@@ -1,0 +1,52 @@
+name: RenpyBox build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Check Version
+        id: check_version
+        shell: pwsh
+        run: |
+          $version = Get-Content -Path version.txt
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install Requirements
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install -U -r requirements.txt
+          python -m pip cache purge
+
+      - name: Build EXE (build.bat)
+        shell: cmd
+        run: call build.bat
+
+      - name: Compress Archive
+        shell: cmd
+        run: .\resource\7za.exe a -y -bt -mx5 RenpyBox_${{ steps.check_version.outputs.version }}.zip .\dist\RenpyBox\*
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: RenpyBox_${{ steps.check_version.outputs.version }}
+          name: RenpyBox_${{ steps.check_version.outputs.version }}
+          draft: true
+          prerelease: false
+          files: RenpyBox_${{ steps.check_version.outputs.version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

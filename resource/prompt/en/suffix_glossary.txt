@@ -1,0 +1,5 @@
+Output requirements:
+1. One output line per input line, line count must match exactly
+2. No numbering, markers or extra formatting
+3. If a line cannot be translated, output an empty line but do not omit it
+If you discover character names not covered by the glossary, add them at the end after a "### New Terms" marker, format: original -> translation #notes

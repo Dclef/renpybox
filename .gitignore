@@ -1,0 +1,26 @@
+# IDE
+/.vscode
+/__pycache__/
+*.pyc
+
+# Runtime directories
+/log
+/input
+/output
+/storage
+
+# Test files
+*.rpa
+
+# Python
+*.egg-info/
+dist/
+build/
+*.pyc
+resource/config.json
+frontend/RenpyToolbox/__pycache__/AddLanguageEntrancePage.cpython-310.pyc
+frontend/RenpyToolbox/__pycache__/FontReplacePage.cpython-310.pyc
+frontend/RenpyToolbox/__pycache__/LocalGlossaryPage.cpython-310.pyc
+frontend/RenpyToolbox/__pycache__/RenpyToolboxPage.cpython-310.pyc
+frontend/RenpyToolbox/__pycache__/SetDefaultLanguagePage.cpython-310.pyc
+config.json
