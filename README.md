@@ -56,7 +56,7 @@
 - 其他格式持续补充，欢迎在 Issues 提交需求
 
 ## 近期更新 📅
-- 2025-12-22 `v0.3.2`：最新构建，持续打磨一键翻译、批量修正与打包流程（详见提交记录）
+- 2025-12-25 `v0.3.3`：修复缺失补丁生成流程问题, 优化文件处理逻辑（详见提交记录）
 
 ## 常见问题 📥
 - 运行日志位于 `./log`，反馈问题请附相关日志
@@ -75,5 +75,5 @@
 相较于LinguaGacha,本项目的独特优势是Renpy相关的工具使用.
 
 - 相关代码取于[AiNiee](https://github.com/NEKOparapa/AiNiee)
-- 模块的设计理念来自于**[renpy-translator](https://github.com/anonymousException/renpy-translator)**
+- 模块的设计理念来自于[renpy-translator](https://github.com/anonymousException/renpy-translator)
 
