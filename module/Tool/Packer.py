@@ -1,9 +1,8 @@
-"""
-RPA pack/unpack helper.
+"""RPA pack/unpack helper.
 
 Notes:
-- 解包优先通过注入 `hook_unrpa.rpy` 并启动游戏来导出文件，可选使用外部工具
-  (`unrpa` 或 `rpatool`) 作为兜底。
+- 解包优先使用外部工具：游戏自带 python + unren_rpatool（UnRen 风格），
+  或系统/unpacked 内置的 unrpa/rpatool。
 - 打包使用 rpatool，采用“先创建再逐个追加”的方式以兼容 Windows 命令行长度限制。
 """
 
@@ -29,7 +28,73 @@ class Packer:
         self.base_dir = Path(__file__).resolve().parents[2]
         self.root_dir = self.base_dir.parent
         self.resource_dir = Path(get_resource_path("resource"))
-        self.hooks_dir = self.resource_dir / "hooks"
+
+    def _creationflags_no_window(self) -> int:
+        if os.name != "nt":
+            return 0
+        try:
+            return subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        except Exception:
+            return 0
+
+    def _run_unren_forall(
+        self,
+        game_root: Path,
+        *,
+        options: str,
+        lang: str = "zh",
+        timeout_s: int | None = None,
+    ) -> subprocess.CompletedProcess[str] | None:
+        """Run bundled UnRen-forall.bat in headless automation mode."""
+        if os.name != "nt":
+            return None
+        unren_bat = Path(get_resource_path("resource", "UnRen-forall.bat"))
+        if not unren_bat.is_file():
+            return None
+
+        env = os.environ.copy()
+        env["UNREN_AUTORUN"] = options
+        env["UNREN_NO_PAUSE"] = "1"
+        env["UNREN_NO_UPDATE"] = "1"
+
+        try:
+            return subprocess.run(
+                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
+                cwd=str(game_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                env=env,
+                timeout=timeout_s,
+                creationflags=self._creationflags_no_window(),
+            )
+        except Exception as exc:
+            self.logger.warning(f"UnRen-forall 运行失败: {exc}")
+            return None
+
+    def unpack_all_unren_forall(
+        self,
+        game_dir: str,
+        *,
+        lang: str = "zh",
+        timeout_s: int | None = None,
+        use_alternative: bool = False,
+    ) -> tuple[bool, list[str]]:
+        """Fallback unpack via UnRen-forall.bat (no window, no prompts)."""
+        game_path = Path(game_dir).resolve()
+        if not game_path.exists() or not game_path.is_dir():
+            raise FileNotFoundError(f"目录不存在: {game_path}")
+
+        game_root = game_path.parent
+        options = "7x" if use_alternative else "1x"
+        result = self._run_unren_forall(game_root, options=options, lang=lang, timeout_s=timeout_s)
+        if result is None:
+            return False, ["UnRen-forall 不可用或启动失败"]
+        output = (result.stdout or "").strip()
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        return result.returncode == 0, lines
 
     def _get_game_python(self, game_root_dir: Path) -> Path | None:
         try:
@@ -114,6 +179,7 @@ class Packer:
                 cwd=str(game_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                creationflags=self._creationflags_no_window(),
             )
         finally:
             # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen-forall.bat 行为一致）
@@ -150,18 +216,12 @@ class Packer:
         script_only: bool | None = None,
         overwrite_existing: bool | None = None,
         max_threads: int | None = None,
-        *,
-        prefer_hook: bool = True,
-        allow_external_fallback: bool = True,
     ) -> Tuple[int, List[str]]:
         """
         Unpack all .rpa files in the given `game_dir`.
 
         Strategy:
         - Prefer external tools when possible: `unrpa` CLI or bundled `rpatool`.
-        - If external tools are not available or fail for all archives, try a
-          Ren'Py in-game hook fallback (inject `hook_unrpa.rpy` then attempt to
-          locate and launch the game automatically). This mirrors renpy-translator-main.
 
         Returns:
             (unpacked_count, messages)
@@ -172,36 +232,9 @@ class Packer:
 
         files = self.find_rpa_files(game_dir)
 
-        if prefer_hook:
-            self.logger.info(f"通过 Hook 解包: {game_dir}")
-            try:
-                hook_msgs = self._hook_unpack(
-                    game_dir,
-                    script_only=script_only,
-                    overwrite_existing=overwrite_existing,
-                    max_threads=max_threads,
-                )
-                for m in hook_msgs:
-                    self.logger.info(m)
-                msgs.extend(hook_msgs)
-                if files:
-                    msgs.append(f"检测到 {len(files)} 个 .rpa，Hook 将在游戏运行时写出文件。")
-                    self.logger.info(f"检测到 {len(files)} 个 .rpa，Hook 将在游戏运行时写出文件。")
-                else:
-                    msgs.append("未检测到 .rpa，但已注入 Hook，可手动运行游戏确认。")
-                    self.logger.info("未检测到 .rpa，但已注入 Hook，可手动运行游戏确认。")
-                return 0, msgs
-            except Exception as hook_err:
-                msg = f"Hook 解包失败: {hook_err}"
-                msgs.append(msg)
-                self.logger.error(msg)
-                if not allow_external_fallback:
-                    return 0, msgs
-
         unpacked = 0
         if not (unrpa or rpatool):
-            if not prefer_hook:
-                msgs.append("未检测到 unrpa 或 rpatool，且未启用 Hook。无法解包。")
+            msgs.append("未检测到 unrpa 或 rpatool，无法解包。")
             return unpacked, msgs
 
         if not files:
@@ -217,10 +250,22 @@ class Packer:
                 self.logger.info(f"解包: {rpa} -> {out_dir}")
                 if unrpa:
                     cmd = [unrpa, "-mp", str(out_dir), str(rpa)]
-                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    subprocess.run(
+                        cmd,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        creationflags=self._creationflags_no_window(),
+                    )
                 else:
                     cmd = [sys.executable, str(rpatool), "-x", "-o", str(out_dir), str(rpa)]
-                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    subprocess.run(
+                        cmd,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        creationflags=self._creationflags_no_window(),
+                    )
                 unpacked += 1
             except subprocess.CalledProcessError as e:
                 output = e.stdout.decode(errors='ignore') if getattr(e, 'stdout', None) else str(e)
@@ -229,114 +274,6 @@ class Packer:
                 self.logger.error(msg)
 
         return unpacked, msgs
-
-    def _hook_unpack(
-        self,
-        game_dir: str,
-        *,
-        script_only: bool | None,
-        overwrite_existing: bool | None,
-        max_threads: int | None,
-    ) -> List[str]:
-        """
-        Try to use the in-game hook logic to dump files from RPA.
-        Steps:
-        - Copy hook_unrpa.rpy into the `game_dir`.
-        - Try to locate a sibling .exe to launch the game.
-        - Launch the game and wait briefly for a marker file to change.
-        This is a best-effort helper to mirror renpy-translator-main behavior.
-        """
-        msgs: List[str] = []
-        hooks_dir = self.hooks_dir
-        hook_file = hooks_dir / "hook_unrpa.rpy"
-        if not hook_file.exists():
-            # Fallback in case resource_dir was mis-resolved
-            hook_file = Path(get_resource_path("resource", "hooks", "hook_unrpa.rpy"))
-        dest = Path(game_dir) / "hook_unrpa.rpy"
-        if not hook_file.exists():
-            raise FileNotFoundError(f"缺少资源: {hook_file}")
-        # Backup and write with adjusted options
-        try:
-            text = hook_file.read_text(encoding="utf-8")
-            # Adjust options if requested
-            if script_only is not None:
-                text = re.sub(r"(?m)^\s*SCRIPT_ONLY\s*=\s*(True|False)\s*$",
-                              f"    SCRIPT_ONLY = {str(bool(script_only))}", text)
-            if overwrite_existing is not None:
-                # SKIP_IF_EXIST is True by default; invert overwrite
-                skip = not bool(overwrite_existing)
-                text = re.sub(r"(?m)^\s*SKIP_IF_EXIST\s*=\s*(True|False)\s*$",
-                              f"    SKIP_IF_EXIST = {str(skip)}", text)
-            if max_threads is not None and max_threads > 0:
-                text = re.sub(r"(?m)^\s*MAX_UNPACK_THREADS\s*=\s*\d+\s*$",
-                              f"    MAX_UNPACK_THREADS = {int(max_threads)}", text)
-            if dest.exists():
-                backup = dest.with_suffix(dest.suffix + ".bak")
-                shutil.copy2(dest, backup)
-            dest.write_text(text, encoding="utf-8")
-            msgs.append(f"已注入 Hook: {dest}")
-        except Exception as ie:
-            raise RuntimeError(f"复制 Hook 失败: {ie}")
-
-        # Create finish flag under exe dir
-        exe_dir = Path(game_dir).parent
-        finish_flag = exe_dir / "unpack.finish"
-        try:
-            finish_flag.write_text("waiting", encoding="utf-8")
-            self.logger.debug(f"写入标记文件: {finish_flag}")
-        except Exception:
-            pass
-
-        # Try to find a candidate exe and launch
-        exe_candidates = list(exe_dir.glob("*.exe"))
-        if not exe_candidates:
-            msgs.append("未找到可执行文件，已仅完成 Hook 注入。请手动启动游戏以触发解包。")
-            return msgs
-
-        # Prefer the largest exe (usually the main game exe)
-        exe_candidates.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
-        exe = exe_candidates[0]
-        msgs.append(f"尝试启动游戏: {exe}")
-        try:
-            subprocess.Popen([str(exe)], cwd=str(exe_dir))
-        except Exception as le:
-            msgs.append(f"自动启动失败: {le}。请手动运行游戏以触发解包。")
-            return msgs
-
-        # We do not hard-block waiting here; renpy-translator uses a UI loop
-        # that watches for the flag removal and pid file. We log guidance.
-        msgs.append("已启动游戏并注入 Hook。完成后将自动在游戏目录下写出文件。")
-        msgs.append("若需要覆盖已存在文件，请修改 hook_unrpa.rpy 中 SKIP_IF_EXIST。")
-        return msgs
-
-    def remove_hook_files(self, game_dir: str) -> List[str]:
-        """
-        删除 game 目录下的 hook 文件（hook_unrpa.rpy, hook_unrpa.rpyc 等）。
-        解包完成后应调用此方法清理 hook 文件，防止打包后自动解压。
-        
-        Returns:
-            删除的文件列表
-        """
-        removed: List[str] = []
-        hook_patterns = [
-            'hook_unrpa.rpy',
-            'hook_unrpa.rpyc',
-            'hook_extract.rpy',
-            'hook_extract.rpyc',
-            'hook_add_change_language_entrance.rpy',
-            'hook_add_change_language_entrance.rpyc',
-        ]
-        game_path = Path(game_dir)
-        for pattern in hook_patterns:
-            hook_file = game_path / pattern
-            if hook_file.exists():
-                try:
-                    hook_file.unlink()
-                    removed.append(str(hook_file))
-                    self.logger.info(f"已删除 Hook 文件: {hook_file}")
-                except Exception as e:
-                    self.logger.warning(f"删除 Hook 文件失败 {hook_file}: {e}")
-        return removed
 
     def pack_from_dir(
         self,
@@ -384,13 +321,6 @@ class Packer:
              pass
 
         files: List[Path] = []
-        hook_base_names = {
-            'hook_unrpa',
-            'hook_extract',
-            'hook_add_change_language_entrance',
-        }
-        hook_file_names = {f"{name}.rpy" for name in hook_base_names} | {f"{name}.rpyc" for name in hook_base_names}
-        hook_extensions = {'.rpy', '.rpyc'}
         try:
             for entry in src.rglob('*'):
                 if stop_check and stop_check():
@@ -398,16 +328,6 @@ class Packer:
                 if entry.is_file():
                     # Exclude the output file itself if it's inside the source directory
                     if entry.resolve() == out_path_resolved:
-                        continue
-
-                    # Exclude hook files
-                    entry_name_lower = entry.name.lower()
-                    entry_stem_lower = entry.stem.lower()
-                    entry_suffix_lower = entry.suffix.lower()
-                    if (
-                        entry_name_lower in hook_file_names
-                        or (entry_stem_lower in hook_base_names and entry_suffix_lower in hook_extensions)
-                    ):
                         continue
 
                     files.append(entry)

@@ -718,40 +718,16 @@ class YiJianFanyiPage(Base, QWidget):
         """
         try:
             from module.Tool.RenpyDecompiler import RenpyDecompiler
-            from pathlib import Path
-            
-            game_path = Path(game_dir)
-            
-            # 检测 Ren'Py 版本，选择合适的反编译器
-            variant = "unrpyc_python"  # 默认 v7
-            
-            # 尝试检测版本
-            version_file = game_path / "renpy" / "version.txt"
-            if version_file.exists():
-                try:
-                    version_text = version_file.read_text(encoding='utf-8', errors='ignore')
-                    if '8.' in version_text or 'Ren\'Py 8' in version_text:
-                        variant = "unrpyc_python_v2"
-                except Exception:
-                    pass
-            
-            # 另一种检测方式：检查 Python 版本
-            from ...utils.call_game_python import is_python2_from_game_dir
-            if not is_python2_from_game_dir(game_dir):
-                # Python 3 游戏，可能是 v8
-                py_exe = game_path / "lib" / "py3-windows-x86_64" / "python.exe"
-                if py_exe.exists():
-                    variant = "unrpyc_python_v2"
-            
-            decompiler = RenpyDecompiler(variant=variant)
+
+            decompiler = RenpyDecompiler()
             decompiler.decompile(game_dir, overwrite=False)
             
-            return True, f"反编译完成 (使用 {variant})"
+            return True, "反编译完成 (unrpyc v2)"
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return False, f"反编译失败: {e}"
+            return False, f"反编译失败（可能版本不兼容/加密/脚本特殊）：{e}"
         
     def _go_step2(self):
         """进入步骤2并开始提取"""

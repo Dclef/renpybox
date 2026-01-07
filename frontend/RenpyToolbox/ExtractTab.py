@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
-import shutil
 from qfluentwidgets import (
     PushButton,
     PrimaryPushButton,
@@ -22,7 +21,6 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
-from base.PathHelper import get_resource_path
 from module.Text.SkipRules import should_skip_text
 from module.Renpy.json_handler import JsonExporter, JsonImporter
 from module.Renpy import renpy_extract as rx
@@ -53,7 +51,6 @@ class ExtractTab(Base, QWidget):
         layout.addWidget(self._create_progress_card())
         layout.addWidget(self._create_json_card())
         layout.addWidget(self._create_official_card())
-        layout.addWidget(self._create_runtime_card())
 
         layout.addStretch()
 
@@ -147,38 +144,6 @@ class ExtractTab(Base, QWidget):
         btn_export_tl.clicked.connect(self._export_tl_to_json)
         row2.addWidget(btn_clean)
         row2.addWidget(btn_export_tl)
-        row2.addStretch()
-        layout.addLayout(row2)
-
-        return card
-
-    def _create_runtime_card(self) -> CardWidget:
-        card = CardWidget(self)
-        layout = QVBoxLayout(card)
-
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("游戏程序:"))
-        self.exe_edit = LineEdit()
-        self.exe_edit.setPlaceholderText("可执行文件，例如 game.exe")
-        btn_browse = PushButton("浏览")
-        btn_browse.clicked.connect(self._browse_exe)
-        row1.addWidget(self.exe_edit, 1)
-        row1.addWidget(btn_browse)
-        layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        btn_inject = PushButton("注入 Hook")
-        btn_launch = PushButton("启动游戏")
-        btn_export_rt = PushButton("导出捕获为 JSON")
-        btn_remove = PushButton("移除 Hook")
-        btn_inject.clicked.connect(self._inject_hooks)
-        btn_launch.clicked.connect(self._launch_game)
-        btn_export_rt.clicked.connect(self._export_runtime_capture)
-        btn_remove.clicked.connect(self._remove_hooks)
-        row2.addWidget(btn_inject)
-        row2.addWidget(btn_launch)
-        row2.addWidget(btn_export_rt)
-        row2.addWidget(btn_remove)
         row2.addStretch()
         layout.addLayout(row2)
 
@@ -396,139 +361,3 @@ class ExtractTab(Base, QWidget):
         except Exception as e:
             LogManager.get().error(f"TL 导出失败: {e}")
             InfoBar.error("错误", f"TL 导出失败: {e}", parent=self)
-
-    def _browse_exe(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择游戏可执行文件", "", "可执行文件 (*.exe);;所有文件 (*)")
-        if path:
-            self.exe_edit.setText(path)
-
-    def _inject_hooks(self):
-        try:
-            game_file = self.game_file_edit.text().strip()
-            if not game_file:
-                InfoBar.warning("提示", "请选择游戏文件", parent=self)
-                return
-            project = Path(game_file).parent
-            hooks_dir = Path(get_resource_path("resource", "hooks"))
-            dest_dir = project / "game"
-            if not hooks_dir.exists() or not dest_dir.exists():
-                InfoBar.error("错误", f"资源或项目目录不存在: {hooks_dir}", parent=self)
-                return
-            injected = 0
-            for hook in hooks_dir.glob("*.rpy"):
-                target = dest_dir / hook.name
-                try:
-                    if target.exists():
-                        backup = target.with_suffix(target.suffix + ".bak")
-                        shutil.copy2(target, backup)
-                    shutil.copy2(hook, target)
-                    injected += 1
-                    LogManager.get().info(f"已注入 Hook: {target}")
-                except Exception as ie:
-                    LogManager.get().error(f"注入失败 {hook}: {ie}")
-            InfoBar.success("完成", f"注入 {injected} 个 Hook", parent=self)
-        except Exception as e:
-            LogManager.get().error(f"Hook 注入失败: {e}")
-            InfoBar.error("错误", f"Hook 注入失败: {e}", parent=self)
-
-    def _launch_game(self):
-        try:
-            exe = self.exe_edit.text().strip()
-            if not exe:
-                InfoBar.warning("提示", "请先选择游戏可执行文件", parent=self)
-                return
-            import subprocess
-            cwd = str(Path(exe).parent)
-            subprocess.Popen([exe], cwd=cwd)
-            InfoBar.info("已启动", "游戏已启动，请在游戏中执行需要的操作以收集文本", parent=self)
-            LogManager.get().info(f"Launched game: {exe}")
-        except Exception as e:
-            LogManager.get().error(f"启动失败: {e}")
-            InfoBar.error("错误", f"启动失败: {e}", parent=self)
-
-    def _remove_hooks(self):
-        try:
-            game_file = self.game_file_edit.text().strip()
-            if not game_file:
-                InfoBar.warning("提示", "请选择游戏文件", parent=self)
-                return
-            dest_dir = Path(game_file).parent / "game"
-            removed = 0
-            for name in [
-                "hook_add_change_language_entrance.rpy",
-                "hook_extract.rpy",
-                "hook_unrpa.rpy",
-            ]:
-                target = dest_dir / name
-                if target.exists():
-                    backup = target.with_suffix(target.suffix + ".bak.removed")
-                    try:
-                        shutil.copy2(target, backup)
-                    except Exception:
-                        pass
-                    target.unlink(missing_ok=True)
-                    removed += 1
-                    LogManager.get().info(f"已移除 Hook: {target}")
-            if removed:
-                InfoBar.success("完成", f"移除 {removed} 个 Hook", parent=self)
-            else:
-                InfoBar.info("提示", "未找到可移除的 Hook", parent=self)
-        except Exception as e:
-            LogManager.get().error(f"Hook 移除失败: {e}")
-            InfoBar.error("错误", f"Hook 移除失败: {e}", parent=self)
-
-    def _export_runtime_capture(self):
-        try:
-            game_file = self.game_file_edit.text().strip()
-            if not game_file:
-                InfoBar.warning("提示", "请选择游戏文件", parent=self)
-                return
-            project = Path(game_file).parent
-            default_dir = project
-            default_path = default_dir / "extraction_hooked.json"
-            if not default_path.exists():
-                json_path, _ = QFileDialog.getOpenFileName(
-                    self, "选择 extraction_hooked.json", str(default_dir), "JSON 文件 (*.json)"
-                )
-                if not json_path:
-                    return
-                json_file = Path(json_path)
-            else:
-                json_file = default_path
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            json_data: Dict[str, List[Dict]] = {}
-            skipped = 0
-            for filename, entries in data.items():
-                items: List[Dict] = []
-                for entry in entries:
-                    identifier, who, what, linenumber = entry
-                    if should_skip_text(str(what) if what is not None else ""):
-                        skipped += 1
-                        continue
-                    items.append({
-                        "line": linenumber or 0,
-                        "original": str(what) if what is not None else "",
-                        "translation": "",
-                        "type": "dialogue",
-                        "status": "pending",
-                    })
-                json_data[filename] = items
-
-            save_path, _ = QFileDialog.getSaveFileName(
-                self, "保存运行时捕获 JSON", str(project / "translations_runtime.json"), "JSON 文件 (*.json)"
-            )
-            if not save_path:
-                return
-            exporter = JsonExporter()
-            if exporter.export(json_data, save_path, include_metadata=True):
-                total_files = len(json_data)
-                total_entries = sum(len(items) for items in json_data.values())
-                LogManager.get().info(f"Runtime capture exported: {save_path} ({total_files} files, {total_entries} entries, skipped {skipped})")
-                InfoBar.success("完成", f"已导出运行时捕获到 JSON\n{total_files} 个文件，{total_entries} 条对话，跳过 {skipped} 条资源/占位符", parent=self)
-            else:
-                InfoBar.error("错误", "导出失败", parent=self)
-        except Exception as e:
-            LogManager.get().error(f"导出捕获失败: {e}")
-            InfoBar.error("错误", f"导出捕获失败: {e}", parent=self)

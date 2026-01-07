@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from base.PathHelper import get_resource_path
 from base.LogManager import LogManager
 from module.Renpy.json_handler import JsonExporter
 from module.Text.SkipRules import should_skip_text
@@ -23,15 +20,16 @@ from utils.string_tool import encode_say_string
 
 
 class RenpyExtractor:
-    """High level wrapper around renpy-translator's extraction workflow."""
+    """High level wrapper around renpy-translator's extraction workflow.
 
-    HOOK_RUNTIME = "hook_extract.rpy"
+    运行时抽取已移除（不再内置 Hook）。
+    """
+
+    HOOK_RUNTIME = None  # runtime hook deprecated
     MISS_FILE_PREFIXES = ("miss_ready_replace",)
 
     def __init__(self) -> None:
         self.logger = LogManager.get()
-        # Use PathHelper so packaged builds can find bundled hooks.
-        self.hooks_dir = Path(get_resource_path("resource", "hooks"))
 
     # ------------------------------------------------------------------
     # Public API
@@ -179,51 +177,7 @@ class RenpyExtractor:
     ) -> Path:
         """Inject runtime hook, launch game, and build tl files from JSON."""
 
-        exe, project = self._resolve_game_exe(target_path)
-        game_dir = project / "game"
-        hook_source = self.hooks_dir / self.HOOK_RUNTIME
-        if not hook_source.exists():
-            raise FileNotFoundError(f"缺少运行时 Hook: {hook_source}")
-
-        hook_target = game_dir / self.HOOK_RUNTIME
-        shutil.copy2(hook_source, hook_target)
-        self.logger.info(f"已注入运行时 Hook: {hook_target}")
-
-        json_path = project / "extraction_hooked.json"
-        if json_path.exists():
-            json_path.unlink()
-
-        finish_flag = project / "extract_runtime.finish"
-        if finish_flag.exists():
-            finish_flag.unlink()
-
-        self.logger.info(f"启动游戏进行运行时提取: {exe}")
-        proc = subprocess.Popen([str(exe)], cwd=str(project))
-
-        start = time.time()
-        while True:
-            if json_path.exists() and json_path.stat().st_size > 0:
-                break
-            if proc.poll() is not None and not json_path.exists():
-                raise RuntimeError("游戏已退出但未生成 extraction_hooked.json")
-            if time.time() - start > timeout:
-                proc.terminate()
-                raise TimeoutError("等待 extraction_hooked.json 超时")
-            time.sleep(1)
-
-        with json_path.open("r", encoding="utf-8") as f:
-            mapping = json.load(f)
-
-        self.logger.info("运行时 JSON 捕获完成，开始生成 tl 文件")
-        tl_dir = self._write_runtime_tl(project, tl_name, mapping, generate_empty)
-
-        # 清理
-        json_path.unlink(missing_ok=True)
-        for extra in [hook_target, hook_target.with_suffix(".rpyc")]:
-            extra.unlink(missing_ok=True)
-        finish_flag.touch()
-        self.logger.info(f"运行时提取完成: {tl_dir}")
-        return tl_dir
+        raise RuntimeError("运行时抽取 Hook 已移除。请使用官方抽取或现有 tl 解析（SimpleRpyExtractor）。")
 
     def collect_entries(
         self,
@@ -357,14 +311,8 @@ class RenpyExtractor:
 
         return removed
 
-    # 工具生成的钩子文件，不应该被提取或翻译
+    # 工具生成的脚本/中间文件，不应该被提取或翻译
     HOOK_FILES = {
-        'hook_add_change_language_entrance.rpy',
-        'hook_add_change_language_entrance.rpyc',
-        'hook_extract.rpy',
-        'hook_extract.rpyc',
-        'hook_unrpa.rpy',
-        'hook_unrpa.rpyc',
         'set_default_language_at_startup.rpy',
         'set_default_language_at_startup.rpyc',
     }

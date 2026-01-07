@@ -23,14 +23,8 @@ from module.Text.SkipRules import should_skip_text
 class SimpleRpyExtractor:
     """简洁的 RPY 翻译提取器，直接解析已有翻译文件"""
 
-    # 工具生成的钩子文件，不应该被提取或翻译
+    # 工具生成的脚本/中间文件，不应该被提取或翻译
     HOOK_FILES = {
-        'hook_add_change_language_entrance.rpy',
-        'hook_add_change_language_entrance.rpyc',
-        'hook_extract.rpy',
-        'hook_extract.rpyc',
-        'hook_unrpa.rpy',
-        'hook_unrpa.rpyc',
         'set_default_language_at_startup.rpy',
         'set_default_language_at_startup.rpyc',
         # 缺失补丁（仅作为生成 replace_text 的中间文件，不应参与“已抽取覆盖”统计）

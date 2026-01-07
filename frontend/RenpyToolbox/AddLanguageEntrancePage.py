@@ -167,3 +167,4 @@ class AddLanguageEntrancePage(Base, QWidget):
         except Exception as e:
             LogManager.get().error(f"添加语言入口失败: {e}")
             InfoBar.error("错误", f"添加语言入口失败: {e}", parent=self)
+

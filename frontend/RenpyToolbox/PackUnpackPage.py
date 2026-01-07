@@ -1,6 +1,4 @@
-"""
-解包/反编译/打包页面 - 通过 Hook 注入优先解包 RPA、封装 unrpyc 反编译，以及 rpatool 打包能力。
-"""
+"""解包/反编译/打包页面 - 后台线程调用 UnRen/rpatool 解包，unrpyc 反编译，以及 rpatool 打包能力。"""
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -62,6 +60,189 @@ class PackWorker(QThread):
         self.should_stop = True
 
 
+class UnpackWorker(QThread):
+    """后台解包工作线程（避免阻塞 UI）"""
+
+    progress = pyqtSignal(str)  # message
+    finished = pyqtSignal(object)  # result dict
+
+    def __init__(self, game_dir: str, *, direct: bool, script_only: bool):
+        super().__init__()
+        self.game_dir = game_dir
+        self.direct = direct
+        self.script_only = script_only
+
+    def run(self):
+        try:
+            packer = Packer()
+
+            # 1) UnRen 直接解包（不启动游戏）
+            if self.direct:
+                try:
+                    self.progress.emit("正在尝试直接解包…")
+                    count, _messages = packer.unpack_all_unren(
+                        self.game_dir,
+                        script_only=self.script_only,
+                    )
+                    if count > 0:
+                        self.finished.emit({
+                            "level": "success",
+                            "title": "完成",
+                            "message": f"已直接解包 {count} 个归档文件",
+                        })
+                        return
+                except Exception as exc:
+                    LogManager.get().error(f"直接解包失败: {exc}")
+                    self.progress.emit("直接解包失败，尝试使用外部工具继续解包…")
+
+            # 2) 外部工具：unrpa / rpatool
+            self.progress.emit("正在解包…")
+            count, _messages = packer.unpack_all(
+                self.game_dir,
+                script_only=self.script_only,
+                output_root=self.game_dir,
+            )
+
+            if count > 0:
+                self.finished.emit({
+                    "level": "success",
+                    "title": "完成",
+                    "message": f"已解包 {count} 个 RPA 文件",
+                })
+                return
+
+            # 3) UnRen-forall 保底（静默）
+            self.progress.emit("尝试 UnRen 保底解包…")
+            ok, _lines = packer.unpack_all_unren_forall(self.game_dir, lang="zh", timeout_s=60 * 60)
+            if not ok:
+                ok, _lines = packer.unpack_all_unren_forall(
+                    self.game_dir,
+                    lang="zh",
+                    timeout_s=60 * 60,
+                    use_alternative=True,
+                )
+
+            if ok:
+                self.finished.emit({
+                    "level": "success",
+                    "title": "完成",
+                    "message": "已使用 UnRen 保底解包（请检查 game 目录输出）",
+                })
+                return
+
+            self.finished.emit({
+                "level": "info",
+                "title": "提示",
+                "message": "未找到 RPA 文件，或外部工具/UnRen 不可用",
+            })
+        except Exception as exc:
+            LogManager.get().error(f"解包失败: {exc}")
+            self.finished.emit({
+                "level": "error",
+                "title": "错误",
+                "message": f"解包失败: {exc}",
+            })
+
+
+class DecompileWorker(QThread):
+    """后台反编译工作线程（避免阻塞 UI）"""
+
+    progress = pyqtSignal(str)  # message
+    finished = pyqtSignal(object)  # result dict
+
+    def __init__(self, target: str, *, overwrite: bool):
+        super().__init__()
+        self.target = target
+        self.overwrite = overwrite
+
+    def run(self):
+        try:
+            self.progress.emit("正在反编译…")
+            decompiler = RenpyDecompiler()
+            decompiler.decompile(self.target, overwrite=self.overwrite)
+            self.finished.emit({
+                "level": "success",
+                "title": "完成",
+                "message": "反编译完成，已生成 .rpy 文件",
+            })
+        except Exception as exc:
+            LogManager.get().error(f"反编译失败: {exc}")
+            self.finished.emit({
+                "level": "error",
+                "title": "错误",
+                "message": f"反编译失败: {exc}",
+            })
+
+
+class CleanupWorker(QThread):
+    """后台清理工作线程（避免阻塞 UI）"""
+
+    progress = pyqtSignal(str)  # message
+    finished = pyqtSignal(object)  # result dict
+
+    def __init__(self, game_dir: str):
+        super().__init__()
+        self.game_dir = game_dir
+
+    def run(self):
+        try:
+            self.progress.emit("正在清理临时文件…")
+
+            game_path = Path(self.game_dir)
+            root_dir = game_path.parent
+
+            to_delete = [
+                game_path / "__pycache__",
+                game_path / "unpacked_rpa",
+                root_dir / "unpack.finish",
+                root_dir / "game.pid",
+                root_dir / "common_backup.zip",
+                root_dir / "unrpyc.complete",
+                root_dir / "decomp.cab",
+                root_dir / "decomp.cab.tmp",
+                root_dir / "unrpyc.py",
+                root_dir / "unrpyc.pyo",
+                root_dir / "deobfuscate.py",
+                root_dir / "deobfuscate.pyo",
+                root_dir / "decompiler",
+            ]
+
+            removed = 0
+            for p in to_delete:
+                try:
+                    if not p.exists():
+                        continue
+                    if p.is_dir():
+                        import shutil
+
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    removed += 1
+                except Exception:
+                    continue
+
+            if removed:
+                self.finished.emit({
+                    "level": "success",
+                    "title": "完成",
+                    "message": f"已清理 {removed} 个临时项",
+                })
+            else:
+                self.finished.emit({
+                    "level": "info",
+                    "title": "提示",
+                    "message": "未发现需要清理的临时文件",
+                })
+        except Exception as exc:
+            LogManager.get().error(f"清理失败: {exc}")
+            self.finished.emit({
+                "level": "error",
+                "title": "错误",
+                "message": f"清理失败: {exc}",
+            })
+
+
 class PackUnpackPage(Base, QWidget):
     """解包/打包页面"""
 
@@ -73,6 +254,10 @@ class PackUnpackPage(Base, QWidget):
         
         self.window = parent
         self.pack_worker = None
+        self.unpack_worker = None
+        self.decompile_worker = None
+        self.cleanup_worker = None
+        self._pending_decompile_after_unpack = False
         self._init_ui()
 
     def _init_ui(self):
@@ -147,6 +332,17 @@ class PackUnpackPage(Base, QWidget):
         btn_row.addWidget(self.unpack_cleanup_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        # 解包进度（不确定进度）
+        self.unpack_progress = ProgressBar(self)
+        self.unpack_progress.setRange(0, 0)
+        self.unpack_progress.setVisible(False)
+        layout.addWidget(self.unpack_progress)
+
+        self.unpack_status_label = QLabel("")
+        self.unpack_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.unpack_status_label.setVisible(False)
+        layout.addWidget(self.unpack_status_label)
 
         return card
 
@@ -230,21 +426,28 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(self.decompile_overwrite_check)
 
         btn_row = QHBoxLayout()
-        self.decompile_button = PrimaryPushButton("反编译 (经典)", icon=FluentIcon.CODE)
-        self.decompile_button.clicked.connect(lambda: self._decompile("unrpyc_python"))
+        self.decompile_button = PrimaryPushButton("反编译", icon=FluentIcon.CODE)
+        self.decompile_button.setToolTip("使用 unrpyc v2 反编译（Ren'Py 8 / Python 3）")
+        self.decompile_button.clicked.connect(self._decompile)
         btn_row.addWidget(self.decompile_button)
 
-        self.decompile_button_v2 = PushButton("反编译 (unrpyc v2)", icon=FluentIcon.CODE)
-        self.decompile_button_v2.setToolTip("使用新版本 unrpyc 适配 Ren'Py 8 系列")
-        self.decompile_button_v2.clicked.connect(lambda: self._decompile("unrpyc_python_v2"))
-        btn_row.addWidget(self.decompile_button_v2)
-
         self.unpack_and_decompile_button = PushButton("解包 + 反编译", icon=FluentIcon.PLAY)
-        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后执行 unrpyc（自动尝试经典/v2）")
+        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后执行 unrpyc v2 反编译")
         self.unpack_and_decompile_button.clicked.connect(self._unpack_and_decompile)
         btn_row.addWidget(self.unpack_and_decompile_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        # 反编译进度（不确定进度）
+        self.decompile_progress = ProgressBar(self)
+        self.decompile_progress.setRange(0, 0)
+        self.decompile_progress.setVisible(False)
+        layout.addWidget(self.decompile_progress)
+
+        self.decompile_status_label = QLabel("")
+        self.decompile_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.decompile_status_label.setVisible(False)
+        layout.addWidget(self.decompile_status_label)
 
         return card
 
@@ -281,63 +484,80 @@ class PackUnpackPage(Base, QWidget):
     def _unpack(self):
         """解包 RPA"""
         try:
+            if self.unpack_worker and self.unpack_worker.isRunning():
+                InfoBar.warning("提示", "解包任务正在进行中", parent=self)
+                return False
+
             game_dir = self.unpack_game_dir_edit.text().strip()
             if not game_dir:
                 InfoBar.warning("提示", "请选择 game 目录", parent=self)
-                return
+                return False
 
             if not Path(game_dir).exists():
                 InfoBar.error("错误", "目录不存在", parent=self)
-                return
+                return False
 
             LogManager.get().info(f"开始解包: {game_dir}")
             
-            packer = Packer()
             script_only = self.unpack_script_only_check.isChecked()
+            direct = self.unpack_direct_check.isChecked()
 
-            # 1) UnRen：使用游戏自带 python 直接解包（不启动游戏）
-            if self.unpack_direct_check.isChecked():
-                try:
-                    count, messages = packer.unpack_all_unren(
-                        game_dir,
-                        script_only=script_only,
-                    )
-                    for msg in messages:
-                        LogManager.get().info(msg)
-                    if count > 0:
-                        InfoBar.success("完成", f"已直接解包 {count} 个归档文件", parent=self)
-                        return
-                    InfoBar.info("提示", "未找到可解包的归档文件", parent=self)
-                    return
-                except Exception as e:
-                    LogManager.get().error(f"直接解包失败: {e}")
-                    InfoBar.warning("提示", "直接解包失败，尝试使用外部工具继续解包", parent=self)
-
-            # 2) 外部工具：unrpa / rpatool
-            count, messages = packer.unpack_all(
+            self._set_unpack_busy(True, "准备开始…")
+            self.unpack_worker = UnpackWorker(
                 game_dir,
+                direct=direct,
                 script_only=script_only,
-                prefer_hook=False,
-                allow_external_fallback=True,
-                output_root=game_dir,
             )
+            self.unpack_worker.progress.connect(self._on_unpack_progress)
+            self.unpack_worker.finished.connect(self._on_unpack_finished)
+            self.unpack_worker.start()
+            return True
 
-            for msg in messages:
-                LogManager.get().info(msg)
-
-            if count > 0:
-                InfoBar.success("完成", f"已解包 {count} 个 RPA 文件", parent=self)
-                return
-
-            InfoBar.info("提示", "未找到 RPA 文件，或外部工具不可用", parent=self)
-            
         except Exception as e:
             LogManager.get().error(f"解包失败: {e}")
             InfoBar.error("错误", f"解包失败: {e}", parent=self)
+            return False
+
+    def _on_unpack_progress(self, message: str) -> None:
+        self.unpack_status_label.setText(message or "")
+
+    def _on_unpack_finished(self, result: dict) -> None:
+        self._set_unpack_busy(False)
+        self.unpack_worker = None
+
+        level = (result or {}).get("level", "info")
+        title = (result or {}).get("title", "提示")
+        message = (result or {}).get("message", "")
+
+        if level == "success":
+            InfoBar.success(title, message, parent=self)
+        elif level == "warning":
+            InfoBar.warning(title, message, parent=self)
+        elif level == "error":
+            InfoBar.error(title, message, parent=self)
+        else:
+            InfoBar.info(title, message, parent=self)
+
+        if self._pending_decompile_after_unpack:
+            self._pending_decompile_after_unpack = False
+            if level != "error":
+                self._decompile()
 
     def _cleanup_unpack_artifacts(self):
         """清理解包/反编译可能遗留的临时文件（不影响正常文件）。"""
         try:
+            if self.cleanup_worker and self.cleanup_worker.isRunning():
+                InfoBar.warning("提示", "清理任务正在进行中", parent=self)
+                return
+
+            if self.unpack_worker and self.unpack_worker.isRunning():
+                InfoBar.warning("提示", "解包任务正在进行中", parent=self)
+                return
+
+            if self.decompile_worker and self.decompile_worker.isRunning():
+                InfoBar.warning("提示", "反编译任务正在进行中", parent=self)
+                return
+
             game_dir = self.unpack_game_dir_edit.text().strip()
             if not game_dir:
                 InfoBar.warning("提示", "请选择 game 目录", parent=self)
@@ -348,50 +568,42 @@ class PackUnpackPage(Base, QWidget):
                 InfoBar.error("错误", "目录不存在", parent=self)
                 return
 
-            root_dir = game_path.parent
-
-            to_delete = [
-                game_path / "__pycache__",
-                game_path / "unpacked_rpa",
-                game_path / "hook_unrpa.rpy",
-                game_path / "hook_unrpa.rpyc",
-                game_path / "hook_extract.rpy",
-                game_path / "hook_extract.rpyc",
-                game_path / "hook_add_change_language_entrance.rpy",
-                game_path / "hook_add_change_language_entrance.rpyc",
-                root_dir / "unpack.finish",
-                root_dir / "game.pid",
-                root_dir / "common_backup.zip",
-                root_dir / "unrpyc.complete",
-            ]
-
-            removed = []
-            for p in to_delete:
-                try:
-                    if not p.exists():
-                        continue
-                    if p.is_dir():
-                        import shutil
-                        shutil.rmtree(p, ignore_errors=True)
-                    else:
-                        p.unlink(missing_ok=True)
-                    removed.append(str(p))
-                except Exception:
-                    continue
-
-            if removed:
-                InfoBar.success("完成", f"已清理 {len(removed)} 个临时项", parent=self)
-                for item in removed:
-                    LogManager.get().info(f"已清理: {item}")
-            else:
-                InfoBar.info("提示", "未发现需要清理的临时文件", parent=self)
+            self._set_unpack_busy(True, "准备清理…")
+            self.cleanup_worker = CleanupWorker(game_dir)
+            self.cleanup_worker.progress.connect(self._on_cleanup_progress)
+            self.cleanup_worker.finished.connect(self._on_cleanup_finished)
+            self.cleanup_worker.start()
         except Exception as e:
             LogManager.get().error(f"清理失败: {e}")
             InfoBar.error("错误", f"清理失败: {e}", parent=self)
 
-    def _decompile(self, variant: str = "unrpyc_python"):
-        """反编译 RPYC，variant 控制使用哪个 unrpyc 版本"""
+    def _on_cleanup_progress(self, message: str) -> None:
+        self.unpack_status_label.setText(message or "")
+
+    def _on_cleanup_finished(self, result: dict) -> None:
+        self._set_unpack_busy(False)
+        self.cleanup_worker = None
+
+        level = (result or {}).get("level", "info")
+        title = (result or {}).get("title", "提示")
+        message = (result or {}).get("message", "")
+
+        if level == "success":
+            InfoBar.success(title, message, parent=self)
+        elif level == "warning":
+            InfoBar.warning(title, message, parent=self)
+        elif level == "error":
+            InfoBar.error(title, message, parent=self)
+        else:
+            InfoBar.info(title, message, parent=self)
+
+    def _decompile(self):
+        """反编译 RPYC → RPY（unrpyc v2）"""
         try:
+            if self.decompile_worker and self.decompile_worker.isRunning():
+                InfoBar.warning("提示", "反编译任务正在进行中", parent=self)
+                return
+
             exe_path = self.decompile_exe_edit.text().strip()
             if not exe_path:
                 InfoBar.warning("提示", "请选择游戏根目录或可执行文件", parent=self)
@@ -402,17 +614,37 @@ class PackUnpackPage(Base, QWidget):
                 return
 
             overwrite = self.decompile_overwrite_check.isChecked()
-            LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, variant={variant})")
+            LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, unrpyc=v2)")
 
-            decompiler = RenpyDecompiler(variant)
-            decompiler.decompile(exe_path, overwrite=overwrite)
-
-            variant_label = "unrpyc v2" if variant == "unrpyc_python_v2" else "经典 unrpyc"
-            InfoBar.success("完成", f"{variant_label} 反编译完成，已生成 .rpy 文件", parent=self)
+            self._set_decompile_busy(True, "准备开始…")
+            self.decompile_worker = DecompileWorker(exe_path, overwrite=overwrite)
+            self.decompile_worker.progress.connect(self._on_decompile_progress)
+            self.decompile_worker.finished.connect(self._on_decompile_finished)
+            self.decompile_worker.start()
 
         except Exception as e:
             LogManager.get().error(f"反编译失败: {e}")
             InfoBar.error("错误", f"反编译失败: {e}", parent=self)
+
+    def _on_decompile_progress(self, message: str) -> None:
+        self.decompile_status_label.setText(message or "")
+
+    def _on_decompile_finished(self, result: dict) -> None:
+        self._set_decompile_busy(False)
+        self.decompile_worker = None
+
+        level = (result or {}).get("level", "info")
+        title = (result or {}).get("title", "提示")
+        message = (result or {}).get("message", "")
+
+        if level == "success":
+            InfoBar.success(title, message, parent=self)
+        elif level == "warning":
+            InfoBar.warning(title, message, parent=self)
+        elif level == "error":
+            InfoBar.error(title, message, parent=self)
+        else:
+            InfoBar.info(title, message, parent=self)
 
     def _unpack_and_decompile(self):
         """一键：按解包设置解包后，执行 unrpyc 反编译。"""
@@ -434,8 +666,31 @@ class PackUnpackPage(Base, QWidget):
             except Exception:
                 pass
 
-        # 默认优先 v2（内部会自动 fallback 到另一个版本）
-        self._decompile("unrpyc_python_v2")
+        self._pending_decompile_after_unpack = True
+        if not self._unpack():
+            self._pending_decompile_after_unpack = False
+
+    def _set_unpack_busy(self, busy: bool, message: str = "") -> None:
+        self.unpack_button.setEnabled(not busy)
+        self.unpack_cleanup_button.setEnabled(not busy)
+        self.unpack_progress.setVisible(busy)
+        self.unpack_status_label.setVisible(busy)
+        self.unpack_status_label.setText(message or "")
+
+        # 避免同时触发反编译导致目录冲突
+        self.decompile_button.setEnabled(not busy)
+        self.unpack_and_decompile_button.setEnabled(not busy)
+
+    def _set_decompile_busy(self, busy: bool, message: str = "") -> None:
+        self.decompile_button.setEnabled(not busy)
+        self.unpack_and_decompile_button.setEnabled(not busy)
+        self.decompile_progress.setVisible(busy)
+        self.decompile_status_label.setVisible(busy)
+        self.decompile_status_label.setText(message or "")
+
+        # 避免同时触发解包导致目录冲突
+        self.unpack_button.setEnabled(not busy)
+        self.unpack_cleanup_button.setEnabled(not busy)
 
     def _pack(self):
         """打包为 RPA（后台线程）"""
@@ -458,14 +713,6 @@ class PackUnpackPage(Base, QWidget):
         output_path = Path(output_file)
         if not output_path.is_absolute():
             output_file = str(Path(src_dir).parent / output_file)
-
-        # 打包前删除 game 目录下的 hook 文件
-        game_dir = Path(src_dir).parent
-        packer = Packer()
-        removed = packer.remove_hook_files(str(game_dir))
-        if removed:
-            for f in removed:
-                LogManager.get().info(f"打包前已删除 Hook 文件: {f}")
 
         # 检查是否已有打包任务在运行
         if self.pack_worker and self.pack_worker.isRunning():

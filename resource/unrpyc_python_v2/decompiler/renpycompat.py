@@ -202,64 +202,6 @@ class RevertableSet(magic.FakeStrict, set):
             self.update(state)
 
 
-# Compatibility shims seen in some custom builds/obfuscators
-@SPECIAL_CLASSES.append
-class RScriptArguments(magic.FakeStrict, dict):
-    __module__ = "store"
-
-    def __new__(cls):
-        return dict.__new__(cls)
-
-    def __getattr__(self, name):
-        if name in self:
-            return self[name]
-        raise AttributeError(f"RScript argument {name} not defined.")
-
-    def __setattr__(self, name, value):
-        self[name] = value
-
-    def __delattr__(self, name):
-        if name in self:
-            del self[name]
-        else:
-            raise AttributeError(f"RScript argument {name} not defined.")
-
-
-@SPECIAL_CLASSES.append
-class KirikiriStorage(magic.FakeStrict, dict):
-    __module__ = "store.engine.krkr"
-
-    def __new__(cls):
-        return dict.__new__(cls)
-
-    def __getattr__(self, name):
-        if name in self:
-            return self[name]
-        raise AttributeError(f"Kirikiri argument {name} not defined.")
-
-    def __setattr__(self, name, value):
-        self[name] = value
-
-    def __delattr__(self, name):
-        if name in self:
-            del self[name]
-        else:
-            raise AttributeError(f"Kirikiri argument {name} not defined.")
-
-
-class _NamedSet(magic.FakeStrict):
-    __module__ = "__builtin__"
-
-    def __new__(cls, name):
-        obj = object.__new__(cls)
-        obj.name = name
-        return obj
-
-
-_NamedSet.__name__ = "set"
-SPECIAL_CLASSES.append(_NamedSet)
-
-
 # as of ren'py 8.4, default properties of many classes are not stored in the pickle anymore.
 # so we define prototypes of these classes here, so we don't end up with a soup of hasattr checks.
 # rules: unless otherwise stated, int properties default to 0, anything else is None
