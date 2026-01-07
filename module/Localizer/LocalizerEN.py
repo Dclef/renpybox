@@ -159,6 +159,8 @@ class LocalizerEN(LocalizerZH):
     response_decoder_translation_by_rule: str = "Translation data -> rule parsing after split, total {COUNT} entries"
 
     # 应用设置
+    app_settings_page_startup_sound_title: str = "Startup Sound"
+    app_settings_page_startup_sound_content: str = "Play a sound when the app starts (default: off)"
     app_settings_page_expert_title: str = "Expert Mode"
     app_settings_page_expert_content: str = "Enabling this feature will display more log information and provide more advanced setting options (takes effect after app restart)"
     app_settings_page_font_hinting_title: str = "Font Hinting"

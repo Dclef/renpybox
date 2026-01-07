@@ -1,7 +1,7 @@
 {
     "theme": "LIGHT",
     "app_language": "ZH",
-    "startup_sound_enable": true,
+    "startup_sound_enable": false,
     "startup_sound_path": "resource/Ciallo.mp3",
     "startup_sound_volume": 80,
     "activate_platform": 0,

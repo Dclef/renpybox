@@ -103,8 +103,14 @@ class VersionManager(Base):
         version_path = install_dir / "version.txt"
         version_bak_path = install_dir / "version.txt.bak"
 
-        config_path = install_dir / "resource" / "config.json"
-        config_bak_path = install_dir / "resource" / "config.json.bak"
+        # 用户配置文件：优先使用安装目录下的 config.json（运行时生成），并兼容旧版 resource/config.json
+        config_candidates = [
+            install_dir / "config.json",
+            install_dir / "resource" / "config.json",
+        ]
+        config_backup_pairs: list[tuple[Path, Path]] = []
+        for cfg in config_candidates:
+            config_backup_pairs.append((cfg, cfg.with_suffix(cfg.suffix + ".bak")))
 
         temp_zip_path = (
             (install_dir / Path(__class__.TEMP_PATH)).resolve()
@@ -124,6 +130,11 @@ class VersionManager(Base):
                 legacy.unlink()
             except Exception:
                 pass
+        for _, bak in config_backup_pairs:
+            try:
+                bak.unlink()
+            except Exception:
+                pass
 
         try:
             if extracted_root_path.exists():
@@ -132,12 +143,13 @@ class VersionManager(Base):
             pass
 
         # 备份用户配置（保留用户设置，不随更新覆盖）
-        if config_path.is_file():
-            try:
-                os.makedirs(config_path.parent, exist_ok = True)
-                shutil.copy2(config_path, config_bak_path)
-            except Exception:
-                pass
+        for cfg, bak in config_backup_pairs:
+            if cfg.is_file():
+                try:
+                    os.makedirs(bak.parent, exist_ok = True)
+                    shutil.copy2(cfg, bak)
+                except Exception:
+                    pass
 
         # 备份关键文件
         try:
@@ -171,11 +183,13 @@ class VersionManager(Base):
             shutil.rmtree(extracted_root_path, ignore_errors = True)
 
             # 恢复用户配置
-            if config_bak_path.is_file():
-                try:
-                    shutil.copy2(config_bak_path, config_path)
-                except Exception:
-                    pass
+            for cfg, bak in config_backup_pairs:
+                if bak.is_file():
+                    try:
+                        os.makedirs(cfg.parent, exist_ok = True)
+                        shutil.copy2(bak, cfg)
+                    except Exception:
+                        pass
 
             # 删除临时包
             try:
@@ -221,11 +235,13 @@ class VersionManager(Base):
                 pass
 
             # 恢复用户配置
-            if config_bak_path.is_file():
-                try:
-                    shutil.copy2(config_bak_path, config_path)
-                except Exception:
-                    pass
+            for cfg, bak in config_backup_pairs:
+                if bak.is_file():
+                    try:
+                        os.makedirs(cfg.parent, exist_ok = True)
+                        shutil.copy2(bak, cfg)
+                    except Exception:
+                        pass
 
             # 清理临时目录（失败也尽量不影响用户）
             try:

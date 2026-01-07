@@ -86,8 +86,19 @@ class SourceTranslatePage(Base, QWidget):
 
         box.addWidget(StrongBodyLabel("📂 翻译目标"))
 
+        # 模式：目录 / 单文件
+        mode_row = QHBoxLayout()
+        self.single_file_switch = SwitchButton("单文件模式")
+        self.single_file_switch.setChecked(False)
+        self.single_file_switch.checkedChanged.connect(self._on_single_file_changed)
+        mode_row.addWidget(self.single_file_switch)
+        mode_row.addStretch(1)
+        box.addLayout(mode_row)
+
         # game 目录
-        row1 = QHBoxLayout()
+        self.game_dir_row = QWidget()
+        row1 = QHBoxLayout(self.game_dir_row)
+        row1.setContentsMargins(0, 0, 0, 0)
         row1.addWidget(QLabel("game 目录:"))
         self.game_dir_edit = LineEdit()
         self.game_dir_edit.setPlaceholderText("选择游戏的 game 目录")
@@ -95,7 +106,21 @@ class SourceTranslatePage(Base, QWidget):
         btn_browse.clicked.connect(self._browse_game_dir)
         row1.addWidget(self.game_dir_edit, 1)
         row1.addWidget(btn_browse)
-        box.addLayout(row1)
+        box.addWidget(self.game_dir_row)
+
+        # 单个文件
+        self.single_file_row = QWidget()
+        file_row = QHBoxLayout(self.single_file_row)
+        file_row.setContentsMargins(0, 0, 0, 0)
+        file_row.addWidget(QLabel(".rpy 文件:"))
+        self.single_file_edit = LineEdit()
+        self.single_file_edit.setPlaceholderText("选择要翻译的单个 .rpy 文件")
+        btn_browse_file = PushButton("浏览", icon=FluentIcon.DOCUMENT)
+        btn_browse_file.clicked.connect(self._browse_single_rpy_file)
+        file_row.addWidget(self.single_file_edit, 1)
+        file_row.addWidget(btn_browse_file)
+        self.single_file_row.setVisible(False)
+        box.addWidget(self.single_file_row)
 
         # 目标语言
         lang_row = QHBoxLayout()
@@ -163,6 +188,20 @@ class SourceTranslatePage(Base, QWidget):
         if directory:
             self.game_dir_edit.setText(directory)
 
+    def _on_single_file_changed(self, checked: bool):
+        self.game_dir_row.setVisible(not checked)
+        self.single_file_row.setVisible(checked)
+
+    def _browse_single_rpy_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要翻译的 .rpy 文件",
+            "",
+            "Ren'Py Script (*.rpy)",
+        )
+        if file_path:
+            self.single_file_edit.setText(file_path)
+
     def _on_backup_external_changed(self, checked: bool):
         self.backup_external_edit.setVisible(checked)
         self.btn_browse_backup.setVisible(checked)
@@ -173,13 +212,33 @@ class SourceTranslatePage(Base, QWidget):
             self.backup_external_edit.setText(directory)
 
     def _start_translation(self):
-        game_dir = self.game_dir_edit.text().strip()
-        if not game_dir:
-            InfoBar.warning("提示", "请选择 game 目录", parent=self)
-            return
-        if not Path(game_dir).exists():
-            InfoBar.error("错误", "目录不存在", parent=self)
-            return
+        single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
+
+        target_path: Optional[Path] = None
+        output_dir: Optional[Path] = None
+        if single_file:
+            file_path = self.single_file_edit.text().strip()
+            if not file_path:
+                InfoBar.warning("提示", "请选择 .rpy 文件", parent=self)
+                return
+            target_path = Path(file_path)
+            if not target_path.exists() or not target_path.is_file():
+                InfoBar.error("错误", "文件不存在", parent=self)
+                return
+            if target_path.suffix.lower() != ".rpy":
+                InfoBar.error("错误", "请选择 .rpy 文件", parent=self)
+                return
+            output_dir = target_path.parent
+        else:
+            game_dir = self.game_dir_edit.text().strip()
+            if not game_dir:
+                InfoBar.warning("提示", "请选择 game 目录", parent=self)
+                return
+            target_path = Path(game_dir)
+            if not target_path.exists():
+                InfoBar.error("错误", "目录不存在", parent=self)
+                return
+            output_dir = target_path
 
         backup = self.backup_switch.isChecked()
         backup_root = None
@@ -191,8 +250,8 @@ class SourceTranslatePage(Base, QWidget):
 
         try:
             config = Config().load()
-            config.input_folder = str(Path(game_dir))
-            config.output_folder = str(Path(game_dir))
+            config.input_folder = str(target_path)
+            config.output_folder = str(output_dir)
             lang_map = {
                 "简体中文": "ZH",
                 "繁体中文": "ZH",
@@ -211,7 +270,7 @@ class SourceTranslatePage(Base, QWidget):
 
         # 简单备份（外部目录或本地 .bak）
         if backup or backup_root:
-            self._backup_sources(Path(game_dir), backup_root)
+            self._backup_sources(target_path, backup_root)
 
         # 更新 UI
         self.btn_start.setEnabled(False)
@@ -260,13 +319,20 @@ class SourceTranslatePage(Base, QWidget):
         self.progress_bar.setVisible(False)
 
     # ------------------------------------------------------------------ helpers
-    def _backup_sources(self, game_dir: Path, backup_root: Optional[str]) -> None:
-        """简单备份 .rpy 源文件"""
+    def _backup_sources(self, target: Path, backup_root: Optional[str]) -> None:
+        """简单备份 .rpy 源文件（目录模式：全部 .rpy；单文件模式：仅备份目标文件）。"""
         try:
-            candidates = list(Path(game_dir).rglob("*.rpy"))
+            base_dir = target.parent if target.is_file() else target
+            candidates = [target] if target.is_file() else list(Path(target).rglob("*.rpy"))
             for path in candidates:
+                if not path.is_file():
+                    continue
                 if backup_root:
-                    dest = Path(backup_root) / path.relative_to(game_dir)
+                    try:
+                        rel = path.relative_to(base_dir)
+                    except Exception:
+                        rel = Path(path.name)
+                    dest = Path(backup_root) / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(path.read_bytes())
                 else:

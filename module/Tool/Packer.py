@@ -31,6 +31,23 @@ class Packer:
         self.resource_dir = Path(get_resource_path("resource"))
         self.hooks_dir = self.resource_dir / "hooks"
 
+    def _get_game_python(self, game_root_dir: Path) -> Path | None:
+        try:
+            from utils.call_game_python import get_python_path_from_game_dir
+        except Exception:
+            return None
+
+        root = str(game_root_dir.resolve()).replace("\\", "/")
+        if not root.endswith("/"):
+            root += "/"
+
+        python_path = get_python_path_from_game_dir(root)
+        if not python_path:
+            return None
+
+        python_exe = Path(python_path)
+        return python_exe if python_exe.exists() else None
+
     def _which_unrpa(self) -> str | None:
         return shutil.which("unrpa")
 
@@ -53,6 +70,74 @@ class Packer:
         
         self.logger.warning("未找到 rpatool")
         return None
+
+    def unpack_all_unren(
+        self,
+        game_dir: str,
+        *,
+        script_only: bool = False,
+        remove_archives: bool = False,
+    ) -> Tuple[int, List[str]]:
+        """
+        Unpack archives using the game's own python + Ren'Py loader (UnRen style).
+
+        This does not launch the game process and can handle encrypted archives
+        in many cases (because it relies on Ren'Py's loader).
+        """
+        game_path = Path(game_dir).resolve()
+        if not game_path.exists():
+            raise FileNotFoundError(f"目录不存在: {game_path}")
+        if not game_path.is_dir():
+            raise NotADirectoryError(f"不是目录: {game_path}")
+
+        game_root = game_path.parent
+        python_exe = self._get_game_python(game_root)
+        if not python_exe:
+            raise FileNotFoundError("无法定位游戏自带 python.exe（请确认选择的是 game 目录，且上级目录存在 lib/.../python.exe）")
+
+        script_path = Path(get_resource_path("resource", "tools", "unren_rpatool.py"))
+        if not script_path.exists():
+            raise FileNotFoundError(f"缺少资源: {script_path}")
+
+        cmd = [str(python_exe), str(script_path)]
+        if remove_archives:
+            cmd.append("-r")
+        if script_only:
+            cmd.append("--script-only")
+        cmd.append(str(game_path))
+
+        self.logger.info(f"UnRen 直接解包: {game_path}")
+        result = None
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(game_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+        finally:
+            # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen-forall.bat 行为一致）
+            try:
+                pycache_dir = game_path / "__pycache__"
+                if pycache_dir.exists() and pycache_dir.is_dir():
+                    shutil.rmtree(pycache_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        raw = (getattr(result, "stdout", None) or b"") if result else b""
+        try:
+            output = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            output = raw.decode(errors="ignore")
+
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not result or result.returncode != 0:
+            tail = "\n".join(lines[-50:]) if lines else ""
+            code = getattr(result, "returncode", None)
+            raise RuntimeError(tail or f"unren_rpatool exited with code {code}")
+
+        unpacked = len(re.findall(r"(?i)\\bUnpacking\\b", output))
+        return unpacked, lines
 
     def find_rpa_files(self, game_dir: str) -> List[Path]:
         p = Path(game_dir)
