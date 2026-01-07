@@ -1,13 +1,14 @@
-"""Ren'Py RPYC decompiler helper.
+"""Ren'Py RPYC decompiler helper (unrpyc v2 only).
 
 Workflow:
-- copy bundled `resource/unrpyc_python*` into the target game root;
+- copy bundled `resource/unrpyc_python_v2` into the target game root;
 - backup `renpy/common` and execute the game's python with `unrpyc.py`;
 - restore the original files afterwards.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,19 +19,22 @@ from utils.call_game_python import (
     copy_files_under_directory_to_directory,
     get_game_path_from_game_dir,
     get_python_path_from_game_path,
-    is_python2_from_game_dir,
 )
 from utils.unzipdir import unzip_file, zip_dir
 
 
 class RenpyDecompiler:
-    DEFAULT_VARIANT = "unrpyc_python"
+    RESOURCE_VARIANT = "unrpyc_python_v2"
 
-    def __init__(self, variant: str = DEFAULT_VARIANT) -> None:
+    def __init__(self) -> None:
         self.logger = LogManager.get()
         self.resource_root = Path(get_resource_path("resource"))
-        self._cleanup_candidates: set[str] = set()
-        self._set_variant(variant or self.DEFAULT_VARIANT)
+        self.resource_dir = self.resource_root / self.RESOURCE_VARIANT
+        if not self.resource_dir.exists():
+            raise FileNotFoundError(f"Missing resource directory: {self.resource_dir}")
+        injected = {path.name for path in self.resource_dir.iterdir()}
+        self._injected_names = sorted(injected)
+        self._cleanup_candidates: set[str] = set(injected)
 
     def decompile(self, target: str, *, overwrite: bool = False) -> None:
         """
@@ -45,8 +49,6 @@ class RenpyDecompiler:
         if not game_dir.exists():
             raise FileNotFoundError(f"Missing game directory: {game_dir}")
 
-        is_py2 = is_python2_from_game_dir(str(root_dir))
-
         python_path = get_python_path_from_game_path(str(exe_path))
         if not python_path:
             raise FileNotFoundError("Could not locate python.exe in the game folder.")
@@ -57,49 +59,84 @@ class RenpyDecompiler:
             raise FileNotFoundError(f"Missing renpy/common directory: {renpy_common}")
 
         backup_zip = root_dir / "common_backup.zip"
-        primary_variant = self.variant or self.DEFAULT_VARIANT
-        if is_py2:
-            primary_variant = "unrpyc_python"
-            fallback_variant = None
-        else:
-            other = "unrpyc_python_v2" if primary_variant != "unrpyc_python_v2" else "unrpyc_python"
-            fallback_variant = other if other != primary_variant else None
 
-        self.logger.info(f"Start decompiling {exe_path} (detected {'Python 2' if is_py2 else 'Python 3'})")
+        self.logger.info(f"Start decompiling {exe_path} (unrpyc=v2)")
+        unrpyc_error: Exception | None = None
+        unrpyc_output: str | None = None
         try:
             self.logger.debug(f"Backing up renpy/common -> {backup_zip}")
             zip_dir(str(renpy_common), str(backup_zip))
 
-            last_error: Exception | None = None
-            for variant in (v for v in (primary_variant, fallback_variant) if v):
-                self._set_variant(variant)
-                self.logger.info(f"Using {variant} resources")
-                try:
-                    self._restore_common_from_backup(root_dir, backup_zip, keep_backup=True)
-                    self._cleanup_injected_files(root_dir)
-                    self._copy_unrpyc_resources(root_dir)
-                    result = self._run_unrpyc(python_exe, root_dir, game_dir, overwrite)
-                    if result.stdout:
-                        self.logger.info(result.stdout.strip())
-                    if result.returncode != 0:
-                        raise RuntimeError(f"unrpyc returned non-zero exit code {result.returncode}")
-                    self.logger.info("Decompile finished, cleaning up temporary files")
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    self.logger.warning(f"{variant} failed: {exc}")
-                    continue
-            else:
-                if last_error:
-                    raise last_error
-                raise RuntimeError("unrpyc failed unexpectedly")
+            self._restore_common_from_backup(root_dir, backup_zip, keep_backup=True)
+            self._cleanup_injected_files(root_dir)
+            self._copy_unrpyc_resources(root_dir)
+            result = self._run_unrpyc(python_exe, root_dir, game_dir, overwrite)
+            unrpyc_output = (result.stdout or "").strip() if result else ""
+            if unrpyc_output:
+                self.logger.info(unrpyc_output)
+            if result.returncode != 0:
+                raise RuntimeError(f"unrpyc returned non-zero exit code {result.returncode}")
+            self.logger.info("Decompile finished, cleaning up temporary files")
+        except Exception as exc:
+            unrpyc_error = exc
         finally:
             self._cleanup_injected_files(root_dir)
             self._restore_common_from_backup(root_dir, backup_zip, keep_backup=False)
 
+        if unrpyc_error is None:
+            return
+
+        # Fallback: unrpyc 失败时，静默尝试 UnRen（无窗口自动跑）
+        self.logger.warning(f"unrpyc failed: {unrpyc_error}")
+        renpy_version = self._read_renpy_version(root_dir) or "unknown"
+        unren_bat = Path(get_resource_path("resource", "UnRen-forall.bat"))
+        unren_result = self._run_unren_silent(
+            unren_bat,
+            root_dir,
+            options="2x",
+            lang="zh",
+            timeout_s=60 * 60,
+        )
+        if unren_result and unren_result.returncode == 0:
+            self.logger.info("UnRen fallback finished (decompile).")
+            return
+
+        detail = ""
+        if unrpyc_output:
+            detail += f"\n\n[unrpyc output]\n{unrpyc_output.strip()}"
+        if unren_result is None:
+            detail += f"\n\nUnRen: 未执行（可能缺少或无法启动） -> {unren_bat}"
+        else:
+            tail = (unren_result.stdout or "").strip()
+            tail = "\n".join(tail.splitlines()[-80:]) if tail else ""
+            detail += f"\n\n[UnRen exit={unren_result.returncode}] {unren_bat}"
+            if tail:
+                detail += f"\n\n[UnRen output]\n{tail}"
+
+        raise RuntimeError(
+            "反编译失败（可能是 Ren'Py 版本过高或脚本格式变更导致 unrpyc 不兼容）。\n"
+            f"Ren'Py version: {renpy_version}{detail}"
+        ) from unrpyc_error
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _read_renpy_version(self, root_dir: Path) -> str | None:
+        version_file = root_dir / "renpy" / "version.txt"
+        if not version_file.is_file():
+            return None
+        try:
+            text = version_file.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            try:
+                text = version_file.read_text(errors="ignore").strip()
+            except Exception:
+                return None
+        if not text:
+            return None
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return lines[0] if lines else None
+
     def _resolve_game_root(self, target: Path) -> tuple[Path, Path]:
         target = target.resolve()
         if target.is_file() and target.suffix.lower() == ".exe":
@@ -117,17 +154,8 @@ class RenpyDecompiler:
         candidates = sorted(directory.glob("*.exe"))
         return candidates[0] if candidates else None
 
-    def _set_variant(self, variant: str) -> None:
-        self.variant = variant or self.DEFAULT_VARIANT
-        self.resource_dir = self.resource_root / self.variant
-        if not self.resource_dir.exists():
-            raise FileNotFoundError(f"Missing resource directory: {self.resource_dir}")
-        injected = {path.name for path in self.resource_dir.iterdir()}
-        self._injected_names = sorted(injected)
-        self._cleanup_candidates.update(injected)
-
     def _copy_unrpyc_resources(self, root_dir: Path) -> None:
-        self.logger.debug(f"Copying {self.variant} resources -> {root_dir}")
+        self.logger.debug(f"Copying {self.RESOURCE_VARIANT} resources -> {root_dir}")
         copy_files_under_directory_to_directory(str(self.resource_dir), str(root_dir))
 
     def _run_unrpyc(
@@ -143,13 +171,62 @@ class RenpyDecompiler:
             command.append("--clobber")
 
         self.logger.info(f"Running unrpyc: {' '.join(command)}")
+        creationflags = 0
+        if os.name == "nt":
+            try:
+                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except Exception:
+                creationflags = 0
         return subprocess.run(
             command,
             cwd=str(root_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=creationflags,
         )
+
+    def _run_unren_silent(
+        self,
+        unren_bat: Path,
+        game_root: Path,
+        *,
+        options: str,
+        lang: str = "zh",
+        timeout_s: int | None = None,
+    ) -> subprocess.CompletedProcess[str] | None:
+        """静默运行 UnRen（无窗口），用于兜底处理。"""
+        if os.name != "nt":
+            return None
+        if not unren_bat.is_file():
+            return None
+        try:
+            creationflags = 0
+            try:
+                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except Exception:
+                creationflags = 0
+            env = os.environ.copy()
+            env["UNREN_AUTORUN"] = options
+            env["UNREN_NO_PAUSE"] = "1"
+            env["UNREN_NO_UPDATE"] = "1"
+            return subprocess.run(
+                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
+                cwd=str(game_root),
+                creationflags=creationflags,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                env=env,
+                timeout=timeout_s,
+            )
+        except Exception as exc:
+            self.logger.warning(f"启动 UnRen 失败: {exc}")
+            return None
 
     def _restore_common_from_backup(self, root_dir: Path, backup_zip: Path, *, keep_backup: bool) -> None:
         """Restore renpy/common using the backup zip."""

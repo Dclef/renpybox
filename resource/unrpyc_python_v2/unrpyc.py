@@ -28,7 +28,6 @@ __url__ = "https://github.com/CensoredUsername/unrpyc"
 
 import argparse
 import glob
-import inspect
 import struct
 import sys
 import traceback
@@ -47,18 +46,6 @@ import deobfuscate
 from decompiler import astdump, translate
 from decompiler.renpycompat import (pickle_safe_loads, pickle_safe_dumps, pickle_loads,
                                     pickle_detect_python2)
-
-try:
-    from renpy import script as renpy_script
-except Exception:
-    renpy_script = None
-
-try:
-    from renpy.loader import YVANeusEX
-except Exception:
-    YVANeusEX = None
-
-RPYC_HEADER = getattr(renpy_script, "RPYC2_HEADER", b"RENPY RPC2") if renpy_script else b"RENPY RPC2"
 
 
 class Context:
@@ -108,26 +95,14 @@ def read_ast_from_file(in_file, context):
     file_start = raw_contents[:50]
     is_rpyc_v1 = False
 
-    # If renpy exposes a helper, use it first.
-    reader = renpy_script and getattr(renpy_script.Script, "read_rpyc_data", None)
-    if reader and not inspect.ismethod(reader):
-        try:
-            in_file.seek(0)
-            raw_data = reader(object, in_file, 1)
-            _, stmts = pickle_safe_loads(raw_data)
-            return stmts
-        except Exception:
-            in_file.seek(0)
-            raw_contents = in_file.read()
-
-    if not raw_contents.startswith(RPYC_HEADER):
+    if not raw_contents.startswith(b"RENPY RPC2"):
         # if the header isn't present, it should be a RPYC V1 file, which is just the blob
         contents = raw_contents
         is_rpyc_v1 = True
 
     else:
         # parse the archive structure
-        position = len(RPYC_HEADER)
+        position = 10
         chunks = {}
         have_errored = False
 
@@ -154,25 +129,15 @@ def read_ast_from_file(in_file, context):
                 "Unable to find the right slot to load from the rpyc file. The file header "
                 f"structure has been changed. File header: {file_start}")
 
-        # Some launchers encrypt slot 1+2 using YVANeusEX; if present decrypt both.
-        if YVANeusEX and 2 in chunks:
-            try:
-                contents = (
-                    YVANeusEX.encrypt(bytearray(chunks[1]), YVANeusEX.cipherkey, True) +
-                    YVANeusEX.encrypt(bytearray(chunks[2]), YVANeusEX.cipherkey, True)
-                )
-            except Exception:
-                contents = chunks[1]
-        else:
-            contents = chunks[1]
+        contents = chunks[1]
 
     try:
         contents = zlib.decompress(contents)
-    except Exception as err:
+    except Exception:
         context.set_state('bad_header')
         raise BadRpycException(
             "Did not find a zlib compressed blob where it was expected. Either the header has been "
-            f"modified or the file structure has been changed. File header: {file_start}") from err
+            f"modified or the file structure has been changed. File header: {file_start}") from None
 
     # add some detection of ren'py 7 files
     if is_rpyc_v1 or pickle_detect_python2(contents):
