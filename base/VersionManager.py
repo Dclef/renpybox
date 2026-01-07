@@ -104,11 +104,15 @@ class VersionManager(Base):
             else Path(__class__.TEMP_PATH).resolve()
         )
 
-        updater_exe = install_dir / "RenpyBoxUpdater.exe"
-        if not updater_exe.is_file():
+        updater_candidates = [
+            install_dir / "_internal" / "RenpyBoxUpdater.exe",
+            install_dir / "RenpyBoxUpdater.exe",
+        ]
+        updater_exe = next((p for p in updater_candidates if p.is_file()), None)
+        if updater_exe is None:
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.ERROR,
-                "message": f"{Localizer.get().app_new_version_apply_failure}Updater not found: {updater_exe}",
+                "message": f"{Localizer.get().app_new_version_apply_failure}Updater not found",
                 "duration": 60 * 1000,
             })
             with self.lock:
@@ -151,8 +155,6 @@ class VersionManager(Base):
                     "--exe-name",
                     str(exe_path.name),
                     "--restart",
-                    "--release-url",
-                    str(__class__.RELEASE_URL),
                 ],
                 cwd = str(install_dir),
             )

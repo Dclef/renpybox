@@ -26,6 +26,29 @@ def _message_box(title: str, message: str, *, error: bool = False) -> None:
         return
 
 
+def _ensure_output_streams() -> None:
+    if getattr(sys, "stdout", None) is None:
+        try:
+            sys.stdout = open(os.devnull, "w", encoding = "utf-8")
+        except Exception:
+            pass
+    if getattr(sys, "stderr", None) is None:
+        try:
+            sys.stderr = open(os.devnull, "w", encoding = "utf-8")
+        except Exception:
+            pass
+
+
+class _UpdaterArgumentParser(argparse.ArgumentParser):
+    def _print_message(self, message: str | None, file = None) -> None:
+        if not message:
+            return
+        _message_box("RenpyBox Updater", message)
+
+    def error(self, message: str) -> None:
+        self.exit(2, f"{message}\n\nRenpyBoxUpdater 是自动更新组件，请不要直接运行。")
+
+
 def _wait_for_pid_exit(pid: int, *, timeout_sec: int = 120) -> None:
     if pid <= 0:
         return
@@ -234,16 +257,25 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description = "RenpyBox standalone updater")
-    parser.add_argument("--pid", type = int, default = 0)
-    parser.add_argument("--zip", dest = "zip_path", required = True)
-    parser.add_argument("--install-dir", dest = "install_dir", required = True)
-    parser.add_argument("--release-url", dest = "release_url", default = "")
-    parser.add_argument("--restart", action = "store_true")
-    parser.add_argument("--exe-name", dest = "exe_name", default = "RenpyBox.exe")
-    args = parser.parse_args(argv)
-
     try:
+        _ensure_output_streams()
+        if not argv or any(a in {"-h", "--help"} for a in argv):
+            _message_box(
+                "RenpyBox Updater",
+                "RenpyBoxUpdater 是自动更新组件，请在 RenpyBox 内点击“更新”使用。\n\n"
+                "现在可以直接关闭此窗口。",
+            )
+            return 0
+
+        parser = _UpdaterArgumentParser(description = "RenpyBox standalone updater")
+        parser.add_argument("--pid", type = int, default = 0)
+        parser.add_argument("--zip", dest = "zip_path", required = True)
+        parser.add_argument("--install-dir", dest = "install_dir", required = True)
+        parser.add_argument("--release-url", dest = "release_url", default = "")
+        parser.add_argument("--restart", action = "store_true")
+        parser.add_argument("--exe-name", dest = "exe_name", default = "RenpyBox.exe")
+        args = parser.parse_args(argv)
+
         apply_update(
             pid = int(args.pid),
             zip_path = Path(args.zip_path),
@@ -253,6 +285,11 @@ def main(argv: list[str]) -> int:
             exe_name = str(args.exe_name).strip() or "RenpyBox.exe",
         )
         return 0
+    except SystemExit as exc:
+        try:
+            return int(getattr(exc, "code", 0) or 0)
+        except Exception:
+            return 1
     except Exception as exc:
         detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         _message_box("RenpyBox Updater", f"更新失败：\n\n{detail}", error = True)
