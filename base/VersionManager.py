@@ -1,11 +1,11 @@
 import os
 import re
 import shutil
+import subprocess
 import signal
 import sys
 import threading
 import time
-import zipfile
 from pathlib import Path
 from base.compat import StrEnum, Self
 
@@ -98,158 +98,74 @@ class VersionManager(Base):
 
         install_dir = Path(sys.executable).resolve().parent
         exe_path = Path(sys.executable).resolve()
-        exe_bak_path = install_dir / f"{exe_path.name}.bak"
-
-        version_path = install_dir / "version.txt"
-        version_bak_path = install_dir / "version.txt.bak"
-
-        # 用户配置文件：优先使用安装目录下的 config.json（运行时生成），并兼容旧版 resource/config.json
-        config_candidates = [
-            install_dir / "config.json",
-            install_dir / "resource" / "config.json",
-        ]
-        config_backup_pairs: list[tuple[Path, Path]] = []
-        for cfg in config_candidates:
-            config_backup_pairs.append((cfg, cfg.with_suffix(cfg.suffix + ".bak")))
-
         temp_zip_path = (
             (install_dir / Path(__class__.TEMP_PATH)).resolve()
             if not Path(__class__.TEMP_PATH).is_absolute()
             else Path(__class__.TEMP_PATH).resolve()
         )
 
-        extracted_root_path = install_dir / "RenpyBox"
-
-        # 删除临时/备份文件（包含旧逻辑的遗留文件）
-        for legacy in [
-            install_dir / "app.exe.bak",
-            exe_bak_path,
-            version_bak_path,
-        ]:
-            try:
-                legacy.unlink()
-            except Exception:
-                pass
-        for _, bak in config_backup_pairs:
-            try:
-                bak.unlink()
-            except Exception:
-                pass
-
-        try:
-            if extracted_root_path.exists():
-                shutil.rmtree(extracted_root_path, ignore_errors = True)
-        except Exception:
-            pass
-
-        # 备份用户配置（保留用户设置，不随更新覆盖）
-        for cfg, bak in config_backup_pairs:
-            if cfg.is_file():
-                try:
-                    os.makedirs(bak.parent, exist_ok = True)
-                    shutil.copy2(cfg, bak)
-                except Exception:
-                    pass
-
-        # 备份关键文件
-        try:
-            if exe_path.is_file():
-                os.rename(exe_path, exe_bak_path)
-            else:
-                raise FileNotFoundError(str(exe_path))
-        except Exception as e:
+        updater_exe = install_dir / "RenpyBoxUpdater.exe"
+        if not updater_exe.is_file():
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.ERROR,
-                "message": f"{Localizer.get().app_new_version_apply_failure}{e}",
+                "message": f"{Localizer.get().app_new_version_apply_failure}Updater not found: {updater_exe}",
+                "duration": 60 * 1000,
+            })
+            with self.lock:
+                self.extracting = False
+            QDesktopServices.openUrl(QUrl(__class__.RELEASE_URL))
+            return
+
+        if not temp_zip_path.is_file():
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.ERROR,
+                "message": f"{Localizer.get().app_new_version_apply_failure}Update package not found: {temp_zip_path}",
                 "duration": 60 * 1000,
             })
             with self.lock:
                 self.extracting = False
             return
 
+        # 将 updater 复制到系统临时目录运行，避免更新时覆盖自身导致失败
+        updater_runtime = updater_exe
         try:
-            if version_path.is_file():
-                try:
-                    os.rename(version_path, version_bak_path)
-                except Exception:
-                    pass
+            import tempfile
 
-            # 开始更新（解压到安装目录）
-            with zipfile.ZipFile(temp_zip_path) as zip_file:
-                zip_file.extractall(install_dir)
+            tmp_dir = Path(tempfile.gettempdir())
+            tmp_name = f"RenpyBoxUpdater_{os.getpid()}_{int(time.time())}.exe"
+            updater_runtime = tmp_dir / tmp_name
+            shutil.copy2(updater_exe, updater_runtime)
+        except Exception:
+            updater_runtime = updater_exe
 
-            # 先复制再删除的方式实现覆盖同名文件
-            shutil.copytree(extracted_root_path, install_dir, dirs_exist_ok = True)
-            shutil.rmtree(extracted_root_path, ignore_errors = True)
+        try:
+            subprocess.Popen(
+                [
+                    str(updater_runtime),
+                    "--pid",
+                    str(os.getpid()),
+                    "--zip",
+                    str(temp_zip_path),
+                    "--install-dir",
+                    str(install_dir),
+                    "--exe-name",
+                    str(exe_path.name),
+                    "--restart",
+                    "--release-url",
+                    str(__class__.RELEASE_URL),
+                ],
+                cwd = str(install_dir),
+            )
 
-            # 恢复用户配置
-            for cfg, bak in config_backup_pairs:
-                if bak.is_file():
-                    try:
-                        os.makedirs(cfg.parent, exist_ok = True)
-                        shutil.copy2(bak, cfg)
-                    except Exception:
-                        pass
-
-            # 删除临时包
-            try:
-                os.remove(temp_zip_path)
-            except Exception:
-                pass
-
-            # 显示提示
-            self.emit(Base.Event.APP_TOAST_SHOW,{
+            self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.SUCCESS,
                 "message": Localizer.get().app_new_version_waiting_restart,
-                "duration": 60 * 1000,
+                "duration": 10 * 1000,
             })
 
-            # 延迟3秒后关闭应用并打开更新日志
-            time.sleep(3)
-            QDesktopServices.openUrl(QUrl(__class__.RELEASE_URL))
+            time.sleep(1)
             os.kill(os.getpid(), signal.SIGTERM)
         except Exception as e:
-            self.error("Apply update failed", e)
-
-            # 尝试回滚关键文件
-            try:
-                if exe_path.is_file():
-                    os.remove(exe_path)
-            except Exception:
-                pass
-            try:
-                if exe_bak_path.is_file():
-                    os.rename(exe_bak_path, exe_path)
-            except Exception:
-                pass
-
-            try:
-                if version_path.is_file():
-                    os.remove(version_path)
-            except Exception:
-                pass
-            try:
-                if version_bak_path.is_file():
-                    os.rename(version_bak_path, version_path)
-            except Exception:
-                pass
-
-            # 恢复用户配置
-            for cfg, bak in config_backup_pairs:
-                if bak.is_file():
-                    try:
-                        os.makedirs(cfg.parent, exist_ok = True)
-                        shutil.copy2(bak, cfg)
-                    except Exception:
-                        pass
-
-            # 清理临时目录（失败也尽量不影响用户）
-            try:
-                if extracted_root_path.exists():
-                    shutil.rmtree(extracted_root_path, ignore_errors = True)
-            except Exception:
-                pass
-
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.ERROR,
                 "message": f"{Localizer.get().app_new_version_apply_failure}{e}",

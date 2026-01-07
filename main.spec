@@ -153,8 +153,46 @@ exe = EXE(
     entitlements_file=None,
     icon=str(icon_file) if icon_file else None,
 )
+
+# 独立更新器：使用 onefile，避免运行时依赖目标目录的 `_internal`，从而可以在应用退出后覆盖更新文件
+a_updater = Analysis(
+    [str(project_root / 'updater.py')],
+    pathex=[str(project_root)],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+pyz_updater = PYZ(a_updater.pure, a_updater.zipped_data, cipher=block_cipher)
+updater_exe = EXE(
+    pyz_updater,
+    a_updater.scripts,
+    a_updater.binaries,
+    a_updater.zipfiles,
+    a_updater.datas,
+    name='RenpyBoxUpdater',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=str(icon_file) if icon_file else None,
+)
 coll = COLLECT(
     exe,
+    updater_exe,
     a.binaries,
     a.zipfiles,
     a.datas,
