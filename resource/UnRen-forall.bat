@@ -31,7 +31,7 @@ set "UNREN_NO_PAUSE=%UNREN_NO_PAUSE%"
 :: DO NOT MODIFY BELOW THIS LINE unless you know what you're doing
 :: Define various global names
 set "NAME=current"
-set "VERSION=(v9.7.27) (12/24/25)"
+set "VERSION=(v9.7.27) (汉化by老猫)"
 title UnRen-%NAME%.bat - %VERSION%
 set "URL_REF=https://f95zone.to/threads/unrengui-unren-forall-v9-4-unren-powershell-forall-v9-4-unren-old.92717/post-17110063/"
 set "SCRIPTDIR=%~dp0"
@@ -218,6 +218,7 @@ echo           %YEL%  \____/_/ /_/_/ \_\\___/_/ /_/ (_) \_.__/\__^,_/\__/ - %NAM
 echo.
 echo           %YEL%       Sam @ www.f95zone.to ^& Gideon%RES%
 echo           %YEL%       Modified by joelurmel @ f95zone.to%RES%
+echo           %YEL%       汉化 by 老猫%RES%
 echo.
 echo           %YEL%  !INCASEOF.%LNG%!%RES%
 echo           %MAG%  %URL_REF%%RES%
