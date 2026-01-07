@@ -12,9 +12,14 @@ echo Building RenpyBox...
 pyinstaller main.spec --clean --noconfirm
 
 rem Move updater under _internal to reduce accidental clicks
+if not exist dist\\RenpyBox\\_internal mkdir dist\\RenpyBox\\_internal
 if exist dist\\RenpyBox\\RenpyBoxUpdater.exe (
-  if not exist dist\\RenpyBox\\_internal mkdir dist\\RenpyBox\\_internal
   move /y dist\\RenpyBox\\RenpyBoxUpdater.exe dist\\RenpyBox\\_internal\\RenpyBoxUpdater.exe >nul
+)
+if exist dist\\RenpyBoxUpdater.exe (
+  move /y dist\\RenpyBoxUpdater.exe dist\\RenpyBox\\_internal\\RenpyBoxUpdater.exe >nul
+)
+if exist dist\\RenpyBox\\_internal\\RenpyBoxUpdater.exe (
   attrib +h +s dist\\RenpyBox\\_internal\\RenpyBoxUpdater.exe >nul 2>nul
 )
 echo Build complete. Output in dist/RenpyBox
