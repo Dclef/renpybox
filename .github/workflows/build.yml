@@ -22,7 +22,7 @@ jobs:
         id: check_version
         shell: pwsh
         run: |
-          $version = Get-Content -Path version.txt
+          $version = python -c "from base.Version import Version; print(Version.CURRENT)"
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Install Requirements
