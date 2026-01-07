@@ -35,7 +35,6 @@ from module.Extract.ReplaceGenerator import (
     parse_miss_rpy,
     write_replace_script,
     sync_miss_rpy_with_glossary,
-    archive_miss_file,
 )
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -312,17 +311,9 @@ class RenpyTranslationPage(QWidget):
 
             def _is_effective_tl_rpy(path: Path) -> bool:
                 name = path.name.lower()
-                try:
-                    rel = path.relative_to(tl_dir)
-                    if rel.parts and rel.parts[0].lower() in {"base_box", "fonts"}:
-                        return False
-                except Exception:
-                    pass
                 if name.startswith("miss_ready_replace"):
                     return False
                 if name.startswith("hook_"):
-                    return False
-                if name == "choice_screen_fix_auto.rpy":
                     return False
                 if name in {"replace_text_auto.rpy", "set_default_language_at_startup.rpy"}:
                     return False
@@ -474,14 +465,9 @@ class RenpyTranslationPage(QWidget):
             output = tl_dir / "replace_text_auto.rpy"
             write_replace_script(output, pairs)
 
-            archived = archive_miss_file(target, tl)
-
             self._end(True)
             self._update_miss_status()
-            if archived:
-                InfoBar.success("完成", f"已生成钩子 ({len(pairs)} 条)，并已归档 miss 文件", parent=self)
-            else:
-                InfoBar.success("完成", f"已生成钩子 ({len(pairs)} 条)", parent=self)
+            InfoBar.success("完成", f"已生成钩子 ({len(pairs)} 条)", parent=self)
 
         except Exception as e:
             self.logger.error(f"生成钩子失败: {e}")
@@ -495,18 +481,9 @@ class RenpyTranslationPage(QWidget):
             status = check_miss_rpy_status(target, tl)
 
             if not status["exists"]:
-                if status.get("hook_exists"):
-                    self.miss_status.setText("状态: 已生成钩子（miss 已归档）")
-                    self.miss_status.setStyleSheet("color: #20a050;")
-                    self.hook_btn.setEnabled(False)
-                elif status.get("archived_exists"):
-                    self.miss_status.setText("状态: miss 已归档（可重新扫描）")
-                    self.miss_status.setStyleSheet("color: #666;")
-                    self.hook_btn.setEnabled(False)
-                else:
-                    self.miss_status.setText("状态: 尚未扫描")
-                    self.miss_status.setStyleSheet("color: #666;")
-                    self.hook_btn.setEnabled(False)
+                self.miss_status.setText("状态: 尚未扫描")
+                self.miss_status.setStyleSheet("color: #666;")
+                self.hook_btn.setEnabled(False)
             else:
                 total = status["total_count"]
                 done = status["translated_count"]

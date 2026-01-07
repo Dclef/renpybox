@@ -78,7 +78,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.subscribe(Base.Event.APP_UPDATE_DOWNLOAD_ERROR, self.app_update_download_error)
         self.subscribe(Base.Event.APP_UPDATE_DOWNLOAD_UPDATE, self.app_update_download_update)
 
-        # 启动音效（可在 resource/config.json 里关闭）
+        # 启动音效（可在“应用设置”里关闭）
         QTimer.singleShot(0, self.play_startup_sound)
 
         # 检查更新

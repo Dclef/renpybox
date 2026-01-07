@@ -115,7 +115,7 @@ class PackUnpackPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("📂 Hook 解包 RPA 文件"))
+        layout.addWidget(StrongBodyLabel("📂 解包 RPA 文件"))
 
         # game 目录
         row1 = QHBoxLayout()
@@ -129,18 +129,22 @@ class PackUnpackPage(Base, QWidget):
         layout.addLayout(row1)
 
         # 选项
-        self.unpack_all_check = CheckBox("解包所有文件（否则仅解包脚本）")
-        self.unpack_all_check.setChecked(False)
-        layout.addWidget(self.unpack_all_check)
+        self.unpack_direct_check = CheckBox("直接解包（UnRen：使用游戏自带 python，无需启动游戏）")
+        self.unpack_direct_check.setChecked(True)
+        layout.addWidget(self.unpack_direct_check)
+
+        self.unpack_script_only_check = CheckBox("仅解包脚本（.rpy/.rpyc）")
+        self.unpack_script_only_check.setChecked(True)
+        layout.addWidget(self.unpack_script_only_check)
 
         # 按钮
         btn_row = QHBoxLayout()
         self.unpack_button = PrimaryPushButton("解包", icon=FluentIcon.FOLDER_ADD)
         self.unpack_button.clicked.connect(self._unpack)
-        self.remove_hook_button = PushButton("删除 Hook 文件", icon=FluentIcon.DELETE)
-        self.remove_hook_button.clicked.connect(self._remove_hook_files)
+        self.unpack_cleanup_button = PushButton("清理临时文件", icon=FluentIcon.DELETE)
+        self.unpack_cleanup_button.clicked.connect(self._cleanup_unpack_artifacts)
         btn_row.addWidget(self.unpack_button)
-        btn_row.addWidget(self.remove_hook_button)
+        btn_row.addWidget(self.unpack_cleanup_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
@@ -212,9 +216,9 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("🧩 反编译 RPYC → RPY"))
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("游戏可执行文件:"))
+        row1.addWidget(QLabel("游戏根目录/可执行文件:"))
         self.decompile_exe_edit = LineEdit()
-        self.decompile_exe_edit.setPlaceholderText("选择游戏启动程序 (.exe)")
+        self.decompile_exe_edit.setPlaceholderText("选择游戏根目录或启动程序 (.exe)")
         btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_decompile_exe)
         row1.addWidget(self.decompile_exe_edit, 1)
@@ -234,6 +238,11 @@ class PackUnpackPage(Base, QWidget):
         self.decompile_button_v2.setToolTip("使用新版本 unrpyc 适配 Ren'Py 8 系列")
         self.decompile_button_v2.clicked.connect(lambda: self._decompile("unrpyc_python_v2"))
         btn_row.addWidget(self.decompile_button_v2)
+
+        self.unpack_and_decompile_button = PushButton("解包 + 反编译", icon=FluentIcon.PLAY)
+        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后执行 unrpyc（自动尝试经典/v2）")
+        self.unpack_and_decompile_button.clicked.connect(self._unpack_and_decompile)
+        btn_row.addWidget(self.unpack_and_decompile_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
@@ -284,12 +293,33 @@ class PackUnpackPage(Base, QWidget):
             LogManager.get().info(f"开始解包: {game_dir}")
             
             packer = Packer()
-            script_only = not self.unpack_all_check.isChecked()
+            script_only = self.unpack_script_only_check.isChecked()
+
+            # 1) UnRen：使用游戏自带 python 直接解包（不启动游戏）
+            if self.unpack_direct_check.isChecked():
+                try:
+                    count, messages = packer.unpack_all_unren(
+                        game_dir,
+                        script_only=script_only,
+                    )
+                    for msg in messages:
+                        LogManager.get().info(msg)
+                    if count > 0:
+                        InfoBar.success("完成", f"已直接解包 {count} 个归档文件", parent=self)
+                        return
+                    InfoBar.info("提示", "未找到可解包的归档文件", parent=self)
+                    return
+                except Exception as e:
+                    LogManager.get().error(f"直接解包失败: {e}")
+                    InfoBar.warning("提示", "直接解包失败，尝试使用外部工具继续解包", parent=self)
+
+            # 2) 外部工具：unrpa / rpatool
             count, messages = packer.unpack_all(
                 game_dir,
                 script_only=script_only,
-                prefer_hook=True,
+                prefer_hook=False,
                 allow_external_fallback=True,
+                output_root=game_dir,
             )
 
             for msg in messages:
@@ -297,57 +327,78 @@ class PackUnpackPage(Base, QWidget):
 
             if count > 0:
                 InfoBar.success("完成", f"已解包 {count} 个 RPA 文件", parent=self)
-            else:
-                joined = "\n".join(messages)
-                if "已注入 Hook" in joined or "尝试启动游戏" in joined:
-                    InfoBar.info(
-                        "Hook 已注入",
-                        "已注入 Hook 并启动游戏，解包完成后 Hook 文件会自动删除。",
-                        parent=self,
-                    )
-                else:
-                    InfoBar.info("提示", "未找到 RPA 文件，或 Hook/外部工具均不可用", parent=self)
+                return
+
+            InfoBar.info("提示", "未找到 RPA 文件，或外部工具不可用", parent=self)
             
         except Exception as e:
             LogManager.get().error(f"解包失败: {e}")
             InfoBar.error("错误", f"解包失败: {e}", parent=self)
 
-    def _remove_hook_files(self):
-        """删除 Hook 文件"""
+    def _cleanup_unpack_artifacts(self):
+        """清理解包/反编译可能遗留的临时文件（不影响正常文件）。"""
         try:
             game_dir = self.unpack_game_dir_edit.text().strip()
             if not game_dir:
                 InfoBar.warning("提示", "请选择 game 目录", parent=self)
                 return
 
-            if not Path(game_dir).exists():
+            game_path = Path(game_dir)
+            if not game_path.exists():
                 InfoBar.error("错误", "目录不存在", parent=self)
                 return
 
-            packer = Packer()
-            removed = packer.remove_hook_files(game_dir)
+            root_dir = game_path.parent
+
+            to_delete = [
+                game_path / "__pycache__",
+                game_path / "unpacked_rpa",
+                game_path / "hook_unrpa.rpy",
+                game_path / "hook_unrpa.rpyc",
+                game_path / "hook_extract.rpy",
+                game_path / "hook_extract.rpyc",
+                game_path / "hook_add_change_language_entrance.rpy",
+                game_path / "hook_add_change_language_entrance.rpyc",
+                root_dir / "unpack.finish",
+                root_dir / "game.pid",
+                root_dir / "common_backup.zip",
+                root_dir / "unrpyc.complete",
+            ]
+
+            removed = []
+            for p in to_delete:
+                try:
+                    if not p.exists():
+                        continue
+                    if p.is_dir():
+                        import shutil
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    removed.append(str(p))
+                except Exception:
+                    continue
 
             if removed:
-                InfoBar.success("完成", f"已删除 {len(removed)} 个 Hook 文件", parent=self)
-                for f in removed:
-                    LogManager.get().info(f"已删除: {f}")
+                InfoBar.success("完成", f"已清理 {len(removed)} 个临时项", parent=self)
+                for item in removed:
+                    LogManager.get().info(f"已清理: {item}")
             else:
-                InfoBar.info("提示", "未找到需要删除的 Hook 文件", parent=self)
-
+                InfoBar.info("提示", "未发现需要清理的临时文件", parent=self)
         except Exception as e:
-            LogManager.get().error(f"删除 Hook 文件失败: {e}")
-            InfoBar.error("错误", f"删除失败: {e}", parent=self)
+            LogManager.get().error(f"清理失败: {e}")
+            InfoBar.error("错误", f"清理失败: {e}", parent=self)
 
     def _decompile(self, variant: str = "unrpyc_python"):
         """反编译 RPYC，variant 控制使用哪个 unrpyc 版本"""
         try:
             exe_path = self.decompile_exe_edit.text().strip()
             if not exe_path:
-                InfoBar.warning("提示", "请选择游戏可执行文件", parent=self)
+                InfoBar.warning("提示", "请选择游戏根目录或可执行文件", parent=self)
                 return
 
             if not Path(exe_path).exists():
-                InfoBar.error("错误", "可执行文件不存在", parent=self)
+                InfoBar.error("错误", "路径不存在", parent=self)
                 return
 
             overwrite = self.decompile_overwrite_check.isChecked()
@@ -362,6 +413,29 @@ class PackUnpackPage(Base, QWidget):
         except Exception as e:
             LogManager.get().error(f"反编译失败: {e}")
             InfoBar.error("错误", f"反编译失败: {e}", parent=self)
+
+    def _unpack_and_decompile(self):
+        """一键：按解包设置解包后，执行 unrpyc 反编译。"""
+        game_dir = self.unpack_game_dir_edit.text().strip()
+        if not game_dir:
+            InfoBar.warning("提示", "请选择 game 目录", parent=self)
+            return
+        if not Path(game_dir).exists():
+            InfoBar.error("错误", "目录不存在", parent=self)
+            return
+
+        # 先解包（UnRen / 外部工具）
+        self._unpack()
+
+        # 自动填充反编译目标（未填写时使用 game 的上级目录）
+        if not self.decompile_exe_edit.text().strip():
+            try:
+                self.decompile_exe_edit.setText(str(Path(game_dir).parent))
+            except Exception:
+                pass
+
+        # 默认优先 v2（内部会自动 fallback 到另一个版本）
+        self._decompile("unrpyc_python_v2")
 
     def _pack(self):
         """打包为 RPA（后台线程）"""

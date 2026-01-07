@@ -29,7 +29,7 @@ MISS_RPY = "miss_ready_replace.rpy"
 LEGACY_MISS_TXT = "miss_ready_replace.txt"
 MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
-REGEX_CACHE_VERSION = 2
+REGEX_CACHE_VERSION = 1
 
 
 def _get_miss_candidates(tl_dir: Path) -> List[Path]:
@@ -116,11 +116,11 @@ def _collect_source_rpy_files(game_dir: Path) -> Tuple[List[Path], int, int]:
                 continue
 
         for filename in filenames:
-            if not filename.lower().endswith((".rpy", ".rpym")):
+            if not filename.lower().endswith(".rpy"):
                 continue
             p = Path(dirpath) / filename
             # 跳过引擎级公共文件，避免误报
-            if p.name.lower() in ("common.rpy", "common.rpym"):
+            if p.name.lower() == "common.rpy":
                 continue
 
             rpy_files.append(p)
@@ -307,47 +307,6 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
             return cached
 
     logger.debug(f"正则扫描：找到 {len(rpy_files)} 个源码文件")
-
-    # 多行 define/default = { ... } / [ ... ] 的开始行
-    multiline_block_start_re = re.compile(
-        r'^\s*(?:define|default)\s+\w+\s*=\s*([\{\[])\s*(?:#.*)?$',
-        re.IGNORECASE,
-    )
-    multiline_block_start_dollar_re = re.compile(
-        r'^\s*\$\s*\w+\s*=\s*([\{\[])\s*(?:#.*)?$',
-        re.IGNORECASE,
-    )
-
-    def bracket_delta_outside_strings(line: str, open_ch: str, close_ch: str) -> int:
-        """Count bracket delta (+open/-close) outside quoted strings and outside comments."""
-        delta = 0
-        quote: Optional[str] = None
-        escaped = False
-        for ch in line:
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                    continue
-                if ch == "\\":
-                    escaped = True
-                    continue
-                if ch == quote:
-                    quote = None
-                continue
-
-            if ch in ("'", '"'):
-                quote = ch
-                escaped = False
-                continue
-
-            if ch == "#":
-                break
-
-            if ch == open_ch:
-                delta += 1
-            elif ch == close_ch:
-                delta -= 1
-        return delta
     
     for rpy_path in rpy_files:
         try:
@@ -386,32 +345,11 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
             if text:
                 all_strings.add(text)
         
-        # 4. 逐行扫描：变量赋值、f-string、多行 define/default 字典/列表等
-        multiline_block: Optional[dict] = None  # {"open": "{", "close": "}", "kind": "dict|list", "depth": int}
+        # 4. 逐行扫描：变量赋值、f-string 等
         for line in content.splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-
-            # 多行 define/default 字典/列表：把分散在多行的字符串也纳入候选（常见于 location/daytime 这类表）。
-            if multiline_block is not None:
-                if multiline_block["kind"] == "dict":
-                    # 仅抓 value（冒号后面的字符串），避免把 key（如 'night'）误当成可翻译文本
-                    for match in re.finditer(r':\s*(["\'])((?:\\\1|.)*?)\1', line):
-                        text = _unescape(match.group(2))
-                        if text and len(text) > 1:
-                            all_strings.add(text)
-                else:
-                    for match in re.finditer(r'(["\'])((?:\\\1|.)*?)\1', line):
-                        text = _unescape(match.group(2))
-                        if text and len(text) > 1:
-                            all_strings.add(text)
-
-                multiline_block["depth"] += bracket_delta_outside_strings(
-                    line, multiline_block["open"], multiline_block["close"]
-                )
-                if multiline_block["depth"] <= 0:
-                    multiline_block = None
             
             # 变量赋值中的字符串
             if re.search(r'(default|define)\s+\w+\s*=\s*', line) or re.search(r'\$\s*\w+\s*=\s*', line):
@@ -426,21 +364,6 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
                     text = _unescape(match.group(2))
                     if text and len(text) > 1:
                         all_strings.add(text)
-
-            # 进入多行字典/列表块（只在当前不处于 block 时触发）
-            if multiline_block is None:
-                m = multiline_block_start_re.match(line) or multiline_block_start_dollar_re.match(line)
-                if m:
-                    open_ch = m.group(1)
-                    close_ch = "}" if open_ch == "{" else "]"
-                    depth = bracket_delta_outside_strings(line, open_ch, close_ch)
-                    if depth > 0:
-                        multiline_block = {
-                            "open": open_ch,
-                            "close": close_ch,
-                            "kind": "dict" if open_ch == "{" else "list",
-                            "depth": depth,
-                        }
 
         # 5. 三引号多行字符串（简单捕获）
         for match in re.finditer(r'"""(.*?)"""', content, re.DOTALL):
@@ -644,17 +567,6 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     # 2. tl 覆盖（已抽取的文本）
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
-
-    # 2b. replace_text_auto 覆盖（已通过 hook 替换的文本）
-    hook_path = tl_dir / "replace_text_auto.rpy"
-    if hook_path.exists():
-        try:
-            hook_originals = {old for old, _ in _parse_existing_replace_pairs(hook_path)}
-        except Exception:
-            hook_originals = set()
-        if hook_originals:
-            tl_covered |= hook_originals
-            logger.info(f"已识别 replace_text_auto 覆盖: {len(hook_originals)} 条")
     
     # 3. 计算差集
     missing = regex_filtered - tl_covered
@@ -1053,32 +965,6 @@ def render_replace_script(
 ) -> str:
     """Render a Ren'Py script that defines a ``replace_text`` hook."""
 
-    # 归一化/去重：同一个 original 只保留最后一次出现的翻译
-    merged: dict[str, str] = {}
-    for original, translation in pairs:
-        if not original or not translation or original == translation:
-            continue
-        merged[str(original)] = str(translation)
-
-    # 兼容：很多 UI 字符串会带 {b}/{color} 等标签，但运行时可能被剥离后再进入 replace_text。
-    # 因此自动补一份“去标签”的映射，保证两种形态都能命中。
-    expanded: dict[str, str] = dict(merged)
-    for original, translation in list(merged.items()):
-        if "{" not in original or "}" not in original:
-            continue
-        stripped_old = _strip_format_tags(original)
-        stripped_new = _strip_format_tags(translation)
-        if not stripped_old or not stripped_new or stripped_old == stripped_new:
-            continue
-        # 不覆盖已有的无标签映射（如果用户手工指定了更精确的版本）
-        expanded.setdefault(stripped_old, stripped_new)
-
-    # 长字符串优先，避免 "Back" 先替换导致 "Back home" 失效这类问题
-    normalized_pairs: List[Pair] = sorted(
-        expanded.items(),
-        key=lambda it: (-len(it[0]), it[0]),
-    )
-
     lines: List[str] = [
         "# Auto-generated replace_text hook",
         "# 用于替换官方抽取无法覆盖的文本",
@@ -1089,11 +975,11 @@ def render_replace_script(
     lines.append(f"        if not isinstance({target_name}, str):")
     lines.append(f"            return {target_name}")
     
-    if not normalized_pairs:
+    if not pairs:
         lines.append(f"        return {target_name}")
     else:
         lines.append(f"        result = {target_name}")
-        for original, translation in normalized_pairs:
+        for original, translation in pairs:
             escaped_old = _escape_string(original)
             escaped_new = _escape_string(translation)
             lines.append(f'        result = result.replace("{escaped_old}", "{escaped_new}")')
@@ -1107,60 +993,12 @@ def render_replace_script(
     return "\n".join(lines)
 
 
-def _parse_existing_replace_pairs(path: Path) -> List[Pair]:
-    """Parse existing `replace_text_auto.rpy` and return (old, new) pairs.
-
-    This is best-effort and only supports the tool-generated format:
-    `result = result.replace("old", "new")`.
-    """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
-
-    # Match the exact tool-generated `result.replace("...", "...")` lines.
-    pattern = re.compile(
-        r'result\s*=\s*result\.replace\(\s*"(?P<old>(?:\\.|[^"\\])*)"\s*,\s*"(?P<new>(?:\\.|[^"\\])*)"\s*\)'
-    )
-
-    def unescape_literal(s: str) -> str:
-        return s.replace("\\n", "\n").replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
-
-    pairs: List[Pair] = []
-    for m in pattern.finditer(text):
-        old = unescape_literal(m.group("old"))
-        new = unescape_literal(m.group("new"))
-        if old and new and old != new:
-            pairs.append((old, new))
-    return pairs
-
-
-def write_replace_script(
-    output_path: str | Path,
-    pairs: Sequence[Pair],
-    *,
-    merge_existing: bool = True,
-    **kwargs,
-) -> Path:
-    """Write a rendered replace hook to ``output_path`` and return the path.
-
-    By default it merges existing `replace_text_auto.rpy` mappings so re-generating the hook
-    won't drop previously translated replacements.
-    """
+def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwargs) -> Path:
+    """Write a rendered replace hook to ``output_path`` and return the path."""
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-
-    merged: dict[str, str] = {}
-    if merge_existing and output.exists():
-        for old, new in _parse_existing_replace_pairs(output):
-            merged[old] = new
-
-    for old, new in pairs:
-        if old and new and old != new:
-            merged[str(old)] = str(new)
-
-    script = render_replace_script(list(merged.items()), **kwargs)
+    script = render_replace_script(pairs, **kwargs)
     output.write_text(script, encoding="utf-8")
     return output
 
@@ -1206,32 +1044,13 @@ def check_miss_rpy_status(target_path: str | Path, tl_name: str) -> dict:
     game_dir = _get_game_dir(target_path)
     tl_dir = game_dir / "tl" / tl_name
     miss_path = _resolve_miss_path(tl_dir)
-
-    # hook 文件（生成后可不再保留 miss 文件）
-    hook_path = tl_dir / "replace_text_auto.rpy"
-    hook_exists = hook_path.exists()
-
-    # 归档文件（避免 Ren'Py 运行时报重复翻译）
-    archived_path: Optional[Path] = None
-    for base in (tl_dir / MISS_DIR, tl_dir):
-        try:
-            found = sorted(base.glob("miss_ready_replace.done*.txt"))
-        except Exception:
-            found = []
-        if found:
-            archived_path = found[0]
-            break
     
     if not miss_path or not miss_path.exists():
         return {
             "exists": False,
             "total_count": 0,
             "translated_count": 0,
-            "path": None,
-            "hook_exists": hook_exists,
-            "hook_path": str(hook_path) if hook_exists else None,
-            "archived_exists": bool(archived_path is not None),
-            "archived_path": str(archived_path) if archived_path is not None else None,
+            "path": None
         }
     
     content = miss_path.read_text(encoding="utf-8")
@@ -1263,53 +1082,6 @@ def check_miss_rpy_status(target_path: str | Path, tl_name: str) -> dict:
         "exists": True,
         "total_count": total,
         "translated_count": translated,
-        "path": str(miss_path),
-        "hook_exists": hook_exists,
-        "hook_path": str(hook_path) if hook_exists else None,
-        "archived_exists": bool(archived_path is not None),
-        "archived_path": str(archived_path) if archived_path is not None else None,
+        "path": str(miss_path)
     }
-
-
-def archive_miss_file(target_path: str | Path, tl_name: str) -> Path | None:
-    """Archive miss_ready_replace.rpy to a non-.rpy file to avoid Ren'Py duplicate-translation errors.
-
-    After generating `replace_text_auto.rpy`, this intermediate file is no longer needed at runtime.
-
-    Returns:
-        Archived path, or None if no active miss file exists.
-    """
-    game_dir = _get_game_dir(target_path)
-    tl_dir = game_dir / "tl" / tl_name
-    miss_path = _resolve_miss_path(tl_dir)
-
-    if not miss_path or not miss_path.exists():
-        return None
-
-    name_lower = miss_path.name.lower()
-    if not name_lower.startswith("miss_ready_replace"):
-        return None
-
-    archive_dir = miss_path.parent
-    archive_dir.mkdir(parents=True, exist_ok=True)
-
-    archive_path = archive_dir / f"{miss_path.stem}.done.txt"
-    if archive_path.exists():
-        # Avoid overwrite if user keeps historical files.
-        import time
-
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        archive_path = archive_dir / f"{miss_path.stem}.done.{ts}.txt"
-
-    try:
-        miss_path.replace(archive_path)
-    except Exception:
-        try:
-            content = miss_path.read_text(encoding="utf-8", errors="replace")
-            archive_path.write_text(content, encoding="utf-8")
-            miss_path.unlink(missing_ok=True)
-        except Exception:
-            return None
-
-    return archive_path
 

@@ -46,6 +46,7 @@ class AppSettingsPage(QWidget, Base):
         self.root.addWidget(scroll_area)
 
         # 添加控件
+        self.add_widget_startup_sound(scroll_area_vbox, config, window)
         self.add_widget_expert_mode(scroll_area_vbox, config, window)
         self.add_widget_font_hinting(scroll_area_vbox, config, window)
         self.add_widget_scale_factor(scroll_area_vbox, config, window)
@@ -53,6 +54,28 @@ class AppSettingsPage(QWidget, Base):
 
         # 填充
         scroll_area_vbox.addStretch(1)
+
+    # 启动音效
+    def add_widget_startup_sound(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+
+        def init(widget: SwitchButtonCard) -> None:
+            widget.get_switch_button().setChecked(
+                bool(getattr(config, "startup_sound_enable", False))
+            )
+
+        def checked_changed(widget: SwitchButtonCard) -> None:
+            config = Config().load()
+            config.startup_sound_enable = widget.get_switch_button().isChecked()
+            config.save()
+
+        parent.addWidget(
+            SwitchButtonCard(
+                title = Localizer.get().app_settings_page_startup_sound_title,
+                description = Localizer.get().app_settings_page_startup_sound_content,
+                init = init,
+                checked_changed = checked_changed,
+            )
+        )
 
     # 专家模式
     def add_widget_expert_mode(self, parent: QLayout, config: Config, window: FluentWindow) -> None:

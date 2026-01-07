@@ -163,6 +163,8 @@ class LocalizerZH():
     response_decoder_translation_by_rule: str = "翻译数据 -> 拆分后规则解析，共 {COUNT} 条"
 
     # 应用设置
+    app_settings_page_startup_sound_title: str = "启动音效"
+    app_settings_page_startup_sound_content: str = "启用后，应用启动时会播放提示音（默认关闭）"
     app_settings_page_expert_title: str = "专家模式"
     app_settings_page_expert_content: str = "启用此功能后，将显示更多日志信息并提供更多高级设置选项（将在应用重启后生效）"
     app_settings_page_font_hinting_title: str = "字体优化"

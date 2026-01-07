@@ -166,12 +166,7 @@ class DirectRpyTranslatePage(Base, QWidget):
 
     # ------------------------------------------------------------------ actions
     def _browse_game_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择游戏 exe / 项目目录 / 单个 rpy 文件",
-            "",
-            "Executable (*.exe);;Ren'Py Script (*.rpy);;All Files (*)",
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "选择游戏 exe 或目录", "", "Executable (*.exe);;All Files (*)")
         if path:
             self.game_file_edit.setText(path)
 
@@ -186,51 +181,6 @@ class DirectRpyTranslatePage(Base, QWidget):
         tl_name = self.tl_edit.text().strip() or "chinese"
 
         try:
-            # 单文件模式：直接翻译指定的 .rpy（例如 miss_ready_replace.rpy）
-            if game_path:
-                p = Path(game_path)
-                if p.is_file() and p.suffix.lower() == ".rpy":
-                    target_file = p.resolve()
-                    config = Config().load()
-                    config.input_folder = str(target_file)
-                    config.output_folder = str(target_file.parent)
-                    config.renpy_backup_original = self.backup_switch.isChecked()
-
-                    # 简单备份 .bak
-                    if config.renpy_backup_original:
-                        try:
-                            bak = target_file.with_suffix(target_file.suffix + ".bak")
-                            if not bak.exists():
-                                bak.write_bytes(target_file.read_bytes())
-                        except Exception:
-                            pass
-
-                    lang_map = {
-                        "简体中文": "ZH",
-                        "繁体中文": "ZH",
-                        "英语": "EN",
-                        "日语": "JA",
-                        "韩语": "KO",
-                    }
-                    tgt = lang_map.get(self.target_lang_combo.currentText())
-                    if tgt:
-                        config.target_language = tgt
-
-                    self.btn_start.setEnabled(False)
-                    self.btn_stop.setEnabled(True)
-                    self.progress_bar.setValue(0)
-                    self.status_label.setText("单文件翻译已委托 Engine，请稍候...")
-
-                    self.emit(
-                        Base.Event.TRANSLATION_START,
-                        {
-                            "config": config,
-                            "status": Base.TranslationStatus.UNTRANSLATED,
-                        },
-                    )
-                    InfoBar.success("已开始", "已开始翻译单个 .rpy 文件（Engine 流程）", parent=self)
-                    return
-
             tl_dir: Optional[Path] = None
             if tl_dir_text:
                 tl_dir = Path(tl_dir_text)

@@ -56,15 +56,8 @@ class UnifiedExtractor:
         "common_box.rpy",
         "screens_box.rpy",
         "style_box.rpy",
-        "choice_screen_fix_auto.rpy",
     }
-    CHOICE_SCREEN_FIX_FILE = "choice_screen_fix_auto.rpy"
     AUTO_SCREEN_FILE = "auto_screens_default.rpy"
-
-    CHOICE_SCREEN_DEF_RE = re.compile(
-        r"^\s*(?:init\s+[-\d]+\s+)?screen\s+choice\s*\(\s*items\s*\)\s*:\s*$",
-        re.IGNORECASE,
-    )
     
     def __init__(self, renpy_extractor: Optional[RenpyExtractor] = None):
         self.logger = LogManager.get()
@@ -150,7 +143,8 @@ class UnifiedExtractor:
 
             def collect_base_box_old_values() -> Set[str]:
                 base_old: Set[str] = set()
-                for fp in sorted(src_dir.glob("*.rpy")):
+                for fn in ("common_box.rpy", "screens_box.rpy"):
+                    fp = src_dir / fn
                     if not fp.is_file():
                         continue
                     try:
@@ -276,7 +270,8 @@ class UnifiedExtractor:
             except Exception:
                 pass
 
-            for src in sorted(src_dir.glob("*.rpy")):
+            for filename in ("common_box.rpy", "screens_box.rpy"):
+                src = src_dir / filename
                 if not src.is_file():
                     continue
 
@@ -286,29 +281,17 @@ class UnifiedExtractor:
                 content = content.replace("tl/schinese", f"tl/{tl_name}")
                 content = content.replace("{tl_name}", tl_name)
 
-                dest_file = dest_dir / src.name
+                dest_file = dest_dir / filename
                 dest_file.write_text(content, encoding="utf-8")
 
                 # 2) 若 tl_dir 其它文件已存在有效翻译，则从 base_box 中移除对应条目，避免重复。
                 if prefer_user_translation:
                     removed_from_base_box += remove_string_entries_by_old_values(dest_file, prefer_user_translation)
 
-                # 若文件只剩空 translate 块，直接删除（否则会导致 Ren'Py 报错）
+                # 若过滤后无任何 old 条目，直接删除文件（否则会留下空 translate 块导致 Ren'Py 报错）
                 try:
                     final_text = dest_file.read_text(encoding="utf-8", errors="replace")
-                    meaningful = False
-                    for line in final_text.splitlines():
-                        stripped = line.strip()
-                        if not stripped or stripped.startswith("#"):
-                            continue
-                        if stripped.startswith("translate "):
-                            continue
-                        meaningful = True
-                        break
-                    # strings 翻译文件必须至少包含一个 old 条目，否则视为无意义
-                    if self.TRANSLATE_STRINGS_PATTERN.search(final_text) and not self.OLD_LINE_RE.search(final_text):
-                        meaningful = False
-                    if not meaningful:
+                    if not self.OLD_LINE_RE.search(final_text):
                         dest_file.unlink()
                         continue
                 except Exception:
@@ -326,133 +309,6 @@ class UnifiedExtractor:
         except Exception as exc:
             self.logger.warning(f"注入内置 base_box 失败: {exc}")
             return 0
-
-    def _deploy_choice_screen_fix(self, game_dir: Path, tl_dir: Path) -> Optional[Path]:
-        """为自定义 `choice` 屏幕生成修补文件，避免 `item.caption` 被字符串拼接后失去翻译效果。
-
-        常见写法：`"... " + item.caption + " ..."`。此时 `item.caption` 会先变成纯字符串，
-        导致 Ren'Py 的 strings 翻译无法命中。修补策略：仅在拼接场景下将其改为 `_(str(item.caption))`。
-
-        生成文件：`tl/<lang>/choice_screen_fix_auto.rpy`（若已存在则不覆盖）。
-        """
-        try:
-            if not (game_dir and tl_dir and tl_dir.exists()):
-                return None
-
-            target = tl_dir / self.CHOICE_SCREEN_FIX_FILE
-            if target.exists():
-                return target
-
-            scripts_dir = game_dir / "game"
-            if not scripts_dir.exists():
-                return None
-
-            def read_text_loose(path: Path) -> str:
-                try:
-                    return path.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    return ""
-
-            def extract_block(lines: List[str], start: int) -> List[str]:
-                header = lines[start]
-                base_indent = len(header) - len(header.lstrip())
-                block: List[str] = [header]
-                i = start + 1
-                while i < len(lines):
-                    line = lines[i]
-                    stripped = line.strip()
-                    if stripped == "":
-                        block.append(line)
-                        i += 1
-                        continue
-                    indent = len(line) - len(line.lstrip())
-                    if indent <= base_indent:
-                        break
-                    block.append(line)
-                    i += 1
-                return block
-
-            def needs_fix(block: List[str]) -> bool:
-                for line in block:
-                    if "item.caption" not in line:
-                        continue
-                    if re.search(r"\+\s*item\.caption\b|\bitem\.caption\s*\+", line):
-                        return True
-                return False
-
-            def patch_block(block: List[str]) -> List[str]:
-                if not block:
-                    return block
-
-                header = block[0]
-                header_indent = header[: len(header) - len(header.lstrip())]
-                patched: List[str] = [f"{header_indent}init 999 screen choice(items):"]
-
-                for line in block[1:]:
-                    updated = line
-                    updated = re.sub(
-                        r"(\+\s*)item\.caption(\s*\+)",
-                        r"\1_(str(item.caption))\2",
-                        updated,
-                    )
-                    updated = re.sub(
-                        r"(\+\s*)item\.caption\b(?!\s*\+)",
-                        r"\1_(str(item.caption))",
-                        updated,
-                    )
-                    updated = re.sub(
-                        r"\bitem\.caption(\s*\+)",
-                        r"_(str(item.caption))\1",
-                        updated,
-                    )
-                    patched.append(updated)
-
-                return patched
-
-            found: Optional[Tuple[Path, int, List[str]]] = None
-            for fp in sorted(scripts_dir.rglob("*.rpy")):
-                try:
-                    rel = fp.relative_to(scripts_dir)
-                    if rel.parts and rel.parts[0].lower() == "tl":
-                        continue
-                except Exception:
-                    pass
-                raw = read_text_loose(fp)
-                if "choice(" not in raw and "screen choice" not in raw:
-                    continue
-
-                lines = raw.splitlines()
-                for idx, line in enumerate(lines):
-                    if not self.CHOICE_SCREEN_DEF_RE.match(line):
-                        continue
-                    block = extract_block(lines, idx)
-                    if needs_fix(block):
-                        found = (fp, idx + 1, block)  # 1-based line for humans
-                        break
-                if found:
-                    break
-
-            if not found:
-                return None
-
-            src_path, src_line, block = found
-            patched_block = patch_block(block)
-            if patched_block == block:
-                return None
-
-            header_lines = [
-                "# Auto-generated by Ren'Py Translation Tool",
-                "# Fix: translate menu captions when custom choice screen concatenates item.caption",
-                f"# Source: {src_path.as_posix()}:{src_line}",
-                "",
-            ]
-            content = "\n".join(header_lines + patched_block).rstrip() + "\n"
-            target.write_text(content, encoding="utf-8")
-            self.logger.info(f"已生成 choice 屏幕修补文件: {target}")
-            return target
-        except Exception as exc:
-            self.logger.warning(f"生成 choice 屏幕修补失败: {exc}")
-            return None
 
     def _load_glossary_map(self, config: Config) -> Dict[str, str]:
         """加载用户术语库，返回 {原文: 译文}。"""
@@ -684,9 +540,6 @@ class UnifiedExtractor:
             injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
             if injected_ui:
                 self.logger.info(f"已注入 base_box UI 翻译: {injected_ui} 个文件")
-
-            # 6. 修补自定义 choice(items) 屏幕（避免 item.caption 拼接导致 strings 翻译失效）
-            self._deploy_choice_screen_fix(game_dir, tl_dir)
             
             # 统计
             result.total_files = len(list(self._iter_rpy_files(tl_dir)))
@@ -889,9 +742,6 @@ class UnifiedExtractor:
                         result.message = result.message + "\n• 已注入 base_box UI 翻译"
                     elif not output_to_separate_folder and result.message:
                         result.message = result.message + "（已注入 base_box UI 翻译）"
-
-                # 修补自定义 choice(items) 屏幕（避免 item.caption 拼接导致 strings 翻译失效）
-                self._deploy_choice_screen_fix(game_dir, tl_dir)
                 
                 self._emit_progress("增量抽取完成", 100)
                 
@@ -1306,6 +1156,20 @@ class UnifiedExtractor:
         for rpy_file in tl_dir.rglob("*.rpy"):
             name = rpy_file.name
             stem = rpy_file.stem
+            name_lower = name.lower()
+            # common.rpy / screens.rpy 为引擎层 UI 翻译模板：已用 base_box 注入覆盖，直接清理避免混入翻译目录
+            if name_lower == "common.rpy" or (name_lower == "screens.rpy" and rpy_file.parent == tl_dir):
+                try:
+                    rpy_file.unlink()
+                except Exception as exc:
+                    self.logger.warning(f"删除内置 UI 文件失败 {rpy_file}: {exc}")
+                companion = rpy_file.with_suffix(".rpyc")
+                if companion.exists():
+                    try:
+                        companion.unlink()
+                    except Exception:
+                        pass
+                continue
 
             if name in hook_names or any(stem.startswith(pat) for pat in extra_patterns):
                 try:

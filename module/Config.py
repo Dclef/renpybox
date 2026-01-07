@@ -21,7 +21,7 @@ class Config():
     # Application
     theme: str = THEME_LIGHT
     app_language: BaseLanguage.Enum = BaseLanguage.Enum.ZH
-    startup_sound_enable: bool = True
+    startup_sound_enable: bool = False
     startup_sound_path: str = "resource/Ciallo.mp3"
     startup_sound_volume: int = 80
 
