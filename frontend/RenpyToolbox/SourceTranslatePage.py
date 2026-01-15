@@ -25,6 +25,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from module.Config import Config
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
@@ -122,6 +123,15 @@ class SourceTranslatePage(Base, QWidget):
         self.single_file_row.setVisible(False)
         box.addWidget(self.single_file_row)
 
+        # 源语言
+        src_lang_row = QHBoxLayout()
+        src_lang_row.addWidget(QLabel("源语言:"))
+        self.source_lang_combo = ComboBox()
+        self.source_lang_combo.addItems(["简体中文", "繁体中文", "英语", "日语", "韩语"])
+        self.source_lang_combo.setCurrentText("英语")
+        src_lang_row.addWidget(self.source_lang_combo, 1)
+        box.addLayout(src_lang_row)
+
         # 目标语言
         lang_row = QHBoxLayout()
         lang_row.addWidget(QLabel("目标语言:"))
@@ -134,7 +144,7 @@ class SourceTranslatePage(Base, QWidget):
         # 备份开关
         backup_row = QHBoxLayout()
         self.backup_switch = SwitchButton("自动备份 .bak")
-        self.backup_switch.setChecked(True)
+        self.backup_switch.setChecked(False)
         backup_row.addWidget(self.backup_switch)
         self.backup_external_switch = SwitchButton("备份源码到外部")
         self.backup_external_switch.checkedChanged.connect(self._on_backup_external_changed)
@@ -253,12 +263,15 @@ class SourceTranslatePage(Base, QWidget):
             config.input_folder = str(target_path)
             config.output_folder = str(output_dir)
             lang_map = {
-                "简体中文": "ZH",
-                "繁体中文": "ZH",
-                "英语": "EN",
-                "日语": "JA",
-                "韩语": "KO",
+                "简体中文": BaseLanguage.Enum.ZH,
+                "繁体中文": BaseLanguage.Enum.ZH,
+                "英语": BaseLanguage.Enum.EN,
+                "日语": BaseLanguage.Enum.JA,
+                "韩语": BaseLanguage.Enum.KO,
             }
+            src = lang_map.get(self.source_lang_combo.currentText())
+            if src:
+                config.source_language = src
             tgt = lang_map.get(self.target_lang_combo.currentText())
             if tgt:
                 config.target_language = tgt
@@ -283,6 +296,10 @@ class SourceTranslatePage(Base, QWidget):
         self.emit(Base.Event.TRANSLATION_START, {
             "config": config,
             "status": Base.TranslationStatus.UNTRANSLATED,
+            "input_folder": str(target_path),
+            "output_folder": str(output_dir),
+            "source_language": config.source_language,
+            "target_language": config.target_language,
         })
         InfoBar.success("已开始", "已切换到统一翻译流程，进度见日志/进度条。", parent=self)
 

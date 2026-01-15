@@ -8,6 +8,7 @@ from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Renpy.renpy_io import RenpyStringEntry, RenpyStringReader, RenpyStringWriter
+from module.Translate.RenpySourceTranslator import RenpySourceTranslator
 
 
 class RENPY(Base):
@@ -46,6 +47,8 @@ class RENPY(Base):
             except Exception as exc:
                 self.error(f"Failed to parse {path}", exc)
                 continue
+            if not entries:
+                entries = self._read_source_entries(path)
 
             for entry in entries:
                 dst = entry.translation or ""
@@ -77,6 +80,27 @@ class RENPY(Base):
 
         return items
 
+    def _read_source_entries(self, path: Path) -> List[RenpyStringEntry]:
+        parser = RenpySourceTranslator()
+        entries: List[RenpyStringEntry] = []
+        for entry in parser.scan_file(path):
+            if not entry.needs_translation:
+                continue
+            text = entry.text.strip()
+            if not text:
+                continue
+            line_no = max(0, entry.line_number - 1)
+            entries.append(
+                RenpyStringEntry(
+                    source=entry.text,
+                    translation="",
+                    line_no=line_no,
+                    tag=entry.speaker,
+                    format_type="source",
+                )
+            )
+        return entries
+
     def write_to_path(self, items: List[CacheItem]) -> None:
         """Write translated items back to .rpy files using stored line metadata."""
         grouped: Dict[str, List[RenpyStringEntry]] = {}
@@ -99,7 +123,10 @@ class RENPY(Base):
 
     def _relative_to_input(self, path: Path) -> str:
         try:
-            rel = path.relative_to(self.input_path)
+            if self.input_path.is_file():
+                rel = path.name
+            else:
+                rel = path.relative_to(self.input_path)
         except ValueError:
             rel = path.name
         return str(rel).replace("\\", "/")

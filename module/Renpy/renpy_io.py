@@ -209,6 +209,16 @@ class RenpyStringWriter:
                 if tag_start_index != -1:
                     search_start_index = tag_start_index + len(entry.tag)
 
+            replaced = self._replace_exact_quoted_text(
+                original_line,
+                entry.source,
+                new_trans,
+                search_start_index,
+            )
+            if replaced is not None:
+                lines[line_num] = replaced
+                continue
+
             first_quote_index = self._find_first_unescaped_quote(original_line, search_start_index)
             last_quote_index = self._find_last_unescaped_quote(original_line)
 
@@ -247,6 +257,21 @@ class RenpyStringWriter:
                 return pos
             pos -= 1
         return -1
+
+    def _replace_exact_quoted_text(
+        self,
+        line: str,
+        source: str,
+        replacement: str,
+        start_index: int = 0,
+    ) -> Optional[str]:
+        if not source:
+            return None
+        pattern = re.compile(r'(["\'])' + re.escape(source) + r'\1')
+        match = pattern.search(line, pos=start_index)
+        if not match:
+            return None
+        return line[: match.start() + 1] + replacement + line[match.end() - 1 :]
 
     def _escape_quotes_for_renpy(self, text: str) -> str:
         pattern = r'\\"|""|" "|\"'
