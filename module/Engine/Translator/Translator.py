@@ -152,6 +152,18 @@ class Translator(Base):
 
         # 初始化
         self.config = config if isinstance(config, Config) else Config().load()
+        override_input = data.get("input_folder")
+        override_output = data.get("output_folder")
+        override_source = data.get("source_language")
+        override_target = data.get("target_language")
+        if override_input:
+            self.config.input_folder = str(override_input)
+        if override_output:
+            self.config.output_folder = str(override_output)
+        if override_source:
+            self.config.source_language = override_source
+        if override_target:
+            self.config.target_language = override_target
         self.platform = self.config.get_platform(self.config.activate_platform)
         local_flag = self.initialize_local_flag()
         max_workers, rpm_threshold = self.initialize_max_workers()
