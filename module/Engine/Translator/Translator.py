@@ -202,12 +202,18 @@ class Translator(Base):
         if status == Base.TranslationStatus.TRANSLATING:
             self.extras = self.cache_manager.get_project().get_extras()
             self.extras["start_time"] = time.time() - self.extras.get("time", 0)
+            # 根据实际的 Item 状态重新计算 line，避免缓存与项目数据不一致
+            self.extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
+            self.extras.setdefault("total_tokens", 0)
+            self.extras.setdefault("total_input_tokens", 0)
+            self.extras.setdefault("total_output_tokens", 0)
         else:
             self.extras = {
                 "start_time": time.time(),
                 "total_line": 0,
                 "line": 0,
                 "total_tokens": 0,
+                "total_input_tokens": 0,
                 "total_output_tokens": 0,
                 "time": 0,
             }
@@ -232,8 +238,12 @@ class Translator(Base):
                 return None
 
             # 第一轮且不是继续翻译时，记录任务的总行数
-            if current_round == 0 and status == Base.TranslationStatus.UNTRANSLATED:
-                self.extras["total_line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
+            if current_round == 0:
+                remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
+                if status == Base.TranslationStatus.UNTRANSLATED:
+                    self.extras["total_line"] = remaining
+                else:
+                    self.extras["total_line"] = self.extras.get("line", 0) + remaining
 
             # 第二轮开始切分
             if current_round > 0:
@@ -276,7 +286,7 @@ class Translator(Base):
                 self.print("")
 
             # 开始执行翻译任务
-            task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold)
+            task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold, max_concurrency = max_workers)
             with ProgressBar(transient = True) as progress:
                 pid = progress.new()
                 executor = concurrent.futures.ThreadPoolExecutor(
@@ -295,16 +305,22 @@ class Translator(Base):
                             stopping = True
                             break
 
-                        task_limiter.wait()
-                        if Engine.get().get_status() == Engine.Status.STOPPING:
+                        if not task_limiter.acquire(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                            stopping = True
+                            break
+
+                        if not task_limiter.wait(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                            task_limiter.release()
                             stopping = True
                             break
 
                         try:
                             future = executor.submit(task.start, current_round)
                         except RuntimeError:
+                            task_limiter.release()
                             stopping = True
                             break
+                        future.add_done_callback(task_limiter.release)
                         future.add_done_callback(lambda future: self.task_done_callback(future, pid, progress))
                 finally:
                     with self.data_lock:
@@ -572,6 +588,7 @@ class Translator(Base):
                 new["total_line"] = self.extras.get("total_line", 0)
                 new["line"] = self.extras.get("line", 0) + result.get("row_count", 0)
                 new["total_tokens"] = self.extras.get("total_tokens", 0) + result.get("input_tokens", 0) + result.get("output_tokens", 0)
+                new["total_input_tokens"] = self.extras.get("total_input_tokens", 0) + result.get("input_tokens", 0)
                 new["total_output_tokens"] = self.extras.get("total_output_tokens", 0) + result.get("output_tokens", 0)
                 new["time"] = time.time() - self.extras.get("start_time", 0)
                 self.extras = new

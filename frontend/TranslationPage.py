@@ -26,8 +26,11 @@ from qfluentwidgets import SubtitleLabel
 from qfluentwidgets import StrongBodyLabel
 from qfluentwidgets import LargeTitleLabel
 from qfluentwidgets import IndeterminateProgressRing
+from qfluentwidgets import ToolTipFilter
+from qfluentwidgets import ToolTipPosition
 
 from base.Base import Base
+from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Cache.CacheManager import CacheManager
@@ -126,6 +129,10 @@ class TimerMessageBox(MessageBoxBase):
         return True
 
 class TranslationPage(QWidget, Base):
+
+    class TokenDisplayMode(StrEnum):
+        INPUT = "INPUT"
+        OUTPUT = "OUTPUT"
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
@@ -310,7 +317,13 @@ class TranslationPage(QWidget, Base):
         if Engine.get().get_status() not in (Engine.Status.STOPPING, Engine.Status.TRANSLATING):
             return None
 
-        token = self.data.get("total_tokens", 0)
+        display_mode = getattr(self, "token_display_mode", self.TokenDisplayMode.OUTPUT)
+        if display_mode == self.TokenDisplayMode.OUTPUT:
+            token = self.data.get("total_output_tokens", 0)
+        else:
+            token = self.data.get("total_input_tokens", 0)
+            if token == 0:
+                token = self.data.get("total_tokens", 0) - self.data.get("total_output_tokens", 0)
         if token < 1000:
             self.token.set_unit("Token")
             self.token.set_value(f"{token}")
@@ -501,14 +514,84 @@ class TranslationPage(QWidget, Base):
 
     # 累计消耗
     def add_token_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+        self.token_display_mode = self.TokenDisplayMode.OUTPUT
+
+        def on_token_card_clicked(card: DashboardCard) -> None:
+            if self.token_display_mode == self.TokenDisplayMode.OUTPUT:
+                self.token_display_mode = self.TokenDisplayMode.INPUT
+                card.title_label.setText(Localizer.get().translation_page_card_token_input)
+            else:
+                self.token_display_mode = self.TokenDisplayMode.OUTPUT
+                card.title_label.setText(Localizer.get().translation_page_card_token_output)
+
+            self._animate_token_card_switch()
+
         self.token = DashboardCard(
             parent = self,
-            title = Localizer.get().translation_page_card_token,
+            title = Localizer.get().translation_page_card_token_output,
             value = Localizer.get().none,
             unit = "",
+            clicked = on_token_card_clicked,
         )
         self.token.setFixedSize(204, 204)
+        self.token.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.token.installEventFilter(ToolTipFilter(self.token, 300, ToolTipPosition.TOP))
+        self.token.setToolTip(Localizer.get().translation_page_card_token_tooltip)
         parent.addWidget(self.token)
+
+    def _animate_token_card_switch(self) -> None:
+        from PyQt5.QtCore import QEasingCurve
+        from PyQt5.QtCore import QPropertyAnimation
+        from PyQt5.QtWidgets import QGraphicsOpacityEffect
+
+        value_label = self.token.value_label
+        unit_label = self.token.unit_label
+
+        if not hasattr(self, "_token_value_opacity_effect") or self._token_value_opacity_effect is None:
+            self._token_value_opacity_effect = QGraphicsOpacityEffect(value_label)
+            value_label.setGraphicsEffect(self._token_value_opacity_effect)
+
+        if not hasattr(self, "_token_unit_opacity_effect") or self._token_unit_opacity_effect is None:
+            self._token_unit_opacity_effect = QGraphicsOpacityEffect(unit_label)
+            unit_label.setGraphicsEffect(self._token_unit_opacity_effect)
+
+        fade_out = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
+        fade_out.setDuration(100)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.3)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        fade_out_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
+        fade_out_unit.setDuration(100)
+        fade_out_unit.setStartValue(1.0)
+        fade_out_unit.setEndValue(0.3)
+        fade_out_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        fade_in = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
+        fade_in.setDuration(100)
+        fade_in.setStartValue(0.3)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        fade_in_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
+        fade_in_unit.setDuration(100)
+        fade_in_unit.setStartValue(0.3)
+        fade_in_unit.setEndValue(1.0)
+        fade_in_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        def on_fade_out_finished() -> None:
+            self.update_token(self.data)
+            fade_in.start()
+            fade_in_unit.start()
+
+        fade_out.finished.connect(on_fade_out_finished)
+        fade_out.start()
+        fade_out_unit.start()
+
+        self._token_fade_out_anim = fade_out
+        self._token_fade_out_unit_anim = fade_out_unit
+        self._token_fade_in_anim = fade_in
+        self._token_fade_in_unit_anim = fade_in_unit
 
     # 并行任务
     def add_task_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
@@ -613,6 +696,8 @@ class TranslationPage(QWidget, Base):
         self.action_export = parent.add_action(
             Action(FluentIcon.SHARE, Localizer.get().translation_page_export, parent, triggered = triggered),
         )
+        self.action_export.installEventFilter(ToolTipFilter(self.action_export, 300, ToolTipPosition.TOP))
+        self.action_export.setToolTip(Localizer.get().translation_page_export_tooltip)
         self.action_export.setEnabled(False)
 
     # 定时器

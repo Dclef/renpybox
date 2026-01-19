@@ -105,10 +105,17 @@ class PromptBuilder(Base):
     # 构造术语表
     def build_glossary(self, srcs: list[str]) -> str:
         full = "\n".join(srcs)
-        glossary: list[dict[str, str]] = [
-            v
-            for v in self.config.glossary_data if v.get("src") in full
-        ]
+        full_lower = full.lower()
+        glossary: list[dict[str, str]] = []
+        for v in self.config.glossary_data:
+            src = v.get("src", "")
+            is_case_sensitive = v.get("case_sensitive", False)
+            if is_case_sensitive:
+                if src in full:
+                    glossary.append(v)
+            else:
+                if src.lower() in full_lower:
+                    glossary.append(v)
 
         # 构建文本
         result = []
@@ -139,10 +146,17 @@ class PromptBuilder(Base):
     # 构造术语表
     def build_glossary_sakura(self, srcs: list[str]) -> str:
         full = "\n".join(srcs)
-        glossary: list[dict[str, str]] = [
-            v
-            for v in self.config.glossary_data if v.get("src") in full
-        ]
+        full_lower = full.lower()
+        glossary: list[dict[str, str]] = []
+        for v in self.config.glossary_data:
+            src = v.get("src", "")
+            is_case_sensitive = v.get("case_sensitive", False)
+            if is_case_sensitive:
+                if src in full:
+                    glossary.append(v)
+            else:
+                if src.lower() in full_lower:
+                    glossary.append(v)
 
         # 构建文本
         result = []
