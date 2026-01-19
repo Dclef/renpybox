@@ -6,6 +6,7 @@ import time
 import opencc
 
 from base.Base import Base
+from base.compat import StrEnum
 from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Cache.CacheItem import CacheItem
@@ -13,6 +14,15 @@ from module.Config import Config
 from module.Response.ResponseChecker import ResponseChecker
 from module.Localizer.Localizer import Localizer
 from module.TextProcessor import TextProcessor
+
+class WarningType(StrEnum):
+    """检查警告类型枚举"""
+    KANA = "KANA"                           # 假名残留
+    HANGEUL = "HANGEUL"                     # 谚文残留
+    TEXT_PRESERVE = "TEXT_PRESERVE"         # 文本保护失效
+    SIMILARITY = "SIMILARITY"               # 相似度过高
+    GLOSSARY = "GLOSSARY"                   # 术语表未生效
+    RETRY_THRESHOLD = "RETRY_THRESHOLD"     # 重试次数达阈值
 
 class ResultChecker(Base):
 
@@ -33,6 +43,7 @@ class ResultChecker(Base):
         # 初始化
         self.config: Config = config
         self.text_processor: TextProcessor = TextProcessor(config, None)
+        self._prepared_glossary_data: list[dict] = self._prepare_glossary_data()
 
         # 筛选数据
         # ResultChecker 只用于结果报告，不应对每条数据重复执行完整的 TextProcessor 预处理（会非常耗时且阻塞 UI）。
@@ -40,7 +51,7 @@ class ResultChecker(Base):
         self.items_untranslated = [item for item in items if item.get_status() == Base.TranslationStatus.UNTRANSLATED]
         self.items_translated: list[CacheItem] = [
             item for item in items
-            if item.get_status() == Base.TranslationStatus.TRANSLATED
+            if item.get_status() in (Base.TranslationStatus.TRANSLATED, Base.TranslationStatus.TRANSLATED_IN_PAST)
             and item.get_src().strip() != ""
         ]
 
@@ -52,8 +63,7 @@ class ResultChecker(Base):
             src = item.get_src()
 
             if pre_translation_replacement_enable == True and len(pre_translation_replacement_data) > 0:
-                for v in pre_translation_replacement_data:
-                    src = src.replace(v.get('src'), v.get('dst'))
+                src = self._apply_replacement_rules(src, pre_translation_replacement_data)
 
             self.src_repls.append(src)
 
@@ -65,10 +75,136 @@ class ResultChecker(Base):
             dst = item.get_dst()
 
             if post_translation_replacement_enable == True and len(post_translation_replacement_data) > 0:
-                for v in post_translation_replacement_data:
-                    dst = dst.replace(v.get('dst'), v.get('src'))
+                dst = self._apply_replacement_rules(dst, post_translation_replacement_data, reverse = True)
 
             self.dst_repls.append(dst)
+
+    def _apply_replacement_rules(self, text: str, rules: list[dict], reverse: bool = False) -> str:
+        for rule in rules:
+            src = rule.get("src", "")
+            dst = rule.get("dst", "")
+            if src == "" and dst == "":
+                continue
+
+            pattern = dst if reverse else src
+            replacement = src if reverse else dst
+            is_regex = rule.get("regex", False)
+            is_case_sensitive = rule.get("case_sensitive", False)
+
+            if is_regex:
+                flags = 0 if is_case_sensitive else re.IGNORECASE
+                text = re.sub(pattern, replacement, text, flags = flags)
+            else:
+                if is_case_sensitive:
+                    text = text.replace(pattern, replacement)
+                else:
+                    pattern_escaped = re.escape(pattern)
+                    text = re.sub(pattern_escaped, replacement, text, flags = re.IGNORECASE)
+
+        return text
+
+    def _prepare_glossary_data(self) -> list[dict]:
+        if self.config.glossary_enable == False or len(self.config.glossary_data) == 0:
+            return []
+
+        converter = ResultChecker.OPENCCS2T if self.config.traditional_chinese_enable == True else ResultChecker.OPENCCT2S
+        return [
+            {
+                "src": v.get("src", ""),
+                "dst": converter.convert(v.get("dst", "")),
+                "info": v.get("info", ""),
+                "case_sensitive": v.get("case_sensitive", False),
+            }
+            for v in self.config.glossary_data
+        ]
+
+    def _get_repl_texts(self, item: CacheItem) -> tuple[str, str]:
+        src = item.get_src()
+        dst = item.get_dst()
+
+        if self.config.pre_translation_replacement_enable and self.config.pre_translation_replacement_data:
+            src = self._apply_replacement_rules(src, self.config.pre_translation_replacement_data)
+
+        if self.config.post_translation_replacement_enable and self.config.post_translation_replacement_data:
+            dst = self._apply_replacement_rules(dst, self.config.post_translation_replacement_data, reverse = True)
+
+        return src, dst
+
+    def _has_kana_error(self, item: CacheItem) -> bool:
+        if self.config.source_language != BaseLanguage.Enum.JA:
+            return False
+        dst = item.get_dst()
+        return TextHelper.JA.any_hiragana(dst) or TextHelper.JA.any_katakana(dst)
+
+    def _has_hangeul_error(self, item: CacheItem) -> bool:
+        if self.config.source_language != BaseLanguage.Enum.KO:
+            return False
+        return TextHelper.KO.any_hangeul(item.get_dst())
+
+    def _has_text_preserve_error(self, item: CacheItem, src_repl: str, dst_repl: str) -> bool:
+        return not self.text_processor.check(src_repl, dst_repl, item.get_text_type())
+
+    def _has_similarity_error(self, src_repl: str, dst_repl: str) -> bool:
+        src: str = src_repl.strip()
+        dst: str = dst_repl.strip()
+        return src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
+
+    def _has_glossary_error(self, src_repl: str, dst_repl: str) -> bool:
+        if not self._prepared_glossary_data:
+            return False
+
+        src_lower = src_repl.lower()
+        dst_lower = dst_repl.lower()
+        for v in self._prepared_glossary_data:
+            glossary_src = v.get("src", "")
+            glossary_dst = v.get("dst", "")
+            case_sensitive = v.get("case_sensitive", False)
+
+            if case_sensitive:
+                if glossary_src and glossary_src in src_repl and glossary_dst not in dst_repl:
+                    return True
+            else:
+                if glossary_src and glossary_src.lower() in src_lower and glossary_dst.lower() not in dst_lower:
+                    return True
+
+        return False
+
+    def _has_retry_threshold_error(self, item: CacheItem) -> bool:
+        return item.get_retry_count() >= ResponseChecker.RETRY_COUNT_THRESHOLD
+
+    def get_check_results(self, items: list[CacheItem]) -> dict[int, list[WarningType]]:
+        warning_map: dict[int, list[WarningType]] = {}
+        for item in items:
+            warnings = self.check_single_item(item)
+            if warnings:
+                warning_map[id(item)] = warnings
+        return warning_map
+
+    def check_single_item(self, item: CacheItem) -> list[WarningType]:
+        warnings: list[WarningType] = []
+
+        if item.get_status() == Base.TranslationStatus.UNTRANSLATED:
+            return warnings
+
+        if not item.get_dst():
+            return warnings
+
+        src_repl, dst_repl = self._get_repl_texts(item)
+
+        if self._has_kana_error(item):
+            warnings.append(WarningType.KANA)
+        if self._has_hangeul_error(item):
+            warnings.append(WarningType.HANGEUL)
+        if self._has_text_preserve_error(item, src_repl, dst_repl):
+            warnings.append(WarningType.TEXT_PRESERVE)
+        if self._has_similarity_error(src_repl, dst_repl):
+            warnings.append(WarningType.SIMILARITY)
+        if self._has_glossary_error(src_repl, dst_repl):
+            warnings.append(WarningType.GLOSSARY)
+        if self._has_retry_threshold_error(item):
+            warnings.append(WarningType.RETRY_THRESHOLD)
+
+        return warnings
 
     # 检查
     def check(self) -> None:
@@ -203,23 +339,9 @@ class ResultChecker(Base):
         if self.config.glossary_enable == False or len(self.config.glossary_data) == 0:
             return None
 
-        # 如果启用了繁体输出，则先将数据转换为繁体
-        if self.config.traditional_chinese_enable == True:
-            self.config.glossary_data = [
-                {
-                    "src": v.get('src'),
-                    "dst": ResultChecker.OPENCCS2T.convert(v.get('dst')),
-                }
-                for v in self.config.glossary_data
-            ]
-        else:
-            self.config.glossary_data = [
-                {
-                    "src": v.get('src'),
-                    "dst": ResultChecker.OPENCCT2S.convert(v.get('dst')),
-                }
-                for v in self.config.glossary_data
-            ]
+        glossary_data = self._prepared_glossary_data
+        if not glossary_data:
+            return None
 
         count = 0
         fixed_count = 0
@@ -230,16 +352,39 @@ class ResultChecker(Base):
             seen = set()
             current_dst = item.get_dst()
             fixed = False
-            for v in self.config.glossary_data:
+            src_repl_lower = src_repl.lower()
+            current_dst_lower = current_dst.lower()
+            for v in glossary_data:
                 glossary_src = v.get("src", "")
                 glossary_dst = v.get("dst", "")
+                case_sensitive = v.get("case_sensitive", False)
+
+                if not glossary_src or not glossary_dst:
+                    continue
+
+                if case_sensitive:
+                    src_hit = glossary_src in src_repl
+                    dst_hit = glossary_dst in current_dst
+                else:
+                    src_hit = glossary_src.lower() in src_repl_lower
+                    dst_hit = glossary_dst.lower() in current_dst_lower
+
                 # 如果原文包含术语，但译文没有正确翻译
-                if glossary_src and glossary_dst and glossary_src in src_repl and glossary_dst not in current_dst:
+                if src_hit and not dst_hit:
                     # 自动替换：将原文术语替换为译文术语
-                    if glossary_src in current_dst:
-                        new_dst = current_dst.replace(glossary_src, glossary_dst)
+                    if case_sensitive:
+                        replace_hit = glossary_src in current_dst
+                    else:
+                        replace_hit = glossary_src.lower() in current_dst_lower
+
+                    if replace_hit:
+                        if case_sensitive:
+                            new_dst = current_dst.replace(glossary_src, glossary_dst)
+                        else:
+                            new_dst = re.sub(re.escape(glossary_src), glossary_dst, current_dst, flags = re.IGNORECASE)
                         item.set_dst(new_dst)
                         current_dst = new_dst
+                        current_dst_lower = current_dst.lower()
                         fixed = True
                         fixed_count += 1
                     else:

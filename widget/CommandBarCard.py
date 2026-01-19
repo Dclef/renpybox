@@ -26,6 +26,10 @@ class CommandBarCard(CardWidget):
     def add_widget(self, widget) -> None:
         return self.hbox.addWidget(widget)
 
+    def add_widget_to_command_bar(self, widget) -> None:
+        """Add a custom widget into the CommandBar area."""
+        self.command_bar.addWidget(widget)
+
     def add_stretch(self, stretch: int) -> None:
         self.hbox.addStretch(stretch)
 

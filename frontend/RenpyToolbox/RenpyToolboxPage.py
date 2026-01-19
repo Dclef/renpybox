@@ -17,7 +17,6 @@ from base.LogManager import LogManager
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
-from frontend.RenpyToolbox.BatchCorrectionPage import BatchCorrectionPage
 from frontend.RenpyTranslationPage import RenpyTranslationPage
 from frontend.RenpyToolbox.FormatterPage import FormatterPage
 from frontend.RenpyToolbox.ErrorRepairPage import ErrorRepairPage
@@ -29,6 +28,7 @@ from frontend.RenpyToolbox.LocalGlossaryPage import LocalGlossaryPage
 from frontend.RenpyToolbox.MaSuitePage import MaSuitePage
 from frontend.RenpyToolbox.TextPreservePage import TextPreservePage
 from frontend.RenpyToolbox.SourceTranslatePage import SourceTranslatePage
+from frontend.Proofreading.ProofreadingPage import ProofreadingPage
 
 
 class RenpyToolboxPage(Base, QWidget):
@@ -131,10 +131,10 @@ class RenpyToolboxPage(Base, QWidget):
             ("📄 直接翻译RPY", "直接翻译 tl/*.rpy 文件（高级用户）", self._open_direct_rpy_translate),
             ("源码翻译", "直接翻译 game/*.rpy 源码，无需 tl 目录", self._open_source_translate),
             ("翻译抽取到TL", "高级：官方抽取、运行时抽取等", self._open_extract_to_tl),
+            ("错误校对", "基于缓存进行校对、筛选与重译", self._open_proofreading_task),
             ("📚 本地词库", "管理术语表，统一专有名词翻译", self._open_local_glossary),
             ("🚫 禁翻表", "管理不需要翻译的文本（变量、代码等）", self._open_text_preserve),
             ("终极结构导出", "Excel & translate_names/others.rpy 输出", self._open_ma_suite),
-            ("批量修正", "批量修正翻译中的错误和问题", self._open_batch_correction),
             ("错误修复", "扫描并修复常见的脚本错误", self._open_error_repair),
             ("代码格式化", "格式化 .rpy 文件，保持代码整洁", self._open_formatter),
             ("字体注入", "一键注入预置字体包（tl/<lang>/base_box + tl/<lang>/fonts）", self._open_font_replace),
@@ -244,13 +244,6 @@ class RenpyToolboxPage(Base, QWidget):
             LogManager.get().error(f"打开翻译面板失败: {e}")
             InfoBar.error("错误", f"打开翻译面板失败: {e}", parent=self)
 
-    def _open_batch_correction(self, card):
-        """打开批量修正页面"""
-        if not hasattr(self.window, 'batch_correction_page'):
-            self.window.batch_correction_page = BatchCorrectionPage("batch-correction", self.window)
-            self._mark_toolbox_widget(self.window.batch_correction_page)
-        self._goto_widget("批量修正", self.window.batch_correction_page)
-
     def _open_local_glossary(self, card):
         """打开本地词库页面"""
         if not hasattr(self.window, 'local_glossary_page'):
@@ -264,6 +257,13 @@ class RenpyToolboxPage(Base, QWidget):
             self.window.text_preserve_page = TextPreservePage("text-preserve", self.window)
             self._mark_toolbox_widget(self.window.text_preserve_page)
         self._goto_widget("禁翻表", self.window.text_preserve_page)
+
+    def _open_proofreading_task(self, card):
+        """打开校对任务页面"""
+        if not hasattr(self.window, 'proofreading_page'):
+            self.window.proofreading_page = ProofreadingPage("proofreading_page", self.window)
+            self._mark_toolbox_widget(self.window.proofreading_page)
+        self._goto_widget("校对任务", self.window.proofreading_page)
 
     def _open_ma_suite(self, card):
         """打开翻译套件页面"""

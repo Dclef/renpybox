@@ -193,7 +193,7 @@ class TextProcessor(Base):
         if self.config.clean_ruby == False:
             return src
         else:
-            return RubyCleaner.clean(src)
+            return RubyCleaner.clean(src, self.item.get_text_type())
 
     # 自动修复
     def auto_fix(self, src: str, dst: str) -> str:
@@ -253,10 +253,20 @@ class TextProcessor(Base):
             return src
 
         for v in self.config.pre_translation_replacement_data:
-            if v.get("regex", False) != True:
-                src = src.replace(v.get("src"), v.get("dst"))
+            pattern = v.get("src")
+            replacement = v.get("dst")
+            is_regex = v.get("regex", False)
+            is_case_sensitive = v.get("case_sensitive", False)
+
+            if is_regex:
+                flags = 0 if is_case_sensitive else re.IGNORECASE
+                src = re.sub(pattern, replacement, src, flags = flags)
             else:
-                src = re.sub(rf"{v.get('src')}", rf"{v.get('dst')}", src)
+                if is_case_sensitive:
+                    src = src.replace(pattern, replacement)
+                else:
+                    pattern_escaped = re.escape(pattern)
+                    src = re.sub(pattern_escaped, replacement, src, flags = re.IGNORECASE)
 
         return src
 
@@ -266,10 +276,20 @@ class TextProcessor(Base):
             return dst
 
         for v in self.config.post_translation_replacement_data:
-            if v.get("regex", False) != True:
-                dst = dst.replace(v.get("src"), v.get("dst"))
+            pattern = v.get("src")
+            replacement = v.get("dst")
+            is_regex = v.get("regex", False)
+            is_case_sensitive = v.get("case_sensitive", False)
+
+            if is_regex:
+                flags = 0 if is_case_sensitive else re.IGNORECASE
+                dst = re.sub(pattern, replacement, dst, flags = flags)
             else:
-                dst = re.sub(rf"{v.get('src')}", rf"{v.get('dst')}", dst)
+                if is_case_sensitive:
+                    dst = dst.replace(pattern, replacement)
+                else:
+                    pattern_escaped = re.escape(pattern)
+                    dst = re.sub(pattern_escaped, replacement, dst, flags = re.IGNORECASE)
 
         return dst
 
@@ -285,6 +305,9 @@ class TextProcessor(Base):
 
     # 处理前后缀代码段
     def prefix_suffix_process(self, i: int, src: str, text_type: CacheItem.TextType) -> None:
+        if self.config.auto_process_prefix_suffix_preserved_text == False:
+            return src
+
         rule: re.Pattern = self.get_re_prefix(
             custom = self.config.text_preserve_enable,
             text_type = text_type,
