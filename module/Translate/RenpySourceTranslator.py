@@ -167,6 +167,12 @@ class RenpySourceParser:
         + STRING_PREFIX +
         r'["\']+(?P<text>(?:[^"\'\\]|\\.)*)["\']+'
     )
+    # ChoiceMenuItem 文本 (python 块)
+    RE_CHOICEMENUITEM_START = re.compile(r'\bChoiceMenuItem\s*\(')
+    RE_PYTHON_STRING_LITERAL = re.compile(
+        STRING_PREFIX +
+        r'(?P<quote>["\'])(?P<text>(?:\\.|[^\\])*?)(?P=quote)'
+    )
     # ========================================
     
     # 代码关键字 - 这些行不应翻译
@@ -233,6 +239,9 @@ class RenpySourceParser:
         self._python_indent = 0
         self._menu_indent = 0
         self._strings_indent = 0
+        self._in_choice_menu_item = False
+        self._choice_menu_item_paren_balance = 0
+        self._choice_menu_item_text_found = False
     
     def _should_skip_text(self, text: str) -> bool:
         """检查文本是否应该跳过翻译"""
@@ -291,6 +300,9 @@ class RenpySourceParser:
         self._python_indent = 0
         self._menu_indent = 0
         self._strings_indent = 0
+        self._in_choice_menu_item = False
+        self._choice_menu_item_paren_balance = 0
+        self._choice_menu_item_text_found = False
     
     def _get_indent(self, line: str) -> int:
         """获取行缩进级别"""
@@ -355,6 +367,45 @@ class RenpySourceParser:
                         text=text,
                         protected_tags=protected,
                     ))
+            
+            # ChoiceMenuItem 文本（支持跨行）
+            choice_started = False
+            if not self._in_choice_menu_item:
+                start_match = self.RE_CHOICEMENUITEM_START.search(line)
+                if start_match:
+                    self._in_choice_menu_item = True
+                    self._choice_menu_item_text_found = False
+                    segment = line[start_match.start():]
+                    self._choice_menu_item_paren_balance = (
+                        segment.count('(') - segment.count(')')
+                    )
+                    choice_started = True
+            
+            if self._in_choice_menu_item and not self._choice_menu_item_text_found:
+                match_string = self.RE_PYTHON_STRING_LITERAL.search(line)
+                if match_string:
+                    text = match_string.group("text")
+                    if text.strip() and not self._should_skip_text(text):
+                        protected = self._extract_protected_tags(text)
+                        entries_list.append(TranslationEntry(
+                            line_number=line_num,
+                            line_type=LineType.MENU_OPTION,
+                            original_line=line,
+                            speaker=None,
+                            text=text,
+                            protected_tags=protected,
+                        ))
+                        self._choice_menu_item_text_found = True
+            
+            if self._in_choice_menu_item:
+                if not choice_started:
+                    self._choice_menu_item_paren_balance += (
+                        line.count('(') - line.count(')')
+                    )
+                if self._choice_menu_item_paren_balance <= 0:
+                    self._in_choice_menu_item = False
+                    self._choice_menu_item_paren_balance = 0
+                    self._choice_menu_item_text_found = False
             
             if entries_list:
                 return entries_list
@@ -712,6 +763,9 @@ class RenpySourceParser:
         """检查是否退出块"""
         if self._in_python_block and current_indent <= self._python_indent:
             self._in_python_block = False
+            self._in_choice_menu_item = False
+            self._choice_menu_item_paren_balance = 0
+            self._choice_menu_item_text_found = False
         
         if self._in_menu_block and current_indent <= self._menu_indent:
             self._in_menu_block = False
