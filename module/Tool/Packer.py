@@ -37,65 +37,6 @@ class Packer:
         except Exception:
             return 0
 
-    def _run_unren_forall(
-        self,
-        game_root: Path,
-        *,
-        options: str,
-        lang: str = "zh",
-        timeout_s: int | None = None,
-    ) -> subprocess.CompletedProcess[str] | None:
-        """Run bundled UnRen-forall.bat in headless automation mode."""
-        if os.name != "nt":
-            return None
-        unren_bat = Path(get_resource_path("resource", "UnRen-forall.bat"))
-        if not unren_bat.is_file():
-            return None
-
-        env = os.environ.copy()
-        env["UNREN_AUTORUN"] = options
-        env["UNREN_NO_PAUSE"] = "1"
-        env["UNREN_NO_UPDATE"] = "1"
-
-        try:
-            return subprocess.run(
-                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
-                cwd=str(game_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                env=env,
-                timeout=timeout_s,
-                creationflags=self._creationflags_no_window(),
-            )
-        except Exception as exc:
-            self.logger.warning(f"UnRen-forall 运行失败: {exc}")
-            return None
-
-    def unpack_all_unren_forall(
-        self,
-        game_dir: str,
-        *,
-        lang: str = "zh",
-        timeout_s: int | None = None,
-        use_alternative: bool = False,
-    ) -> tuple[bool, list[str]]:
-        """Fallback unpack via UnRen-forall.bat (no window, no prompts)."""
-        game_path = Path(game_dir).resolve()
-        if not game_path.exists() or not game_path.is_dir():
-            raise FileNotFoundError(f"目录不存在: {game_path}")
-
-        game_root = game_path.parent
-        options = "7x" if use_alternative else "1x"
-        result = self._run_unren_forall(game_root, options=options, lang=lang, timeout_s=timeout_s)
-        if result is None:
-            return False, ["UnRen-forall 不可用或启动失败"]
-        output = (result.stdout or "").strip()
-        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-        return result.returncode == 0, lines
-
     def _get_game_python(self, game_root_dir: Path) -> Path | None:
         try:
             from utils.call_game_python import get_python_path_from_game_dir
@@ -135,6 +76,126 @@ class Packer:
         
         self.logger.warning("未找到 rpatool")
         return None
+
+    def _read_renpy_version(self, root_dir: Path) -> str | None:
+        version_file = root_dir / "renpy" / "version.txt"
+        if not version_file.is_file():
+            return None
+        try:
+            text = version_file.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            try:
+                text = version_file.read_text(errors="ignore").strip()
+            except Exception:
+                return None
+        if not text:
+            return None
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return lines[0] if lines else None
+
+    def _detect_renpy_major(self, root_dir: Path) -> int | None:
+        version = self._read_renpy_version(root_dir)
+        if not version:
+            return None
+        match = re.search(r"(\d+)(?:\.\d+)?", version)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _select_unren_bat(self, root_dir: Path) -> tuple[Path | None, int | None]:
+        major = self._detect_renpy_major(root_dir)
+        legacy_res = Path(get_resource_path("resource", "UnRen-legacy.bat"))
+        current_res = Path(get_resource_path("resource", "UnRen-current.bat"))
+        legacy = legacy_res if legacy_res.exists() else (self.base_dir / "dist" / "UnRen-legacy.bat")
+        current = current_res if current_res.exists() else (self.base_dir / "dist" / "UnRen-current.bat")
+
+        if major is None:
+            if current.exists():
+                return current, major
+            if legacy.exists():
+                return legacy, major
+            return None, major
+
+        if major >= 8:
+            if current.exists():
+                return current, major
+            if legacy.exists():
+                return legacy, major
+            return None, major
+
+        if legacy.exists():
+            return legacy, major
+        if current.exists():
+            return current, major
+        return None, major
+
+    def _run_unren_bat(
+        self,
+        unren_bat: Path,
+        game_root: Path,
+        *,
+        options: str,
+        lang: str,
+        timeout_s: int | None,
+    ) -> subprocess.CompletedProcess[str] | None:
+        if os.name != "nt":
+            return None
+        if not unren_bat.is_file():
+            return None
+        try:
+            return subprocess.run(
+                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
+                cwd=str(game_root),
+                input=f"{options}\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=timeout_s,
+                creationflags=self._creationflags_no_window(),
+            )
+        except Exception as exc:
+            self.logger.warning(f"UnRen 启动失败: {exc}")
+            return None
+
+    def unpack_all_unren_bat(
+        self,
+        game_dir: str,
+        *,
+        lang: str = "zh",
+        options: str = "6x",
+        timeout_s: int | None = None,
+    ) -> Tuple[bool, List[str]]:
+        """Fallback via UnRen-legacy/current.bat (no window, no prompts)."""
+        game_path = Path(game_dir).resolve()
+        if not game_path.exists() or not game_path.is_dir():
+            raise FileNotFoundError(f"目录不存在: {game_path}")
+
+        game_root = game_path.parent
+        unren_bat, major = self._select_unren_bat(game_root)
+        if not unren_bat:
+            return False, ["UnRen 脚本不可用"]
+
+        version_label = f"Ren'Py {major}" if major is not None else "Ren'Py 未知版本"
+        self.logger.info(f"UnRen 兜底解包: {unren_bat.name} ({version_label})")
+
+        result = self._run_unren_bat(
+            unren_bat,
+            game_root,
+            options=options,
+            lang=lang,
+            timeout_s=timeout_s,
+        )
+        if result is None:
+            return False, ["UnRen 启动失败"]
+
+        output = (result.stdout or "").strip()
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        return result.returncode == 0, lines
 
     def unpack_all_unren(
         self,
@@ -182,7 +243,7 @@ class Packer:
                 creationflags=self._creationflags_no_window(),
             )
         finally:
-            # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen-forall.bat 行为一致）
+            # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen 行为一致）
             try:
                 pycache_dir = game_path / "__pycache__"
                 if pycache_dir.exists() and pycache_dir.is_dir():

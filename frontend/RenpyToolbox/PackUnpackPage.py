@@ -111,25 +111,15 @@ class UnpackWorker(QThread):
                 })
                 return
 
-            # 3) UnRen-forall 保底（静默）
-            self.progress.emit("尝试 UnRen 保底解包…")
-            ok, _lines = packer.unpack_all_unren_forall(self.game_dir, lang="zh", timeout_s=60 * 60)
-            if not ok:
-                ok, _lines = packer.unpack_all_unren_forall(
-                    self.game_dir,
-                    lang="zh",
-                    timeout_s=60 * 60,
-                    use_alternative=True,
-                )
-
+            self.progress.emit("尝试 UnRen 兜底解包…")
+            ok, _lines = packer.unpack_all_unren_bat(self.game_dir, lang="zh", timeout_s=60 * 60)
             if ok:
                 self.finished.emit({
                     "level": "success",
                     "title": "完成",
-                    "message": "已使用 UnRen 保底解包（请检查 game 目录输出）",
+                    "message": "已使用 UnRen 兜底解包（请检查 game 目录输出）",
                 })
                 return
-
             self.finished.emit({
                 "level": "info",
                 "title": "提示",
