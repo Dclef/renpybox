@@ -86,32 +86,10 @@ class RenpyDecompiler:
         if unrpyc_error is None:
             return
 
-        # Fallback: unrpyc 失败时，静默尝试 UnRen（无窗口自动跑）
-        self.logger.warning(f"unrpyc failed: {unrpyc_error}")
         renpy_version = self._read_renpy_version(root_dir) or "unknown"
-        unren_bat = Path(get_resource_path("resource", "UnRen-forall.bat"))
-        unren_result = self._run_unren_silent(
-            unren_bat,
-            root_dir,
-            options="2x",
-            lang="zh",
-            timeout_s=60 * 60,
-        )
-        if unren_result and unren_result.returncode == 0:
-            self.logger.info("UnRen fallback finished (decompile).")
-            return
-
         detail = ""
         if unrpyc_output:
             detail += f"\n\n[unrpyc output]\n{unrpyc_output.strip()}"
-        if unren_result is None:
-            detail += f"\n\nUnRen: 未执行（可能缺少或无法启动） -> {unren_bat}"
-        else:
-            tail = (unren_result.stdout or "").strip()
-            tail = "\n".join(tail.splitlines()[-80:]) if tail else ""
-            detail += f"\n\n[UnRen exit={unren_result.returncode}] {unren_bat}"
-            if tail:
-                detail += f"\n\n[UnRen output]\n{tail}"
 
         raise RuntimeError(
             "反编译失败（可能是 Ren'Py 版本过高或脚本格式变更导致 unrpyc 不兼容）。\n"
@@ -187,46 +165,6 @@ class RenpyDecompiler:
             errors="ignore",
             creationflags=creationflags,
         )
-
-    def _run_unren_silent(
-        self,
-        unren_bat: Path,
-        game_root: Path,
-        *,
-        options: str,
-        lang: str = "zh",
-        timeout_s: int | None = None,
-    ) -> subprocess.CompletedProcess[str] | None:
-        """静默运行 UnRen（无窗口），用于兜底处理。"""
-        if os.name != "nt":
-            return None
-        if not unren_bat.is_file():
-            return None
-        try:
-            creationflags = 0
-            try:
-                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-            except Exception:
-                creationflags = 0
-            env = os.environ.copy()
-            env["UNREN_AUTORUN"] = options
-            env["UNREN_NO_PAUSE"] = "1"
-            env["UNREN_NO_UPDATE"] = "1"
-            return subprocess.run(
-                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
-                cwd=str(game_root),
-                creationflags=creationflags,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                env=env,
-                timeout=timeout_s,
-            )
-        except Exception as exc:
-            self.logger.warning(f"启动 UnRen 失败: {exc}")
-            return None
 
     def _restore_common_from_backup(self, root_dir: Path, backup_zip: Path, *, keep_backup: bool) -> None:
         """Restore renpy/common using the backup zip."""
