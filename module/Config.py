@@ -117,6 +117,18 @@ class Config():
     # 解决：tl 目录存在但某些文件没翻译过/只抽到占位时，增量抽取输出过少的问题。
     renpy_incremental_include_untranslated: bool = True
 
+    # AndroidBuildPage
+    renpy_sdk_path: str = ""
+    android_app_name: str = ""
+    android_package_name: str = ""
+    android_version: str = ""
+    android_archive_source_dir: str = ""
+    android_shell_backup_enable: bool = True
+    android_shell_remove_dirs: str = "images,image,audio,video,videos,movies,script"
+    android_dname: str = ""
+    android_update_always: bool = True
+    android_update_icons: bool = True
+
     # RenpyToolkitPage
     renpy_font_replace_enable: bool = False
     renpy_font_original: str = ""
