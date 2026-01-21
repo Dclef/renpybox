@@ -22,6 +22,7 @@ from frontend.RenpyToolbox.FormatterPage import FormatterPage
 from frontend.RenpyToolbox.ErrorRepairPage import ErrorRepairPage
 from frontend.RenpyToolbox.FontReplacePage import FontReplacePage
 from frontend.RenpyToolbox.PackUnpackPage import PackUnpackPage
+from frontend.RenpyToolbox.AndroidBuildPage import AndroidBuildPage
 from frontend.RenpyToolbox.AddLanguageEntrancePage import AddLanguageEntrancePage
 from frontend.RenpyToolbox.SetDefaultLanguagePage import SetDefaultLanguagePage
 from frontend.RenpyToolbox.LocalGlossaryPage import LocalGlossaryPage
@@ -139,6 +140,7 @@ class RenpyToolboxPage(Base, QWidget):
             ("代码格式化", "格式化 .rpy 文件，保持代码整洁", self._open_formatter),
             ("字体注入", "一键注入预置字体包（tl/<lang>/base_box + tl/<lang>/fonts）", self._open_font_replace),
             ("解包/打包", "解包 RPA 文件或打包游戏资源", self._open_pack_unpack),
+            ("安卓打包", "安装 SDK / 生成签名 / 构建 APK", self._open_android_build),
             ("添加语言入口", "向游戏添加语言切换功能", self._open_add_language_entrance),
             ("设置默认语言", "设置游戏启动时的默认语言", self._open_set_default_language),
         ])
@@ -305,6 +307,13 @@ class RenpyToolboxPage(Base, QWidget):
         if not hasattr(self.window, 'pack_unpack_page'):
             self.window.pack_unpack_page = PackUnpackPage("pack-unpack", self.window)
         self._goto_widget("解包打包", self.window.pack_unpack_page)
+
+    def _open_android_build(self, card):
+        """打开安卓打包页面"""
+        if not hasattr(self.window, 'android_build_page'):
+            self.window.android_build_page = AndroidBuildPage("android-build", self.window)
+            self._mark_toolbox_widget(self.window.android_build_page)
+        self._goto_widget("安卓打包", self.window.android_build_page)
 
     def _open_add_language_entrance(self, card):
         """打开添加语言入口页面"""
