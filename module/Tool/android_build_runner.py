@@ -228,6 +228,15 @@ def generate_keys(args: argparse.Namespace) -> int:
     return 0
 
 
+def check_env(args: argparse.Namespace) -> int:
+    _setup_rapt(args.sdk)
+    import rapt.install_sdk as install_sdk
+
+    iface = _make_interface()
+    install_sdk.check_java(iface)
+    return 0
+
+
 def build_android(args: argparse.Namespace) -> int:
     _setup_rapt(args.sdk)
     _patch_key_store_properties()
@@ -269,6 +278,9 @@ def main() -> int:
     keys.add_argument("--auto-yes", action="store_true", default=True)
     keys.add_argument("--dname", default=None)
 
+    check = subparsers.add_parser("check_env", help="Check Java environment")
+    check.add_argument("--sdk", required=True)
+
     build = subparsers.add_parser("build", help="Build Android package")
     build.add_argument("--sdk", required=True)
     build.add_argument("--project", required=True)
@@ -285,6 +297,8 @@ def main() -> int:
         return install_sdk(args)
     if args.command == "generate_keys":
         return generate_keys(args)
+    if args.command == "check_env":
+        return check_env(args)
     if args.command == "build":
         return build_android(args)
     if args.command == "distclean":
