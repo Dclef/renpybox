@@ -179,6 +179,9 @@ class AndroidBuilder:
     def install_sdk(self, on_output: Callable[[str], None] | None = None) -> bool:
         return self.run_runner(["install_sdk", "--sdk", str(self.sdk_root)], on_output=on_output)
 
+    def check_env(self, on_output: Callable[[str], None] | None = None) -> bool:
+        return self.run_runner(["check_env", "--sdk", str(self.sdk_root)], on_output=on_output)
+
     def generate_keys(
         self,
         *,

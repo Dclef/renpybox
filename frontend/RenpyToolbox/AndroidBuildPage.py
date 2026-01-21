@@ -132,11 +132,13 @@ class AndroidBuildPage(Base, QWidget):
         layout.setSpacing(12)
 
         layout.addWidget(StrongBodyLabel("路径设置"))
+        note = QLabel("如果制作安卓壳子，请在群：821152470 下载魔改 SDK。")
+        layout.addWidget(note)
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Ren'Py SDK:"))
         self.sdk_path_edit = LineEdit()
-        self.sdk_path_edit.setPlaceholderText("选择 renpy-8.5.0-Alternative_Saves 目录")
+        self.sdk_path_edit.setPlaceholderText("选择 renpy-sdk 目录")
         btn_sdk = PushButton("浏览", icon=FluentIcon.FOLDER)
         btn_sdk.clicked.connect(self._browse_sdk_path)
         row1.addWidget(self.sdk_path_edit, 1)
@@ -185,17 +187,23 @@ class AndroidBuildPage(Base, QWidget):
 
         self.update_always_check = CheckBox("自动更新 Java 代码", card)
         self.update_always_check.setVisible(False)
+        self.update_icons_check = CheckBox("自动更新图标", card)
+        self.update_icons_check.setVisible(False)
 
-        row6 = QHBoxLayout()
-        self.update_icons_check = CheckBox("自动更新图标")
-        row6.addWidget(self.update_icons_check)
-        row6.addStretch(1)
-        layout.addLayout(row6)
+        hint = QLabel(
+            "图标替换：项目根目录放 android-icon_foreground.png 与 android-icon_background.png（PNG，建议 1024x1024）。\n"
+            "启动图：android-presplash.png/jpg、android-downloading.png/jpg（建议 930x580 或保持同比例）。"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         row7 = QHBoxLayout()
-        row7.addWidget(QLabel("签名名称:"))
+        self.dname_label = QLabel("签名名称:")
+        self.dname_label.setVisible(False)
+        row7.addWidget(self.dname_label)
         self.dname_edit = LineEdit()
         self.dname_edit.setPlaceholderText("生成 keystore 时的组织/名称 (可选)")
+        self.dname_edit.setVisible(False)
         row7.addWidget(self.dname_edit, 1)
         layout.addLayout(row7)
 
@@ -216,10 +224,13 @@ class AndroidBuildPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("环境与签名"))
 
         btn_row = QHBoxLayout()
+        self.check_env_button = PushButton("检查环境", icon=FluentIcon.SEARCH)
+        self.check_env_button.clicked.connect(self._check_env)
         self.install_sdk_button = PrimaryPushButton("安装 SDK", icon=FluentIcon.DOWNLOAD)
         self.install_sdk_button.clicked.connect(self._install_sdk)
         self.generate_keys_button = PushButton("生成签名", icon=FluentIcon.SAVE)
         self.generate_keys_button.clicked.connect(self._generate_keys)
+        btn_row.addWidget(self.check_env_button)
         btn_row.addWidget(self.install_sdk_button)
         btn_row.addWidget(self.generate_keys_button)
         btn_row.addStretch(1)
@@ -235,7 +246,6 @@ class AndroidBuildPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("构建"))
 
         hint = QLabel("仅生成 APK。构建完成后自动打开 rapt/bin。")
-        hint.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(hint)
 
         btn_row = QHBoxLayout()
@@ -249,7 +259,6 @@ class AndroidBuildPage(Base, QWidget):
         layout.addLayout(btn_row)
 
         self.build_status_label = QLabel("")
-        self.build_status_label.setStyleSheet("color: gray; font-size: 11px;")
         self.build_status_label.setVisible(False)
         layout.addWidget(self.build_status_label)
 
@@ -261,7 +270,7 @@ class AndroidBuildPage(Base, QWidget):
         layout.setSpacing(12)
 
         layout.addWidget(StrongBodyLabel("壳子制作"))
-        layout.addWidget(QLabel("将指定目录打包为 archive.rpa（保存到项目上一级），并清理大体积资源目录。"))
+        layout.addWidget(QLabel("将指定目录打包为 archive.rpa（保存到项目根目录），并清理大体积资源目录。"))
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("打包目录:"))
@@ -277,7 +286,7 @@ class AndroidBuildPage(Base, QWidget):
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        self.shell_backup_check = CheckBox("备份打包目录并压缩为 zip（保存到项目上一级）")
+        self.shell_backup_check = CheckBox("备份打包目录并压缩为 zip（保存到项目根目录）")
         row2.addWidget(self.shell_backup_check)
         row2.addStretch(1)
         layout.addLayout(row2)
@@ -486,7 +495,7 @@ class AndroidBuildPage(Base, QWidget):
         InfoBar.success("完成", f"已检测到 {len(detected)} 个目录，已覆盖", parent=self)
 
     def _get_external_archive_dir(self, project_dir: Path) -> Path:
-        return project_dir.parent / f"{project_dir.name}_android_assets"
+        return project_dir
 
 
     def _sanitize_android_dist_assets(self, dist_dir: Path, output) -> None:
@@ -598,6 +607,19 @@ class AndroidBuildPage(Base, QWidget):
         self._save_config()
         InfoBar.success("完成", "android.json 已更新", parent=self)
 
+    def _check_env(self) -> None:
+        builder = self._get_builder()
+        if not builder:
+            return
+        self._open_bin_after_build = False
+
+        def task(output):
+            output("开始检查环境...")
+            ok = builder.check_env(on_output=output)
+            return ok, "环境检查完成" if ok else "环境检查失败"
+
+        self._start_worker(task, "检查环境中...")
+
     def _install_sdk(self) -> None:
         builder = self._get_builder()
         if not builder:
@@ -678,7 +700,7 @@ class AndroidBuildPage(Base, QWidget):
     def _make_shell_only(self) -> None:
         reply = MessageBox(
             "确认壳子处理",
-            "将打包 archive.rpa（保存到项目上一级），并清理配置的资源目录。\n"
+            "将打包 archive.rpa（保存到项目根目录），并清理配置的资源目录。\n"
             "此操作会修改工程文件，建议先备份。",
             self,
         ).exec()
@@ -884,6 +906,7 @@ class AndroidBuildPage(Base, QWidget):
         self.make_shell_button.setEnabled(not busy)
         self.detect_archive_button.setEnabled(not busy)
         self.detect_remove_button.setEnabled(not busy)
+        self.check_env_button.setEnabled(not busy)
         self.install_sdk_button.setEnabled(not busy)
         self.generate_keys_button.setEnabled(not busy)
         self.write_json_button.setEnabled(not busy)
