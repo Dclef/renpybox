@@ -92,7 +92,7 @@ class UnpackWorker(QThread):
                         })
                         return
                 except Exception as exc:
-                    LogManager.get().error(f"直接解包失败: {exc}")
+                    LogManager.get().error(f"直接解包失败，尝试使用外部工具继续解包…: {exc}")
                     self.progress.emit("直接解包失败，尝试使用外部工具继续解包…")
 
             # 2) 外部工具：unrpa / rpatool
@@ -112,7 +112,12 @@ class UnpackWorker(QThread):
                 return
 
             self.progress.emit("尝试 UnRen 兜底解包…")
-            ok, _lines = packer.unpack_all_unren_bat(self.game_dir, lang="zh", timeout_s=60 * 60)
+            ok, _lines = packer.unpack_all_unren_bat(
+                self.game_dir,
+                lang="zh",
+                options="3x",
+                timeout_s=60 * 60,
+            )
             if ok:
                 self.finished.emit({
                     "level": "success",
@@ -140,10 +145,27 @@ class DecompileWorker(QThread):
     progress = pyqtSignal(str)  # message
     finished = pyqtSignal(object)  # result dict
 
-    def __init__(self, target: str, *, overwrite: bool):
+    def __init__(self, target: str, *, overwrite: bool, fallback_unren_options: str | None = None):
         super().__init__()
         self.target = target
         self.overwrite = overwrite
+        self.fallback_unren_options = fallback_unren_options
+
+    def _resolve_game_dir(self) -> Path:
+        target = Path(self.target).resolve()
+        if target.is_file() and target.suffix.lower() == ".exe":
+            root_dir = target.parent
+        else:
+            root_dir = target
+
+        if target.is_dir() and target.name.lower() == "game":
+            return target
+
+        game_dir = root_dir / "game"
+        if game_dir.is_dir():
+            return game_dir
+
+        raise FileNotFoundError("无法定位 game 目录用于 UnRen 兜底反编译")
 
     def run(self):
         try:
@@ -157,12 +179,32 @@ class DecompileWorker(QThread):
             })
         except Exception as exc:
             LogManager.get().error(f"反编译失败: {exc}")
+
+            if self.fallback_unren_options:
+                try:
+                    self.progress.emit("反编译失败，尝试使用 UnRen 兜底反编译…")
+                    game_dir = self._resolve_game_dir()
+                    ok, _lines = Packer().unpack_all_unren_bat(
+                        str(game_dir),
+                        lang="zh",
+                        options=self.fallback_unren_options,
+                        timeout_s=60 * 60,
+                    )
+                    if ok:
+                        self.finished.emit({
+                            "level": "success",
+                            "title": "完成",
+                            "message": "已使用 UnRen 兜底反编译（请检查 game 目录输出）",
+                        })
+                        return
+                except Exception as unren_exc:
+                    LogManager.get().error(f"UnRen 兜底反编译失败: {unren_exc}")
+
             self.finished.emit({
                 "level": "error",
                 "title": "错误",
                 "message": f"反编译失败: {exc}",
             })
-
 
 class CleanupWorker(QThread):
     """后台清理工作线程（避免阻塞 UI）"""
@@ -248,6 +290,7 @@ class PackUnpackPage(Base, QWidget):
         self.decompile_worker = None
         self.cleanup_worker = None
         self._pending_decompile_after_unpack = False
+        self._pending_decompile_fallback_options = "4x"
         self._init_ui()
 
     def _init_ui(self):
@@ -305,10 +348,14 @@ class PackUnpackPage(Base, QWidget):
 
         # 选项
         self.unpack_direct_check = CheckBox("直接解包（UnRen：使用游戏自带 python，无需启动游戏）")
+        self.unpack_direct_check.setToolTip("优先用游戏自带的 python 直接解包，失败会继续尝试外部工具")
         self.unpack_direct_check.setChecked(True)
         layout.addWidget(self.unpack_direct_check)
 
-        self.unpack_script_only_check = CheckBox("仅解包脚本（.rpy/.rpyc）")
+        self.unpack_script_only_check = CheckBox(
+            "仅解包脚本（.rpy/.rpyc；忽略图片/音频等资源，速度更快、体积更小）"
+        )
+        self.unpack_script_only_check.setToolTip("只提取脚本文件，忽略图片/音频等资源，速度更快")
         self.unpack_script_only_check.setChecked(True)
         layout.addWidget(self.unpack_script_only_check)
 
@@ -402,9 +449,9 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("🧩 反编译 RPYC → RPY"))
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("游戏根目录/可执行文件:"))
+        row1.addWidget(QLabel("game 目录/可执行文件:"))
         self.decompile_exe_edit = LineEdit()
-        self.decompile_exe_edit.setPlaceholderText("选择游戏根目录或启动程序 (.exe)")
+        self.decompile_exe_edit.setPlaceholderText("选择 game 目录（或根目录/启动程序 .exe）")
         btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_decompile_exe)
         row1.addWidget(self.decompile_exe_edit, 1)
@@ -462,14 +509,9 @@ class PackUnpackPage(Base, QWidget):
             self.pack_output_edit.setText(file_path)
 
     def _browse_decompile_exe(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择 Ren'Py 游戏可执行文件",
-            "",
-            "可执行文件 (*.exe)",
-        )
-        if file_path:
-            self.decompile_exe_edit.setText(file_path)
+        directory = QFileDialog.getExistingDirectory(self, "选择 game 目录（或项目根目录）", "")
+        if directory:
+            self.decompile_exe_edit.setText(directory)
 
     def _unpack(self):
         """解包 RPA"""
@@ -530,8 +572,10 @@ class PackUnpackPage(Base, QWidget):
 
         if self._pending_decompile_after_unpack:
             self._pending_decompile_after_unpack = False
+            fallback_options = self._pending_decompile_fallback_options or "4x"
+            self._pending_decompile_fallback_options = "4x"
             if level != "error":
-                self._decompile()
+                self._decompile(fallback_unren_options=fallback_options)
 
     def _cleanup_unpack_artifacts(self):
         """清理解包/反编译可能遗留的临时文件（不影响正常文件）。"""
@@ -587,7 +631,7 @@ class PackUnpackPage(Base, QWidget):
         else:
             InfoBar.info(title, message, parent=self)
 
-    def _decompile(self):
+    def _decompile(self, fallback_unren_options: str | None = None):
         """反编译 RPYC → RPY（unrpyc v2）"""
         try:
             if self.decompile_worker and self.decompile_worker.isRunning():
@@ -596,7 +640,7 @@ class PackUnpackPage(Base, QWidget):
 
             exe_path = self.decompile_exe_edit.text().strip()
             if not exe_path:
-                InfoBar.warning("提示", "请选择游戏根目录或可执行文件", parent=self)
+                InfoBar.warning("提示", "请选择 game 目录（或根目录/可执行文件）", parent=self)
                 return
 
             if not Path(exe_path).exists():
@@ -606,8 +650,13 @@ class PackUnpackPage(Base, QWidget):
             overwrite = self.decompile_overwrite_check.isChecked()
             LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, unrpyc=v2)")
 
+            fallback_options = fallback_unren_options or "4x"
             self._set_decompile_busy(True, "准备开始…")
-            self.decompile_worker = DecompileWorker(exe_path, overwrite=overwrite)
+            self.decompile_worker = DecompileWorker(
+                exe_path,
+                overwrite=overwrite,
+                fallback_unren_options=fallback_options,
+            )
             self.decompile_worker.progress.connect(self._on_decompile_progress)
             self.decompile_worker.finished.connect(self._on_decompile_finished)
             self.decompile_worker.start()
@@ -646,19 +695,18 @@ class PackUnpackPage(Base, QWidget):
             InfoBar.error("错误", "目录不存在", parent=self)
             return
 
-        # 先解包（UnRen / 外部工具）
-        self._unpack()
-
-        # 自动填充反编译目标（未填写时使用 game 的上级目录）
+        # 自动填充反编译目标（未填写时使用 game 目录）
         if not self.decompile_exe_edit.text().strip():
             try:
-                self.decompile_exe_edit.setText(str(Path(game_dir).parent))
+                self.decompile_exe_edit.setText(str(Path(game_dir)))
             except Exception:
                 pass
 
         self._pending_decompile_after_unpack = True
+        self._pending_decompile_fallback_options = "6x"
         if not self._unpack():
             self._pending_decompile_after_unpack = False
+            self._pending_decompile_fallback_options = "4x"
 
     def _set_unpack_busy(self, busy: bool, message: str = "") -> None:
         self.unpack_button.setEnabled(not busy)
@@ -758,3 +806,6 @@ class PackUnpackPage(Base, QWidget):
                 InfoBar.error("错误", f"打包失败: {message}", parent=self)
 
         self.pack_worker = None
+
+
+

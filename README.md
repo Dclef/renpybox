@@ -8,17 +8,15 @@
   <img src="https://img.shields.io/github/license/dclef/RenpyBox" />
   <img src="https://img.shields.io/github/stars/dclef/RenpyBox" />
 </div>
-<p align="center">使用 AI 能力一键翻译 Ren'Py / 视觉小说文本的次世代工具箱</p>
+<p align="center">使用 AI 能力一键翻译 Ren'Py / 视觉小说文本的工具箱</p>
 
 ## README 🌍
-- 中文（本页）；其他语言版本计划追加
+- 中文（本页）
 
 ## 概述 📢
-- RenpyBox：PyQt + Fluent UI 打造的 Ren'Py 本地化工具箱，集提取、翻译、修复、打包于一体
-- 支持 `中` `英` `日` `韩` 等多语互译，可接入 OpenAI、DeepSeek、Anthropic、Google 等本地/在线接口
-- 提供“开箱即用 + 向导式”体验，默认配置即可跑通一键翻译，进阶用户可深度自定义
+- RenpyBox：PyQt + Fluent UI 打造的 Ren'Py 本地化工具箱，提取、翻译、修复、打包于一体的Ren'Py 专用翻译解决方案
+- 目标用户：视觉小说开发者、同人翻译组、Ren'Py翻译者
 
-> 🖼️ 截图与视频演示待补充，欢迎在 Issues/PR 中提供示例
 
 ## 特别说明 ⚠️
 - 若涉及商业用途，请先联系作者获取授权
@@ -31,32 +29,19 @@
 - Ren'Py 工具链：RPY 格式化、缩进/引号检查与修复、尾空格清理、批量字体替换、RPA 解包/打包、语言入口/默认语言设置
 - 进度可视化：并发控制、速率限制、token/进度仪表盘，缓存落盘于 `output/cache`，随时导出已完成部分
 
-## 配置要求 🖥️
-- 建议 Python 3.10+ 环境
-- 安装依赖：`python -m pip install -r requirements.txt`
-- 需要可用的本地或在线大模型接口（如 OpenAI、DeepSeek 等），在应用内配置密钥与地址
-
-## 基本流程 🛸
-1. 克隆或下载本项目，安装依赖：`python -m pip install -r requirements.txt`
-2. 运行应用：`python app.py`（首次会生成 `config.json`）
-3. 在 “接口管理” 激活或添加翻译平台，填写密钥/地址
-4. 在 “项目设置” 指定输入/输出目录与源/目标语言
-5. 进入 “Ren'Py 百宝箱” 或 “一键翻译”，选择增量/全量模式并开始任务，进度可视化可随时暂停/恢复
 
 ## 工具箱模块 🧰
 - 一键翻译 / 翻译提取 / 直接翻译 RPY/源码 / 增量翻译
 - 本地术语表、文本保护、前后替换、名称字段提取、局部重翻、批量修正
 - RPA 解包/打包、字体注入、默认语言/入口配置、格式化与错误修复、HTML/Excel/JSON 导入导出
-- MaSuite、SourceTranslate、PackUnpack 等专项卡片，覆盖从资源处理到打包的常见需求
+
 
 ## 支持的文本格式 🏷️
 - Ren'Py 导出 `.rpy`、本地术语表/替换规则
-- 常见文本：`.txt` `.md`，字幕：`.srt` `.ass`
-- MTool/自定义 JSON 与 Excel 导出，HTML 片段导入
 - 其他格式持续补充，欢迎在 Issues 提交需求
 
 ## 近期更新 📅
-- 2025-12-22 `v0.3.2`：最新构建，持续打磨一键翻译、批量修正与打包流程（详见提交记录）
+- 2026-1-22 v0.3.9：增加安卓打包模块
 
 ## 常见问题 📥
 - 运行日志位于 `./log`，反馈问题请附相关日志

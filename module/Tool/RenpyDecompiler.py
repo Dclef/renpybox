@@ -120,10 +120,15 @@ class RenpyDecompiler:
         if target.is_file() and target.suffix.lower() == ".exe":
             return target.parent, target
         if target.is_dir():
+            if target.name.lower() == "game":
+                root_dir = target.parent
+                exe = self._find_game_exe(root_dir)
+                if exe:
+                    return exe.parent, exe
             exe = self._find_game_exe(target)
             if exe:
                 return exe.parent, exe
-        raise FileNotFoundError("Please provide the game root directory or executable (.exe).")
+        raise FileNotFoundError("Please provide the game root directory, game folder, or executable (.exe).")
 
     def _find_game_exe(self, directory: Path) -> Path | None:
         game_path = get_game_path_from_game_dir(str(directory))
@@ -143,10 +148,12 @@ class RenpyDecompiler:
             str(python_exe),
             "-O",
             str(root_dir / "unrpyc.py"),
-            str(game_dir),
+            "--processes",
+            "1",
         ]
         if overwrite:
             command.append("--clobber")
+        command.append(str(game_dir))
 
         self.logger.info(f"Running unrpyc: {' '.join(command)}")
         creationflags = 0
