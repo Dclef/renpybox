@@ -10,14 +10,44 @@ import sys
 
 def _detect_archive_extensions(renpy_loader):
     archive_extensions = []
-    if hasattr(renpy_loader, "archive_handlers"):
-        for handler in renpy_loader.archive_handlers:
-            for ext in handler.get_supported_extensions():
+
+    # Prefer loader helper if present (some versions expose get_supported_extensions()).
+    try:
+        get_exts = getattr(renpy_loader, "get_supported_extensions", None)
+        if callable(get_exts):
+            for ext in get_exts() or []:
                 if ext not in archive_extensions:
                     archive_extensions.append(ext)
-    else:
-        archive_extensions.append(".rpa")
-    return archive_extensions
+            if archive_extensions:
+                return archive_extensions
+    except Exception:
+        pass
+
+    # Newer Ren'Py uses ArchiveHandlers object with .exts dict (not iterable).
+    try:
+        archive_handlers = getattr(renpy_loader, "archive_handlers", None)
+        if archive_handlers is not None:
+            exts = getattr(archive_handlers, "exts", None)
+            if isinstance(exts, dict):
+                for ext in exts.keys():
+                    if ext not in archive_extensions:
+                        archive_extensions.append(ext)
+                if archive_extensions:
+                    return archive_extensions
+
+            # Older versions may still allow iteration of handlers.
+            try:
+                for handler in archive_handlers:
+                    for ext in handler.get_supported_extensions():
+                        if ext not in archive_extensions:
+                            archive_extensions.append(ext)
+            except TypeError:
+                pass
+    except Exception:
+        pass
+
+    # Fallback to .rpa if detection fails.
+    return archive_extensions or [".rpa"]
 
 
 class RenPyArchive:
@@ -56,12 +86,34 @@ class RenPyArchive:
         self.handle = open(self.file, "rb")
 
         base, ext = filename.rsplit(".", 1)
-        self._renpy_config.archives.append(base)
-        self._renpy_config.searchpath = [os.path.dirname(os.path.realpath(self.file))]
-        self._renpy_config.basedir = os.path.dirname(self._renpy_config.searchpath[0])
+        # Newer Ren'Py versions require arc_files to be populated before index_archives.
+        # Build a minimal arc_files list for this archive to avoid global scans.
+        try:
+            if hasattr(self._renpy_loader, "arc_files") and hasattr(self._renpy_loader, "index_archives"):
+                archive_path = os.path.realpath(self.file)
+                arc_ext = "." + ext
+                self._renpy_loader.arc_files = [(base, arc_ext, archive_path)]
+                if hasattr(self._renpy_loader, "archives"):
+                    try:
+                        self._renpy_loader.archives.clear()
+                    except Exception:
+                        self._renpy_loader.archives = []
+                self._renpy_loader.index_archives()
+                if getattr(self._renpy_loader, "archives", None):
+                    items = self._renpy_loader.archives[0][1].items()
+                else:
+                    raise Exception("index_archives returned empty")
+            else:
+                raise Exception("no arc_files/index_archives")
+        except Exception:
+            # Fallback to legacy flow using searchpath + archives.
+            self._renpy_config.archives.append(base)
+            self._renpy_config.searchpath = [os.path.dirname(os.path.realpath(self.file))]
+            self._renpy_config.basedir = os.path.dirname(self._renpy_config.searchpath[0])
 
-        self._renpy_loader.index_archives()
-        items = self._renpy_loader.archives[index][1].items()
+            self._renpy_loader.index_archives()
+            items = self._renpy_loader.archives[index][1].items()
+
         for file, index in items:
             self.indexes[file] = index
 
@@ -104,6 +156,8 @@ def main(argv):
             del sys.modules[key]
 
     try:
+        # Some Ren'Py versions reference renpy.error during renpy.config import.
+        import renpy.error  # noqa: F401
         import renpy.object  # noqa: F401
         import renpy.config as renpy_config
         import renpy.loader as renpy_loader
