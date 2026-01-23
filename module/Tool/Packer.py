@@ -37,6 +37,13 @@ class Packer:
         except Exception:
             return 0
 
+    def _format_progress_bar(self, current: int, total: int, width: int = 20) -> str:
+        if total <= 0:
+            return f"[{'-' * width}] {current}/0"
+        filled = int(width * current / total)
+        percent = int(current * 100 / total)
+        return f"[{'#' * filled}{'-' * (width - filled)}] {current}/{total} ({percent}%)"
+
     def _get_game_python(self, game_root_dir: Path) -> Path | None:
         try:
             from utils.call_game_python import get_python_path_from_game_dir
@@ -233,15 +240,47 @@ class Packer:
         cmd.append(str(game_path))
 
         self.logger.info(f"UnRen 直接解包: {game_path}")
+
+        archive_candidates = self.find_rpa_files(str(game_path))
+        total_archives = len(archive_candidates)
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        lines: List[str] = []
+        unpacked = 0
         result = None
         try:
-            result = subprocess.run(
+            result = subprocess.Popen(
                 cmd,
                 cwd=str(game_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                env=env,
                 creationflags=self._creationflags_no_window(),
             )
+
+            if result.stdout:
+                for raw_line in result.stdout:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    lines.append(line)
+
+                    if re.search(r"(?i)\bUnpacking\b", line):
+                        unpacked += 1
+                        bar = self._format_progress_bar(unpacked, total_archives) if total_archives else ""
+                        if bar:
+                            self.logger.info(f"进度 {bar} {line}")
+                        else:
+                            self.logger.info(f"{line} (已解包 {unpacked})")
+                    elif "There are no archives" in line:
+                        self.logger.info("未找到归档文件")
+            if result:
+                result.wait()
         finally:
             # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen 行为一致）
             try:
@@ -251,19 +290,21 @@ class Packer:
             except Exception:
                 pass
 
-        raw = (getattr(result, "stdout", None) or b"") if result else b""
-        try:
-            output = raw.decode("utf-8", errors="ignore")
-        except Exception:
-            output = raw.decode(errors="ignore")
+        output = "\n".join(lines)
+        if unpacked == 0 and output:
+            unpacked = len(re.findall(r"(?i)\bUnpacking\b", output))
 
-        lines = [line.strip() for line in output.splitlines() if line.strip()]
         if not result or result.returncode != 0:
             tail = "\n".join(lines[-50:]) if lines else ""
             code = getattr(result, "returncode", None)
             raise RuntimeError(tail or f"unren_rpatool exited with code {code}")
 
-        unpacked = len(re.findall(r"(?i)\\bUnpacking\\b", output))
+        if total_archives:
+            bar = self._format_progress_bar(unpacked, total_archives)
+            self.logger.info(f"解包完成 {bar}")
+        else:
+            self.logger.info(f"UnRen 直接解包完成: {unpacked} 个归档文件")
+
         return unpacked, lines
 
     def find_rpa_files(self, game_dir: str) -> List[Path]:
@@ -304,11 +345,15 @@ class Packer:
             msgs.append(msg)
             return unpacked, msgs
 
-        for rpa in files:
+        total_files = len(files)
+        self.logger.info(f"找到 {total_files} 个 RPA 文件，开始解包")
+
+        for index, rpa in enumerate(files, start=1):
             out_dir = Path(output_root) if output_root else (Path(game_dir) / "unpacked_rpa" / rpa.stem)
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
-                self.logger.info(f"解包: {rpa} -> {out_dir}")
+                bar = self._format_progress_bar(index, total_files)
+                self.logger.info(f"进度 {bar} 解包: {rpa.name}")
                 if unrpa:
                     cmd = [unrpa, "-mp", str(out_dir), str(rpa)]
                     subprocess.run(
@@ -328,12 +373,14 @@ class Packer:
                         creationflags=self._creationflags_no_window(),
                     )
                 unpacked += 1
+                self.logger.info(f"完成: {rpa.name}")
             except subprocess.CalledProcessError as e:
                 output = e.stdout.decode(errors='ignore') if getattr(e, 'stdout', None) else str(e)
                 msg = f"解包失败 {rpa}: {output.strip()}"
                 msgs.append(msg)
                 self.logger.error(msg)
 
+        self.logger.info(f"解包完成: {unpacked}/{total_files}")
         return unpacked, msgs
 
     def pack_from_dir(
@@ -464,3 +511,7 @@ class Packer:
             raise RuntimeError(f"保存 RPA 失败: {e}")
 
         self.logger.info(f"RPA 打包完成: {out_rpa}")
+
+
+
+

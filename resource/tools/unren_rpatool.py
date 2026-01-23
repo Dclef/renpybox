@@ -96,7 +96,12 @@ def main(argv):
         return 1
 
     os.chdir(directory)
-    sys.path.append(os.path.abspath(os.path.join(directory, os.pardir)))
+    sys.path.insert(0, os.path.abspath(os.path.join(directory, os.pardir)))
+
+    # Ensure the game's Ren'Py package wins over any shadowing modules.
+    for key in list(sys.modules):
+        if key == "renpy" or key.startswith("renpy."):
+            del sys.modules[key]
 
     try:
         import renpy.object  # noqa: F401
@@ -170,4 +175,5 @@ def main(argv):
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
 
