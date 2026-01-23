@@ -299,7 +299,6 @@ class ShowLayer(magic.FakeStrict):
 class Camera(magic.FakeStrict):
     __module__ = "renpy.ast"
 
-    imspec = None
     atl = None
     warp = True
     layer = "master"
@@ -309,6 +308,7 @@ class Camera(magic.FakeStrict):
 class Scene(magic.FakeStrict):
     __module__ = "renpy.ast"
 
+    imspec = None
     atl = None
     warp = True
     layer = "master"
@@ -465,6 +465,7 @@ class TranslateBlock(magic.FakeStrict):
     __module__ = "renpy.ast"
 
     translation_relevant = True
+    language = None
 
 
 @SPECIAL_CLASSES.append
@@ -472,6 +473,7 @@ class TranslateEarlyBlock(magic.FakeStrict):
     __module__ = "renpy.ast"
 
     translation_relevant = True
+    language = None
 
 
 # end of the declarative data section
