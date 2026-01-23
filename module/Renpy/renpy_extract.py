@@ -443,7 +443,13 @@ class extractThread(threading.Thread):
                 self.tl_dir = self.tl_dir.rstrip('\\')
                 if self.tl_name is not None and len(self.tl_name) > 0:
                     ori_tl = os.path.basename(self.tl_dir)
-                    self.tl_dir = self.tl_dir[:-len(ori_tl)] + self.tl_name
+                    # 当传入的是 tl 目录本身时（未包含语言子目录），自动创建 tl/<lang>
+                    if ori_tl.lower() == "tl":
+                        self.tl_dir = os.path.join(self.tl_dir, self.tl_name)
+                    else:
+                        self.tl_dir = self.tl_dir[:-len(ori_tl)] + self.tl_name
+                if not os.path.exists(self.tl_dir):
+                    os.makedirs(self.tl_dir, exist_ok=True)
                 log.info(self.tl_dir + ' begin extract!')
                 ExtractAllFilesInDir(self.tl_dir, self.is_open_filter, self.filter_length, self.is_gen_empty,
                                      self.is_skip_underline)
