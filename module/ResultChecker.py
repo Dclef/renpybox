@@ -169,6 +169,35 @@ class ResultChecker(Base):
 
         return False
 
+    def get_failed_glossary_terms(self, item: CacheItem) -> list[tuple[str, str]]:
+        if not self._prepared_glossary_data:
+            return []
+
+        src_repl, dst_repl = self._get_repl_texts(item)
+        src_lower = src_repl.lower()
+        dst_lower = dst_repl.lower()
+        failed_terms: list[tuple[str, str]] = []
+
+        for v in self._prepared_glossary_data:
+            glossary_src = v.get("src", "")
+            glossary_dst = v.get("dst", "")
+            case_sensitive = v.get("case_sensitive", False)
+
+            if not glossary_src or not glossary_dst:
+                continue
+
+            if case_sensitive:
+                src_hit = glossary_src in src_repl
+                dst_hit = glossary_dst in dst_repl
+            else:
+                src_hit = glossary_src.lower() in src_lower
+                dst_hit = glossary_dst.lower() in dst_lower
+
+            if src_hit and not dst_hit:
+                failed_terms.append((glossary_src, glossary_dst))
+
+        return failed_terms
+
     def _has_retry_threshold_error(self, item: CacheItem) -> bool:
         return item.get_retry_count() >= ResponseChecker.RETRY_COUNT_THRESHOLD
 
@@ -188,6 +217,8 @@ class ResultChecker(Base):
 
         if not item.get_dst():
             return warnings
+
+        self._prepared_glossary_data = self._prepare_glossary_data()
 
         src_repl, dst_repl = self._get_repl_texts(item)
 

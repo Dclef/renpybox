@@ -24,6 +24,7 @@ class Config():
     startup_sound_enable: bool = False
     startup_sound_path: str = "resource/Ciallo.mp3"
     startup_sound_volume: int = 80
+    cache_use_sqlite: bool = True
 
     # PlatformPage
     activate_platform: int = 0

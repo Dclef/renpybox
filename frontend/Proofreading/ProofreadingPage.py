@@ -42,6 +42,8 @@ class ProofreadingPage(QWidget, Base):
     translate_done = pyqtSignal(object, bool)
     save_done = pyqtSignal(bool)
     export_done = pyqtSignal(bool, str)
+    warnings_batch_updated = pyqtSignal(int, object)
+    warnings_check_done = pyqtSignal(int)
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
@@ -51,6 +53,7 @@ class ProofreadingPage(QWidget, Base):
         self.items: list[CacheItem] = []
         self.filtered_items: list[CacheItem] = []
         self.warning_map: dict[int, list[WarningType]] = {}
+        self.result_checker: ResultChecker | None = None
         self.is_readonly: bool = False
         self.config: Config | None = None
         self.filter_options: dict = {}
@@ -58,6 +61,7 @@ class ProofreadingPage(QWidget, Base):
         self.search_is_regex: bool = False
         self.search_match_indices: list[int] = []
         self.search_current_match: int = -1
+        self._warning_check_id: int = 0
 
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
@@ -75,6 +79,8 @@ class ProofreadingPage(QWidget, Base):
         self.translate_done.connect(self._on_translate_done_ui)
         self.save_done.connect(self._on_save_done_ui)
         self.export_done.connect(self._on_export_done_ui)
+        self.warnings_batch_updated.connect(self._on_warnings_batch_updated_ui)
+        self.warnings_check_done.connect(self._on_warnings_check_done_ui)
 
         self._indeterminate_start_time: float = 0.0
         self._indeterminate_hide_timer: QTimer | None = None
@@ -175,14 +181,15 @@ class ProofreadingPage(QWidget, Base):
                     self.items_loaded.emit([])
                     return
 
-                checker = ResultChecker(self.config, items)
-                warning_map = checker.get_check_results(items)
-
                 self.items = items
-                self.warning_map = warning_map
+                self.warning_map = {}
+                self.result_checker = ResultChecker(self.config, items)
                 self.filter_options = {}
+                self._warning_check_id += 1
+                check_id = self._warning_check_id
 
                 self.items_loaded.emit(items)
+                self._start_warning_check(items, self.result_checker, check_id)
 
             except Exception as e:
                 self.error(f"{Localizer.get().proofreading_page_load_failed}", e)
@@ -193,6 +200,51 @@ class ProofreadingPage(QWidget, Base):
                 self.items_loaded.emit([])
 
         threading.Thread(target = task, daemon = True).start()
+
+    def _start_warning_check(self, items: list[CacheItem], checker: ResultChecker, check_id: int) -> None:
+        def task() -> None:
+            batch: dict[int, list[WarningType]] = {}
+            batch_size = 200
+            for idx, item in enumerate(items):
+                warnings = checker.check_single_item(item)
+                if warnings:
+                    batch[id(item)] = warnings
+
+                if len(batch) >= batch_size:
+                    self.warnings_batch_updated.emit(check_id, batch)
+                    batch = {}
+
+                if idx % 2000 == 0:
+                    time.sleep(0)
+
+            if batch:
+                self.warnings_batch_updated.emit(check_id, batch)
+            self.warnings_check_done.emit(check_id)
+
+        threading.Thread(target = task, daemon = True).start()
+
+    def _on_warnings_batch_updated_ui(self, check_id: int, batch: dict[int, list[WarningType]]) -> None:
+        if check_id != self._warning_check_id or not batch:
+            return
+
+        self.warning_map.update(batch)
+
+        for row in range(self.table_widget.rowCount()):
+            item = self.table_widget.get_item_at_row(row)
+            if not item:
+                continue
+            warnings = batch.get(id(item))
+            if warnings is not None:
+                self.table_widget.update_row_status(row, warnings)
+
+    def _on_warnings_check_done_ui(self, check_id: int) -> None:
+        if check_id != self._warning_check_id:
+            return
+
+        warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
+        glossary_terms = self.filter_options.get(FilterDialog.KEY_GLOSSARY_TERMS)
+        if warning_types is not None or glossary_terms is not None:
+            self._apply_filter()
 
     def _on_items_loaded_ui(self, items: list[CacheItem]) -> None:
         self.indeterminate_hide()
@@ -213,7 +265,11 @@ class ProofreadingPage(QWidget, Base):
             })
             return
 
-        dialog = FilterDialog(self.items, self.window)
+        if not self.config:
+            return
+
+        checker = self.result_checker or ResultChecker(self.config, self.items)
+        dialog = FilterDialog(self.items, self.warning_map, checker, self.config, self.window)
         dialog.set_filter_options(self.filter_options)
 
         if dialog.exec():
@@ -224,6 +280,7 @@ class ProofreadingPage(QWidget, Base):
         warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
         statuses = self.filter_options.get(FilterDialog.KEY_STATUSES)
         file_paths = self.filter_options.get(FilterDialog.KEY_FILE_PATHS)
+        glossary_terms = self.filter_options.get(FilterDialog.KEY_GLOSSARY_TERMS)
 
         filtered = []
         for item in self.items:
@@ -235,6 +292,15 @@ class ProofreadingPage(QWidget, Base):
                 if item_warnings and not any(e in warning_types for e in item_warnings):
                     continue
                 if not item_warnings and FilterDialog.NO_WARNING_TAG not in warning_types:
+                    continue
+
+            if glossary_terms is not None:
+                item_warnings = self.warning_map.get(id(item), [])
+                if WarningType.GLOSSARY not in item_warnings:
+                    continue
+                checker = self.result_checker or ResultChecker(self.config, [item])
+                failed_terms = checker.get_failed_glossary_terms(item)
+                if not any(term in glossary_terms for term in failed_terms):
                     continue
 
             if statuses is not None and item.get_status() not in statuses:
@@ -592,6 +658,8 @@ class ProofreadingPage(QWidget, Base):
             self.items = []
             self.filtered_items = []
             self.warning_map = {}
+            self.result_checker = None
+            self._warning_check_id += 1
             self.table_widget.set_items([], {})
             self.pagination_bar.reset()
 

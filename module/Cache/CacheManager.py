@@ -4,6 +4,8 @@ import json
 import threading
 
 from base.Base import Base
+from module.Config import Config
+from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheProject import CacheProject
 from module.Localizer.Localizer import Localizer
@@ -12,6 +14,9 @@ class CacheManager(Base):
 
     # 缓存文件保存周期（秒）
     SAVE_INTERVAL = 15
+
+    # SQLite 缓存文件名
+    CACHE_DB_NAME = "cache.db"
 
     # 结尾标点符号
     END_LINE_PUNCTUATION = (
@@ -39,6 +44,11 @@ class CacheManager(Base):
         # 默认值
         self.project: CacheProject = CacheProject()
         self.items: list[CacheItem] = []
+        self.cache_use_sqlite: bool = True
+        try:
+            self.cache_use_sqlite = bool(Config().load().cache_use_sqlite)
+        except Exception:
+            self.cache_use_sqlite = True
 
         # 初始化
         self.require_flag: bool = False
@@ -79,12 +89,54 @@ class CacheManager(Base):
                 self.require_flag = False
                 self.last_require_time = time.time()
 
+    def _get_db_path(self, output_folder: str) -> str:
+        return f"{output_folder}/cache/{__class__.CACHE_DB_NAME}"
+
+    def _should_use_sqlite(self, output_folder: str) -> bool:
+        if os.path.isfile(self._get_db_path(output_folder)):
+            return True
+        return self.cache_use_sqlite
+
+    def _load_items_from_sqlite(self, output_path: str) -> list[CacheItem] | None:
+        db_path = self._get_db_path(output_path)
+        if not os.path.isfile(db_path):
+            return None
+        store = CacheDB(db_path)
+        return store.get_items()
+
+    def _load_project_from_sqlite(self, output_path: str) -> CacheProject | None:
+        db_path = self._get_db_path(output_path)
+        if not os.path.isfile(db_path):
+            return None
+        store = CacheDB(db_path)
+        return store.get_project()
+
+    def _save_items_to_sqlite(self, output_path: str, items: list[CacheItem]) -> None:
+        store = CacheDB(self._get_db_path(output_path))
+        store.set_items(items)
+
+    def _save_project_to_sqlite(self, output_path: str, project: CacheProject) -> None:
+        store = CacheDB(self._get_db_path(output_path))
+        store.set_project(project)
+
     # 保存缓存到文件
     def save_to_file(self, project: CacheProject, items: list[CacheItem], output_folder: str) -> None:
         # 创建上级文件夹
         os.makedirs(f"{output_folder}/cache", exist_ok = True)
 
-        # 保存缓存到文件
+        # 优先写入 SQLite 缓存
+        if self._should_use_sqlite(output_folder):
+            with __class__.LOCK:
+                try:
+                    self._save_items_to_sqlite(output_folder, items)
+                    self._save_project_to_sqlite(output_folder, project)
+                    self.require_flag = False
+                    self.last_require_time = time.time()
+                    return
+                except Exception as e:
+                    self.debug(Localizer.get().log_write_cache_file_fail, e)
+
+        # 保存缓存到 JSON 文件（回退）
         path = f"{output_folder}/cache/items.json"
         with __class__.LOCK:
             try:
@@ -104,7 +156,7 @@ class CacheManager(Base):
             except Exception as e:
                 self.debug(Localizer.get().log_write_cache_file_fail, e)
 
-        # 保存项目数据到文件
+        # 保存项目数据到 JSON 文件（回退）
         path = f"{output_folder}/cache/project.json"
         with __class__.LOCK:
             try:
@@ -129,23 +181,49 @@ class CacheManager(Base):
 
     # 从文件读取项目数据
     def load_items_from_file(self, output_path: str) -> None:
+        use_sqlite = self._should_use_sqlite(output_path)
+        if use_sqlite:
+            with __class__.LOCK:
+                try:
+                    items = self._load_items_from_sqlite(output_path)
+                    if items is not None:
+                        self.items = items
+                        return
+                except Exception as e:
+                    self.debug(Localizer.get().log_read_cache_file_fail, e)
+
         path = f"{output_path}/cache/items.json"
         with __class__.LOCK:
             try:
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.items = [CacheItem.from_dict(item) for item in json.load(reader)]
+                    if use_sqlite:
+                        self._save_items_to_sqlite(output_path, self.items)
             except Exception as e:
                 self.debug(Localizer.get().log_read_cache_file_fail, e)
 
     # 从文件读取项目数据
     def load_project_from_file(self, output_path: str) -> None:
+        use_sqlite = self._should_use_sqlite(output_path)
+        if use_sqlite:
+            with __class__.LOCK:
+                try:
+                    project = self._load_project_from_sqlite(output_path)
+                    if project is not None:
+                        self.project = project
+                        return
+                except Exception as e:
+                    self.debug(Localizer.get().log_read_cache_file_fail, e)
+
         path = f"{output_path}/cache/project.json"
         with __class__.LOCK:
             try:
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.project = CacheProject.from_dict(json.load(reader))
+                    if use_sqlite:
+                        self._save_project_to_sqlite(output_path, self.project)
             except Exception as e:
                 self.debug(Localizer.get().log_read_cache_file_fail, e)
 
