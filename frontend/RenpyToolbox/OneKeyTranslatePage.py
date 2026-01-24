@@ -301,6 +301,16 @@ class YiJianFanyiPage(Base, QWidget):
         
         tip_label = CaptionLabel("小提示：默认选择增量抽取，避免覆盖已有翻译；完整抽取只在重做全量时使用。")
         old_trans_layout.addWidget(tip_label)
+
+        self.auto_merge_cleanup_chk = CheckBox("抽取后自动合并并清理重复")
+        try:
+            from module.Config import Config
+            auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", False)
+        except Exception:
+            auto_merge_enabled = False
+        self.auto_merge_cleanup_chk.setChecked(auto_merge_enabled)
+        self.auto_merge_cleanup_chk.stateChanged.connect(self._on_auto_merge_cleanup_changed)
+        old_trans_layout.addWidget(self.auto_merge_cleanup_chk)
         
         # 互斥逻辑
         self.incremental_rb.stateChanged.connect(lambda state: self.full_extract_rb.setChecked(not state) if state else None)
@@ -523,6 +533,11 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_next_btn.clicked.connect(self._go_step3)
         self.step2_next_btn.setVisible(False)
         btn_row.addWidget(self.step2_next_btn)
+
+        self.step2_merge_btn = PushButton("合并并清理重复")
+        self.step2_merge_btn.clicked.connect(self._merge_incremental_dir)
+        self.step2_merge_btn.setVisible(False)
+        btn_row.addWidget(self.step2_merge_btn)
         
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
@@ -535,6 +550,38 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_retry_btn.setVisible(False)
         self.step2_skip_btn.setVisible(False)
         self._go_step2()
+
+    def _on_auto_merge_cleanup_changed(self, state: int):
+        """同步自动合并开关到配置"""
+        try:
+            from module.Config import Config
+            config = Config().load()
+            config.renpy_incremental_auto_merge_cleanup = bool(state)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"保存自动合并配置失败: {exc}")
+
+    def _merge_incremental_dir(self):
+        """合并增量目录并清理重复"""
+        try:
+            if not self.game_dir:
+                InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+                return
+            tl_name = self.tl_folder_edit.text().strip() or "chinese"
+            incremental_dir = Path(self.game_dir) / "game" / "tl" / f"{tl_name}_new"
+            result = self.unified_extractor.merge_incremental_folder(
+                self.game_dir,
+                tl_name,
+                incremental_dir,
+                clean_duplicates=True,
+            )
+            if result.success:
+                InfoBar.success("合并完成", result.message, parent=self)
+            else:
+                InfoBar.warning("合并失败", result.message, parent=self)
+        except Exception as exc:
+            self.logger.error(f"合并失败: {exc}")
+            InfoBar.error("错误", str(exc), parent=self)
     
     # ==================== 进度三：术语表 ====================
     def _create_step3_page(self):
@@ -746,6 +793,8 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_retry_btn.setEnabled(False)
         self.step2_skip_btn.setVisible(False)
         self.step2_skip_btn.setEnabled(False)
+        self.step2_merge_btn.setVisible(False)
+        self.step2_merge_btn.setEnabled(False)
         self.step2_desc.setText("正在从游戏中提取文本并生成翻译文件，请稍候。")
         self.step2_page.progress_bar.setValue(0)
         
@@ -851,6 +900,23 @@ class YiJianFanyiPage(Base, QWidget):
                     f"原有翻译保持不变，可分别处理新增内容。"
                 )
                 self._incremental_dir = result.incremental_dir
+                try:
+                    from module.Config import Config
+                    auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", False)
+                except Exception:
+                    auto_merge_enabled = False
+                if auto_merge_enabled:
+                    tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                    merge_result = self.unified_extractor.merge_incremental_folder(
+                        self.game_dir,
+                        tl_name,
+                        result.incremental_dir,
+                        clean_duplicates=True,
+                    )
+                    if merge_result.success:
+                        detail_msg = detail_msg + f"\n✅ 已自动合并并清理重复：{merge_result.message}"
+                    else:
+                        detail_msg = detail_msg + f"\n⚠ 自动合并失败：{merge_result.message}"
             else:
                 detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
                 self._incremental_dir = None
@@ -864,6 +930,8 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setVisible(False)
             self.step2_skip_btn.setEnabled(False)
             self.step2_next_btn.setText("开始翻译 →")
+            self.step2_merge_btn.setVisible(bool(result and result.incremental_dir and result.incremental_dir.exists()))
+            self.step2_merge_btn.setEnabled(bool(result and result.incremental_dir and result.incremental_dir.exists()))
             
             # 自动执行角色名和禁翻表扫描（仅第一次执行，避免重复卡顿）
             self._extract_character_names()
@@ -878,6 +946,8 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setEnabled(True)
             self.step2_next_btn.setVisible(False)
             self.step2_next_btn.setEnabled(False)
+            self.step2_merge_btn.setVisible(False)
+            self.step2_merge_btn.setEnabled(False)
             InfoBar.warning("提示", "提取过程遇到问题，你可以重试或跳过", parent=self)
 
     def _scan_character_names(self):

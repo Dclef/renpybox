@@ -117,6 +117,8 @@ class Config():
     # 增量抽取时，把 old/new 中未翻译（new==old 或 new==""）的条目也纳入“待翻译新增包”。
     # 解决：tl 目录存在但某些文件没翻译过/只抽到占位时，增量抽取输出过少的问题。
     renpy_incremental_include_untranslated: bool = True
+    # 增量抽取后自动合并并清理重复（把 tl/<lang>_new 合并回 tl/<lang>）
+    renpy_incremental_auto_merge_cleanup: bool = False
 
     # AndroidBuildPage
     renpy_sdk_path: str = ""

@@ -216,6 +216,20 @@ class RenpyTranslationPage(QWidget):
         opt_row.addStretch(1)
         adv_layout.addLayout(opt_row)
 
+        # === 增量合并 ===
+        merge_row = QHBoxLayout()
+        self.chk_auto_merge_cleanup = CheckBox("抽取后自动合并并清理重复")
+        self.chk_auto_merge_cleanup.setChecked(
+            getattr(self.config, "renpy_incremental_auto_merge_cleanup", False)
+        )
+        merge_row.addWidget(self.chk_auto_merge_cleanup)
+
+        self.merge_cleanup_btn = PushButton(FluentIcon.SYNC, "合并并清理重复")
+        self.merge_cleanup_btn.clicked.connect(self._merge_incremental_now)
+        merge_row.addWidget(self.merge_cleanup_btn)
+        merge_row.addStretch(1)
+        adv_layout.addLayout(merge_row)
+
         # === 缺失补丁工具 ===
         adv_layout.addWidget(self._create_miss_section())
 
@@ -365,6 +379,8 @@ class RenpyTranslationPage(QWidget):
             self.config.extract_use_custom = use_custom
             if hasattr(self, 'chk_skip_hooks'):
                 self.config.extract_skip_hook_files = self.chk_skip_hooks.isChecked()
+            if hasattr(self, "chk_auto_merge_cleanup"):
+                self.config.renpy_incremental_auto_merge_cleanup = self.chk_auto_merge_cleanup.isChecked()
             self.config.save()
 
             # 执行抽取
@@ -379,6 +395,21 @@ class RenpyTranslationPage(QWidget):
                     exe_path,
                     use_official=use_official
                 )
+                if (
+                    result.success
+                    and getattr(self.config, "renpy_incremental_auto_merge_cleanup", False)
+                    and result.incremental_dir
+                ):
+                    merge_result = self.unified_extractor.merge_incremental_folder(
+                        project_root,
+                        tl_name,
+                        result.incremental_dir,
+                        clean_duplicates=True,
+                    )
+                    if merge_result.success:
+                        InfoBar.success("自动合并完成", merge_result.message, parent=self)
+                    else:
+                        InfoBar.warning("自动合并失败", merge_result.message, parent=self)
             else:
                 result = self.unified_extractor.extract_regular(
                     project_root,
@@ -471,6 +502,28 @@ class RenpyTranslationPage(QWidget):
 
         except Exception as e:
             self.logger.error(f"生成钩子失败: {e}")
+            InfoBar.error("错误", str(e), parent=self)
+            self._end(False)
+
+    def _merge_incremental_now(self):
+        """合并增量目录并清理重复"""
+        try:
+            _, tl, project_root = self._resolve_paths()
+            incremental_dir = project_root / "game" / "tl" / f"{tl}_new"
+            self._begin("正在合并增量翻译…")
+            result = self.unified_extractor.merge_incremental_folder(
+                project_root,
+                tl,
+                incremental_dir,
+                clean_duplicates=True,
+            )
+            self._end(result.success)
+            if result.success:
+                InfoBar.success("合并完成", result.message, parent=self)
+            else:
+                InfoBar.warning("合并失败", result.message, parent=self)
+        except Exception as e:
+            self.logger.error(f"合并失败: {e}")
             InfoBar.error("错误", str(e), parent=self)
             self._end(False)
 
