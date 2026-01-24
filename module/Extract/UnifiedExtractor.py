@@ -123,8 +123,8 @@ class UnifiedExtractor:
         """将内置 base_box（UI 文本翻译）注入到 tl 目录，避免后续重复翻译 UI。
 
         同时会对 `tl_dir` 内现有翻译进行一次冲突处理，避免 Ren'Py 因重复 strings 翻译崩溃：
-        - 若 `tl_dir` 的其他文件已存在“有效翻译”（new != "" 且 new != old），则从 base_box 中移除对应条目；
-        - 若其他文件仅存在占位翻译（new == "" 或 new == old），则删除这些占位条目，保留 base_box 翻译。
+        - 若其他文件仅存在占位翻译（new == "" 或 new == old），删除这些占位条目，保留 base_box 翻译；
+        - 若 screens/common 存在有效翻译且 base_box 为占位，则用其补全 base_box，并清理重复条目。
         """
         try:
             src_dir = Path(get_resource_path("resource", "base_box"))
@@ -141,19 +141,48 @@ class UnifiedExtractor:
                 except Exception:
                     return text.replace('\\"', '"').replace("\\'", "'")
 
-            def collect_base_box_old_values() -> Set[str]:
+            def iter_old_new_pairs(lines: List[str]) -> List[Tuple[str, str]]:
+                pairs: List[Tuple[str, str]] = []
+                i = 0
+                while i < len(lines):
+                    old_match = self.OLD_LINE_RE.match(lines[i])
+                    if old_match and i + 1 < len(lines):
+                        j = i + 1
+                        while j < len(lines):
+                            probe = lines[j].strip()
+                            if not probe or probe.startswith("#"):
+                                j += 1
+                                continue
+                            break
+                        if j < len(lines):
+                            new_match = self.NEW_LINE_RE.match(lines[j])
+                        else:
+                            new_match = None
+                        if new_match:
+                            old_value = decode_literal(old_match.group(1), old_match.group("text"))
+                            new_value = decode_literal(new_match.group(1), new_match.group("text"))
+                            pairs.append((old_value, new_value))
+                            i = j + 1
+                            continue
+                    i += 1
+                return pairs
+
+            def collect_base_box_entries() -> Tuple[Set[str], Set[str]]:
                 base_old: Set[str] = set()
+                placeholder_old: Set[str] = set()
                 for fn in ("common_box.rpy", "screens_box.rpy"):
                     fp = src_dir / fn
                     if not fp.is_file():
                         continue
                     try:
-                        content = fp.read_text(encoding="utf-8", errors="replace")
+                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
                     except Exception:
                         continue
-                    for m in self.OLD_LINE_RE.finditer(content):
-                        base_old.add(decode_literal(m.group(1), m.group("text")))
-                return base_old
+                    for old_value, new_value in iter_old_new_pairs(lines):
+                        base_old.add(old_value)
+                        if new_value == "" or new_value == old_value:
+                            placeholder_old.add(old_value)
+                return base_old, placeholder_old
 
             def remove_string_entries_by_old_values(file_path: Path, olds_to_remove: Set[str]) -> int:
                 if not olds_to_remove:
@@ -211,14 +240,63 @@ class UnifiedExtractor:
                         pass
                 return removed
 
+            def is_extracted_ui_file(file_path: Path) -> bool:
+                return file_path.name.lower() in {"common.rpy", "screens.rpy"}
+
+            def apply_overrides_to_base_box(
+                file_path: Path,
+                overrides: Dict[str, str],
+                placeholder_olds: Set[str],
+            ) -> int:
+                if not overrides or not placeholder_olds:
+                    return 0
+                try:
+                    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                except Exception:
+                    return 0
+
+                updated = 0
+                i = 0
+                while i < len(lines):
+                    old_match = self.OLD_LINE_RE.match(lines[i])
+                    if old_match:
+                        old_value = decode_literal(old_match.group(1), old_match.group("text"))
+                        if old_value in placeholder_olds and old_value in overrides:
+                            j = i + 1
+                            while j < len(lines):
+                                probe = lines[j].strip()
+                                if not probe or probe.startswith("#"):
+                                    j += 1
+                                    continue
+                                break
+                            if j < len(lines):
+                                new_match = self.NEW_LINE_RE.match(lines[j])
+                            else:
+                                new_match = None
+                            if new_match:
+                                indent_match = re.match(r'^(\s*)new', lines[j])
+                                indent = indent_match.group(1) if indent_match else ""
+                                escaped = self._escape_rpy_string(overrides[old_value])
+                                lines[j] = f'{indent}new "{escaped}"'
+                                updated += 1
+                                i = j + 1
+                                continue
+                    i += 1
+
+                if updated:
+                    file_path.write_text("\n".join(lines), encoding="utf-8")
+                return updated
+
             injected = 0
             removed_placeholders = 0
-            removed_from_base_box = 0
+            removed_ui_duplicates = 0
+            overrides_applied = 0
 
-            base_box_old_set = collect_base_box_old_values()
-            prefer_user_translation: Set[str] = set()
+            base_box_old_set, base_box_placeholder_set = collect_base_box_entries()
+            ui_translation_overrides: Dict[str, str] = {}
+            ui_files: List[Path] = []
 
-            # 1) 先扫描 tl_dir 里的其它文件：对 base_box 范围内的占位翻译做清理；若已存在有效翻译则标记为“用户优先”。
+            # 1) 先扫描 tl_dir 里的其它文件：清理占位翻译，并收集 screens/common 的有效翻译用于补全 base_box 占位。
             for rpy_file in tl_dir.rglob("*.rpy"):
                 try:
                     rel = rpy_file.relative_to(tl_dir)
@@ -232,34 +310,18 @@ class UnifiedExtractor:
                 except Exception:
                     continue
 
-                placeholder_olds: Set[str] = set()
-                i = 0
-                while i < len(lines):
-                    old_match = self.OLD_LINE_RE.match(lines[i])
-                    if old_match and i + 1 < len(lines):
-                        j = i + 1
-                        while j < len(lines):
-                            probe = lines[j].strip()
-                            if not probe or probe.startswith("#"):
-                                j += 1
-                                continue
-                            break
-                        if j < len(lines):
-                            new_match = self.NEW_LINE_RE.match(lines[j])
-                        else:
-                            new_match = None
+                if is_extracted_ui_file(rpy_file):
+                    ui_files.append(rpy_file)
 
-                        if new_match:
-                            old_value = decode_literal(old_match.group(1), old_match.group("text"))
-                            if old_value in base_box_old_set:
-                                new_value = decode_literal(new_match.group(1), new_match.group("text"))
-                                if new_value == "" or new_value == old_value:
-                                    placeholder_olds.add(old_value)
-                                else:
-                                    prefer_user_translation.add(old_value)
-                            i = j + 1
-                            continue
-                    i += 1
+                placeholder_olds: Set[str] = set()
+                for old_value, new_value in iter_old_new_pairs(lines):
+                    if old_value not in base_box_old_set:
+                        continue
+                    if new_value == "" or new_value == old_value:
+                        placeholder_olds.add(old_value)
+                        continue
+                    if is_extracted_ui_file(rpy_file):
+                        ui_translation_overrides.setdefault(old_value, new_value)
 
                 if placeholder_olds:
                     removed_placeholders += remove_string_entries_by_old_values(rpy_file, placeholder_olds)
@@ -284,9 +346,10 @@ class UnifiedExtractor:
                 dest_file = dest_dir / filename
                 dest_file.write_text(content, encoding="utf-8")
 
-                # 2) 若 tl_dir 其它文件已存在有效翻译，则从 base_box 中移除对应条目，避免重复。
-                if prefer_user_translation:
-                    removed_from_base_box += remove_string_entries_by_old_values(dest_file, prefer_user_translation)
+                # 2) 对 base_box 的占位翻译进行补全（仅在 new=="" 或 new==old 时使用 screens/common 的翻译）。
+                overrides_applied += apply_overrides_to_base_box(
+                    dest_file, ui_translation_overrides, base_box_placeholder_set
+                )
 
                 # 若过滤后无任何 old 条目，直接删除文件（否则会留下空 translate 块导致 Ren'Py 报错）
                 try:
@@ -299,10 +362,20 @@ class UnifiedExtractor:
 
                 injected += 1
 
-            if removed_placeholders or removed_from_base_box:
+            if ui_files and base_box_old_set:
+                for ui_file in ui_files:
+                    removed_ui_duplicates += remove_string_entries_by_old_values(ui_file, base_box_old_set)
+                    try:
+                        remain_text = ui_file.read_text(encoding="utf-8", errors="replace")
+                        if not self.OLD_LINE_RE.search(remain_text):
+                            ui_file.unlink()
+                    except Exception:
+                        pass
+
+            if removed_placeholders or removed_ui_duplicates or overrides_applied:
                 self.logger.info(
                     f"已清理 base_box 冲突: 删除占位 {removed_placeholders} 条，"
-                    f"从 base_box 移除 {removed_from_base_box} 条"
+                    f"清理重复 {removed_ui_duplicates} 条，补全占位 {overrides_applied} 条"
                 )
 
             return injected
@@ -1153,25 +1226,10 @@ class UnifiedExtractor:
             "unrpyc",
             "set_default_language_at_startup",
         )
-        for rpy_file in tl_dir.rglob("*.rpy"):
-            name = rpy_file.name
-            stem = rpy_file.stem
-            name_lower = name.lower()
-            # common.rpy / screens.rpy 为引擎层 UI 翻译模板：已用 base_box 注入覆盖，直接清理避免混入翻译目录
-            if name_lower == "common.rpy" or (name_lower == "screens.rpy" and rpy_file.parent == tl_dir):
-                try:
-                    rpy_file.unlink()
-                except Exception as exc:
-                    self.logger.warning(f"删除内置 UI 文件失败 {rpy_file}: {exc}")
-                companion = rpy_file.with_suffix(".rpyc")
-                if companion.exists():
-                    try:
-                        companion.unlink()
-                    except Exception:
-                        pass
-                continue
-
-            if name in hook_names or any(stem.startswith(pat) for pat in extra_patterns):
+            for rpy_file in tl_dir.rglob("*.rpy"):
+                name = rpy_file.name
+                stem = rpy_file.stem
+                if name in hook_names or any(stem.startswith(pat) for pat in extra_patterns):
                 try:
                     rpy_file.unlink()
                 except Exception as exc:
