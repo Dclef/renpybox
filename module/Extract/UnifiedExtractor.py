@@ -831,6 +831,182 @@ class UnifiedExtractor:
             
         return result
 
+    def merge_incremental_folder(
+        self,
+        game_dir: str | Path,
+        tl_name: str,
+        incremental_dir: str | Path | None = None,
+        *,
+        clean_duplicates: bool = True,
+    ) -> ExtractionResult:
+        """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。"""
+        result = ExtractionResult()
+        game_dir = Path(game_dir)
+        tl_dir = game_dir / "game" / "tl" / tl_name
+        result.tl_dir = tl_dir
+
+        if incremental_dir is None:
+            incremental_dir = game_dir / "game" / "tl" / f"{tl_name}_new"
+        incremental_dir = Path(incremental_dir)
+        result.incremental_dir = incremental_dir
+
+        if not incremental_dir.exists():
+            result.success = False
+            result.message = f"未找到增量目录: {incremental_dir}"
+            return result
+
+        def decode_literal(quote: str, text: str) -> str:
+            literal = f"{quote}{text}{quote}"
+            try:
+                return ast.literal_eval(literal)
+            except Exception:
+                return text.replace('\\"', '"').replace("\\'", "'")
+
+        def collect_pairs(lines: List[str]) -> List[Tuple[str, str]]:
+            pairs: List[Tuple[str, str]] = []
+            i = 0
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if old_match and i + 1 < len(lines):
+                    j = i + 1
+                    while j < len(lines):
+                        probe = lines[j].strip()
+                        if not probe or probe.startswith("#"):
+                            j += 1
+                            continue
+                        break
+                    if j < len(lines):
+                        new_match = self.NEW_LINE_RE.match(lines[j])
+                    else:
+                        new_match = None
+                    if new_match:
+                        old_value = decode_literal(old_match.group(1), old_match.group("text"))
+                        new_value = decode_literal(new_match.group(1), new_match.group("text"))
+                        pairs.append((old_value, new_value))
+                        i = j + 1
+                        continue
+                i += 1
+            return pairs
+
+        def collect_target_map(lines: List[str]) -> Dict[str, Tuple[str, int]]:
+            target_map: Dict[str, Tuple[str, int]] = {}
+            i = 0
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if old_match and i + 1 < len(lines):
+                    j = i + 1
+                    while j < len(lines):
+                        probe = lines[j].strip()
+                        if not probe or probe.startswith("#"):
+                            j += 1
+                            continue
+                        break
+                    if j < len(lines):
+                        new_match = self.NEW_LINE_RE.match(lines[j])
+                    else:
+                        new_match = None
+                    if new_match:
+                        old_value = decode_literal(old_match.group(1), old_match.group("text"))
+                        new_value = decode_literal(new_match.group(1), new_match.group("text"))
+                        target_map.setdefault(old_value, (new_value, j))
+                        i = j + 1
+                        continue
+                i += 1
+            return target_map
+
+        merged_files = 0
+        added_entries = 0
+        updated_entries = 0
+
+        for rpy_file in self._iter_rpy_files(incremental_dir):
+            try:
+                inc_lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception as exc:
+                self.logger.warning(f"读取增量文件失败 {rpy_file}: {exc}")
+                continue
+
+            inc_pairs = collect_pairs(inc_lines)
+            if not inc_pairs:
+                continue
+
+            rel_path = rpy_file.relative_to(incremental_dir)
+            target_file = tl_dir / rel_path
+
+            if not target_file.exists():
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(str(rpy_file), str(target_file))
+                    merged_files += 1
+                    added_entries += len(inc_pairs)
+                except Exception as exc:
+                    self.logger.warning(f"合并文件失败 {rpy_file}: {exc}")
+                continue
+
+            try:
+                target_lines = target_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception as exc:
+                self.logger.warning(f"读取目标文件失败 {target_file}: {exc}")
+                continue
+
+            target_map = collect_target_map(target_lines)
+            new_entries: List[Tuple[str, str]] = []
+            changed = False
+
+            for old_text, new_text in inc_pairs:
+                if old_text in target_map:
+                    current_new, new_line_idx = target_map[old_text]
+                    if (not current_new or current_new == old_text) and new_text and new_text != old_text:
+                        # 仅用增量翻译补全占位，避免覆盖已有译文
+                        indent_match = re.match(r'^(\s*)new', target_lines[new_line_idx])
+                        indent = indent_match.group(1) if indent_match else "    "
+                        escaped_new = self._escape_rpy_string(new_text)
+                        target_lines[new_line_idx] = f'{indent}new "{escaped_new}"'
+                        updated_entries += 1
+                        changed = True
+                    continue
+                new_entries.append((old_text, new_text))
+
+            if new_entries:
+                append_lines = ["", "# 增量合并", f"translate {tl_name} strings:", ""]
+                for old_text, new_text in new_entries:
+                    escaped_old = self._escape_rpy_string(old_text)
+                    escaped_new = self._escape_rpy_string(new_text) if new_text else ""
+                    append_lines.append(f'    old "{escaped_old}"')
+                    append_lines.append(f'    new "{escaped_new}"')
+                    append_lines.append("")
+                target_lines.extend(append_lines)
+                added_entries += len(new_entries)
+                changed = True
+
+            if changed:
+                target_file.write_text("\n".join(target_lines).rstrip() + "\n", encoding="utf-8")
+                merged_files += 1
+
+        if clean_duplicates:
+            try:
+                rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
+            except Exception as exc:
+                self.logger.warning(f"清理重复失败 {tl_dir}: {exc}")
+            config = Config().load()
+            if getattr(config, "renpy_remove_string_duplicates", False):
+                removed = self._remove_string_duplicates_with_blocks(tl_dir)
+                if removed:
+                    self.logger.info(f"已移除 {removed} 条与翻译块重复的 strings 翻译")
+            try:
+                removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
+                if removed_blocks:
+                    self.logger.info(f"已移除 {removed_blocks} 个空的 translate strings 块")
+            except Exception:
+                pass
+
+        result.success = True
+        result.total_files = len(list(self._iter_rpy_files(tl_dir)))
+        result.message = (
+            f"合并完成：更新占位 {updated_entries} 条，"
+            f"新增 {added_entries} 条，涉及 {merged_files} 个文件"
+        )
+        return result
+
     def _get_all_originals(self, tl_dir: Path) -> Set[str]:
         """获取 tl 目录中所有的原文"""
         originals = set()
