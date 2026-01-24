@@ -1226,10 +1226,10 @@ class UnifiedExtractor:
             "unrpyc",
             "set_default_language_at_startup",
         )
-            for rpy_file in tl_dir.rglob("*.rpy"):
-                name = rpy_file.name
-                stem = rpy_file.stem
-                if name in hook_names or any(stem.startswith(pat) for pat in extra_patterns):
+        for rpy_file in tl_dir.rglob("*.rpy"):
+            name = rpy_file.name
+            stem = rpy_file.stem
+            if name in hook_names or any(stem.startswith(pat) for pat in extra_patterns):
                 try:
                     rpy_file.unlink()
                 except Exception as exc:
@@ -1243,7 +1243,10 @@ class UnifiedExtractor:
             else:
                 # 同名 rpyc 一并删除
                 rpyc_path = rpy_file.with_suffix(".rpyc")
-                if rpyc_path.exists() and (rpyc_path.name in hook_names or any(rpyc_path.stem.startswith(pat) for pat in extra_patterns)):
+                if rpyc_path.exists() and (
+                    rpyc_path.name in hook_names
+                    or any(rpyc_path.stem.startswith(pat) for pat in extra_patterns)
+                ):
                     try:
                         rpyc_path.unlink()
                     except Exception:
