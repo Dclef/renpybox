@@ -148,8 +148,6 @@ class RenpyDecompiler:
             str(python_exe),
             "-O",
             str(root_dir / "unrpyc.py"),
-            "--processes",
-            "1",
         ]
         if overwrite:
             command.append("--clobber")

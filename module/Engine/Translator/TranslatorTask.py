@@ -136,6 +136,28 @@ class TranslatorTask(Base):
         # 提取回复内容
         dsts, glossarys = ResponseDecoder().decode(response_result)
 
+        # Sakura JSONLINE 解析失败时尝试格式化重试
+        if (
+            self.platform.get("api_format") == Base.APIFormat.SAKURALLM
+            and self.config.sakura_jsonline_retry_enable == True
+            and (len(dsts) == 0 or all(v == "" or v == None for v in dsts))
+        ):
+            console_log.append("Sakura 回复未按 JSONLINE 输出，尝试格式化重试。")
+            retry_messages, retry_log = self.prompt_builder.generate_prompt_sakura_format_retry(srcs, response_result)
+            if retry_log:
+                console_log.extend(retry_log)
+            retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(retry_messages)
+            if retry_skip == False and isinstance(retry_result, str):
+                retry_dsts, retry_glossarys = ResponseDecoder().decode(retry_result)
+                if len(retry_dsts) > 0 and not all(v == "" or v == None for v in retry_dsts):
+                    dsts = retry_dsts
+                    glossarys = retry_glossarys
+                    response_result = retry_result
+                    if retry_think != "":
+                        response_think = (response_think + "\n" + retry_think) if response_think != "" else retry_think
+                    input_tokens = (input_tokens or 0) + (retry_input_tokens or 0)
+                    output_tokens = (output_tokens or 0) + (retry_output_tokens or 0)
+
         # 检查回复内容
         # TODO - 当前逻辑下任务不会跨文件，所以一个任务的 TextType 都是一样的，有效，但是十分的 UGLY
         checks = self.response_checker.check(srcs, dsts, self.items[0].get_text_type())

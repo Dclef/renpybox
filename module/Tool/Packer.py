@@ -175,6 +175,7 @@ class Packer:
         *,
         lang: str = "zh",
         options: str = "6x",
+        purpose: str = "解包",
         timeout_s: int | None = None,
     ) -> Tuple[bool, List[str]]:
         """Fallback via UnRen-legacy/current.bat (no window, no prompts)."""
@@ -188,7 +189,7 @@ class Packer:
             return False, ["UnRen 脚本不可用"]
 
         version_label = f"Ren'Py {major}" if major is not None else "Ren'Py 未知版本"
-        self.logger.info(f"UnRen 兜底解包: {unren_bat.name} ({version_label})")
+        self.logger.info(f"UnRen {purpose}: {unren_bat.name} ({version_label})")
 
         result = self._run_unren_bat(
             unren_bat,
@@ -202,7 +203,25 @@ class Packer:
 
         output = (result.stdout or "").strip()
         lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-        return result.returncode == 0, lines
+        detected_version = None
+        if lines:
+            ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+            for line in lines:
+                clean = ansi_re.sub("", line)
+                m = re.search(r"Ren'Py version found:\s*(\S+)", clean)
+                if not m:
+                    m = re.search(r"检测到 Ren'Py 版本：\s*(\S+)", clean)
+                if m:
+                    detected_version = m.group(1)
+                    break
+        if detected_version:
+            self.logger.info(f"UnRen 检测到 Ren'Py 版本: {detected_version}")
+        ok = result.returncode == 0
+        if not ok and output:
+            success_markers = ("Operation completed.", "操作完成。", "操作完成")
+            if any(marker in output for marker in success_markers):
+                ok = True
+        return ok, lines
 
     def unpack_all_unren(
         self,

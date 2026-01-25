@@ -678,6 +678,10 @@ class UnifiedExtractor:
             # 2. 获取当前所有原文（用于后续对比新增）
             existing_originals = set(existing_translations.keys())
             all_current_originals = self._get_all_originals(tl_dir)
+            block_originals = self._collect_block_originals(tl_dir)
+            if block_originals:
+                all_current_originals |= block_originals
+                self.logger.info(f"翻译块原文 {len(block_originals)} 条已计入已存在集合")
             self.logger.info(f"当前共 {len(all_current_originals)} 条原文")
             
             # 3. 创建临时目录进行抽取
@@ -759,6 +763,8 @@ class UnifiedExtractor:
                 if output_to_separate_folder and getattr(config, "renpy_incremental_include_untranslated", False):
                     # tl 已存在但没翻译过/只有占位（new==old/new==""）时，把这些也纳入待翻译包
                     pending_originals = self._get_untranslated_originals(tl_dir)
+                    if block_originals:
+                        pending_originals -= block_originals
                     pending_originals -= set(existing_translations.keys())
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
 

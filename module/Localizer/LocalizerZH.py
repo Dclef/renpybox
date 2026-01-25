@@ -394,6 +394,10 @@ class LocalizerZH():
         "<br>"
         "• 禁用后，会将完整的文本条目发送给模型翻译，可能会获得更完整的语义，但会降低文本保护效果"
     )
+    expert_settings_page_sakura_jsonline_retry_enable: str = "Sakura JSONLINE 解析失败时格式化重试"
+    expert_settings_page_sakura_jsonline_retry_enable_desc: str = (
+        "当 SakuraLLM 回复不是 JSONLINE 时，自动发起一次格式化重试，提高通过率"
+    )
     expert_settings_page_result_checker_retry_count_threshold: str = "结果检查 - 重试次数达到阈值"
     expert_settings_page_result_checker_retry_count_threshold_desc: str = (
         "是否在结果检查报告里面输出 <font color='darkgoldenrod'><b>重试次数达到阈值</b></font> 的条目列表"
