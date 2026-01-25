@@ -145,11 +145,12 @@ class DecompileWorker(QThread):
     progress = pyqtSignal(str)  # message
     finished = pyqtSignal(object)  # result dict
 
-    def __init__(self, target: str, *, overwrite: bool, fallback_unren_options: str | None = None):
+    def __init__(self, target: str, *, overwrite: bool, fallback_unren_options: str | None = None, use_unren: bool = True):
         super().__init__()
         self.target = target
         self.overwrite = overwrite
         self.fallback_unren_options = fallback_unren_options
+        self.use_unren = use_unren
 
     def _resolve_game_dir(self) -> Path:
         target = Path(self.target).resolve()
@@ -168,6 +169,29 @@ class DecompileWorker(QThread):
         raise FileNotFoundError("无法定位 game 目录用于 UnRen 兜底反编译")
 
     def run(self):
+        unren_error: Exception | None = None
+        if self.use_unren and self.fallback_unren_options:
+            try:
+                self.progress.emit("正在使用 UnRen 反编译…")
+                game_dir = self._resolve_game_dir()
+                ok, _lines = Packer().unpack_all_unren_bat(
+                    str(game_dir),
+                    lang="zh",
+                    options=self.fallback_unren_options,
+                    purpose="反编译",
+                    timeout_s=60 * 60,
+                )
+                if ok:
+                    self.finished.emit({
+                        "level": "success",
+                        "title": "完成",
+                        "message": "反编译完成（UnRen）",
+                    })
+                    return
+            except Exception as unren_exc:
+                unren_error = unren_exc
+                LogManager.get().error(f"UnRen 反编译失败: {unren_exc}")
+
         try:
             self.progress.emit("正在反编译…")
             decompiler = RenpyDecompiler()
@@ -179,31 +203,11 @@ class DecompileWorker(QThread):
             })
         except Exception as exc:
             LogManager.get().error(f"反编译失败: {exc}")
-
-            if self.fallback_unren_options:
-                try:
-                    self.progress.emit("反编译失败，尝试使用 UnRen 兜底反编译…")
-                    game_dir = self._resolve_game_dir()
-                    ok, _lines = Packer().unpack_all_unren_bat(
-                        str(game_dir),
-                        lang="zh",
-                        options=self.fallback_unren_options,
-                        timeout_s=60 * 60,
-                    )
-                    if ok:
-                        self.finished.emit({
-                            "level": "success",
-                            "title": "完成",
-                            "message": "已使用 UnRen 兜底反编译（请检查 game 目录输出）",
-                        })
-                        return
-                except Exception as unren_exc:
-                    LogManager.get().error(f"UnRen 兜底反编译失败: {unren_exc}")
-
+            extra = f"（UnRen 失败：{unren_error}）" if unren_error else ""
             self.finished.emit({
                 "level": "error",
                 "title": "错误",
-                "message": f"反编译失败: {exc}",
+                "message": f"反编译失败: {exc}{extra}",
             })
 
 class CleanupWorker(QThread):
@@ -356,7 +360,7 @@ class PackUnpackPage(Base, QWidget):
             "仅解包脚本（.rpy/.rpyc；忽略图片/音频等资源，速度更快、体积更小）"
         )
         self.unpack_script_only_check.setToolTip("只提取脚本文件，忽略图片/音频等资源，速度更快")
-        self.unpack_script_only_check.setChecked(True)
+        self.unpack_script_only_check.setChecked(False)
         layout.addWidget(self.unpack_script_only_check)
 
         # 按钮
@@ -462,14 +466,19 @@ class PackUnpackPage(Base, QWidget):
         self.decompile_overwrite_check.setChecked(False)
         layout.addWidget(self.decompile_overwrite_check)
 
+        self.decompile_direct_check = CheckBox("直接反编译（UnRen：使用游戏自带 python，无需启动游戏）")
+        self.decompile_direct_check.setToolTip("优先使用 UnRen 执行反编译，失败再尝试 unrpyc")
+        self.decompile_direct_check.setChecked(True)
+        layout.addWidget(self.decompile_direct_check)
+
         btn_row = QHBoxLayout()
         self.decompile_button = PrimaryPushButton("反编译", icon=FluentIcon.CODE)
-        self.decompile_button.setToolTip("使用 unrpyc v2 反编译（Ren'Py 8 / Python 3）")
+        self.decompile_button.setToolTip("优先使用 UnRen 反编译，失败再尝试 unrpyc v2")
         self.decompile_button.clicked.connect(self._decompile)
         btn_row.addWidget(self.decompile_button)
 
         self.unpack_and_decompile_button = PushButton("解包 + 反编译", icon=FluentIcon.PLAY)
-        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后执行 unrpyc v2 反编译")
+        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后优先使用 UnRen 反编译")
         self.unpack_and_decompile_button.clicked.connect(self._unpack_and_decompile)
         btn_row.addWidget(self.unpack_and_decompile_button)
         btn_row.addStretch(1)
@@ -562,12 +571,16 @@ class PackUnpackPage(Base, QWidget):
         message = (result or {}).get("message", "")
 
         if level == "success":
+            LogManager.get().info(message or "解包完成")
             InfoBar.success(title, message, parent=self)
         elif level == "warning":
+            LogManager.get().warning(message or "解包提示")
             InfoBar.warning(title, message, parent=self)
         elif level == "error":
+            LogManager.get().error(message or "解包失败")
             InfoBar.error(title, message, parent=self)
         else:
+            LogManager.get().info(message or "解包完成")
             InfoBar.info(title, message, parent=self)
 
         if self._pending_decompile_after_unpack:
@@ -623,12 +636,16 @@ class PackUnpackPage(Base, QWidget):
         message = (result or {}).get("message", "")
 
         if level == "success":
+            LogManager.get().info(message or "反编译完成")
             InfoBar.success(title, message, parent=self)
         elif level == "warning":
+            LogManager.get().warning(message or "反编译提示")
             InfoBar.warning(title, message, parent=self)
         elif level == "error":
+            LogManager.get().error(message or "反编译失败")
             InfoBar.error(title, message, parent=self)
         else:
+            LogManager.get().info(message or "反编译完成")
             InfoBar.info(title, message, parent=self)
 
     def _decompile(self, fallback_unren_options: str | None = None):
@@ -648,14 +665,17 @@ class PackUnpackPage(Base, QWidget):
                 return
 
             overwrite = self.decompile_overwrite_check.isChecked()
-            LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, unrpyc=v2)")
+            use_unren = self.decompile_direct_check.isChecked()
+            mode = "优先 UnRen" if use_unren else "unrpyc"
+            LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, {mode})")
 
-            fallback_options = fallback_unren_options or "4x"
+            fallback_options = fallback_unren_options or "2x"
             self._set_decompile_busy(True, "准备开始…")
             self.decompile_worker = DecompileWorker(
                 exe_path,
                 overwrite=overwrite,
                 fallback_unren_options=fallback_options,
+                use_unren=use_unren,
             )
             self.decompile_worker.progress.connect(self._on_decompile_progress)
             self.decompile_worker.finished.connect(self._on_decompile_finished)
@@ -677,12 +697,16 @@ class PackUnpackPage(Base, QWidget):
         message = (result or {}).get("message", "")
 
         if level == "success":
+            LogManager.get().info(message or "反编译完成")
             InfoBar.success(title, message, parent=self)
         elif level == "warning":
+            LogManager.get().warning(message or "反编译提示")
             InfoBar.warning(title, message, parent=self)
         elif level == "error":
+            LogManager.get().error(message or "反编译失败")
             InfoBar.error(title, message, parent=self)
         else:
+            LogManager.get().info(message or "反编译完成")
             InfoBar.info(title, message, parent=self)
 
     def _unpack_and_decompile(self):

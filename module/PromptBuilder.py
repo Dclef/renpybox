@@ -273,18 +273,53 @@ class PromptBuilder(Base):
             "content": "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
         })
 
-        # 术语表
-        content = "将下面的日文文本翻译成中文：\n" + "\n".join(srcs)
+        content_lines = [
+            "只输出 JSONLINE，每行一个 JSON 对象，格式为 {\"序号\":\"译文\"}。",
+            "输入是 JSONLINE 包装，值为原文文本；不要翻译 JSON 结构或序号。",
+            "输出行数必须与输入行数一致，不要附加原文/英文/解释。",
+            "保留原文中的控制字符/标签/变量（如 {w}、{...}、[...]）原样输出。",
+        ]
         if self.config.glossary_enable == True:
             result = self.build_glossary_sakura(srcs)
             if result != "":
-                content = (
-                    "根据以下术语表（可以为空）：\n" + result
-                    + "\n" + "将下面的日文文本根据对应关系和备注翻译成中文：\n" + "\n".join(srcs)
-                )
+                content_lines.append("术语表（可空）：")
+                content_lines.append(result)
                 extra_log.append(result)
 
+        content_lines.append(self.build_inputs(srcs))
+        content = "\n".join(content_lines)
+
         # 构建提示词列表
+        messages.append({
+            "role": "user",
+            "content": content,
+        })
+
+        return messages, extra_log
+
+    # 生成提示词 - Sakura 格式化重试
+    def generate_prompt_sakura_format_retry(self, srcs: list[str], raw_reply: str) -> tuple[list[dict], list[str]]:
+        # 初始化
+        messages: list[dict[str, str]] = []
+        extra_log: list[str] = []
+
+        messages.append({
+            "role": "system",
+            "content": "你是翻译结果的格式整理助手，只输出 JSONLINE。"
+        })
+
+        content_lines = [
+            "把“模型回复内容”整理成 JSONLINE 输出。",
+            "每行一个 JSON 对象，格式为 {\"序号\":\"译文\"}，序号从 0 开始。",
+            "输出行数必须与输入行数一致，缺失行用空字符串补齐。",
+            "如果出现中英双语，优先中文行，忽略英文行。",
+            "保留控制字符/标签/变量（如 {w}、{...}、[...]）原样输出。",
+            self.build_inputs(srcs),
+            "模型回复内容：",
+            raw_reply,
+        ]
+        content = "\n".join(content_lines)
+
         messages.append({
             "role": "user",
             "content": content,

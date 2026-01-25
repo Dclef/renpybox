@@ -53,6 +53,7 @@ class Config():
     write_translated_name_fields_to_file: bool = True
     result_checker_retry_count_threshold: bool = False
     auto_process_prefix_suffix_preserved_text: bool = False
+    sakura_jsonline_retry_enable: bool = True
 
     # ProjectPage
     # 默认原文语言改为英文，避免误将非日文项目设为日文
@@ -191,6 +192,7 @@ class Config():
         self.write_translated_name_fields_to_file: bool = True
         self.result_checker_retry_count_threshold: bool = False
         self.auto_process_prefix_suffix_preserved_text: bool = False
+        self.sakura_jsonline_retry_enable: bool = True
 
         # TextPreservePage
         self.text_preserve_enable: bool = False

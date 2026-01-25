@@ -390,6 +390,10 @@ class LocalizerEN(LocalizerZH):
         "<br>"
         "• When disabled, full text is sent to the model, which may preserve semantics but weakens text preservation"
     )
+    expert_settings_page_sakura_jsonline_retry_enable: str = "Sakura JSONLINE Retry on Parse Failure"
+    expert_settings_page_sakura_jsonline_retry_enable_desc: str = (
+        "When SakuraLLM output is not JSONLINE, automatically send a formatting retry to improve pass rate"
+    )
     expert_settings_page_result_checker_retry_count_threshold: str = "Result Checker - Retry Count Reached Threshold"
     expert_settings_page_result_checker_retry_count_threshold_desc: str = (
         "Include a list of items that <font color='darkgoldenrod'><b>reached the retry threshold</b></font> in the result check report, disabled by default"

@@ -763,6 +763,27 @@ class YiJianFanyiPage(Base, QWidget):
         Returns:
             (success, message)
         """
+        unren_error = None
+        try:
+            from pathlib import Path
+            from module.Tool.Packer import Packer
+
+            game_path = Path(game_dir)
+            if game_path.name.lower() != "game":
+                game_path = game_path / "game"
+
+            ok, _lines = Packer().unpack_all_unren_bat(
+                str(game_path),
+                lang="zh",
+                options="2x",
+                purpose="反编译",
+                timeout_s=60 * 60,
+            )
+            if ok:
+                return True, "反编译完成 (UnRen)"
+        except Exception as unren_exc:
+            unren_error = unren_exc
+
         try:
             from module.Tool.RenpyDecompiler import RenpyDecompiler
 
@@ -774,6 +795,8 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as e:
             import traceback
             traceback.print_exc()
+            if unren_error:
+                return False, f"反编译失败（UnRen 失败：{unren_error}）：{e}"
             return False, f"反编译失败（可能版本不兼容/加密/脚本特殊）：{e}"
         
     def _go_step2(self):
