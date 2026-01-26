@@ -2,6 +2,7 @@ import json
 import itertools
 import threading
 import time
+import traceback
 from functools import lru_cache
 
 import rich
@@ -32,6 +33,21 @@ class TranslatorTask(Base):
     def __init__(self, config: Config, platform: dict, local_flag: bool, items: list[CacheItem], precedings: list[CacheItem]) -> None:
         super().__init__()
 
+        # 参数验证（防御性编程）
+        if not isinstance(config, Config):
+            raise TypeError(f"[INIT] Config 类型错误: {type(config)}")
+        if not isinstance(platform, dict):
+            raise TypeError(f"[INIT] Platform 类型错误: {type(platform)}")
+        
+        # 验证 platform 必需字段
+        required_keys = ['api_url', 'model', 'api_format']
+        missing = [k for k in required_keys if k not in platform]
+        if missing:
+            raise ValueError(f"[INIT] Platform 缺少必需字段: {missing}")
+        
+        if not items or len(items) == 0:
+            raise ValueError(f"[INIT] Items 列表不能为空")
+
         # 初始化
         self.items = items
         self.precedings = precedings
@@ -44,12 +60,35 @@ class TranslatorTask(Base):
 
     # 启动任务
     def start(self, current_round: int) -> dict[str, str]:
-        return self.request(self.items, self.processors, self.precedings, self.local_flag, current_round)
+        """
+        启动翻译任务，包含异常捕获确保线程不会静默死亡
+        """
+        self.info(f"[TASK-START] 任务启动: items={len(self.items)}, round={current_round+1}, "
+                  f"model={self.platform.get('model', 'unknown')}")
+        try:
+            return self.request(self.items, self.processors, self.precedings, self.local_flag, current_round)
+        except Exception as e:
+            # 关键：捕获所有异常，防止线程静默死亡导致主流程挂起
+            error_msg = f"任务执行失败: {str(e)}"
+            self.error(f"[TASK-CRASH] {error_msg}")
+            self.error(f"[TASK-CRASH] 完整堆栈:\n{traceback.format_exc()}")
+            
+            # 确保返回有效结果，防止主线程无限等待
+            return {
+                "row_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "error": True,
+                "error_msg": error_msg,
+            }
 
     # 请求
     def request(self, items: list[CacheItem], processors: list[TextProcessor], precedings: list[CacheItem], local_flag: bool, current_round: int) -> dict[str, str]:
         # 任务开始的时间
         start_time = time.time()
+        
+        # 添加请求入口日志
+        self.debug(f"[REQUEST-START] 开始处理: items={len(items)}, precedings={len(precedings)}, local={local_flag}")
 
         # 文本预处理
         srcs: list[str] = []
@@ -63,6 +102,7 @@ class TranslatorTask(Base):
 
         # 如果没有任何有效原文文本，则直接完成当前任务
         if len(srcs) == 0:
+            self.debug(f"[REQUEST] 无有效原文，直接标记完成")
             for item, processor in zip(items, processors):
                 item.set_dst(item.get_src())
                 item.set_status(Base.TranslationStatus.TRANSLATED)
@@ -74,22 +114,42 @@ class TranslatorTask(Base):
             }
 
         # 生成请求提示词
+        self.debug(f"[REQUEST] 生成提示词: srcs={len(srcs)}, api_format={self.platform.get('api_format')}")
         if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
             self.messages, console_log = self.prompt_builder.generate_prompt(srcs, samples, precedings, local_flag)
         else:
             self.messages, console_log = self.prompt_builder.generate_prompt_sakura(srcs)
+        
+        # 验证消息是否生成成功
+        if not isinstance(self.messages, list) or len(self.messages) == 0:
+            self.error(f"[REQUEST] 消息构建失败: type={type(self.messages)}, "
+                      f"len={len(self.messages) if isinstance(self.messages, list) else 'N/A'}")
+            return {
+                "row_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "error": True,
+                "error_msg": "消息构建失败",
+            }
+        
+        self.debug(f"[REQUEST] 提示词生成完成: messages={len(self.messages)}")
 
         # 发起请求
         requester = TaskRequester(self.config, self.platform, current_round)
+        self.debug(f"[REQUEST] 发起API请求...")
         skip, response_think, response_result, input_tokens, output_tokens = requester.request(self.messages)
 
         # 如果请求结果标记为 skip，即有错误发生，则跳过本次循环
         if skip == True:
+            self.warning(f"[REQUEST] API请求被跳过（发生错误）")
             return {
                 "row_count": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+        
+        self.debug(f"[REQUEST] API请求完成: input_tokens={input_tokens}, output_tokens={output_tokens}, "
+                   f"response_len={len(response_result) if response_result else 0}")
 
         # 内容被安全审查阻止时，Gemini 可能返回空内容；TaskRequester 会用特殊 JSON 标记。
         # 这种情况属于不可重试错误：对单条目任务直接标记为 EXCLUDED，避免无限重试；
@@ -134,7 +194,7 @@ class TranslatorTask(Base):
                 }
 
         # 提取回复内容
-        dsts, glossarys = ResponseDecoder().decode(response_result)
+        dsts, glossarys = ResponseDecoder().decode(response_result, len(srcs))
 
         # Sakura JSONLINE 解析失败时尝试格式化重试
         if (
@@ -148,7 +208,7 @@ class TranslatorTask(Base):
                 console_log.extend(retry_log)
             retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(retry_messages)
             if retry_skip == False and isinstance(retry_result, str):
-                retry_dsts, retry_glossarys = ResponseDecoder().decode(retry_result)
+                retry_dsts, retry_glossarys = ResponseDecoder().decode(retry_result, len(srcs))
                 if len(retry_dsts) > 0 and not all(v == "" or v == None for v in retry_dsts):
                     dsts = retry_dsts
                     glossarys = retry_glossarys

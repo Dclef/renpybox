@@ -244,8 +244,7 @@ class TranslationWorker(QThread):
                     raise RuntimeError("翻译结果为空")
 
                 # 解析结果
-                source_text_dict = {str(idx): src for idx, src in enumerate(srcs)}
-                dsts, _ = ResponseDecoder().decode(response_text, source_text_dict)
+                dsts, _ = ResponseDecoder().decode(response_text, len(srcs))
 
                 # 后处理
                 dsts_copy = dsts.copy() if dsts else []

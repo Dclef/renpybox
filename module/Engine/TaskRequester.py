@@ -166,6 +166,11 @@ class TaskRequester(Base):
 
     # 发起请求
     def request(self, messages: list[dict]) -> tuple[bool, str, int, int]:
+        # 添加请求入口日志
+        self.debug(f"[API-REQUEST] 准备请求: model={self.platform.get('model')}, "
+                   f"api_format={self.platform.get('api_format')}, "
+                   f"messages={len(messages)}, round={self.current_round+1}")
+        
         args: dict[str, float] = {}
         if self.platform.get('top_p_custom_enable') == True:
             args["top_p"] = self.platform.get('top_p')
@@ -192,16 +197,21 @@ class TaskRequester(Base):
         for attempt in range(1, __class__.MAX_REQUEST_RETRY + 1):
             # If user has requested a stop, abort new requests immediately
             if Engine.get().get_status() == Engine.Status.STOPPING:
+                self.debug(f"[API-REQUEST] 用户请求停止，中断请求")
                 return True, None, None, None, None
 
+            self.debug(f"[API-REQUEST] 尝试 {attempt}/{__class__.MAX_REQUEST_RETRY}")
             last_result = dispatch()
             skip = last_result[0]
             if skip is False:
+                self.debug(f"[API-REQUEST] 请求成功")
                 return last_result
             if attempt < __class__.MAX_REQUEST_RETRY:
                 delay = min(2 ** (attempt - 1), 5)
+                self.debug(f"[API-REQUEST] 请求失败，{delay}秒后重试")
                 time.sleep(delay)
 
+        self.warning(f"[API-REQUEST] 请求失败，已达最大重试次数")
         return last_result
 
     # 生成请求参数

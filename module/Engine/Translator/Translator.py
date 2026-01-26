@@ -167,6 +167,10 @@ class Translator(Base):
         self.platform = self.config.get_platform(self.config.activate_platform)
         local_flag = self.initialize_local_flag()
         max_workers, rpm_threshold = self.initialize_max_workers()
+        
+        # 添加初始化日志
+        self.info(f"[INIT] 配置加载完成: platform={self.platform.get('name', 'unknown')}, model={self.platform.get('model', 'unknown')}")
+        self.info(f"[INIT] 最大并发: {max_workers}, RPM限制: {rpm_threshold}")
 
         # 重置
         TextProcessor.reset()
@@ -208,9 +212,15 @@ class Translator(Base):
             self.extras.setdefault("total_input_tokens", 0)
             self.extras.setdefault("total_output_tokens", 0)
         else:
+            # 修复: 计算实际的总行数，而不是硬编码为0
+            total_untranslated = self.cache_manager.get_item_count_by_status(
+                Base.TranslationStatus.UNTRANSLATED
+            )
+            self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
+            
             self.extras = {
                 "start_time": time.time(),
-                "total_line": 0,
+                "total_line": total_untranslated,  # 使用实际值
                 "line": 0,
                 "total_tokens": 0,
                 "total_input_tokens": 0,
@@ -580,6 +590,11 @@ class Translator(Base):
             # 结果为空则跳过后续的更新步骤
             if not isinstance(result, dict) or len(result) == 0:
                 return
+            
+            # 检查是否为错误返回 (配合 TranslatorTask 的异常捕获)
+            if result.get("error"):
+                self.error(f"[CALLBACK] 子任务报告错误: {result.get('error_msg', '未知错误')}")
+                return
 
             # 记录数据
             with self.data_lock:
@@ -612,4 +627,7 @@ class Translator(Base):
             # 触发翻译进度更新事件
             self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
         except Exception as e:
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            # 捕获 future.result() 或后续处理中的异常
+            self.error(f"[CALLBACK-CRASH] 处理任务结果时发生异常: {str(e)}")
+            import traceback
+            self.error(traceback.format_exc())
