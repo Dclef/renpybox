@@ -270,7 +270,7 @@ class PromptBuilder(Base):
         # 构建系统提示词
         messages.append({
             "role": "system",
-            "content": "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
+            "content": "你是一个轻小说翻译模型，可以流畅通顺地将多种语言（日文、英文、韩文等）翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。即使原文是英文游戏内容，也要完整翻译成中文。"
         })
 
         content_lines = [
@@ -278,6 +278,9 @@ class PromptBuilder(Base):
             "输入是 JSONLINE 包装，值为原文文本；不要翻译 JSON 结构或序号。",
             "输出行数必须与输入行数一致，不要附加原文/英文/解释。",
             "保留原文中的控制字符/标签/变量（如 {w}、{...}、[...]）原样输出。",
+            "【重要】游戏 UI 文本（如 NEW GAME, CONTINUE, OPTIONS）必须翻译成中文（如 新游戏、继续、选项）。",
+            "【重要】对话和描述性内容必须完整翻译，不可保留英文原文。",
+            "【允许】人名可以保留英文或音译为中文，由模型自行判断。",
         ]
         if self.config.glossary_enable == True:
             result = self.build_glossary_sakura(srcs)
