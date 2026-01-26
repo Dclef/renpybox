@@ -61,51 +61,77 @@ if font_file.exists():
 else:
     print(f"Warning: builtin font not found at {font_file}")
 binaries = []
-hiddenimports = [
-    # QtMultimedia（启动音效）
-    'PyQt5.QtMultimedia',
-    # base 包的所有模块
-    'base.Base',
-    'base.CLIManager',
-    'base.LogManager',
-    'base.VersionManager',
-    'base.Version',
-    'base.PathHelper',
-    'base.BaseLanguage',
-    'base.EventManager',
-    'base.compat',
-    # frontend 动态导入的模块
-    'frontend.RenpyToolbox.DirectRpyTranslatePage',
-    'frontend.RenpyToolbox.SourceTranslatePage',
-    'frontend.RenpyToolbox.OneKeyTranslatePage',
-    'frontend.RenpyToolbox.LocalGlossaryPage',
-    'frontend.RenpyToolbox.SetDefaultLanguagePage',
-    'frontend.RenpyToolbox.AddLanguageEntrancePage',
-    'frontend.RenpyToolbox.TranslateEngineTab',
-    'frontend.RenpyToolbox.RenpyToolboxPage',
-    'frontend.TranslationPage',
-    'frontend.AppFluentWindow',
-    # module 相关
-    'module.Engine.Translator.Translator',
-    'module.Engine.Translator.TranslatorTask',
-    'module.Engine.TaskRequester',
+# 核心第三方库 - 精确收集（避免拉入不需要的大型依赖）
+third_party_packages = [
+    'qfluentwidgets',    # UI 框架
+    'rich',              # 日志美化
+    'opencc',            # 繁简转换
+    'tiktoken',          # Token 计数
+    'httpx',             # HTTP 客户端（openai/anthropic 依赖）
+    'openai',            # OpenAI API
+    'anthropic',         # Claude API
+    'translators',       # 翻译器（FastTranslator使用）
+    'pygtrans',          # Google翻译（FastTranslator使用）
+    'json_repair',       # JSON修复（ResponseDecoder使用）
 ]
-tmp_ret = collect_all('qfluentwidgets')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-# aiohttp (部分三方库会在运行时动态使用；未完整打包可能导致 `aiohttp.ClientSession` 缺失)
-try:
-    tmp_ret = collect_all('aiohttp')
-    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-except Exception as e:
-    print(f"Warning: failed to collect aiohttp: {e}")
-hiddenimports += collect_submodules('base')
-hiddenimports += collect_submodules('widget')
-hiddenimports += collect_submodules('utils')
-hiddenimports += collect_submodules('frontend.RenpyToolbox')
-hiddenimports += collect_submodules('module.Engine')
-hiddenimports += collect_submodules('module.Extract')
-hiddenimports += collect_submodules('module.Renpy')
+# Google Gemini 需要精确指定，避免收集整个 google 命名空间
+google_packages = [
+    'google.generativeai',  # Gemini API 主包
+    'google.genai',         # 新版 Gemini SDK
+    'google.auth',          # 认证
+    'google.api_core',      # API 核心
+]
+
+# 轻量级工具库 - 只收集子模块
+lightweight_packages = [
+    'charset_normalizer',  # 字符编码检测
+    'lxml',                # XML 解析
+    'bs4',                 # HTML 解析
+    'openpyxl',            # Excel 处理
+    'yaml',                # YAML 解析
+    'pandas',              # 数据分析
+    'spacy',               # NER功能
+    'thinc',               # spacy依赖
+]
+
+hiddenimports = []
+
+# 1. 核心第三方库 - 全量收集
+for package in third_party_packages:
+    try:
+        tmp_ret = collect_all(package)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+        print(f"✓ Collected: {package}")
+    except Exception as e:
+        print(f"⚠ Skip {package}: {e}")
+
+# 2. Google 包 - 精确收集子模块，避免拉入整个命名空间
+for package in google_packages:
+    try:
+        hiddenimports += collect_submodules(package)
+        print(f"✓ Collected submodules: {package}")
+    except Exception as e:
+        print(f"⚠ Skip {package}: {e}")
+
+# 3. 轻量级工具库 - 只收集子模块
+for package in lightweight_packages:
+    try:
+        hiddenimports += collect_submodules(package)
+        print(f"✓ Collected submodules: {package}")
+    except Exception as e:
+        print(f"⚠ Skip {package}: {e}")
+
+# 项目内部模块 - 自动收集所有子模块
+internal_modules = ['base', 'widget', 'utils', 'frontend', 'module']
+for mod in internal_modules:
+    try:
+        hiddenimports += collect_submodules(mod)
+        print(f"✓ Collected submodules: {mod}")
+    except Exception as e:
+        print(f"⚠ Skip {mod}: {e}")
 
 block_cipher = None
 
@@ -118,6 +144,37 @@ else:
     print(f"Warning: icon file not found under {resource_dir}")
     icon_file = None
 
+# 排除不需要的大型依赖
+excludes = [
+    # NLP/ML 库
+    'tensorflow',      # 深度学习
+    'torch',           # PyTorch
+    'transformers',    # Hugging Face
+    'sklearn',         # scikit-learn
+    
+    # 科学计算库
+    'scipy',           # 科学计算
+    'matplotlib',      # 绘图
+    'seaborn',         # 数据可视化
+    'plotly',          # 交互式绘图
+    
+    # pandas可选依赖
+    'pyarrow',         # Apache Arrow
+    'fastparquet',     # Parquet文件
+    'tables',          # HDF5
+    'sqlalchemy',      # 数据库
+    'xlrd',            # 旧版Excel
+    'xlwt',            # 旧版Excel写入
+    'odfpy',           # OpenDocument
+    
+    # 其他不需要的
+    'tkinter',         # GUI
+    'IPython',         # Jupyter
+    'notebook',        # Jupyter
+    'pytest',          # 测试
+    'unittest',        # 测试
+]
+
 a = Analysis(
     [str(project_root / 'app.py')],
     pathex=[str(project_root)],
@@ -127,7 +184,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
