@@ -104,34 +104,34 @@ for package in third_party_packages:
         datas += tmp_ret[0]
         binaries += tmp_ret[1]
         hiddenimports += tmp_ret[2]
-        print(f"✓ Collected: {package}")
+        print(f"[OK] Collected: {package}")
     except Exception as e:
-        print(f"⚠ Skip {package}: {e}")
+        print(f"[SKIP] {package}: {e}")
 
 # 2. Google 包 - 精确收集子模块，避免拉入整个命名空间
 for package in google_packages:
     try:
         hiddenimports += collect_submodules(package)
-        print(f"✓ Collected submodules: {package}")
+        print(f"[OK] Collected submodules: {package}")
     except Exception as e:
-        print(f"⚠ Skip {package}: {e}")
+        print(f"[SKIP] {package}: {e}")
 
 # 3. 轻量级工具库 - 只收集子模块
 for package in lightweight_packages:
     try:
         hiddenimports += collect_submodules(package)
-        print(f"✓ Collected submodules: {package}")
+        print(f"[OK] Collected submodules: {package}")
     except Exception as e:
-        print(f"⚠ Skip {package}: {e}")
+        print(f"[SKIP] {package}: {e}")
 
 # 项目内部模块 - 自动收集所有子模块
 internal_modules = ['base', 'widget', 'utils', 'frontend', 'module']
 for mod in internal_modules:
     try:
         hiddenimports += collect_submodules(mod)
-        print(f"✓ Collected submodules: {mod}")
+        print(f"[OK] Collected submodules: {mod}")
     except Exception as e:
-        print(f"⚠ Skip {mod}: {e}")
+        print(f"[SKIP] {mod}: {e}")
 
 block_cipher = None
 
