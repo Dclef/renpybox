@@ -93,6 +93,7 @@ lightweight_packages = [
     'pandas',              # 数据分析
     'spacy',               # NER功能
     'thinc',               # spacy依赖
+    'psutil',              # 系统监控（translators依赖）
 ]
 
 hiddenimports = []
@@ -167,12 +168,17 @@ excludes = [
     'xlwt',            # 旧版Excel写入
     'odfpy',           # OpenDocument
     
+    # 测试相关（排除所有测试模块）
+    'pytest',          # 测试框架
+    'unittest',        # 测试
+    'test',            # 测试模块
+    '_pytest',         # pytest内部
+    'tests',           # 测试包
+    
     # 其他不需要的
     'tkinter',         # GUI
     'IPython',         # Jupyter
     'notebook',        # Jupyter
-    'pytest',          # 测试
-    'unittest',        # 测试
 ]
 
 a = Analysis(
