@@ -23,6 +23,11 @@ from module.Tool.Packer import Packer
 from module.Tool.RenpyDecompiler import RenpyDecompiler
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
+EXE_SUFFIX = ".exe"
+GAME_DIR_NAME = "game"
+RPY_SUFFIX = ".rpy"
+RPYC_SUFFIX = ".rpyc"
+
 
 class PackWorker(QThread):
     """后台打包工作线程"""
@@ -279,6 +284,87 @@ class CleanupWorker(QThread):
             })
 
 
+class RpycCleanupWorker(QThread):
+    """后台清理 RPYC 文件工作线程（避免阻塞 UI）"""
+
+    progress = pyqtSignal(str)  # message
+    finished = pyqtSignal(object)  # result dict
+
+    def __init__(self, target: str) -> None:
+        super().__init__()
+        self.target = target
+
+    def run(self) -> None:
+        try:
+            self.progress.emit("正在清理 RPYC 文件…")
+            game_dir = self.resolve_game_dir(Path(self.target))
+            removed, skipped, total = self.cleanup_rpyc_files(game_dir)
+            if removed:
+                detail = f"已清理 {removed} 个 RPYC 文件"
+                if skipped:
+                    detail += f"，跳过 {skipped} 个未找到同名 .rpy 的文件"
+                self.finished.emit({
+                    "level": "success",
+                    "title": "完成",
+                    "message": detail,
+                })
+                return
+
+            if total == 0:
+                message = "未发现 RPYC 文件"
+            elif skipped:
+                message = "未发现可清理的 RPYC 文件（未找到同名 .rpy）"
+            else:
+                message = "未发现可清理的 RPYC 文件"
+            self.finished.emit({
+                "level": "info",
+                "title": "提示",
+                "message": message,
+            })
+        except Exception as exc:
+            LogManager.get().error("清理 RPYC 失败", exc)
+            self.finished.emit({
+                "level": "error",
+                "title": "错误",
+                "message": f"清理失败: {exc}",
+            })
+
+    def resolve_game_dir(self, target: Path) -> Path:
+        resolved = target.resolve()
+        if resolved.is_file() and resolved.suffix.lower() == EXE_SUFFIX:
+            root_dir = resolved.parent
+        else:
+            root_dir = resolved
+
+        if resolved.is_dir() and resolved.name.lower() == GAME_DIR_NAME:
+            return resolved
+
+        game_dir = root_dir / GAME_DIR_NAME
+        if game_dir.is_dir():
+            return game_dir
+
+        raise FileNotFoundError("无法定位 game 目录用于清理 RPYC")
+
+    def cleanup_rpyc_files(self, game_dir: Path) -> tuple[int, int, int]:
+        removed = 0
+        skipped = 0
+        total = 0
+        for rpyc_file in game_dir.rglob(f"*{RPYC_SUFFIX}"):
+            total += 1
+            rpy_file = rpyc_file.with_suffix(RPY_SUFFIX)
+            # 保留未成功反编译的脚本，避免误删唯一脚本来源。
+            if not rpy_file.exists():
+                skipped += 1
+                continue
+            try:
+                rpyc_file.unlink()
+                removed += 1
+            except Exception as exc:
+                skipped += 1
+                LogManager.get().warning(f"清理 RPYC 失败 {rpyc_file}", exc)
+        return removed, skipped, total
+
+
 class PackUnpackPage(Base, QWidget):
     """解包/打包页面"""
 
@@ -293,8 +379,6 @@ class PackUnpackPage(Base, QWidget):
         self.unpack_worker = None
         self.decompile_worker = None
         self.cleanup_worker = None
-        self._pending_decompile_after_unpack = False
-        self._pending_decompile_fallback_options = "4x"
         self._init_ui()
 
     def _init_ui(self):
@@ -477,10 +561,10 @@ class PackUnpackPage(Base, QWidget):
         self.decompile_button.clicked.connect(self._decompile)
         btn_row.addWidget(self.decompile_button)
 
-        self.unpack_and_decompile_button = PushButton("解包 + 反编译", icon=FluentIcon.PLAY)
-        self.unpack_and_decompile_button.setToolTip("按解包设置先解包归档，然后优先使用 UnRen 反编译")
-        self.unpack_and_decompile_button.clicked.connect(self._unpack_and_decompile)
-        btn_row.addWidget(self.unpack_and_decompile_button)
+        self.cleanup_rpyc_button = PushButton("清理 RPYC 文件", icon=FluentIcon.DELETE)
+        self.cleanup_rpyc_button.setToolTip("删除 game 目录内已成功反编译的 RPYC 文件")
+        self.cleanup_rpyc_button.clicked.connect(self.cleanup_rpyc_files)
+        btn_row.addWidget(self.cleanup_rpyc_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
@@ -582,13 +666,6 @@ class PackUnpackPage(Base, QWidget):
         else:
             LogManager.get().info(message or "解包完成")
             InfoBar.info(title, message, parent=self)
-
-        if self._pending_decompile_after_unpack:
-            self._pending_decompile_after_unpack = False
-            fallback_options = self._pending_decompile_fallback_options or "4x"
-            self._pending_decompile_fallback_options = "4x"
-            if level != "error":
-                self._decompile(fallback_unren_options=fallback_options)
 
     def _cleanup_unpack_artifacts(self):
         """清理解包/反编译可能遗留的临时文件（不影响正常文件）。"""
@@ -709,28 +786,44 @@ class PackUnpackPage(Base, QWidget):
             LogManager.get().info(message or "反编译完成")
             InfoBar.info(title, message, parent=self)
 
-    def _unpack_and_decompile(self):
-        """一键：按解包设置解包后，执行 unrpyc 反编译。"""
-        game_dir = self.unpack_game_dir_edit.text().strip()
-        if not game_dir:
-            InfoBar.warning("提示", "请选择 game 目录", parent=self)
-            return
-        if not Path(game_dir).exists():
-            InfoBar.error("错误", "目录不存在", parent=self)
-            return
+    def cleanup_rpyc_files(self) -> None:
+        """清理 game 目录下已成功反编译的 RPYC 文件。"""
+        try:
+            if self.decompile_worker and self.decompile_worker.isRunning():
+                InfoBar.warning("提示", "清理任务正在进行中", parent=self)
+                return
 
-        # 自动填充反编译目标（未填写时使用 game 目录）
-        if not self.decompile_exe_edit.text().strip():
-            try:
-                self.decompile_exe_edit.setText(str(Path(game_dir)))
-            except Exception:
-                pass
+            if self.unpack_worker and self.unpack_worker.isRunning():
+                InfoBar.warning("提示", "解包任务正在进行中", parent=self)
+                return
 
-        self._pending_decompile_after_unpack = True
-        self._pending_decompile_fallback_options = "6x"
-        if not self._unpack():
-            self._pending_decompile_after_unpack = False
-            self._pending_decompile_fallback_options = "4x"
+            if self.cleanup_worker and self.cleanup_worker.isRunning():
+                InfoBar.warning("提示", "清理任务正在进行中", parent=self)
+                return
+
+            target = self.decompile_exe_edit.text().strip()
+            if not target:
+                fallback = self.unpack_game_dir_edit.text().strip()
+                if fallback:
+                    self.decompile_exe_edit.setText(fallback)
+                    target = fallback
+            if not target:
+                InfoBar.warning("提示", "请选择 game 目录（或根目录/可执行文件）", parent=self)
+                return
+
+            if not Path(target).exists():
+                InfoBar.error("错误", "路径不存在", parent=self)
+                return
+
+            LogManager.get().info(f"开始清理 RPYC: {target}")
+            self._set_decompile_busy(True, "准备清理…")
+            self.decompile_worker = RpycCleanupWorker(target)
+            self.decompile_worker.progress.connect(self._on_decompile_progress)
+            self.decompile_worker.finished.connect(self._on_decompile_finished)
+            self.decompile_worker.start()
+        except Exception as exc:
+            LogManager.get().error("清理 RPYC 失败", exc)
+            InfoBar.error("错误", f"清理失败: {exc}", parent=self)
 
     def _set_unpack_busy(self, busy: bool, message: str = "") -> None:
         self.unpack_button.setEnabled(not busy)
@@ -741,11 +834,11 @@ class PackUnpackPage(Base, QWidget):
 
         # 避免同时触发反编译导致目录冲突
         self.decompile_button.setEnabled(not busy)
-        self.unpack_and_decompile_button.setEnabled(not busy)
+        self.cleanup_rpyc_button.setEnabled(not busy)
 
     def _set_decompile_busy(self, busy: bool, message: str = "") -> None:
         self.decompile_button.setEnabled(not busy)
-        self.unpack_and_decompile_button.setEnabled(not busy)
+        self.cleanup_rpyc_button.setEnabled(not busy)
         self.decompile_progress.setVisible(busy)
         self.decompile_status_label.setVisible(busy)
         self.decompile_status_label.setText(message or "")
@@ -753,6 +846,7 @@ class PackUnpackPage(Base, QWidget):
         # 避免同时触发解包导致目录冲突
         self.unpack_button.setEnabled(not busy)
         self.unpack_cleanup_button.setEnabled(not busy)
+        self.cleanup_rpyc_button.setEnabled(not busy)
 
     def _pack(self):
         """打包为 RPA（后台线程）"""
