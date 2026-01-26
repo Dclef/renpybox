@@ -225,6 +225,14 @@ class TaskRequester(Base):
             }
         }
 
+        # 思考模式切换 - QWEN3（与 OpenAI 格式保持一致）
+        if __class__.RE_QWEN3.search(self.platform.get('model')) is not None:
+            if thinking == True:
+                pass
+            else:
+                if "/no_think" not in messages[-1].get("content", ""):
+                    messages[-1]["content"] = messages[-1].get('content') + "\n" + "/no_think"
+
         return args
 
     # 发起请求
@@ -244,8 +252,18 @@ class TaskRequester(Base):
                 **self.generate_sakura_args(messages, thinking, args)
             )
 
-            # 提取回复的文本内容
-            response_result = response.choices[0].message.content
+            # 提取回复内容（支持 Qwen3 的 <think> 标签）
+            message = response.choices[0].message
+            if hasattr(message, "reasoning_content") and isinstance(message.reasoning_content, str):
+                response_think = __class__.RE_LINE_BREAK.sub("\n", message.reasoning_content.strip())
+                response_result = message.content.strip()
+            elif "</think>" in message.content:
+                splited = message.content.split("</think>")
+                response_think = __class__.RE_LINE_BREAK.sub("\n", splited[0].removeprefix("<think>").strip())
+                response_result = splited[-1].strip()
+            else:
+                response_think = ""
+                response_result = message.content.strip()
         except Exception as e:
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
