@@ -457,13 +457,28 @@ class YiJianFanyiPage(Base, QWidget):
         tl_dir = Path(game_dir) / "game" / "tl" / tl_name
         config.renpy_tl_folder = str(tl_dir)
         
-        # 输入设为 tl 目录，输出默认为 tl 同级的 out（确保不与输入同目录）
+        # 输入：tl 目录（待翻译文件）
         config.input_folder = str(tl_dir)
-        config.output_folder = str(tl_dir.parent / "out")
+        
+        # 输出：游戏根目录下的独立文件夹（不会被 Ren'Py 引擎识别）
+        output_base = Path(game_dir) / "RenpyBox_Translation"
+        config.output_folder = str(output_base / tl_name)
+        
         # 确保输出目录存在
         Path(config.output_folder).mkdir(parents=True, exist_ok=True)
         
+        # 保存输出根目录，用于后续显示
+        if not hasattr(config, 'renpybox_output_root'):
+            # 动态添加属性（如果配置类不支持，可以忽略）
+            try:
+                config.renpybox_output_root = str(output_base)
+            except:
+                pass
+        
         config.save()
+        
+        self.info(f"[配置] 输入目录: {config.input_folder}")
+        self.info(f"[配置] 输出目录: {config.output_folder}")
     
     def _check_old_translation(self, game_dir):
         """检测是否有旧翻译"""
@@ -632,7 +647,10 @@ class YiJianFanyiPage(Base, QWidget):
         page, layout = self._create_page_container("执行翻译", 4)
         
         layout.addWidget(SubtitleLabel("准备翻译"))
-        self.step4_status = BodyLabel("请确认已配置翻译接口与输入/输出目录。")
+        self.step4_status = BodyLabel(
+            "翻译文件将输出到游戏根目录下的独立文件夹，不会被引擎识别。\n"
+            "完成后可在「后续处理」中应用到游戏。"
+        )
         layout.addWidget(self.step4_status)
         
         layout.addSpacing(20)
@@ -691,6 +709,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 工具卡片
         tools = [
+            ("应用翻译到游戏", "将翻译结果复制到游戏 tl 目录", self._tool_apply_translation),
             ("检测/修复报错", "修复缩进和格式问题", self._tool_fix_errors),
             ("设置默认语言", "设置游戏启动时的默认语言", self._tool_set_default_lang),
             ("添加语言切换", "注入语言切换按钮", self._tool_add_lang_switch),
@@ -1305,7 +1324,32 @@ class YiJianFanyiPage(Base, QWidget):
         if not self._refresh_step4_ready():
             InfoBar.warning("提示", "请先在接口设置激活翻译平台，并在项目设置填写输入/输出目录。", parent=self)
             return
-        self._open_legacy_translation_page()
+        
+        # 显示友好的目录说明
+        from module.Config import Config
+        from qfluentwidgets import MessageBox
+        
+        config = Config().load()
+        
+        # 根据主题选择样式颜色
+        code_bg = "#2d2d2d" if isDarkTheme() else "#f5f5f5"
+        hint_color = "#aaa" if isDarkTheme() else "#666"
+        
+        msg_box = MessageBox(
+            "📁 翻译目录说明",
+            f"<b>输入目录</b>（待翻译文件）：<br>"
+            f"<code style='background:{code_bg};padding:2px 4px;'>{config.input_folder}</code><br><br>"
+            f"<b>输出目录</b>（翻译结果）：<br>"
+            f"<code style='background:{code_bg};padding:2px 4px;'>{config.output_folder}</code><br><br>"
+            f"<p style='color:{hint_color};'><i>💡 输出目录位于游戏根目录下，不会被 Ren'Py 引擎识别。<br>"
+            f"翻译完成后，可在「后续处理」中应用到游戏。</i></p>",
+            self
+        )
+        msg_box.yesButton.setText("开始翻译")
+        msg_box.cancelButton.setText("取消")
+        
+        if msg_box.exec():
+            self._open_legacy_translation_page()
         
     def _open_legacy_translation_page(self):
         """打开传统翻译页面，保留续翻译能力"""
@@ -1425,6 +1469,95 @@ class YiJianFanyiPage(Base, QWidget):
         self.has_old_translation = False
         
     # 工具函数
+    def _tool_apply_translation(self, card):
+        """应用翻译：将输出目录的文件复制到 tl 目录"""
+        from module.Config import Config
+        import shutil
+        from qfluentwidgets import MessageBox
+        from pathlib import Path
+        
+        config = Config().load()
+        
+        # 验证路径
+        output_dir = Path(config.output_folder)
+        input_dir = Path(config.input_folder)
+        
+        if not output_dir.exists():
+            InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
+            return
+        
+        if not input_dir.exists():
+            InfoBar.error("错误", f"目标目录不存在：{input_dir}", parent=self)
+            return
+        
+        # 统计文件
+        output_files = list(output_dir.rglob("*.rpy"))
+        if not output_files:
+            InfoBar.warning("提示", "输出目录中没有翻译文件（.rpy）", parent=self)
+            return
+        
+        # 确认对话框 - 根据主题选择样式颜色
+        code_bg = "#2d2d2d" if isDarkTheme() else "#f5f5f5"
+        warn_color = "#e67e22" if isDarkTheme() else "#d35400"
+        
+        msg_box = MessageBox(
+            "确认应用翻译",
+            f"<b>即将应用翻译到游戏</b><br><br>"
+            f"<b>源目录：</b><br><code style='background:{code_bg};padding:2px 4px;'>{output_dir}</code><br><br>"
+            f"<b>目标目录：</b><br><code style='background:{code_bg};padding:2px 4px;'>{input_dir}</code><br><br>"
+            f"<b>文件数量：</b>{len(output_files)} 个<br><br>"
+            f"<p style='color:{warn_color};'><i>⚠️ 这将覆盖目标目录中的同名文件！<br>"
+            f"建议先备份原始文件。</i></p>",
+            self
+        )
+        msg_box.yesButton.setText("应用翻译")
+        msg_box.cancelButton.setText("取消")
+        
+        if not msg_box.exec():
+            return
+        
+        # 执行复制
+        try:
+            success_count = 0
+            failed_files = []
+            
+            for file in output_files:
+                try:
+                    # 计算相对路径
+                    rel_path = file.relative_to(output_dir)
+                    target_file = input_dir / rel_path
+                    
+                    # 确保目标目录存在
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # 复制文件
+                    shutil.copy2(file, target_file)
+                    success_count += 1
+                    
+                except Exception as e:
+                    failed_files.append((file.name, str(e)))
+            
+            # 显示结果
+            if failed_files:
+                msg = f"应用完成：成功 {success_count} 个，失败 {len(failed_files)} 个\n\n失败文件：\n"
+                msg += "\n".join([f"- {name}: {err}" for name, err in failed_files[:5]])
+                if len(failed_files) > 5:
+                    msg += f"\n... 还有 {len(failed_files) - 5} 个"
+                InfoBar.warning("部分成功", msg, duration=5000, parent=self)
+            else:
+                InfoBar.success(
+                    "应用成功",
+                    f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
+                    f"现在可以启动游戏查看翻译效果。",
+                    duration=5000,
+                    parent=self
+                )
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            InfoBar.error("错误", f"应用翻译失败：{e}", parent=self)
+    
     def _tool_fix_errors(self, card):
         # ... (Keep existing implementation or simplify)
         InfoBar.info("提示", "功能调用", parent=self)
