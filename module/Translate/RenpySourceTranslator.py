@@ -493,6 +493,21 @@ class RenpySourceParser:
                         protected_tags=protected,
                     ))
             
+            # 检查是否有变量赋值中的字符串
+            match_var = self.RE_VAR_ASSIGN.match(line)
+            if match_var:
+                text = match_var.group("text")
+                if text.strip():
+                    protected = self._extract_protected_tags(text)
+                    entries_list.append(TranslationEntry(
+                        line_number=line_num,
+                        line_type=LineType.NARRATION,
+                        original_line=line,
+                        speaker=None,
+                        text=text,
+                        protected_tags=protected,
+                    ))
+
             if entries_list:
                 return entries_list
             

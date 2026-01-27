@@ -960,8 +960,9 @@ def render_replace_script(
     pairs: Sequence[Pair],
     *,
     function_name: str = "replace_text",
-    target_name: str = "s",
+    target_name: str = "t",
     assign_to_config: bool = True,
+    language: str | None = "chinese",
 ) -> str:
     """Render a Ren'Py script that defines a ``replace_text`` hook."""
 
@@ -969,21 +970,32 @@ def render_replace_script(
         "# Auto-generated replace_text hook",
         "# 用于替换官方抽取无法覆盖的文本",
         "",
-        "init python early:",
+        "init python:",
+        "",
+        "    import re",
+        f"    def {function_name}({target_name}):",
+        "",
     ]
-    lines.append(f"    def {function_name}({target_name}):")
-    lines.append(f"        if not isinstance({target_name}, str):")
-    lines.append(f"            return {target_name}")
-    
-    if not pairs:
-        lines.append(f"        return {target_name}")
+
+    if language:
+        lines.append(f"        if _preferences.language == \"{language}\":")
+        if not pairs:
+            lines.append("            pass")
+        else:
+            for original, translation in pairs:
+                escaped_old = _escape_string(original)
+                escaped_new = _escape_string(translation)
+                lines.append(f'            {target_name} = {target_name}.replace("{escaped_old}" , "{escaped_new}")')
+        lines.append("")
     else:
-        lines.append(f"        result = {target_name}")
-        for original, translation in pairs:
-            escaped_old = _escape_string(original)
-            escaped_new = _escape_string(translation)
-            lines.append(f'        result = result.replace("{escaped_old}", "{escaped_new}")')
-        lines.append("        return result")
+        if pairs:
+            for original, translation in pairs:
+                escaped_old = _escape_string(original)
+                escaped_new = _escape_string(translation)
+                lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}" , "{escaped_new}")')
+            lines.append("")
+
+    lines.append(f"        return {target_name}")
 
     if assign_to_config:
         lines.append("")
@@ -991,7 +1003,6 @@ def render_replace_script(
 
     lines.append("")
     return "\n".join(lines)
-
 
 def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwargs) -> Path:
     """Write a rendered replace hook to ``output_path`` and return the path."""
