@@ -229,7 +229,7 @@ class VersionManager(Base):
             browser_download_url = target_asset.get("browser_download_url", "")
             if not browser_download_url:
                 raise Exception("browser_download_url is empty ...")
-            with httpx.stream("GET", browser_download_url, timeout = 60, follow_redirects = True) as response:
+            with httpx.stream("GET", browser_download_url, timeout = 120, follow_redirects = True) as response:
                 response.raise_for_status()
 
                 # 获取文件总大小
@@ -240,11 +240,11 @@ class VersionManager(Base):
                 if total_size == 0:
                     raise Exception("Content-Length is 0 ...")
 
-                # 写入文件并更新进度
+                # 写入文件并更新进度（使用4MB缓冲区加速下载）
                 os.remove(__class__.TEMP_PATH) if os.path.isfile(__class__.TEMP_PATH) else None
                 os.makedirs(os.path.dirname(__class__.TEMP_PATH), exist_ok = True)
                 with open(__class__.TEMP_PATH, "wb") as writer:
-                    for chunk in response.iter_bytes(chunk_size = 1024 * 1024):
+                    for chunk in response.iter_bytes(chunk_size = 4 * 1024 * 1024):
                         if chunk is not None:
                             writer.write(chunk)
                             downloaded_size = downloaded_size + len(chunk)
