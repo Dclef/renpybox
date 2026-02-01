@@ -36,6 +36,18 @@ try:
 except Exception as e:
     print(f"Warning: failed to create sanitized config: {e}")
 
+# 收集需要作为脚本运行的 .py 文件（不是模块导入的）
+# PyInstaller 6.x: datas 目标路径是相对于 _internal 目录的
+script_files = [
+    ('module/Tool/android_build_runner.py', 'module/Tool'),
+    ('module/Tool/rpatool_core.py', 'module/Tool'),
+]
+for src, dest in script_files:
+    src_path = project_root / src
+    if src_path.exists():
+        datas.append((str(src_path), dest))
+        print(f"[DATA] Script: {src} -> _internal/{dest}")
+
 binaries = []
 hiddenimports = []
 
