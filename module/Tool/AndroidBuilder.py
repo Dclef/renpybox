@@ -4,10 +4,21 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Iterable
 
 from base.LogManager import LogManager
+
+
+def _get_module_dir() -> Path:
+    """获取模块目录，兼容打包和源码运行"""
+    if getattr(sys, 'frozen', False):
+        # 打包环境：使用 _internal/module/Tool
+        return Path(sys._MEIPASS) / "module" / "Tool"
+    else:
+        # 源码环境
+        return Path(__file__).resolve().parent
 
 
 class AndroidBuilder:
@@ -34,7 +45,7 @@ class AndroidBuilder:
 
     @property
     def runner_script(self) -> Path:
-        return Path(__file__).resolve().parent / "android_build_runner.py"
+        return _get_module_dir() / "android_build_runner.py"
 
     def validate_paths(self) -> list[str]:
         errors: list[str] = []
