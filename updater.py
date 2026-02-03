@@ -324,6 +324,11 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
                     rel_path = src_file.relative_to(item)
                     dest_file = dest / rel_path
                     
+                    # 避免覆盖正在运行的更新器自身
+                    if dest_file.resolve() == running_exe_path:
+                        skipped_count += 1
+                        continue
+
                     if _should_update_file(src_file, dest_file):
                         _copy2_with_retry(src_file, dest_file, retries = 20, delay_sec = 0.15)
                         updated_count += 1
