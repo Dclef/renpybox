@@ -25,6 +25,8 @@ from module.Config import Config
 from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Extract.MaExtractor import MaExtractor
 from module.Extract.JsonExtractor import JsonExtractor
+from module.File.RenPyTL.RenPyTlExtractor import RenPyTlExtractor
+from module.File.RenPyTL.RenPyTlParser import parse_document
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import should_skip_text
 
@@ -1018,10 +1020,21 @@ class UnifiedExtractor:
         originals = set()
         if not tl_dir.exists():
             return originals
-            
+
+        extractor = RenPyTlExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
-                content = rpy_file.read_text(encoding='utf-8', errors='replace')
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_document(content.splitlines())
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    originals.add(item.get_src())
+                continue
+            except Exception:
+                pass
+
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 for match in self.OLD_LINE_RE.finditer(content):
                     old_text = match.group("text").replace('\\"', '"').replace("\\'", "'")
                     originals.add(old_text)
@@ -1040,6 +1053,21 @@ class UnifiedExtractor:
             return pending
 
         for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_document(content.splitlines())
+                extractor = RenPyTlExtractor()
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    src = item.get_src()
+                    if should_skip_text(src):
+                        continue
+                    if item.get_dst() == "" or item.get_dst() == src:
+                        pending.add(src)
+                continue
+            except Exception:
+                pass
+
             try:
                 lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:
@@ -1220,6 +1248,27 @@ class UnifiedExtractor:
             return block_originals
 
         for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_document(content.splitlines())
+                extractor = RenPyTlExtractor()
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    extra = item.get_extra_field()
+                    if not isinstance(extra, dict):
+                        continue
+                    renpy = extra.get("renpy")
+                    if not isinstance(renpy, dict):
+                        continue
+                    block = renpy.get("block")
+                    if not isinstance(block, dict):
+                        continue
+                    if str(block.get("kind")) == "LABEL":
+                        block_originals.add(item.get_src())
+                continue
+            except Exception:
+                pass
+
             try:
                 lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:
