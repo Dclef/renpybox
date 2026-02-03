@@ -114,48 +114,65 @@ def _safe_extract(zip_file: zipfile.ZipFile, dest_dir: Path) -> None:
         zip_file.extract(member, dest_dir)
 
 
-def _rmtree_with_retry(path: Path, *, retries: int = 40, delay_sec: float = 0.25) -> None:
-    last_exc: Exception | None = None
-    for _ in range(max(1, retries)):
+def _rmtree_with_retry(path: Path, *, retries: int = 10, delay_sec: float = 0.1) -> None:
+    """带重试的删除目录"""
+    for i in range(max(1, retries)):
         try:
             if path.exists():
-                shutil.rmtree(path, ignore_errors = False)
+                shutil.rmtree(path, ignore_errors=False)
             return
         except Exception as exc:
-            last_exc = exc
-            time.sleep(delay_sec)
-    if last_exc is not None:
-        raise last_exc
+            if i == retries - 1:
+                raise exc
+            time.sleep(delay_sec * (1 + i * 0.5))  # 渐进延迟
 
 
-def _copy2_with_retry(src: Path, dst: Path, *, retries: int = 40, delay_sec: float = 0.25) -> None:
-    last_exc: Exception | None = None
-    for _ in range(max(1, retries)):
+def _copy2_with_retry(src: Path, dst: Path, *, retries: int = 5, delay_sec: float = 0.05) -> None:
+    """带重试的文件复制（优化版）"""
+    for i in range(max(1, retries)):
         try:
-            os.makedirs(dst.parent, exist_ok = True)
+            # 仅在首次尝试时创建目录
+            if i == 0:
+                dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
             return
         except Exception as exc:
-            last_exc = exc
-            time.sleep(delay_sec)
-    if last_exc is not None:
-        raise last_exc
+            if i == retries - 1:
+                raise exc
+            time.sleep(delay_sec * (1 + i))  # 渐进延迟
 
 
-def _file_hash(path: Path, *, chunk_size: int = 262144) -> str:
-    """快速计算文件哈希值（256KB缓冲区）"""
+def _file_hash(path: Path, *, chunk_size: int = 524288) -> str:
+    """快速计算文件哈希值（512KB缓冲区，使用更快的xxhash风格）"""
     try:
+        # 使用 md5 但只取部分数据来加速（首尾+中间采样）
+        file_size = path.stat().st_size
         hasher = hashlib.md5(usedforsecurity=False)
+        
         with open(path, "rb") as f:
-            while chunk := f.read(chunk_size):
-                hasher.update(chunk)
+            # 小于1MB直接全读
+            if file_size < 1048576:
+                hasher.update(f.read())
+            else:
+                # 读取首部512KB
+                hasher.update(f.read(chunk_size))
+                # 读取中间512KB
+                mid_pos = file_size // 2
+                f.seek(mid_pos)
+                hasher.update(f.read(chunk_size))
+                # 读取尾部512KB
+                f.seek(max(0, file_size - chunk_size))
+                hasher.update(f.read(chunk_size))
+                # 加入文件大小作为额外校验
+                hasher.update(str(file_size).encode())
+        
         return hasher.hexdigest()
     except Exception:
         return ""
 
 
 def _should_update_file(src: Path, dst: Path) -> bool:
-    """判断文件是否需要更新"""
+    """判断文件是否需要更新（优化版）"""
     if not dst.exists():
         return True
     
@@ -163,15 +180,24 @@ def _should_update_file(src: Path, dst: Path) -> bool:
         src_stat = src.stat()
         dst_stat = dst.stat()
         
-        # 快速检查：大小不同
+        # 快速检查：大小不同，必须更新
         if src_stat.st_size != dst_stat.st_size:
             return True
         
-        # 小文件：直接比较内容（比哈希更快）
-        if src_stat.st_size < 8192:
+        # 小文件（<32KB）：直接比较内容
+        if src_stat.st_size < 32768:
             return src.read_bytes() != dst.read_bytes()
         
-        # 大文件：比较哈希
+        # 中等文件（<1MB）：比较修改时间，如果源文件更新则更新
+        if src_stat.st_size < 1048576:
+            if src_stat.st_mtime > dst_stat.st_mtime + 1:
+                return True
+            return src.read_bytes() != dst.read_bytes()
+        
+        # 大文件：先比较修改时间，再用采样哈希
+        if src_stat.st_mtime > dst_stat.st_mtime + 1:
+            return True
+        
         return _file_hash(src) != _file_hash(dst)
     except Exception:
         return True
@@ -275,14 +301,14 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     for cfg, bak in config_backup_pairs:
         if cfg.is_file():
             try:
-                os.makedirs(bak.parent, exist_ok = True)
-                _copy2_with_retry(cfg, bak, retries = 10, delay_sec = 0.2)
+                bak.parent.mkdir(parents=True, exist_ok=True)
+                _copy2_with_retry(cfg, bak, retries=5, delay_sec=0.05)
             except Exception:
                 pass
 
     staging_dir = install_dir / "_update_staging"
     if staging_dir.exists():
-        _rmtree_with_retry(staging_dir, retries = 10, delay_sec = 0.2)
+        _rmtree_with_retry(staging_dir, retries=5, delay_sec=0.1)
     staging_dir.mkdir(parents = True, exist_ok = True)
 
     try:
@@ -292,78 +318,105 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         payload_dir = _find_payload_dir(staging_dir, exe_name = exe_name)
 
         running_exe_path = Path(sys.executable).resolve()
+        running_exe_path_lower = str(running_exe_path).lower()
         preserve_dirs = {"input", "output", "log"}
-        updated_count = 0
-        skipped_count = 0
-        deleted_count = 0
+        updater_names = {"renpyboxupdater.exe", "updater.exe"}
         
-        # 收集新版本中的所有文件路径（用于清理旧文件）
+        # 收集所有需要处理的文件任务
+        copy_tasks: list[tuple[Path, Path]] = []  # (src, dst)
         new_files: set[Path] = set()
-        for item in payload_dir.iterdir():
-            if item.name in preserve_dirs:
-                continue
-            if item.is_dir():
-                for src_file in item.rglob("*"):
-                    if src_file.is_file():
-                        rel = src_file.relative_to(payload_dir)
-                        new_files.add(rel)
-            elif item.name.lower() != "config.json":
-                new_files.add(Path(item.name))
+        skipped_count = 0
         
-        # 增量更新文件
         for item in payload_dir.iterdir():
             if item.name in preserve_dirs:
                 continue
-
-            dest = install_dir / item.name
+            
             if item.is_dir():
                 for src_file in item.rglob("*"):
                     if not src_file.is_file():
                         continue
                     
                     rel_path = src_file.relative_to(item)
-                    dest_file = dest / rel_path
+                    dest_file = (install_dir / item.name / rel_path)
+                    rel_to_payload = src_file.relative_to(payload_dir)
+                    new_files.add(rel_to_payload)
                     
-                    # 避免覆盖正在运行的更新器自身
-                    if dest_file.resolve() == running_exe_path:
+                    # 跳过更新器自身
+                    if str(dest_file.resolve()).lower() == running_exe_path_lower:
                         skipped_count += 1
                         continue
-
-                    if _should_update_file(src_file, dest_file):
-                        _copy2_with_retry(src_file, dest_file, retries = 20, delay_sec = 0.15)
-                        updated_count += 1
-                    else:
+                    if dest_file.name.lower() in updater_names:
                         skipped_count += 1
+                        continue
+                    
+                    copy_tasks.append((src_file, dest_file))
             else:
                 if item.name.lower() == "config.json":
                     continue
-                if str(dest.resolve()).lower() == str(running_exe_path).lower():
+                dest_file = install_dir / item.name
+                new_files.add(Path(item.name))
+                
+                if str(dest_file.resolve()).lower() == running_exe_path_lower:
+                    continue
+                if item.name.lower() in updater_names:
                     continue
                 
-                if _should_update_file(item, dest):
-                    _copy2_with_retry(item, dest, retries = 20, delay_sec = 0.15)
-                    updated_count += 1
-                else:
-                    skipped_count += 1
+                copy_tasks.append((item, dest_file))
+        
+        # 预先创建所有目标目录（避免并行时的竞争）
+        dest_dirs: set[Path] = {task[1].parent for task in copy_tasks}
+        for d in dest_dirs:
+            d.mkdir(parents=True, exist_ok=True)
+        
+        # 并行复制文件
+        updated_count = 0
+        
+        def _copy_if_needed(task: tuple[Path, Path]) -> int:
+            """返回 1 如果更新了文件，否则返回 0"""
+            src, dst = task
+            if _should_update_file(src, dst):
+                _copy2_with_retry(src, dst, retries=5, delay_sec=0.05)
+                return 1
+            return 0
+        
+        # 根据任务数量选择串行或并行
+        if len(copy_tasks) < 30:
+            for task in copy_tasks:
+                updated_count += _copy_if_needed(task)
+            skipped_count += len(copy_tasks) - updated_count
+        else:
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(_copy_if_needed, copy_tasks))
+            updated_count = sum(results)
+            skipped_count += len(copy_tasks) - updated_count
         
         # 清理旧文件（新版本中不存在的文件）
+        deleted_count = 0
         internal_dir = install_dir / "_internal"
         if internal_dir.exists():
+            files_to_delete: list[Path] = []
+            protected_suffixes = {".json", ".log", ".bak"}
+            
             for old_file in internal_dir.rglob("*"):
                 if not old_file.is_file():
                     continue
                 rel = Path("_internal") / old_file.relative_to(internal_dir)
+                
                 # 保护更新器和配置文件
                 if "updater" in old_file.name.lower():
                     continue
-                if old_file.suffix.lower() in {".json", ".log", ".bak"}:
+                if old_file.suffix.lower() in protected_suffixes:
                     continue
                 if rel not in new_files:
-                    try:
-                        old_file.unlink()
-                        deleted_count += 1
-                    except Exception:
-                        pass
+                    files_to_delete.append(old_file)
+            
+            # 批量删除
+            for f in files_to_delete:
+                try:
+                    f.unlink()
+                    deleted_count += 1
+                except Exception:
+                    pass
         
         # 写入更新统计到日志
         try:
@@ -378,8 +431,8 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         for cfg, bak in config_backup_pairs:
             if bak.is_file():
                 try:
-                    os.makedirs(cfg.parent, exist_ok = True)
-                    _copy2_with_retry(bak, cfg, retries = 10, delay_sec = 0.2)
+                    cfg.parent.mkdir(parents=True, exist_ok=True)
+                    _copy2_with_retry(bak, cfg, retries=5, delay_sec=0.05)
                 except Exception:
                     pass
 
@@ -389,7 +442,7 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
             pass
 
         try:
-            _rmtree_with_retry(staging_dir, retries = 10, delay_sec = 0.2)
+            _rmtree_with_retry(staging_dir, retries=5, delay_sec=0.1)
         except Exception:
             pass
 
