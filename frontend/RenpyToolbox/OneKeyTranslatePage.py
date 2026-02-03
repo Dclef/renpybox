@@ -318,6 +318,29 @@ class YiJianFanyiPage(Base, QWidget):
         
         layout.addWidget(self.old_translation_card)
 
+        # 高级选项
+        options_card = CardWidget()
+        options_layout = QVBoxLayout(options_card)
+        options_layout.setContentsMargins(12, 12, 12, 12)
+        options_layout.setSpacing(6)
+
+        options_title = StrongBodyLabel("高级选项")
+        options_layout.addWidget(options_title)
+
+        from module.Config import Config
+        config = Config().load()
+
+        self.inject_base_box_chk = CheckBox("注入 UI 翻译包（base_box）")
+        self.inject_base_box_chk.setChecked(getattr(config, "onekey_inject_base_box", False))
+        self.inject_base_box_chk.setToolTip(
+            "自动注入预置的 UI 翻译（开始、保存、设置等）。\n"
+            "如果你已有自定义 UI 翻译，请取消勾选。"
+        )
+        self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
+        options_layout.addWidget(self.inject_base_box_chk)
+
+        layout.addWidget(options_card)
+
         layout.addSpacing(20)        # 语言设置（简化）
         layout.addWidget(SubtitleLabel("翻译语言设置"))
         
@@ -439,6 +462,13 @@ class YiJianFanyiPage(Base, QWidget):
             self.old_translation_card.setVisible(False)
             self.has_old_translation = False
     
+    def _on_inject_base_box_changed(self, state):
+        """更新 base_box 注入开关"""
+        from module.Config import Config
+        config = Config().load()
+        config.onekey_inject_base_box = bool(state)
+        config.save()
+
     def _sync_game_dir_to_config(self, game_dir):
         """同步游戏目录到配置文件，包括输入/输出目录"""
         from module.Config import Config
@@ -1599,3 +1629,4 @@ class YiJianFanyiPage(Base, QWidget):
 # 兼容旧引用
 OneKeyTranslatePage = YiJianFanyiPage
 __all__ = ["YiJianFanyiPage", "OneKeyTranslatePage"]
+
