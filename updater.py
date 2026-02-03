@@ -207,51 +207,53 @@ def _parallel_extract(zip_path: Path, dest_dir: Path, *, max_workers: int = 4) -
     """并行解压ZIP文件"""
     with zipfile.ZipFile(zip_path, 'r') as zf:
         members = zf.infolist()
-        dest_root = dest_dir.resolve()
+    
+    dest_root = dest_dir.resolve()
 
-        def _safe_member_path(member_name: str) -> Path | None:
-            member_path = dest_dir / member_name
-            try:
-                resolved = member_path.resolve()
-                if dest_root not in resolved.parents and resolved != dest_root:
-                    return None  # 跳过不安全路径
-            except Exception:
+    def _safe_member_path(member_name: str) -> Path | None:
+        member_path = dest_dir / member_name
+        try:
+            resolved = member_path.resolve()
+            if dest_root not in resolved.parents and resolved != dest_root:
                 return None
-            return member_path
+        except Exception:
+            return None
+        return member_path
 
-        # 先创建所有目录，避免并行解压时目录创建的竞争
-        dir_paths: set[Path] = set()
-        for m in members:
-            member_path = _safe_member_path(m.filename)
-            if member_path is None:
-                continue
-            if m.is_dir():
-                dir_paths.add(member_path)
-            else:
-                parent = member_path.parent
-                if parent != dest_dir:
-                    dir_paths.add(parent)
-        for d in sorted(dir_paths, key = lambda p: len(p.parts)):
-            try:
-                d.mkdir(parents = True, exist_ok = True)
-            except Exception:
-                pass
-        
-        def extract_member(member: zipfile.ZipInfo) -> None:
-            if member.is_dir():
-                return
-            # 安全检查
-            if _safe_member_path(member.filename) is None:
-                return
-            zf.extract(member, dest_dir)
-        
-        # 小文件数量少时用单线程，避免开销
-        if len(members) < 50:
-            for m in members:
-                extract_member(m)
+    # 先创建所有目录
+    dir_paths: set[Path] = set()
+    file_members: list[zipfile.ZipInfo] = []
+    for m in members:
+        member_path = _safe_member_path(m.filename)
+        if member_path is None:
+            continue
+        if m.is_dir():
+            dir_paths.add(member_path)
         else:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                list(executor.map(extract_member, members))
+            file_members.append(m)
+            if member_path.parent != dest_dir:
+                dir_paths.add(member_path.parent)
+    
+    for d in sorted(dir_paths, key=lambda p: len(p.parts)):
+        d.mkdir(parents=True, exist_ok=True)
+
+    def _extract_batch(batch: list[zipfile.ZipInfo]) -> None:
+        # 每个线程单独打开 ZipFile，避免线程安全问题
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for member in batch:
+                if _safe_member_path(member.filename) is None:
+                    continue
+                zf.extract(member, dest_dir)
+
+    # 小文件数量少时用单线程
+    if len(file_members) < 50:
+        _extract_batch(file_members)
+    else:
+        # 分批并行解压
+        batch_size = (len(file_members) + max_workers - 1) // max_workers
+        batches = [file_members[i:i + batch_size] for i in range(0, len(file_members), batch_size)]
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(_extract_batch, batches))
 
 
 def _find_payload_dir(staging_dir: Path, *, exe_name: str) -> Path:
