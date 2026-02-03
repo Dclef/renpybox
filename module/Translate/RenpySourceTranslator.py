@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Set
 
 from base.LogManager import LogManager
 from module.Text.SkipRules import should_skip_text
@@ -818,7 +818,7 @@ class RenpySourceTranslator:
                     continue
                 
                 entries = self.parser.parse_file(file_path)
-                translatable = [e for e in entries if e.needs_translation and e.text.strip()]
+                translatable = [e for e in entries if e.needs_translation and e.text.strip() and not self.should_preserve(e.text)]
                 
                 if translatable:
                     results[file_path] = translatable
@@ -831,7 +831,7 @@ class RenpySourceTranslator:
             return []
         
         entries = self.parser.parse_file(file_path)
-        translatable = [e for e in entries if e.needs_translation and e.text.strip()]
+        translatable = [e for e in entries if e.needs_translation and e.text.strip() and not self.should_preserve(e.text)]
         return translatable
     
     def count_entries(self, game_dir: Path) -> Tuple[int, int, int]:
@@ -1025,3 +1025,35 @@ class RenpySourceTranslator:
     def set_character_names(self, names: Dict[str, str]):
         """设置角色名映射"""
         self.character_names = names
+
+    def _load_from_config(self):
+        """从配置加载术语库和禁翻表"""
+        try:
+            from module.Config import Config
+            config = Config().load()
+            if config.glossary_enable and config.glossary_data:
+                for item in config.glossary_data:
+                    if isinstance(item, dict):
+                        src = item.get("src", "").strip()
+                        dst = item.get("dst", "").strip()
+                        if src and dst:
+                            self.glossary[src] = dst
+            if config.text_preserve_enable and config.text_preserve_data:
+                for item in config.text_preserve_data:
+                    src = item.get("src", "") if isinstance(item, dict) else str(item)
+                    if src:
+                        self.text_preserve.add(src.strip())
+        except Exception as e:
+            self.logger.warning(f"加载配置失败（将使用空术语库）: {e}")
+
+    def should_preserve(self, text: str) -> bool:
+        """检查文本是否应保护（不翻译）"""
+        return text.strip() in self.text_preserve
+
+    def set_text_preserve(self, preserves: Set[str]):
+        """设置禁翻表"""
+        self.text_preserve = preserves
+
+
+
+
