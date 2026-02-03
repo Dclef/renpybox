@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-import json
+import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
-from module.Renpy.renpy_io import RenpyStringEntry, RenpyStringReader, RenpyStringWriter
-from module.Translate.RenpySourceTranslator import RenpySourceTranslator
+from module.File.RenPyTL.RenPyTlExtractor import RenPyTlExtractor
+from module.File.RenPyTL.RenPyTlParser import parse_document
+from module.File.RenPyTL.RenPyTlWriter import RenPyTlWriter
 
 
 class RENPY(Base):
-    """Ren'Py reader/writer built around line-accurate parsing (inspired by AiNiee)."""
+    """Ren'Py reader/writer powered by AST-based parsing."""
 
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
         self.input_path = Path(config.input_folder)
         self.output_path = Path(config.output_folder)
-        encoding = config.renpy_default_encoding or "utf-8"
-        self.reader = RenpyStringReader(encoding=encoding)
-        self.writer = RenpyStringWriter(encoding=encoding)
         self._skip_dirs = {"base_box"}
         self._skip_files = {
             "common.rpy",
@@ -31,8 +29,9 @@ class RENPY(Base):
         }
 
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
-        """Parse .rpy files into cache items with precise line mapping."""
+        """Parse .rpy files into cache items via AST extraction."""
         items: List[CacheItem] = []
+        extractor = RenPyTlExtractor()
         for abs_path in abs_paths:
             path = Path(abs_path)
             if not path.is_file():
@@ -42,84 +41,179 @@ class RENPY(Base):
             if self._should_skip_file(path, rel_path):
                 self.debug(f"Skip builtin UI file: {rel_path}")
                 continue
-            try:
-                entries = self.reader.read(path)
-            except Exception as exc:
-                self.error(f"Failed to parse {path}", exc)
-                continue
-            if not entries:
-                entries = self._read_source_entries(path)
 
-            for entry in entries:
-                dst = entry.translation or ""
-                translated = bool(dst and dst != entry.source)
-                status = (
-                    Base.TranslationStatus.TRANSLATED_IN_PAST if translated else Base.TranslationStatus.UNTRANSLATED
-                )
-                items.append(
-                    CacheItem.from_dict(
-                        {
-                            "src": entry.source,
-                            "dst": dst if translated else "",
-                            "row": len(items),
-                            "file_type": CacheItem.FileType.RENPY,
-                            "file_path": rel_path,
-                            "text_type": CacheItem.TextType.RENPY,
-                            "status": status,
-                            "extra_field": json.dumps(
-                                {
-                                    "line_no": entry.line_no,
-                                    "tag": entry.tag,
-                                    "format": entry.format_type,
-                                },
-                                ensure_ascii=False,
-                            ),
-                        }
-                    )
-                )
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                self.error(f"Failed to read {path}", exc)
+                continue
+
+            lines = text.splitlines()
+            doc = parse_document(lines)
+            items.extend(extractor.extract(doc, rel_path))
 
         return items
 
-    def _read_source_entries(self, path: Path) -> List[RenpyStringEntry]:
-        parser = RenpySourceTranslator()
-        entries: List[RenpyStringEntry] = []
-        for entry in parser.scan_file(path):
-            if not entry.needs_translation:
-                continue
-            text = entry.text.strip()
-            if not text:
-                continue
-            line_no = max(0, entry.line_number - 1)
-            entries.append(
-                RenpyStringEntry(
-                    source=entry.text,
-                    translation="",
-                    line_no=line_no,
-                    tag=entry.speaker,
-                    format_type="source",
-                )
-            )
-        return entries
-
     def write_to_path(self, items: List[CacheItem]) -> None:
-        """Write translated items back to .rpy files using stored line metadata."""
-        grouped: Dict[str, List[RenpyStringEntry]] = {}
-        for item in items:
-            if item.get_file_type() != CacheItem.FileType.RENPY:
+        """Write translated items back to .rpy files using AST metadata."""
+        target: List[CacheItem] = [
+            item for item in items if item.get_file_type() == CacheItem.FileType.RENPY
+        ]
+
+        grouped: Dict[str, List[CacheItem]] = {}
+        for item in target:
+            grouped.setdefault(item.get_file_path(), []).append(item)
+
+        writer = RenPyTlWriter()
+        extractor = RenPyTlExtractor()
+
+        for rel_path, group_items in grouped.items():
+            source_path = self._resolve_source_path(rel_path)
+            if not source_path.exists():
                 continue
 
-            entry = self._build_entry_from_item(item)
-            if entry is None:
-                continue
-            grouped.setdefault(item.get_file_path(), []).append(entry)
-
-        for rel_path, entries in grouped.items():
-            target_path = self.output_path / rel_path
-            source_path = target_path if target_path.exists() else self.input_path / rel_path
             try:
-                self.writer.write(target_path, entries, source_file_path=source_path)
+                text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
-                self.error(f"Failed to write Ren'Py file {target_path}", exc)
+                self.error(f"Failed to read Ren'Py file {source_path}", exc)
+                continue
+
+            lines = text.splitlines()
+            items_to_apply = self.build_items_for_writeback(
+                extractor,
+                rel_path,
+                lines,
+                group_items,
+            )
+            items_to_apply.sort(key=self.get_item_target_line)
+
+            applied, skipped = writer.apply_items_to_lines(lines, items_to_apply)
+            if skipped > 0:
+                self.warning(
+                    f"RENPY 导出写回跳过 {skipped} 条: {rel_path} (applied={applied})",
+                    console=False,
+                )
+
+            target_path = self.output_path / rel_path
+            os.makedirs(target_path.parent, exist_ok=True)
+            target_path.write_text("\n".join(lines), encoding="utf-8")
+
+    def build_items_for_writeback(
+        self,
+        extractor: RenPyTlExtractor,
+        rel_path: str,
+        lines: list[str],
+        items: list[CacheItem],
+    ) -> list[CacheItem]:
+        # If all items already carry AST metadata, use them directly.
+        if items and all(self.has_ast_extra_field(v) for v in items):
+            return items
+
+        # Rebuild AST from current file and transfer translations by AST keys.
+        doc = parse_document(lines)
+        new_items = extractor.extract(doc, rel_path)
+        self.transfer_ast_translations(items, new_items)
+        return new_items
+
+    def has_ast_extra_field(self, item: CacheItem) -> bool:
+        extra_raw = item.get_extra_field()
+        if not isinstance(extra_raw, dict):
+            return False
+        renpy = extra_raw.get("renpy")
+        return isinstance(renpy, dict)
+
+    def get_item_target_line(self, item: CacheItem) -> int:
+        extra_raw = item.get_extra_field()
+        extra = extra_raw if isinstance(extra_raw, dict) else {}
+        renpy = extra.get("renpy", {}) if isinstance(extra.get("renpy"), dict) else {}
+        pair = renpy.get("pair", {}) if isinstance(renpy.get("pair"), dict) else {}
+        line = pair.get("target_line")
+        return int(line) if isinstance(line, int) else 0
+
+    def transfer_ast_translations(
+        self,
+        existing_items: list[CacheItem],
+        new_items: list[CacheItem],
+    ) -> None:
+        existing_by_key: dict[tuple[str, str, str], list[CacheItem]] = {}
+        for item in existing_items:
+            if not self.has_ast_extra_field(item):
+                continue
+
+            keys = self.build_ast_keys(item)
+            if not keys:
+                continue
+
+            # Only use the primary key to avoid double consumption.
+            existing_by_key.setdefault(keys[0], []).append(item)
+
+        for item in new_items:
+            keys = self.build_ast_keys(item)
+            if not keys:
+                continue
+
+            candidates: list[CacheItem] | None = None
+            for key in keys:
+                bucket = existing_by_key.get(key)
+                if bucket:
+                    candidates = bucket
+                    break
+            if candidates is None:
+                continue
+
+            picked = self.pick_best_candidate(item, candidates)
+            item.set_dst(picked.get_dst())
+            if picked.get_name_dst() is not None:
+                item.set_name_dst(picked.get_name_dst())
+
+    def build_ast_keys(self, item: CacheItem) -> list[tuple[str, str, str]]:
+        extra_raw = item.get_extra_field()
+        extra = extra_raw if isinstance(extra_raw, dict) else {}
+        renpy = extra.get("renpy")
+        if not isinstance(renpy, dict):
+            return []
+        block = renpy.get("block")
+        digest = renpy.get("digest")
+        if not isinstance(block, dict) or not isinstance(digest, dict):
+            return []
+        lang = block.get("lang")
+        label = block.get("label")
+        if not isinstance(lang, str) or not isinstance(label, str):
+            return []
+
+        primary = digest.get("template_raw_sha1")
+        fallback = digest.get("template_raw_rstrip_sha1")
+
+        keys: list[tuple[str, str, str]] = []
+        if isinstance(primary, str) and primary != "":
+            keys.append((lang, label, primary))
+        if (
+            isinstance(fallback, str)
+            and fallback != ""
+            and (not keys or fallback != keys[0][2])
+        ):
+            keys.append((lang, label, fallback))
+
+        return keys
+
+    def pick_best_candidate(
+        self, item: CacheItem, candidates: list[CacheItem]
+    ) -> CacheItem:
+        if len(candidates) == 1:
+            return candidates.pop(0)
+
+        src = item.get_src()
+        name = item.get_name_src()
+
+        for i, cand in enumerate(candidates):
+            if cand.get_src() == src and cand.get_name_src() == name:
+                return candidates.pop(i)
+
+        for i, cand in enumerate(candidates):
+            if cand.get_src() == src:
+                return candidates.pop(i)
+
+        return candidates.pop(0)
 
     def _relative_to_input(self, path: Path) -> str:
         try:
@@ -141,33 +235,6 @@ class RENPY(Base):
         except Exception:
             return False
 
-    def _build_entry_from_item(self, item: CacheItem) -> Optional[RenpyStringEntry]:
-        extra = self._load_extra(item.get_extra_field())
-        if not isinstance(extra, dict):
-            return None
-
-        line_no = extra.get("line_no")
-        if line_no is None:
-            return None
-
-        dst = item.get_dst()
-        if not dst or dst == item.get_src():
-            return None
-
-        return RenpyStringEntry(
-            source=item.get_src(),
-            translation=dst,
-            line_no=int(line_no),
-            tag=extra.get("tag"),
-            format_type=extra.get("format", ""),
-        )
-
-    def _load_extra(self, extra_field: str | Dict) -> Optional[Dict]:
-        if isinstance(extra_field, dict):
-            return extra_field
-        if isinstance(extra_field, str) and extra_field.strip():
-            try:
-                return json.loads(extra_field)
-            except Exception:
-                return None
-        return None
+    def _resolve_source_path(self, rel_path: str) -> Path:
+        target_path = self.output_path / rel_path
+        return target_path if target_path.exists() else self.input_path / rel_path
