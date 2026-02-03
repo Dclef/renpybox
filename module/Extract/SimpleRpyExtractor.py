@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from base.LogManager import LogManager
+from module.Renpy.renpy_tl_core import TlStmtKind
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Text.SkipRules import should_skip_text
 
 
@@ -180,6 +183,93 @@ class SimpleRpyExtractor:
         return parent in self.BUILTIN_UI_DIRS
 
     def _parse_rpy_file(self, file_path: Path, tl_name: str, rel_path: str) -> List[Dict]:
+        """优先使用 AST 解析，失败则回退到旧正则逻辑。"""
+        entries = self._parse_rpy_file_ast(file_path, rel_path, tl_name)
+        if entries is not None:
+            return entries
+        return self._parse_rpy_file_legacy(file_path, tl_name, rel_path)
+
+    def _parse_rpy_file_ast(
+        self, file_path: Path, rel_path: str, tl_name: str
+    ) -> List[Dict] | None:
+        """使用 AST 解析单个 rpy 文件，失败返回 None。"""
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            self.logger.warning(f"读取文件失败 {file_path}: {e}")
+            return []
+
+        try:
+            lines = content.splitlines()
+            doc = parse_tl_document(lines)
+            extractor = RenpyTlItemExtractor()
+            items = extractor.extract(doc, rel_path)
+            if not items:
+                return []
+
+            meta_by_line = self._collect_meta_by_line(doc)
+            entries: List[Dict] = []
+            for item in items:
+                src = item.get_src()
+                if self._should_skip(src):
+                    continue
+
+                extra = item.get_extra_field()
+                extra_dict = extra if isinstance(extra, dict) else {}
+                renpy = extra_dict.get("renpy", {}) if isinstance(extra_dict.get("renpy"), dict) else {}
+                block = renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
+                label = block.get("label") if isinstance(block.get("label"), str) else ""
+                lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
+                if tl_name and lang and lang != tl_name:
+                    continue
+                kind = str(block.get("kind") or "")
+                entry_type = "strings" if kind == "STRINGS" else "dialogue"
+
+                template_line = item.get_row()
+                source_file, source_line = meta_by_line.get(template_line, (None, None))
+
+                entries.append(
+                    {
+                        "file": rel_path,
+                        "line": template_line,
+                        "original": src,
+                        "translation": item.get_dst(),
+                        "type": entry_type,
+                        "identifier": label,
+                        "source_file": source_file,
+                        "source_line": source_line,
+                    }
+                )
+            return entries
+        except Exception:
+            return None
+
+    def _collect_meta_by_line(self, doc) -> Dict[int, Tuple[str | None, int | None]]:
+        """根据 META 注释收集源文件定位信息（按模板行号映射）。"""
+        pattern = re.compile(r"^game/(.+?):(\d+)$")
+        meta_by_line: Dict[int, Tuple[str | None, int | None]] = {}
+        for block in doc.blocks:
+            last_meta: Tuple[str | None, int | None] = (None, None)
+            for stmt in block.statements:
+                if stmt.stmt_kind == TlStmtKind.META:
+                    content = stmt.code.strip()
+                    match = pattern.match(content)
+                    if match:
+                        captured_path = match.group(1).replace("\\", "/")
+                        if captured_path.startswith("game/"):
+                            captured_path = captured_path[5:]
+                        try:
+                            captured_line = int(match.group(2))
+                        except ValueError:
+                            captured_line = None
+                        last_meta = (captured_path, captured_line)
+                    continue
+
+                if stmt.stmt_kind == TlStmtKind.TEMPLATE and last_meta[0] is not None:
+                    meta_by_line.setdefault(stmt.line_no, last_meta)
+        return meta_by_line
+
+    def _parse_rpy_file_legacy(self, file_path: Path, tl_name: str, rel_path: str) -> List[Dict]:
         """解析单个 rpy/txt 文件"""
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")

@@ -7,9 +7,9 @@ from typing import Dict, List
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
-from module.File.RenPyTL.RenPyTlExtractor import RenPyTlExtractor
-from module.File.RenPyTL.RenPyTlParser import parse_document
-from module.File.RenPyTL.RenPyTlWriter import RenPyTlWriter
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 
 
 class RENPY(Base):
@@ -31,7 +31,7 @@ class RENPY(Base):
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """Parse .rpy files into cache items via AST extraction."""
         items: List[CacheItem] = []
-        extractor = RenPyTlExtractor()
+        extractor = RenpyTlItemExtractor()
         for abs_path in abs_paths:
             path = Path(abs_path)
             if not path.is_file():
@@ -49,7 +49,7 @@ class RENPY(Base):
                 continue
 
             lines = text.splitlines()
-            doc = parse_document(lines)
+            doc = parse_tl_document(lines)
             items.extend(extractor.extract(doc, rel_path))
 
         return items
@@ -64,8 +64,8 @@ class RENPY(Base):
         for item in target:
             grouped.setdefault(item.get_file_path(), []).append(item)
 
-        writer = RenPyTlWriter()
-        extractor = RenPyTlExtractor()
+        writer = RenpyTlLineUpdater()
+        extractor = RenpyTlItemExtractor()
 
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
@@ -100,7 +100,7 @@ class RENPY(Base):
 
     def build_items_for_writeback(
         self,
-        extractor: RenPyTlExtractor,
+        extractor: RenpyTlItemExtractor,
         rel_path: str,
         lines: list[str],
         items: list[CacheItem],
@@ -110,7 +110,7 @@ class RENPY(Base):
             return items
 
         # Rebuild AST from current file and transfer translations by AST keys.
-        doc = parse_document(lines)
+        doc = parse_tl_document(lines)
         new_items = extractor.extract(doc, rel_path)
         self.transfer_ast_translations(items, new_items)
         return new_items

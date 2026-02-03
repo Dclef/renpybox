@@ -25,8 +25,10 @@ from module.Config import Config
 from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Extract.MaExtractor import MaExtractor
 from module.Extract.JsonExtractor import JsonExtractor
-from module.File.RenPyTL.RenPyTlExtractor import RenPyTlExtractor
-from module.File.RenPyTL.RenPyTlParser import parse_document
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
+from module.Renpy.renpy_tl_core import TlStmtKind
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import should_skip_text
 
@@ -385,6 +387,106 @@ class UnifiedExtractor:
             self.logger.warning(f"注入内置 base_box 失败: {exc}")
             return 0
 
+    def _decode_literal_value(self, quote: str, text: str) -> str:
+        """解析 old/new 字面量文本，兼容转义。"""
+        literal = f"{quote}{text}{quote}"
+        try:
+            return ast.literal_eval(literal)
+        except Exception:
+            return text.replace('\\"', '"').replace("\\'", "'")
+
+    def _collect_base_box_old_values(self, tl_dir: Path) -> Set[str]:
+        """收集 base_box 中所有 old 原文。"""
+        base_dir = tl_dir / "base_box"
+        if not base_dir.exists():
+            return set()
+
+        olds: Set[str] = set()
+        for rpy_file in base_dir.rglob("*.rpy"):
+            try:
+                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+            for line in lines:
+                old_match = self.OLD_LINE_RE.match(line)
+                if not old_match:
+                    continue
+                old_value = self._decode_literal_value(old_match.group(1), old_match.group("text"))
+                if old_value:
+                    olds.add(old_value)
+        return olds
+
+    def _remove_placeholder_duplicates_for_base_box(self, tl_dir: Path, tl_name: str) -> int:
+        """按 base_box 优先清理占位重复（仅删除 new==old 或 new=="" 的条目）。"""
+        base_old_set = self._collect_base_box_old_values(tl_dir)
+        if not base_old_set:
+            return 0
+
+        removed_total = 0
+        for rpy_file in tl_dir.rglob("*.rpy"):
+            try:
+                rel = rpy_file.relative_to(tl_dir)
+                if any(part.lower() == "base_box" for part in rel.parts):
+                    continue
+            except Exception:
+                pass
+
+            try:
+                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            new_lines: List[str] = []
+            i = 0
+            changed = False
+
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if old_match:
+                    old_value = self._decode_literal_value(old_match.group(1), old_match.group("text"))
+
+                    j = i + 1
+                    while j < len(lines):
+                        probe = lines[j].strip()
+                        if not probe or probe.startswith("#"):
+                            j += 1
+                            continue
+                        break
+
+                    new_value = ""
+                    if j < len(lines):
+                        new_match = self.NEW_LINE_RE.match(lines[j])
+                        if new_match:
+                            new_value = self._decode_literal_value(new_match.group(1), new_match.group("text"))
+
+                    if old_value in base_old_set and (not new_value or new_value == old_value):
+                        removed_total += 1
+                        changed = True
+                        i = j + 1 if j > i else i + 1
+                        continue
+
+                new_lines.append(lines[i])
+                i += 1
+
+            if changed:
+                cleaned: List[str] = []
+                prev_empty = False
+                for line in new_lines:
+                    is_empty = not line.strip()
+                    if is_empty and prev_empty:
+                        continue
+                    cleaned.append(line)
+                    prev_empty = is_empty
+                rpy_file.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
+
+        if removed_total:
+            try:
+                self._remove_empty_translate_blocks(tl_dir, tl_name)
+            except Exception:
+                pass
+
+        return removed_total
+
     def _load_glossary_map(self, config: Config) -> Dict[str, str]:
         """加载用户术语库，返回 {原文: 译文}。"""
         mapping: Dict[str, str] = {}
@@ -610,11 +712,14 @@ class UnifiedExtractor:
             
             # 4. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
-
             # 5. 注入内置 UI 包（common_box/screens_box）
-            injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
-            if injected_ui:
-                self.logger.info(f"已注入 base_box UI 翻译: {injected_ui} 个文件")
+            injected_ui = 0
+            if getattr(config, "onekey_inject_base_box", False):
+                injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
+                if injected_ui:
+                    self.logger.info(f"已注入 base_box UI 翻译: {injected_ui} 个文件")
+            else:
+                self.logger.debug("跳过 base_box 注入（配置已关闭）")
             
             # 统计
             result.total_files = len(list(self._iter_rpy_files(tl_dir)))
@@ -816,16 +921,20 @@ class UnifiedExtractor:
                     result.message = f"增量抽取完成，保留了 {translated_count} 条已有翻译，新增 {len(new_originals)} 条"
 
                 # 注入内置 UI 包（仅影响主 tl 目录，不影响增量输出目录）
-                injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
-                if injected_ui and result.success:
-                    self.logger.info(f"已注入 base_box UI 翻译: {injected_ui} 个文件")
-                    if output_to_separate_folder and isinstance(result.message, str) and result.message.startswith("增量抽取完成"):
-                        result.message = result.message + "\n• 已注入 base_box UI 翻译"
-                    elif not output_to_separate_folder and result.message:
-                        result.message = result.message + "（已注入 base_box UI 翻译）"
+                injected_ui = 0
+                if getattr(config, "onekey_inject_base_box", False):
+                    injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
+                    if injected_ui and result.success:
+                        self.logger.info(f"已注入 base_box UI 翻译: {injected_ui} 个文件")
+                        if output_to_separate_folder and isinstance(result.message, str) and result.message.startswith("增量抽取完成"):
+                            result.message = result.message + "\n• 已注入 base_box UI 翻译"
+                        elif not output_to_separate_folder and result.message:
+                            result.message = result.message + "（已注入 base_box UI 翻译）"
+                elif result.success:
+                    self.logger.debug("跳过 base_box 注入（配置已关闭）")
                 
                 self._emit_progress("增量抽取完成", 100)
-                
+
             finally:
                 # 清理临时目录
                 if temp_extract_dir.exists():
@@ -1000,6 +1109,10 @@ class UnifiedExtractor:
                 removed = self._remove_string_duplicates_with_blocks(tl_dir)
                 if removed:
                     self.logger.info(f"已移除 {removed} 条与翻译块重复的 strings 翻译")
+            if getattr(config, "onekey_inject_base_box", False):
+                removed_ui = self._remove_placeholder_duplicates_for_base_box(tl_dir, tl_name)
+                if removed_ui:
+                    self.logger.info(f"已按 base_box 优先清理占位重复 {removed_ui} 条")
             try:
                 removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
                 if removed_blocks:
@@ -1021,11 +1134,11 @@ class UnifiedExtractor:
         if not tl_dir.exists():
             return originals
 
-        extractor = RenPyTlExtractor()
+        extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
-                doc = parse_document(content.splitlines())
+                doc = parse_tl_document(content.splitlines())
                 items = extractor.extract(doc, str(rpy_file))
                 for item in items:
                     originals.add(item.get_src())
@@ -1055,8 +1168,8 @@ class UnifiedExtractor:
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
-                doc = parse_document(content.splitlines())
-                extractor = RenPyTlExtractor()
+                doc = parse_tl_document(content.splitlines())
+                extractor = RenpyTlItemExtractor()
                 items = extractor.extract(doc, str(rpy_file))
                 for item in items:
                     src = item.get_src()
@@ -1107,6 +1220,93 @@ class UnifiedExtractor:
 
         return pending
 
+    def _collect_selected_blocks_from_ast(
+        self,
+        doc,
+        lines: List[str],
+        items: List,
+        tl_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """根据 AST 抽取结果收集需要输出的翻译块。"""
+        block_by_header = {block.header_line_no: block for block in doc.blocks}
+        grouped: Dict[int, List] = {}
+
+        for item in items:
+            extra_raw = item.get_extra_field()
+            extra = extra_raw if isinstance(extra_raw, dict) else {}
+            renpy = extra.get("renpy", {}) if isinstance(extra.get("renpy"), dict) else {}
+            block = renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
+            lang = block.get("lang")
+            if tl_name and isinstance(lang, str) and lang != tl_name:
+                continue
+            header_line = block.get("header_line")
+            if not isinstance(header_line, int) or header_line <= 0:
+                continue
+            grouped.setdefault(header_line, []).append(item)
+
+        selections: List[Dict] = []
+        for header_line in sorted(grouped.keys()):
+            block = block_by_header.get(header_line)
+            if block is None:
+                continue
+
+            include_lines: Set[int] = set()
+            idx_by_line = {s.line_no: idx for idx, s in enumerate(block.statements)}
+
+            for item in grouped[header_line]:
+                extra_raw = item.get_extra_field()
+                extra = extra_raw if isinstance(extra_raw, dict) else {}
+                renpy = extra.get("renpy", {}) if isinstance(extra.get("renpy"), dict) else {}
+                pair = renpy.get("pair", {}) if isinstance(renpy.get("pair"), dict) else {}
+
+                template_line = pair.get("template_line")
+                target_line = pair.get("target_line")
+
+                if isinstance(template_line, int) and template_line > 0:
+                    include_lines.add(template_line)
+                    # 吸收紧邻模板行的 META 注释（位置说明）
+                    idx = idx_by_line.get(template_line)
+                    if idx is not None:
+                        j = idx - 1
+                        while j >= 0:
+                            stmt = block.statements[j]
+                            if stmt.stmt_kind != TlStmtKind.META:
+                                break
+                            include_lines.add(stmt.line_no)
+                            j -= 1
+
+                if isinstance(target_line, int) and target_line > 0:
+                    include_lines.add(target_line)
+
+            if not include_lines:
+                continue
+
+            selected_lines: List[str] = []
+            for stmt in block.statements:
+                if stmt.line_no in include_lines and 1 <= stmt.line_no <= len(lines):
+                    selected_lines.append(lines[stmt.line_no - 1])
+
+            if not selected_lines:
+                continue
+
+            header_text = (
+                lines[header_line - 1]
+                if 1 <= header_line <= len(lines)
+                else f"translate {block.lang} {block.label}:"
+            )
+            selections.append(
+                {
+                    "header_line_no": header_line,
+                    "header_line": header_text,
+                    "lang": block.lang,
+                    "label": block.label,
+                    "kind": str(block.kind),
+                    "lines": selected_lines,
+                }
+            )
+
+        return selections
+
     def _extract_new_entries_to_folder(
         self,
         source_dir: Path,
@@ -1117,14 +1317,58 @@ class UnifiedExtractor:
         """将指定条目（新增/未翻译）提取到目标文件夹"""
         if not selected_originals:
             return
-            
+
+        extractor = RenpyTlItemExtractor()
+
         for rpy_file in self._iter_rpy_files(source_dir):
+            # AST 优先
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                doc = parse_tl_document(lines)
+                items = extractor.extract(doc, str(rpy_file))
+                if not items:
+                    continue
+
+                selected_items = [item for item in items if item.get_src() in selected_originals]
+                if not selected_items:
+                    continue
+
+                selections = self._collect_selected_blocks_from_ast(
+                    doc, lines, selected_items, tl_name
+                )
+                if not selections:
+                    continue
+
+                rel_path = rpy_file.relative_to(source_dir)
+                target_file = target_dir / rel_path
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                output_lines = [
+                    "# 增量抽取 - 新增/待翻译内容",
+                    f"# 来源: {rpy_file.name}",
+                    "",
+                ]
+
+                for sel in selections:
+                    output_lines.append(sel["header_line"])
+                    output_lines.extend(sel["lines"])
+                    if output_lines and output_lines[-1].strip() != "":
+                        output_lines.append("")
+
+                text = "\n".join(output_lines).rstrip() + "\n"
+                target_file.write_text(text, encoding="utf-8")
+                continue
+            except Exception as e:
+                self.logger.warning(f"AST 增量提取失败 {rpy_file}: {e}")
+
+            # 回退旧正则逻辑
             try:
                 content = rpy_file.read_text(encoding='utf-8', errors='replace')
                 lines = content.split('\n')
-                
+
                 new_entries: List[Tuple[str, str]] = []  # (old_text, new_text)
-                
+
                 i = 0
                 while i < len(lines):
                     line = lines[i]
@@ -1132,27 +1376,27 @@ class UnifiedExtractor:
                     if old_match:
                         old_text = old_match.group("text").replace('\\"', '"').replace("\\'", "'")
                         new_text = ""
-                        
+
                         if i + 1 < len(lines):
                             new_line = lines[i + 1]
                             new_match = self.NEW_LINE_RE.match(new_line)
                             if new_match:
                                 new_text = new_match.group("text")
-                        
+
                         # 只提取被选中的原文
                         if old_text in selected_originals:
                             new_entries.append((old_text, new_text))
-                        
+
                         i += 2
                         continue
                     i += 1
-                
+
                 # 写入目标文件
                 if new_entries:
                     rel_path = rpy_file.relative_to(source_dir)
                     target_file = target_dir / rel_path
                     target_file.parent.mkdir(parents=True, exist_ok=True)
-                    
+
                     output_lines = [
                         f"# 增量抽取 - 新增/待翻译内容",
                         f"# 来源: {rpy_file.name}",
@@ -1160,16 +1404,16 @@ class UnifiedExtractor:
                         f"translate {tl_name} strings:",
                         "",
                     ]
-                    
+
                     for old_text, new_text in new_entries:
                         escaped_old = self._escape_rpy_string(old_text)
                         escaped_new = self._escape_rpy_string(new_text) if new_text else ""
                         output_lines.append(f'    old "{escaped_old}"')
                         output_lines.append(f'    new "{escaped_new}"')
                         output_lines.append("")
-                    
+
                     target_file.write_text('\n'.join(output_lines), encoding='utf-8')
-                    
+
             except Exception as e:
                 self.logger.warning(f"处理文件失败 {rpy_file}: {e}")
 
@@ -1183,30 +1427,118 @@ class UnifiedExtractor:
         """将新增条目合并到原 tl 目录（旧行为）"""
         if not new_originals:
             return
-            
+
+        extractor = RenpyTlItemExtractor()
+
         for rpy_file in self._iter_rpy_files(source_dir):
+            rel_path = rpy_file.relative_to(source_dir)
+            target_file = tl_dir / rel_path
+
+            # AST 优先
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                doc = parse_tl_document(lines)
+                items = extractor.extract(doc, str(rpy_file))
+                if not items:
+                    continue
+
+                selected_items = [item for item in items if item.get_src() in new_originals]
+                if not selected_items:
+                    continue
+
+                if not target_file.exists():
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(rpy_file), str(target_file))
+                    continue
+
+                target_content = target_file.read_text(encoding="utf-8", errors="replace")
+                target_lines = target_content.splitlines()
+                target_doc = parse_tl_document(target_lines)
+                target_items = extractor.extract(target_doc, str(target_file))
+                target_originals = {item.get_src() for item in target_items}
+
+                filtered_items = [item for item in selected_items if item.get_src() not in target_originals]
+                if not filtered_items:
+                    continue
+
+                selections = self._collect_selected_blocks_from_ast(doc, lines, filtered_items)
+                if not selections:
+                    continue
+
+                block_map = {}
+                for block in target_doc.blocks:
+                    key = (block.lang, block.label, str(block.kind))
+                    block_map[key] = block
+
+                combined: Dict[Tuple[str, str, str], Dict[str, List[str]]] = {}
+                for sel in sorted(selections, key=lambda x: x["header_line_no"]):
+                    key = (sel["lang"], sel["label"], sel["kind"])
+                    entry = combined.get(key)
+                    if entry is None:
+                        entry = {"header": sel["header_line"], "lines": []}
+                        combined[key] = entry
+                    entry["lines"].extend(sel["lines"])
+
+                insert_ops: List[Tuple[int, List[str]]] = []
+                append_lines: List[str] = []
+
+                for key, entry in combined.items():
+                    lines_to_insert = entry["lines"]
+                    if not lines_to_insert:
+                        continue
+                    block = block_map.get(key)
+                    if block is not None:
+                        end_line = block.statements[-1].line_no if block.statements else block.header_line_no
+                        insert_ops.append((end_line, lines_to_insert))
+                    else:
+                        header = entry["header"]
+                        if append_lines and append_lines[-1].strip() != "":
+                            append_lines.append("")
+                        append_lines.append(header)
+                        append_lines.extend(lines_to_insert)
+
+                for index, insert_lines in sorted(insert_ops, key=lambda x: x[0], reverse=True):
+                    if index < 0:
+                        continue
+                    if index > len(target_lines):
+                        index = len(target_lines)
+                    target_lines[index:index] = insert_lines
+
+                if append_lines:
+                    if target_lines and target_lines[-1].strip() != "":
+                        target_lines.append("")
+                    target_lines.extend(append_lines)
+
+                if insert_ops or append_lines:
+                    target_file.write_text("\n".join(target_lines), encoding="utf-8")
+                continue
+            except Exception as e:
+                self.logger.warning(f"AST 合并新增失败 {rpy_file}: {e}")
+
+            # 回退旧正则逻辑
             try:
                 content = rpy_file.read_text(encoding='utf-8', errors='replace')
                 rel_path = rpy_file.relative_to(source_dir)
                 target_file = tl_dir / rel_path
-                
+
                 if target_file.exists():
                     # 追加新条目到现有文件
                     target_content = target_file.read_text(encoding='utf-8', errors='replace')
                     target_originals = set()
                     for match in self.OLD_LINE_RE.finditer(target_content):
                         target_originals.add(match.group("text").replace('\\"', '"').replace("\\'", "'"))
-                    
+
                     lines = content.split('\n')
                     new_entries = []
-                    
+
                     i = 0
                     while i < len(lines):
                         line = lines[i]
                         old_match = self.OLD_LINE_RE.match(line)
                         if old_match:
                             old_text = old_match.group("text").replace('\\"', '"').replace("\\'", "'")
-                            
+
                             if old_text in new_originals and old_text not in target_originals:
                                 new_text = ""
                                 if i + 1 < len(lines):
@@ -1214,13 +1546,13 @@ class UnifiedExtractor:
                                     new_match = self.NEW_LINE_RE.match(new_line)
                                     if new_match:
                                         new_text = new_match.group("text")
-                                
+
                                 new_entries.append((old_text, new_text))
-                            
+
                             i += 2
                             continue
                         i += 1
-                    
+
                     if new_entries:
                         append_lines = ["\n# 增量抽取新增"]
                         for old_text, new_text in new_entries:
@@ -1228,18 +1560,16 @@ class UnifiedExtractor:
                             escaped_new = self._escape_rpy_string(new_text) if new_text else ""
                             append_lines.append(f'    old "{escaped_old}"')
                             append_lines.append(f'    new "{escaped_new}"')
-                        
+
                         with target_file.open('a', encoding='utf-8') as f:
                             f.write('\n'.join(append_lines))
                 else:
                     # 创建新文件
                     target_file.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(rpy_file), str(target_file))
-                    
+
             except Exception as e:
                 self.logger.warning(f"合并文件失败 {rpy_file}: {e}")
-
-    # ================= 内部辅助方法 =================
 
     def _collect_block_originals(self, tl_dir: Path) -> Set[str]:
         """收集 translate 块中的原文（从注释行提取），用于与 strings 去重"""
@@ -1250,8 +1580,8 @@ class UnifiedExtractor:
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
-                doc = parse_document(content.splitlines())
-                extractor = RenPyTlExtractor()
+                doc = parse_tl_document(content.splitlines())
+                extractor = RenpyTlItemExtractor()
                 items = extractor.extract(doc, str(rpy_file))
                 for item in items:
                     extra = item.get_extra_field()
@@ -1488,18 +1818,29 @@ class UnifiedExtractor:
         获取有效的翻译对 {original: translated}
         条件：new != "" AND new != old
         """
-        translations = {}
+        translations: Dict[str, str] = {}
         if not tl_dir.exists():
             return translations
-            
+
+        extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
-                content = rpy_file.read_text(encoding='utf-8', errors='replace')
-                # 简单的正则匹配可能不够准确，但对于标准 rpy 格式通常足够
-                # 匹配 old "xxx" ... new "yyy"
-                # 注意：这里简化处理，假设 old 和 new 是成对出现的
-                
-                lines = content.split('\n')
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_tl_document(content.splitlines())
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    src = item.get_src()
+                    dst = item.get_dst()
+                    if dst and dst != src:
+                        translations[src] = dst
+                continue
+            except Exception:
+                pass
+
+            # AST 失败时回退到旧正则逻辑
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                lines = content.split("\n")
                 i = 0
                 while i < len(lines):
                     line = lines[i]
@@ -1538,13 +1879,48 @@ class UnifiedExtractor:
         if not translations:
             return
 
+        extractor = RenpyTlItemExtractor()
+        writer = RenpyTlLineUpdater()
+
         for rpy_file in self._iter_rpy_files(tl_dir):
+            # 优先使用 AST 回填，失败再走旧正则逻辑
             try:
-                content = rpy_file.read_text(encoding='utf-8')
-                lines = content.split('\n')
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                doc = parse_tl_document(lines)
+                items = extractor.extract(doc, str(rpy_file))
+                if items:
+                    updated = False
+                    for item in items:
+                        src = item.get_src()
+                        if src in translations:
+                            item.set_dst(translations[src])
+                            updated = True
+
+                    if updated:
+                        def get_target_line(cache_item) -> int:
+                            extra_raw = cache_item.get_extra_field()
+                            extra = extra_raw if isinstance(extra_raw, dict) else {}
+                            renpy = extra.get("renpy", {}) if isinstance(extra.get("renpy"), dict) else {}
+                            pair = renpy.get("pair", {}) if isinstance(renpy.get("pair"), dict) else {}
+                            line = pair.get("target_line")
+                            return int(line) if isinstance(line, int) else 0
+
+                        items.sort(key=get_target_line)
+                        applied, _ = writer.apply_items_to_lines(lines, items)
+                        if applied > 0:
+                            rpy_file.write_text("\n".join(lines), encoding="utf-8")
+                    continue
+            except Exception as e:
+                self.logger.warning(f"AST 回填翻译失败 {rpy_file}: {e}")
+
+            # 回退旧正则逻辑
+            try:
+                content = rpy_file.read_text(encoding="utf-8")
+                lines = content.split("\n")
                 new_lines = []
                 modified = False
-                
+
                 i = 0
                 while i < len(lines):
                     line = lines[i]
@@ -1554,25 +1930,24 @@ class UnifiedExtractor:
                         indent = match.group(1)
                         old_text = match.group(3)
                         old_text_unescaped = old_text.replace('\\"', '"').replace("\\'", "'")
-                        
+
                         # 检查是否有翻译
                         if old_text_unescaped in translations:
                             trans_text = translations[old_text_unescaped]
                             # 转义
                             trans_text_escaped = trans_text.replace('"', '\\"')
-                            
-                            new_lines.append(line) # old 行不变
-                            new_lines.append(f'{indent}new "{trans_text_escaped}"') # 替换 new 行
+
+                            new_lines.append(line)  # old 行不变
+                            new_lines.append(f'{indent}new "{trans_text_escaped}"')  # 替换 new 行
                             modified = True
-                            i += 2 # 跳过原来的 new 行
+                            i += 2  # 跳过原来的 new 行
                             continue
-                            
+
                     new_lines.append(line)
                     i += 1
-                
+
                 if modified:
-                    rpy_file.write_text('\n'.join(new_lines), encoding='utf-8')
-                    
+                    rpy_file.write_text("\n".join(new_lines), encoding="utf-8")
             except Exception as e:
                 self.logger.warning(f"回填翻译失败 {rpy_file}: {e}")
 
@@ -1622,3 +1997,10 @@ class UnifiedExtractor:
 
             except Exception:
                 pass
+
+
+
+
+
+
+
