@@ -121,6 +121,9 @@ class Config():
     # 增量抽取后自动合并并清理重复（把 tl/<lang>_new 合并回 tl/<lang>）
     renpy_incremental_auto_merge_cleanup: bool = False
 
+    # 一键翻译选项
+    onekey_inject_base_box: bool = False
+
     # AndroidBuildPage
     renpy_sdk_path: str = ""
     android_app_name: str = ""
@@ -211,3 +214,5 @@ class Config():
             if item.get("id", 0) == platform.get("id", 0):
                 self.platforms[i] = platform
                 break
+
+
