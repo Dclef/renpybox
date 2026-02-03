@@ -10,7 +10,7 @@ Version: 0.1.0
 import os
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Set
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
@@ -47,6 +47,8 @@ class TranslationTask(QObject):
         self.engine_name = engine_name
         self.params = params
         self.should_stop = False
+        self.glossary_map: Dict[str, str] = {}
+        self.text_preserve_set: Set[str] = set()
         
     def stop(self):
         """停止任务"""
@@ -102,7 +104,21 @@ class TranslationTask(QObject):
             }
         """
         all_texts: Dict[str, List[Dict]] = {}
-        parser = RenpySourceTranslator()
+        parser = RenpySourceTranslator(auto_load_config=False)
+
+        from module.Config import Config
+        config = Config().load()
+        self.glossary_map = self._build_glossary_map(config)
+        self.text_preserve_set = self._build_text_preserve_set(config)
+
+        if self.glossary_map:
+            parser.set_glossary(self.glossary_map)
+            logger.info(f"已加载术语库 ({len(self.glossary_map)} 条)")
+
+        if self.text_preserve_set and hasattr(parser, "set_text_preserve"):
+            parser.set_text_preserve(self.text_preserve_set)
+            logger.info(f"已加载禁翻表 ({len(self.text_preserve_set)} 条)")
+
 
         for file_path in self.source_files:
             if self.should_stop:
@@ -173,6 +189,44 @@ class TranslationTask(QObject):
 
         return all_texts
 
+    def _build_glossary_map(self, config) -> Dict[str, str]:
+        """构建术语表映射"""
+        mapping: Dict[str, str] = {}
+        if not getattr(config, "glossary_enable", True):
+            return mapping
+        for item in getattr(config, "glossary_data", []) or []:
+            if isinstance(item, dict):
+                src = item.get("src", "").strip()
+                dst = item.get("dst", "").strip()
+                if src and dst:
+                    mapping[src] = dst
+        return mapping
+
+    def _build_text_preserve_set(self, config) -> Set[str]:
+        """构建禁翻表集合"""
+        preserves: Set[str] = set()
+        if not getattr(config, "text_preserve_enable", False):
+            return preserves
+        for item in getattr(config, "text_preserve_data", []) or []:
+            src = item.get("src", "") if isinstance(item, dict) else str(item)
+            if src:
+                preserves.add(src.strip())
+        return preserves
+
+    def _collect_glossary_lines(self, batch: List[str]) -> List[str]:
+        """从批次文本中挑选相关术语"""
+        if not self.glossary_map:
+            return []
+        joined = "\n".join(batch)
+        joined_lower = joined.lower()
+        lines: List[str] = []
+        for src, dst in self.glossary_map.items():
+            if not src:
+                continue
+            if src in joined or src.lower() in joined_lower:
+                lines.append(f"{src} -> {dst}")
+        return lines
+
     @staticmethod
     def _map_line_type(line_type: LineType) -> str:
         mapping = {
@@ -200,6 +254,8 @@ class TranslationTask(QObject):
                 existing_translation = item.get('translation', '').strip()
                 if existing_translation and existing_translation != text:
                     continue
+                if text in self.text_preserve_set:
+                    continue
                 if text:
                     unique_texts.add(text)
         
@@ -213,6 +269,14 @@ class TranslationTask(QObject):
         """
         translations = {}
         batch_size = self.params.get('batch_size', 10)
+
+        pending_texts: List[str] = []
+        for text in texts:
+            if text in self.glossary_map:
+                translations[text] = self.glossary_map[text]
+            else:
+                pending_texts.append(text)
+        texts = pending_texts
         total = len(texts)
         
         # 创建翻译请求器
@@ -247,6 +311,9 @@ class TranslationTask(QObject):
 3. 保留特殊标记和格式
 """
                 
+                glossary_lines = self._collect_glossary_lines(batch)
+                if glossary_lines:
+                    prompt += "\n术语表（保持对应翻译）：\n" + "\n".join(glossary_lines) + "\n"
                 # 调用翻译API
                 result = requester.make_request(
                     messages=[{"role": "user", "content": prompt}]
@@ -521,3 +588,12 @@ class RenpyTranslator(QObject):
             self.thread = None
         self.current_task = None
         logger.info("翻译任务已清理")
+
+
+
+
+
+
+
+
+
