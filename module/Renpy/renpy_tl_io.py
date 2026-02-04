@@ -455,7 +455,14 @@ class RenpyTlLineUpdater(Base):
             )
 
         kind = block.get("kind")
-        kind_str = str(kind) if kind is not None else ""
+        if kind is None:
+            kind_str = ""
+        elif hasattr(kind, "value"):
+            kind_str = str(kind.value)
+        else:
+            kind_str = str(kind)
+        if kind_str.startswith("TlBlockKind."):
+            kind_str = kind_str.split(".", 1)[1]
 
         replacement_by_index = self._build_replacements(item, slots)
         if not replacement_by_index:
@@ -569,7 +576,14 @@ class RenpyTlLineUpdater(Base):
         target_indent, target_rest = split_indent(target_raw)
 
         kind = block.get("kind")
-        kind_str = str(kind) if kind is not None else ""
+        if kind is None:
+            kind_str = ""
+        elif hasattr(kind, "value"):
+            kind_str = str(kind.value)
+        else:
+            kind_str = str(kind)
+        if kind_str.startswith("TlBlockKind."):
+            kind_str = kind_str.split(".", 1)[1]
 
         if kind_str == "STRINGS":
             base_code = target_rest

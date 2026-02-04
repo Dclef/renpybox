@@ -109,7 +109,7 @@ class RENPY(Base):
                 applied2, skipped2 = writer.apply_items_to_lines(lines, fallback_items)
                 if applied2 > 0:
                     applied, skipped = applied2, skipped2
-            if applied == 0 and translated_items > 0:
+            if skipped > 0 and translated_items > 0:
                 # Last resort: loose writeback without hash checks.
                 if fallback_items is None:
                     doc = parse_tl_document(lines)
