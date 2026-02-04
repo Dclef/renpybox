@@ -41,9 +41,11 @@
 - 其他格式持续补充，欢迎在 Issues 提交需求
 
 ## 近期更新 📅
-2026-1-24 v0.4.1：
-- 添加 SQLite 缓存支持，优化缓存管理和导出功能
-- 增强反编译解码器功能，优化多进程支持和错误处理
+2026-2-04 v0.4.7：
+- 源码翻译统一走 Engine，支持术语库/禁翻表/缓存与断点续译
+- 新增 Ren'Py 源码读写流程
+- 修复源码翻译不走引擎导致结果为空的问题
+
 
 ## 常见问题 📥
 - 运行日志位于 `./log`，反馈问题请附相关日志
@@ -68,3 +70,4 @@
 - 模块的设计理念来自于[renpy-translator](https://github.com/anonymousException/renpy-translator)
 - 教程请看[RenpyBox使用教程](https://www.bilibili.com/video/BV1KPBoBhEMD)
 - 文档请看[Renpy汉化教程](https://docs.dclef.com/)
+
