@@ -27,9 +27,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
-from module.Engine.Engine import Engine
 from module.Config import Config
-from module.Renpy.translator import RenpyTranslator
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -44,7 +42,6 @@ class SourceTranslatePage(Base, QWidget):
 
         self.window = parent
         self.logger = LogManager.get()
-        self.source_translator = RenpyTranslator(self)
 
         self._init_ui()
 
@@ -52,10 +49,6 @@ class SourceTranslatePage(Base, QWidget):
         self.subscribe(Base.Event.TRANSLATION_UPDATE, self._on_engine_update)
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_engine_done)
         self.subscribe(Base.Event.TRANSLATION_STOP, self._on_engine_stop)
-        self.source_translator.translation_started.connect(self._on_source_started)
-        self.source_translator.progress_updated.connect(self._on_source_progress)
-        self.source_translator.translation_finished.connect(self._on_source_done)
-        self.source_translator.translation_error.connect(self._on_source_error)
 
     # ------------------------------------------------------------------ UI
     def _init_ui(self):
@@ -65,7 +58,7 @@ class SourceTranslatePage(Base, QWidget):
 
         layout.addWidget(TitleLabel("🔧 源码翻译"))
 
-        warn = CaptionLabel("可选：统一 Engine 或 直接源码解析（旧）。请选择 game 目录/文件、语言、备份，然后开始。")
+        warn = CaptionLabel("使用引擎翻译源码。请选择 game 目录/文件、语言、备份，然后开始。")
         warn.setStyleSheet("color: #e0a000;")
         layout.addWidget(warn)
 
@@ -100,9 +93,6 @@ class SourceTranslatePage(Base, QWidget):
         self.single_file_switch.setChecked(False)
         self.single_file_switch.checkedChanged.connect(self._on_single_file_changed)
         mode_row.addWidget(self.single_file_switch)
-        self.source_mode_switch = SwitchButton("使用源码解析（旧）")
-        self.source_mode_switch.setChecked(True)
-        mode_row.addWidget(self.source_mode_switch)
         mode_row.addStretch(1)
         box.addLayout(mode_row)
 
@@ -232,9 +222,7 @@ class SourceTranslatePage(Base, QWidget):
             self.backup_external_edit.setText(directory)
 
     def _start_translation(self):
-        if self.source_mode_switch.isChecked():
-            self._start_source_translation()
-            return
+
         single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
 
         target_path: Optional[Path] = None
@@ -289,6 +277,8 @@ class SourceTranslatePage(Base, QWidget):
             if tgt:
                 config.target_language = tgt
             config.renpy_backup_original = bool(backup)
+            # 源码翻译走引擎时，启用源码解析模式
+            config.renpy_source_translate = True
         except Exception as exc:
             self.logger.error(f"加载/写入配置失败: {exc}")
             InfoBar.error("错误", f"加载配置失败: {exc}", parent=self)
@@ -317,12 +307,7 @@ class SourceTranslatePage(Base, QWidget):
         InfoBar.success("已开始", "已切换到统一翻译流程，进度见日志/进度条。", parent=self)
 
     def _stop_translation(self):
-        if self.source_mode_switch.isChecked():
-            Engine.get().set_status(Engine.Status.STOPPING)
-            self.source_translator.stop_translation()
-            self.btn_stop.setEnabled(False)
-            self.status_label.setText("正在请求停止...")
-            return
+
         self.emit(Base.Event.TRANSLATION_STOP, {})
         self.btn_stop.setEnabled(False)
         self.status_label.setText("正在请求停止...")
@@ -354,38 +339,6 @@ class SourceTranslatePage(Base, QWidget):
         self.status_label.setText("已停止")
         self.progress_bar.setVisible(False)
 
-    # ------------------------------------------------------------------ source translator callbacks
-    def _on_source_started(self):
-        self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.status_label.setText("源码翻译中…")
-
-    def _on_source_progress(self, current: int, total: int, message: str):
-        if total > 0:
-            percent = int(max(0.0, min(1.0, current / total)) * 100)
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(percent)
-            self.status_label.setText(f"{message} {current}/{total}")
-        else:
-            self.status_label.setText(message or "源码翻译中…")
-
-    def _on_source_done(self, _results: dict):
-        Engine.get().set_status(Engine.Status.IDLE)
-        self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.status_label.setText("翻译完成")
-        InfoBar.success("完成", "源码翻译已完成", parent=self)
-
-    def _on_source_error(self, error: str):
-        Engine.get().set_status(Engine.Status.IDLE)
-        self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.progress_bar.setVisible(False)
-        self.status_label.setText("翻译失败")
-        InfoBar.error("错误", error, parent=self)
 
     # ------------------------------------------------------------------ helpers
     def _backup_sources(self, target: Path, backup_root: Optional[str]) -> None:
@@ -410,77 +363,3 @@ class SourceTranslatePage(Base, QWidget):
                         bak.write_bytes(path.read_bytes())
         except Exception as exc:
             self.logger.warning(f"备份源码失败: {exc}")
-
-    def _start_source_translation(self) -> None:
-        single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
-        backup = self.backup_switch.isChecked()
-        backup_root = None
-        if self.backup_external_switch.isChecked():
-            backup_root = self.backup_external_edit.text().strip()
-            if not backup_root:
-                InfoBar.warning("提示", "请选择备份目录", parent=self)
-                return
-
-        target_path: Optional[Path] = None
-        if single_file:
-            file_path = self.single_file_edit.text().strip()
-            if not file_path:
-                InfoBar.warning("提示", "请选择 .rpy 文件", parent=self)
-                return
-            target_path = Path(file_path)
-        else:
-            game_dir = self.game_dir_edit.text().strip()
-            if not game_dir:
-                InfoBar.warning("提示", "请选择 game 目录", parent=self)
-                return
-            target_path = Path(game_dir)
-
-        if not target_path.exists():
-            InfoBar.error("错误", "路径不存在", parent=self)
-            return
-
-        # 简单备份（外部目录或本地 .bak）
-        if backup or backup_root:
-            self._backup_sources(target_path, backup_root)
-
-        # 收集 .rpy 文件
-        if target_path.is_file():
-            source_files = [str(target_path)]
-        else:
-            source_files = [str(p) for p in target_path.rglob("*.rpy")]
-
-        if not source_files:
-            InfoBar.warning("提示", "未找到 .rpy 文件", parent=self)
-            return
-
-        # 目标语言映射（用于 tl 目录名）
-        lang_map = {
-            "简体中文": "chinese",
-            "繁体中文": "chinese_traditional",
-            "英语": "english",
-            "日语": "japanese",
-            "韩语": "korean",
-        }
-        target_language = lang_map.get(self.target_lang_combo.currentText(), "chinese")
-
-        # 使用当前配置平台
-        try:
-            config = Config().load()
-            platform = config.get_platform(config.activate_platform)
-            engine_name = platform.get("name", "unknown")
-            params = {
-                "model": platform.get("model"),
-                "temperature": platform.get("temperature", 0.3),
-                "top_p": platform.get("top_p", 0.95),
-            }
-        except Exception:
-            engine_name = "unknown"
-            params = {}
-
-        Engine.get().set_status(Engine.Status.TRANSLATING)
-        self.source_translator.start_translation(
-            source_files=source_files,
-            target_language=target_language,
-            engine_name=engine_name,
-            params=params,
-        )

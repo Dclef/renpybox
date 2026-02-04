@@ -30,6 +30,7 @@ class CacheItem():
         XLSX = "XLSX"                              # .xlsx Translator++ SExtractor
         WOLFXLSX = "WOLFXLSX"                      # .xlsx WOLF 官方翻译工具导出文件
         RENPY = "RENPY"                            # .rpy RenPy
+        RENPYSOURCE = "RENPYSOURCE"                # .rpy 源码翻译
         TRANS = "TRANS"                            # .trans Translator++
         KVJSON = "KVJSON"                          # .json MTool
         MESSAGEJSON = "MESSAGEJSON"                # .json SExtractor
