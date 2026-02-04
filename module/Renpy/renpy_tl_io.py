@@ -278,9 +278,51 @@ class RenpyTlItemExtractor(Base):
 class RenpyTlLineUpdater(Base):
     """将 CacheItem 应用回 tl 文件行。"""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._debug_skip_limit = 200
+        self._debug_skip_count = 0
+
+    def _reset_debug_skip(self) -> None:
+        self._debug_skip_count = 0
+
+    def _short_hash(self, value: str | None) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value[:8]
+
+    def _debug_skip(self, item: CacheItem | None, reason: str, **details) -> bool:
+        if self._debug_skip_count >= self._debug_skip_limit:
+            if self._debug_skip_count == self._debug_skip_limit:
+                self.debug(
+                    "[WRITEBACK_DEBUG] skip log limit reached, suppressing further entries",
+                    console=False,
+                )
+            self._debug_skip_count += 1
+            return False
+
+        self._debug_skip_count += 1
+        parts: list[str] = [f"reason={reason}"]
+        if item is not None:
+            file_path = item.get_file_path()
+            row = item.get_row()
+            if file_path:
+                parts.append(f"file={file_path}")
+            if row:
+                parts.append(f"row={row}")
+
+        for key, value in details.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value}")
+
+        self.debug("[WRITEBACK_DEBUG] skip " + " ".join(parts), console=False)
+        return False
+
     def apply_items_to_lines(
         self, lines: list[str], items: list[CacheItem]
     ) -> tuple[int, int]:
+        self._reset_debug_skip()
         applied = 0
         skipped = 0
 
@@ -298,25 +340,62 @@ class RenpyTlLineUpdater(Base):
         extra: dict = extra_raw if isinstance(extra_raw, dict) else {}
         renpy: dict = extra.get("renpy", {})
         if not isinstance(renpy, dict):
-            return False
+            return self._debug_skip(
+                item,
+                "no_renpy_extra",
+                mode="strict",
+                extra_type=type(extra_raw).__name__,
+                renpy_type=type(renpy).__name__,
+            )
 
         pair = renpy.get("pair", {})
         digest = renpy.get("digest", {})
         slots = renpy.get("slots", [])
         block = renpy.get("block", {})
         if not isinstance(pair, dict) or not isinstance(digest, dict):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_pair_or_digest",
+                mode="strict",
+                pair_type=type(pair).__name__,
+                digest_type=type(digest).__name__,
+            )
         if not isinstance(slots, list) or not isinstance(block, dict):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_slots_or_block",
+                mode="strict",
+                slots_type=type(slots).__name__,
+                block_type=type(block).__name__,
+            )
 
         template_line = pair.get("template_line")
         target_line = pair.get("target_line")
         if not isinstance(template_line, int) or not isinstance(target_line, int):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_line_number_type",
+                mode="strict",
+                template_line=template_line,
+                target_line=target_line,
+            )
         if template_line <= 0 or target_line <= 0:
-            return False
+            return self._debug_skip(
+                item,
+                "line_number_non_positive",
+                mode="strict",
+                template_line=template_line,
+                target_line=target_line,
+            )
         if template_line > len(lines) or target_line > len(lines):
-            return False
+            return self._debug_skip(
+                item,
+                "line_out_of_range",
+                mode="strict",
+                template_line=template_line,
+                target_line=target_line,
+                total_lines=len(lines),
+            )
 
         template_raw_sha1 = digest.get("template_raw_sha1")
         target_skeleton_sha1 = digest.get("target_skeleton_sha1")
@@ -324,29 +403,68 @@ class RenpyTlLineUpdater(Base):
         if not isinstance(template_raw_sha1, str) or not isinstance(
             target_skeleton_sha1, str
         ):
-            return False
+            return self._debug_skip(
+                item,
+                "digest_missing",
+                mode="strict",
+                template_raw_sha1_type=type(template_raw_sha1).__name__,
+                target_skeleton_sha1_type=type(target_skeleton_sha1).__name__,
+            )
         if not isinstance(target_string_count, int):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_target_string_count",
+                mode="strict",
+                target_string_count=target_string_count,
+            )
 
         template_raw = lines[template_line - 1]
-        if sha1_hex(template_raw) != template_raw_sha1:
-            return False
+        template_raw_sha1_now = sha1_hex(template_raw)
+        if template_raw_sha1_now != template_raw_sha1:
+            return self._debug_skip(
+                item,
+                "template_raw_sha1_mismatch",
+                mode="strict",
+                template_line=template_line,
+                expected=self._short_hash(template_raw_sha1),
+                actual=self._short_hash(template_raw_sha1_now),
+            )
 
         target_raw = lines[target_line - 1]
         target_indent, target_rest = split_indent(target_raw)
         target_literals = scan_quoted_literals(target_rest)
         target_skeleton = build_line_skeleton(target_rest, target_literals)
-        if sha1_hex(target_skeleton) != target_skeleton_sha1:
-            return False
+        target_skeleton_sha1_now = sha1_hex(target_skeleton)
+        if target_skeleton_sha1_now != target_skeleton_sha1:
+            return self._debug_skip(
+                item,
+                "target_skeleton_sha1_mismatch",
+                mode="strict",
+                target_line=target_line,
+                expected=self._short_hash(target_skeleton_sha1),
+                actual=self._short_hash(target_skeleton_sha1_now),
+            )
         if len(target_literals) != target_string_count:
-            return False
+            return self._debug_skip(
+                item,
+                "target_string_count_mismatch",
+                mode="strict",
+                target_line=target_line,
+                expected=target_string_count,
+                actual=len(target_literals),
+            )
 
         kind = block.get("kind")
         kind_str = str(kind) if kind is not None else ""
 
         replacement_by_index = self._build_replacements(item, slots)
         if not replacement_by_index:
-            return False
+            return self._debug_skip(
+                item,
+                "no_replacements",
+                mode="strict",
+                slots_count=len(slots),
+            )
 
         if kind_str == "STRINGS":
             base_code = target_rest
@@ -354,7 +472,13 @@ class RenpyTlLineUpdater(Base):
             _, template_rest = split_indent(template_raw)
             is_comment, template_code = strip_comment_prefix(template_rest)
             if not is_comment:
-                return False
+                return self._debug_skip(
+                    item,
+                    "template_not_comment",
+                    mode="strict",
+                    template_line=template_line,
+                    target_line=target_line,
+                )
             base_code = template_code
 
         new_code = self._replace_literals_by_index(base_code, replacement_by_index)
@@ -365,6 +489,7 @@ class RenpyTlLineUpdater(Base):
         self, lines: list[str], items: list[CacheItem]
     ) -> tuple[int, int]:
         """宽松写回：不校验哈希，仅基于行号与字面量结构写回。"""
+        self._reset_debug_skip()
         applied = 0
         skipped = 0
 
@@ -382,26 +507,63 @@ class RenpyTlLineUpdater(Base):
         extra: dict = extra_raw if isinstance(extra_raw, dict) else {}
         renpy: dict = extra.get("renpy", {})
         if not isinstance(renpy, dict):
-            return False
+            return self._debug_skip(
+                item,
+                "no_renpy_extra",
+                mode="loose",
+                extra_type=type(extra_raw).__name__,
+                renpy_type=type(renpy).__name__,
+            )
 
         pair = renpy.get("pair", {})
         slots = renpy.get("slots", [])
         block = renpy.get("block", {})
         if not isinstance(pair, dict) or not isinstance(slots, list) or not isinstance(block, dict):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_pair_slots_or_block",
+                mode="loose",
+                pair_type=type(pair).__name__,
+                slots_type=type(slots).__name__,
+                block_type=type(block).__name__,
+            )
 
         template_line = pair.get("template_line")
         target_line = pair.get("target_line")
         if not isinstance(template_line, int) or not isinstance(target_line, int):
-            return False
+            return self._debug_skip(
+                item,
+                "invalid_line_number_type",
+                mode="loose",
+                template_line=template_line,
+                target_line=target_line,
+            )
         if template_line <= 0 or target_line <= 0:
-            return False
+            return self._debug_skip(
+                item,
+                "line_number_non_positive",
+                mode="loose",
+                template_line=template_line,
+                target_line=target_line,
+            )
         if template_line > len(lines) or target_line > len(lines):
-            return False
+            return self._debug_skip(
+                item,
+                "line_out_of_range",
+                mode="loose",
+                template_line=template_line,
+                target_line=target_line,
+                total_lines=len(lines),
+            )
 
         replacement_by_index = self._build_replacements(item, slots)
         if not replacement_by_index:
-            return False
+            return self._debug_skip(
+                item,
+                "no_replacements",
+                mode="loose",
+                slots_count=len(slots),
+            )
 
         target_raw = lines[target_line - 1]
         target_indent, target_rest = split_indent(target_raw)
@@ -431,7 +593,14 @@ class RenpyTlLineUpdater(Base):
             if not isinstance(idx, int):
                 continue
 
-            role_str = str(role) if role is not None else ""
+            role_str = ""
+            if role is not None:
+                if hasattr(role, "value"):
+                    role_str = str(role.value)
+                else:
+                    role_str = str(role)
+            if role_str.startswith("TlSlotRole."):
+                role_str = role_str.split(".", 1)[1]
             if role_str == "NAME":
                 name_dst_raw = item.get_name_dst()
                 if isinstance(name_dst_raw, str) and name_dst_raw != "":
