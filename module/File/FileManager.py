@@ -12,6 +12,7 @@ from module.File.KVJSON import KVJSON
 from module.File.MD import MD
 from module.File.MESSAGEJSON import MESSAGEJSON
 from module.File.RENPY import RENPY
+from module.File.RENPYSOURCE import RENPYSOURCE
 from module.File.SRT import SRT
 from module.File.TRANS.TRANS import TRANS
 from module.File.TXT import TXT
@@ -44,6 +45,11 @@ class FileManager(Base):
                 for root, _, files in os.walk(input_folder):
                     paths.extend([f"{root}/{file}".replace("\\", "/") for file in files])
 
+            # 源码翻译模式：仅处理 .rpy 源码
+            if getattr(self.config, "renpy_source_translate", False):
+                rpy_paths = [path for path in paths if path.lower().endswith(".rpy")]
+                items.extend(RENPYSOURCE(self.config).read_from_path(rpy_paths))
+                return project, items
             # 优先处理 translations JSON（避免被其他 json 解析器抢先处理）
             items.extend(RENPYTRANSLATIONSJSON(self.config).read_from_path([path for path in paths if path.lower().endswith(".json")]))
             items.extend(MD(self.config).read_from_path([path for path in paths if path.lower().endswith(".md")]))
@@ -73,7 +79,10 @@ class FileManager(Base):
             EPUB(self.config).write_to_path(items)
             XLSX(self.config).write_to_path(items)
             WOLFXLSX(self.config).write_to_path(items)
-            RENPY(self.config).write_to_path(items)
+            if getattr(self.config, "renpy_source_translate", False):
+                RENPYSOURCE(self.config).write_to_path(items)
+            else:
+                RENPY(self.config).write_to_path(items)
             TRANS(self.config).write_to_path(items)
             KVJSON(self.config).write_to_path(items)
             MESSAGEJSON(self.config).write_to_path(items)

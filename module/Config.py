@@ -111,6 +111,8 @@ class Config():
     renpy_extract_strings: bool = True
     renpy_extract_screens: bool = True
     renpy_backup_original: bool = True
+    # 源码翻译：引擎读取 .rpy 源码
+    renpy_source_translate: bool = False
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
     # 删除与 translate 块重复的 strings 项，避免双份：保留块翻译，移除 old/new
@@ -214,5 +216,3 @@ class Config():
             if item.get("id", 0) == platform.get("id", 0):
                 self.platforms[i] = platform
                 break
-
-
