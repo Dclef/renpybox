@@ -9,12 +9,14 @@ Version: 0.1.0
 
 import os
 import asyncio
+import copy
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Set
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
 from module.Engine.TaskRequester import TaskRequester
+from module.Config import Config
 from base.LogManager import LogManager
 from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Translate.RenpySourceTranslator import (
@@ -67,7 +69,8 @@ class TranslationTask(QObject):
                 self.error.emit("未找到可翻译文本")
                 return
                 
-            logger.info(f"读取到 {len(texts)} 条文本")
+            total_items = sum(len(items) for items in texts.values())
+            logger.info(f"读取到 {total_items} 条文本（{len(texts)} 个文件）")
             
             # 2. 预处理文本
             unique_texts = self._preprocess_texts(texts)
@@ -90,7 +93,7 @@ class TranslationTask(QObject):
             logger.info("翻译任务完成")
             
         except Exception as e:
-            logger.error(f"翻译任务出错: {str(e)}", exc_info=True)
+            logger.error(f"翻译任务出错: {str(e)}", e)
             self.error.emit(f"翻译失败: {str(e)}")
     
     def _read_source_texts(self) -> Dict[str, List[Dict]]:
@@ -105,7 +108,7 @@ class TranslationTask(QObject):
             }
         """
         all_texts: Dict[str, List[Dict]] = {}
-        parser = RenpySourceTranslator(auto_load_config=False)
+        parser = RenpySourceTranslator()
 
         from module.Config import Config
         config = Config().load()
@@ -280,15 +283,21 @@ class TranslationTask(QObject):
         texts = pending_texts
         total = len(texts)
         
-        # 创建翻译请求器
-        requester = TaskRequester(
-            engine=self.engine_name,
-            model=self.params.get('model', 'gpt-4o-mini'),
-            temperature=self.params.get('temperature', 0.3),
-            top_p=self.params.get('top_p', 0.95)
-        )
+        # 创建翻译请求器（复用 Engine 配置与平台）
+        config = Config().load()
+        platform = copy.deepcopy(config.get_platform(config.activate_platform))
+        if self.params.get('model'):
+            platform['model'] = self.params.get('model')
+        if self.params.get('temperature') is not None:
+            platform['temperature'] = self.params.get('temperature')
+            platform['temperature_custom_enable'] = True
+        if self.params.get('top_p') is not None:
+            platform['top_p'] = self.params.get('top_p')
+            platform['top_p_custom_enable'] = True
+        requester = TaskRequester(config, platform, 0)
         
         # 分批翻译
+        logger.info(f"开始翻译 {total} 条文本，batch_size={batch_size}")
         for i in range(0, total, batch_size):
             if self.should_stop:
                 break
@@ -298,6 +307,7 @@ class TranslationTask(QObject):
             total_batches = (total + batch_size - 1) // batch_size
             
             self.progress.emit(i, total, f"正在翻译第 {batch_num}/{total_batches} 批...")
+            logger.info(f"翻译批次 {batch_num}/{total_batches}（{len(batch)} 条）")
             
             try:
                 # 构建翻译提示
@@ -316,13 +326,13 @@ class TranslationTask(QObject):
                 if glossary_lines:
                     prompt += "\n术语表（保持对应翻译）：\n" + "\n".join(glossary_lines) + "\n"
                 # 调用翻译API
-                result = requester.make_request(
+                skip, _think, response_result, _input_tokens, _output_tokens = requester.request(
                     messages=[{"role": "user", "content": prompt}]
                 )
-                
-                if result and result.get('content'):
+
+                if skip is False and isinstance(response_result, str) and response_result:
                     # 解析翻译结果
-                    translated_text = result['content']
+                    translated_text = response_result
                     parsed = self._parse_translation_result(batch, translated_text)
                     translations.update(parsed)
                     
@@ -331,7 +341,7 @@ class TranslationTask(QObject):
                         self.text_translated.emit(original, translated)
                     
             except Exception as e:
-                logger.error(f"翻译批次 {batch_num} 失败: {str(e)}")
+                logger.error(f"翻译批次 {batch_num} 失败: {str(e)}", e)
                 # 失败的批次使用原文
                 for text in batch:
                     translations[text] = text
@@ -457,7 +467,7 @@ class TranslationTask(QObject):
                 logger.info(f"翻译已保存: {trans_file}")
                 
         except Exception as e:
-            logger.error(f"保存翻译失败: {str(e)}", exc_info=True)
+            logger.error(f"保存翻译失败: {str(e)}", e)
 
     @staticmethod
     def _escape_rpy_string(value: str) -> str:

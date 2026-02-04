@@ -803,6 +803,8 @@ class RenpySourceTranslator:
         self.glossary: Dict[str, str] = {}
         # 已知角色名映射
         self.character_names: Dict[str, str] = {}
+        # 禁翻表
+        self.text_preserve: Set[str] = set()
     
     def scan_directory(self, game_dir: Path, extensions: List[str] = None) -> Dict[Path, List[TranslationEntry]]:
         """扫描目录，返回所有可翻译条目"""
