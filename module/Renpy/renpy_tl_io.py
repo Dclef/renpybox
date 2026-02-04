@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Ren'Py TL 读写与条目抽取（重命名重构版）
+Ren'Py TL 读写与条目抽取
 """
 
 from __future__ import annotations
@@ -356,6 +356,66 @@ class RenpyTlLineUpdater(Base):
             if not is_comment:
                 return False
             base_code = template_code
+
+        new_code = self._replace_literals_by_index(base_code, replacement_by_index)
+        lines[target_line - 1] = f"{target_indent}{new_code}"
+        return True
+
+    def apply_items_to_lines_loose(
+        self, lines: list[str], items: list[CacheItem]
+    ) -> tuple[int, int]:
+        """宽松写回：不校验哈希，仅基于行号与字面量结构写回。"""
+        applied = 0
+        skipped = 0
+
+        for item in items:
+            ok = self.apply_item_loose(lines, item)
+            if ok:
+                applied += 1
+            else:
+                skipped += 1
+
+        return applied, skipped
+
+    def apply_item_loose(self, lines: list[str], item: CacheItem) -> bool:
+        extra_raw = item.get_extra_field()
+        extra: dict = extra_raw if isinstance(extra_raw, dict) else {}
+        renpy: dict = extra.get("renpy", {})
+        if not isinstance(renpy, dict):
+            return False
+
+        pair = renpy.get("pair", {})
+        slots = renpy.get("slots", [])
+        block = renpy.get("block", {})
+        if not isinstance(pair, dict) or not isinstance(slots, list) or not isinstance(block, dict):
+            return False
+
+        template_line = pair.get("template_line")
+        target_line = pair.get("target_line")
+        if not isinstance(template_line, int) or not isinstance(target_line, int):
+            return False
+        if template_line <= 0 or target_line <= 0:
+            return False
+        if template_line > len(lines) or target_line > len(lines):
+            return False
+
+        replacement_by_index = self._build_replacements(item, slots)
+        if not replacement_by_index:
+            return False
+
+        target_raw = lines[target_line - 1]
+        target_indent, target_rest = split_indent(target_raw)
+
+        kind = block.get("kind")
+        kind_str = str(kind) if kind is not None else ""
+
+        if kind_str == "STRINGS":
+            base_code = target_rest
+        else:
+            template_raw = lines[template_line - 1]
+            _, template_rest = split_indent(template_raw)
+            is_comment, template_code = strip_comment_prefix(template_rest)
+            base_code = template_code if is_comment else target_rest
 
         new_code = self._replace_literals_by_index(base_code, replacement_by_index)
         lines[target_line - 1] = f"{target_indent}{new_code}"

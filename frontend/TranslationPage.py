@@ -212,18 +212,22 @@ class TranslationPage(QWidget, Base):
             self.action_stop.setEnabled(False)
             # 空闲状态下，如果有缓存数据也允许导出
             self.action_export.setEnabled(has_cache_data)
+            self.action_reinject_cache.setEnabled(has_cache_data)
         elif Engine.get().get_status() == Engine.Status.TESTING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
+            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(True)
             self.action_export.setEnabled(True)
+            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.STOPPING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
+            self.action_reinject_cache.setEnabled(False)
 
         if Engine.get().get_status() == Engine.Status.IDLE and data.get('status') == Base.TranslationStatus.TRANSLATING:
             self.action_continue.setEnabled(True)
@@ -440,6 +444,7 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_retry_failed(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_export(self.command_bar_card, config, window)
+        self.add_command_bar_action_reinject_cache(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
@@ -699,6 +704,32 @@ class TranslationPage(QWidget, Base):
         self.action_export.installEventFilter(ToolTipFilter(self.action_export, 300, ToolTipPosition.TOP))
         self.action_export.setToolTip(Localizer.get().translation_page_export_tooltip)
         self.action_export.setEnabled(False)
+
+    # 从缓存重新注入
+    def add_command_bar_action_reinject_cache(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
+        def triggered() -> None:
+            message_box = MessageBox(
+                Localizer.get().alert,
+                Localizer.get().translation_page_reinject_cache_confirm,
+                window,
+            )
+            message_box.yesButton.setText(Localizer.get().confirm)
+            message_box.cancelButton.setText(Localizer.get().cancel)
+
+            if not message_box.exec():
+                return
+
+            current_config = Config().load()
+            self.emit(Base.Event.TRANSLATION_CACHE_REINJECT, {
+                "output_folder": current_config.output_folder,
+            })
+
+        self.action_reinject_cache = parent.add_action(
+            Action(FluentIcon.SYNC, Localizer.get().translation_page_reinject_cache, parent, triggered = triggered),
+        )
+        self.action_reinject_cache.installEventFilter(ToolTipFilter(self.action_reinject_cache, 300, ToolTipPosition.TOP))
+        self.action_reinject_cache.setToolTip(Localizer.get().translation_page_reinject_cache_tooltip)
+        self.action_reinject_cache.setEnabled(False)
 
     # 定时器
     def add_command_bar_action_timer(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:

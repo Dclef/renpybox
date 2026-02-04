@@ -67,6 +67,18 @@ class UnifiedExtractor:
         self.logger = LogManager.get()
         self.renpy_extractor = renpy_extractor or RenpyExtractor()
         self._progress_callback: Optional[Callable[[str, int], None]] = None
+
+    def _warn_if_writeback_report(self, tl_dir: Path) -> None:
+        report_path = tl_dir / "writeback_report_renpy.json"
+        if not report_path.exists():
+            return
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(report_path.stat().st_mtime))
+        except Exception:
+            ts = "unknown"
+        self.logger.warning(
+            f"检测到翻译写回报告 {report_path} (mtime={ts})，本次抽取可能覆盖译文"
+        )
     
     def set_progress_callback(self, callback: Optional[Callable[[str, int], None]]):
         """设置进度回调 (message, percent)"""
@@ -672,6 +684,7 @@ class UnifiedExtractor:
         game_dir = Path(game_dir)
         tl_dir = game_dir / "game" / "tl" / tl_name
         result.tl_dir = tl_dir
+        self._warn_if_writeback_report(tl_dir)
         
         try:
             config = Config().load()
@@ -759,6 +772,7 @@ class UnifiedExtractor:
         game_dir = Path(game_dir)
         tl_dir = game_dir / "game" / "tl" / tl_name
         result.tl_dir = tl_dir
+        self._warn_if_writeback_report(tl_dir)
         
         # 新增内容的输出目录
         incremental_dir = game_dir / "game" / "tl" / f"{tl_name}_new" if output_to_separate_folder else None

@@ -16,6 +16,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
 from module.Engine.TaskRequester import TaskRequester
 from base.LogManager import LogManager
+from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Translate.RenpySourceTranslator import (
     LineType,
     RenpySourceTranslator,

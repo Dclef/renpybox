@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Dict, List
@@ -67,9 +68,11 @@ class RENPY(Base):
         writer = RenpyTlLineUpdater()
         extractor = RenpyTlItemExtractor()
 
+        report: list[dict] = []
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
+                self.warning(f"RENPY 导出源文件不存在: {source_path}")
                 continue
 
             try:
@@ -87,16 +90,76 @@ class RENPY(Base):
             )
             items_to_apply.sort(key=self.get_item_target_line)
 
+            translated_items = sum(
+                1
+                for item in group_items
+                if isinstance(item.get_dst(), str)
+                and item.get_dst() != ""
+                and item.get_dst() != item.get_src()
+            )
             applied, skipped = writer.apply_items_to_lines(lines, items_to_apply)
+            fallback_items: list[CacheItem] | None = None
+            if skipped > 0:
+                # Fallback: rebuild AST from current file and remap translations by text.
+                doc = parse_tl_document(lines)
+                fallback_items = extractor.extract(doc, rel_path)
+                self.transfer_ast_translations(group_items, fallback_items)
+                self.transfer_text_translations(group_items, fallback_items)
+                fallback_items.sort(key=self.get_item_target_line)
+                applied2, skipped2 = writer.apply_items_to_lines(lines, fallback_items)
+                if applied2 > 0:
+                    applied, skipped = applied2, skipped2
+            if applied == 0 and translated_items > 0:
+                # Last resort: loose writeback without hash checks.
+                if fallback_items is None:
+                    doc = parse_tl_document(lines)
+                    fallback_items = extractor.extract(doc, rel_path)
+                    self.transfer_ast_translations(group_items, fallback_items)
+                    self.transfer_text_translations(group_items, fallback_items)
+                    fallback_items.sort(key=self.get_item_target_line)
+                applied3, skipped3 = writer.apply_items_to_lines_loose(lines, fallback_items)
+                if applied3 > 0:
+                    applied, skipped = applied3, skipped3
+                    self.warning(
+                        f"RENPY 写回已改用宽松匹配: {rel_path} (applied={applied}, skipped={skipped})",
+                        console=False,
+                    )
             if skipped > 0:
                 self.warning(
                     f"RENPY 导出写回跳过 {skipped} 条: {rel_path} (applied={applied})",
+                    console=False,
+                )
+            if translated_items > 0 and applied == 0:
+                self.warning(
+                    f"RENPY 写回疑似未生效: {rel_path} (translated={translated_items}, applied={applied}, skipped={skipped})",
                     console=False,
                 )
 
             target_path = self.output_path / rel_path
             os.makedirs(target_path.parent, exist_ok=True)
             target_path.write_text("\n".join(lines), encoding="utf-8")
+
+            report.append(
+                {
+                    "file": rel_path,
+                    "source": str(source_path),
+                    "target": str(target_path),
+                    "items": len(group_items),
+                    "translated_items": translated_items,
+                    "applied": applied,
+                    "skipped": skipped,
+                }
+            )
+
+        if report:
+            report_path = self.output_path / "writeback_report_renpy.json"
+            try:
+                report_path.write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
 
     def build_items_for_writeback(
         self,
@@ -113,6 +176,7 @@ class RENPY(Base):
         doc = parse_tl_document(lines)
         new_items = extractor.extract(doc, rel_path)
         self.transfer_ast_translations(items, new_items)
+        self.transfer_text_translations(items, new_items)
         return new_items
 
     def has_ast_extra_field(self, item: CacheItem) -> bool:
@@ -166,6 +230,39 @@ class RENPY(Base):
             if picked.get_name_dst() is not None:
                 item.set_name_dst(picked.get_name_dst())
 
+    def transfer_text_translations(
+        self,
+        existing_items: list[CacheItem],
+        new_items: list[CacheItem],
+    ) -> None:
+        existing_by_text: dict[tuple[str, str], list[CacheItem]] = {}
+        for item in existing_items:
+            src = item.get_src()
+            if not isinstance(src, str) or src == "":
+                continue
+            name_key = self._normalize_name_key(item.get_name_src())
+            existing_by_text.setdefault((src, name_key), []).append(item)
+
+        for item in new_items:
+            dst = item.get_dst()
+            src = item.get_src()
+            if not isinstance(src, str) or src == "":
+                continue
+            if isinstance(dst, str) and dst != "" and dst != src:
+                continue
+
+            name_key = self._normalize_name_key(item.get_name_src())
+            candidates = existing_by_text.get((src, name_key))
+            if not candidates:
+                continue
+
+            picked = self.pick_best_candidate(item, candidates)
+            picked_dst = picked.get_dst()
+            if isinstance(picked_dst, str) and picked_dst != "" and picked_dst != src:
+                item.set_dst(picked_dst)
+            if picked.get_name_dst() is not None:
+                item.set_name_dst(picked.get_name_dst())
+
     def build_ast_keys(self, item: CacheItem) -> list[tuple[str, str, str]]:
         extra_raw = item.get_extra_field()
         extra = extra_raw if isinstance(extra_raw, dict) else {}
@@ -214,6 +311,13 @@ class RENPY(Base):
                 return candidates.pop(i)
 
         return candidates.pop(0)
+
+    def _normalize_name_key(self, value: str | list[str] | None) -> str:
+        if isinstance(value, list):
+            return "|".join([str(v) for v in value if v is not None])
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _relative_to_input(self, path: Path) -> str:
         try:

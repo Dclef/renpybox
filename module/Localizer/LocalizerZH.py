@@ -268,6 +268,11 @@ class LocalizerZH():
     translation_page_continue: str = "继续任务"
     translation_page_export: str = "导出任务数据"
     translation_page_export_tooltip: str = "导出译文文件"
+    translation_page_reinject_cache: str = "从缓存重新注入"
+    translation_page_reinject_cache_tooltip: str = "将缓存中的译文重新写回输出目录"
+    translation_page_reinject_cache_confirm: str = "将从缓存重新写回译文文件，是否继续？"
+    translation_page_reinject_cache_success: str = "缓存重新注入完成"
+    translation_page_reinject_cache_no_cache: str = "未找到缓存数据，请先翻译"
     translation_page_timer: str = "请设置延迟启动前要等待的时间"
 
     # 校对任务
