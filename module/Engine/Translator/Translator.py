@@ -1,4 +1,6 @@
 import concurrent.futures
+import copy
+import json
 import os
 import re
 import shutil
@@ -46,6 +48,7 @@ class Translator(Base):
         self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
         self.subscribe(Base.Event.TRANSLATION_START, self.translation_start)
         self.subscribe(Base.Event.TRANSLATION_MANUAL_EXPORT, self.translation_manual_export)
+        self.subscribe(Base.Event.TRANSLATION_CACHE_REINJECT, self.translation_cache_reinject)
         self.subscribe(Base.Event.PROJECT_STATUS, self.translation_project_status_check)
 
     # 翻译停止事件
@@ -124,6 +127,44 @@ class Translator(Base):
             items = self.cache_manager.copy_items()
             self.mtool_optimizer_postprocess(items)
             self.check_and_wirte_result(items)
+        threading.Thread(target = task, args = (event, data)).start()
+
+    # 从缓存重新注入翻译结果
+    def translation_cache_reinject(self, event: str, data: dict) -> None:
+        def task(event: str, data: dict) -> None:
+            config = Config().load()
+            output_folder = data.get("output_folder") or config.output_folder
+            if not output_folder:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.WARNING,
+                    "message": Localizer.get().translation_page_reinject_cache_no_cache,
+                })
+                return
+
+            cache_manager = CacheManager(service = False)
+            cache_manager.load_items_from_file(output_folder)
+            items = cache_manager.get_items()
+
+            if not items:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.WARNING,
+                    "message": Localizer.get().translation_page_reinject_cache_no_cache,
+                })
+                return
+
+            # 使用输出目录作为读写根，避免写回错位
+            config.output_folder = output_folder
+            config.input_folder = output_folder
+
+            self.info(f"[REINJECT] 从缓存重新注入：{output_folder} (items={len(items)})")
+            FileManager(config).write_to_path(items)
+            self.info(f"[REINJECT] 注入完成：{output_folder}")
+
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.SUCCESS,
+                "message": Localizer.get().translation_page_reinject_cache_success,
+            })
+
         threading.Thread(target = task, args = (event, data)).start()
 
     # 翻译状态检查事件
@@ -569,6 +610,8 @@ class Translator(Base):
 
         # 写入文件
         FileManager(self.config).write_to_path(items)
+        self.info(f"[WRITEBACK] 输出目录写回完成: {self.config.output_folder}")
+        self._auto_reinject_on_writeback_fail(items)
         self.print("")
         self.info(Localizer.get().translator_write.replace("{PATH}", self.config.output_folder))
         self.print("")
@@ -576,6 +619,47 @@ class Translator(Base):
         # 打开输出文件夹
         if self.config.output_folder_open_on_finish == True:
             webbrowser.open(os.path.abspath(self.config.output_folder))
+
+    def _auto_reinject_on_writeback_fail(self, items: list[CacheItem]) -> None:
+        """写回失败时自动从缓存再次注入（兜底）。"""
+        try:
+            report_path = os.path.join(self.config.output_folder, "writeback_report_renpy.json")
+            if not os.path.isfile(report_path):
+                return
+
+            with open(report_path, "r", encoding="utf-8") as reader:
+                report = json.load(reader)
+
+            if not isinstance(report, list):
+                return
+
+            need_reinject = False
+            for entry in report:
+                if not isinstance(entry, dict):
+                    continue
+                translated = entry.get("translated_items", 0)
+                applied = entry.get("applied", 0)
+                if isinstance(translated, int) and isinstance(applied, int):
+                    if translated > 0 and applied == 0:
+                        need_reinject = True
+                        break
+
+            if not need_reinject:
+                return
+
+            reinject_config = copy.deepcopy(self.config)
+            reinject_config.output_folder = self.config.output_folder
+            reinject_config.input_folder = self.config.output_folder
+            self.warning(f"[REINJECT] 检测到写回失败，自动重新注入：{self.config.output_folder}")
+
+            # 重新从缓存读取，避免内存中的条目与写回基准不一致
+            cache_manager = CacheManager(service = False)
+            cache_manager.load_items_from_file(self.config.output_folder)
+            reinject_items = cache_manager.get_items()
+            FileManager(reinject_config).write_to_path(reinject_items)
+            self.info(f"[REINJECT] 自动注入完成：{self.config.output_folder}")
+        except Exception as exc:
+            self.warning(f"[REINJECT] 自动注入失败: {exc}")
 
     # 翻译任务完成时
     def task_done_callback(self, future: concurrent.futures.Future, pid: TaskID, progress: ProgressBar) -> None:

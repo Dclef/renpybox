@@ -264,6 +264,11 @@ class LocalizerEN(LocalizerZH):
     translation_page_continue: str = "Continue Task"
     translation_page_export: str = "Export Task Data"
     translation_page_export_tooltip: str = "Export translation file"
+    translation_page_reinject_cache: str = "Reinject from Cache"
+    translation_page_reinject_cache_tooltip: str = "Rewrite translations from cache to the output folder"
+    translation_page_reinject_cache_confirm: str = "This will rewrite translation files from cache. Continue?"
+    translation_page_reinject_cache_success: str = "Cache reinjection completed"
+    translation_page_reinject_cache_no_cache: str = "No cache data found, please translate first"
     translation_page_timer: str = "Waiting time before delayed startup"
 
     # Proofreading

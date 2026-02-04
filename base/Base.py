@@ -16,6 +16,7 @@ class Base():
         TRANSLATION_DONE = "TRANSLATION_DONE"                              # 翻译完成
         TRANSLATION_UPDATE = "TRANSLATION_UPDATE"                          # 翻译状态更新
         TRANSLATION_MANUAL_EXPORT = "TRANSLATION_MANUAL_EXPORT"            # 翻译结果手动导出
+        TRANSLATION_CACHE_REINJECT = "TRANSLATION_CACHE_REINJECT"          # 从缓存重新注入
         CACHE_FILE_AUTO_SAVE = "CACHE_FILE_AUTO_SAVE"                      # 缓存文件自动保存
         PROJECT_STATUS = "PROJECT_STATUS"                                  # 项目状态检查
         PROJECT_STATUS_CHECK_DONE = "PROJECT_STATUS_CHECK_DONE"            # 项目状态检查完成
