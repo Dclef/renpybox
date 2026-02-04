@@ -1,4 +1,32 @@
 # -*- coding: utf-8 -*-
-"""Ren'Py 辅助模块聚合。保持 json/excel 处理等子模块的包引用。"""
+"""Ren'Py 辅助模块聚合。"""
 
-__all__: list[str] = []
+from module.Renpy.renpy_tl_core import (
+    TlBlockKind,
+    TlStmtKind,
+    TlSlotRole,
+    TlStringLiteral,
+    TlSlot,
+    TlStatement,
+    TlBlock,
+    TlDocument,
+    parse_tl_document,
+)
+from module.Renpy.renpy_tl_io import (
+    RenpyTlItemExtractor,
+    RenpyTlLineUpdater,
+)
+
+__all__ = [
+    "TlBlockKind",
+    "TlStmtKind",
+    "TlSlotRole",
+    "TlStringLiteral",
+    "TlSlot",
+    "TlStatement",
+    "TlBlock",
+    "TlDocument",
+    "parse_tl_document",
+    "RenpyTlItemExtractor",
+    "RenpyTlLineUpdater",
+]

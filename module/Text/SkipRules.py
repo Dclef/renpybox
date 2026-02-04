@@ -169,22 +169,41 @@ def is_path_like(text: str | None) -> bool:
     candidate = _strip(text)
     if not candidate:
         return False
-    lower = candidate.lower()
-    # 包含路径分隔符
-    if "/" in candidate or "\\" in candidate:
+
+    # 移除 Ren'Py 标签/占位符，避免误判（如 {color=...}{/color} 或 \[..\]）
+    temp = re.sub(r'\{[^}]*\}', '', candidate)
+    temp = temp.replace(r'\[', '[').replace(r'\]', ']')
+    temp = re.sub(r'\[[^\]]*\]', '', temp)
+    temp = temp.strip()
+    if not temp:
+        return False
+
+    lower = temp.lower()
+
+    # 盘符路径或 UNC 路径
+    if re.search(r'[a-z]:[\\/]', temp):
         return True
-    # 包含盘符 (C:, D:)
-    if ":" in candidate and " " not in candidate:
+    if temp.startswith('\\'):
         return True
+
+    # 绝对/相对路径前缀
+    if lower.startswith(('/', './', '../', '~/')):
+        return True
+
     # 短文件名格式
     if _FILENAME_PATTERN.match(lower):
         return True
+
     # 检测常见资源路径前缀
     path_prefixes = ('images/', 'audio/', 'music/', 'sound/', 'video/', 'gui/', 'fonts/')
     if any(lower.startswith(p) or ('/' + p) in lower for p in path_prefixes):
         return True
-    return False
 
+    # 包含路径分隔符且带有扩展名
+    if re.search(r'[\\/][^\\/]+\.[a-z0-9]{1,5}', lower):
+        return True
+
+    return False
 
 def is_code_identifier(text: str | None) -> bool:
     """检测是否为代码标识符（变量名、函数名等）"""

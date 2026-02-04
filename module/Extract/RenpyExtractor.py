@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from base.LogManager import LogManager
+from module.Renpy.renpy_tl_core import TlStmtKind
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.json_handler import JsonExporter
 from module.Text.SkipRules import should_skip_text
 from utils.call_game_python import (
@@ -341,106 +344,194 @@ class RenpyExtractor:
             if tl_file.name in self.HOOK_FILES:
                 self.logger.debug(f"跳过钩子文件: {tl_file}")
                 continue
-                
+
             rel = tl_file.relative_to(project / "game" / "tl" / tl_name).as_posix()
-            try:
-                lines = tl_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-            except Exception as exc:
-                self.logger.warning(f"读取翻译文件失败 {tl_file}: {exc}")
+            file_entries = self._parse_tl_file_ast(tl_file, rel, tl_name)
+            if file_entries is None:
+                file_entries = self._parse_tl_file_legacy(tl_file, rel, tl_name)
+            entries.extend(file_entries)
+
+        self.logger.info(f"解析 tl/{tl_name}，共 {len(entries)} 条记录")
+        return entries
+
+    def _parse_tl_file_ast(self, tl_file: Path, rel: str, tl_name: str) -> List[Dict] | None:
+        """使用 AST 解析单个 tl 文件，失败返回 None。"""
+        try:
+            text = tl_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            self.logger.warning(f"读取翻译文件失败 {tl_file}: {exc}")
+            return []
+
+        try:
+            lines = text.splitlines()
+            doc = parse_tl_document(lines)
+            extractor = RenpyTlItemExtractor()
+            items = extractor.extract(doc, rel)
+            if not items:
+                return []
+
+            meta_by_line = self._collect_meta_by_line(doc)
+            entries: List[Dict] = []
+            for item in items:
+                src = item.get_src()
+                if self.should_skip_text(src):
+                    continue
+
+                extra = item.get_extra_field()
+                extra_dict = extra if isinstance(extra, dict) else {}
+                renpy = extra_dict.get("renpy", {}) if isinstance(extra_dict.get("renpy"), dict) else {}
+                block = renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
+                label = block.get("label") if isinstance(block.get("label"), str) else ""
+                lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
+                if tl_name and lang and lang != tl_name:
+                    continue
+                kind = str(block.get("kind") or "")
+                entry_type = "strings" if kind == "STRINGS" else "dialogue"
+
+                template_line = item.get_row()
+                source_file, source_line = meta_by_line.get(template_line, (None, None))
+
+                entries.append(
+                    {
+                        "file": rel,
+                        "line": template_line,
+                        "identifier": label,
+                        "original": src,
+                        "translation": item.get_dst(),
+                        "source_file": source_file,
+                        "source_line": source_line,
+                        "type": entry_type,
+                    }
+                )
+            return entries
+        except Exception:
+            return None
+
+    def _collect_meta_by_line(self, doc) -> dict[int, tuple[str | None, int | None]]:
+        """根据 META 注释收集源文件定位信息（按模板行号映射）。"""
+        pattern = re.compile(r"^game/(.+?):(\d+)$")
+        meta_by_line: dict[int, tuple[str | None, int | None]] = {}
+        for block in doc.blocks:
+            last_meta: tuple[str | None, int | None] = (None, None)
+            for stmt in block.statements:
+                if stmt.stmt_kind == TlStmtKind.META:
+                    content = stmt.code.strip()
+                    match = pattern.match(content)
+                    if match:
+                        captured_path = match.group(1).replace("\\", "/")
+                        if captured_path.startswith("game/"):
+                            captured_path = captured_path[5:]
+                        try:
+                            captured_line = int(match.group(2))
+                        except ValueError:
+                            captured_line = None
+                        last_meta = (captured_path, captured_line)
+                    continue
+
+                if stmt.stmt_kind == TlStmtKind.TEMPLATE and last_meta[0] is not None:
+                    meta_by_line.setdefault(stmt.line_no, last_meta)
+        return meta_by_line
+
+    def _parse_tl_file_legacy(self, tl_file: Path, rel: str, tl_name: str) -> List[Dict]:
+        """保留旧正则解析逻辑，作为 AST 失败的回退路径。"""
+        try:
+            lines = tl_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception as exc:
+            self.logger.warning(f"读取翻译文件失败 {tl_file}: {exc}")
+            return []
+
+        entries: List[Dict] = []
+        in_block = False
+        current_identifier = None
+        block_source_file: str | None = None
+        block_source_line: int | None = None
+        pending_source_file: str | None = None
+        pending_source_line: int | None = None
+        idx = 0
+        while idx < len(lines):
+            raw = lines[idx]
+            stripped = raw.strip()
+
+            match = self.COMMENT_PATTERN.match(stripped)
+            if match:
+                captured_path = match.group(1).replace("\\", "/")
+                if captured_path.startswith("game/"):
+                    captured_path = captured_path[5:]
+                try:
+                    captured_line = int(match.group(2))
+                except ValueError:
+                    captured_line = None
+
+                if in_block:
+                    block_source_file = captured_path
+                    block_source_line = captured_line
+                else:
+                    pending_source_file = captured_path
+                    pending_source_line = captured_line
+                idx += 1
                 continue
 
-            in_block = False
-            current_identifier = None
-            block_source_file: str | None = None
-            block_source_line: int | None = None
-            pending_source_file: str | None = None
-            pending_source_line: int | None = None
-            idx = 0
-            while idx < len(lines):
-                raw = lines[idx]
-                stripped = raw.strip()
+            if stripped.startswith("translate ") and stripped.endswith(":"):
+                parts = stripped.split()
+                if len(parts) >= 3 and parts[0] == "translate" and parts[1] == tl_name:
+                    current_identifier = parts[2].rstrip(":")
+                    in_block = True
+                    block_source_file = pending_source_file
+                    block_source_line = pending_source_line
+                    pending_source_file = None
+                    pending_source_line = None
+                else:
+                    in_block = False
+                    block_source_file = None
+                    block_source_line = None
+                    pending_source_file = None
+                    pending_source_line = None
+                idx += 1
+                continue
 
-                match = self.COMMENT_PATTERN.match(stripped)
-                if match:
-                    captured_path = match.group(1).replace("\\", "/")
-                    if captured_path.startswith("game/"):
-                        captured_path = captured_path[5:]
-                    try:
-                        captured_line = int(match.group(2))
-                    except ValueError:
-                        captured_line = None
+            if in_block and stripped.startswith("old "):
+                original = self._extract_quoted(stripped)
+                translation = ""
 
-                    if in_block:
-                        block_source_file = captured_path
-                        block_source_line = captured_line
-                    else:
-                        pending_source_file = captured_path
-                        pending_source_line = captured_line
-                    idx += 1
-                    continue
+                lookahead = idx + 1
+                while lookahead < len(lines):
+                    candidate = lines[lookahead].strip()
+                    if candidate.startswith("new "):
+                        translation = self._extract_quoted(candidate)
+                        break
+                    if candidate.startswith("old ") or candidate.startswith("translate "):
+                        lookahead -= 1
+                        break
+                    lookahead += 1
 
-                if stripped.startswith("translate ") and stripped.endswith(":"):
-                    parts = stripped.split()
-                    if len(parts) >= 3 and parts[0] == "translate" and parts[1] == tl_name:
-                        current_identifier = parts[2].rstrip(":")
-                        in_block = True
-                        block_source_file = pending_source_file
-                        block_source_line = pending_source_line
-                        pending_source_file = None
-                        pending_source_line = None
-                    else:
-                        in_block = False
-                        block_source_file = None
-                        block_source_line = None
-                        pending_source_file = None
-                        pending_source_line = None
-                    idx += 1
-                    continue
-
-                if in_block and stripped.startswith("old "):
-                    original = self._extract_quoted(stripped)
-                    translation = ""
-
-                    lookahead = idx + 1
-                    while lookahead < len(lines):
-                        candidate = lines[lookahead].strip()
-                        if candidate.startswith("new "):
-                            translation = self._extract_quoted(candidate)
-                            break
-                        if candidate.startswith("old ") or candidate.startswith("translate "):
-                            lookahead -= 1
-                            break
-                        lookahead += 1
-
-                    if self.should_skip_text(original):
-                        if lookahead >= idx + 1:
-                            idx = lookahead + 1
-                        else:
-                            idx += 1
-                        continue
-
-                    entries.append(
-                        {
-                            "file": rel,
-                            "line": idx + 1,
-                            "identifier": current_identifier or "",
-                            "original": original,
-                            "translation": translation,
-                            "source_file": block_source_file,
-                            "source_line": block_source_line,
-                            "type": "strings",
-                        }
-                    )
-
+                if self.should_skip_text(original):
                     if lookahead >= idx + 1:
                         idx = lookahead + 1
                     else:
                         idx += 1
                     continue
 
-                idx += 1
+                entries.append(
+                    {
+                        "file": rel,
+                        "line": idx + 1,
+                        "identifier": current_identifier or "",
+                        "original": original,
+                        "translation": translation,
+                        "source_file": block_source_file,
+                        "source_line": block_source_line,
+                        "type": "strings",
+                    }
+                )
 
-        self.logger.info(f"解析 tl/{tl_name}，共 {len(entries)} 条记录")
+                if lookahead >= idx + 1:
+                    idx = lookahead + 1
+                else:
+                    idx += 1
+                continue
+
+            idx += 1
+
         return entries
 
     def _extract_quoted(self, line: str) -> str:
