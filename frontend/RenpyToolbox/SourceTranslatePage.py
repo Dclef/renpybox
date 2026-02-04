@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -222,7 +223,6 @@ class SourceTranslatePage(Base, QWidget):
             self.backup_external_edit.setText(directory)
 
     def _start_translation(self):
-
         single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
 
         target_path: Optional[Path] = None
@@ -284,27 +284,46 @@ class SourceTranslatePage(Base, QWidget):
             InfoBar.error("错误", f"加载配置失败: {exc}", parent=self)
             return
 
+        def _start_engine_translation() -> None:
+            # 更新 UI
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(True)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("预处理中…")
+
+            # 触发 Engine 翻译
+            self.emit(Base.Event.TRANSLATION_START, {
+                "config": config,
+                "status": Base.TranslationStatus.UNTRANSLATED,
+                "input_folder": str(target_path),
+                "output_folder": str(output_dir),
+                "source_language": config.source_language,
+                "target_language": config.target_language,
+            })
+            InfoBar.success("已开始", "已切换到统一翻译流程，进度见日志/进度条。", parent=self)
+
         # 简单备份（外部目录或本地 .bak）
         if backup or backup_root:
-            self._backup_sources(target_path, backup_root)
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("正在备份源码…")
 
-        # 更新 UI
-        self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.status_label.setText("已委托 Engine 翻译，请稍候...")
+            def _backup_task() -> None:
+                try:
+                    self._backup_sources(target_path, backup_root)
+                except Exception as exc:
+                    self.logger.warning(f"备份源码失败: {exc}")
+                QTimer.singleShot(0, _start_engine_translation)
 
-        # 触发 Engine 翻译
-        self.emit(Base.Event.TRANSLATION_START, {
-            "config": config,
-            "status": Base.TranslationStatus.UNTRANSLATED,
-            "input_folder": str(target_path),
-            "output_folder": str(output_dir),
-            "source_language": config.source_language,
-            "target_language": config.target_language,
-        })
-        InfoBar.success("已开始", "已切换到统一翻译流程，进度见日志/进度条。", parent=self)
+            threading.Thread(target=_backup_task, daemon=True).start()
+            return
+
+        _start_engine_translation()
 
     def _stop_translation(self):
 
@@ -316,9 +335,15 @@ class SourceTranslatePage(Base, QWidget):
     def _on_engine_update(self, event, extras):
         if not isinstance(extras, dict):
             return
+        if extras.get("phase") == "preparing":
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.status_label.setText(extras.get("message") or "预处理中…")
+            return
         total = extras.get("total_line", 0) or 0
         current = extras.get("line", 0) or 0
         if total > 0:
+            self.progress_bar.setRange(0, 100)
             percent = int(max(0.0, min(1.0, current / total)) * 100)
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(percent)
