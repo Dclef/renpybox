@@ -193,6 +193,11 @@ class Translator(Base):
 
         # 初始化
         self.config = config if isinstance(config, Config) else Config().load()
+        # 预处理提示（解析/生成任务阶段）
+        self.emit(Base.Event.TRANSLATION_UPDATE, {
+            "phase": "preparing",
+            "message": "预处理中…",
+        })
         override_input = data.get("input_folder")
         override_output = data.get("output_folder")
         override_source = data.get("source_language")
@@ -283,6 +288,11 @@ class Translator(Base):
 
         # 开始循环
         for current_round in range(self.config.max_round):
+            if current_round == 0:
+                self.emit(Base.Event.TRANSLATION_UPDATE, {
+                    "phase": "preparing",
+                    "message": "生成任务中…",
+                })
             # 检测是否需要停止任务
             # 目的是避免用户正好在两轮之间停止任务
             if Engine.get().get_status() == Engine.Status.STOPPING:
