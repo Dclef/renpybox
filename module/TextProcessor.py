@@ -70,6 +70,8 @@ class TextProcessor(Base):
         self.vaild_index: set[int] = set()
         self.prefix_codes: dict[int, list[str]] = {}
         self.suffix_codes: dict[int, list[str]] = {}
+        self.inline_codes: dict[int, list[tuple[str, str]]] = {}
+        self.inline_preserve_re = None
 
     def _get_custom_text_preserve_patterns(self) -> tuple[str, ...]:
         cache_key = id(self.config)
@@ -90,6 +92,10 @@ class TextProcessor(Base):
             if src.startswith("[") and src.endswith("]") and "\\" not in src:
                 if re.fullmatch(rf"\[[\w{CacheItem.CJK_RANGE}.]+\]", src) is not None:
                     src = re.escape(src)
+            # Ren'Py 标签常见的花括号字面量（如 {w}、{/b}）。
+            # 若直接作为正则使用会报错或误匹配，这里自动转义为字面量。
+            if src.startswith("{") and src.endswith("}") and "\\" not in src:
+                src = re.escape(src)
 
             patterns.append(src)
 
@@ -324,6 +330,42 @@ class TextProcessor(Base):
 
         return src
 
+    def _protect_inline_tags(self, i: int, src: str) -> str:
+        if self.config.text_preserve_enable == False:
+            return src
+
+        if self.inline_preserve_re is None:
+            patterns = self._get_custom_text_preserve_patterns()
+            if not patterns:
+                return src
+            try:
+                self.inline_preserve_re = re.compile("|".join(patterns), re.IGNORECASE)
+            except re.error:
+                return src
+
+        rule = self.inline_preserve_re
+        if rule is None:
+            return src
+
+        codes: list[tuple[str, str]] = []
+
+        def repl(match: re.Match) -> str:
+            placeholder = f"__RBX_PRESERVE_{i}_{len(codes)}__"
+            codes.append((placeholder, match.group(0)))
+            return placeholder
+
+        new_src = rule.sub(repl, src)
+        if codes:
+            self.inline_codes[i] = codes
+            # 记录命中的禁翻片段，便于提示词增强
+            self.samples.extend([orig for _, orig in codes if orig.strip() != ""])
+        return new_src
+
+    def _restore_inline_tags(self, i: int, dst: str) -> str:
+        for placeholder, original in self.inline_codes.get(i, []):
+            dst = dst.replace(placeholder, original)
+        return dst
+
     # 预处理
     def pre_process(self) -> None:
         # 依次处理每行，顺序为：
@@ -336,6 +378,8 @@ class TextProcessor(Base):
             else:
                 # 处理前后缀代码段
                 src = self.prefix_suffix_process(i, src, text_type)
+                # 行内禁翻库保护
+                src = self._protect_inline_tags(i, src)
 
                 # 如果处理后的文本为空
                 if src == "":
@@ -387,6 +431,8 @@ class TextProcessor(Base):
             else:
                 # 移除模型可能额外添加的头尾空白符
                 dst = dsts.pop(0).strip()
+                # 还原行内标签
+                dst = self._restore_inline_tags(i, dst)
 
                 # 自动修复
                 dst = self.auto_fix(src, dst)
