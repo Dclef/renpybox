@@ -72,6 +72,7 @@ class TextProcessor(Base):
         self.suffix_codes: dict[int, list[str]] = {}
         self.inline_codes: dict[int, list[tuple[str, str]]] = {}
         self.inline_preserve_re = None
+        self.inline_preserve_re_text_type = None
 
     def _get_custom_text_preserve_patterns(self) -> tuple[str, ...]:
         cache_key = id(self.config)
@@ -330,18 +331,42 @@ class TextProcessor(Base):
 
         return src
 
-    def _protect_inline_tags(self, i: int, src: str) -> str:
-        if self.config.text_preserve_enable == False:
-            return src
+    def _build_inline_preserve_regex(self, text_type: CacheItem.TextType) -> re.Pattern | None:
+        patterns: list[str] = []
 
-        if self.inline_preserve_re is None:
-            patterns = self._get_custom_text_preserve_patterns()
-            if not patterns:
-                return src
-            try:
-                self.inline_preserve_re = re.compile("|".join(patterns), re.IGNORECASE)
-            except re.error:
-                return src
+        # 行内保护只使用“安全占位模式”，避免把 \\s 这类宽泛规则（会匹配空格）替换成占位符。
+        if text_type == CacheItem.TextType.RENPY:
+            patterns.extend([v.pattern for v in CacheItem.REGEX_RENPY])
+        elif text_type == CacheItem.TextType.WOLF:
+            patterns.extend([v.pattern for v in CacheItem.REGEX_WOLF])
+        elif text_type == CacheItem.TextType.RPGMAKER:
+            patterns.extend([v.pattern for v in CacheItem.REGEX_RPGMaker])
+
+        # 自定义禁翻规则按开关叠加。
+        if self.config.text_preserve_enable == True:
+            patterns = list(self._get_custom_text_preserve_patterns()) + patterns
+
+        if len(patterns) == 0:
+            return None
+
+        try:
+            return re.compile("|".join(patterns), re.IGNORECASE)
+        except re.error:
+            # 合并失败时回退到首个可用规则，保证流程不受影响。
+            for pattern in patterns:
+                try:
+                    return re.compile(pattern, re.IGNORECASE)
+                except re.error:
+                    continue
+        return None
+
+    def _protect_inline_tags(self, i: int, src: str, text_type: CacheItem.TextType) -> str:
+        if (
+            self.inline_preserve_re is None
+            or self.inline_preserve_re_text_type != text_type
+        ):
+            self.inline_preserve_re = self._build_inline_preserve_regex(text_type)
+            self.inline_preserve_re_text_type = text_type
 
         rule = self.inline_preserve_re
         if rule is None:
@@ -379,7 +404,7 @@ class TextProcessor(Base):
                 # 处理前后缀代码段
                 src = self.prefix_suffix_process(i, src, text_type)
                 # 行内禁翻库保护
-                src = self._protect_inline_tags(i, src)
+                src = self._protect_inline_tags(i, src, text_type)
 
                 # 如果处理后的文本为空
                 if src == "":
