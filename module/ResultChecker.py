@@ -36,6 +36,8 @@ class ResultChecker(Base):
         r'^["\'\(（]*[A-Z][a-z]{1,14}[\u4e00-\u9fff]',  # 如 "It醒醒", "You我不知道"
         re.UNICODE
     )
+    # 术语检查时忽略占位符/标签片段，避免将 [sus_rlt] 误判为术语 sus 命中
+    RE_GLOSSARY_IGNORE_SEGMENTS = re.compile(r"\[[^\]]*]|\{[^}]*}")
 
     def __init__(self, config: Config, items: list[CacheItem]) -> None:
         super().__init__()
@@ -153,18 +155,27 @@ class ResultChecker(Base):
         if not self._prepared_glossary_data:
             return False
 
+        src_clean = self._strip_glossary_ignore_segments(src_repl)
+        src_clean_lower = src_clean.lower()
+        dst_clean = self._strip_glossary_ignore_segments(dst_repl)
+        dst_clean_lower = dst_clean.lower()
         src_lower = src_repl.lower()
         dst_lower = dst_repl.lower()
         for v in self._prepared_glossary_data:
             glossary_src = v.get("src", "")
             glossary_dst = v.get("dst", "")
             case_sensitive = v.get("case_sensitive", False)
+            use_raw_text = any(ch in glossary_src for ch in "[]{}")
 
             if case_sensitive:
-                if glossary_src and glossary_src in src_repl and glossary_dst not in dst_repl:
+                src_target = src_repl if use_raw_text else src_clean
+                dst_target = dst_repl if use_raw_text else dst_clean
+                if glossary_src and glossary_src in src_target and glossary_dst not in dst_target:
                     return True
             else:
-                if glossary_src and glossary_src.lower() in src_lower and glossary_dst.lower() not in dst_lower:
+                src_target = src_lower if use_raw_text else src_clean_lower
+                dst_target = dst_lower if use_raw_text else dst_clean_lower
+                if glossary_src and glossary_src.lower() in src_target and glossary_dst.lower() not in dst_target:
                     return True
 
         return False
@@ -174,6 +185,10 @@ class ResultChecker(Base):
             return []
 
         src_repl, dst_repl = self._get_repl_texts(item)
+        src_clean = self._strip_glossary_ignore_segments(src_repl)
+        src_clean_lower = src_clean.lower()
+        dst_clean = self._strip_glossary_ignore_segments(dst_repl)
+        dst_clean_lower = dst_clean.lower()
         src_lower = src_repl.lower()
         dst_lower = dst_repl.lower()
         failed_terms: list[tuple[str, str]] = []
@@ -182,21 +197,56 @@ class ResultChecker(Base):
             glossary_src = v.get("src", "")
             glossary_dst = v.get("dst", "")
             case_sensitive = v.get("case_sensitive", False)
+            use_raw_text = any(ch in glossary_src for ch in "[]{}")
 
             if not glossary_src or not glossary_dst:
                 continue
 
             if case_sensitive:
-                src_hit = glossary_src in src_repl
-                dst_hit = glossary_dst in dst_repl
+                src_target = src_repl if use_raw_text else src_clean
+                dst_target = dst_repl if use_raw_text else dst_clean
+                src_hit = glossary_src in src_target
+                dst_hit = glossary_dst in dst_target
             else:
-                src_hit = glossary_src.lower() in src_lower
-                dst_hit = glossary_dst.lower() in dst_lower
+                src_target = src_lower if use_raw_text else src_clean_lower
+                dst_target = dst_lower if use_raw_text else dst_clean_lower
+                src_hit = glossary_src.lower() in src_target
+                dst_hit = glossary_dst.lower() in dst_target
 
             if src_hit and not dst_hit:
                 failed_terms.append((glossary_src, glossary_dst))
 
         return failed_terms
+
+    @classmethod
+    def _strip_glossary_ignore_segments(cls, text: str) -> str:
+        """去除占位符/标签片段，仅用于术语命中判断。"""
+        return cls.RE_GLOSSARY_IGNORE_SEGMENTS.sub("", text or "")
+
+    @classmethod
+    def _replace_term_outside_segments(
+        cls,
+        text: str,
+        glossary_src: str,
+        glossary_dst: str,
+        case_sensitive: bool,
+    ) -> str:
+        """仅在非占位符片段中替换术语，避免改写 [sus_rlt] / {w} 等结构。"""
+        if text == "" or glossary_src == "":
+            return text
+
+        parts = cls.RE_GLOSSARY_IGNORE_SEGMENTS.split(text)
+        separators = cls.RE_GLOSSARY_IGNORE_SEGMENTS.findall(text)
+
+        out: list[str] = []
+        for i, part in enumerate(parts):
+            if case_sensitive:
+                out.append(part.replace(glossary_src, glossary_dst))
+            else:
+                out.append(re.sub(re.escape(glossary_src), glossary_dst, part, flags = re.IGNORECASE))
+            if i < len(separators):
+                out.append(separators[i])
+        return "".join(out)
 
     def _has_retry_threshold_error(self, item: CacheItem) -> bool:
         return item.get_retry_count() >= ResponseChecker.RETRY_COUNT_THRESHOLD
@@ -383,38 +433,57 @@ class ResultChecker(Base):
             seen = set()
             current_dst = item.get_dst()
             fixed = False
+            src_repl_clean = self._strip_glossary_ignore_segments(src_repl)
+            src_repl_clean_lower = src_repl_clean.lower()
             src_repl_lower = src_repl.lower()
+            current_dst_clean = self._strip_glossary_ignore_segments(current_dst)
+            current_dst_clean_lower = current_dst_clean.lower()
             current_dst_lower = current_dst.lower()
             for v in glossary_data:
                 glossary_src = v.get("src", "")
                 glossary_dst = v.get("dst", "")
                 case_sensitive = v.get("case_sensitive", False)
+                use_raw_text = any(ch in glossary_src for ch in "[]{}")
 
                 if not glossary_src or not glossary_dst:
                     continue
 
                 if case_sensitive:
-                    src_hit = glossary_src in src_repl
-                    dst_hit = glossary_dst in current_dst
+                    src_target = src_repl if use_raw_text else src_repl_clean
+                    dst_target = current_dst if use_raw_text else current_dst_clean
+                    src_hit = glossary_src in src_target
+                    dst_hit = glossary_dst in dst_target
                 else:
-                    src_hit = glossary_src.lower() in src_repl_lower
-                    dst_hit = glossary_dst.lower() in current_dst_lower
+                    src_target = src_repl_lower if use_raw_text else src_repl_clean_lower
+                    dst_target = current_dst_lower if use_raw_text else current_dst_clean_lower
+                    src_hit = glossary_src.lower() in src_target
+                    dst_hit = glossary_dst.lower() in dst_target
 
                 # 如果原文包含术语，但译文没有正确翻译
                 if src_hit and not dst_hit:
                     # 自动替换：将原文术语替换为译文术语
                     if case_sensitive:
-                        replace_hit = glossary_src in current_dst
+                        replace_target = current_dst if use_raw_text else current_dst_clean
+                        replace_hit = glossary_src in replace_target
                     else:
-                        replace_hit = glossary_src.lower() in current_dst_lower
+                        replace_target = current_dst_lower if use_raw_text else current_dst_clean_lower
+                        replace_hit = glossary_src.lower() in replace_target
 
                     if replace_hit:
-                        if case_sensitive:
-                            new_dst = current_dst.replace(glossary_src, glossary_dst)
-                        else:
-                            new_dst = re.sub(re.escape(glossary_src), glossary_dst, current_dst, flags = re.IGNORECASE)
+                        new_dst = self._replace_term_outside_segments(
+                            current_dst,
+                            glossary_src,
+                            glossary_dst,
+                            case_sensitive,
+                        ) if not use_raw_text else (
+                            current_dst.replace(glossary_src, glossary_dst)
+                            if case_sensitive
+                            else re.sub(re.escape(glossary_src), glossary_dst, current_dst, flags = re.IGNORECASE)
+                        )
                         item.set_dst(new_dst)
                         current_dst = new_dst
+                        current_dst_clean = self._strip_glossary_ignore_segments(current_dst)
+                        current_dst_clean_lower = current_dst_clean.lower()
                         current_dst_lower = current_dst.lower()
                         fixed = True
                         fixed_count += 1

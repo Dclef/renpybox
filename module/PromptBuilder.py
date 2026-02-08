@@ -1,5 +1,6 @@
 import json
 import threading
+import re
 from functools import lru_cache
 
 from base.Base import Base
@@ -12,6 +13,7 @@ class PromptBuilder(Base):
 
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
+    RE_GLOSSARY_IGNORE_SEGMENTS = re.compile(r"\[[^\]]*]|\{[^}]*}")
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -105,16 +107,24 @@ class PromptBuilder(Base):
     # 构造术语表
     def build_glossary(self, srcs: list[str]) -> str:
         full = "\n".join(srcs)
-        full_lower = full.lower()
+        # 术语匹配时忽略占位/标签段，避免 [jane_rlt2] 命中术语 "jane"。
+        full_clean = __class__.RE_GLOSSARY_IGNORE_SEGMENTS.sub("", full)
+        full_lower = full_clean.lower()
+        full_raw_lower = full.lower()
         glossary: list[dict[str, str]] = []
         for v in self.config.glossary_data:
             src = v.get("src", "")
+            if src == "":
+                continue
+            # 若术语本身带占位字符，按原文匹配；普通术语按清洗后文本匹配。
+            target_full = full if any(ch in src for ch in "[]{}") else full_clean
             is_case_sensitive = v.get("case_sensitive", False)
             if is_case_sensitive:
-                if src in full:
+                if src in target_full:
                     glossary.append(v)
             else:
-                if src.lower() in full_lower:
+                target_lower = full_raw_lower if any(ch in src for ch in "[]{}") else full_lower
+                if src.lower() in target_lower:
                     glossary.append(v)
 
         # 构建文本
@@ -146,16 +156,22 @@ class PromptBuilder(Base):
     # 构造术语表
     def build_glossary_sakura(self, srcs: list[str]) -> str:
         full = "\n".join(srcs)
-        full_lower = full.lower()
+        full_clean = __class__.RE_GLOSSARY_IGNORE_SEGMENTS.sub("", full)
+        full_lower = full_clean.lower()
+        full_raw_lower = full.lower()
         glossary: list[dict[str, str]] = []
         for v in self.config.glossary_data:
             src = v.get("src", "")
+            if src == "":
+                continue
+            target_full = full if any(ch in src for ch in "[]{}") else full_clean
             is_case_sensitive = v.get("case_sensitive", False)
             if is_case_sensitive:
-                if src in full:
+                if src in target_full:
                     glossary.append(v)
             else:
-                if src.lower() in full_lower:
+                target_lower = full_raw_lower if any(ch in src for ch in "[]{}") else full_lower
+                if src.lower() in target_lower:
                     glossary.append(v)
 
         # 构建文本

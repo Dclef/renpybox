@@ -4,6 +4,7 @@
 """
 
 from typing import List, Dict
+from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QWidget,
@@ -438,33 +439,103 @@ class TextPreservePage(Base, QWidget):
         value = row[index]
         return "" if value is None else str(value).strip()
 
+    @staticmethod
+    def _list_scan_candidates(config: Config) -> List[Path]:
+        """根据当前配置推断变量扫描候选目录（按优先级排序并去重）"""
+        raws = [
+            getattr(config, "input_folder", ""),
+            getattr(config, "output_folder", ""),
+            getattr(config, "renpy_game_folder", ""),
+        ]
+        candidates: List[Path] = []
+        for raw in raws:
+            if not raw:
+                continue
+            path = Path(raw)
+            if not path.exists():
+                continue
+
+            if path.is_file():
+                if path.suffix.lower() == ".rpy":
+                    candidates.append(path.parent)
+                continue
+
+            # 若选择的是 tl 目录，优先回退到上层 game 目录
+            if path.name.lower() == "tl" and path.parent.exists():
+                candidates.append(path.parent)
+
+            game_child = path / "game"
+            if game_child.exists() and game_child.is_dir():
+                candidates.append(game_child)
+
+            candidates.append(path)
+
+        deduped: List[Path] = []
+        seen: set[str] = set()
+        for p in candidates:
+            try:
+                key = str(p.resolve()).lower()
+            except Exception:
+                key = str(p).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+        return deduped
+
+    @staticmethod
+    def _count_rpy_files_without_tl(root: Path) -> int:
+        """统计目录下可用于扫描变量的 rpy 数量（排除 tl 目录）"""
+        count = 0
+        for rpy_file in root.rglob("*.rpy"):
+            if "tl" in [part.lower() for part in rpy_file.parts]:
+                continue
+            count += 1
+        return count
+
     def _on_rescan_variables(self):
         """重新扫描游戏目录，提取[variable]变量引用到禁翻表（清空旧数据）"""
         import re
-        from pathlib import Path
         
-        # 重新加载配置以获取最新的游戏目录
+        # 重新加载配置以获取最新目录配置
         self.config = Config().load()
-        
-        # 获取游戏目录
-        game_folder = self.config.renpy_game_folder
-        if not game_folder:
-            InfoBar.warning("警告", "请先在一键翻译中选择游戏目录", parent=self)
+
+        candidates = self._list_scan_candidates(self.config)
+        if not candidates:
+            InfoBar.warning("警告", "未找到可扫描目录，请先设置输入/输出目录或游戏目录", parent=self)
             return
-            
-        game_path = Path(game_folder) / "game"
-        if not game_path.exists():
-            game_path = Path(game_folder)
-            if not game_path.exists():
-                InfoBar.error("错误", f"游戏目录不存在: {game_folder}", parent=self)
-                return
-        
+
+        # 按候选优先级选择第一个可扫描目录：
+        # input/output 优先于 renpy_game_folder，避免跳到历史项目。
+        game_path = None
+        fallback_path = None
+        for candidate in candidates:
+            if fallback_path is None:
+                fallback_path = candidate
+            try:
+                count = self._count_rpy_files_without_tl(candidate)
+            except Exception:
+                count = -1
+            if count > 0:
+                game_path = candidate
+                break
+
+        if game_path is None:
+            game_path = fallback_path
+
+        if game_path is None or not game_path.exists():
+            InfoBar.error("错误", "无法确定扫描目录", parent=self)
+            return
+
         # 正则匹配 [variable_name]
-        RE_VARIABLE_IN_TEXT = re.compile(r'\[(\w+)\]')
+        RE_VARIABLE_IN_TEXT = re.compile(r'\[([\w.]+)\]')
         
         found_preserves = set()
         try:
             for rpy_file in game_path.rglob("*.rpy"):
+                # 跳过 tl 目录，避免将翻译产物中的占位污染禁翻表
+                if "tl" in [part.lower() for part in rpy_file.parts]:
+                    continue
                 try:
                     content = rpy_file.read_text(encoding="utf-8", errors="ignore")
                     var_matches = RE_VARIABLE_IN_TEXT.findall(content)
@@ -479,14 +550,15 @@ class TextPreservePage(Base, QWidget):
         if not found_preserves:
             # 清空禁翻表
             self.config.text_preserve_data = []
+            self.config.text_preserve_enable = False
             self.config.save()
             self._load_from_config()
-            InfoBar.info("提示", "未找到变量引用，已清空禁翻表", parent=self)
+            InfoBar.info("提示", f"未找到变量引用，已清空禁翻表（扫描目录：{game_path}）", parent=self)
             return
         
         # 完全清空旧数据，只保留新扫描的 [variable]
         new_preserves = []
-        for text in found_preserves:
+        for text in sorted(found_preserves):
             new_preserves.append({"src": text})
         
         # 保存到配置
@@ -497,4 +569,4 @@ class TextPreservePage(Base, QWidget):
         # 刷新表格
         self._load_from_config()
         
-        InfoBar.success("完成", f"已扫描到 {len(new_preserves)} 个变量引用", parent=self)
+        InfoBar.success("完成", f"已扫描到 {len(new_preserves)} 个变量引用（扫描目录：{game_path}）", parent=self)
