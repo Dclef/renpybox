@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QFileDialog,
     QStackedWidget,
+    QSizePolicy,
 )
 from qfluentwidgets import (
     FlowLayout,
@@ -179,13 +180,20 @@ class YiJianFanyiPage(Base, QWidget):
         # 分割线
         page_layout.addWidget(Separator(page))
         
-        # 内容区域
+        # 内容区域（滚动容器，避免非全屏时控件挤压重叠）
+        content_scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
+        content_scroll.setWidgetResizable(True)
+        content_scroll.enableTransparentBackground()
+        mark_toolbox_scroll_area(content_scroll)
+
         content = QWidget()
+        mark_toolbox_widget(content, "toolboxScroll")
         content.setStyleSheet("background: transparent;")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(16)
-        page_layout.addWidget(content, 1)
+        content_scroll.setWidget(content)
+        page_layout.addWidget(content_scroll, 1)
         
         # 底部：进度条
         page_layout.addWidget(Separator(page))
@@ -226,7 +234,8 @@ class YiJianFanyiPage(Base, QWidget):
         page.progress_ring = progress_ring
         page.status_label = status_label
         page.progress_bar = progress_bar
-        
+        page.content_scroll = content_scroll
+
         return page, content_layout
     
     # ==================== 进度一：前期设置 ====================
@@ -276,6 +285,7 @@ class YiJianFanyiPage(Base, QWidget):
         # 旧翻译检测提示卡片（默认隐藏）
         self.old_translation_card = CardWidget()
         self.old_translation_card.setVisible(False)
+        self.old_translation_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         old_trans_layout = QVBoxLayout(self.old_translation_card)
         old_trans_layout.setContentsMargins(12, 12, 12, 12)
         old_trans_layout.setSpacing(8)
@@ -284,22 +294,29 @@ class YiJianFanyiPage(Base, QWidget):
         old_trans_layout.addWidget(self.old_trans_title)
         
         self.old_trans_desc = CaptionLabel("该游戏已有翻译文件，请选择处理方式：")
+        self.old_trans_desc.setWordWrap(True)
         old_trans_layout.addWidget(self.old_trans_desc)
-        
-        mode_row = QHBoxLayout()
-        self.incremental_rb = CheckBox("增量抽取（推荐）- 保留已有翻译，抽取新增内容 + 未翻译占位")
+
+        # 选项文本采用“短标题 + 说明”两行布局，避免窗口较窄时勾选框文本重叠
+        self.incremental_rb = CheckBox("增量抽取（推荐）")
         self.incremental_rb.setChecked(True)
-        mode_row.addWidget(self.incremental_rb)
-        old_trans_layout.addLayout(mode_row)
-        
-        mode_row2 = QHBoxLayout()
-        self.full_extract_rb = CheckBox("完整抽取 - 备份旧翻译，重新抽取所有内容")
+        old_trans_layout.addWidget(self.incremental_rb)
+        incremental_desc = CaptionLabel("保留已有翻译，抽取新增内容 + 未翻译占位")
+        incremental_desc.setWordWrap(True)
+        incremental_desc.setStyleSheet("padding-left: 28px; color: #666;")
+        old_trans_layout.addWidget(incremental_desc)
+
+        self.full_extract_rb = CheckBox("完整抽取（重做全量）")
         self.full_extract_rb.setChecked(False)
         self.full_extract_rb.setToolTip("会把 tl/<lang> 备份后重新生成，占位会被重置，慎用")
-        mode_row2.addWidget(self.full_extract_rb)
-        old_trans_layout.addLayout(mode_row2)
+        old_trans_layout.addWidget(self.full_extract_rb)
+        full_extract_desc = CaptionLabel("备份旧翻译后重新抽取全部内容，仅在需要推倒重做时使用")
+        full_extract_desc.setWordWrap(True)
+        full_extract_desc.setStyleSheet("padding-left: 28px; color: #666;")
+        old_trans_layout.addWidget(full_extract_desc)
         
         tip_label = CaptionLabel("小提示：默认选择增量抽取，避免覆盖已有翻译；完整抽取只在重做全量时使用。")
+        tip_label.setWordWrap(True)
         old_trans_layout.addWidget(tip_label)
 
         self.auto_merge_cleanup_chk = CheckBox("抽取后自动合并并清理重复")
@@ -320,6 +337,7 @@ class YiJianFanyiPage(Base, QWidget):
 
         # 高级选项
         options_card = CardWidget()
+        options_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         options_layout = QVBoxLayout(options_card)
         options_layout.setContentsMargins(12, 12, 12, 12)
         options_layout.setSpacing(6)
@@ -389,6 +407,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 轻量说明：一步到位
         self.quick_tip_label = CaptionLabel("直接点击“开始提取文本”即可，完成后进入翻译。如果已有翻译，默认会保留。")
+        self.quick_tip_label.setWordWrap(True)
         layout.addWidget(self.quick_tip_label)
         
         # 跳过抽取按钮（已有翻译时显示）
