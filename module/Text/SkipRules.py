@@ -105,8 +105,11 @@ def _contains_translatable_text(text: str) -> bool:
     3. 英文文本需要有大写字母（区分标识符）
     """
     # 移除标签和占位符后检查（逻辑）
-    temp = re.sub(r'\{.*?\}', '', text)
+    # 处理 Ren'Py 的 [[ 和 ]] 转义，避免被当成占位符剔除
+    temp = text.replace('[[', '__RENpy_LBRACKET__').replace(']]', '__RENpy_RBRACKET__')
+    temp = re.sub(r'\{.*?\}', '', temp)
     temp = re.sub(r'\[.*?\]', '', temp)
+    temp = temp.replace('__RENpy_LBRACKET__', '[').replace('__RENpy_RBRACKET__', ']')
     temp = temp.strip()
     
     if not temp:
@@ -452,4 +455,6 @@ def get_skip_reason(text: str | None) -> Optional[str]:
     if not _contains_translatable_text(candidate):
         return "无可翻译内容"
     return None
+
+
 

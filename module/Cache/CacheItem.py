@@ -71,7 +71,11 @@ class CacheItem():
     CJK_RANGE: ClassVar[str] = rf"{TextBase.CJK_RANGE}{TextBase.HANGUL_RANGE}{TextBase.HIRAGANA_RANGE}{TextBase.KATAKANA_RANGE}"
     REGEX_RENPY: ClassVar[tuple[re.Pattern]] = (
         re.compile(r"\{[^\{" + CJK_RANGE + r"]*?\}", flags = re.IGNORECASE),                    # {w=2.3}
-        re.compile(r"\[[^\[" + CJK_RANGE + r"]*?\]", flags = re.IGNORECASE),                    # [renpy.version_only]
+        # [placeholder] 保护规则（避开 Ren'Py 的 [[...]] 字面量方括号写法）
+        # 说明：
+        # 1. (?<!\[) 避免匹配 `[[...` 中的第二个 `[`
+        # 2. (?!\]) 避免匹配 `...]]` 中的第一个 `]`
+        re.compile(r"(?<!\[)\[[^\[" + CJK_RANGE + r"]*?\](?!\])", flags = re.IGNORECASE),      # [renpy.version_only]
     )
 
     # RPGMaker

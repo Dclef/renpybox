@@ -44,6 +44,7 @@ class AppFluentWindow(FluentWindow, Base):
 
     def __init__(self) -> None:
         super().__init__()
+        self._is_closing = False
 
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
@@ -118,17 +119,65 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 重写窗口关闭函数
     def closeEvent(self, event: QEvent) -> None:
+        self._is_closing = True
         message_box = MessageBox("警告", "确定要关闭应用吗？", self)
         message_box.yesButton.setText("确认")
         message_box.cancelButton.setText("取消")
 
         if not message_box.exec():
+            self._is_closing = False
             event.ignore()
         else:
             os.kill(os.getpid(), signal.SIGTERM)
 
+    def _is_qobject_alive(self, obj) -> bool:
+        """检查 Qt 对象是否仍可访问，避免访问已释放的 C++ 对象。"""
+        if obj is None:
+            return False
+        try:
+            # 访问底层 QObject 接口，若对象已释放会抛 RuntimeError
+            _ = obj.metaObject()
+            _ = obj.objectName()
+        except RuntimeError:
+            return False
+        except Exception:
+            pass
+        return True
+
+    def _is_app_closing(self) -> bool:
+        app = QApplication.instance()
+        if app is None:
+            return True
+        return self._is_closing or app.closingDown()
+
+    def _cleanup_infobar_stale_refs(self) -> None:
+        """清理 InfoBarManager 中已失效的条目，避免已删除对象参与布局计算。"""
+        try:
+            from qfluentwidgets.components.widgets.info_bar import InfoBarManager
+        except Exception:
+            return
+
+        managers = getattr(InfoBarManager, "managers", {}) or {}
+        for manager_cls in managers.values():
+            try:
+                manager = manager_cls()
+                info_bars = getattr(manager, "infoBars", None)
+                if info_bars is None or self not in info_bars:
+                    continue
+
+                bars = list(info_bars.get(self, []))
+                alive_bars = [bar for bar in bars if self._is_qobject_alive(bar)]
+
+                if len(alive_bars) != len(bars):
+                    info_bars[self] = alive_bars
+            except Exception:
+                continue
+
     # 响应显示 Toast 事件
     def show_toast(self, event: str, data: dict) -> None:
+        if self._is_app_closing() or not self._is_qobject_alive(self):
+            return
+
         toast_type = data.get("type", Base.ToastType.INFO)
         toast_message = data.get("message", "")
         toast_duration = data.get("duration", 2500)
@@ -142,15 +191,26 @@ class AppFluentWindow(FluentWindow, Base):
         else:
             toast_func = InfoBar.info
 
-        toast_func(
-            title = "",
-            content = toast_message,
-            parent = self,
-            duration = toast_duration,
-            orient = Qt.Orientation.Horizontal,
-            position = InfoBarPosition.TOP,
-            isClosable = True,
-        )
+        # 创建新 toast 前先清理历史残留，避免 qfluentwidgets 在布局时访问已删除对象。
+        self._cleanup_infobar_stale_refs()
+
+        try:
+            toast_func(
+                title = "",
+                content = toast_message,
+                parent = self,
+                duration = toast_duration,
+                orient = Qt.Orientation.Horizontal,
+                position = InfoBarPosition.TOP,
+                isClosable = True,
+            )
+        except RuntimeError as exc:
+            # 兼容 qfluentwidgets 已知竞态：InfoBar 在动画/布局阶段对象被释放。
+            if "InfoBar has been deleted" in str(exc):
+                self.warning(f"[UI] 忽略已删除 InfoBar 竞态异常: {exc}", console = False)
+                self._cleanup_infobar_stale_refs()
+                return
+            raise
 
     # 切换主题
     def switch_theme(self) -> None:
