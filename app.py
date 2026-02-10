@@ -49,6 +49,12 @@ else:
 os.chdir(script_dir)
 
 def excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_traceback: TracebackType) -> None:
+    # 已知 UI 竞态：qfluentwidgets 在 InfoBar 动画/布局时可能访问到已释放对象。
+    # 该问题不影响核心翻译流程，这里仅记录并忽略，避免程序被强制退出。
+    if isinstance(exc_value, RuntimeError) and "InfoBar has been deleted" in str(exc_value):
+        LogManager.get().warning(f"[UI] 忽略非致命异常: {exc_value}")
+        return
+
     LogManager.get().error(Localizer.get().log_crash, exc_value)
 
     if not isinstance(exc_value, KeyboardInterrupt):

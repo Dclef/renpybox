@@ -708,7 +708,9 @@ class RenpySourceParser:
         match_action = self.RE_ACTION_STRING.search(line)
         if match_action:
             text = match_action.group("text")
-            if text.strip():
+            # action 的字符串参数经常是 screen/label/变量标识符（如 "load"），
+            # 这类内容翻译后会导致 Ren'Py 运行时找不到目标对象。
+            if text.strip() and not self._should_skip_text(text):
                 protected = self._extract_protected_tags(text)
                 return TranslationEntry(
                     line_number=line_num,

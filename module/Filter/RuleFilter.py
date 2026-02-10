@@ -35,6 +35,11 @@ class RuleFilter():
         flags = re.IGNORECASE
     )
 
+    # Ren'Py 中可通过 [[ / ]] 输出字面量方括号。
+    # 过滤占位符前先临时替换，避免把 [[text] 误判为 [placeholder]。
+    ESC_LBRACKET = "__RBX_ESC_LBRACKET__"
+    ESC_RBRACKET = "__RBX_ESC_RBRACKET__"
+
     def filter(src: str) -> bool:
         flags = []
         for line in src.splitlines():
@@ -74,8 +79,19 @@ class RuleFilter():
 
             # 纯变量+标点的文本（如 "[zelda_name]." 或 "{player}?"）
             # 去除变量占位符后，如果只剩下标点和空白，则不需要翻译
-            text_without_placeholders = re.sub(r'\[[^\]]*\]', '', line)  # 移除 [xxx]
+            # 先保护 Ren'Py 的 [[ / ]] 字面量方括号，避免误剔除内容文本。
+            text_without_placeholders = (
+                line
+                .replace('[[', RuleFilter.ESC_LBRACKET)
+                .replace(']]', RuleFilter.ESC_RBRACKET)
+            )
+            text_without_placeholders = re.sub(r'\[[^\]]*\]', '', text_without_placeholders)  # 移除 [xxx]
             text_without_placeholders = re.sub(r'\{[^}]*\}', '', text_without_placeholders)  # 移除 {xxx}
+            text_without_placeholders = (
+                text_without_placeholders
+                .replace(RuleFilter.ESC_LBRACKET, '[')
+                .replace(RuleFilter.ESC_RBRACKET, ']')
+            )
             text_without_placeholders = text_without_placeholders.strip()
             if text_without_placeholders == '' or all(TextHelper.is_punctuation(c) or c.isspace() for c in text_without_placeholders):
                 flags.append(True)
