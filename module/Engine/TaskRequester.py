@@ -22,6 +22,8 @@ class TaskRequester(Base):
     # 密钥索引
     API_KEY_INDEX: int = 0
     MAX_REQUEST_RETRY: int = 3
+    DEFAULT_MAX_OUTPUT_TOKENS: int = 4 * 1024
+    GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS: int = 16 * 1024
 
     # 连接缓存（用于停止任务时快速中断网络请求）
     CLIENT_REGISTRY: dict[tuple[str, str, Base.APIFormat, int], Any] = {}
@@ -287,7 +289,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
-            "max_tokens": max(4 * 1024, self.config.token_threshold),
+            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)"
             }
@@ -299,7 +301,7 @@ class TaskRequester(Base):
             __class__.RE_O_SERIES.search(self.platform.get('model')) is not None
         ):
             args.pop("max_tokens", None)
-            args["max_completion_tokens"] = max(4 * 1024, self.config.token_threshold)
+            args["max_completion_tokens"] = max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold)
 
         # 思考模式切换 - QWEN3
         if __class__.RE_QWEN3.search(self.platform.get('model')) is not None:
@@ -360,8 +362,15 @@ class TaskRequester(Base):
 
     # 生成请求参数
     def generate_google_args(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> dict[str, str | int | float]:
+        # Gemini 2.5 Flash 在长文本批次下容易命中 4096 输出上限导致截断。
+        # 这里提高默认上限，降低 JSONLINE 行数不匹配（如 2/9）的重试概率。
+        model = str(self.platform.get("model") or "")
+        max_output_tokens = max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold)
+        if __class__.RE_GEMINI_2_5_FLASH.search(model) is not None:
+            max_output_tokens = max(__class__.GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS, self.config.token_threshold)
+
         args: dict = args | {
-            "max_output_tokens": max(4 * 1024, self.config.token_threshold),
+            "max_output_tokens": max_output_tokens,
             "safety_settings": (
                 types.SafetySetting(
                     category = "HARM_CATEGORY_HARASSMENT",
@@ -487,7 +496,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
-            "max_tokens": max(4 * 1024, self.config.token_threshold),
+            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox"
             }
