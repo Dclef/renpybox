@@ -39,6 +39,28 @@ class ResponseChecker(Base):
 
     # 退化检测规则
     RE_DEGRADATION = re.compile(r"(.{1,3})\1{16,}", flags = re.IGNORECASE)
+    # 代码/条件表达式（不应要求“必须翻译”）
+    RE_LOGIC_EXPRESSION = re.compile(
+        r"(==|!=|<=|>=|&&|\|\||\b(and|or|not|True|False|None)\b)",
+        flags = re.IGNORECASE,
+    )
+    # 标识符/版本号/资源键（含数字或连接符）
+    RE_IDENTIFIER_WITH_SYMBOL = re.compile(
+        r"^[A-Za-z_][A-Za-z0-9_.:-]*[0-9_.:-][A-Za-z0-9_.:-]*$",
+        flags = re.IGNORECASE,
+    )
+    # 常见按键名
+    RE_KEY_NAME = re.compile(
+        r"^(Ctrl|Alt|Shift|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2})$",
+        flags = re.IGNORECASE,
+    )
+    # 单词型专有名（首字母大写或全大写）
+    RE_PROPER_NOUN_TOKEN = re.compile(
+        r"^(?:[A-Z][A-Za-z'\-]{2,}|[A-Z]{2,})$",
+        flags = re.IGNORECASE,
+    )
+    # 行内占位符一致性检查
+    RE_PRESERVE_TOKEN = re.compile(r"__RBX_PRESERVE_\d+_\d+__", flags = re.IGNORECASE)
 
     def __init__(self, config: Config, items: list[CacheItem]) -> None:
         super().__init__()
@@ -91,6 +113,17 @@ class ResponseChecker(Base):
                 checks.append(__class__.Error.NONE)
                 continue
 
+            # 行内占位符必须成对且一一对应，避免半截占位符写回文件。
+            src_preserves = __class__.RE_PRESERVE_TOKEN.findall(src)
+            dst_preserves = __class__.RE_PRESERVE_TOKEN.findall(dst)
+            if src_preserves != []:
+                if sorted(src_preserves) != sorted(dst_preserves):
+                    checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
+                    continue
+            elif "__RBX_PRESERVE_" in dst:
+                checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
+                continue
+
             # 当原文中不包含重复文本但是译文中包含重复文本时，判断为 退化
             if __class__.RE_DEGRADATION.search(src) == None and __class__.RE_DEGRADATION.search(dst) != None:
                 checks.append(__class__.Error.LINE_ERROR_DEGRADATION)
@@ -121,7 +154,14 @@ class ResponseChecker(Base):
                 continue
 
             # 判断是否包含或相似
-            if src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80:
+            is_similar = src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
+
+            # 对“看起来像代码/标识符/按键名”的文本，允许原样保留，避免无意义重试。
+            if is_similar and self.is_likely_non_translatable_text(src):
+                checks.append(__class__.Error.NONE)
+                continue
+
+            if is_similar:
                 # 日翻中时，只有译文至少包含一个平假名或片假名字符时，才判断为 相似
                 if self.config.source_language == BaseLanguage.Enum.JA and self.config.target_language == BaseLanguage.Enum.ZH:
                     if TextHelper.JA.any_hiragana(dst) or TextHelper.JA.any_katakana(dst):
@@ -142,3 +182,32 @@ class ResponseChecker(Base):
 
         # 返回结果
         return checks
+
+    @classmethod
+    def is_likely_non_translatable_text(cls, text: str) -> bool:
+        s = text.strip()
+        if s == "":
+            return True
+
+        # 逻辑表达式（含变量、比较符、布尔运算）
+        if cls.RE_LOGIC_EXPRESSION.search(s) is not None and re.search(r"[A-Za-z_]\w*", s) is not None:
+            return True
+
+        # 标识符、版本号、资源键（如 DesertStalkerEA-100001）
+        if cls.RE_IDENTIFIER_WITH_SYMBOL.fullmatch(s) is not None:
+            return True
+
+        # 常见按键名
+        if cls.RE_KEY_NAME.fullmatch(s) is not None:
+            return True
+
+        # 单词型专有名词（如 Spatium）
+        words = s.split()
+        if len(words) == 1 and cls.RE_PROPER_NOUN_TOKEN.fullmatch(words[0]) is not None:
+            return True
+
+        # 邮箱/句柄类文本（如 Karl Casey @ White Bat Audio）
+        if "@" in s and not s.startswith("@"):
+            return True
+
+        return False
