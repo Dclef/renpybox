@@ -54,6 +54,28 @@ class Config():
     result_checker_retry_count_threshold: bool = False
     auto_process_prefix_suffix_preserved_text: bool = False
     sakura_jsonline_retry_enable: bool = True
+    honorific_placeholder_bridge_enable: bool = True
+    honorific_placeholder_titles: list[str] = dataclasses.field(default_factory = lambda: [
+        "mr",
+        "mrs",
+        "ms",
+        "miss",
+        "dr",
+        "doctor",
+        "prof",
+        "professor",
+        "sir",
+        "madam",
+        "lady",
+        "master",
+    ])
+    honorific_placeholder_alias_names: list[str] = dataclasses.field(default_factory = lambda: [
+        "David",
+        "Alex",
+        "Chris",
+        "Evan",
+        "Taylor",
+    ])
 
     # ProjectPage
     # 默认原文语言改为英文，避免误将非日文项目设为日文
@@ -198,6 +220,28 @@ class Config():
         self.result_checker_retry_count_threshold: bool = False
         self.auto_process_prefix_suffix_preserved_text: bool = False
         self.sakura_jsonline_retry_enable: bool = True
+        self.honorific_placeholder_bridge_enable: bool = True
+        self.honorific_placeholder_titles: list[str] = [
+            "mr",
+            "mrs",
+            "ms",
+            "miss",
+            "dr",
+            "doctor",
+            "prof",
+            "professor",
+            "sir",
+            "madam",
+            "lady",
+            "master",
+        ]
+        self.honorific_placeholder_alias_names: list[str] = [
+            "David",
+            "Alex",
+            "Chris",
+            "Evan",
+            "Taylor",
+        ]
 
         # TextPreservePage
         self.text_preserve_enable: bool = False

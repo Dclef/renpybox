@@ -399,6 +399,23 @@ class LocalizerZH():
         "<br>"
         "• 禁用后，会将完整的文本条目发送给模型翻译，可能会获得更完整的语义，但会降低文本保护效果"
     )
+    expert_settings_page_honorific_placeholder_bridge: str = "称呼变量智能桥接"
+    expert_settings_page_honorific_placeholder_bridge_desc: str = (
+        "自动处理称呼 + 变量场景（如 Mr.[xx]），避免模型丢失变量并修正中文语序，默认启用"
+        "<br>"
+        "• 译前会将变量临时替换为人名占位，帮助模型产生“人名 + 称呼”结构"
+        "<br>"
+        "• 译后会自动还原为原变量（如 [xx]先生），无需手工术语和搜索替换"
+    )
+    expert_settings_page_honorific_placeholder_titles: str = "称呼词列表（可自定义）"
+    expert_settings_page_honorific_placeholder_titles_desc: str = (
+        "用于识别“称呼 + 变量”结构的称呼词，可在下方表格中直接增删改，保存后立即生效"
+    )
+    expert_settings_page_honorific_placeholder_titles_placeholder: str = "示例：mr,mrs,dr,professor,master,captain,lord,sensei"
+    expert_settings_page_honorific_placeholder_titles_column: str = "称呼词"
+    expert_settings_page_honorific_placeholder_titles_select_delete: str = "请选择需要删除的行"
+    expert_settings_page_honorific_placeholder_titles_reload_success: str = "已从配置重新加载称呼词"
+    expert_settings_page_honorific_placeholder_titles_save_success: str = "已保存 {COUNT} 个称呼词"
     expert_settings_page_sakura_jsonline_retry_enable: str = "Sakura JSONLINE 解析失败时格式化重试"
     expert_settings_page_sakura_jsonline_retry_enable_desc: str = (
         "当 SakuraLLM 回复不是 JSONLINE 时，自动发起一次格式化重试，提高通过率"

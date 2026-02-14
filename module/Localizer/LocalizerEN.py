@@ -395,6 +395,23 @@ class LocalizerEN(LocalizerZH):
         "<br>"
         "• When disabled, full text is sent to the model, which may preserve semantics but weakens text preservation"
     )
+    expert_settings_page_honorific_placeholder_bridge: str = "Honorific Placeholder Smart Bridge"
+    expert_settings_page_honorific_placeholder_bridge_desc: str = (
+        "Automatically handles honorific + variable patterns (e.g., Mr.[xx]) to avoid placeholder loss and fix Chinese word order, enabled by default"
+        "<br>"
+        "• Before translation, placeholders are temporarily replaced by person-name aliases to encourage “name + title” output"
+        "<br>"
+        "• After translation, aliases are restored to original placeholders (e.g., [xx]先生), no manual glossary/search-replace needed"
+    )
+    expert_settings_page_honorific_placeholder_titles: str = "Honorific Title List (Customizable)"
+    expert_settings_page_honorific_placeholder_titles_desc: str = (
+        "Title words used to detect “honorific + placeholder” patterns; edit them directly in the table below and save to apply immediately"
+    )
+    expert_settings_page_honorific_placeholder_titles_placeholder: str = "Example: mr,mrs,dr,professor,master,captain,lord,sensei"
+    expert_settings_page_honorific_placeholder_titles_column: str = "Title"
+    expert_settings_page_honorific_placeholder_titles_select_delete: str = "Please select a row to delete"
+    expert_settings_page_honorific_placeholder_titles_reload_success: str = "Honorific titles reloaded from config"
+    expert_settings_page_honorific_placeholder_titles_save_success: str = "Saved {COUNT} honorific titles"
     expert_settings_page_sakura_jsonline_retry_enable: str = "Sakura JSONLINE Retry on Parse Failure"
     expert_settings_page_sakura_jsonline_retry_enable_desc: str = (
         "When SakuraLLM output is not JSONLINE, automatically send a formatting retry to improve pass rate"
