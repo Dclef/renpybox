@@ -29,6 +29,7 @@ from frontend.RenpyToolbox.LocalGlossaryPage import LocalGlossaryPage
 from frontend.RenpyToolbox.MaSuitePage import MaSuitePage
 from frontend.RenpyToolbox.TextPreservePage import TextPreservePage
 from frontend.RenpyToolbox.SourceTranslatePage import SourceTranslatePage
+from frontend.RenpyToolbox.HonorificPlaceholderPage import HonorificPlaceholderPage
 from frontend.Proofreading.ProofreadingPage import ProofreadingPage
 
 
@@ -135,6 +136,7 @@ class RenpyToolboxPage(Base, QWidget):
             ("错误校对", "基于缓存进行校对、筛选与重译", self._open_proofreading_task),
             ("📚 本地词库", "管理术语表，统一专有名词翻译", self._open_local_glossary),
             ("🚫 禁翻表", "管理不需要翻译的文本（变量、代码等）", self._open_text_preserve),
+            ("称呼桥接", "称呼+变量智能桥接（Mr.[xx]→[xx]先生）", self._open_honorific_placeholder),
             ("终极结构导出", "Excel & translate_names/others.rpy 输出", self._open_ma_suite),
             ("错误修复", "扫描并修复常见的脚本错误", self._open_error_repair),
             ("代码格式化", "格式化 .rpy 文件，保持代码整洁", self._open_formatter),
@@ -259,6 +261,13 @@ class RenpyToolboxPage(Base, QWidget):
             self.window.text_preserve_page = TextPreservePage("text-preserve", self.window)
             self._mark_toolbox_widget(self.window.text_preserve_page)
         self._goto_widget("禁翻表", self.window.text_preserve_page)
+
+    def _open_honorific_placeholder(self, card):
+        """打开称呼变量桥接页面"""
+        if not hasattr(self.window, 'honorific_placeholder_page'):
+            self.window.honorific_placeholder_page = HonorificPlaceholderPage("honorific-placeholder", self.window)
+            self._mark_toolbox_widget(self.window.honorific_placeholder_page)
+        self._goto_widget("称呼桥接", self.window.honorific_placeholder_page)
 
     def _open_proofreading_task(self, card):
         """打开校对任务页面"""

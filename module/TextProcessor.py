@@ -52,6 +52,27 @@ class TextProcessor(Base):
     # 正则表达式
     RE_NAME = re.compile(r"^【(.*?)】\s*|\[(.*?)\]\s*", flags = re.IGNORECASE)
     RE_BLANK: re.Pattern = re.compile(r"\s+", re.IGNORECASE)
+    DEFAULT_HONORIFIC_TITLES: tuple[str, ...] = (
+        "mr",
+        "mrs",
+        "ms",
+        "miss",
+        "dr",
+        "doctor",
+        "prof",
+        "professor",
+        "sir",
+        "madam",
+        "lady",
+        "master",
+    )
+    DEFAULT_HONORIFIC_ALIAS_NAMES: tuple[str, ...] = (
+        "David",
+        "Alex",
+        "Chris",
+        "Evan",
+        "Taylor",
+    )
 
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
@@ -71,8 +92,112 @@ class TextProcessor(Base):
         self.prefix_codes: dict[int, list[str]] = {}
         self.suffix_codes: dict[int, list[str]] = {}
         self.inline_codes: dict[int, list[tuple[str, str]]] = {}
+        self.honorific_placeholder_bridges: dict[int, list[tuple[str, str]]] = {}
+        self.honorific_placeholder_re: re.Pattern | None = None
+        self.honorific_placeholder_re_key: tuple[str, ...] | None = None
         self.inline_preserve_re = None
         self.inline_preserve_re_text_type = None
+
+    def _get_honorific_titles(self) -> list[str]:
+        titles = getattr(self.config, "honorific_placeholder_titles", None)
+        if isinstance(titles, list):
+            result = [str(v).strip().lower() for v in titles if str(v).strip() != ""]
+            if len(result) > 0:
+                return result
+        return list(__class__.DEFAULT_HONORIFIC_TITLES)
+
+    def _get_honorific_placeholder_regex(self) -> re.Pattern | None:
+        titles = self._get_honorific_titles()
+        key = tuple(titles)
+        if self.honorific_placeholder_re_key == key and self.honorific_placeholder_re is not None:
+            return self.honorific_placeholder_re
+
+        escaped_titles = [re.escape(v).replace(r"\ ", r"\s+") for v in titles if v != ""]
+        if len(escaped_titles) == 0:
+            self.honorific_placeholder_re = None
+            self.honorific_placeholder_re_key = key
+            return None
+
+        escaped_titles.sort(key = len, reverse = True)
+        pattern = (
+            r"(?P<title>\b(?:"
+            + "|".join(escaped_titles)
+            + r")\.?\s*)(?P<placeholder>\[[^\]\n]+\]|【[^】\n]+】)"
+        )
+        self.honorific_placeholder_re = re.compile(pattern, flags = re.IGNORECASE)
+        self.honorific_placeholder_re_key = key
+        return self.honorific_placeholder_re
+
+    def _get_honorific_alias_names(self) -> list[str]:
+        names = getattr(self.config, "honorific_placeholder_alias_names", None)
+        if isinstance(names, list):
+            result = [str(v).strip() for v in names if str(v).strip() != ""]
+            if len(result) > 0:
+                return result
+        return list(__class__.DEFAULT_HONORIFIC_ALIAS_NAMES)
+
+    def _bridge_honorific_placeholders_pre(self, i: int, src: str) -> str:
+        if getattr(self.config, "honorific_placeholder_bridge_enable", True) != True:
+            return src
+        if src == "":
+            return src
+
+        honorific_re = self._get_honorific_placeholder_regex()
+        if honorific_re is None:
+            return src
+
+        aliases = self._get_honorific_alias_names()
+        src_lower = src.lower()
+        used_aliases: set[str] = set()
+        placeholder_to_alias: dict[str, str] = {}
+        bridges: list[tuple[str, str]] = []
+        alias_index = 0
+
+        def pick_alias() -> str:
+            nonlocal alias_index
+
+            for _ in range(len(aliases)):
+                alias = aliases[alias_index % len(aliases)]
+                alias_index += 1
+                if alias.lower() in src_lower:
+                    continue
+                if alias.lower() in used_aliases:
+                    continue
+                used_aliases.add(alias.lower())
+                return alias
+
+            alias = f"RbxName{len(used_aliases) + 1}"
+            used_aliases.add(alias.lower())
+            return alias
+
+        def repl(match: re.Match) -> str:
+            title = match.group("title")
+            placeholder = match.group("placeholder")
+
+            alias = placeholder_to_alias.get(placeholder)
+            if alias is None:
+                alias = pick_alias()
+                placeholder_to_alias[placeholder] = alias
+                bridges.append((alias, placeholder))
+
+            return f"{title}{alias}"
+
+        new_src = honorific_re.sub(repl, src)
+        if len(bridges) > 0:
+            self.honorific_placeholder_bridges[i] = bridges
+
+        return new_src
+
+    def _bridge_honorific_placeholders_post(self, i: int, dst: str) -> str:
+        bridges = self.honorific_placeholder_bridges.get(i, [])
+        if len(bridges) == 0:
+            return dst
+
+        for alias, placeholder in bridges:
+            pattern = rf"\b{re.escape(alias)}\b"
+            dst = re.sub(pattern, placeholder, dst, flags = re.IGNORECASE)
+
+        return dst
 
     def _get_custom_text_preserve_patterns(self) -> tuple[str, ...]:
         cache_key = id(self.config)
@@ -403,6 +528,8 @@ class TextProcessor(Base):
             else:
                 # 处理前后缀代码段
                 src = self.prefix_suffix_process(i, src, text_type)
+                # 称呼 + 变量桥接（如 Mr.[xx] -> Mr.David）
+                src = self._bridge_honorific_placeholders_pre(i, src)
                 # 行内禁翻库保护
                 src = self._protect_inline_tags(i, src, text_type)
 
@@ -458,6 +585,8 @@ class TextProcessor(Base):
                 dst = dsts.pop(0).strip()
                 # 还原行内标签
                 dst = self._restore_inline_tags(i, dst)
+                # 还原称呼变量桥接（如 David先生 -> [xx]先生）
+                dst = self._bridge_honorific_placeholders_post(i, dst)
 
                 # 自动修复
                 dst = self.auto_fix(src, dst)
