@@ -104,36 +104,6 @@ def is_ui_keyword(text: str) -> bool:
     return text.strip().lower() in UI_KEYWORDS
 
 
-def _extract_tl_name_from_tl_dir(path: str) -> str:
-    """从 .../tl/<lang>/... 路径中解析语言目录名。"""
-    try:
-        normalized = str(path).replace("\\", "/").rstrip("/")
-        marker = "/tl/"
-        idx = normalized.rfind(marker)
-        if idx == -1:
-            return ""
-        rest = normalized[idx + len(marker):]
-        if not rest:
-            return ""
-        return rest.split("/", 1)[0].strip().lower()
-    except Exception:
-        return ""
-
-
-def _should_skip_source_rel_path(rel_path: str, tl_name: str = "") -> bool:
-    """判断源文件相对路径是否应跳过（只排除翻译目录）。"""
-    normalized = str(rel_path).replace("\\", "/").lstrip("/")
-    if not normalized:
-        return False
-
-    first_part = normalized.split("/", 1)[0].strip().lower()
-    if not first_part:
-        return False
-
-    # 跳过标准 tl 目录，以及与当前语言同名的历史翻译目录（如 game/chinese）。
-    return first_part == "tl" or (tl_name and first_part == tl_name.strip().lower())
-
-
 class ExtractTlThread(threading.Thread):
     def __init__(self, p, is_py2, is_remove_repeat_only = False):
         threading.Thread.__init__(self)
@@ -740,7 +710,13 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
 def CreateEmptyFileIfNotExsit(p):
     if (p[len(p) - 1] != '/' and p[len(p) - 1] != '\\'):
         p = p + '/'
-    tl_name = _extract_tl_name_from_tl_dir(p)
+
+    normalized_p = p.replace("\\", "/").rstrip("/")
+    tl_name = ""
+    tl_idx = normalized_p.rfind("/tl/")
+    if tl_idx != -1:
+        tl_name = normalized_p[tl_idx + 4:].split("/", 1)[0].strip().lower()
+
     source_root = os.path.abspath(os.path.join(p, "..", ".."))
     paths = os.walk(source_root, topdown=False)
 
@@ -748,7 +724,9 @@ def CreateEmptyFileIfNotExsit(p):
         for file_name in file_lst:
             i = os.path.join(path, file_name)
             rel_path = os.path.relpath(i, source_root)
-            if _should_skip_source_rel_path(rel_path, tl_name):
+            rel_norm = rel_path.replace("\\", "/").lstrip("/")
+            first_part = rel_norm.split("/", 1)[0].strip().lower() if rel_norm else ""
+            if first_part == "tl" or (tl_name and first_part == tl_name):
                 continue
             if (file_name.endswith("rpy") == False):
                 continue
@@ -789,6 +767,7 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
         log.warning(p + ' no tl found2!')
         return
     tl = p[index + 3:index2]
+    tl_lower = tl.lower()
     paths = os.walk(p, topdown=False)
     for path, dir_lst, file_lst in paths:
         for file_name in file_lst:
@@ -798,7 +777,9 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
             if is_builtin_ui_file(i, p):
                 continue
             rel_path = os.path.relpath(i, p)
-            if _should_skip_source_rel_path(rel_path, tl):
+            rel_norm = rel_path.replace("\\", "/").lstrip("/")
+            first_part = rel_norm.split("/", 1)[0].strip().lower() if rel_norm else ""
+            if first_part == "tl" or first_part == tl_lower:
                 continue
             target = os.path.normpath(os.path.join(p, '..', '..', rel_path))
             if os.path.isfile(target) == False:
