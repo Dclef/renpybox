@@ -193,7 +193,7 @@ class LocalizerEN(LocalizerZH):
     platform_page_api_test: str = "Test API"
     platform_page_api_delete: str = "Delete API"
     platform_page_widget_add_title: str = "API List"
-    platform_page_widget_add_content: str = "Add and manage any LLM API compatible with Google, OpenAI and Anthropic formats here"
+    platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI, Anthropic, DeepL and DeepLX here"
 
     # 接口编辑
     platform_edit_page_name: str = "Please enter API name …"

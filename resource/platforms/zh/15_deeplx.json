@@ -1,0 +1,15 @@
+{
+    "id": 12,
+    "name": "DeepLX",
+    "api_url": "https://dplx.xi-xu.me",
+    "api_key": [
+        "no_key_required"
+    ],
+    "api_format": "DeepLX",
+    "model": "deeplx-translate",
+    "thinking": false,
+    "top_p": 0.95,
+    "temperature": 0.95,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0
+}

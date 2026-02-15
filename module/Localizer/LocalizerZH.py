@@ -197,7 +197,7 @@ class LocalizerZH():
     platform_page_api_test: str = "测试接口"
     platform_page_api_delete: str = "删除接口"
     platform_page_widget_add_title: str = "接口列表"
-    platform_page_widget_add_content: str = "在此添加和管理任何兼容 Google、OpenAI、Anthropic 格式的 LLM 模型接口"
+    platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic、DeepL、DeepLX 的翻译接口"
 
     # 接口编辑
     platform_edit_page_name: str = "请输入接口名称 …"
