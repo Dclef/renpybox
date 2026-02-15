@@ -1733,6 +1733,12 @@ class UnifiedExtractor:
             self._emit_progress("正在应用保留库过滤...", 80)
             self._filter_tl_files(tl_dir, preserve_set)
 
+        # 抽取后统一做一次 old/new 去重，避免同一原文重复导致 Ren'Py 报错。
+        try:
+            rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
+        except Exception as exc:
+            self.logger.warning(f"去重失败 {tl_dir}: {exc}")
+
         # 移除与 translate 块重复的 strings 条目（保留块翻译，删掉 old/new）
         if getattr(config, "renpy_remove_string_duplicates", False):
             removed = self._remove_string_duplicates_with_blocks(tl_dir)
