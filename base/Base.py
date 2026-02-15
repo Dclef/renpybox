@@ -37,6 +37,8 @@ class Base():
         GOOGLE = "Google"
         ANTHROPIC = "Anthropic"
         SAKURALLM = "SakuraLLM"
+        DEEPL = "DeepL"
+        DEEPLX = "DeepLX"
 
     # 接口格式
     class ToastType(StrEnum):

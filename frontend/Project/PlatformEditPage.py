@@ -59,15 +59,36 @@ class PlatformEditPage(MessageBoxBase, Base):
         self.add_widget_name(self.vbox, config, window)
 
         # 接口地址
-        if self.platform.get('api_format') in (Base.APIFormat.OPENAI, Base.APIFormat.GOOGLE, Base.APIFormat.ANTHROPIC, Base.APIFormat.SAKURALLM):
+        if self.platform.get('api_format') in (
+            Base.APIFormat.OPENAI,
+            Base.APIFormat.GOOGLE,
+            Base.APIFormat.ANTHROPIC,
+            Base.APIFormat.SAKURALLM,
+            Base.APIFormat.DEEPL,
+            Base.APIFormat.DEEPLX,
+        ):
             self.add_widget_api_url(self.vbox, config, window)
 
         # 接口密钥
-        if self.platform.get('api_format') in (Base.APIFormat.OPENAI, Base.APIFormat.GOOGLE, Base.APIFormat.ANTHROPIC, Base.APIFormat.SAKURALLM):
+        if self.platform.get('api_format') in (
+            Base.APIFormat.OPENAI,
+            Base.APIFormat.GOOGLE,
+            Base.APIFormat.ANTHROPIC,
+            Base.APIFormat.SAKURALLM,
+            Base.APIFormat.DEEPL,
+            Base.APIFormat.DEEPLX,
+        ):
             self.add_widget_api_key(self.vbox, config, window)
 
         # 模型名称
-        if self.platform.get('api_format') in (Base.APIFormat.OPENAI, Base.APIFormat.GOOGLE, Base.APIFormat.ANTHROPIC, Base.APIFormat.SAKURALLM):
+        if self.platform.get('api_format') in (
+            Base.APIFormat.OPENAI,
+            Base.APIFormat.GOOGLE,
+            Base.APIFormat.ANTHROPIC,
+            Base.APIFormat.SAKURALLM,
+            Base.APIFormat.DEEPL,
+            Base.APIFormat.DEEPLX,
+        ):
             self.add_widget_model(self.vbox, config, window)
 
         # 思考模式

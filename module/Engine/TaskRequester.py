@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from module.Config import Config
 from module.Engine.Engine import Engine
@@ -46,6 +47,8 @@ class TaskRequester(Base):
 
     # 正则
     RE_LINE_BREAK: re.Pattern = re.compile(r"\n+")
+    RE_JSONLINE_FENCE: re.Pattern = re.compile(r"```jsonline\s*(.*?)\s*```", flags = re.IGNORECASE | re.DOTALL)
+    RE_INLINE_JSON_OBJECT: re.Pattern = re.compile(r"\{[^{}]+\}")
 
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
@@ -150,6 +153,19 @@ class TaskRequester(Base):
                 ),
                 max_retries = 1,
             )
+        elif format in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+            client = httpx.Client(
+                timeout = httpx.Timeout(
+                    read = timeout,
+                    pool = 8.00,
+                    write = 8.00,
+                    connect = 8.00,
+                ),
+                follow_redirects = True,
+                headers = {
+                    "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)",
+                },
+            )
         else:
             client = openai.OpenAI(
                 base_url = url,
@@ -192,6 +208,10 @@ class TaskRequester(Base):
                 return self.request_google(messages, thinking, args)
             elif self.platform.get('api_format') == Base.APIFormat.ANTHROPIC:
                 return self.request_anthropic(messages, thinking, args)
+            elif self.platform.get('api_format') == Base.APIFormat.DEEPL:
+                return self.request_deepl(messages)
+            elif self.platform.get('api_format') == Base.APIFormat.DEEPLX:
+                return self.request_deeplx(messages)
             else:
                 return self.request_openai(messages, thinking, args)
 
@@ -565,3 +585,222 @@ class TaskRequester(Base):
             output_tokens = 0
 
         return False, response_think, response_result, input_tokens, output_tokens
+
+    def _parse_jsonline_entries(self, text: str) -> list[tuple[int, str]]:
+        entries: list[tuple[int, str]] = []
+        if not isinstance(text, str) or text.strip() == "":
+            return entries
+
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line == "":
+                continue
+
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+
+            if not isinstance(data, dict) or len(data) != 1:
+                continue
+
+            key, value = next(iter(data.items()))
+            if not str(key).isdigit() or not isinstance(value, str):
+                continue
+
+            entries.append((int(key), value))
+
+        if entries != []:
+            entries.sort(key = lambda item: item[0])
+            return entries
+
+        try:
+            data = json.loads(text)
+        except Exception:
+            return []
+
+        if not isinstance(data, dict):
+            return []
+
+        for key, value in data.items():
+            if str(key).isdigit() and isinstance(value, str):
+                entries.append((int(key), value))
+
+        entries.sort(key = lambda item: item[0])
+        return entries
+
+    def _extract_translation_inputs(self, messages: list[dict[str, str]]) -> list[str]:
+        for msg in messages:
+            content = msg.get("content", "")
+            if not isinstance(content, str) or content.strip() == "":
+                continue
+
+            blocks = __class__.RE_JSONLINE_FENCE.findall(content)
+            for block in blocks:
+                entries = self._parse_jsonline_entries(block)
+                if entries != []:
+                    return [value for _, value in entries]
+
+            entries = self._parse_jsonline_entries(content)
+            if entries != []:
+                return [value for _, value in entries]
+
+            inline_entries: list[tuple[int, str]] = []
+            for matched in __class__.RE_INLINE_JSON_OBJECT.findall(content):
+                try:
+                    data = json.loads(matched)
+                except Exception:
+                    continue
+
+                if not isinstance(data, dict) or len(data) != 1:
+                    continue
+
+                key, value = next(iter(data.items()))
+                if not str(key).isdigit() or not isinstance(value, str):
+                    continue
+
+                inline_entries.append((int(key), value))
+
+            if inline_entries != []:
+                inline_entries.sort(key = lambda item: item[0])
+                return [value for _, value in inline_entries]
+
+        return []
+
+    def _build_translation_jsonline_response(self, translations: list[str]) -> str:
+        return json.dumps(
+            {str(i): v for i, v in enumerate(translations)},
+            ensure_ascii = False,
+        )
+
+    def _get_deepl_language_codes(self) -> tuple[str, str]:
+        source_lang = str(self.config.source_language or "").strip().upper()
+        target_lang = str(self.config.target_language or "").strip().upper()
+
+        if source_lang == "":
+            source_lang = "AUTO"
+        if target_lang == "":
+            target_lang = str(BaseLanguage.Enum.ZH)
+
+        return source_lang, target_lang
+
+    def _resolve_deepl_endpoint(self, api_url: str) -> str:
+        base = str(api_url or "").strip().rstrip("/")
+        if base == "":
+            base = "https://api.deepl.com"
+        if base.endswith("/v2/translate"):
+            return base
+        if base.endswith("/v2"):
+            return base + "/translate"
+        return base + "/v2/translate"
+
+    def _resolve_deeplx_endpoint(self, api_url: str) -> str:
+        base = str(api_url or "").strip().rstrip("/")
+        if base == "":
+            base = "https://dplx.xi-xu.me"
+        if base.endswith("/translate"):
+            return base
+        return base + "/translate"
+
+    def request_deepl(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
+        srcs = self._extract_translation_inputs(messages)
+        if srcs == []:
+            self.warning("DeepL 请求失败：未从提示词中提取到待翻译文本")
+            return True, None, None, None, None
+
+        try:
+            with __class__.LOCK:
+                key = __class__.get_key(self.platform.get('api_key'))
+                client = __class__.get_client(
+                    url = self.platform.get('api_url'),
+                    key = key,
+                    format = self.platform.get('api_format'),
+                    timeout = self.config.request_timeout,
+                )
+
+            source_lang, target_lang = self._get_deepl_language_codes()
+            payload: dict[str, Any] = {
+                "text": srcs,
+                "target_lang": target_lang,
+            }
+            if source_lang != "AUTO":
+                payload["source_lang"] = source_lang
+
+            headers = {
+                "Authorization": f"DeepL-Auth-Key {key}",
+                "Content-Type": "application/json",
+            }
+
+            response = client.post(
+                self._resolve_deepl_endpoint(self.platform.get('api_url')),
+                json = payload,
+                headers = headers,
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            translations = data.get("translations", []) if isinstance(data, dict) else []
+            dsts = [str(item.get("text", "")) for item in translations if isinstance(item, dict)]
+            if len(dsts) != len(srcs):
+                self.warning(f"DeepL 返回数量不匹配: {len(dsts)}/{len(srcs)}")
+                return True, None, None, None, None
+        except Exception as e:
+            self.error(f"{Localizer.get().log_task_fail}", e)
+            return True, None, None, None, None
+
+        input_tokens = sum(len(v) for v in srcs)
+        output_tokens = sum(len(v) for v in dsts)
+        return False, "", self._build_translation_jsonline_response(dsts), input_tokens, output_tokens
+
+    def request_deeplx(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
+        srcs = self._extract_translation_inputs(messages)
+        if srcs == []:
+            self.warning("DeepLX 请求失败：未从提示词中提取到待翻译文本")
+            return True, None, None, None, None
+
+        try:
+            with __class__.LOCK:
+                key = __class__.get_key(self.platform.get('api_key'))
+                client = __class__.get_client(
+                    url = self.platform.get('api_url'),
+                    key = key,
+                    format = self.platform.get('api_format'),
+                    timeout = self.config.request_timeout,
+                )
+
+            source_lang, target_lang = self._get_deepl_language_codes()
+            endpoint = self._resolve_deeplx_endpoint(self.platform.get('api_url'))
+
+            headers = {"Content-Type": "application/json"}
+            if key and key != "no_key_required":
+                headers["Authorization"] = f"Bearer {key}"
+
+            dsts: list[str] = []
+            for text in srcs:
+                payload: dict[str, str] = {
+                    "text": text,
+                    "source_lang": source_lang if source_lang != "" else "AUTO",
+                    "target_lang": target_lang,
+                }
+                response = client.post(endpoint, json = payload, headers = headers)
+                response.raise_for_status()
+
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ValueError("DeepLX 返回格式错误")
+
+                if int(data.get("code", 500)) != 200:
+                    raise ValueError(str(data.get("message", "DeepLX translation failed")))
+
+                dsts.append(str(data.get("data", "")))
+
+            if len(dsts) != len(srcs):
+                self.warning(f"DeepLX 返回数量不匹配: {len(dsts)}/{len(srcs)}")
+                return True, None, None, None, None
+        except Exception as e:
+            self.error(f"{Localizer.get().log_task_fail}", e)
+            return True, None, None, None, None
+
+        input_tokens = sum(len(v) for v in srcs)
+        output_tokens = sum(len(v) for v in dsts)
+        return False, "", self._build_translation_jsonline_response(dsts), input_tokens, output_tokens

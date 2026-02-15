@@ -30,7 +30,9 @@ class PlatformPage(QWidget, Base):
         config = Config().load()
         if config.platforms == None:
             config.platforms = self.load_default_platforms()
-        config.save()
+            config.save()
+        elif self.ensure_default_platforms(config.platforms):
+            config.save()
 
         # 设置主容器
         self.vbox = QVBoxLayout(self)
@@ -78,6 +80,54 @@ class PlatformPage(QWidget, Base):
             platform["id"] = i
 
         return sorted(platforms, key = lambda x: x.get('id'))
+
+    # 补全默认平台（用于旧配置升级）
+    def ensure_default_platforms(self, platforms: list[dict]) -> bool:
+        if not isinstance(platforms, list):
+            return False
+
+        changed = False
+        defaults = self.load_default_platforms()
+        existing_formats = {str(item.get("api_format", "")) for item in platforms}
+
+        # 统一旧命名（Deel API / DeepL API）为 DeepL
+        for item in platforms:
+            if str(item.get("api_format", "")) != str(Base.APIFormat.DEEPL):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name in ("Deel API", "DeepL API"):
+                item["name"] = "DeepL"
+                changed = True
+
+        # 旧配置中没有 DeepL / DeepLX 时，自动补齐到默认列表
+        for fmt in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+            if str(fmt) in existing_formats:
+                continue
+            template = next((item for item in defaults if str(item.get("api_format", "")) == str(fmt)), None)
+            if template is None:
+                continue
+
+            cloned = {
+                k: (v.copy() if isinstance(v, list) else v)
+                for k, v in template.items()
+            }
+            platforms.append(cloned)
+            existing_formats.add(str(fmt))
+            changed = True
+
+        if not changed:
+            return False
+
+        # 非自定义接口在前，自定义接口在后；并重新连续编号 id
+        def is_custom(item: dict) -> bool:
+            name = str(item.get("name", "")).strip().lower()
+            return name.startswith("自定义") or name.startswith("custom")
+
+        platforms.sort(key = lambda x: (1 if is_custom(x) else 0, x.get("id", 0)))
+        for i, item in enumerate(platforms):
+            item["id"] = i
+
+        return True
 
     # 添加接口
     def add_platform(self, item: dict, widget: FlowCard, window: FluentWindow) -> None:

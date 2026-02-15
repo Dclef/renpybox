@@ -218,6 +218,10 @@ class ArgsEditPage(MessageBoxBase, Base):
             url = "https://docs.anthropic.com/en/api/getting-started"
         elif self.platform.get('api_format') == Base.APIFormat.SAKURALLM:
             url = "https://github.com/SakuraLLM/SakuraLLM#%E6%8E%A8%E7%90%86"
+        elif self.platform.get('api_format') == Base.APIFormat.DEEPL:
+            url = "https://developers.deepl.com/docs/api-reference/translate"
+        elif self.platform.get('api_format') == Base.APIFormat.DEEPLX:
+            url = "https://github.com/xixu-me/deeplx"
         else:
             url = "https://platform.openai.com/docs/api-reference/chat/create"
 
