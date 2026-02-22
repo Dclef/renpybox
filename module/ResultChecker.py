@@ -94,8 +94,17 @@ class ResultChecker(Base):
             is_case_sensitive = rule.get("case_sensitive", False)
 
             if is_regex:
+                # 反向应用时，dst（如 \2\1）可能含有反向引用，不能作为合法的正则
+                # 模式；同时 src 含有捕获组，也不适合直接作为替换文本。跳过此类
+                # 无法安全反转的正则规则。
+                if reverse and re.search(r'\\[0-9]', pattern):
+                    continue
+
                 flags = 0 if is_case_sensitive else re.IGNORECASE
-                text = re.sub(pattern, replacement, text, flags = flags)
+                try:
+                    text = re.sub(pattern, replacement, text, flags = flags)
+                except re.error as e:
+                    self.warning(f"替换规则正则错误（已跳过）: pattern={repr(pattern)}, error={e}")
             else:
                 if is_case_sensitive:
                     text = text.replace(pattern, replacement)

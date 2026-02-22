@@ -615,8 +615,11 @@ class Translator(Base):
             # 术语表刷新事件
             self.emit(Base.Event.GLOSSARY_REFRESH, {})
 
-        # 检查结果
-        ResultChecker(self.config, items).check()
+        # 检查结果（异常不影响写文件）
+        try:
+            ResultChecker(self.config, items).check()
+        except Exception as e:
+            self.warning(f"[ResultChecker] 检查阶段出现异常，已跳过: {e}")
 
         # 写入文件
         FileManager(self.config).write_to_path(items)

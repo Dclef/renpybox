@@ -182,23 +182,30 @@ class DirectRpyTranslatePage(Base, QWidget):
 
         try:
             tl_dir: Optional[Path] = None
+            input_tl_dir: Optional[Path] = None
             if tl_dir_text:
                 tl_dir = Path(tl_dir_text)
                 if not tl_dir.exists():
                     raise RuntimeError(f"tl 目录不存在: {tl_dir}")
+                # 用户填入的是 tl 根目录，追加语言子目录
+                input_tl_dir = tl_dir / tl_name
+                if not input_tl_dir.exists():
+                    raise RuntimeError(f"tl/{tl_name} 目录不存在: {input_tl_dir}")
             else:
                 if not game_path:
                     raise RuntimeError("请先选择游戏文件或 tl 目录")
                 game = Path(game_path)
                 project_dir = game.parent if game.is_file() else game
-                tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
-                if tl_dir is None:
+                input_tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
+                if input_tl_dir is None:
                     raise RuntimeError(f"未找到 tl/{tl_name} 目录，请先执行抽取或指定 tl 目录")
 
             config = Config().load()
-            config.input_folder = str(tl_dir)
-            config.output_folder = str(tl_dir)
+            config.input_folder = str(input_tl_dir)
+            config.output_folder = str(input_tl_dir)
             config.renpy_backup_original = self.backup_switch.isChecked()
+            # 直接翻译 tl/.rpy，必须关闭源码翻译模式，否则 FileManager 会走 RENPYSOURCE 分支
+            config.renpy_source_translate = False
 
             lang_map = {
                 "简体中文": "ZH",
