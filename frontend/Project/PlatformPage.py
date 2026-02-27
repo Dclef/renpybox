@@ -30,6 +30,8 @@ class PlatformPage(QWidget, Base):
         config = Config().load()
         if config.platforms == None:
             config.platforms = self.load_default_platforms()
+            # 首次加载默认平台时，顺便做一轮字段归一化，避免旧布尔字段残留。
+            self.ensure_default_platforms(config.platforms)
             config.save()
         elif self.ensure_default_platforms(config.platforms):
             config.save()
@@ -97,6 +99,22 @@ class PlatformPage(QWidget, Base):
             name = str(item.get("name", "")).strip()
             if name in ("Deel API", "DeepL API"):
                 item["name"] = "DeepL"
+                changed = True
+
+        # 统一思考字段：旧版 bool -> 新版 {"level": "..."}，并修正非法值。
+        for item in platforms:
+            raw_thinking = item.get("thinking")
+            level = "OFF"
+
+            if isinstance(raw_thinking, dict):
+                raw_level = str(raw_thinking.get("level", "OFF")).upper().strip()
+                level = raw_level if raw_level in ("OFF", "LOW", "MEDIUM", "HIGH") else "OFF"
+            elif raw_thinking == True:
+                level = "HIGH"
+
+            normalized_thinking = {"level": level}
+            if raw_thinking != normalized_thinking:
+                item["thinking"] = normalized_thinking
                 changed = True
 
         # 旧配置中没有 DeepL / DeepLX 时，自动补齐到默认列表

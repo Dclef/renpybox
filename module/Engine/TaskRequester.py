@@ -14,9 +14,20 @@ from google.genai import types
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
+from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+
+
+class ThinkingLevel(StrEnum):
+    """思考挡位枚举"""
+
+    OFF = "OFF"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
 
 class TaskRequester(Base):
 
@@ -29,11 +40,43 @@ class TaskRequester(Base):
     # 连接缓存（用于停止任务时快速中断网络请求）
     CLIENT_REGISTRY: dict[tuple[str, str, Base.APIFormat, int], Any] = {}
 
-    # qwen3_instruct_8b_q6k
+    # qwen3_instruct_8b_q6k（本地/Sakura 常见命名）
     RE_QWEN3: re.Pattern = re.compile(r"qwen3", flags = re.IGNORECASE)
+
+    # qwen3.5（OpenAI 兼容接口常见命名）
+    RE_QWEN3_5: re.Pattern = re.compile(r"qwen3(?:\.|-)?5", flags = re.IGNORECASE)
+
+    # gemini-2.5-pro
+    RE_GEMINI_2_5_PRO: re.Pattern = re.compile(r"gemini-2\.5-pro", flags = re.IGNORECASE)
 
     # gemini-2.5-flash
     RE_GEMINI_2_5_FLASH: re.Pattern = re.compile(r"gemini-2\.5-flash", flags = re.IGNORECASE)
+
+    # gemini-3-pro
+    RE_GEMINI_3_PRO: re.Pattern = re.compile(r"gemini-3-pro", flags = re.IGNORECASE)
+
+    # gemini-3-flash
+    RE_GEMINI_3_FLASH: re.Pattern = re.compile(r"gemini-3-flash", flags = re.IGNORECASE)
+
+    # gemini-3.1-pro
+    RE_GEMINI_3_1_PRO: re.Pattern = re.compile(r"gemini-3\.1-pro", flags = re.IGNORECASE)
+
+    # gpt-5 系列
+    RE_GPT5: re.Pattern = re.compile(r"gpt-5", flags = re.IGNORECASE)
+
+    # doubao-seed 系列（兼容 2.0 / 2-0 两种写法）
+    RE_DOUBAO: tuple[re.Pattern, ...] = (
+        re.compile(r"doubao-seed-1(?:\.|-)6", flags = re.IGNORECASE),
+        re.compile(r"doubao-seed-1(?:\.|-)8", flags = re.IGNORECASE),
+        re.compile(r"doubao-seed-2(?:\.|-)0", flags = re.IGNORECASE),
+    )
+
+    # thinking.type 系列（GLM / Kimi / DeepSeek）
+    RE_THINKING: tuple[re.Pattern, ...] = (
+        re.compile(r"glm", flags = re.IGNORECASE),
+        re.compile(r"kimi", flags = re.IGNORECASE),
+        re.compile(r"deepseek", flags = re.IGNORECASE),
+    )
 
     # Claude
     RE_CLAUDE: tuple[re.Pattern] = (
@@ -53,13 +96,30 @@ class TaskRequester(Base):
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
 
-    def __init__(self, config: Config, platform: dict[str, str | bool | int | float | list], current_round: int) -> None:
+    def __init__(self, config: Config, platform: dict[str, Any], current_round: int) -> None:
         super().__init__()
 
         # 初始化
         self.config = config
         self.platform = platform
         self.current_round = current_round
+        self.thinking_level = self.resolve_thinking_level(self.platform.get("thinking"))
+
+    @classmethod
+    def resolve_thinking_level(cls, thinking: Any) -> ThinkingLevel:
+        """兼容旧布尔配置与新思考挡位配置，统一解析为 ThinkingLevel。"""
+
+        if isinstance(thinking, dict):
+            level = str(thinking.get("level", "OFF")).upper().strip()
+            try:
+                return ThinkingLevel(level)
+            except ValueError:
+                return ThinkingLevel.OFF
+
+        if thinking == True:
+            return ThinkingLevel.HIGH
+
+        return ThinkingLevel.OFF
 
     # 重置
     @classmethod
@@ -199,21 +259,21 @@ class TaskRequester(Base):
         if self.platform.get('frequency_penalty_custom_enable') == True:
             args["frequency_penalty"] = self.platform.get('frequency_penalty')
 
-        thinking = self.platform.get('thinking')
+        thinking_level = self.thinking_level
 
         def dispatch() -> tuple[bool, str, str, int, int]:
             if self.platform.get('api_format') == Base.APIFormat.SAKURALLM:
-                return self.request_sakura(messages, thinking, args)
+                return self.request_sakura(messages, thinking_level, args)
             elif self.platform.get('api_format') == Base.APIFormat.GOOGLE:
-                return self.request_google(messages, thinking, args)
+                return self.request_google(messages, thinking_level, args)
             elif self.platform.get('api_format') == Base.APIFormat.ANTHROPIC:
-                return self.request_anthropic(messages, thinking, args)
+                return self.request_anthropic(messages, thinking_level, args)
             elif self.platform.get('api_format') == Base.APIFormat.DEEPL:
                 return self.request_deepl(messages)
             elif self.platform.get('api_format') == Base.APIFormat.DEEPLX:
                 return self.request_deeplx(messages)
             else:
-                return self.request_openai(messages, thinking, args)
+                return self.request_openai(messages, thinking_level, args)
 
         last_result: tuple[bool, str, str, int, int] = (True, None, None, None, None)
         for attempt in range(1, __class__.MAX_REQUEST_RETRY + 1):
@@ -237,7 +297,7 @@ class TaskRequester(Base):
         return last_result
 
     # 生成请求参数
-    def generate_sakura_args(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> dict:
+    def generate_sakura_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
@@ -249,16 +309,14 @@ class TaskRequester(Base):
 
         # 思考模式切换 - QWEN3（与 OpenAI 格式保持一致）
         if __class__.RE_QWEN3.search(self.platform.get('model')) is not None:
-            if thinking == True:
-                pass
-            else:
+            if thinking_level == ThinkingLevel.OFF and len(messages) > 0:
                 if "/no_think" not in messages[-1].get("content", ""):
                     messages[-1]["content"] = messages[-1].get('content') + "\n" + "/no_think"
 
         return args
 
     # 发起请求
-    def request_sakura(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+    def request_sakura(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
             with __class__.LOCK:
@@ -271,7 +329,7 @@ class TaskRequester(Base):
 
             # 发起请求
             response = client.chat.completions.create(
-                **self.generate_sakura_args(messages, thinking, args)
+                **self.generate_sakura_args(messages, thinking_level, args)
             )
 
             # 提取回复内容（支持 Qwen3 的 <think> 标签）
@@ -305,7 +363,7 @@ class TaskRequester(Base):
         return False, "", response_result, input_tokens, output_tokens
 
     # 生成请求参数
-    def generate_openai_args(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> dict:
+    def generate_openai_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
@@ -315,26 +373,56 @@ class TaskRequester(Base):
             }
         }
 
+        model = str(self.platform.get('model') or "")
+
         # OpenAI O-Series 模型兼容性处理
         if (
             self.platform.get('api_url').startswith("https://api.openai.com") or
-            __class__.RE_O_SERIES.search(self.platform.get('model')) is not None
+            __class__.RE_O_SERIES.search(model) is not None
         ):
             args.pop("max_tokens", None)
             args["max_completion_tokens"] = max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold)
 
-        # 思考模式切换 - QWEN3
-        if __class__.RE_QWEN3.search(self.platform.get('model')) is not None:
-            if thinking == True:
-                pass
+        extra_body: dict[str, Any] = {}
+
+        # GPT-5 系列支持 reasoning_effort 多挡位控制。
+        if __class__.RE_GPT5.search(model) is not None:
+            if thinking_level == ThinkingLevel.OFF:
+                extra_body["reasoning_effort"] = "none"
             else:
+                extra_body["reasoning_effort"] = thinking_level.lower()
+
+        # Qwen3.5 在 OpenAI 兼容接口上使用 enable_thinking 开关。
+        elif __class__.RE_QWEN3_5.search(model) is not None:
+            extra_body["enable_thinking"] = thinking_level != ThinkingLevel.OFF
+
+        # 豆包 seed 系列通过 reasoning_effort 控制推理强度。
+        elif any(v.search(model) is not None for v in __class__.RE_DOUBAO):
+            if thinking_level == ThinkingLevel.OFF:
+                extra_body["reasoning_effort"] = "minimal"
+            else:
+                extra_body["reasoning_effort"] = thinking_level.lower()
+
+        # GLM / Kimi / DeepSeek 等模型通过 thinking.type 切换思考模式。
+        elif any(v.search(model) is not None for v in __class__.RE_THINKING):
+            if thinking_level == ThinkingLevel.OFF:
+                extra_body["thinking"] = {"type": "disabled"}
+            else:
+                extra_body["thinking"] = {"type": "enabled"}
+
+        # 本地 qwen3 / Sakura 兼容源沿用 /no_think 兜底语义，避免破坏旧接口行为。
+        elif __class__.RE_QWEN3.search(model) is not None:
+            if thinking_level == ThinkingLevel.OFF and len(messages) > 0:
                 if "/no_think" not in messages[-1].get("content", ""):
                     messages[-1]["content"] = messages[-1].get('content') + "\n" + "/no_think"
+
+        if extra_body != {}:
+            args["extra_body"] = extra_body
 
         return args
 
     # 发起请求
-    def request_openai(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+    def request_openai(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
             with __class__.LOCK:
@@ -347,7 +435,7 @@ class TaskRequester(Base):
 
             # 发起请求
             response = client.chat.completions.create(
-                **self.generate_openai_args(messages, thinking, args)
+                **self.generate_openai_args(messages, thinking_level, args)
             )
 
             # 提取回复内容
@@ -381,7 +469,7 @@ class TaskRequester(Base):
         return False, response_think, response_result, input_tokens, output_tokens
 
     # 生成请求参数
-    def generate_google_args(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> dict[str, str | int | float]:
+    def generate_google_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict[str, str | int | float]:
         # Gemini 2.5 Flash 在长文本批次下容易命中 4096 输出上限导致截断。
         # 这里提高默认上限，降低 JSONLINE 行数不匹配（如 2/9）的重试概率。
         model = str(self.platform.get("model") or "")
@@ -411,17 +499,88 @@ class TaskRequester(Base):
             ),
         }
 
-        # 思考模式切换 - Gemini 2.5 Flash
-        if __class__.RE_GEMINI_2_5_FLASH.search(self.platform.get('model')) is not None:
-            if thinking == True:
+        # 兼容不同 google-genai 版本：新版本支持 thinking_level，旧版本仅支持 thinking_budget。
+        # 为避免旧环境报错，这里按档位提供等价 fallback budget。
+        def set_google_thinking_config_by_level(level_name: str, fallback_budget: int, include_thoughts: bool = True) -> None:
+            thinking_level_enum = getattr(types, "ThinkingLevel", None)
+            if thinking_level_enum is not None and hasattr(thinking_level_enum, level_name):
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_level = getattr(thinking_level_enum, level_name),
+                    include_thoughts = include_thoughts,
+                )
+            else:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = fallback_budget,
+                    include_thoughts = include_thoughts,
+                )
+
+        # Gemini
+        if __class__.RE_GEMINI_3_1_PRO.search(model) is not None:
+            if thinking_level in (ThinkingLevel.OFF, ThinkingLevel.LOW):
+                set_google_thinking_config_by_level("LOW", 384, True)
+            elif thinking_level == ThinkingLevel.MEDIUM:
+                set_google_thinking_config_by_level("MEDIUM", 768, True)
+            elif thinking_level == ThinkingLevel.HIGH:
+                set_google_thinking_config_by_level("HIGH", 1024, True)
+
+        elif __class__.RE_GEMINI_3_PRO.search(model) is not None:
+            if thinking_level in (ThinkingLevel.OFF, ThinkingLevel.LOW, ThinkingLevel.MEDIUM):
+                set_google_thinking_config_by_level("LOW", 384, True)
+            elif thinking_level == ThinkingLevel.HIGH:
+                set_google_thinking_config_by_level("HIGH", 1024, True)
+
+        elif __class__.RE_GEMINI_3_FLASH.search(model) is not None:
+            if thinking_level == ThinkingLevel.OFF:
+                set_google_thinking_config_by_level("MINIMAL", 128, True)
+            elif thinking_level == ThinkingLevel.LOW:
+                set_google_thinking_config_by_level("LOW", 384, True)
+            elif thinking_level == ThinkingLevel.MEDIUM:
+                set_google_thinking_config_by_level("MEDIUM", 768, True)
+            elif thinking_level == ThinkingLevel.HIGH:
+                set_google_thinking_config_by_level("HIGH", 1024, True)
+
+        elif __class__.RE_GEMINI_2_5_PRO.search(model) is not None:
+            if thinking_level == ThinkingLevel.OFF:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 128,
+                    include_thoughts = True,
+                )
+            elif thinking_level == ThinkingLevel.LOW:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 384,
+                    include_thoughts = True,
+                )
+            elif thinking_level == ThinkingLevel.MEDIUM:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 768,
+                    include_thoughts = True,
+                )
+            elif thinking_level == ThinkingLevel.HIGH:
                 args["thinking_config"] = types.ThinkingConfig(
                     thinking_budget = 1024,
                     include_thoughts = True,
                 )
-            else:
+
+        elif __class__.RE_GEMINI_2_5_FLASH.search(model) is not None:
+            if thinking_level == ThinkingLevel.OFF:
                 args["thinking_config"] = types.ThinkingConfig(
                     thinking_budget = 0,
                     include_thoughts = False,
+                )
+            elif thinking_level == ThinkingLevel.LOW:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 384,
+                    include_thoughts = True,
+                )
+            elif thinking_level == ThinkingLevel.MEDIUM:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 768,
+                    include_thoughts = True,
+                )
+            elif thinking_level == ThinkingLevel.HIGH:
+                args["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget = 1024,
+                    include_thoughts = True,
                 )
 
         return {
@@ -433,7 +592,7 @@ class TaskRequester(Base):
     # 发起请求
 
 
-    def request_google(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> tuple[bool, str, int, int]:
+    def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, int, int]:
         try:
             # 获取客户端
             with __class__.LOCK:
@@ -446,7 +605,7 @@ class TaskRequester(Base):
 
             # 发起请求
             response = client.models.generate_content(
-                **self.generate_google_args(messages, thinking, args)
+                **self.generate_google_args(messages, thinking_level, args)
             )
 
             # 获取回复内容
@@ -512,7 +671,8 @@ class TaskRequester(Base):
             output_tokens = 0
 
         return False, response_think, response_result, input_tokens, output_tokens
-    def generate_anthropic_args(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> dict:
+
+    def generate_anthropic_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
@@ -528,18 +688,25 @@ class TaskRequester(Base):
 
         # 思考模式切换
         if any(v.search(self.platform.get('model')) is not None for v in __class__.RE_CLAUDE):
-            if thinking == True:
-                args["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": 1024,
-                }
-            else:
-                pass
+            if thinking_level == ThinkingLevel.OFF:
+                args["thinking"] = {"type": "disabled"}
+            elif thinking_level == ThinkingLevel.LOW:
+                args["thinking"] = {"type": "enabled", "budget_tokens": 384}
+                args.pop("top_p", None)
+                args.pop("temperature", None)
+            elif thinking_level == ThinkingLevel.MEDIUM:
+                args["thinking"] = {"type": "enabled", "budget_tokens": 768}
+                args.pop("top_p", None)
+                args.pop("temperature", None)
+            elif thinking_level == ThinkingLevel.HIGH:
+                args["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+                args.pop("top_p", None)
+                args.pop("temperature", None)
 
         return args
 
     # 发起请求
-    def request_anthropic(self, messages: list[dict[str, str]], thinking: bool, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+    def request_anthropic(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
             with __class__.LOCK:
@@ -552,7 +719,7 @@ class TaskRequester(Base):
 
             # 发起请求
             response = client.messages.create(
-                **self.generate_anthropic_args(messages, thinking, args)
+                **self.generate_anthropic_args(messages, thinking_level, args)
             )
 
             # 提取回复内容
