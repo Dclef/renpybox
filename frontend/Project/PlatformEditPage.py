@@ -14,10 +14,10 @@ from qfluentwidgets import SingleDirectionScrollArea
 from base.Base import Base
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from widget.ComboBoxCard import ComboBoxCard
 from widget.EmptyCard import EmptyCard
 from widget.GroupCard import GroupCard
 from widget.LineEditCard import LineEditCard
-from widget.SwitchButtonCard import SwitchButtonCard
 from widget.LineEditMessageBox import LineEditMessageBox
 from frontend.Project.ModelListPage import ModelListPage
 
@@ -238,23 +238,54 @@ class PlatformEditPage(MessageBoxBase, Base):
 
     # 思考模式
     def add_widget_thinking(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+        level_to_index = {
+            "OFF": 0,
+            "LOW": 1,
+            "MEDIUM": 2,
+            "HIGH": 3,
+        }
+        index_to_level = {
+            0: "OFF",
+            1: "LOW",
+            2: "MEDIUM",
+            3: "HIGH",
+        }
 
-        def init(widget: SwitchButtonCard) -> None:
-            widget.get_switch_button().setChecked(
-                self.platform.get("thinking", False)
-            )
+        def normalize_level() -> str:
+            thinking = self.platform.get("thinking")
+            if isinstance(thinking, dict):
+                level = str(thinking.get("level", "OFF")).upper().strip()
+                return level if level in level_to_index else "OFF"
 
-        def checked_changed(widget: SwitchButtonCard) -> None:
+            # 兼容旧布尔配置：开启时按 HIGH 处理，关闭时按 OFF 处理。
+            if thinking == True:
+                return "HIGH"
+
+            return "OFF"
+
+        def init(widget: ComboBoxCard) -> None:
+            current_level = normalize_level()
+            widget.get_combo_box().setCurrentIndex(level_to_index.get(current_level, 0))
+            widget.get_combo_box().setFixedWidth(128)
+
+        def current_changed(widget: ComboBoxCard) -> None:
             config = Config().load()
-            self.platform["thinking"] = widget.get_switch_button().isChecked()
+            level = index_to_level.get(widget.get_combo_box().currentIndex(), "OFF")
+            self.platform["thinking"] = {"level": level}
             config.set_platform(self.platform)
             config.save()
 
         parent.addWidget(
-            SwitchButtonCard(
+            ComboBoxCard(
                 title = Localizer.get().platform_edit_page_thinking_title,
                 description = Localizer.get().platform_edit_page_thinking_content,
+                items = [
+                    Localizer.get().platform_edit_page_thinking_off,
+                    Localizer.get().platform_edit_page_thinking_low,
+                    Localizer.get().platform_edit_page_thinking_medium,
+                    Localizer.get().platform_edit_page_thinking_high,
+                ],
                 init = init,
-                checked_changed = checked_changed,
+                current_changed = current_changed,
             )
         )
