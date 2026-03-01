@@ -28,6 +28,7 @@ class ProofreadingTableWidget(TableWidget):
     retranslate_clicked = pyqtSignal(object)
     copy_src_clicked = pyqtSignal(object)
     copy_dst_clicked = pyqtSignal(object)
+    selected_items_changed = pyqtSignal(int)
 
     COL_SRC = 0
     COL_DST = 1
@@ -57,7 +58,7 @@ class ProofreadingTableWidget(TableWidget):
         ])
 
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.setBorderVisible(False)
@@ -79,6 +80,7 @@ class ProofreadingTableWidget(TableWidget):
         self._loading_rows: set[int] = set()
 
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        self.itemSelectionChanged.connect(self._on_item_selection_changed)
 
     def set_items(self, items: list[CacheItem], warning_map: dict[int, list[WarningType]]) -> None:
         self.blockSignals(True)
@@ -232,6 +234,14 @@ class ProofreadingTableWidget(TableWidget):
             return src_cell.data(self.ITEM_ROLE)
         return None
 
+    def get_selected_items(self) -> list[CacheItem]:
+        items: list[CacheItem] = []
+        for row in self.selectionModel().selectedRows():
+            item = self.get_item_at_row(row.row())
+            if item is not None:
+                items.append(item)
+        return items
+
     def update_row_status(self, row: int, warnings: list[WarningType]) -> None:
         item = self.get_item_at_row(row)
         if item:
@@ -304,3 +314,6 @@ class ProofreadingTableWidget(TableWidget):
             return
         self.selectRow(row)
         QTimer.singleShot(0, lambda: self.scrollToItem(self.item(row, self.COL_SRC), QAbstractItemView.PositionAtCenter))
+
+    def _on_item_selection_changed(self) -> None:
+        self.selected_items_changed.emit(len(self.get_selected_items()))
