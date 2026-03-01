@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 from pathlib import Path
+import importlib.util
 import os
 import sys
 
@@ -51,8 +52,34 @@ for src, dest in script_files:
 binaries = []
 hiddenimports = []
 
+# -------------------------------------------------------------------
+# 通用包数据目录补全工具
+# -------------------------------------------------------------------
+
+def _pkg_root(pkg_name):
+    """获取包安装根目录，失败返回 None"""
+    try:
+        spec = importlib.util.find_spec(pkg_name)
+        if spec and spec.origin:
+            return Path(spec.origin).parent
+    except Exception:
+        pass
+    return None
+
+def _add_dir(datas_list, src_dir, dest):
+    """将整个目录追加进 datas（目录不存在则打印警告跳过）"""
+    src_dir = Path(src_dir)
+    if src_dir.exists():
+        datas_list.append((str(src_dir), dest))
+        print(f"[DATA+] {src_dir} -> _internal/{dest}")
+    else:
+        print(f"[WARN ] not found, skip: {src_dir}")
+
+# -------------------------------------------------------------------
 # 收集第三方依赖
-# 全量收集（包含二进制文件）
+# -------------------------------------------------------------------
+
+# 全量收集（datas + binaries + hiddenimports）
 full_collect_packages = [
     'qfluentwidgets', 'rich', 'opencc', 'tiktoken', 'httpx',
     'openai', 'anthropic', 'translators', 'pygtrans', 'json_repair'
@@ -68,21 +95,65 @@ submodule_packages = [
 # 项目内部模块
 internal_modules = ['base', 'widget', 'utils', 'frontend', 'module']
 
+# -------------------------------------------------------------------
+# 已知 collect_all 无法完整收集数据文件的包，在此手动补充
+#
+# 格式：包名 -> [(相对于包根的子路径, _internal 中的目标路径), ...]
+#   子路径为空字符串 '' 表示包根目录本身
+#
+# 新增问题时只需在此 dict 中追加，无需修改其他代码。
+# -------------------------------------------------------------------
+MANUAL_DATA_DIRS = {
+    # opencc-python-reimplemented：JSON 转换配置存放在 cLib/ 下，collect_all 会遗漏
+    'opencc': [
+        ('cLib', 'opencc/cLib'),
+    ],
+    # tiktoken_ext 是独立命名空间包，collect_all('tiktoken') 不会一并处理
+    'tiktoken': [
+        ('',  'tiktoken'),
+    ],
+    # spacy 的语言数据（lang/*/）通过 collect_all 有时不完整
+    'spacy': [
+        ('lang', 'spacy/lang'),
+    ],
+    # charset_normalizer 包含静态 .bin 数据表
+    'charset_normalizer': [
+        ('',  'charset_normalizer'),
+    ],
+    # openpyxl 内嵌 XML 模板，collect_data_files 有时遗漏
+    'openpyxl': [
+        ('templates', 'openpyxl/templates'),
+        ('reader',    'openpyxl/reader'),
+    ],
+}
+
+# -------------------------------------------------------------------
 # 执行收集
+# -------------------------------------------------------------------
+
 for pkg in full_collect_packages:
     try:
         tmp = collect_all(pkg)
         datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
-        print(f"[OK] {pkg}")
+        print(f"[OK] collect_all: {pkg}")
     except Exception as e:
-        print(f"[SKIP] {pkg}: {e}")
+        print(f"[SKIP] collect_all {pkg}: {e}")
 
 for pkg in submodule_packages + internal_modules:
     try:
         hiddenimports += collect_submodules(pkg)
-        print(f"[OK] {pkg}")
+        print(f"[OK] collect_submodules: {pkg}")
     except Exception as e:
-        print(f"[SKIP] {pkg}: {e}")
+        print(f"[SKIP] collect_submodules {pkg}: {e}")
+
+# 手动补充已知问题包的数据目录（幂等：PyInstaller 会自动去重）
+for pkg, entries in MANUAL_DATA_DIRS.items():
+    pkg_root = _pkg_root(pkg)
+    if pkg_root is None:
+        print(f"[SKIP] manual data: {pkg} not installed / not found")
+        continue
+    for sub, dest in entries:
+        _add_dir(datas, pkg_root / sub if sub else pkg_root, dest)
 
 # 图标和排除列表
 icon_file = resource_dir / "icon.ico"
