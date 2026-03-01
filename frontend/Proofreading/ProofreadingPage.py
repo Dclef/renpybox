@@ -21,6 +21,7 @@ from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
 
 from base.Base import Base
+from frontend.Proofreading.BatchReplaceDialog import BatchReplaceDialog
 from frontend.Proofreading.FilterDialog import FilterDialog
 from frontend.Proofreading.PaginationBar import PaginationBar
 from frontend.Proofreading.ProofreadingTableWidget import ProofreadingTableWidget
@@ -62,6 +63,9 @@ class ProofreadingPage(QWidget, Base):
         self.search_match_indices: list[int] = []
         self.search_current_match: int = -1
         self._warning_check_id: int = 0
+        self._batch_retranslate_item_ids: set[int] = set()
+        self._batch_retranslate_success: int = 0
+        self._batch_retranslate_failed: int = 0
 
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
@@ -91,6 +95,7 @@ class ProofreadingPage(QWidget, Base):
         self.table_widget.retranslate_clicked.connect(self._on_retranslate_clicked)
         self.table_widget.copy_src_clicked.connect(self._on_copy_src_clicked)
         self.table_widget.copy_dst_clicked.connect(self._on_copy_dst_clicked)
+        self.table_widget.selected_items_changed.connect(self._on_selected_items_changed)
         self.table_widget.set_items([], {})
 
         parent.addWidget(self.table_widget, 1)
@@ -139,6 +144,21 @@ class ProofreadingPage(QWidget, Base):
             Action(FluentIcon.FILTER, Localizer.get().proofreading_page_filter, triggered = self._on_filter_clicked)
         )
         self.btn_filter.setEnabled(False)
+
+        self.btn_batch_replace = self.command_bar_card.add_action(
+            Action(FluentIcon.EDIT, Localizer.get().proofreading_page_batch_replace, triggered = self._on_batch_replace_clicked)
+        )
+        self.btn_batch_replace.setEnabled(False)
+
+        self.btn_batch_retranslate = self.command_bar_card.add_action(
+            Action(FluentIcon.SYNC, Localizer.get().proofreading_page_batch_retranslate, triggered = self._on_batch_retranslate_clicked)
+        )
+        self.btn_batch_retranslate.setEnabled(False)
+
+        self.btn_batch_reset = self.command_bar_card.add_action(
+            Action(FluentIcon.DELETE, Localizer.get().proofreading_page_batch_reset_translation, triggered = self._on_batch_reset_translation_clicked)
+        )
+        self.btn_batch_reset.setEnabled(False)
 
         self.command_bar_card.add_separator()
 
@@ -256,6 +276,21 @@ class ProofreadingPage(QWidget, Base):
             self.pagination_bar.reset()
 
         self._check_engine_status()
+        self._update_batch_action_state()
+
+    def _on_selected_items_changed(self, count: int) -> None:
+        del count
+        self._update_batch_action_state()
+
+    def _update_batch_action_state(self) -> None:
+        has_items = bool(self.items)
+        is_busy = self.is_readonly
+        can_operate = (not is_busy) and has_items
+        selected_count = len(self.table_widget.get_selected_items()) if has_items else 0
+
+        self.btn_batch_replace.setEnabled(can_operate and len(self.filtered_items) > 0)
+        self.btn_batch_retranslate.setEnabled(can_operate and selected_count > 0)
+        self.btn_batch_reset.setEnabled(can_operate and selected_count > 0)
 
     def _on_filter_clicked(self) -> None:
         if not self.items:
@@ -448,6 +483,7 @@ class ProofreadingPage(QWidget, Base):
         page_warning_map = {id(item): self.warning_map.get(id(item), []) for item in page_items}
 
         self.table_widget.set_items(page_items, page_warning_map)
+        self._update_batch_action_state()
 
     def _on_cell_edited(self, item: CacheItem, new_dst: str) -> None:
         if self.is_readonly:
@@ -494,6 +530,177 @@ class ProofreadingPage(QWidget, Base):
             "message": Localizer.get().proofreading_page_copy_dst_done,
         })
 
+    def _on_batch_replace_clicked(self) -> None:
+        if self.is_readonly or not self.items:
+            return
+
+        selected_items = self.table_widget.get_selected_items()
+        dialog = BatchReplaceDialog(len(selected_items), len(self.filtered_items), self.window)
+        if not dialog.exec():
+            return
+
+        payload = dialog.get_payload()
+        find_text = str(payload.get("find_text", ""))
+        replace_text = str(payload.get("replace_text", ""))
+        use_regex = payload.get("regex") == True
+        case_sensitive = payload.get("case_sensitive") == True
+        scope = str(payload.get("scope", BatchReplaceDialog.SCOPE_FILTERED))
+
+        if find_text == "":
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_batch_replace_empty_keyword,
+            })
+            return
+
+        if scope == BatchReplaceDialog.SCOPE_SELECTED:
+            targets = selected_items
+        else:
+            targets = self.filtered_items
+
+        if len(targets) == 0:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_batch_no_selection,
+            })
+            return
+
+        if use_regex:
+            regex_flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                pattern = re.compile(find_text, regex_flags)
+            except re.error as e:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": f"{Localizer.get().proofreading_page_batch_replace_invalid_regex}: {e}",
+                })
+                return
+
+            def replace_func(text: str) -> str:
+                return pattern.sub(replace_text, text)
+        else:
+            if case_sensitive:
+                def replace_func(text: str) -> str:
+                    return text.replace(find_text, replace_text)
+            else:
+                escaped_pattern = re.compile(re.escape(find_text), re.IGNORECASE)
+
+                # 非正则替换按纯文本处理，避免 replacement 中的反斜杠被当作反向引用。
+                def replace_func(text: str) -> str:
+                    return escaped_pattern.sub(lambda _: replace_text, text)
+
+        changed_count = 0
+        for item in targets:
+            old_dst = item.get_dst()
+            new_dst = replace_func(old_dst)
+            if new_dst == old_dst:
+                continue
+
+            changed_count += 1
+            item.set_dst(new_dst)
+            if new_dst != "" and item.get_status() == Base.TranslationStatus.UNTRANSLATED:
+                item.set_status(Base.TranslationStatus.TRANSLATED)
+
+            row = self.table_widget.find_row_by_item(item)
+            if row >= 0:
+                self.table_widget.update_row_dst(row, new_dst)
+            self._recheck_item(item)
+
+        if changed_count > 0:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.SUCCESS,
+                "message": Localizer.get().proofreading_page_batch_replace_done.replace("{N}", str(changed_count)),
+            })
+        else:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_batch_replace_no_change,
+            })
+
+    def _on_batch_reset_translation_clicked(self) -> None:
+        if self.is_readonly:
+            return
+
+        selected_items = self.table_widget.get_selected_items()
+        if len(selected_items) == 0:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_batch_no_selection,
+            })
+            return
+
+        message_box = MessageBox(
+            Localizer.get().confirm,
+            Localizer.get().proofreading_page_batch_reset_translation_confirm.replace("{COUNT}", str(len(selected_items))),
+            self.window
+        )
+        message_box.yesButton.setText(Localizer.get().confirm)
+        message_box.cancelButton.setText(Localizer.get().cancel)
+        if not message_box.exec():
+            return
+
+        changed_count = 0
+        for item in selected_items:
+            old_dst = item.get_dst()
+            old_status = item.get_status()
+
+            item.set_dst("")
+            item.set_status(Base.TranslationStatus.UNTRANSLATED)
+            item.set_retry_count(0)
+
+            if old_dst != "" or old_status != Base.TranslationStatus.UNTRANSLATED:
+                changed_count += 1
+
+            row = self.table_widget.find_row_by_item(item)
+            if row >= 0:
+                self.table_widget.update_row_dst(row, "")
+            self._recheck_item(item)
+
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": Base.ToastType.SUCCESS,
+            "message": Localizer.get().proofreading_page_batch_reset_translation_done.replace("{N}", str(changed_count)),
+        })
+
+    def _on_batch_retranslate_clicked(self) -> None:
+        if self.is_readonly or not self.config:
+            return
+
+        selected_items = self.table_widget.get_selected_items()
+        if len(selected_items) == 0:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_batch_no_selection,
+            })
+            return
+
+        message_box = MessageBox(
+            Localizer.get().confirm,
+            Localizer.get().proofreading_page_batch_retranslate_confirm.replace("{COUNT}", str(len(selected_items))),
+            self.window
+        )
+        message_box.yesButton.setText(Localizer.get().confirm)
+        message_box.cancelButton.setText(Localizer.get().cancel)
+        if not message_box.exec():
+            return
+
+        self._batch_retranslate_item_ids = {id(v) for v in selected_items}
+        self._batch_retranslate_success = 0
+        self._batch_retranslate_failed = 0
+
+        for item in selected_items:
+            row = self.table_widget.find_row_by_item(item)
+            if row >= 0:
+                self.table_widget.set_row_loading(row, True)
+
+            item.set_status(Base.TranslationStatus.UNTRANSLATED)
+            item.set_retry_count(0)
+
+            Engine.get().translate_single_item(
+                item = item,
+                config = self.config,
+                callback = lambda i, s: self.translate_done.emit(i, s)
+            )
+
     def _on_retranslate_clicked(self, item: CacheItem) -> None:
         if self.is_readonly or not self.config:
             return
@@ -524,25 +731,46 @@ class ProofreadingPage(QWidget, Base):
 
     def _on_translate_done_ui(self, item: CacheItem, success: bool) -> None:
         row = self.table_widget.find_row_by_item(item)
-        if row < 0:
-            return
+        if row >= 0:
+            self.table_widget.set_row_loading(row, False)
 
-        self.table_widget.set_row_loading(row, False)
+        is_batch_mode = id(item) in self._batch_retranslate_item_ids
 
         if success:
-            self.table_widget.update_row_dst(row, item.get_dst())
+            if row >= 0:
+                self.table_widget.update_row_dst(row, item.get_dst())
             self._recheck_item(item)
 
-            self.emit(Base.Event.APP_TOAST_SHOW, {
-                "type": Base.ToastType.SUCCESS,
-                "message": Localizer.get().proofreading_page_retranslate_success,
-            })
+            if is_batch_mode:
+                self._batch_retranslate_success += 1
+            else:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.SUCCESS,
+                    "message": Localizer.get().proofreading_page_retranslate_success,
+                })
         else:
             item.set_status(Base.TranslationStatus.TRANSLATED)
-            self.emit(Base.Event.APP_TOAST_SHOW, {
-                "type": Base.ToastType.ERROR,
-                "message": Localizer.get().proofreading_page_retranslate_failed,
-            })
+            if is_batch_mode:
+                self._batch_retranslate_failed += 1
+            else:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": Localizer.get().proofreading_page_retranslate_failed,
+                })
+
+        if is_batch_mode:
+            self._batch_retranslate_item_ids.discard(id(item))
+            if len(self._batch_retranslate_item_ids) == 0:
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.SUCCESS if self._batch_retranslate_failed == 0 else Base.ToastType.WARNING,
+                    "message": Localizer.get().proofreading_page_batch_retranslate_done.replace(
+                        "{SUCCESS}",
+                        str(self._batch_retranslate_success),
+                    ).replace(
+                        "{FAILURE}",
+                        str(self._batch_retranslate_failed),
+                    ),
+                })
 
     def _on_save_clicked(self) -> None:
         self.indeterminate_show(Localizer.get().proofreading_page_indeterminate_saving)
@@ -659,6 +887,9 @@ class ProofreadingPage(QWidget, Base):
             self.filtered_items = []
             self.warning_map = {}
             self.result_checker = None
+            self._batch_retranslate_item_ids.clear()
+            self._batch_retranslate_success = 0
+            self._batch_retranslate_failed = 0
             self._warning_check_id += 1
             self.table_widget.set_items([], {})
             self.pagination_bar.reset()
@@ -672,6 +903,7 @@ class ProofreadingPage(QWidget, Base):
         self.btn_export.setEnabled(can_operate)
         self.btn_search.setEnabled(can_operate)
         self.btn_filter.setEnabled(can_operate)
+        self._update_batch_action_state()
 
         if is_busy != self.is_readonly:
             self.is_readonly = is_busy
