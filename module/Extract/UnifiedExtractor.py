@@ -11,6 +11,7 @@ UnifiedExtractor - 统一翻译提取接口
 from __future__ import annotations
 
 import ast
+import csv
 import os
 import re
 import shutil
@@ -62,11 +63,19 @@ class UnifiedExtractor:
         "style_box.rpy",
     }
     AUTO_SCREEN_FILE = "auto_screens_default.rpy"
+    INTERNAL_TL_DIRS = {"_filtered_suspicious"}
+    SUSPICIOUS_BACKUP_DIR = "_filtered_suspicious"
+    SUSPICIOUS_MANIFEST_NAME = "restore_manifest.csv"
+    SUSPICIOUS_BOOL_EXPR_RE = re.compile(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\b\s*(?:==|!=|=)\s*(?:True|False|true|false)\b"
+    )
     
     def __init__(self, renpy_extractor: Optional[RenpyExtractor] = None):
         self.logger = LogManager.get()
         self.renpy_extractor = renpy_extractor or RenpyExtractor()
         self._progress_callback: Optional[Callable[[str, int], None]] = None
+        self._last_suspicious_manifest: Optional[Path] = None
+        self._last_suspicious_removed_count: int = 0
 
     def _warn_if_writeback_report(self, tl_dir: Path) -> None:
         report_path = tl_dir / "writeback_report_renpy.json"
@@ -127,6 +136,12 @@ class UnifiedExtractor:
     def _iter_rpy_files(self, tl_dir: Path):
         """遍历 tl 目录下的 rpy 文件，自动跳过内置 UI/模板文件"""
         for rpy_file in tl_dir.rglob("*.rpy"):
+            try:
+                rel_parts = [part.lower() for part in rpy_file.relative_to(tl_dir).parts[:-1]]
+                if any(part in self.INTERNAL_TL_DIRS for part in rel_parts):
+                    continue
+            except Exception:
+                pass
             # 缺失补丁：仅作为生成 replace_text 的中间文件，不应参与抽取/增量统计与后处理
             if rpy_file.name.startswith("miss_ready_replace"):
                 continue
@@ -584,6 +599,355 @@ class UnifiedExtractor:
             .replace("\n", "\\n")
         )
 
+    @staticmethod
+    def _decode_rpy_string(quote: str, value: str) -> str:
+        literal = f"{quote}{value}{quote}"
+        try:
+            decoded = ast.literal_eval(literal)
+            return decoded if isinstance(decoded, str) else str(decoded)
+        except Exception:
+            return value.replace('\\"', '"').replace("\\'", "'")
+
+    def get_last_suspicious_manifest(self) -> Optional[Path]:
+        return self._last_suspicious_manifest
+
+    @staticmethod
+    def _is_restore_flag_enabled(value: str) -> bool:
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "checked", "x", "v", "ok"}
+
+    def _is_suspicious_bool_expr_text(self, text: str) -> bool:
+        candidate = text.strip()
+        if not candidate or "\n" in candidate or "\r" in candidate:
+            return False
+
+        if not self.SUSPICIOUS_BOOL_EXPR_RE.search(candidate):
+            return False
+
+        lower_candidate = candidate.lower()
+        if "==" in candidate or "!=" in candidate:
+            return True
+        if " and " in lower_candidate or " or " in lower_candidate or " not " in lower_candidate:
+            return True
+        if "_" in candidate:
+            return True
+        return bool(
+            re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:True|False|true|false)",
+                candidate,
+            )
+        )
+
+    def _collect_existing_old_values(self, file_path: Path) -> Set[str]:
+        olds: Set[str] = set()
+        if not file_path.exists():
+            return olds
+
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return olds
+
+        for line in lines:
+            old_match = self.OLD_LINE_RE.match(line)
+            if not old_match:
+                continue
+            old_text = self._decode_rpy_string(old_match.group(1), old_match.group("text"))
+            olds.add(old_text)
+        return olds
+
+    def _write_suspicious_backup(
+        self,
+        tl_dir: Path,
+        tl_name: str,
+        removed_by_file: Dict[str, List[Dict[str, str | int]]],
+    ) -> Optional[Path]:
+        if not removed_by_file:
+            return None
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_dir = tl_dir / self.SUSPICIOUS_BACKUP_DIR / timestamp
+        entries_dir = run_dir / "entries"
+        entries_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest_path = run_dir / self.SUSPICIOUS_MANIFEST_NAME
+        fieldnames = ["restore", "id", "file", "line", "old", "new", "reason", "backup_file"]
+
+        counter = 1
+        with manifest_path.open("w", encoding="utf-8-sig", newline="") as csv_writer:
+            writer = csv.DictWriter(csv_writer, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for rel_path in sorted(removed_by_file.keys()):
+                entries = removed_by_file[rel_path]
+                backup_rel = Path("entries") / Path(rel_path)
+                backup_file = run_dir / backup_rel
+                backup_file.parent.mkdir(parents=True, exist_ok=True)
+
+                backup_lines = [
+                    "# RenpyBox: filtered suspicious bool-expression entries",
+                    f"# source: {rel_path}",
+                    "",
+                    f"translate {tl_name} strings:",
+                    "",
+                ]
+
+                for item in entries:
+                    old_text = str(item.get("old", ""))
+                    new_text = str(item.get("new", ""))
+                    line_no = int(item.get("line", 0) or 0)
+                    reason = str(item.get("reason", "suspicious_bool_expr"))
+
+                    backup_lines.append(f"    # old line: {line_no}")
+                    backup_lines.append(f'    old "{self._escape_rpy_string(old_text)}"')
+                    backup_lines.append(f'    new "{self._escape_rpy_string(new_text)}"')
+                    backup_lines.append("")
+
+                    writer.writerow(
+                        {
+                            "restore": "0",
+                            "id": str(counter),
+                            "file": rel_path,
+                            "line": str(line_no),
+                            "old": old_text,
+                            "new": new_text,
+                            "reason": reason,
+                            "backup_file": backup_rel.as_posix(),
+                        }
+                    )
+                    counter += 1
+
+                backup_file.write_text("\n".join(backup_lines).rstrip() + "\n", encoding="utf-8")
+
+        readme_path = run_dir / "README.txt"
+        readme_path.write_text(
+            "\n".join(
+                [
+                    "RenpyBox filtered suspicious entries backup",
+                    "",
+                    "1) Open restore_manifest.csv",
+                    "2) For entries you want back, set column 'restore' to 1",
+                    "3) In RenpyBox click: 恢复误提取勾选项",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        latest_hint = tl_dir / self.SUSPICIOUS_BACKUP_DIR / "latest_manifest.txt"
+        try:
+            latest_hint.write_text(str(manifest_path), encoding="utf-8")
+        except Exception:
+            pass
+
+        return manifest_path
+
+    def _remove_suspicious_bool_expr_entries(self, tl_dir: Path, tl_name: str) -> Tuple[int, Optional[Path]]:
+        removed_total = 0
+        removed_by_file: Dict[str, List[Dict[str, str | int]]] = {}
+
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception as exc:
+                self.logger.warning(f"读取翻译文件失败 {rpy_file}: {exc}")
+                continue
+
+            changed = False
+            new_lines: List[str] = []
+            i = 0
+            rel_path = rpy_file.relative_to(tl_dir).as_posix()
+
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if old_match and i + 1 < len(lines):
+                    j = i + 1
+                    while j < len(lines):
+                        probe = lines[j].strip()
+                        if not probe or probe.startswith("#"):
+                            j += 1
+                            continue
+                        break
+                    new_match = self.NEW_LINE_RE.match(lines[j]) if j < len(lines) else None
+                    if new_match:
+                        old_text = self._decode_rpy_string(old_match.group(1), old_match.group("text"))
+                        if self._is_suspicious_bool_expr_text(old_text):
+                            new_text = self._decode_rpy_string(new_match.group(1), new_match.group("text"))
+                            removed_by_file.setdefault(rel_path, []).append(
+                                {
+                                    "line": i + 1,
+                                    "old": old_text,
+                                    "new": new_text,
+                                    "reason": "suspicious_bool_expr",
+                                }
+                            )
+                            removed_total += 1
+                            changed = True
+                            i = j + 1
+                            while i < len(lines) and not lines[i].strip():
+                                i += 1
+                            continue
+
+                        new_lines.extend(lines[i : j + 1])
+                        i = j + 1
+                        continue
+
+                new_lines.append(lines[i])
+                i += 1
+
+            if changed:
+                final_lines: List[str] = []
+                prev_empty = False
+                for entry in new_lines:
+                    is_empty = not entry.strip()
+                    if is_empty and prev_empty:
+                        continue
+                    final_lines.append(entry)
+                    prev_empty = is_empty
+
+                final_text = "\n".join(final_lines).rstrip()
+                if final_text:
+                    final_text += "\n"
+                rpy_file.write_text(final_text, encoding="utf-8")
+
+        manifest_path = self._write_suspicious_backup(tl_dir, tl_name, removed_by_file)
+        return removed_total, manifest_path
+
+    def _find_latest_suspicious_manifest(self, tl_dir: Path) -> Optional[Path]:
+        backup_root = tl_dir / self.SUSPICIOUS_BACKUP_DIR
+        if not backup_root.exists():
+            return None
+
+        candidates = list(backup_root.glob(f"*/{self.SUSPICIOUS_MANIFEST_NAME}"))
+        if not candidates:
+            fallback = backup_root / self.SUSPICIOUS_MANIFEST_NAME
+            return fallback if fallback.exists() else None
+
+        candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
+        return candidates[0] if candidates else None
+
+    def restore_flagged_suspicious_entries(
+        self,
+        game_dir: str | Path,
+        tl_name: str,
+        manifest_path: str | Path | None = None,
+    ) -> ExtractionResult:
+        result = ExtractionResult(success=False)
+        game_dir = Path(game_dir)
+        tl_dir = game_dir / "game" / "tl" / tl_name
+        result.tl_dir = tl_dir
+
+        if not tl_dir.exists():
+            result.message = f"未找到 tl 目录: {tl_dir}"
+            return result
+
+        if manifest_path is not None:
+            manifest = Path(manifest_path)
+        else:
+            manifest = self._find_latest_suspicious_manifest(tl_dir)
+
+        if manifest is None or not manifest.exists():
+            result.message = "未找到可恢复清单（_filtered_suspicious/*/restore_manifest.csv）"
+            return result
+
+        selected_by_file: Dict[str, List[Tuple[str, str]]] = {}
+        try:
+            with manifest.open("r", encoding="utf-8-sig", newline="") as reader:
+                csv_reader = csv.DictReader(reader)
+                for row in csv_reader:
+                    if not self._is_restore_flag_enabled(row.get("restore", "")):
+                        continue
+                    rel_path = (row.get("file", "") or "").replace("\\", "/").strip().lstrip("/")
+                    old_text = row.get("old", "") or ""
+                    new_text = row.get("new", "") or ""
+                    if not rel_path:
+                        continue
+                    selected_by_file.setdefault(rel_path, []).append((old_text, new_text))
+        except Exception as exc:
+            result.message = f"读取恢复清单失败: {exc}"
+            return result
+
+        if not selected_by_file:
+            result.message = "恢复清单中没有勾选项（请把 restore 列改为 1）"
+            return result
+
+        restored = 0
+        skipped_duplicates = 0
+        invalid_entries = 0
+        touched_files = 0
+
+        for rel_path, entries in selected_by_file.items():
+            rel_obj = Path(rel_path)
+            if rel_obj.is_absolute() or ".." in rel_obj.parts:
+                invalid_entries += len(entries)
+                continue
+
+            target_file = tl_dir / rel_obj
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+
+            existing_olds = self._collect_existing_old_values(target_file)
+            pending: List[Tuple[str, str]] = []
+            seen_olds = set(existing_olds)
+
+            for old_text, new_text in entries:
+                normalized_old = (old_text or "").strip()
+                if not normalized_old:
+                    invalid_entries += 1
+                    continue
+                if normalized_old in seen_olds:
+                    skipped_duplicates += 1
+                    continue
+                seen_olds.add(normalized_old)
+                pending.append((normalized_old, new_text or ""))
+
+            if not pending:
+                continue
+
+            existed = target_file.exists()
+            old_content = ""
+            if existed:
+                try:
+                    old_content = target_file.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    old_content = ""
+
+            restore_source = manifest.name
+            try:
+                restore_source = manifest.relative_to(tl_dir).as_posix()
+            except Exception:
+                restore_source = str(manifest)
+
+            append_lines = [
+                f"# restored from: {restore_source}",
+                f"translate {tl_name} strings:",
+                "",
+            ]
+            for old_text, new_text in pending:
+                append_lines.append(f'    old "{self._escape_rpy_string(old_text)}"')
+                append_lines.append(f'    new "{self._escape_rpy_string(new_text)}"')
+                append_lines.append("")
+
+            with target_file.open("a", encoding="utf-8", newline="\n") as writer:
+                if old_content and not old_content.endswith(("\n", "\r")):
+                    writer.write("\n")
+                if old_content:
+                    writer.write("\n")
+                writer.write("\n".join(append_lines).rstrip() + "\n")
+
+            restored += len(pending)
+            touched_files += 1
+
+        result.success = restored > 0
+        if result.success:
+            result.message = (
+                f"已恢复 {restored} 条，涉及 {touched_files} 个文件；"
+                f"跳过重复 {skipped_duplicates} 条，无效 {invalid_entries} 条"
+            )
+        else:
+            result.message = (
+                f"未恢复任何条目；跳过重复 {skipped_duplicates} 条，无效 {invalid_entries} 条"
+            )
+        return result
+
     def _cleanup_legacy_auto_screens_translation(self, tl_dir: Path) -> None:
         """清理旧版本生成的 auto_screens_default.rpy（历史遗留）。"""
         auto_file = tl_dir / self.AUTO_SCREEN_FILE
@@ -738,7 +1102,13 @@ class UnifiedExtractor:
             result.total_files = len(list(self._iter_rpy_files(tl_dir)))
             result.success = True
             ui_note = "（已注入 base_box UI 翻译）" if injected_ui else ""
-            result.message = f"常规抽取完成，共 {result.total_files} 个文件{ui_note}"
+            suspicious_note = ""
+            if self._last_suspicious_removed_count:
+                suspicious_note = (
+                    f"，已过滤疑似误提取 {self._last_suspicious_removed_count} 条"
+                    "（可在 _filtered_suspicious 勾选恢复）"
+                )
+            result.message = f"常规抽取完成，共 {result.total_files} 个文件{ui_note}{suspicious_note}"
             self._emit_progress("抽取完成", 100)
             
         except Exception as e:
@@ -916,6 +1286,11 @@ class UnifiedExtractor:
                     ]
                     if pending_originals:
                         msg_lines.append(f"• 未翻译待补全: {len(pending_originals)} 条")
+                    if self._last_suspicious_removed_count:
+                        msg_lines.append(
+                            "• 已过滤疑似误提取: "
+                            f"{self._last_suspicious_removed_count} 条（_filtered_suspicious 可勾选恢复）"
+                        )
                     msg_lines.append(f"• 新增内容位置: {incremental_dir.name}/")
                     result.message = "\n".join(msg_lines)
                 else:
@@ -932,7 +1307,16 @@ class UnifiedExtractor:
                     
                     result.total_files = len(list(self._iter_rpy_files(tl_dir)))
                     result.success = True
-                    result.message = f"增量抽取完成，保留了 {translated_count} 条已有翻译，新增 {len(new_originals)} 条"
+                    suspicious_note = ""
+                    if self._last_suspicious_removed_count:
+                        suspicious_note = (
+                            f"，并过滤疑似误提取 {self._last_suspicious_removed_count} 条"
+                            "（可在 _filtered_suspicious 勾选恢复）"
+                        )
+                    result.message = (
+                        f"增量抽取完成，保留了 {translated_count} 条已有翻译，"
+                        f"新增 {len(new_originals)} 条{suspicious_note}"
+                    )
 
                 # 注入内置 UI 包（仅影响主 tl 目录，不影响增量输出目录）
                 injected_ui = 0
@@ -1726,12 +2110,25 @@ class UnifiedExtractor:
         existing_translations: Optional[Dict[str, str]] = None,
     ):
         """后处理：应用保留库过滤 + 清理空文件"""
+        self._last_suspicious_manifest = None
+        self._last_suspicious_removed_count = 0
         preserve_set = self._load_preserve_set(config)
         
         # 应用过滤
         if preserve_set:
             self._emit_progress("正在应用保留库过滤...", 80)
             self._filter_tl_files(tl_dir, preserve_set)
+
+        # 过滤疑似误提取的代码布尔表达式（例如 foo == True / bar = false）
+        if getattr(config, "renpy_filter_suspicious_bool_expr", True):
+            removed_suspicious, manifest_path = self._remove_suspicious_bool_expr_entries(tl_dir, tl_name)
+            self._last_suspicious_removed_count = removed_suspicious
+            self._last_suspicious_manifest = manifest_path
+            if removed_suspicious:
+                manifest_msg = str(manifest_path) if manifest_path else "N/A"
+                self.logger.info(
+                    f"已过滤疑似误提取条目 {removed_suspicious} 条，可在清单勾选恢复: {manifest_msg}"
+                )
 
         # 抽取后统一做一次 old/new 去重，避免同一原文重复导致 Ren'Py 报错。
         try:

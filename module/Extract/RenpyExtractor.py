@@ -327,6 +327,7 @@ class RenpyExtractor:
         "screens_box.rpy",
         "style_box.rpy",
     }
+    INTERNAL_TL_DIRS = {"_filtered_suspicious"}
 
     COMMENT_PATTERN = re.compile(r'#\s*game/(.+?):(\d+)', re.IGNORECASE)
 
@@ -337,6 +338,12 @@ class RenpyExtractor:
 
         entries: List[Dict] = []
         for tl_file in sorted(tl_dir.rglob("*.rpy")):
+            try:
+                rel_parts = [part.lower() for part in tl_file.relative_to(tl_dir).parts[:-1]]
+                if any(part in self.INTERNAL_TL_DIRS for part in rel_parts):
+                    continue
+            except Exception:
+                pass
             if self._is_builtin_ui_file(tl_file):
                 self.logger.debug(f"跳过内置 UI 文件: {tl_file}")
                 continue

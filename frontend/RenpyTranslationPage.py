@@ -1,10 +1,13 @@
-"""
+﻿"""
 翻译抽取到 TL 页面
 简化版：一个主功能 + 可折叠的高级选项
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -213,6 +216,12 @@ class RenpyTranslationPage(QWidget):
         self.chk_skip_hooks = CheckBox("跳过 Hook 文件")
         self.chk_skip_hooks.setChecked(self.config.extract_skip_hook_files)
         opt_row.addWidget(self.chk_skip_hooks)
+        self.chk_filter_bool_expr = CheckBox("过滤疑似代码条目")
+        self.chk_filter_bool_expr.setChecked(
+            getattr(self.config, "renpy_filter_suspicious_bool_expr", True)
+        )
+        self.chk_filter_bool_expr.setToolTip("会备份到 _filtered_suspicious，可手动勾选恢复")
+        opt_row.addWidget(self.chk_filter_bool_expr)
         opt_row.addStretch(1)
         adv_layout.addLayout(opt_row)
 
@@ -220,7 +229,7 @@ class RenpyTranslationPage(QWidget):
         merge_row = QHBoxLayout()
         self.chk_auto_merge_cleanup = CheckBox("抽取后自动合并并清理重复")
         self.chk_auto_merge_cleanup.setChecked(
-            getattr(self.config, "renpy_incremental_auto_merge_cleanup", False)
+            getattr(self.config, "renpy_incremental_auto_merge_cleanup", True)
         )
         merge_row.addWidget(self.chk_auto_merge_cleanup)
 
@@ -229,6 +238,26 @@ class RenpyTranslationPage(QWidget):
         merge_row.addWidget(self.merge_cleanup_btn)
         merge_row.addStretch(1)
         adv_layout.addLayout(merge_row)
+
+        # === 误提取恢复 ===
+        restore_row = QHBoxLayout()
+        self.open_filtered_backup_btn = PushButton(FluentIcon.FOLDER, "打开误提取备份")
+        self.open_filtered_backup_btn.clicked.connect(self._open_filtered_backup_dir)
+        restore_row.addWidget(self.open_filtered_backup_btn)
+
+        self.restore_filtered_btn = PushButton(FluentIcon.SYNC, "恢复误提取勾选项")
+        self.restore_filtered_btn.clicked.connect(self._restore_filtered_entries)
+        restore_row.addWidget(self.restore_filtered_btn)
+        restore_row.addStretch(1)
+        adv_layout.addLayout(restore_row)
+
+        restore_tip = CaptionLabel(
+            "抽取后会把疑似代码行移到 tl/<lang>/_filtered_suspicious/<时间戳>/restore_manifest.csv；"
+            "把 restore 列改为 1 后可一键恢复。"
+        )
+        restore_tip.setStyleSheet("color: #666; font-size: 11px;")
+        restore_tip.setWordWrap(True)
+        adv_layout.addWidget(restore_tip)
 
         # === 缺失补丁工具 ===
         adv_layout.addWidget(self._create_miss_section())
@@ -379,6 +408,8 @@ class RenpyTranslationPage(QWidget):
             self.config.extract_use_custom = use_custom
             if hasattr(self, 'chk_skip_hooks'):
                 self.config.extract_skip_hook_files = self.chk_skip_hooks.isChecked()
+            if hasattr(self, 'chk_filter_bool_expr'):
+                self.config.renpy_filter_suspicious_bool_expr = self.chk_filter_bool_expr.isChecked()
             if hasattr(self, "chk_auto_merge_cleanup"):
                 self.config.renpy_incremental_auto_merge_cleanup = self.chk_auto_merge_cleanup.isChecked()
             self.config.save()
@@ -397,7 +428,7 @@ class RenpyTranslationPage(QWidget):
                 )
                 if (
                     result.success
-                    and getattr(self.config, "renpy_incremental_auto_merge_cleanup", False)
+                    and getattr(self.config, "renpy_incremental_auto_merge_cleanup", True)
                     and result.incremental_dir
                 ):
                     merge_result = self.unified_extractor.merge_incremental_folder(
@@ -527,6 +558,68 @@ class RenpyTranslationPage(QWidget):
             InfoBar.error("错误", str(e), parent=self)
             self._end(False)
 
+    def _get_filtered_backup_root(self) -> Path:
+        _, tl, project_root = self._resolve_paths()
+        return project_root / "game" / "tl" / tl / "_filtered_suspicious"
+
+    def _find_latest_filtered_manifest(self) -> Optional[Path]:
+        backup_root = self._get_filtered_backup_root()
+        if not backup_root.exists():
+            return None
+
+        manifests = sorted(
+            backup_root.glob("*/restore_manifest.csv"),
+            key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+            reverse=True,
+        )
+        if manifests:
+            return manifests[0]
+
+        fallback = backup_root / "restore_manifest.csv"
+        return fallback if fallback.exists() else None
+
+    def _open_path_in_shell(self, path: Path) -> None:
+        target = str(path)
+        if sys.platform.startswith("win"):
+            os.startfile(target)
+            return
+        if sys.platform == "darwin":
+            subprocess.run(["open", target], check=False)
+            return
+        subprocess.run(["xdg-open", target], check=False)
+
+    def _open_filtered_backup_dir(self):
+        try:
+            manifest = self._find_latest_filtered_manifest()
+            if manifest and manifest.exists():
+                self._open_path_in_shell(manifest)
+                return
+
+            backup_root = self._get_filtered_backup_root()
+            if backup_root.exists():
+                self._open_path_in_shell(backup_root)
+                return
+
+            InfoBar.warning("提示", "还没有误提取备份记录", parent=self)
+        except Exception as e:
+            self.logger.error(f"打开误提取备份失败: {e}")
+            InfoBar.error("错误", str(e), parent=self)
+
+    def _restore_filtered_entries(self):
+        try:
+            _, tl, project_root = self._resolve_paths()
+            self._begin("正在恢复误提取条目…")
+            result = self.unified_extractor.restore_flagged_suspicious_entries(project_root, tl)
+            self._end(result.success)
+            if result.success:
+                InfoBar.success("恢复完成", result.message, parent=self)
+            else:
+                InfoBar.warning("未恢复", result.message, parent=self)
+        except Exception as e:
+            self.logger.error(f"恢复误提取条目失败: {e}")
+            InfoBar.error("错误", str(e), parent=self)
+            self._end(False)
+
     def _update_miss_status(self):
         """更新缺失状态显示"""
         try:
@@ -636,3 +729,4 @@ class RenpyTranslationPage(QWidget):
                 self.chk_custom.setChecked(True)
         except Exception as e:
             self.logger.warning(f"刷新选项状态失败: {e}")
+
