@@ -322,7 +322,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.auto_merge_cleanup_chk = CheckBox("抽取后自动合并并清理重复")
         try:
             from module.Config import Config
-            auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", False)
+            auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", True)
         except Exception:
             auto_merge_enabled = False
         self.auto_merge_cleanup_chk.setChecked(auto_merge_enabled)
@@ -993,7 +993,7 @@ class YiJianFanyiPage(Base, QWidget):
                 self._incremental_dir = result.incremental_dir
                 try:
                     from module.Config import Config
-                    auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", False)
+                    auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", True)
                 except Exception:
                     auto_merge_enabled = False
                 if auto_merge_enabled:

@@ -139,11 +139,13 @@ class Config():
     renpy_default_encoding: str = "utf-8"
     # 删除与 translate 块重复的 strings 项，避免双份：保留块翻译，移除 old/new
     renpy_remove_string_duplicates: bool = True
+    # 过滤疑似被误提取的布尔表达式（例如 "foo == True"、"bar = false"），并备份到 tl/<lang>/_filtered_suspicious
+    renpy_filter_suspicious_bool_expr: bool = True
     # 增量抽取时，把 old/new 中未翻译（new==old 或 new==""）的条目也纳入“待翻译新增包”。
     # 解决：tl 目录存在但某些文件没翻译过/只抽到占位时，增量抽取输出过少的问题。
     renpy_incremental_include_untranslated: bool = True
     # 增量抽取后自动合并并清理重复（把 tl/<lang>_new 合并回 tl/<lang>）
-    renpy_incremental_auto_merge_cleanup: bool = False
+    renpy_incremental_auto_merge_cleanup: bool = True
 
     # 一键翻译选项
     onekey_inject_base_box: bool = False
