@@ -9,6 +9,7 @@ Ren'Py 源码翻译器 - 按照严格规则翻译游戏源代码
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -162,10 +163,19 @@ class RenpySourceParser:
     # 字典/列表中的 "name": "...", "description": "..." 等字段
     # 匹配 "key": "value" 模式
     RE_DICT_STRING_FIELD = re.compile(
-        r'["\'](?:name|description|title|text|message|label|hint|tooltip|caption|content|summary|bio|info|note|prompt|dialog|dialogue|speech)["\']'
+        r'["\'](?:name|description|title|text|message|label|hint|tooltip|caption|content|summary|bio|info|note|prompt|dialog|dialogue|speech|safe|lines)["\']'
         r'\s*:\s*'
         + STRING_PREFIX +
         r'["\']+(?P<text>(?:[^"\'\\]|\\.)*)["\']+'
+    )
+    # 匹配 "key": ["value"] 列表模式
+    RE_DICT_LIST_FIELD = re.compile(
+        r'["\'](?:name|description|title|text|message|label|hint|tooltip|caption|content|summary|bio|info|note|prompt|dialog|dialogue|speech|safe|lines)["\']'
+        r'\s*:\s*'
+        r'\s*\[\s*'
+        + STRING_PREFIX +
+        r'["\']+(?P<text>(?:[^"\'\\]|\\.)*)["\']+'
+        r'\s*\]'
     )
     # ChoiceMenuItem 文本 (python 块)
     RE_CHOICEMENUITEM_START = re.compile(r'\bChoiceMenuItem\s*\(')
@@ -242,6 +252,7 @@ class RenpySourceParser:
         self._in_choice_menu_item = False
         self._choice_menu_item_paren_balance = 0
         self._choice_menu_item_text_found = False
+        self._python_strings_map: Dict[int, List[str]] = {}
     
     def _should_skip_text(self, text: str) -> bool:
         """检查文本是否应该跳过翻译"""
@@ -269,6 +280,138 @@ class RenpySourceParser:
         
         return False
 
+    def _extract_python_strings_with_ast(self, content: str) -> Dict[int, List[str]]:
+        """使用AST从Python块中提取可翻译字符串
+
+        返回一个字典，键为行号（1-based），值为该行提取的字符串列表
+        """
+        result: Dict[int, List[str]] = {}
+
+        lines = content.split('\n')
+
+        # 查找所有Python块
+        python_blocks = []
+        in_python_block = False
+        current_block = []
+        block_start_line = 0
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+
+            # 匹配 init python: 或 init -10 python: 等变体
+            if re.match(r'^(init(?:\s+[-\d]+)?\s+)?python\s*:', stripped):
+                in_python_block = True
+                current_block = []
+                block_start_line = i
+                # 跳过python:行本身
+                continue
+
+            if in_python_block:
+                # 检查是否退出python块（缩进减少）
+                if stripped and not line.startswith(' ' * 4) and not line.startswith('\t'):
+                    # 保存当前块
+                    if current_block:
+                        python_blocks.append({
+                            'start_line': block_start_line,
+                            'lines': current_block
+                        })
+                    in_python_block = False
+                    current_block = []
+                else:
+                    current_block.append(line)
+
+        # 处理最后一个块
+        if in_python_block and current_block:
+            python_blocks.append({
+                'start_line': block_start_line,
+                'lines': current_block
+            })
+
+        for block in python_blocks:
+            # 去除公共缩进
+            block_lines = block['lines']
+            min_indent = None
+            for line in block_lines:
+                if line.strip():
+                    indent = len(line) - len(line.lstrip())
+                    if min_indent is None or indent < min_indent:
+                        min_indent = indent
+
+            if min_indent is None:
+                min_indent = 0
+
+            dedented_lines = []
+            for line in block_lines:
+                if len(line) >= min_indent:
+                    dedented_lines.append(line[min_indent:])
+                else:
+                    dedented_lines.append(line)
+
+            python_code = '\n'.join(dedented_lines)
+
+            try:
+                tree = ast.parse(python_code)
+
+                # 遍历AST提取字符串
+                class StringExtractor(ast.NodeVisitor):
+                    def __init__(self, base_line):
+                        self.strings = []
+                        self.base_line = base_line
+
+                    def _contains_chinese(self, text: str) -> bool:
+                        """检查字符串是否包含中文字符"""
+                        return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+                    def visit_Constant(self, node):
+                        if isinstance(node.value, str):
+                            text = node.value
+                            # 基本过滤
+                            if len(text.strip()) < 2:
+                                return
+                            if text.strip().isdigit():
+                                return
+                            # 跳过看起来像标识符的字符串
+                            if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', text.strip()):
+                                return
+                            # 跳过已经包含中文的字符串（可能已经翻译过）
+                            if self._contains_chinese(text):
+                                return
+
+                            # 计算实际行号
+                            actual_line = self.base_line + node.lineno + 1  # +1因为跳过了python:行
+                            self.strings.append((actual_line, text))
+                        self.generic_visit(node)
+
+                    # Python <3.8兼容性
+                    def visit_Str(self, node):
+                        text = node.s
+                        if len(text.strip()) < 2:
+                            return
+                        if text.strip().isdigit():
+                            return
+                        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', text.strip()):
+                            return
+                        # 跳过已经包含中文的字符串
+                        if self._contains_chinese(text):
+                            return
+
+                        actual_line = self.base_line + node.lineno + 1
+                        self.strings.append((actual_line, text))
+                        self.generic_visit(node)
+
+                extractor = StringExtractor(block['start_line'])
+                extractor.visit(tree)
+
+                # 按行号分组字符串
+                for line_num, text in extractor.strings:
+                    result.setdefault(line_num, []).append(text)
+
+            except SyntaxError:
+                # AST解析失败，回退到正则表达式
+                continue
+
+        return result
+
     def parse_file(self, file_path: Path) -> List[TranslationEntry]:
         """解析单个 .rpy 文件，返回可翻译条目列表"""
         entries: List[TranslationEntry] = []
@@ -281,7 +424,10 @@ class RenpySourceParser:
         
         lines = content.split('\n')
         self._reset_state()
-        
+
+        # 使用AST提取Python块中的字符串
+        self._python_strings_map = self._extract_python_strings_with_ast(content)
+
         for line_num, line in enumerate(lines, 1):
             line_entries = self._parse_line(line_num, line)
             if line_entries:
@@ -303,6 +449,7 @@ class RenpySourceParser:
         self._in_choice_menu_item = False
         self._choice_menu_item_paren_balance = 0
         self._choice_menu_item_text_found = False
+        self._python_strings_map = {}
     
     def _get_indent(self, line: str) -> int:
         """获取行缩进级别"""
@@ -339,34 +486,36 @@ class RenpySourceParser:
         # Python 块内 - 尝试提取可翻译文本
         if self._in_python_block:
             entries_list = []
-            
-            # 检查是否有 renpy.notify 调用
+
+            # 首先检查AST提取的字符串（优先使用AST分析）
+            if line_num in self._python_strings_map:
+                for text in self._python_strings_map[line_num]:
+                    if text.strip() and not self._should_skip_text(text):
+                        protected = self._extract_protected_tags(text)
+                        entries_list.append(TranslationEntry(
+                            line_number=line_num,
+                            line_type=LineType.NARRATION,
+                            original_line=line,
+                            speaker=None,
+                            text=text,
+                            protected_tags=protected,
+                        ))
+
+            # 检查是否有 renpy.notify 调用（可能不在数据结构中）
             for match in self.RE_RENPY_NOTIFY.finditer(line):
                 text = match.group("text")
                 if text.strip():
-                    protected = self._extract_protected_tags(text)
-                    entries_list.append(TranslationEntry(
-                        line_number=line_num,
-                        line_type=LineType.NARRATION,
-                        original_line=line,
-                        speaker=None,
-                        text=text,
-                        protected_tags=protected,
-                    ))
-            
-            # 检查是否有字典字段 "name": "...", "description": "..." 等
-            for match in self.RE_DICT_STRING_FIELD.finditer(line):
-                text = match.group("text")
-                if text.strip():
-                    protected = self._extract_protected_tags(text)
-                    entries_list.append(TranslationEntry(
-                        line_number=line_num,
-                        line_type=LineType.NARRATION,
-                        original_line=line,
-                        speaker=None,
-                        text=text,
-                        protected_tags=protected,
-                    ))
+                    # 避免重复添加（如果AST已经提取了）
+                    if not any(e.text == text for e in entries_list):
+                        protected = self._extract_protected_tags(text)
+                        entries_list.append(TranslationEntry(
+                            line_number=line_num,
+                            line_type=LineType.NARRATION,
+                            original_line=line,
+                            speaker=None,
+                            text=text,
+                            protected_tags=protected,
+                        ))
             
             # ChoiceMenuItem 文本（支持跨行）
             choice_started = False
@@ -423,7 +572,7 @@ class RenpySourceParser:
         if stripped.endswith(':'):
             first_word = stripped.split()[0] if stripped.split() else ''
             
-            if first_word == 'python' or stripped.startswith('init python'):
+            if first_word == 'python' or re.match(r'^init(?:\s+[-\d]+)?\s+python(?:\s+early)?\s*:', stripped):
                 self._in_python_block = True
                 self._python_indent = indent
                 return [TranslationEntry(
