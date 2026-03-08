@@ -400,6 +400,22 @@ class HakimiSuiteRunner:
                 if not re.search(r'_\s*\(\s*$', preceding.strip()):
                     text_strings.append(string)
 
+        # 字典字符串（如 "safe": "..."、"text": "..."、"lines": ["..."] 等）
+        dict_patterns = [
+            r'"safe"\s*:\s*(["\'])((?:\\\1|.)*?)\1',
+            r'"text"\s*:\s*(["\'])((?:\\\1|.)*?)\1',
+            r'"lines"\s*:\s*\[\s*(["\'])((?:\\\1|.)*?)\1',
+        ]
+        for pattern in dict_patterns:
+            for match in re.finditer(pattern, content, re.IGNORECASE):
+                string = self._unescape(match.group(2))
+                # 检查是否已经被翻译标记（_()）排除
+                start_pos = match.start()
+                line_start = content.rfind('\n', 0, start_pos)
+                preceding = content[line_start:start_pos]
+                if not re.search(r'_\s*\(\s*$', preceding.strip()):
+                    text_strings.append(string)
+
         # 变量 / 特殊调用
         variable_keywords = [r'default\s+\w+\s*=\s*', r'define\s+\w+\s*=\s*', r'\$\s*\w+\s*=\s*']
         for line in content.split('\n'):
