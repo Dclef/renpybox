@@ -88,7 +88,7 @@ full_collect_packages = [
 # 仅收集子模块（减小体积）
 submodule_packages = [
     'google.generativeai', 'google.genai', 'google.auth', 'google.api_core',
-    'charset_normalizer', 'lxml', 'bs4', 'openpyxl', 'yaml',
+    'chardet', 'lxml', 'bs4', 'openpyxl', 'yaml',
     'pandas', 'spacy', 'thinc', 'psutil'
 ]
 
@@ -116,10 +116,6 @@ MANUAL_DATA_DIRS = {
     'spacy': [
         ('lang', 'spacy/lang'),
     ],
-    # charset_normalizer 包含静态 .bin 数据表
-    'charset_normalizer': [
-        ('',  'charset_normalizer'),
-    ],
     # openpyxl 内嵌 XML 模板，collect_data_files 有时遗漏
     'openpyxl': [
         ('templates', 'openpyxl/templates'),
@@ -128,6 +124,11 @@ MANUAL_DATA_DIRS = {
 }
 
 # -------------------------------------------------------------------
+# 打包策略说明
+# requests 运行时会动态导入字符集检测库，PyInstaller 默认不一定能自动识别。
+# 这里显式收集 chardet 作为兜底，并避免额外手动打包 charset_normalizer 的 mypyc 扩展，
+# 以规避冻结环境下 __mypyc 缺失导致的启动崩溃。
+
 # 执行收集
 # -------------------------------------------------------------------
 
