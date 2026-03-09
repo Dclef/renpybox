@@ -1,11 +1,32 @@
+import codecs
+import locale
 import re
 import unicodedata
 
-import charset_normalizer
+# 打包环境下 charset_normalizer 的 mypyc 扩展有概率缺失，这里降级为可选依赖。
+try:
+    import charset_normalizer as _charset_normalizer
+except Exception:
+    _charset_normalizer = None
 
 from module.Text import TextBase
 
 class TextHelper:
+
+    FALLBACK_ENCODINGS = (
+        "utf-8",
+        "utf-8-sig",
+        "utf-16",
+        "utf-16-le",
+        "utf-16-be",
+        "utf-32",
+        "cp932",
+        "shift_jis",
+        "gb18030",
+        "big5",
+        "euc_jp",
+        "euc_kr",
+    )
 
     # 汉字标点符号（CJK）
     CJK_PUNCTUATION_SET = {
@@ -165,23 +186,113 @@ class TextHelper:
         # 计算并返回相似度，完全一致是 1，完全不同是 0
         return intersection / union if union > 0 else 0.0
 
+    # 通过 BOM 判断编码
+    @classmethod
+    def detect_encoding_by_bom(cls, path: str) -> str | None:
+        try:
+            with open(path, "rb") as reader:
+                header = reader.read(4)
+        except Exception:
+            return None
+
+        if header.startswith(codecs.BOM_UTF8):
+            return "utf-8-sig"
+        if header.startswith(codecs.BOM_UTF32_LE) or header.startswith(codecs.BOM_UTF32_BE):
+            return "utf-32"
+        if header.startswith(codecs.BOM_UTF16_LE) or header.startswith(codecs.BOM_UTF16_BE):
+            return "utf-16"
+
+        return None
+
+    # 通过 charset_normalizer 判断编码
+    @classmethod
+    def detect_encoding_by_charset_normalizer(cls, path: str) -> str | None:
+        if _charset_normalizer is None:
+            return None
+
+        try:
+            result = _charset_normalizer.from_path(path).best()
+        except Exception:
+            return None
+
+        if result is None:
+            return None
+
+        return result.encoding
+
+    # 判断文件是否能被指定编码完整解码
+    @classmethod
+    def can_decode_file(cls, path: str, encoding: str) -> bool:
+        try:
+            decoder = codecs.getincrementaldecoder(encoding)(errors = "strict")
+            with open(path, "rb") as reader:
+                while True:
+                    chunk = reader.read(65536)
+                    if chunk == b"":
+                        break
+                    decoder.decode(chunk)
+
+            decoder.decode(b"", final = True)
+            return True
+        except Exception:
+            return False
+
+    # 获取兜底编码列表
+    @classmethod
+    def get_fallback_encodings(cls) -> list[str]:
+        candidates = [
+            locale.getpreferredencoding(False),
+            *cls.FALLBACK_ENCODINGS,
+        ]
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for encoding in candidates:
+            if not encoding:
+                continue
+
+            normalized = encoding.replace("_", "-").lower()
+            if normalized in seen:
+                continue
+
+            seen.add(normalized)
+            result.append(encoding)
+
+        return result
+
+    # 通过兜底编码列表判断编码
+    @classmethod
+    def detect_encoding_by_fallback(cls, path: str) -> str | None:
+        for encoding in cls.get_fallback_encodings():
+            if cls.can_decode_file(path, encoding):
+                return encoding
+
+        return None
+
     # 获取文件编码
     @classmethod
     def get_enconding(cls, path: str, add_sig_to_utf8: bool) -> str:
-        encoding: str = "utf-8"
+        encoding = cls.detect_encoding_by_bom(path)
 
-        try:
-            encoding = charset_normalizer.from_path(path).best().encoding
-        except Exception:
-            pass
+        if encoding is None:
+            encoding = cls.detect_encoding_by_charset_normalizer(path)
+
+        if encoding is None:
+            encoding = cls.detect_encoding_by_fallback(path)
+
+        if encoding is None:
+            encoding = "utf-8"
+
+        normalized_encoding = encoding.replace("_", "-").lower()
 
         # utf-8 是 ascii 的严格超集
         # 所以如果检测到 ascii 可视为 utf-8
-        if encoding == "ascii":
+        if normalized_encoding == "ascii":
             encoding = "utf-8"
+            normalized_encoding = "utf-8"
 
         # 如果需要添加 BOM 标识
-        if add_sig_to_utf8 == True and (encoding == "utf_8" or encoding == "utf-8"):
+        if add_sig_to_utf8 == True and normalized_encoding == "utf-8":
             encoding = "utf-8-sig"
 
         return encoding
