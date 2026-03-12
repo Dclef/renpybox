@@ -1,12 +1,13 @@
 @echo off
+
 :: Get the current code page
-for /f "tokens=2 delims=:" %%a in ('chcp') do set "OLD_CP=%%a"
+for /f "tokens=2 delims=:" %%a in ('%SYSTEMROOT%\System32\chcp.com') do set "OLD_CP=%%a"
 :: Switch to code page 65001 for UTF-8
-chcp 65001 >nul
+%SYSTEMROOT%\System32\chcp.com 65001 >nul
 setlocal EnableDelayedExpansion
 
 :: Original Author:
-:: UnRen.bat by Sam - https://f95zone.com/members/sam.7899/ & Gideon - https://f95zone.to/members/gideon.21585/
+:: UnRen.bat by Sam - https://f95zone.com/members/sam.7899/ ^& Gideon - https://f95zone.to/members/gideon.21585/
 :: https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/
 
 :: Modified by VepsrP - https://f95zone.to/members/vepsrp.329951/
@@ -18,7 +19,7 @@ setlocal EnableDelayedExpansion
 :: Using:
 :: rpatool - https://github.com/Shizmob/rpatool
 :: unrpyc - https://github.com/CensoredUsername/unrpyc
-:: altrpatool - Modified version of rpatool by JoeLurmel based on the UnRen script by VepsrP.
+:: altrpatool - Modified version of rpatool by JoeLurmel based on the version found in UnRen script by VepsrP.
 
 :: UnRen-current.bat - UnRen Script for Ren'Py >= 8
 :: heavily modified by (SM) aka JoeLurmel @ f95zone.to
@@ -27,7 +28,7 @@ setlocal EnableDelayedExpansion
 :: DO NOT MODIFY BELOW THIS LINE unless you know what you're doing
 :: Define various global names
 set "NAME=current"
-set "VERSION=(v9.7.38a) (translated by dclef)"
+set "VERSION=(v9.7.51) (03/03/26)"
 title UnRen-%NAME%.bat - %VERSION%
 set "URL_REF=https://f95zone.to/threads/unrengui-unren-forall-v9-4-unren-powershell-forall-v9-4-unren-old.92717/post-17110063/"
 set "SCRIPTDIR=%~dp0"
@@ -35,15 +36,15 @@ set "UPD_TDIR=%TEMP%\UnRenUpdate"
 set "SCRIPTNAME=%~nx0"
 set "BASENAME=%SCRIPTNAME:.bat=%"
 set "UNRENLOG=%TEMP%\UnRen-forall.log"
-if exist "!UNRENLOG!" del /f /q "!UNRENLOG!" >nul 2>&1
+if exist "%UNRENLOG%" del /f /q "%UNRENLOG%" >nul 2>&1
 :: Use wmic for older system or PowerShell for newer ones to get date and time
-if exist C:\Windows\System32\wbem\wmic.exe (
-    for /f "skip=1 tokens=1" %%a in ('wmic os get LocalDateTime') do (
+if exist "!SYSTEMROOT!\System32\wbem\wmic.exe" (
+    for /f "skip=1 tokens=1" %%a in ('"!SYSTEMROOT!\System32\wbem\wmic.exe" os get LocalDateTime') do (
         set "datetime=%%a"
         goto :dbreak
     )
 ) else (
-    for /f %%a in ('powershell.exe -Command "(Get-CimInstance -ClassName Win32_OperatingSystem).LocalDateTime"') do (
+    for /f %%a in ("'!SYSTEMROOT!\system32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "(Get-CimInstance -ClassName Win32_OperatingSystem).LocalDateTime"') do (
         set "datetime=%%a"
         goto :dbreak
     )
@@ -64,29 +65,27 @@ echo. >> "%UNRENLOG%"
 echo UnRen-%NAME%.bat %VERSION%, started on %formatted_date% at %formatted_time% >> "%UNRENLOG%"
 echo. >> "%UNRENLOG%"
 
-:: External configuration file for LNG, MDEFS and MDEFS2.
+:: Set default values
+set "MDEFS=acefg"
+set "MDEFS2=12acefg"
+set "CTIME=5"
+:: External configuration file for LNG, MDEFS, MDEFS2 and CTIME.
 set "UNREN_CFG=%SCRIPTDIR%UnRen-cfg.bat"
 :: Load external configuration
-if exist "!UNREN_CFG!" (
-    call "!UNREN_CFG!"
-    if defined LNG goto lngtest
-) else (
-    :: Set default values in case of missing configuration
-    set "MDEFS=acefg"
-    set "MDEFS2=123456"
-    set "CTIME=5"
+if exist "%UNREN_CFG%" (
+    call "%UNREN_CFG%"
 )
 
 :: Set the cmd screen size with backup of old settings
 set "count=0"
 :: Read the lines of mode con
-for /f "tokens=*" %%A in ('mode con') do (
+for /f "tokens=*" %%A in ('%SYSTEMROOT%\System32\mode.com con') do (
     :: Split the line into tokens
     for %%B in (%%A) do (
         set "val=%%B"
         :: Check if it's a number
         echo !val! | findstr /r "[0-9][0-9]" >nul
-        if !errorlevel! EQU 0 (
+        if !ERRORLEVEL! EQU 0 (
             set /a count+=1
             if !count! EQU 1 (
                 set "ORIG_LINES=!val!"
@@ -98,18 +97,19 @@ for /f "tokens=*" %%A in ('mode con') do (
     )
 )
 set "NEW_COLS=110"
-mode con: cols=%NEW_COLS% lines=62
+%SYSTEMROOT%\System32\mode.com con: cols=%NEW_COLS% lines=200 %DEBUGREDIR%
+%SYSTEMROOT%\System32\mode.com con: cols=%NEW_COLS% lines=62 %DEBUGREDIR%
 
 if defined LNG goto lngtest
 
 :: Clean retrieval of language code via WMIC or PowerShell
-if exist C:\Windows\System32\wbem\wmic.exe (
-    for /f "skip=1 tokens=1" %%l in ('wmic os get oslanguage') do (
+if exist "%SYSTEMROOT%\System32\wbem\wmic.exe" (
+    for /f "skip=1 tokens=1" %%l in ('%SYSTEMROOT%\System32\wbem\wmic.exe os get oslanguage') do (
         set LNGID=%%l
         goto found_lcid
     )
 ) else (
-    for /f %%l in ('powershell.exe -Command "Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty OSLanguage"') do (
+    for /f %%l in ('%SYSTEMROOT%\system32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty OSLanguage"') do (
         set LNGID=%%l
         goto found_lcid
     )
@@ -117,78 +117,163 @@ if exist C:\Windows\System32\wbem\wmic.exe (
 
 :found_lcid
 :: LCID correspondences
-if "!LNGID!" == "1033" set LNG=en
-if "!LNGID!" == "2052" set LNG=zh
-if "!LNGID!" == "1028" set LNG=zh
-if "!LNGID!" == "3076" set LNG=zh
-if "!LNGID!" == "4100" set LNG=zh
-if "!LNGID!" == "5124" set LNG=zh
+if "!LNGID!" == "1033" set "LNG=en"
+if "!LNGID!" == "1036" set "LNG=fr"
+if "!LNGID!" == "3082" set "LNG=es"
+if "!LNGID!" == "1040" set "LNG=it"
+if "!LNGID!" == "1031" set "LNG=de"
+if "!LNGID!" == "1049" set "LNG=ru"
+if "!LNGID!" == "2052" set "LNG=zh"
 
-if not defined LNG set LNG=en
+if not defined LNG set "LNG=en"
 
 :lngtest
 :: Language support test
-set "SUPPORTED= en zh "
+set "SUPPORTED= de es en fr it ru zh "
 set "FIND= %LNG% "
 echo %SUPPORTED% | find /i "%FIND%" >nul
-if !errorlevel! NEQ 0 set LNG=en
+if %ERRORLEVEL% NEQ 0 set "LNG=en"
 
 :: To be able to take screenshots for F95zone
 if not "%~2" == "" (
     set "LNG=%~2"
 )
 
-
 :: Definition of reusable texts
 set "ANYKEY.en=Press any key to exit..."
+set "ANYKEY.fr=Appuyez sur une touche pour quitter..."
+set "ANYKEY.es=Presione cualquier tecla para salir..."
+set "ANYKEY.it=Premere un tasto per uscire..."
+set "ANYKEY.de=Drücken Sie eine beliebige Taste, um zu beenden..."
+set "ANYKEY.ru=Нажмите любую клавишу для выхода..."
 set "ANYKEY.zh=按任意键退出..."
 
 set "ARIGHT.en=Please run this script as an administrator to add the entry."
-set "ARIGHT.zh=请以管理员身份运行该脚本以添加该项。"
+set "ARIGHT.fr=Veuillez exécuter ce script en tant qu'administrateur pour ajouter l'entrée."
+set "ARIGHT.es=Por favor, ejecute este script como administrador para agregar la entrada."
+set "ARIGHT.it=Per favore, esegui questo script come amministratore per aggiungere la voce."
+set "ARIGHT.de=Bitte führen Sie dieses Skript als Administrator aus, um den Eintrag hinzuzufügen."
+set "ARIGHT.ru=Пожалуйста, запустите этот скрипт от имени администратора, чтобы добавить элемент."
+set "ARIGHT.zh=请以管理员身份运行此脚本以添加条目。"
 
 set "PASS.en=Pass"
-set "PASS.zh=成功"
+set "PASS.fr=Réussi"
+set "PASS.es=Paso"
+set "PASS.it=Passato"
+set "PASS.de=Bestanden"
+set "PASS.ru=Успех"
+set "PASS.zh=通过"
 
 set "FAIL.en=Fail"
+set "FAIL.fr=Échoué"
+set "FAIL.es=Fallo"
+set "FAIL.it=Fallito"
+set "FAIL.de=Fehlgeschlagen"
+set "FAIL.ru=Ошибка"
 set "FAIL.zh=失败"
 
 set "APRESENT.en=Option already presented."
+set "APRESENT.fr=Option déjà présentée."
+set "APRESENT.it=Opzione già presentata."
+set "APRESENT.es=Opción ya presentada."
+set "APRESENT.de=Option bereits präsentiert."
+set "APRESENT.ru=Опция уже представлена."
 set "APRESENT.zh=选项已存在。"
 
 set "TWADD.en=This will add:"
-set "TWADD.zh=将添加："
+set "TWADD.fr=Cela ajoutera:"
+set "TWADD.it=Questo aggiungerà:"
+set "TWADD.es=Esto añadirá:"
+set "TWADD.de=Dies wird hinzufügen:"
+set "TWADD.ru=Это добавит:"
+set "TWADD.zh=这将添加："
 
 set "INCASEOF.en=In case of problem, please refer to:"
-set "INCASEOF.zh=如遇问题请参考："
+set "INCASEOF.fr=En cas de problème, veuillez vous référer à :"
+set "INCASEOF.it=In caso di problemi, si prega di fare riferimento a:"
+set "INCASEOF.es=En caso de problemas, consulte:"
+set "INCASEOF.de=Im Falle von Problemen wenden Sie sich bitte an:"
+set "INCASEOF.ru=В случае проблемы обратитесь к:"
+set "INCASEOF.zh=如果出现问题，请参考："
 
 set "INCASEDEL.en=In case of problem, delete the following files/dirs:"
-set "INCASEDEL.zh=如遇问题，请删除以下文件/目录："
+set "INCASEDEL.fr=En cas de problème, supprimez le.s fichier.s/répertoire.s suivants :"
+set "INCASEDEL.it=In caso di problemi, eliminare i seguenti file/directory:"
+set "INCASEDEL.es=En caso de problemas, elimine los siguientes archivos/directorios:"
+set "INCASEDEL.de=Im Falle von Problemen löschen Sie die folgenden Dateien/Verzeichnisse:"
+set "INCASEDEL.ru=В случае проблемы удалите следующие файлы/каталоги:"
+set "INCASEDEL.zh=如果出现问题，请删除以下文件/目录："
 
 set "UNDWNLD.en=Unable to download:"
+set "UNDWNLD.fr=Impossible de télécharger :"
+set "UNDWNLD.es=No se puede descargar:"
+set "UNDWNLD.it=Impossibile scaricare:"
+set "UNDWNLD.de=Download nicht möglich:"
+set "UNDWNLD.ru=Не удалось загрузить:"
 set "UNDWNLD.zh=无法下载："
 
 set "UNINSTALL.en=Unable to install:"
+set "UNINSTALL.fr=Impossible d'installer :"
+set "UNINSTALL.es=No se puede instalar:"
+set "UNINSTALL.it=Impossibile installare:"
+set "UNINSTALL.de=Installation nicht möglich:"
+set "UNINSTALL.ru=Не удалось установить:"
 set "UNINSTALL.zh=无法安装："
 
 set "UNEXTRACT.en=Unable to extract:"
-set "UNEXTRACT.zh=无法解压："
+set "UNEXTRACT.fr=Impossible d'extraire :"
+set "UNEXTRACT.es=No se puede extraer:"
+set "UNEXTRACT.it=Impossibile estrarre:"
+set "UNEXTRACT.de=Fehler beim Herunterladen von:"
+set "UNEXTRACT.ru=Не удалось извлечь:"
+set "UNEXTRACT.zh=无法提取："
 
 set "MISSING.en=File not found:"
-set "MISSING.zh=未找到文件："
+set "MISSING.fr=Fichier introuvable :"
+set "MISSING.es=Archivo no encontrado:"
+set "MISSING.it=File non trovato:"
+set "MISSING.de=Datei nicht gefunden:"
+set "MISSING.ru=Файл не найден:"
+set "MISSING.zh=找不到文件："
 
 set "ENTERYN.en=Enter [y/n] (default n):"
-set "ENTERYN.zh=请输入 [y/n]（默认 n）："
+set "ENTERYN.fr=Entrez [o/n] (par défaut n) :"
+set "ENTERYN.es=Ingrese [s/n] (predeterminado n):"
+set "ENTERYN.it=Inserisci [s/n] (predefinito n):"
+set "ENTERYN.de=Geben Sie [j/n] ein (Standard n):"
+set "ENTERYN.ru=Введите [y/n] (по умолчанию n):"
+set "ENTERYN.zh=输入 [y/n]（默认 n）："
 
 set "CLEANUP.en=Cleaning up temporary files..."
-set "CLEANUP.zh=正在清理临时文件..."
+set "CLEANUP.fr=Nettoyage des fichiers temporaires..."
+set "CLEANUP.es=Limpiando archivos temporales..."
+set "CLEANUP.it=Pulizia dei file temporanei..."
+set "CLEANUP.de=Bereinigen temporärer Dateien..."
+set "CLEANUP.ru=Очистка временных файлов..."
+set "CLEANUP.zh=清理临时文件..."
 
 set "UNACONT.en=Unable to continue."
+set "UNACONT.fr=Impossible de continuer."
+set "UNACONT.es=No se puede continuar."
+set "UNACONT.it=Impossibile continuare."
+set "UNACONT.de=Kann nicht fortgesetzt werden."
+set "UNACONT.ru=Не удалось продолжить."
 set "UNACONT.zh=无法继续。"
 
 set "LOGCHK.en=Please check the "%UNRENLOG%" for details."
-set "LOGCHK.zh=详情请查看 "%UNRENLOG%"。"
+set "LOGCHK.fr=Veuillez consulter le "%UNRENLOG%" pour plus de détails."
+set "LOGCHK.es=Por favor, consulte el "%UNRENLOG%" para más detalles."
+set "LOGCHK.it=Controlla il "%UNRENLOG%" per ulteriori dettagli."
+set "LOGCHK.de=Bitte überprüfen Sie das "%UNRENLOG%" auf Einzelheiten."
+set "LOGCHK.ru=Пожалуйста, проверьте "%UNRENLOG%" для получения дополнительных сведений."
+set "LOGCHK.zh=请查看 "%UNRENLOG%" 以了解详情。"
 
 set "DONE.en=Operation completed."
+set "DONE.fr=Opération terminée."
+set "DONE.es=Operación completada."
+set "DONE.it=Operazione completata."
+set "DONE.de=Vorgang abgeschlossen."
+set "DONE.ru=Операция завершена."
 set "DONE.zh=操作完成。"
 
 set "GRY=[90m"
@@ -211,11 +296,11 @@ if "!OSVERS!" == "6.1" (
 :: End of reusable texts
 
 
-set "initialized=0"
-set "nocls=0"
+set "INITIALIZED=0"
+set "NOCLS=0"
 :menu
 :: Splash screen
-if "!nocls!" == "0" cls
+if "!NOCLS!" == "0" cls
 echo.
 echo           %YEL%  ---------------------------------------------------------------------------------%RES%
 echo           %YEL%     __  __      ____                  __          __%RES%
@@ -227,7 +312,6 @@ echo.
 echo           %YEL%       Sam @ www.f95zone.to ^& Gideon%RES%
 echo           %YEL%       Modified by VepsrP @ www.f95zone.to%RES%
 echo           %YEL%       Modified by joelurmel @ f95zone.to%RES%
-echo           %YEL%       汉化 by dclef https://github.com/Dclef/renpybox
 echo.
 echo           %YEL%  !INCASEOF.%LNG%!%RES%
 echo           %MAG%  %URL_REF%%RES%
@@ -253,32 +337,56 @@ if !rand! == 16 echo          %GRY%  "You have been recruited by the Star League
 echo           %YEL%  ---------------------------------------------------------------------------------%RES%
 echo.
 
-if "!initialized!" == "1" goto skipInit
+if "!INITIALIZED!" == "1" goto skipInit
 
 :: Initializing debug mode
 set "DEBUGREDIR=>nul 2>&1"
-set "debuglevel=0"
-set "nocls=0"
+set "DEBUGLEVEL=0"
+set "NOCLS=0"
 
 :: We need PowerShell for later, make sure it exists
 set "pshell.en=Checking for availability of PowerShell... "
-set "pshell.zh=正在检查 PowerShell 是否可用... "
+set "pshell.fr=Vérification de la disponibilité de PowerShell... "
+set "pshell.es=Comprobando la disponibilidad de PowerShell... "
+set "pshell.it=Verifica della disponibilità di PowerShell... "
+set "pshell.de=Überprüfung der Verfügbarkeit von PowerShell... "
+set "pshell.ru=Проверка доступности PowerShell... "
+set "pshell.zh=检查 PowerShell 是否可用... "
 
-set "pshell1.en=Powershell is required. !UNACONT.%LNG%!"
-set "pshell1.zh=需要 PowerShell。!UNACONT.%LNG%!"
+set "pshell1.en=Powershell is required."
+set "pshell1.fr=Erreur Powershell est requis."
+set "pshell1.es=Error Se requiere Powershell."
+set "pshell1.it=Errore Powershell è richiesto."
+set "pshell1.de=Fehler Powershell ist erforderlich."
+set "pshell1.ru=Ошибка требуется PowerShell."
+set "pshell1.zh=需要 PowerShell。"
 
 set "pshell2.en=This is included in Windows 7, 8 and 10. XP/Vista users can"
-set "pshell2.zh=Windows 7/8/10 已内置；XP/Vista 用户可以"
+set "pshell2.fr=Ce programme est inclus dans Windows 7, 8 et 10. Les utilisateurs de XP/Vista peuvent"
+set "pshell2.es=Esto está incluido en Windows 7, 8 y 10. Los usuarios de XP/Vista pueden"
+set "pshell2.it=Questo programma è incluso in Windows 7, 8 e 10. Gli utenti di XP/Vista possono"
+set "pshell2.de=Dieses Programm ist in Windows 7, 8 und 10 enthalten. XP/Vista-Benutzer können"
+set "pshell2.ru=Это включено в Windows 7, 8 и 10. Пользователи XP/Vista могут"
+set "pshell2.zh=Windows 7、8 和 10 包含此组件。XP/Vista 用户可以"
 
 set "pshell3.en=download it here: %MAG%https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
-set "pshell3.zh=在此下载： %MAG%https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.fr=le télécharger ici : %MAG%https://learn.microsoft.com/fr-fr/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.es=descargarlo aquí: %MAG%https://learn.microsoft.com/es-es/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.it=scaricarlo qui: %MAG%https://learn.microsoft.com/it-it/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.de=es hier herunterladen: %MAG%https://learn.microsoft.com/de-de/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.ru=скачать его здесь: %MAG%https://learn.microsoft.com/ru-ru/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
+set "pshell3.zh=在此下载：%MAG%https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5%RES%"
 
 echo !pshell.%LNG%! >> "%UNRENLOG%"
 <nul set /p=!pshell.%LNG%!
-if not exist "!SystemRoot!\system32\WindowsPowerShell\v1.0\powershell.exe" (
+set "PWRSHELL=%SYSTEMROOT%\system32\WindowsPowerShell\v1.0\powershell.exe"
+for /f "delims=" %%A in ('"!SYSTEMROOT!\System32\where.exe" pwsh.exe 2^>nul') do (
+    if not "%%A" == "" set "PWRSHELL=%%A"
+)
+if not exist "%PWRSHELL%" (
     call :elog "%RED%!FAIL.%LNG%!%RES%"
     call :elog .
-    call :elog "    !pshell1.%LNG%!"
+    call :elog "    !pshell1.%LNG%! !UNACONT.%LNG%!"
     call :elog "    !pshell2.%LNG%!"
     call :elog "    !pshell3.%LNG%!"
     call :elog .
@@ -292,84 +400,135 @@ if not exist "!SystemRoot!\system32\WindowsPowerShell\v1.0\powershell.exe" (
 :: Analysis of debug arguments
 if /i "%~3" == "-d" (
     set "DEBUGREDIR="
-    set "debuglevel=1"
-    set "nocls=1"
-    powershell.exe -Command "$h = Get-Host; $h.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(!NEW_COLS!,3000)"
+    set "DEBUGLEVEL=1"
+    set "NOCLS=1"
+    "%PWRSHELL%" -NoProfile -Command "$h = Get-Host; $h.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(!NEW_COLS!,5000)"
 )
 if /i "%~3" == "-dd" (
     echo on
     set "DEBUGREDIR="
-    set "debuglevel=2"
-    set "nocls=1"
-    powershell.exe -Command "$h = Get-Host; $h.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(!NEW_COLS!,5000)"
+    set "DEBUGLEVEL=2"
+    set "NOCLS=1"
+    "%PWRSHELL%" -NoProfile -Command "$h = Get-Host; $h.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(!NEW_COLS!,9000)"
 )
 
 
 :: Set the working directory
 set "setpath1.en=Enter the path to the game, drag'n'drop it here,"
-set "setpath1.zh=请输入游戏路径，可将文件夹拖拽到此处，"
+set "setpath1.fr=Entrez le chemin vers le jeu, faites-le glisser ici,"
+set "setpath1.es=Introduzca la ruta al juego, arrástrelo aquí,"
+set "setpath1.it=Inserisci il percorso del gioco, trascinalo qui,"
+set "setpath1.de=Geben Sie den Pfad zum Spiel ein, ziehen Sie es hierher,"
+set "setpath1.ru=Введите путь к игре, перетащите его сюда,"
+set "setpath1.zh=输入游戏路径，将其拖放到此处，"
 
 set "setpath2.en=or press Enter if this tool is already in the desired folder."
-set "setpath2.zh=或如果该工具已在目标目录中，直接回车。"
+set "setpath2.fr=ou appuyez sur Entrée si cet outil se trouve déjà dans le dossier souhaité."
+set "setpath2.es=o presione Entrar si esta herramienta ya se encuentra en la carpeta deseada."
+set "setpath2.it=oppure premi Invio se questo strumento si trova già nella cartella desiderata."
+set "setpath2.de=oder drücken Sie die Eingabetaste, wenn sich dieses Tool bereits im gewünschten Ordner befindet."
+set "setpath2.ru=или нажмите Enter, если этот инструмент уже находится в нужной папке."
+set "setpath2.zh=或者如果此工具已在所需文件夹中，请按 Enter 键。"
 
 set "setpath3.en=If drag'n'drop does not work, please copy/paste the path instead: "
-set "setpath3.zh=如果拖拽无效，请复制/粘贴路径： "
+set "setpath3.fr=Si le glisser-déposer ne fonctionne pas, veuillez copier/coller le chemin à la place : "
+set "setpath3.es=Si arrastrar y soltar no funciona, copie/pegue la ruta en su lugar: "
+set "setpath3.it=Se il trascinamento della selezione non funziona, copia/incolla il percorso invece: "
+set "setpath3.de=Wenn das Ziehen und Ablegen nicht funktioniert, kopieren Sie den Pfad bitte stattdessen hierher: "
+set "setpath3.ru=Если перетаскивание не работает, пожалуйста, скопируйте/вставьте путь вместо этого: "
+set "setpath3.zh=如果拖放不起作用，请复制/粘贴路径："
 
 :: Check if game path is provided and set it
 set "WORKDIR="
+setlocal disabledelayedexpansion
 if "%~1" == "" (
+    setlocal enabledelayedexpansion
     call :elog .
     call :elog "!setpath1.%LNG%!"
     call :elog "!setpath2.%LNG%!"
     call :elog .
     set /p "WORKDIR=!setpath3.%LNG%!"
+    setlocal disabledelayedexpansion
     if not defined WORKDIR (
-        set "WORKDIR=!cd!"
+        set "WORKDIR=%cd%"
     )
 ) else (
     set "WORKDIR=%~1"
-    if "!WORKDIR!" == "." (
-        set "WORKDIR=!cd!"
+    if "%WORKDIR%" == "." (
+        set "WORKDIR=%cd%"
     )
 )
-
 :: Remove surrounding quotes if any
 set "WORKDIR=%WORKDIR:"=%"
 
 :: Normalize WORKDIR to an absolute path
-for %%A in ("!WORKDIR!") do set "WORKDIR=%%~fA"
+for %%A in ("%WORKDIR%") do set "WORKDIR=%%~fA"
 
 set "invchars.en=Invalid character detected in the path..."
-set "invchars.zh=路径中检测到非法字符..."
+set "invchars.fr=Caractère invalide détecté dans le chemin..."
+set "invchars.es=Se ha detectado un carácter no válido en la ruta de acceso..."
+set "invchars.it=Carattere non valido rilevato nel percorso di accesso..."
+set "invchars.de=Ungültiges Zeichen im Pfad gefunden..."
+set "invchars.ru=Обнаружен недействительный символ в пути доступа..."
+set "invchars.zh=路径中检测到无效字符..."
 set "HAS_BAD="
 :: Characters that CAN appear in a valid Windows path but WILL break batch logic:
-for %%C in ("(" ")" "=" ";" "'" "`" "[" "]" "{" "}" "+" "~") do (
-    echo "!WORKDIR!" | find "%%~C" >nul && set "HAS_BAD=%%~C"
+for %%C in ("&" "!" "(" ")" "=" ";" "'" "`" "[" "]" "{" "}" "+" "~") do (
+    echo "%WORKDIR%" | find "%%~C" >nul && (
+        if not defined HAS_BAD (
+            rem Premier caractère trouvé
+            call set "HAS_BAD=%%~C"
+        ) else (
+            rem On ajoute à la liste existante
+            call set "HAS_BAD=%%HAS_BAD%%,%%~C"
+        )
+    )
 )
 
+setlocal enabledelayedexpansion
 if defined HAS_BAD (
-    call :elog .
-    call :elog "%RED%'!HAS_BAD!' - !invchars.%LNG%!%RES% !UNACONT.%LNG%!"
-    call :elog .
+    echo.
+    echo !invchars.%LNG%! '%RED%!HAS_BAD!%RES%' !UNACONT.%LNG%!
+    echo.
     pause>nul|set/p=.      !ANYKEY.%LNG%!
 
     call :exitn 3
 )
 
 set "wdir1.en=Error The specified directory does not exist."
+set "wdir1.fr=Erreur Le répertoire spécifié n'existe pas."
+set "wdir1.es=Error El directorio especificado no existe."
+set "wdir1.it=Errore la directory specificata non esiste."
+set "wdir1.de=Fehler Das angegebene Verzeichnis existiert nicht."
+set "wdir1.ru=Ошибка Указанный каталог не существует."
 set "wdir1.zh=错误：指定的目录不存在。"
 
 set "wdir2.en=Are you sure we're in the game's root directory?"
-set "wdir2.zh=请确认当前是否为游戏根目录？"
+set "wdir2.fr=Êtes-vous sûr que nous sommes dans le répertoire racine du jeu ?"
+set "wdir2.es=¿Está seguro de que estamos en el directorio raíz del juego?"
+set "wdir2.it=Sei sicuro che siamo nella directory principale del gioco?"
+set "wdir2.de=Sind Sie sicher, dass wir uns im Stammverzeichnis des Spiels befinden?"
+set "wdir2.ru=Вы уверены, что находимся в корневом каталоге игры?"
+set "wdir2.zh=确定我们在游戏根目录中吗？"
 
 set "wdir3.en=Testing write access to game directory"
-set "wdir3.zh=正在测试游戏目录写入权限"
+set "wdir3.fr=Test de l'accès en écriture au répertoire du jeu"
+set "wdir3.es=Prueba de acceso de escritura al directorio del juego"
+set "wdir3.it=Verifica l'accesso in scrittura alla directory di gioco"
+set "wdir3.de=Testen des Schreibzugriffs auf das Spieledirectory"
+set "wdir3.ru=Проверка доступа на запись в каталог игры"
+set "wdir3.zh=测试对游戏目录的写入权限"
 
 set "wdir4.en=You can't write in game directory."
+set "wdir4.fr=Vous ne pouvez pas écrire dans le répertoire du jeu."
+set "wdir4.es=No puedes escribir en el directorio del juego."
+set "wdir4.it=Non puoi scrivere nella directory di gioco."
+set "wdir4.de=Sie können nicht im Spieledirectory schreiben."
+set "wdir4.ru=Вы не можете писать в каталоге игры."
 set "wdir4.zh=无法写入游戏目录。"
 
 cd /d "%WORKDIR%"
-if !errorlevel! NEQ 0 (
+if %ERRORLEVEL% NEQ 0 (
     call :elog .
     call :elog "    %RED%!wdir1.%LNG%!%RES%"
     call :elog "    !wdir2.%LNG%!"
@@ -380,15 +539,21 @@ if !errorlevel! NEQ 0 (
 )
 
 
-:: Check for required files
-call :check_all_files
-
-
 set "reqdir1.en=Checking if game, lib, renpy directories exist..."
-set "reqdir1.zh=正在检查 game、lib、renpy 目录是否存在..."
+set "reqdir1.fr=Vérification de l'existence des répertoires game, lib et renpy..."
+set "reqdir1.es=Comprobando si existen los directorios game, lib, renpy..."
+set "reqdir1.it=Controllo dell'esistenza delle directory game, lib, renpy..."
+set "reqdir1.de=Überprüfung der Existenz der Verzeichnisse game, lib, renpy..."
+set "reqdir1.ru=Проверка наличия каталогов game, lib, renpy..."
+set "reqdir1.zh=检查 game、lib、renpy 目录是否存在..."
 
-set "reqdir2.en=Cannot locate game, lib or renpy directories. !UNACONT.%LNG%!"
-set "reqdir2.zh=无法找到 game、lib 或 renpy 目录。!UNACONT.%LNG%!"
+set "reqdir2.en=Cannot locate game, lib or renpy directories."
+set "reqdir2.fr=Erreur Impossible de localiser les répertoires game, lib ou renpy."
+set "reqdir2.es=Error No se pueden localizar los directorios game, lib o renpy."
+set "reqdir2.it=Errore Impossibile localizzare le directory game, lib o renpy."
+set "reqdir2.de=Fehler Unmöglich, die Verzeichnisse game, lib oder renpy zu finden."
+set "reqdir2.ru=Ошибка Не удалось найти каталоги game, lib или renpy."
+set "reqdir2.zh=找不到 game、lib 或 renpy 目录。"
 
 :: Check that you are in the root directory of the game.
 cd /d "%WORKDIR%"
@@ -406,7 +571,7 @@ if not exist ".\renpy" (
 )
 if !missing! EQU 1 (
     call :elog " %RED%!FAIL.%LNG%!%RES%"
-    call :elog "    !reqdir2.%LNG%!"
+    call :elog "    !reqdir2.%LNG%! !UNACONT.%LNG%!"
     call :elog "    !wdir2.%LNG%!"
     call :elog .
     pause>nul|set/p=.      !ANYKEY.%LNG%!
@@ -420,7 +585,7 @@ if !missing! EQU 1 (
 echo !wdir3.%LNG%!... >> "%UNRENLOG%"
 <nul set /p="!wdir3.%LNG%!... "
 copy nul "%WORKDIR%\game\test.txt" %DEBUGREDIR%
-if !errorlevel! NEQ 0 (
+if %ERRORLEVEL% NEQ 0 (
     call :elog "%RED%!FAIL.%LNG%! %YEL%!wdir4.%LNG%!%RES%"
     call :elog .
     call :elog "    !wdir2.%LNG%!"
@@ -429,69 +594,79 @@ if !errorlevel! NEQ 0 (
 
     call :exitn 3
 ) else (
-    del /f /q "!WORKDIR!\game\test.txt" %DEBUGREDIR%
+    del /f /q "%WORKDIR%\game\test.txt" %DEBUGREDIR%
     call :elog "%GRE%!PASS.%LNG%!%RES%"
 )
 
 
 :: Set UNRENLOG for debugging purpose
-If exist "!TEMP!\UnRen-forall.log" (
+If exist "%TEMP%\UnRen-forall.log" (
     :: Move the temporary log file to the working directory
-    move /y "!TEMP!\UnRen-forall.log" "!WORKDIR!\UnRen-forall.log" %DEBUGREDIR%
+    move /y "%TEMP%\UnRen-forall.log" "%WORKDIR%\UnRen-forall.log" %DEBUGREDIR%
 )
 set "UNRENLOG=%WORKDIR%\UnRen-forall.log"
 set "UNRENLOG=%UNRENLOG:"=%"
 
 :: Check for Python
 set "python1.en=Checking if Python is available..."
-set "python1.zh=正在检查 Python 是否可用..."
+set "python1.fr=Vérification de la disponibilité de Python..."
+set "python1.es=Comprobando si Python está disponible..."
+set "python1.it=Controllo della disponibilità di Python..."
+set "python1.de=Überprüfung der Verfügbarkeit von Python..."
+set "python1.ru=Проверка наличия Python..."
+set "python1.zh=检查 Python 是否可用..."
 
-set "python2.en=Cannot locate python directory. !UNACONT.%LNG%!"
-set "python2.zh=无法定位 python 目录。!UNACONT.%LNG%!"
+set "python2.en=Cannot locate python directory."
+set "python2.fr=Impossible de localiser le répertoire python."
+set "python2.es=No se puede localizar el directorio de Python."
+set "python2.it=Impossibile localizzare la directory di Python."
+set "python2.de=Python-Verzeichnis kann nicht gefunden werden."
+set "python2.ru=Не удалось найти каталог Python."
+set "python2.zh=找不到 python 目录。"
 
 echo !python1.%LNG%! >> "%UNRENLOG%"
 <nul set /p=!python1.%LNG%!
 
 :: Doublecheck to avoid issues with Milfania games
-if exist "!WORKDIR!\lib\py3-windows-x86_64\pythonw.exe" if exist "!WORKDIR!\lib\py3-windows-x86_64\python.exe" (
-    if not "!PROCESSOR_ARCHITECTURE!" == "x86" (
+if exist "%WORKDIR%\lib\py3-windows-x86_64\pythonw.exe" if exist "%WORKDIR%\lib\py3-windows-x86_64\python.exe" (
+    if not "%PROCESSOR_ARCHITECTURE%" == "x86" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\py3-windows-x86_64\"
-    ) else if exist "!WORKDIR!\lib\py3-windows-i686\python.exe" (
+        set "PYTHONHOME=%WORKDIR%\lib\py3-windows-x86_64\"
+    ) else if exist "%WORKDIR%\lib\py3-windows-i686\python.exe" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\py3-windows-i686\"
+        set "PYTHONHOME=%WORKDIR%\lib\py3-windows-i686\"
     )
-) else if exist "!WORKDIR!\lib\py3-windows-i686\python.exe" (
+) else if exist "%WORKDIR%\lib\py3-windows-i686\python.exe" (
     <nul set /p=.
-    set "PYTHONHOME=!WORKDIR!\lib\py3-windows-i686\"
+    set "PYTHONHOME=%WORKDIR%\lib\py3-windows-i686\"
 )
-if exist "!WORKDIR!\lib\py2-windows-x86_64\python.exe" (
-    if not "!PROCESSOR_ARCHITECTURE!" == "x86" (
+if exist "%WORKDIR%\lib\py2-windows-x86_64\python.exe" (
+    if not "%PROCESSOR_ARCHITECTURE%" == "x86" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\py2-windows-x86_64\"
-    ) else if exist "!WORKDIR!\lib\py2-windows-i686\python.exe" (
+        set "PYTHONHOME=%WORKDIR%\lib\py2-windows-x86_64\"
+    ) else if exist "%WORKDIR%\lib\py2-windows-i686\python.exe" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\py2-windows-i686\"
+        set "PYTHONHOME=%WORKDIR%\lib\py2-windows-i686\"
     )
-) else if exist "!WORKDIR!\lib\py2-windows-i686\python.exe" (
+) else if exist "%WORKDIR%\lib\py2-windows-i686\python.exe" (
     <nul set /p=.
-    set "PYTHONHOME=!WORKDIR!\lib\py2-windows-i686\"
+    set "PYTHONHOME=%WORKDIR%\lib\py2-windows-i686\"
 )
-if exist "!WORKDIR!\lib\windows-x86_64\python.exe" (
-    if not "!PROCESSOR_ARCHITECTURE!" == "x86" (
+if exist "%WORKDIR%\lib\windows-x86_64\python.exe" (
+    if not "%PROCESSOR_ARCHITECTURE%" == "x86" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\windows-x86_64\"
-    ) else if exist "!WORKDIR!\lib\windows-i686\python.exe" (
+        set "PYTHONHOME=%WORKDIR%\lib\windows-x86_64\"
+    ) else if exist "%WORKDIR%\lib\windows-i686\python.exe" (
         <nul set /p=.
-        set "PYTHONHOME=!WORKDIR!\lib\windows-i686\"
+        set "PYTHONHOME=%WORKDIR%\lib\windows-i686\"
     )
-) else if exist "!WORKDIR!\lib\windows-i686\python.exe" (
+) else if exist "%WORKDIR%\lib\windows-i686\python.exe" (
     <nul set /p=.
-    set "PYTHONHOME=!WORKDIR!\lib\windows-i686\"
+    set "PYTHONHOME=%WORKDIR%\lib\windows-i686\"
 )
 
-:: Set the PYNOASSERT according to “!PYTHONHOME!Lib”.
-if exist "!PYTHONHOME!Lib" (
+:: Set the PYNOASSERT according to “%PYTHONHOME%Lib”.
+if exist "%PYTHONHOME%Lib" (
     set "PYNOASSERT=-O"
 ) else (
     set "PYNOASSERT="
@@ -502,20 +677,20 @@ set "latest="
 set "latestver="
 
 :: Priority to Python 2.7 if present
-if exist "!WORKDIR!\lib\pythonlib2.7" (
+if exist "%WORKDIR%\lib\pythonlib2.7" (
     <nul set /p=.
-    set "PYTHONPATH=!WORKDIR!\lib\pythonlib2.7"
+    set "PYTHONPATH=%WORKDIR%\lib\pythonlib2.7"
     set "PYVERS=2.7"
     goto pyend
-) else if exist "!WORKDIR!\lib\python2.7" (
+) else if exist "%WORKDIR%\lib\python2.7" (
     <nul set /p=.
-    set "PYTHONPATH=!WORKDIR!\lib\python2.7"
+    set "PYTHONPATH=%WORKDIR%\lib\python2.7"
     set "PYVERS=2.7"
     goto pyend
 )
 
 :: Searching for the latest version of Python 3.x
-for /D %%D in ("!WORKDIR!\lib\python3.*") do (
+for /D %%D in ("%WORKDIR%\lib\python3.*") do (
     <nul set /p=.
     set "ver=%%~nxD"
     set "found="
@@ -548,53 +723,73 @@ if defined latest (
 )
 
 :pyend
-if not exist "!PYTHONHOME!\python.exe" (
+if not exist "%PYTHONHOME%\python.exe" (
     call :elog " %RED%!FAIL.%LNG%!%RES%"
     call :elog .
-    call :elog "    %RED%!python2.%LNG%!%RES%"
+    call :elog "    %RED%!python2.%LNG%!%RES% !UNACONT.%LNG%!"
     call :elog "    !wdir2.%LNG%!"
     call :elog .
     pause>nul|set/p=.      !ANYKEY.%LNG%!
 
     call :exitn 3
 ) else (
-    call :elog " %GRE%!PASS.%LNG%!%YEL% Python !PYVERS!%RES%"
+    call :elog " %GRE%!PASS.%LNG%!%YEL% Python %PYVERS%%RES%"
 )
 
 echo Check Python Version... >> "%UNRENLOG%"
-for /f "tokens=2 delims= " %%a in ('"!PYTHONHOME!\python" -V 2^>^&1') do set PYTHONVERS=%%a
+for /f "tokens=2 delims= " %%a in ('"%PYTHONHOME%\python.exe" -V 2^>^&1') do set PYTHONVERS=%%a
 :: Extraction of major and minor versions
-for /f "tokens=1,2 delims=." %%b in ("!PYTHONVERS!") do (
+for /f "tokens=1,2 delims=." %%b in ("%PYTHONVERS%") do (
     set PYTHONMAJOR=%%b
     set PYTHONMINOR=%%c
 )
 
 :: Check if Python ^>= 3.8
-if !PYTHONMAJOR! GEQ 3 (
-	if !PYTHONMINOR! GEQ 8 (
-		echo Python version is !PYTHONVERS!, which is upper or equal to 3.8 >> "%UNRENLOG%"
+if %PYTHONMAJOR% GEQ 3 (
+	if %PYTHONMINOR% GEQ 8 (
+		echo Python version is %PYTHONVERS%, which is upper or equal to 3.8 >> "%UNRENLOG%"
     	set "RPATOOL-NEW=y"
 	) else (
-		echo Python version is !PYTHONVERS!, which is lower than 3.8 >> "%UNRENLOG%"
+		echo Python version is %PYTHONVERS%, which is lower than 3.8 >> "%UNRENLOG%"
 		set "RPATOOL-NEW=n"
 	)
 ) else (
-	echo Python version is !PYTHONVERS!, which is lower than 3 >> "%UNRENLOG%"
+	echo Python version is %PYTHONVERS%, which is lower than 3 >> "%UNRENLOG%"
     set "RPATOOL-NEW=n"
 )
 
 :: Check for Ren'Py version
 set "renpyvers1.en=Ren'Py version found: "
-set "renpyvers1.zh=检测到 Ren'Py 版本："
+set "renpyvers1.fr=Version Ren'Py trouvée : "
+set "renpyvers1.es=Versión de Ren'Py encontrada: "
+set "renpyvers1.it=Versione Ren'Py rilevata: "
+set "renpyvers1.de=Ren'Py-Version gefunden: "
+set "renpyvers1.ru=Найдена версия Ren'Py: "
+set "renpyvers1.zh=检测到的 Ren'Py 版本："
 
-set "renpyvers2.en=Failed to create detect_renpy_version.py. !UNACONT.%LNG%!"
-set "renpyvers2.zh=无法创建 detect_renpy_version.py。!UNACONT.%LNG%!"
+set "renpyvers2.en=Failed to create detect_renpy_version.py."
+set "renpyvers2.fr=Erreur Impossible de créer detect_renpy_version.py."
+set "renpyvers2.es=Error No se pudo crear detect_renpy_version.py."
+set "renpyvers2.it=Errore Impossibile creare detect_renpy_version.py."
+set "renpyvers2.de=Fehler Die Erstellung von detect_renpy_version.py ist fehlgeschlagen."
+set "renpyvers2.ru=Ошибка Не удалось создать detect_renpy_version.py."
+set "renpyvers2.zh=无法创建 detect_renpy_version.py。"
 
 set "renpyvers3.en=Unable to detect Ren'Py version,"
+set "renpyvers3.fr=Impossible de détecter la version de Ren'Py,"
+set "renpyvers3.es=No se puede detectar la versión de Ren'Py,"
+set "renpyvers3.it=Impossibile rilevare la versione di Ren'Py,"
+set "renpyvers3.de=Unmöglich, die Ren'Py-Version zu erkennen, bitte sicherstellen,"
+set "renpyvers3.ru=Не удалось обнаружить версию Ren'Py, пожалуйста,"
 set "renpyvers3.zh=无法检测 Ren'Py 版本，"
 
 set "renpyvers4.en=        please ensure the game is compatible with UnRen."
-set "renpyvers4.zh=        请确保该游戏与 UnRen 兼容。"
+set "renpyvers4.fr=        es-tu sûr que le jeu est compatible avec UnRen ?"
+set "renpyvers4.es=        asegúrese de que el juego sea compatible con UnRen."
+set "renpyvers4.it=        assicurati che il gioco sia compatibile con UnRen."
+set "renpyvers4.de=        dass das Spiel mit UnRen kompatibel ist."
+set "renpyvers4.ru=        убедитесь, что игра совместима с UnRen."
+set "renpyvers4.zh=        请确保游戏与 UnRen 兼容。"
 
 echo !renpyvers1.%LNG%! >> "%UNRENLOG%"
 <nul set /p=!renpyvers1.%LNG%!
@@ -603,34 +798,36 @@ cd /d "%WORKDIR%"
 set "detect_renpy_version_py=detect_renpy_version.py"
 del /f /q "%detect_renpy_version_py%" %DEBUGREDIR%
 >"%detect_renpy_version_py%.b64" (
-    echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uDQojIC0qLSBjb2Rpbmc6IHV0Zi04IC0qLQ0KaW1wb3J0IG9zDQppbXBvcnQgc3lzDQppbXBvcnQgcmUNCg0KIyAtLS0gMS4gU3RhbmRhcmQgbWV0aG9kOiBpbXBvcnQgcmVucHkgLS0tDQp0cnk6DQogICAgaW1wb3J0IHJlbnB5DQogICAgcHJpbnQocmVucHkudmVyc2lvbl90dXBsZVswXSkNCiAgICBzeXMuZXhpdCgwKQ0KZXhjZXB0IEV4Y2VwdGlvbjoNCiAgICBwYXNzICAjIGZhbGxiYWNrIGJlbG93DQoNCiMgLS0tIDIuIEZhbGxiYWNrOiByZWFkIHJlbnB5L3ZlcnNpb24ucHkgbWFudWFsbHkgLS0tDQp2ZXJzaW9uX2ZpbGUgPSBvcy5wYXRoLmpvaW4oInJlbnB5IiwgInZlcnNpb24ucHkiKQ0KDQpkZWYgcmVhZF9maWxlX2NvbXBhdChwYXRoKToNCiAgICAiIiJVVEYtOCByZWFkaW5nIGNvbXBhdGlibGUgd2l0aCBQeXRob24gMiBhbmQgMy4iIiINCiAgICBpZiBzeXMudmVyc2lvbl9pbmZvWzBdIDwgMzoNCiAgICAgICAgaW1wb3J0IGNvZGVjcw0KICAgICAgICB3aXRoIGNvZGVjcy5vcGVuKHBhdGgsICJyIiwgInV0Zi04IikgYXMgZjoNCiAgICAgICAgICAgIHJldHVybiBmLnJlYWQoKQ0KICAgIGVsc2U6DQogICAgICAgIHdpdGggb3BlbihwYXRoLCAiciIsIGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0iaWdub3JlIikgYXMgZjoNCiAgICAgICAgICAgIHJldHVybiBmLnJlYWQoKQ0KDQppZiBvcy5wYXRoLmV4aXN0cyh2ZXJzaW9uX2ZpbGUpOg0KICAgIHRyeToNCiAgICAgICAgdHh0ID0gcmVhZF9maWxlX2NvbXBhdCh2ZXJzaW9uX2ZpbGUpDQoNCiAgICAgICAgIyBTZWFyY2ggdmVyc2lvbl90dXBsZSA9ICg4LCAzLCA0LCAuLi4pDQogICAgICAgIG0gPSByZS5zZWFyY2gociJ2ZXJzaW9uX3R1cGxlXHMqPVxzKlwoXHMqKFxkKykiLCB0eHQpDQogICAgICAgIGlmIG06DQogICAgICAgICAgICBwcmludChtLmdyb3VwKDEpKQ0KICAgICAgICAgICAgc3lzLmV4aXQoMCkNCg0KICAgICAgICAjIFNlYXJjaCB2ZXJzaW9uID0gIjguMy40Ig0KICAgICAgICBtID0gcmUuc2VhcmNoKHIndmVyc2lvblxzKj1ccypbIlwnXShcZCspXC4nLCB0eHQpDQogICAgICAgIGlmIG06DQogICAgICAgICAgICBwcmludChtLmdyb3VwKDEpKQ0KICAgICAgICAgICAgc3lzLmV4aXQoMCkNCg0KICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToNCiAgICAgICAgc3lzLnN0ZGVyci53cml0ZSgiRXJyb3IgcmVhZGluZyB2ZXJzaW9uLnB5OiAlc1xuIiAlIGUpDQoNCiMgLS0tIDMuIElmIGV2ZXJ5dGhpbmcgZmFpbHMgLS0tDQpwcmludCgiRVJST1IiKQ0K
+    echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uCiMgLSotIGNvZGluZzogdXRmLTggLSotCgppbXBvcnQgb3MKaW1wb3J0IHN5cwppbXBvcnQgcmUKI2ltcG9ydCBzdHJ1Y3QKCgppbXBvcnQgb3MsIHJlCgpkZWYgZGV0ZWN0X2Zyb21fc2NyaXB0X3ZlcnNpb24oZ2FtZV9kaXIpOgogICAgIyAxKSBSZW4nUHkgNy84IDogc2NyaXB0X3ZlcnNpb24udHh0CiAgICBwYXRoID0gb3MucGF0aC5qb2luKGdhbWVfZGlyLCAic2NyaXB0X3ZlcnNpb24udHh0IikKICAgIGlmIG9zLnBhdGguaXNmaWxlKHBhdGgpOgogICAgICAgIHRyeToKICAgICAgICAgICAgd2l0aCBvcGVuKHBhdGgsICJyIikgYXMgZjoKICAgICAgICAgICAgICAgIGNvbnRlbnQgPSBmLnJlYWQoKS5zdHJpcCgpCgogICAgICAgICAgICAjIFR1cGxlIGZvcm1hdCA6ICg4LCAxLCAwKQogICAgICAgICAgICBtID0gcmUuc2VhcmNoKHInXChccyooXGQrKVxzKiwnLCBjb250ZW50KQogICAgICAgICAgICBpZiBtOgogICAgICAgICAgICAgICAgcmV0dXJuIGludChtLmdyb3VwKDEpKQoKICAgICAgICAgICAgIyBTaW1wbGUgZm9ybWF0IDogOC4xLjAgb3UgOAogICAgICAgICAgICBtID0gcmUubWF0Y2gocidccyooXGQrKScsIGNvbnRlbnQpCiAgICAgICAgICAgIGlmIG06CiAgICAgICAgICAgICAgICByZXR1cm4gaW50KG0uZ3JvdXAoMSkpCgogICAgICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgICAgIHBhc3MKCiAgICAjIDIpIFJlbidQeSA2IDogcmVucHkvdmVyc2lvbi5weQogICAgdmVyc2lvbl9weSA9IG9zLnBhdGguam9pbihnYW1lX2RpciwgInJlbnB5IiwgInZlcnNpb24ucHkiKQogICAgaWYgb3MucGF0aC5pc2ZpbGUodmVyc2lvbl9weSk6CiAgICAgICAgdHJ5OgogICAgICAgICAgICB3aXRoIG9wZW4odmVyc2lvbl9weSwgInIiKSBhcyBmOgogICAgICAgICAgICAgICAgY29udGVudCA9IGYucmVhZCgpCgogICAgICAgICAgICAjIHZlcnNpb24gPSAiNi45OS4xNCIKICAgICAgICAgICAgbSA9IHJlLnNlYXJjaChyJ3ZlcnNpb25ccyo9XHMqIihcZCspJywgY29udGVudCkKICAgICAgICAgICAgaWYgbToKICAgICAgICAgICAgICAgIHJldHVybiBpbnQobS5ncm91cCgxKSkKCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICAgICAgcGFzcwoKICAgIHJldHVybiBOb25lCgoKZGVmIGRldGVjdF9mcm9tX3JweWMoZ2FtZV9kaXIpOgogICAgIiIiCiAgICBSZWFkcyB0aGUgbWFnaWMgbnVtYmVyIG9mIC5ycHljIC8gLnJweW1jIGZpbGVzLgogICAgUmVuJ1B5IDY6IG1hZ2ljIOKAnFJFTlBZIFJQQzHigJ0gIC0+IG1ham9yIDYgKGFuZCBzb21lIGVhcmx5IDcpCiAgICBSZW4nUHkgNzogbWFnaWMg4oCcUkVOUFkgUlBDMuKAnSAgLT4gbWFqb3IgNwogICAgUmVuJ1B5IDg6IG1hZ2ljIOKAnFJFTlBZIFJQQzLigJ0gIHdpdGggUHl0aG9uIDMgKGNhbm5vdCBiZSBlYXNpbHkgZGlzdGluZ3Vpc2hlZAogICAgICAgICAgICAgICAgZnJvbSA3IHVzaW5nIG1hZ2ljIGFsb25lLCBvdGhlciBtZXRob2RzIGFyZSB1c2VkIHRvIGNvbXBsZXRlIHRoZSBwcm9jZXNzKQogICAgTm90ZTogc29tZSBlYXJseSBSZW4nUHkgNyBtYXkgc3RpbGwgdXNlIOKAnFJFTlBZIFJQQzHigJ0gbWFnaWMsIGJ1dCB0aGV5IGFyZSByYXJlIGFuZCB3ZSBwcmlvcml0aXplIHRoZSBtb3JlIGNvbW1vbiBjYXNlLgogICAgIiIiCiAgICBtYWdpY19tYXAgPSB7CiAgICAgICAgYiJSRU5QWSBSUEMxIjogNiwKICAgICAgICBiIlJFTlBZIFJQQzIiOiA3LCAgIyBjYW4gYWxzbyBiZSA4CiAgICB9CiAgICBmb3Igcm9vdCwgZGlycywgZmlsZXMgaW4gb3Mud2FsayhnYW1lX2Rpcik6CiAgICAgICAgZm9yIGZuYW1lIGluIGZpbGVzOgogICAgICAgICAgICBpZiBmbmFtZS5lbmRzd2l0aCgiLnJweWMiKSBvciBmbmFtZS5lbmRzd2l0aCgiLnJweW1jIik6CiAgICAgICAgICAgICAgICBmcGF0aCA9IG9zLnBhdGguam9pbihyb290LCBmbmFtZSkKICAgICAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICAgICB3aXRoIG9wZW4oZnBhdGgsICJyYiIpIGFzIGY6CiAgICAgICAgICAgICAgICAgICAgICAgIGhlYWRlciA9IGYucmVhZCgxMCkKICAgICAgICAgICAgICAgICAgICBmb3IgbWFnaWMsIG1ham9yIGluIG1hZ2ljX21hcC5pdGVtcygpOgogICAgICAgICAgICAgICAgICAgICAgICBpZiBoZWFkZXIuc3RhcnRzd2l0aChtYWdpYyk6CiAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXR1cm4gbWFqb3IKICAgICAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgICAgICAgICAgICAgY29udGludWUKICAgIHJldHVybiBOb25lCgoKZGVmIGRldGVjdF9mcm9tX2V4ZWN1dGFibGUoZ2FtZV9kaXIpOgogICAgIiIiCiAgICBMb29rIGZvciB2ZXJzaW9uIGNsdWVzIGluIHRoZSBleGVjdXRhYmxlcy9saWJzIHByZXNlbnQKICAgIGluIHRoZSBnYW1lIGZvbGRlciAoc3RyaW5ncyDigJw3LuKAnSBvciDigJw4LuKAnSBjbG9zZSB0byDigJxSZW4nUHnigJ0pLgogICAgIiIiCiAgICBiYXNlID0gb3MucGF0aC5kaXJuYW1lKGdhbWVfZGlyKSAgIyBwYXJlbnQgZm9sZGVyIG9mIHRoZSBnYW1lLyBmb2xkZXIKICAgIHNlYXJjaF9kaXJzID0gW2Jhc2UsIGdhbWVfZGlyXQogICAgcGF0dGVybnMgPSBbCiAgICAgICAgKHJlLmNvbXBpbGUociJSZW4uP1B5XHMrKFxkKVwuXGQiKSwgTm9uZSksCiAgICAgICAgKHJlLmNvbXBpbGUociJyZW5weVtfXC1dKFxkKVwuXGQiKSwgcmUuSUdOT1JFQ0FTRSksCiAgICBdCiAgICBmb3Igc2RpciBpbiBzZWFyY2hfZGlyczoKICAgICAgICBmb3IgZm5hbWUgaW4gb3MubGlzdGRpcihzZGlyKToKICAgICAgICAgICAgZnBhdGggPSBvcy5wYXRoLmpvaW4oc2RpciwgZm5hbWUpCiAgICAgICAgICAgIGlmIG5vdCBvcy5wYXRoLmlzZmlsZShmcGF0aCk6CiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAjIE9ubHkgc21hbGwgdGV4dCBvciBsb2cgZmlsZXMgYXJlIHJlYWQuCiAgICAgICAgICAgIGlmIGZuYW1lLmVuZHN3aXRoKCgiLnR4dCIsICIubG9nIiwgIi5pbmkiLCAiLmNmZyIsICIuanNvbiIpKToKICAgICAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICAgICB3aXRoIG9wZW4oZnBhdGgsICJyIikgYXMgZjoKICAgICAgICAgICAgICAgICAgICAgICAgY29udGVudCA9IGYucmVhZCg0MDk2KQogICAgICAgICAgICAgICAgICAgIGZvciBwYXQsIGZsYWdzIGluIHBhdHRlcm5zOgogICAgICAgICAgICAgICAgICAgICAgICBtID0gcGF0LnNlYXJjaChjb250ZW50KQogICAgICAgICAgICAgICAgICAgICAgICBpZiBtOgogICAgICAgICAgICAgICAgICAgICAgICAgICAgbWFqb3IgPSBpbnQobS5ncm91cCgxKSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmIG1ham9yIGluICg2LCA3LCA4KToKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXR1cm4gbWFqb3IKICAgICAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgICAgICAgICAgICAgcGFzcwogICAgcmV0dXJuIE5vbmUKCgpkZWYgZGV0ZWN0X2Zyb21fYXJjaGl2ZShnYW1lX2Rpcik6CiAgICAiIiIKICAgIEluc3BlY3QgdGhlIC5ycGEgYXJjaGl2ZXMgdG8gZGV0ZWN0IHRoZSB2ZXJzaW9uLgogICAgUlBBLTEuMCAtPiBSZW4nUHkgNiBlYXJseQogICAgUlBBLTIuMCAtPiBSZW4nUHkgNgogICAgUlBBLTMuMCAtPiBSZW4nUHkgNi83CiAgICBSUEFOMy4wIC0+IFJlbidQeSA4IChuZXcgbmV1dHJvbiBhcmNoaXZlKQogICAgWmlYLTEyQSAtPiBSZW4nUHkgOCAobmV3IG5ldXRyb24gYXJjaGl2ZSkKICAgIFppWC0xMkIgLT4gUmVuJ1B5IDggKG5ldyBuZXV0cm9uIGFyY2hpdmUpCiAgICAiIiIKICAgIHJwYV9tYWpvcl9tYXAgPSB7CiAgICAgICAgYiJSUEEtMS4wIjogNiwKICAgICAgICBiIlJQQS0yLjAiOiA2LAogICAgICAgIGIiUlBBLTMuMCI6IDcsICAgIyBNYXliZSA2IGFzIHdlbGwsIGJ1dCB3ZSdsbCByZWZpbmUgaXQgbGF0ZXIuCiAgICAgICAgYiJSUEFOMy4wIjogOCwKICAgICAgICBiIlppWC0xMkEiOiA4LAogICAgICAgIGIiWmlYLTEyQiI6IDgsCiAgICB9CiAgICBmb3VuZCA9IE5vbmUKICAgIGZvciBmbmFtZSBpbiBvcy5saXN0ZGlyKGdhbWVfZGlyKToKICAgICAgICBpZiBub3QgZm5hbWUuZW5kc3dpdGgoIi5ycGEiKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICBmcGF0aCA9IG9zLnBhdGguam9pbihnYW1lX2RpciwgZm5hbWUpCiAgICAgICAgdHJ5OgogICAgICAgICAgICB3aXRoIG9wZW4oZnBhdGgsICJyYiIpIGFzIGY6CiAgICAgICAgICAgICAgICBoZWFkZXIgPSBmLnJlYWQoOCkKICAgICAgICAgICAgZm9yIG1hZ2ljLCBtYWpvciBpbiBycGFfbWFqb3JfbWFwLml0ZW1zKCk6CiAgICAgICAgICAgICAgICBpZiBoZWFkZXIuc3RhcnRzd2l0aChtYWdpYyk6CiAgICAgICAgICAgICAgICAgICAgIyBXZSBrZWVwIHRoZSBoaWdoZXN0IG1ham9yIGZvdW5kLgogICAgICAgICAgICAgICAgICAgIGlmIGZvdW5kIGlzIE5vbmUgb3IgbWFqb3IgPiBmb3VuZDoKICAgICAgICAgICAgICAgICAgICAgICAgZm91bmQgPSBtYWpvcgogICAgICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgICAgIHBhc3MKICAgIHJldHVybiBmb3VuZAoKCmRlZiBkZXRlY3RfcmVucHlfbWFqb3IoZ2FtZV9wYXRoKToKICAgICIiIgogICAgRGV0ZWN0cyB0aGUgbWFqb3IgUmVuJ1B5IHZlcnNpb24gKDYsIDcsIG9yIDgpIGZyb20gdGhlIGdhbWUgcGF0aC4KICAgIGdhbWVfcGF0aCBjYW4gYmUgdGhlIGdhbWUncyByb290IGZvbGRlciBvciB0aGUg4oCcZ2FtZS/igJ0gc3ViZm9sZGVyLgogICAgIiIiCiAgICAjIE5vcm1hbGl6ZTogd2Ugd2FudCB0aGUg4oCcZ2FtZS/igJ0gZm9sZGVyCiAgICBpZiBvcy5wYXRoLmJhc2VuYW1lKGdhbWVfcGF0aCkgPT0gImdhbWUiOgogICAgICAgIGdhbWVfZGlyID0gZ2FtZV9wYXRoCiAgICBlbHNlOgogICAgICAgIGNhbmRpZGF0ZSA9IG9zLnBhdGguam9pbihnYW1lX3BhdGgsICJnYW1lIikKICAgICAgICBpZiBvcy5wYXRoLmlzZGlyKGNhbmRpZGF0ZSk6CiAgICAgICAgICAgIGdhbWVfZGlyID0gY2FuZGlkYXRlCiAgICAgICAgZWxzZToKICAgICAgICAgICAgZ2FtZV9kaXIgPSBnYW1lX3BhdGggICMgd2UgdHJ5IGRpcmVjdGx5CgogICAgaWYgbm90IG9zLnBhdGguaXNkaXIoZ2FtZV9kaXIpOgogICAgICAgIHByaW50KCJFUlJPUjogZGlyZWN0b3J5IG5vdCBmb3VuZDoge30iLmZvcm1hdChnYW1lX2RpcikpCiAgICAgICAgc3lzLmV4aXQoMSkKCiAgICAjIDEuIHNjcmlwdF92ZXJzaW9uLnR4dCAocHJpb3JpdHkgYnV0IG9wdGlvbmFsKQogICAgbWFqb3IgPSBkZXRlY3RfZnJvbV9zY3JpcHRfdmVyc2lvbihnYW1lX2RpcikKICAgIGlmIG1ham9yIGlzIG5vdCBOb25lOgogICAgICAgIHJldHVybiBtYWpvcgoKICAgICMgMi4gQXJjaGl2ZXMgLnJwYSAoUmVsaWFibGUgc2lnbmF0dXJlcyBmb3IgUmVuJ1B5IDgpCiAgICBtYWpvciA9IGRldGVjdF9mcm9tX2FyY2hpdmUoZ2FtZV9kaXIpCiAgICBpZiBtYWpvciBpcyBub3QgTm9uZToKICAgICAgICAjIFJQQS0zLjAgY2FuIGJlIDYgb3IgNzsgd2UgcmVmaW5lIGl0IHdpdGggdGhlIC5ycHljIGZpbGVzLgogICAgICAgIGlmIG1ham9yID09IDc6CiAgICAgICAgICAgIHJweWNfbWFqb3IgPSBkZXRlY3RfZnJvbV9ycHljKGdhbWVfZGlyKQogICAgICAgICAgICBpZiBycHljX21ham9yIGlzIG5vdCBOb25lOgogICAgICAgICAgICAgICAgcmV0dXJuIHJweWNfbWFqb3IKICAgICAgICByZXR1cm4gbWFqb3IKCiAgICAjIDMuIC5ycHljIGZpbGVzICh2ZXJ5IHJlbGlhYmxlIGZvciBSZW4nUHkgNiBhbmQgNywgYnV0IGRvIG5vdCBkaXN0aW5ndWlzaCBiZXR3ZWVuIDcgYW5kIDgpOgogICAgbWFqb3IgPSBkZXRlY3RfZnJvbV9ycHljKGdhbWVfZGlyKQogICAgaWYgbWFqb3IgaXMgbm90IE5vbmU6CiAgICAgICAgcmV0dXJuIG1ham9yCgogICAgIyA0LiBUZXh0IGZpbGVzIGluIHRoZSByb290IGZvbGRlciAobWF5IGNvbnRhaW4gdmVyc2lvbiBpbmZvLCBlc3BlY2lhbGx5IGZvciBSZW4nUHkgOCk6CiAgICBtYWpvciA9IGRldGVjdF9mcm9tX2V4ZWN1dGFibGUoZ2FtZV9kaXIpCiAgICBpZiBtYWpvciBpcyBub3QgTm9uZToKICAgICAgICByZXR1cm4gbWFqb3IKCiAgICByZXR
+    echo 1cm4gTm9uZQoKCmRlZiBtYWluKCk6CiAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgMjoKICAgICAgICBwcmludCgiVXNhZ2U6IHt9IDxnYW1lX3BhdGg+Ii5mb3JtYXQoc3lzLmFyZ3ZbMF0pKQogICAgICAgIHN5cy5leGl0KDEpCgogICAgZ2FtZV9wYXRoID0gc3lzLmFyZ3ZbMV0KCiAgICBtYWpvciA9IGRldGVjdF9yZW5weV9tYWpvcihnYW1lX3BhdGgpCgogICAgaWYgbWFqb3IgaXMgTm9uZToKICAgICAgICBwcmludCgiRVJST1I6IGltcG9zc2libGUgdG8gZGV0ZWN0IFJlbidQeSB2ZXJzaW9uIGluIDoge30iLmZvcm1hdChnYW1lX3BhdGgpKQogICAgICAgIHN5cy5leGl0KDEpCgogICAgaWYgbWFqb3Igbm90IGluICg2LCA3LCA4KToKICAgICAgICBwcmludCgiRVJST1I6IHVuZXhwZWN0ZWQgUmVuJ1B5IHZlcnNpb24gZGV0ZWN0ZWQgOiB7fSIuZm9ybWF0KG1ham9yKSkKICAgICAgICBzeXMuZXhpdCgxKQoKICAgIHByaW50KG1ham9yKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK
 )
-powershell.exe -nologo -noprofile -noninteractive -command "[IO.File]::WriteAllText('%detect_renpy_version_py%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%detect_renpy_version_py%.b64'))))" %DEBUGREDIR%
-if exist "!detect_renpy_version_py!.tmp" (
-    del /f /q "!detect_renpy_version_py!.b64" %DEBUGREDIR%
-    move /y "!detect_renpy_version_py!.tmp" "!detect_renpy_version_py!" %DEBUGREDIR%
+echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%detect_renpy_version_py%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%detect_renpy_version_py%.b64'))))" >> "%UNRENLOG%"
+"%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%detect_renpy_version_py%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%detect_renpy_version_py%.b64'))))" %DEBUGREDIR%
+if exist "%detect_renpy_version_py%.tmp" (
+    del /f /q "%detect_renpy_version_py%.b64" %DEBUGREDIR%
+    move /y "%detect_renpy_version_py%.tmp" "%detect_renpy_version_py%" %DEBUGREDIR%
 ) else (
     call :elog "%RED%!FAIL.%LNG%!%RES%"
     call :elog .
-    call :elog "%RED%!renpyvers2.%LNG%!%RES%"
+    call :elog "!renpyvers2.%LNG%! !UNACONT.%LNG%!"
     call :elog .
     pause>nul|set/p=.      !ANYKEY.%LNG%!
 
     call :exitn 3
 )
 
-if not exist "!detect_renpy_version_py!" (
+if not exist "%detect_renpy_version_py%" (
     call :elog "%RED%!FAIL.%LNG%!%RES%"
     call :elog .
-    call :elog "!renpyvers2.%LNG%!"
+    call :elog "!renpyvers2.%LNG%! !UNACONT.%LNG%!"
     call :elog .
     pause>nul|set/p=.      !ANYKEY.%LNG%!
 
     call :exitn 3
 ) else (
-    for /f "delims=" %%A in ('"!PYTHONHOME!\python.exe" !PYNOASSERT! !detect_renpy_version_py!') do (
+    for /f "delims=" %%A in ('"%PYTHONHOME%\python.exe" %PYNOASSERT% %detect_renpy_version_py% .') do (
         echo %%A | findstr /r "[0-9]" >nul
-        if !errorlevel! EQU 0 (
+        if !ERRORLEVEL! EQU 0 (
             set "RENPYVERSION=%%A"
         )
     )
@@ -645,13 +842,23 @@ if not exist "!detect_renpy_version_py!" (
 )
 del /f /q "%detect_renpy_version_py%" %DEBUGREDIR%
 
-set "renpyvers5.en=You have launched %SCRIPTNAME% but Ren'Py !RENPYVERSION! is found. Please use UnRen-legacy.bat instead."
-set "renpyvers5.zh=你启动了 %SCRIPTNAME%，但检测到 Ren'Py !RENPYVERSION!。请改用 UnRen-legacy.bat。"
+set "renpyvers5.en=You have launched %SCRIPTNAME% but Ren'Py %RENPYVERSION% is found. Please use UnRen-legacy.bat instead."
+set "renpyvers5.fr=Vous avez lancé %SCRIPTNAME% mais Ren'Py %RENPYVERSION% a été trouvé. Veuillez utiliser UnRen-legacy.bat à la place."
+set "renpyvers5.es=Ha iniciado %SCRIPTNAME% pero se ha encontrado Ren'Py %RENPYVERSION%. Utilice UnRen-legacy.bat en su lugar."
+set "renpyvers5.it=Hai avviato %SCRIPTNAME% ma è stato trovato Ren'Py %RENPYVERSION%. Usa invece UnRen-legacy.bat."
+set "renpyvers5.de=Sie haben %SCRIPTNAME% gestartet, aber Ren'Py %RENPYVERSION% wurde gefunden. Bitte verwenden Sie stattdessen UnRen-legacy.bat."
+set "renpyvers5.ru=Вы запустили %SCRIPTNAME%, но найден Ren'Py %RENPYVERSION%. Пожалуйста, используйте UnRen-legacy.bat вместо этого."
+set "renpyvers5.zh=您已启动 %SCRIPTNAME% 但检测到 Ren'Py %RENPYVERSION%。请改用 UnRen-legacy.bat。"
 
-set "renpyvers6.en=You have launched %SCRIPTNAME% but Ren'Py !RENPYVERSION! is found. Please use UnRen-current.bat instead."
-set "renpyvers6.zh=你启动了 %SCRIPTNAME%，但检测到 Ren'Py !RENPYVERSION!。请改用 UnRen-current.bat。"
+set "renpyvers6.en=You have launched %SCRIPTNAME% but Ren'Py %RENPYVERSION% is found. Please use UnRen-current.bat instead."
+set "renpyvers6.fr=Vous avez lancé %SCRIPTNAME% mais Ren'Py %RENPYVERSION% a été trouvé. Veuillez utiliser UnRen-current.bat à la place."
+set "renpyvers6.es=Ha iniciado %SCRIPTNAME% pero se ha encontrado Ren'Py %RENPYVERSION%. Utilice UnRen-current.bat en su lugar."
+set "renpyvers6.it=Hai avviato %SCRIPTNAME% ma è stato trovato Ren'Py %RENPYVERSION%. Usa invece UnRen-current.bat."
+set "renpyvers6.de=Sie haben %SCRIPTNAME% gestartet, aber Ren'Py %RENPYVERSION% wurde gefunden. Bitte verwenden Sie stattdessen UnRen-current.bat."
+set "renpyvers6.ru=Вы запустили %SCRIPTNAME%, но найден Ren'Py %RENPYVERSION%. Пожалуйста, используйте UnRen-current.bat вместо этого."
+set "renpyvers6.zh=您已启动 %SCRIPTNAME% 但检测到 Ren'Py %RENPYVERSION%。请改用 UnRen-current.bat。"
 :: Check to ensure you are using the correct UnRen version
-if !RENPYVERSION! LEQ 7 (
+if %RENPYVERSION% LEQ 7 (
     call :elog .
     call :elog "!renpyvers5.%LNG%!"
     call :elog .
@@ -664,56 +871,200 @@ if !RENPYVERSION! LEQ 7 (
 call :DisplayVars "Init phase"
 
 set "def=5"
-set initialized=1
+set "INITIALIZED=1"
 
 :SkipInit
 set "mtitle.en=Working directory: "
-set "mtitle.zh=工作目录： "
+set "mtitle.fr=Répertoire de travail : "
+set "mtitle.es=Directorio de trabajo: "
+set "mtitle.it=Directory di lavoro: "
+set "mtitle.de=Aktuelles Verzeichnis: "
+set "mtitle.ru=Рабочий каталог: "
+set "mtitle.zh=工作目录："
 
 set "choice1.en=Unpack RPA packages."
+set "choice1.fr=Décompresser les paquets RPA."
+set "choice1.es=Descomprimir paquetes RPA."
+set "choice1.it=Decomprimere pacchetti RPA."
+set "choice1.de=RPA-Pakete entpacken."
+set "choice1.ru=Распаковать пакеты RPA."
 set "choice1.zh=解包 RPA 包。"
 
 set "choice2.en=Decompile RPYC files."
+set "choice2.fr=Décompiler les fichiers RPYC."
+set "choice2.es=Descompilar archivos RPYC."
+set "choice2.it=Decompilare i file RPYC."
+set "choice2.de=RPYC-Dateien dekompilieren."
+set "choice2.ru=Декомпилировать файлы RPYC."
 set "choice2.zh=反编译 RPYC 文件。"
 
-set "choice3.en=Deobfuscate when unpacking RPA files %YEL%(Use basic code)"
-set "choice3.zh=解包 RPA 时去混淆 %YEL%(使用基础方式)"
+set "choice3.en=Deobfuscate when unpacking RPA files %YEL%(Use basic code)."
+set "choice3.fr=Déobfusquer lors de la décompression des fichiers RPA %YEL%(Utilise le code de base)."
+set "choice3.es=Desofuscar al descomprimir archivos RPA %YEL%(Usar código básico)."
+set "choice3.it=Deoffuscare durante la decompressione dei file RPA %YEL%(Utilizzare codice di base)."
+set "choice3.de=Deobfuscate beim Entpacken von RPA-Dateien %YEL%(Basiscode verwenden)."
+set "choice3.ru=Деобфусцировать при распаковке файлов RPA %YEL%(Использовать базовый код)."
+set "choice3.zh=解包 RPA 文件时进行反混淆 %YEL%（使用基础代码）"
 
-set "choice4.en=Deobfuscate when decompile RPYC files %YEL%(Use basic code)"
-set "choice4.zh=反编译 RPYC 时去混淆 %YEL%(使用基础方式)"
+set "choice4.en=Deobfuscate when decompile RPYC files %YEL%(Use basic code)."
+set "choice4.fr=Déobfusquer lors de la décompilation des fichiers RPYC %YEL%(Utilise le code de base)."
+set "choice4.es=Desofuscar al descompilar archivos RPYC %YEL%(Usar código básico)."
+set "choice4.it=Deoffuscare durante la decompilazione dei file RPYC %YEL%(Utilizzare codice di base)."
+set "choice4.de=Deobfuscate beim Dekompilieren von RPYC-Dateien %YEL%(Basiscode verwenden)."
+set "choice4.ru=Деобфусцировать при декомпиляции файлов RPYC %YEL%(Использовать базовый код)."
+set "choice4.zh=反编译 RPYC 文件时进行反混淆 %YEL%（使用基础代码）"
 
-set "choice5.en=Unpack and decompile (RPA and RPYC)"
-set "choice5.zh=解包并反编译（RPA 与 RPYC）"
+set "choice5.en=Unpack and decompile (RPA and RPYC)."
+set "choice5.fr=Décompresser et décompiler (RPA et RPYC)."
+set "choice5.es=Descomprimir y descompilar (RPA y RPYC)."
+set "choice5.it=Decomprimere e decompilare (RPA e RPYC)."
+set "choice5.de=RPA- und RPYC-Dateien entpacken und dekompilieren.."
+set "choice5.ru=Распаковать и декомпилировать (RPA и RPYC)."
+set "choice5.zh=解包并反编译（RPA 和 RPYC）"
 
-set "choice6.en=Deobfuscate, unpack and decompile for both RPA and RPYC files %YEL%(Use basic code)"
-set "choice6.zh=去混淆+解包+反编译（RPA 与 RPYC）%YEL%(使用基础方式)"
+set "choice6.en=Deobfuscate, unpack and decompile for both RPA and RPYC files %YEL%(Use basic code)."
+set "choice6.fr=Déobfusquer, décompresser et décompiler les fichiers RPA et RPYC %YEL%(Utilise le code de base)."
+set "choice6.es=Desofuscar, descomprimir y descompilar archivos RPA y RPYC. %YEL%(Usar código básico)."
+set "choice6.it=Deoffuscare, decomprimere e decompilare sia i file RPA che RPYC %YEL%(Utilizzare codice di base)."
+set "choice6.de=Entschlüsseln, entpacken und dekompilieren Sie sowohl RPA- als auch RPYC-Dateien. %YEL%(Basiscode verwenden)."
+set "choice6.ru=Деобфускация, распаковка и декомпиляция файлов RPA и RPYC %YEL%(Использовать базовый код)."
+set "choice6.zh=对 RPA 和 RPYC 文件进行反混淆、解包和反编译 %YEL%（使用基础代码）"
 
+set "choice7.en=Unpack RPA packages using alternative method."
+set "choice7.fr=Décompresser les paquets RPA en utilisant une méthode alternative."
+set "choice7.es=Descomprimir paquetes RPA utilizando un método alternativo."
+set "choice7.it=Decomprimere i pacchetti RPA utilizzando un metodo alternativo."
+set "choice7.de=RPA-Pakete mit alternativer Methode entpacken."
+set "choice7.ru=Распаковать пакеты RPA с использованием альтернативного метода."
+set "choice7.zh=使用替代方法解包 RPA 包。"
 
+set "minfo1.en=The following options are independent of the Ren'Py version."
+set "minfo1.fr=Les options suivantes sont indépendantes de la version de Ren'Py."
+set "minfo1.es=Las siguientes opciones son independientes de la versión de Ren'Py."
+set "minfo1.it=Le seguenti opzioni sono indipendenti dalla versione di Ren'Py."
+set "minfo1.de=Die folgenden Optionen sind unabhängig von der Ren'Py-Version."
+set "minfo1.ru=Следующие параметры независимы от версии Ren'Py."
+set "minfo1.zh=以下选项与 Ren'Py 版本无关。"
 
+set "choicea.en=Enable Console (Shift+O) and Developer menu (Shift+D)."
+set "choicea.fr=Activer la Console (Maj+O) et le menu Développeur (Maj+D)."
+set "choicea.es=Activar la Consola (Mayús+O) y el menú de desarrollador (Mayús+D)."
+set "choicea.it=Attiva la Console (Maiusc+O) e il menu sviluppatore (Maiusc+D)."
+set "choicea.de=Aktiviert die Konsole (Umschalt+O) und das Entwicklermenü (Umschalt+D)."
+set "choicea.ru=Активируйте консоль (Shift+O) и меню «Разработчик» (Shift+D)."
+set "choicea.zh=启用控制台（Shift+O）和开发者菜单（Shift+D）"
 
+set "choiceb.en=Enable debug mode %RED%(Can break your game)."
+set "choiceb.fr=Activer le mode debug %RED%(peut casser le jeu)."
+set "choiceb.es=Activar el modo debug %RED%(puede romper el juego)."
+set "choiceb.it=Attiva la modalità debug %RED%(può rompere il gioco)."
+set "choiceb.de=Aktiviert Sie den Debug-Modus %RED%(kann Ihr Spiel beschädigen)."
+set "choiceb.ru=Включить режим отладки %RED%(может сломать игру)."
+set "choiceb.zh=启用调试模式 %RED%（可能破坏游戏）"
 
+set "choicec.en=Force Skip (Unseen Text, After Choices)."
+set "choicec.fr=Forcer Skip (Unseen Text, After Choices)."
+set "choicec.es=Forzar Skip (Unseen Text, After Choices)."
+set "choicec.it=Forza Skip (Unseen Text, After Choices)."
+set "choicec.de=Zwangsweise überspringen (Unseen Text, After Choices)."
+set "choicec.ru=Принудить Skip (Unseen Text, After Choices)."
+set "choicec.zh=强制跳过（未读文本、选择后）"
 
+set "choiced.en=Force all Skip (Unseen Text, After Choices, Transitions)."
+set "choiced.fr=Forcer tous les Skip (Unseen Text, After Choices, Transitions)."
+set "choiced.es=Forzar todos los Skip (Unseen Text, After Choices, Transitions)."
+set "choiced.it=Forza tutti gli Skip (Unseen Text, After Choices, Transitions)."
+set "choiced.de=Zwangsweise überspringen (Unseen Text, After Choices, Transitions)."
+set "choiced.ru=Принудить все пропуски (Unseen Text, After Choices, Transitions)."
+set "choiced.zh=强制全部跳过（未读文本、选择后、过渡）"
 
+set "choicee.en=Force enable rollback (scroll wheel)."
+set "choicee.fr=Activer le "Rollback" (molette de défilement)."
+set "choicee.es=Forzar la activación del "Rollback" (rueda de desplazamiento)."
+set "choicee.it=Forza l'attivazione del "Rollback" (rotella di scorrimento)."
+set "choicee.de=Aktivieren Sie "Rollback" (Scrollrad)."
+set "choicee.ru=Принудить активацию "Rollback" (колесо прокрутки)."
+set "choicee.zh=强制启用回滚（鼠标滚轮）"
 
+set "choicef.en=Enable Quick Save and Quick Load (Shift+S F5, Shift+L F9)."
+set "choicef.fr=Activer "Quick Save" et "Quick Load" (Maj+S F5, Maj+L F9)."
+set "choicef.es=Activar "Quick Save" y "Quick Load" (Mayús+S F5, Mayús+L F9)."
+set "choicef.it=Attiva "Quick Save" e "Quick Load" (Maiusc+S F5, Maiusc+L F9)."
+set "choicef.de=Aktivieren Sie "Quick Save" und "Quick Load" (Umschalt+S F5, Umschalt+L F9)."
+set "choicef.ru=Включить "Quick Save" и "Quick Load" (Shift+S F5, Shift+L F9)."
+set "choicef.zh=启用快速保存和快速加载（Shift+S F5、Shift+L F9）"
 
+set "choiceg.en=Try forcing the Quick Menu to display.."
+set "choiceg.fr=Essayer de forcer l'affichage du "Quick Menu"."
+set "choiceg.es=Intenta forzar la visualización del "Quick Menu"."
+set "choiceg.it=Prova a forzare la visualizzazione del "Quick Menu"."
+set "choiceg.de=Versuche, die Anzeige des "Quick Menu" zu erzwingen."
+set "choiceg.ru=Попробуй заставить отобразиться "Quick Menu"."
+set "choiceg.zh=尝试强制显示快速菜单。"
 
+set "choicel.en=Rename MC name with a new name."
+set "choicel.fr=Renommer le MC name avec un nouveau nom."
+set "choicel.es=Renombrar el nombre de MC con un nuevo nombre."
+set "choicel.it=Rinomina il nome di MC con un nuovo nome."
+set "choicel.de=Den MC-Namen mit einem neuen Namen umbenennen."
+set "choicel.ru=Переименовать имя MC с новым именем."
+set "choicel.zh=用新名称重命名 MC 名称"
 
+set "choicet.en=Extract text for translation purposes."
+set "choicet.fr=Extraire le texte à des fins de traduction."
+set "choicet.es=Extraer texto con fines de traducción."
+set "choicet.it=Estrai il testo a scopo di traduzione."
+set "choicet.de=Text zum Übersetzen extrahieren."
+set "choicet.ru=Извлечь текст для перевода."
+set "choicet.zh=提取文本用于翻译目的"
 
+set "minfo2.en=The following choices require administrative privileges."
+set "minfo2.fr=Les choix suivants nécessitent des privilèges administrateurs."
+set "minfo2.es=Las siguientes opciones requieren privilegios administrativos."
+set "minfo2.it=Le seguenti opzioni richiedono privilegi amministrativi."
+set "minfo2.de=Die folgenden Optionen erfordern administrative Berechtigungen."
+set "minfo2.ru=Следующие варианты требуют административных прав."
+set "minfo2.zh=以下选项需要管理员权限。"
 
+set "choice+.en=Add a right-click menu entry for folders to run the script."
+set "choice+.fr=Ajouter une entrée de menu contextuel pour les dossiers afin d'exécuter le script."
+set "choice+.es=Agregar una entrada de menú contextual para las carpetas para ejecutar el script."
+set "choice+.it=Aggiungere una voce al menu contestuale delle cartelle per eseguire lo script."
+set "choice+.de=Einträge im Kontextmenü für Ordner hinzufügen, um das Skript auszuführen."
+set "choice+.ru=Добавить элемент контекстного меню для папок для запуска скрипта."
+set "choice+.zh=为文件夹添加右键菜单项以运行脚本。"
 
+set "choice-.en=Remove the right-click menu entry from the registry."
+set "choice-.fr=Supprimer l'entrée de menu contextuel du registre."
+set "choice-.es=Eliminar la entrada de menú contextual del registro."
+set "choice-.it=Rimuovi la voce del menu contestuale dal registro."
+set "choice-.de=Einträge im Kontextmenü aus der Registrierung entfernen."
+set "choice-.ru=Удалить элемент контекстного меню из реестра."
+set "choice-.zh=从注册表中移除右键菜单项。"
 
-
-
-
-
-set "mquest.en=Your choice (1-6 by default [%MDEFS2%]): "
-set "mquest.zh=请选择（1-6；默认 [%MDEFS2%]）： "
+set "mquest.en=Your choice (1-7,a-g,l,t,+,- by default [%MDEFS2%]): "
+set "mquest.fr=Votre choix (1-7, a-g, l, t, +, -, par défaut [%MDEFS2%]) : "
+set "mquest.es=Su elección (1-7,a-g,l,t,+,- por defecto [%MDEFS2%]): "
+set "mquest.it=La tua scelta (1-7,a-g,l,t,+,- predefinito [%MDEFS2%]): "
+set "mquest.de=Ihre Wahl (1-7,a-g,l,t,+,- für Standard [%MDEFS2%]): "
+set "mquest.ru=Ваш выбор (1-7,a-g,l,t,+,- по умолчанию [%MDEFS2%]): "
+set "mquest.zh=您的选择（1-7, a-g, l, t, +, -，默认 [%MDEFS2%]）："
 
 set "choicex.en=Exit"
+set "choicex.fr=Quitter"
+set "choicex.es=Salir"
+set "choicex.it=Esci"
+set "choicex.de=Beenden"
+set "choicex.ru=Выход"
 set "choicex.zh=退出"
 
 set "uchoice.en=Unknown choice:"
-set "uchoice.zh=未知选项："
+set "uchoice.fr=Choix inconnu :"
+set "uchoice.es=Opción desconocida:"
+set "uchoice.it=Scelta sconosciuta:"
+set "uchoice.de=Unbekannte Wahl:"
+set "uchoice.ru=Неизвестный выбор:"
+set "uchoice.zh=未知选择："
 
 :: Menu display
 call :elog .
@@ -726,8 +1077,22 @@ echo        3) %GRY%!choice3.%LNG%!%RES%
 echo        4) %GRE%!choice4.%LNG%!%RES%
 echo        5) %GRE%!choice5.%LNG%!%RES%
 echo        6) %GRE%!choice6.%LNG%!%RES%
+echo        7) %GRE%!choice7.%LNG%!%RES%
 call :elog .
+echo        %YEL%!minfo1.%LNG%!%RES%
+echo        a) %CYA%!choicea.%LNG%!%RES%
+echo        b) %CYA%!choiceb.%LNG%!%RES%
+echo        c) %CYA%!choicec.%LNG%!%RES%
+echo        d) %CYA%!choiced.%LNG%!%RES%
+echo        e) %CYA%!choicee.%LNG%!%RES%
+echo        f) %CYA%!choicef.%LNG%!%RES%
+echo        g) %CYA%!choiceg.%LNG%!%RES%
+echo        l) %CYA%!choicel.%LNG%!%RES%
+echo        t) %CYA%!choicet.%LNG%!%RES%
 call :elog .
+echo        %YEL%!minfo2.%LNG%!%RES%
+echo        +) %CYA%!choice+.%LNG%!%RES%
+echo        -) %CYA%!choice-.%LNG%!%RES%
 call :elog .
 echo        x) %YEL%!choicex.%LNG%!%RES%
 
@@ -740,7 +1105,7 @@ if not defined OPTIONS set "OPTIONS=!MDEFS2!"
 set "OPTIONS=%OPTIONS: =%"
 
 :: List of valid characters
-set "VALID=123456x"
+set "VALID=1234567abctdefglt+-x"
 
 :: Dispatch table: OPTION → LABEL
 set "ACT.1=extract"
@@ -749,8 +1114,20 @@ set "ACT.3=unavailable"
 set "ACT.4=decompile"
 set "ACT.5=extract"
 set "ACT.6=extract"
+set "ACT.7=extract"
 
+set "ACT.a=console"
+set "ACT.b=debug"
+set "ACT.c=skip"
+set "ACT.d=skipall"
+set "ACT.e=rollback"
+set "ACT.f=quick"
+set "ACT.g=qmenu"
+set "ACT.l=replace_mcname"
+set "ACT.t=extract_text"
 
+set "ACT.+=add_reg"
+set "ACT.-=remove_reg"
 set "ACT.x=exitn"
 
 :: Loop through each character in the input
@@ -791,53 +1168,128 @@ goto menu
 
 :extract
 set "extm1.en=Remove RPA archives after extraction? Enter [y/n] (default n): "
-set "extm1.zh=解包后是否删除 RPA 归档？请输入 [y/n]（默认 n）： "
+set "extm1.fr=Supprimer les archives RPA après extraction ? Entrer [o/n] (par défaut n) : "
+set "extm1.es=¿Eliminar los archivos RPA después de la extracción? Ingrese [s/n] (predeterminado n): "
+set "extm1.it=Rimuovere gli archivi RPA dopo l'estrazione? Inserisci [s/n] (predefinito n): "
+set "extm1.de=RPA-Archive nach der Extraktion entfernen? Geben Sie [y/n] ein (Standard n): "
+set "extm1.ru=Удалить архивы RPA после извлечения? Введите [y/n] (по умолчанию n): "
+set "extm1.zh=提取后是否删除 RPA 存档？输入 [y/n]（默认 n）："
 
 set "extm2.en=RPA archives will be moved to %WORKDIR%\rpa."
-set "extm2.zh=RPA 归档将移动到 %WORKDIR%\rpa。"
+set "extm2.fr=Les archives RPA seront déplacées vers %WORKDIR%\rpa."
+set "extm2.es=Los archivos RPA se moverán a %WORKDIR%\rpa."
+set "extm2.it=Gli archivi RPA verranno spostati in %WORKDIR%\rpa."
+set "extm2.de=RPA-Archive werden nach %WORKDIR%\rpa verschoben."
+set "extm2.ru=Архивы RPA будут перемещены в %WORKDIR%\rpa."
+set "extm2.zh=RPA 存档将被移动到 %WORKDIR%\rpa。"
 
 set "extm3.en=RPA archives will be deleted after extraction."
-set "extm3.zh=RPA 归档将在解包后删除。"
+set "extm3.fr=Les archives RPA seront supprimées après extraction."
+set "extm3.es=Los archivos RPA se eliminarán después de la extracción."
+set "extm3.it=Gli archivi RPA verranno eliminati dopo l'estrazione."
+set "extm3.de=RPA-Archive werden nach der Extraktion gelöscht."
+set "extm3.ru=Архивы RPA будут удалены после извлечения."
+set "extm3.zh=RPA 存档将在提取后被删除。"
 
 set "extm4.en=Unpack all or select RPA archives? Enter [a/s] (default a): "
-set "extm4.zh=解包全部还是选择部分 RPA？请输入 [a/s]（默认 a）： "
+set "extm4.fr=Décompresser toutes les archives RPA ou sélectionner ? Entrer [t/s] (par défaut t) : "
+set "extm4.es=¿Descomprimir todos o seleccionar archivos RPA? Ingrese [t/s] (predeterminado t): "
+set "extm4.it=Decomprimere tutti o selezionare gli archivi RPA? Inserisci [t/s] (predefinito t): "
+set "extm4.de=Alle oder ausgewählte RPA-Archive entpacken? Geben Sie [a/s] ein (Standard a): "
+set "extm4.ru=Извлечь все или выбрать архивы RPA? Введите [a/s] (по умолчанию a): "
+set "extm4.zh=解包全部还是选择 RPA 存档？输入 [a/s]（默认 a）："
 
 set "extm5.en=You will select the RPA archives to unpack."
-set "extm5.zh=你将选择要解包的 RPA 归档。"
+set "extm5.fr=Vous allez sélectionner les archives RPA à décompresser."
+set "extm5.es=Seleccionará los archivos RPA para descomprimir."
+set "extm5.it=Selezionerai gli archivi RPA da decomprimere."
+set "extm5.de=Sie werden die RPA-Archive zum Entpacken auswählen."
+set "extm5.ru=Вы выберете архивы RPA для распаковки."
+set "extm5.zh=您将选择要解包的 RPA 存档。"
 
 set "extm6.en=All RPA archives will be unpacked."
-set "extm6.zh=将解包所有 RPA 归档。"
+set "extm6.fr=Toutes les archives RPA seront décompressées."
+set "extm6.es=Se descomprimirán todos los archivos RPA."
+set "extm6.it=Verranno decompressi tutti gli archivi RPA."
+set "extm6.de=Alle RPA-Archive werden entpackt."
+set "extm6.ru=Все архивы RPA будут распакованы."
+set "extm6.zh=所有 RPA 存档将被解包。"
 
 set "extm7.en=Failed to create:"
+set "extm7.fr=Impossible de créer :"
+set "extm7.es=No se pudo crear:"
+set "extm7.it=Impossibile creare:"
+set "extm7.de=Die Erstellung von ist fehlgeschlagen:"
+set "extm7.ru=Не удалось создать:"
 set "extm7.zh=创建失败："
 
 set "extm8.en=Searching for RPA files in the game directory..."
-set "extm8.zh=正在在 game 目录中搜索 RPA 文件..."
+set "extm8.fr=Recherche de fichiers RPA dans le répertoire du jeu..."
+set "extm8.es=Buscando archivos RPA en el directorio del juego..."
+set "extm8.it=Cercando file RPA nella directory di gioco..."
+set "extm8.de=Suche nach RPA-Dateien im Spieledirectory..."
+set "extm8.ru=Поиск файлов RPA в каталоге игры..."
+set "extm8.zh=在游戏目录中搜索 RPA 文件..."
 
 set "extm9.en=Creating rpatool and altrpatool..."
+set "extm9.fr=Création de rpatool et de altrpatool..."
+set "extm9.es=Creando rpatool y altrpatool..."
+set "extm9.it=Creazione di rpatool e altrpatool..."
+set "extm9.de=Erstellen von rpatool und altrpatool..."
+set "extm9.ru=Создание rpatool и altrpatool..."
 set "extm9.zh=正在创建 rpatool 和 altrpatool..."
 
 set "extm10.en=RPA extension renamed to:"
+set "extm10.fr=Extension RPA renommée en :"
+set "extm10.es=Extensión RPA renombrada a:"
+set "extm10.it=Estensione RPA rinominata in:"
+set "extm10.de=RPA-Erweiterung umbenannt in:"
+set "extm10.ru=Расширение RPA переименовано в:"
 set "extm10.zh=RPA 扩展名已重命名为："
 
 set "extm11.en=No RPA archive detected."
-set "extm11.zh=未检测到 RPA 归档。"
+set "extm11.fr=Aucune archive RPA détectée."
+set "extm11.es=No se detectó ningún archivo RPA."
+set "extm11.it=Nessun archivio RPA rilevato."
+set "extm11.de=Kein RPA-Archiv erkannt."
+set "extm11.ru=Архив RPA не обнаружен."
+set "extm11.zh=未检测到 RPA 存档。"
 
 set "extm12.en=Error processing RPA files in"
-set "extm12.zh=处理 RPA 文件出错："
+set "extm12.fr=Erreur lors du traitement des fichiers RPA dans"
+set "extm12.es=Error al procesar archivos RPA en"
+set "extm12.it=Errore durante l'elaborazione dei file RPA in"
+set "extm12.de=Fehler beim Verarbeiten von RPA-Dateien in"
+set "extm12.ru=Ошибка при обработке файлов RPA в"
+set "extm12.zh=处理 RPA 文件时出错："
 
 :: set extm13 to extm16 are set later in the code because of the dynamic variables.
 
 set "extm16.en=Unpacking file:"
+set "extm16.fr=Décompression du fichier :"
+set "extm16.es=Descomprimiendo archivo:"
+set "extm16.it=Decompressione del file:"
+set "extm16.de=Entpacken der Datei:"
+set "extm16.ru=Распаковка файла:"
 set "extm16.zh=正在解包文件："
 
 set "extm17.en=Do you want to unpack the RPA archive:"
-set "extm17.zh=是否解包该 RPA 归档："
+set "extm17.fr=Voulez-vous décompresser l'archive RPA :"
+set "extm17.es=¿Quieres descomprimir el archivo RPA:"
+set "extm17.it=Vuoi decomprimere l'archivio RPA:"
+set "extm17.de=Möchten Sie das RPA-Archiv entpacken:"
+set "extm17.ru=Вы хотите распаковать архив RPA:"
+set "extm17.zh=是否要解包 RPA 存档："
 
 :: set extm18 to extm24 are set later in the code because of the dynamic variables.
 
 set "extm25.en=Extension found:"
-set "extm25.zh=检测到扩展名："
+set "extm25.fr=Extension trouvée :"
+set "extm25.es=Extensión encontrada:"
+set "extm25.it=Estensione trovata:"
+set "extm25.de=Erweiterung gefunden:"
+set "extm25.ru=Найдено расширение:"
+set "extm25.zh=找到扩展名："
 
 :: set extm26 are set later in the code because of the dynamic variables.
 
@@ -855,11 +1307,8 @@ if not exist "!detect_rpa_ext_py!.b64" (
     call :elog " %RED%!FAIL.%LNG%!%RES%!extm7.%LNG%! %YEL%!detect_rpa_ext_py!.b64%RES%"
     goto rpa_cleanup
 ) else (
-    if !debuglevel! GEQ 1 (
-        call :elog .
-        echo powershell.exe -NoLogo -NoProfile -NonInteractive -Command "& { [IO.File]::WriteAllBytes('!detect_rpa_ext_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_rpa_ext_py!.b64')))}"
-    )
-    powershell.exe -NoLogo -NoProfile -NonInteractive -Command "& { [IO.File]::WriteAllBytes('!detect_rpa_ext_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_rpa_ext_py!.b64')))}"
+    echo "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!detect_rpa_ext_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_rpa_ext_py!.b64')))}" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!detect_rpa_ext_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_rpa_ext_py!.b64')))}" %DEBUGREDIR%
     del /f /q "!detect_rpa_ext_py!.b64" %DEBUGREDIR%
 )
 if not exist "!detect_rpa_ext_py!.tmp" (
@@ -883,7 +1332,7 @@ if defined EXTLINE (
     set EXTLINE=!EXTLINE:,= !
     set EXTLINE=!EXTLINE:.=!
     echo "!EXTLINE!" | findstr /i "rpa" >nul
-    if !errorlevel! GEQ 1 (
+    if !ERRORLEVEL! GEQ 1 (
         set "rpaExt=!EXTLINE! rpa"
     ) else (
         set "rpaExt=!EXTLINE!"
@@ -925,8 +1374,7 @@ call :elog .
 :found_ext
 call :elog .
 set "extans="
-<nul set /p "extans=!extm1.%LNG%!"
-%SystemRoot%\System32\choice.exe /C OSJYN /N /D N /T %CTIME%
+call :choiceEx "!extm1.%LNG%!" "OSJYN" "N" "%CTIME%" "-rawMsg"
 if errorlevel 5 (
     set "extans=n"
 ) else if errorlevel 4 (
@@ -951,8 +1399,7 @@ if /i "!extans!" == "n" (
 :: Ask if we want to extract all RPA or select
 call :elog .
 set "extans="
-<nul set /p "extans=!extm4.%LNG%!"
-%SystemRoot%\System32\choice.exe /C ATS /N /D A /T %CTIME%
+call :choiceEx "!extm4.%LNG%! " "ATS" "A" "%CTIME%" "-rawMsg"
 if errorlevel 3 (
     set "extans=s"
 ) else if errorlevel 2 (
@@ -971,7 +1418,8 @@ if /i "!extans!" == "s" (
 call :elog .
 
 call :elog .
-echo !extm9.%LNG%! >> "%UNRENLOG%" REM Creating rpatool...
+:: Creating rpatool...
+echo !extm9.%LNG%! >> "%UNRENLOG%"
 <nul set /p="!extm9.%LNG%!"
 
 cd /d "%WORKDIR%"
@@ -987,15 +1435,18 @@ del /f /q "%altrpatool%" %DEBUGREDIR%
 :: Write Python scripts from our base64 strings
 :: detect_archive.py
 set "detect_archive_py=%TEMP%\detect_archive.py"
+del /f /q "%detect_archive_py%.tmp" %DEBUGREDIR%
+del /f /q "%detect_archive_py%.b64" %DEBUGREDIR%
+del /f /q "%detect_archive_py%" %DEBUGREDIR%
 >"%detect_archive_py%.b64" (
-    echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uDQppbXBvcnQgc3lzDQoNCmRlZiBkZXRlY3RfYXJjaGl2ZV90eXBlKHBhdGgpOg0KICAgIHRyeToNCiAgICAgICAgd2l0aCBvcGVuKHBhdGgsICJyYiIpIGFzIGY6DQogICAgICAgICAgICBoZWFkZXIgPSBmLnJlYWQoOCkNCiAgICAgICAgICAgICMgU3RhbmRhcmQgUlBBIGFyY2hpdmVzIHN0YXJ0IHdpdGggIlJQQS0zLjAiIG9yICJSUEEtMi4wIg0KICAgICAgICAgICAgaWYgaGVhZGVyLnN0YXJ0c3dpdGgoYiJSUEEtIik6DQogICAgICAgICAgICAgICAgcmV0dXJuIDAgICMgc3RhbmRhcmQNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgcmV0dXJuIDEgICMgbW9kaWZpZWQgLyB1bmtub3duDQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAjIFB5dGhvbiAyIGRvZXNuJ3Qgc3VwcG9ydCBmLXN0cmluZ3MsIHNvIHdlIHVzZSBmb3JtYXQoKQ0KICAgICAgICBzeXMuc3RkZXJyLndyaXRlKCJFcnJvcjoge31cbiIuZm9ybWF0KGUpKQ0KICAgICAgICByZXR1cm4gMSAgIyBieSBkZWZhdWx0LCB3ZSBjb25zaWRlciBtb2RpZmllZA0KDQppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOg0KICAgIGlmIGxlbihzeXMuYXJndikgPCAyOg0KICAgICAgICBwcmludCgiVXNhZ2U6IGRldGVjdF9hcmNoaXZlLnB5IDxhcmNoaXZlX2ZpbGU+IikNCiAgICAgICAgc3lzLmV4aXQoMSkNCg0KICAgIGFyY2hpdmVfZmlsZSA9IHN5cy5hcmd2WzFdDQogICAgcmVzdWx0ID0gZGV0ZWN0X2FyY2hpdmVfdHlwZShhcmNoaXZlX2ZpbGUpDQogICAgc3lzLmV4aXQocmVzdWx0KQ0K
+    echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uDQppbXBvcnQgc3lzDQoNCmRlZiBkZXRlY3RfYXJjaGl2ZV90eXBlKHBhdGgpOg0KICAgIHRyeToNCiAgICAgICAgd2l0aCBvcGVuKHBhdGgsICJyYiIpIGFzIGY6DQogICAgICAgICAgICBoZWFkZXIgPSBmLnJlYWQoOCkNCiAgICAgICAgICAgICMgU3RhbmRhcmQgUlBBIGFyY2hpdmVzIHN0YXJ0IHdpdGggIlJQQS0zLjAiIG9yICJSUEEtMi4wIiBvciAiU1ZBQy0xLjAiDQogICAgICAgICAgICBpZiBoZWFkZXIuc3RhcnRzd2l0aChiIlJQQS0iKSBvciBoZWFkZXIuc3RhcnRzd2l0aChiIlNWQUMtIik6DQogICAgICAgICAgICAgICAgcmV0dXJuIDAgICMgc3RhbmRhcmQNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgcmV0dXJuIDEgICMgbW9kaWZpZWQgLyB1bmtub3duDQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAjIFB5dGhvbiAyIGRvZXNuJ3Qgc3VwcG9ydCBmLXN0cmluZ3MsIHNvIHdlIHVzZSBmb3JtYXQoKQ0KICAgICAgICBzeXMuc3RkZXJyLndyaXRlKCJFcnJvcjoge31cbiIuZm9ybWF0KGUpKQ0KICAgICAgICByZXR1cm4gMSAgIyBieSBkZWZhdWx0LCB3ZSBjb25zaWRlciBtb2RpZmllZA0KDQppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOg0KICAgIGlmIGxlbihzeXMuYXJndikgPCAyOg0KICAgICAgICBwcmludCgiVXNhZ2U6IGRldGVjdF9hcmNoaXZlLnB5IDxhcmNoaXZlX2ZpbGU+IikNCiAgICAgICAgc3lzLmV4aXQoMSkNCg0KICAgIGFyY2hpdmVfZmlsZSA9IHN5cy5hcmd2WzFdDQogICAgcmVzdWx0ID0gZGV0ZWN0X2FyY2hpdmVfdHlwZShhcmNoaXZlX2ZpbGUpDQogICAgc3lzLmV4aXQocmVzdWx0KQ0K
 )
 if not exist "!detect_archive_py!.b64" (
     call :elog " %RED%!FAIL.%LNG%!%RES%!extm7.%LNG%! %YEL%!detect_archive_py!.b64%RES%"
     goto rpa_cleanup
 ) else (
-    echo powershell.exe -NoLogo -NoProfile -NonInteractive -Command "& { [IO.File]::WriteAllBytes('!detect_archive_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_archive_py!.b64')))}" >> "%UNRENLOG%"
-    powershell.exe -NoLogo -NoProfile -NonInteractive -Command "& { [IO.File]::WriteAllBytes('!detect_archive_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_archive_py!.b64')))}"
+    echo "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!detect_archive_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_archive_py!.b64')))}" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!detect_archive_py!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!detect_archive_py!.b64')))}" %DEBUGREDIR%
     del /f /q "!detect_archive_py!.b64" %DEBUGREDIR%
 )
 if not exist "!detect_archive_py!.tmp" (
@@ -1023,12 +1474,13 @@ if "!RPATOOL-NEW!" == "n" (
 :: rpatool by Shizmob 2022-08-24
 ::  https://github.com/Shizmob/rpatool
 ::  Version 0.8 w pickle5 - Require Python ^>= 3.8
+::  Include SVAC-1.0 decoder by JoeLurmel@f95zone
 if "!RPATOOL-NEW!" == "y" (
     >"!rpatool!.b64" (
-        echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMw0KDQpmcm9tIF9fZnV0dXJlX18gaW1wb3J0IHByaW50X2Z1bmN0aW9uDQoNCmltcG9ydCBzeXMNCmltcG9ydCBvcw0KaW1wb3J0IGNvZGVjcw0KaW1wb3J0IHBpY2tsZQ0KaW1wb3J0IGVycm5vDQppbXBvcnQgcmFuZG9tDQp0cnk6DQogICAgaW1wb3J0IHBpY2tsZTUgYXMgcGlja2xlDQpleGNlcHQ6DQogICAgaW1wb3J0IHBpY2tsZQ0KICAgIGlmIHN5cy52ZXJzaW9uX2luZm8gPCAoMywgOCk6DQogICAgICAgIHByaW50KCd3YXJuaW5nOiBwaWNrbGU1IG1vZHVsZSBjb3VsZCBub3QgYmUgbG9hZGVkIGFuZCBQeXRob24gdmVyc2lvbiBpcyA8IDMuOCwnLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIHByaW50KCcgICAgICAgICBuZXdlciBSZW5cJ1B5IGdhbWVzIG1heSBmYWlsIHRvIHVucGFjayEnLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIGlmIHN5cy52ZXJzaW9uX2luZm8gPj0gKDMsIDUpOg0KICAgICAgICAgICAgcHJpbnQoJyAgICAgICAgIGlmIHRoaXMgb2NjdXJzLCBmaXggaXQgYnkgaW5zdGFsbGluZyBwaWNrbGU1OicsIGZpbGU9c3lzLnN0ZGVycikNCiAgICAgICAgICAgIHByaW50KCcgICAgICAgICAgICAge30gLW0gcGlwIGluc3RhbGwgcGlja2xlNScuZm9ybWF0KHN5cy5leGVjdXRhYmxlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgcHJpbnQoJyAgICAgICAgIGlmIHRoaXMgb2NjdXJzLCBwbGVhc2UgdXBncmFkZSB0byBhIG5ld2VyIFB5dGhvbiAoPj0gMy41KS4nLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIHByaW50KGZpbGU9c3lzLnN0ZGVycikNCg0KDQppZiBzeXMudmVyc2lvbl9pbmZvWzBdID49IDM6DQogICAgZGVmIF91bmljb2RlKHRleHQpOg0KICAgICAgICByZXR1cm4gdGV4dA0KDQogICAgZGVmIF9wcmludGFibGUodGV4dCk6DQogICAgICAgIHJldHVybiB0ZXh0DQoNCiAgICBkZWYgX3VubWFuZ2xlKGRhdGEpOg0KICAgICAgICBpZiB0eXBlKGRhdGEpID09IGJ5dGVzOg0KICAgICAgICAgICAgcmV0dXJuIGRhdGENCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIHJldHVybiBkYXRhLmVuY29kZSgnbGF0aW4xJykNCg0KICAgIGRlZiBfdW5waWNrbGUoZGF0YSk6DQogICAgICAgICMgU3BlY2lmeSBsYXRpbjEgZW5jb2RpbmcgdG8gcHJldmVudCByYXcgYnl0ZSB2YWx1ZXMgZnJvbSBjYXVzaW5nIGFuIEFTQ0lJIGRlY29kZSBlcnJvci4NCiAgICAgICAgcmV0dXJuIHBpY2tsZS5sb2FkcyhkYXRhLCBlbmNvZGluZz0nbGF0aW4xJykNCmVsaWYgc3lzLnZlcnNpb25faW5mb1swXSA9PSAyOg0KICAgIGRlZiBfdW5pY29kZSh0ZXh0KToNCiAgICAgICAgaWYgaXNpbnN0YW5jZSh0ZXh0LCB1bmljb2RlKToNCiAgICAgICAgICAgIHJldHVybiB0ZXh0DQogICAgICAgIHJldHVybiB0ZXh0LmRlY29kZSgndXRmLTgnKQ0KDQogICAgZGVmIF9wcmludGFibGUodGV4dCk6DQogICAgICAgIHJldHVybiB0ZXh0LmVuY29kZSgndXRmLTgnKQ0KDQogICAgZGVmIF91bm1hbmdsZShkYXRhKToNCiAgICAgICAgcmV0dXJuIGRhdGENCg0KICAgIGRlZiBfdW5waWNrbGUoZGF0YSk6DQogICAgICAgIHJldHVybiBwaWNrbGUubG9hZHMoZGF0YSkNCg0KY2xhc3MgUmVuUHlBcmNoaXZlOg0KICAgIGZpbGUgPSBOb25lDQogICAgaGFuZGxlID0gTm9uZQ0KDQogICAgZmlsZXMgPSB7fQ0KICAgIGluZGV4ZXMgPSB7fQ0KDQogICAgdmVyc2lvbiA9IE5vbmUNCiAgICBwYWRsZW5ndGggPSAwDQogICAga2V5ID0gTm9uZQ0KICAgIHZlcmJvc2UgPSBGYWxzZQ0KDQogICAgUlBBMl9NQUdJQyA9ICdSUEEtMi4wICcNCiAgICBSUEEzX01BR0lDID0gJ1JQQS0zLjAgJw0KICAgIFJQQTNfMl9NQUdJQyA9ICdSUEEtMy4yICcNCg0KICAgICMgRm9yIGJhY2t3YXJkIGNvbXBhdGliaWxpdHksIG90aGVyd2lzZSBQeXRob24zLXBhY2tlZCBhcmNoaXZlcyB3b24ndCBiZSByZWFkIGJ5IFB5dGhvbjINCiAgICBQSUNLTEVfUFJPVE9DT0wgPSAyDQoNCiAgICBkZWYgX19pbml0X18oc2VsZiwgZmlsZSA9IE5vbmUsIHZlcnNpb24gPSAzLCBwYWRsZW5ndGggPSAwLCBrZXkgPSAweERFQURCRUVGLCB2ZXJib3NlID0gRmFsc2UpOg0KICAgICAgICBzZWxmLnBhZGxlbmd0aCA9IHBhZGxlbmd0aA0KICAgICAgICBzZWxmLmtleSA9IGtleQ0KICAgICAgICBzZWxmLnZlcmJvc2UgPSB2ZXJib3NlDQoNCiAgICAgICAgaWYgZmlsZSBpcyBub3QgTm9uZToNCiAgICAgICAgICAgIHNlbGYubG9hZChmaWxlKQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgc2VsZi52ZXJzaW9uID0gdmVyc2lvbg0KDQogICAgZGVmIF9fZGVsX18oc2VsZik6DQogICAgICAgIGlmIHNlbGYuaGFuZGxlIGlzIG5vdCBOb25lOg0KICAgICAgICAgICAgc2VsZi5oYW5kbGUuY2xvc2UoKQ0KDQogICAgIyBEZXRlcm1pbmUgYXJjaGl2ZSB2ZXJzaW9uLg0KICAgIGRlZiBnZXRfdmVyc2lvbihzZWxmKToNCiAgICAgICAgc2VsZi5oYW5kbGUuc2VlaygwKQ0KICAgICAgICBtYWdpYyA9IHNlbGYuaGFuZGxlLnJlYWRsaW5lKCkuZGVjb2RlKCd1dGYtOCcpDQoNCiAgICAgICAgaWYgbWFnaWMuc3RhcnRzd2l0aChzZWxmLlJQQTNfMl9NQUdJQyk6DQogICAgICAgICAgICByZXR1cm4gMy4yDQogICAgICAgIGVsaWYgbWFnaWMuc3RhcnRzd2l0aChzZWxmLlJQQTNfTUFHSUMpOg0KICAgICAgICAgICAgcmV0dXJuIDMNCiAgICAgICAgZWxpZiBtYWdpYy5zdGFydHN3aXRoKHNlbGYuUlBBMl9NQUdJQyk6DQogICAgICAgICAgICByZXR1cm4gMg0KICAgICAgICBlbGlmIHNlbGYuZmlsZS5lbmRzd2l0aCgnLnJwaScpOg0KICAgICAgICAgICAgcmV0dXJuIDENCg0KICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCd0aGUgZ2l2ZW4gZmlsZSBpcyBub3QgYSB2YWxpZCBSZW5cJ1B5IGFyY2hpdmUsIG9yIGFuIHVuc3VwcG9ydGVkIHZlcnNpb24nKQ0KDQogICAgIyBFeHRyYWN0IGZpbGUgaW5kZXhlcyBmcm9tIG9wZW5lZCBhcmNoaXZlLg0KICAgIGRlZiBleHRyYWN0X2luZGV4ZXMoc2VsZik6DQogICAgICAgIHNlbGYuaGFuZGxlLnNlZWsoMCkNCiAgICAgICAgaW5kZXhlcyA9IE5vbmUNCg0KICAgICAgICBpZiBzZWxmLnZlcnNpb24gaW4gWzIsIDMsIDMuMl06DQogICAgICAgICAgICAjIEZldGNoIG1ldGFkYXRhLg0KICAgICAgICAgICAgbWV0YWRhdGEgPSBzZWxmLmhhbmRsZS5yZWFkbGluZSgpDQogICAgICAgICAgICB2YWxzID0gbWV0YWRhdGEuc3BsaXQoKQ0KICAgICAgICAgICAgb2Zmc2V0ID0gaW50KHZhbHNbMV0sIDE2KQ0KICAgICAgICAgICAgaWYgc2VsZi52ZXJzaW9uID09IDM6DQogICAgICAgICAgICAgICAgc2VsZi5rZXkgPSAwDQogICAgICAgICAgICAgICAgZm9yIHN1YmtleSBpbiB2YWxzWzI6XToNCiAgICAgICAgICAgICAgICAgICAgc2VsZi5rZXkgXj0gaW50KHN1YmtleSwgMTYpDQogICAgICAgICAgICBlbGlmIHNlbGYudmVyc2lvbiA9PSAzLjI6DQogICAgICAgICAgICAgICAgc2VsZi5rZXkgPSAwDQogICAgICAgICAgICAgICAgZm9yIHN1YmtleSBpbiB2YWxzWzM6XToNCiAgICAgICAgICAgICAgICAgICAgc2VsZi5rZXkgXj0gaW50KHN1YmtleSwgMTYpDQoNCiAgICAgICAgICAgICMgTG9hZCBpbiBpbmRleGVzLg0KICAgICAgICAgICAgc2VsZi5oYW5kbGUuc2VlayhvZmZzZXQpDQogICAgICAgICAgICBjb250ZW50cyA9IGNvZGVjcy5kZWNvZGUoc2VsZi5oYW5kbGUucmVhZCgpLCAnemxpYicpDQogICAgICAgICAgICBpbmRleGVzID0gX3VucGlja2xlKGNvbnRlbnRzKQ0KDQogICAgICAgICAgICAjIERlb2JmdXNjYXRlIGluZGV4ZXMuDQogICAgICAgICAgICBpZiBzZWxmLnZlcnNpb24gaW4gWzMsIDMuMl06DQogICAgICAgICAgICAgICAgb2JmdXNjYXRlZF9pbmRleGVzID0gaW5kZXhlcw0KICAgICAgICAgICAgICAgIGluZGV4ZXMgPSB7fQ0KICAgICAgICAgICAgICAgIGZvciBpIGluIG9iZnVzY2F0ZWRfaW5kZXhlcy5rZXlzKCk6DQogICAgICAgICAgICAgICAgICAgIGlmIGxlbihvYmZ1c2NhdGVkX2luZGV4ZXNbaV1bMF0pID09IDI6DQogICAgICAgICAgICAgICAgICAgICAgICBpbmRleGVzW2ldID0gWyAob2Zmc2V0IF4gc2VsZi5rZXksIGxlbmd0aCBeIHNlbGYua2V5KSBmb3Igb2Zmc2V0LCBsZW5ndGggaW4gb2JmdXNjYXRlZF9pbmRleGVzW2ldIF0NCiAgICAgICAgICAgICAgICAgICAgZWxzZToNCiAgICAgICAgICAgICAgICAgICAgICAgIGluZGV4ZXNbaV0gPSBbIChvZmZzZXQgXiBzZWxmLmtleSwgbGVuZ3RoIF4gc2VsZi5rZXksIHByZWZpeCkgZm9yIG9mZnNldCwgbGVuZ3RoLCBwcmVmaXggaW4gb2JmdXNjYXRlZF9pbmRleGVzW2ldIF0NCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIGluZGV4ZXMgPSBwaWNrbGUubG9hZHMoY29kZWNzLmRlY29kZShzZWxmLmhhbmRsZS5yZWFkKCksICd6bGliJykpDQoNCiAgICAgICAgcmV0dXJuIGluZGV4ZXMNCg0KICAgICMgR2VuZXJhdGUgcHNldWRvcmFuZG9tIHBhZGRpbmcgKGZvciB3aGF0ZXZlciByZWFzb24pLg0KICAgIGRlZiBnZW5lcmF0ZV9wYWRkaW5nKHNlbGYpOg0KICAgICAgICBsZW5ndGggPSByYW5kb20ucmFuZGludCgxLCBzZWxmLnBhZGxlbmd0aCkNCg0KICAgICAgICBwYWRkaW5nID0gJycNCiAgICAgICAgd2hpbGUgbGVuZ3RoID4gMDoNCiAgICAgICAgICAgIHBhZGRpbmcgKz0gY2hyKHJhbmRvbS5yYW5kaW50KDEsIDI1NSkpDQogICAgICAgICAgICBsZW5ndGggLT0gMQ0KDQogICAgICAgIHJldHVybiBieXRlcyhwYWRkaW5nLCAndXRmLTgnKQ0KDQogICAgIyBDb252ZXJ0cyBhIGZpbGVuYW1lIHRvIGFyY2hpdmUgZm9ybWF0Lg0KICAgIGRlZiBjb252ZXJ0X2ZpbGVuYW1lKHNlbGYsIGZpbGVuYW1lKToNCiAgICAgICAgKGRyaXZlLCBmaWxlbmFtZSkgPSBvcy5wYXRoLnNwbGl0ZHJpdmUob3MucGF0aC5ub3JtcGF0aChmaWxlbmFtZSkucmVwbGFjZShvcy5zZXAsICcvJykpDQogICAgICAgIHJldHVybiBmaWxlbmFtZQ0KDQogICAgIyBEZWJ1ZyAodmVyYm9zZSkgbWVzc2FnZXMuDQogICAgZGVmIHZlcmJvc2VfcHJpbnQoc2VsZiwgbWVzc2FnZSk6DQogICAgICAgIGlmIHNlbGYudmVyYm9zZToNCiAgICAgICAgICAgIHByaW50KG1lc3NhZ2UpDQoNCg0KICAgICMgTGlzdCBmaWxlcyBpbiBhcmNoaXZlIGFuZCBjdXJyZW50IGludGVybmFsIHN0b3JhZ2UuDQogICAgZGVmIGxpc3Qoc2VsZik6DQogICAgICAgIHJldHVybiBsaXN0KHNlbGYuaW5kZXhlcy5rZXlzKCkpICsgbGlzdChzZWxmLmZpbGVzLmtleXMoKSkNCg0KICAgICMgQ2hlY2sgaWYgYSBmaWxlIGV4aXN0cyBpbiB0aGUgYXJjaGl2ZS4NCiAgICBkZWYgaGFzX2ZpbGUoc2VsZiwgZmlsZW5hbWUpOg0KICAgICAgICBmaWxlbmFtZSA9IF91bmljb2RlKGZpbGVuYW1lKQ0KICAgICAgICByZXR1cm4gZmlsZW5hbWUgaW4gc2VsZi5pbmRleGVzLmtleXMoKSBvciBmaWxlbmFtZSBpbiBzZWxmLmZpbGVzLmtleXMoKQ0KDQogICAgIyBSZWFkIGZpbGUgZnJvbSBhcmNoaXZlIG9yIGludGVybmFsIHN0b3JhZ2UuDQogICAgZGVmIHJlYWQoc2VsZiwgZmlsZW5hbWUpOg0KICAgICAgICBmaWxlbmFtZSA9IHNlbGYuY29udmVydF9maWxlbmFtZShfdW5pY29kZShmaWxlbmFtZSkpDQoNCiAgICAgICAgIyBDaGVjayBpZiB0aGUgZmlsZSBleGlzdHMgaW4gb3VyIGluZGV4ZXMuDQogICAgICAgIGlmIGZpbGVuYW1lIG5vdCBpbiBzZWxmLmZpbGVzIGFuZCBmaWxlbmFtZSBub3QgaW4gc2VsZi5pbmRleGVzOg0KICAgICAgICAgICAgcmFpc2UgSU9FcnJvcihlcnJuby5FTk9FTlQsICd0aGUgcmVxdWVzdGVkIGZpbGUgezB9IGRvZXMgbm90IGV4aXN0IGluIHRoZSBnaXZlbiBSZW5cJ1B5IGFyY2hpdmUnLmZvcm1hdCgNCiAgICAgICAgICAgICAgICBfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQoNCiAgICAgICAgIyBJZiBpdCdzIGluIG91ciBvcGVuZWQgYXJjaGl2ZSBpbmRleCwgYW5kIG91ciBhcmNoaXZlIGhhbmRsZSBpc24ndCB2YWxpZCwgc29tZXRoaW5nIGlzIG9idmlvdXNseSB3cm9uZy4NCiAgICAgICAgaWYgZmlsZW5hbWUgbm90IGluIHNlbGYuZmlsZXMgYW5kIGZpbGVuYW1lIGluIHNlbGYuaW5kZXhlcyBhbmQgc2VsZi5oYW5kbGUgaXMgTm9uZToNCiAgICAgICAgICAgIHJhaXNlIElPRXJyb3IoZXJybm8uRU5PRU5ULCA
-        echo ndGhlIHJlcXVlc3RlZCBmaWxlIHswfSBkb2VzIG5vdCBleGlzdCBpbiB0aGUgZ2l2ZW4gUmVuXCdQeSBhcmNoaXZlJy5mb3JtYXQoDQogICAgICAgICAgICAgICAgX3ByaW50YWJsZShmaWxlbmFtZSkpKQ0KDQogICAgICAgICMgQ2hlY2sgb3VyIHNpbXBsaWZpZWQgaW50ZXJuYWwgaW5kZXhlcyBmaXJzdCwgaW4gY2FzZSBzb21lb25lIHdhbnRzIHRvIHJlYWQgYSBmaWxlIHRoZXkgYWRkZWQgYmVmb3JlIHdpdGhvdXQgc2F2aW5nLCBmb3Igc29tZSB1bmhvbHkgcmVhc29uLg0KICAgICAgICBpZiBmaWxlbmFtZSBpbiBzZWxmLmZpbGVzOg0KICAgICAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdSZWFkaW5nIGZpbGUgezB9IGZyb20gaW50ZXJuYWwgc3RvcmFnZS4uLicuZm9ybWF0KF9wcmludGFibGUoZmlsZW5hbWUpKSkNCiAgICAgICAgICAgIHJldHVybiBzZWxmLmZpbGVzW2ZpbGVuYW1lXQ0KICAgICAgICAjIFdlIG5lZWQgdG8gcmVhZCB0aGUgZmlsZSBmcm9tIG91ciBvcGVuIGFyY2hpdmUuDQogICAgICAgIGVsc2U6DQogICAgICAgICAgICAjIFJlYWQgb2Zmc2V0IGFuZCBsZW5ndGgsIHNlZWsgdG8gdGhlIG9mZnNldCBhbmQgcmVhZCB0aGUgZmlsZSBjb250ZW50cy4NCiAgICAgICAgICAgIGlmIGxlbihzZWxmLmluZGV4ZXNbZmlsZW5hbWVdWzBdKSA9PSAzOg0KICAgICAgICAgICAgICAgIChvZmZzZXQsIGxlbmd0aCwgcHJlZml4KSA9IHNlbGYuaW5kZXhlc1tmaWxlbmFtZV1bMF0NCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgKG9mZnNldCwgbGVuZ3RoKSA9IHNlbGYuaW5kZXhlc1tmaWxlbmFtZV1bMF0NCiAgICAgICAgICAgICAgICBwcmVmaXggPSAnJw0KDQogICAgICAgICAgICBzZWxmLnZlcmJvc2VfcHJpbnQoJ1JlYWRpbmcgZmlsZSB7MH0gZnJvbSBkYXRhIGZpbGUgezF9Li4uIChvZmZzZXQgPSB7Mn0sIGxlbmd0aCA9IHszfSBieXRlcyknLmZvcm1hdCgNCiAgICAgICAgICAgICAgICBfcHJpbnRhYmxlKGZpbGVuYW1lKSwgc2VsZi5maWxlLCBvZmZzZXQsIGxlbmd0aCkpDQogICAgICAgICAgICBzZWxmLmhhbmRsZS5zZWVrKG9mZnNldCkNCiAgICAgICAgICAgIHJldHVybiBfdW5tYW5nbGUocHJlZml4KSArIHNlbGYuaGFuZGxlLnJlYWQobGVuZ3RoIC0gbGVuKHByZWZpeCkpDQoNCiAgICAjIE1vZGlmeSBhIGZpbGUgaW4gYXJjaGl2ZSBvciBpbnRlcm5hbCBzdG9yYWdlLg0KICAgIGRlZiBjaGFuZ2Uoc2VsZiwgZmlsZW5hbWUsIGNvbnRlbnRzKToNCiAgICAgICAgZmlsZW5hbWUgPSBfdW5pY29kZShmaWxlbmFtZSkNCg0KICAgICAgICAjIE91ciAnY2hhbmdlJyBpcyBiYXNpY2FsbHkgcmVtb3ZpbmcgdGhlIGZpbGUgZnJvbSBvdXIgaW5kZXhlcyBmaXJzdCwgYW5kIHRoZW4gcmUtYWRkaW5nIGl0Lg0KICAgICAgICBzZWxmLnJlbW92ZShmaWxlbmFtZSkNCiAgICAgICAgc2VsZi5hZGQoZmlsZW5hbWUsIGNvbnRlbnRzKQ0KDQogICAgIyBBZGQgYSBmaWxlIHRvIHRoZSBpbnRlcm5hbCBzdG9yYWdlLg0KICAgIGRlZiBhZGQoc2VsZiwgZmlsZW5hbWUsIGNvbnRlbnRzKToNCiAgICAgICAgZmlsZW5hbWUgPSBzZWxmLmNvbnZlcnRfZmlsZW5hbWUoX3VuaWNvZGUoZmlsZW5hbWUpKQ0KICAgICAgICBpZiBmaWxlbmFtZSBpbiBzZWxmLmZpbGVzIG9yIGZpbGVuYW1lIGluIHNlbGYuaW5kZXhlczoNCiAgICAgICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoJ2ZpbGUgezB9IGFscmVhZHkgZXhpc3RzIGluIGFyY2hpdmUnLmZvcm1hdChfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQoNCiAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdBZGRpbmcgZmlsZSB7MH0gdG8gYXJjaGl2ZS4uLiAobGVuZ3RoID0gezF9IGJ5dGVzKScuZm9ybWF0KA0KICAgICAgICAgICAgX3ByaW50YWJsZShmaWxlbmFtZSksIGxlbihjb250ZW50cykpKQ0KICAgICAgICBzZWxmLmZpbGVzW2ZpbGVuYW1lXSA9IGNvbnRlbnRzDQoNCiAgICAjIFJlbW92ZSBhIGZpbGUgZnJvbSBhcmNoaXZlIG9yIGludGVybmFsIHN0b3JhZ2UuDQogICAgZGVmIHJlbW92ZShzZWxmLCBmaWxlbmFtZSk6DQogICAgICAgIGZpbGVuYW1lID0gX3VuaWNvZGUoZmlsZW5hbWUpDQogICAgICAgIGlmIGZpbGVuYW1lIGluIHNlbGYuZmlsZXM6DQogICAgICAgICAgICBzZWxmLnZlcmJvc2VfcHJpbnQoJ1JlbW92aW5nIGZpbGUgezB9IGZyb20gaW50ZXJuYWwgc3RvcmFnZS4uLicuZm9ybWF0KF9wcmludGFibGUoZmlsZW5hbWUpKSkNCiAgICAgICAgICAgIGRlbCBzZWxmLmZpbGVzW2ZpbGVuYW1lXQ0KICAgICAgICBlbGlmIGZpbGVuYW1lIGluIHNlbGYuaW5kZXhlczoNCiAgICAgICAgICAgIHNlbGYudmVyYm9zZV9wcmludCgnUmVtb3ZpbmcgZmlsZSB7MH0gZnJvbSBhcmNoaXZlIGluZGV4ZXMuLi4nLmZvcm1hdChfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQogICAgICAgICAgICBkZWwgc2VsZi5pbmRleGVzW2ZpbGVuYW1lXQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgcmFpc2UgSU9FcnJvcihlcnJuby5FTk9FTlQsICd0aGUgcmVxdWVzdGVkIGZpbGUgezB9IGRvZXMgbm90IGV4aXN0IGluIHRoaXMgYXJjaGl2ZScuZm9ybWF0KF9wcmludGFibGUoZmlsZW5hbWUpKSkNCg0KICAgICMgTG9hZCBhcmNoaXZlLg0KICAgIGRlZiBsb2FkKHNlbGYsIGZpbGVuYW1lKToNCiAgICAgICAgZmlsZW5hbWUgPSBfdW5pY29kZShmaWxlbmFtZSkNCg0KICAgICAgICBpZiBzZWxmLmhhbmRsZSBpcyBub3QgTm9uZToNCiAgICAgICAgICAgIHNlbGYuaGFuZGxlLmNsb3NlKCkNCiAgICAgICAgc2VsZi5maWxlID0gZmlsZW5hbWUNCiAgICAgICAgc2VsZi5maWxlcyA9IHt9DQogICAgICAgIHNlbGYuaGFuZGxlID0gb3BlbihzZWxmLmZpbGUsICdyYicpDQogICAgICAgIHNlbGYudmVyc2lvbiA9IHNlbGYuZ2V0X3ZlcnNpb24oKQ0KICAgICAgICBzZWxmLmluZGV4ZXMgPSBzZWxmLmV4dHJhY3RfaW5kZXhlcygpDQoNCiAgICAjIFNhdmUgY3VycmVudCBzdGF0ZSBpbnRvIGEgbmV3IGZpbGUsIG1lcmdpbmcgYXJjaGl2ZSBhbmQgaW50ZXJuYWwgc3RvcmFnZSwgcmVidWlsZGluZyBpbmRleGVzLCBhbmQgb3B0aW9uYWxseSBzYXZpbmcgaW4gYW5vdGhlciBmb3JtYXQgdmVyc2lvbi4NCiAgICBkZWYgc2F2ZShzZWxmLCBmaWxlbmFtZSA9IE5vbmUpOg0KICAgICAgICBmaWxlbmFtZSA9IF91bmljb2RlKGZpbGVuYW1lKQ0KDQogICAgICAgIGlmIGZpbGVuYW1lIGlzIE5vbmU6DQogICAgICAgICAgICBmaWxlbmFtZSA9IHNlbGYuZmlsZQ0KICAgICAgICBpZiBmaWxlbmFtZSBpcyBOb25lOg0KICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcignbm8gdGFyZ2V0IGZpbGUgZm91bmQgZm9yIHNhdmluZyBhcmNoaXZlJykNCiAgICAgICAgaWYgc2VsZi52ZXJzaW9uICE9IDIgYW5kIHNlbGYudmVyc2lvbiAhPSAzOg0KICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcignc2F2aW5nIGlzIG9ubHkgc3VwcG9ydGVkIGZvciB2ZXJzaW9uIDIgYW5kIDMgYXJjaGl2ZXMnKQ0KDQogICAgICAgIHNlbGYudmVyYm9zZV9wcmludCgnUmVidWlsZGluZyBhcmNoaXZlIGluZGV4Li4uJykNCiAgICAgICAgIyBGaWxsIG91ciBvd24gZmlsZXMgc3RydWN0dXJlIHdpdGggdGhlIGZpbGVzIGFkZGVkIG9yIGNoYW5nZWQgaW4gdGhpcyBzZXNzaW9uLg0KICAgICAgICBmaWxlcyA9IHNlbGYuZmlsZXMNCiAgICAgICAgIyBGaXJzdCwgcmVhZCBmaWxlcyBmcm9tIHRoZSBjdXJyZW50IGFyY2hpdmUgaW50byBvdXIgZmlsZXMgc3RydWN0dXJlLg0KICAgICAgICBmb3IgZmlsZSBpbiBsaXN0KHNlbGYuaW5kZXhlcy5rZXlzKCkpOg0KICAgICAgICAgICAgY29udGVudCA9IHNlbGYucmVhZChmaWxlKQ0KICAgICAgICAgICAgIyBSZW1vdmUgZnJvbSBpbmRleGVzIGFycmF5IG9uY2UgcmVhZCwgYWRkIHRvIG91ciBvd24gYXJyYXkuDQogICAgICAgICAgICBkZWwgc2VsZi5pbmRleGVzW2ZpbGVdDQogICAgICAgICAgICBmaWxlc1tmaWxlXSA9IGNvbnRlbnQNCg0KICAgICAgICAjIFByZWRpY3QgaGVhZGVyIGxlbmd0aCwgd2UnbGwgd3JpdGUgdGhhdCBvbmUgbGFzdC4NCiAgICAgICAgb2Zmc2V0ID0gMA0KICAgICAgICBpZiBzZWxmLnZlcnNpb24gPT0gMzoNCiAgICAgICAgICAgIG9mZnNldCA9IDM0DQogICAgICAgIGVsaWYgc2VsZi52ZXJzaW9uID09IDI6DQogICAgICAgICAgICBvZmZzZXQgPSAyNQ0KICAgICAgICBhcmNoaXZlID0gb3BlbihmaWxlbmFtZSwgJ3diJykNCiAgICAgICAgYXJjaGl2ZS5zZWVrKG9mZnNldCkNCg0KICAgICAgICAjIEJ1aWxkIG91ciBvd24gaW5kZXhlcyB3aGlsZSB3cml0aW5nIGZpbGVzIHRvIHRoZSBhcmNoaXZlLg0KICAgICAgICBpbmRleGVzID0ge30NCiAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdXcml0aW5nIGZpbGVzIHRvIGFyY2hpdmUgZmlsZS4uLicpDQogICAgICAgIGZvciBmaWxlLCBjb250ZW50IGluIGZpbGVzLml0ZW1zKCk6DQogICAgICAgICAgICAjIEdlbmVyYXRlIHJhbmRvbSBwYWRkaW5nLCBmb3Igd2hhdGV2ZXIgcmVhc29uLg0KICAgICAgICAgICAgaWYgc2VsZi5wYWRsZW5ndGggPiAwOg0KICAgICAgICAgICAgICAgIHBhZGRpbmcgPSBzZWxmLmdlbmVyYXRlX3BhZGRpbmcoKQ0KICAgICAgICAgICAgICAgIGFyY2hpdmUud3JpdGUocGFkZGluZykNCiAgICAgICAgICAgICAgICBvZmZzZXQgKz0gbGVuKHBhZGRpbmcpDQoNCiAgICAgICAgICAgIGFyY2hpdmUud3JpdGUoY29udGVudCkNCiAgICAgICAgICAgICMgVXBkYXRlIGluZGV4Lg0KICAgICAgICAgICAgaWYgc2VsZi52ZXJzaW9uID09IDM6DQogICAgICAgICAgICAgICAgaW5kZXhlc1tmaWxlXSA9IFsgKG9mZnNldCBeIHNlbGYua2V5LCBsZW4oY29udGVudCkgXiBzZWxmLmtleSkgXQ0KICAgICAgICAgICAgZWxpZiBzZWxmLnZlcnNpb24gPT0gMjoNCiAgICAgICAgICAgICAgICBpbmRleGVzW2ZpbGVdID0gWyAob2Zmc2V0LCBsZW4oY29udGVudCkpIF0NCiAgICAgICAgICAgIG9mZnNldCArPSBsZW4oY29udGVudCkNCg0KICAgICAgICAjIFdyaXRlIHRoZSBpbmRleGVzLg0KICAgICAgICBzZWxmLnZlcmJvc2VfcHJpbnQoJ1dyaXRpbmcgYXJjaGl2ZSBpbmRleCB0byBhcmNoaXZlIGZpbGUuLi4nKQ0KICAgICAgICBhcmNoaXZlLndyaXRlKGNvZGVjcy5lbmNvZGUocGlja2xlLmR1bXBzKGluZGV4ZXMsIHNlbGYuUElDS0xFX1BST1RPQ09MKSwgJ3psaWInKSkNCiAgICAgICAgIyBOb3cgd3JpdGUgdGhlIGhlYWRlci4NCiAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdXcml0aW5nIGhlYWRlciB0byBhcmNoaXZlIGZpbGUuLi4gKHZlcnNpb24gPSBSUEF2ezB9KScuZm9ybWF0KHNlbGYudmVyc2lvbikpDQogICAgICAgIGFyY2hpdmUuc2VlaygwKQ0KICAgICAgICBpZiBzZWxmLnZlcnNpb24gPT0gMzoNCiAgICAgICAgICAgIGFyY2hpdmUud3JpdGUoY29kZWNzLmVuY29kZSgne317OjAxNnh9IHs6MDh4fVxuJy5mb3JtYXQoc2VsZi5SUEEzX01BR0lDLCBvZmZzZXQsIHNlbGYua2V5KSkpDQogICAgICAgIGVsc2U6DQogICAgICAgICAgICBhcmNoaXZlLndyaXRlKGNvZGVjcy5lbmNvZGUoJ3t9ezowMTZ4fVxuJy5mb3JtYXQoc2VsZi5SUEEyX01BR0lDLCBvZmZzZXQpKSkNCiAgICAgICAgIyBXZSdyZSBkb25lLCBjbG9zZSBpdC4NCiAgICAgICAgYXJjaGl2ZS5jbG9zZSgpDQoNCiAgICAgICAgIyBSZWxvYWQgdGhlIGZpbGUgaW4gb3VyIGlubmVyIGRhdGFiYXNlLg0KICAgICAgICBzZWxmLmxvYWQoZmlsZW5hbWUpDQoNCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6DQogICAgaW1wb3J0IGFyZ3BhcnNlDQoNCiAgICBwYXJzZXIgPSBhcmdwYXJzZS5Bcmd1bWVudFBhcnNlcigNCiAgICAgICAgZGVzY3JpcHRpb249J0EgdG9vbCBmb3Igd29ya2luZyB3aXRoIFJlblwnUHkgYXJjaGl2ZSBmaWxlcy4nLA0KICAgICAgICBlcGlsb2c9J1RoZSBGSUxFIGFyZ3VtZW50IGNhbiBvcHRpb25hbGx5IGJlIGluIEFSQ0hJVkU9UkVBTCBmb3JtYXQsIG1hcHBpbmcgYSBmaWxlIGluIHRoZSBhcmNoaXZlIGZpbGUgc3lzdGVtIHRvIGEgZmlsZSBvbiB5b3VyIHJlYWwgZmlsZSBzeXN0ZW0uIEFuIGV4YW1wbGUgb2YgdGhpczogcnBhdG9vbCAteCB0ZXN0LnJwYSBzY3JpcHQucnB5Yz0vaG9tZS9mb28vdGVzdC5ycHljJywNCiAgICAgICAgYWRkX2hlbHA9RmFsc2UpDQoNCi
-        echo AgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCdhcmNoaXZlJywgbWV0YXZhcj0nQVJDSElWRScsIGhlbHA9J1RoZSBSZW5cJ3B5IGFyY2hpdmUgZmlsZSB0byBvcGVyYXRlIG9uLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnZmlsZXMnLCBtZXRhdmFyPSdGSUxFJywgbmFyZ3M9JyonLCBhY3Rpb249J2FwcGVuZCcsIGhlbHA9J1plcm8gb3IgbW9yZSBmaWxlcyB0byBvcGVyYXRlIG9uLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctbCcsICctLWxpc3QnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdMaXN0IGZpbGVzIGluIGFyY2hpdmUgQVJDSElWRS4nKQ0KICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy14JywgJy0tZXh0cmFjdCcsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0V4dHJhY3QgRklMRXMgZnJvbSBBUkNISVZFLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLWMnLCAnLS1jcmVhdGUnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdDcmVhdGl2ZSBBUkNISVZFIGZyb20gRklMRXMuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctZCcsICctLWRlbGV0ZScsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0RlbGV0ZSBGSUxFcyBmcm9tIEFSQ0hJVkUuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctYScsICctLWFwcGVuZCcsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0FwcGVuZCBGSUxFcyB0byBBUkNISVZFLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctMicsICctLXR3bycsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J1VzZSB0aGUgUlBBdjIgZm9ybWF0IGZvciBjcmVhdGluZy9hcHBlbmRpbmcgdG8gYXJjaGl2ZXMuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctMycsICctLXRocmVlJywgYWN0aW9uPSdzdG9yZV90cnVlJywgaGVscD0nVXNlIHRoZSBSUEF2MyBmb3JtYXQgZm9yIGNyZWF0aW5nL2FwcGVuZGluZyB0byBhcmNoaXZlcyAoZGVmYXVsdCkuJykNCg0KICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy1rJywgJy0ta2V5JywgbWV0YXZhcj0nS0VZJywgaGVscD0nVGhlIG9iZnVzY2F0aW9uIGtleSB1c2VkIGZvciBjcmVhdGluZyBSUEF2MyBhcmNoaXZlcywgaW4gaGV4YWRlY2ltYWwgKGRlZmF1bHQ6IDB4REVBREJFRUYpLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLXAnLCAnLS1wYWRkaW5nJywgbWV0YXZhcj0nQ09VTlQnLCBoZWxwPSdUaGUgbWF4aW11bSBudW1iZXIgb2YgYnl0ZXMgb2YgcGFkZGluZyB0byBhZGQgYmV0d2VlbiBmaWxlcyAoZGVmYXVsdDogMCkuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctbycsICctLW91dGZpbGUnLCBoZWxwPSdBbiBhbHRlcm5hdGl2ZSBvdXRwdXQgYXJjaGl2ZSBmaWxlIHdoZW4gYXBwZW5kaW5nIHRvIG9yIGRlbGV0aW5nIGZyb20gYXJjaGl2ZXMsIG9yIG91dHB1dCBkaXJlY3Rvcnkgd2hlbiBleHRyYWN0aW5nLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctaCcsICctLWhlbHAnLCBhY3Rpb249J2hlbHAnLCBoZWxwPSdQcmludCB0aGlzIGhlbHAgYW5kIGV4aXQuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctdicsICctLXZlcmJvc2UnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdCZSBhIGJpdCBtb3JlIHZlcmJvc2Ugd2hpbGUgcGVyZm9ybWluZyBvcGVyYXRpb25zLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLVYnLCAnLS12ZXJzaW9uJywgYWN0aW9uPSd2ZXJzaW9uJywgdmVyc2lvbj0ncnBhdG9vbCB2MC44JywgaGVscD0nU2hvdyB2ZXJzaW9uIGluZm9ybWF0aW9uLicpDQogICAgYXJndW1lbnRzID0gcGFyc2VyLnBhcnNlX2FyZ3MoKQ0KDQogICAgIyBEZXRlcm1pbmUgUlBBIHZlcnNpb24uDQogICAgaWYgYXJndW1lbnRzLnR3bzoNCiAgICAgICAgdmVyc2lvbiA9IDINCiAgICBlbHNlOg0KICAgICAgICB2ZXJzaW9uID0gMw0KDQogICAgIyBEZXRlcm1pbmUgUlBBdjMga2V5Lg0KICAgIGlmICdrZXknIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLmtleSBpcyBub3QgTm9uZToNCiAgICAgICAga2V5ID0gaW50KGFyZ3VtZW50cy5rZXksIDE2KQ0KICAgIGVsc2U6DQogICAgICAgIGtleSA9IDB4REVBREJFRUYNCg0KICAgICMgRGV0ZXJtaW5lIHBhZGRpbmcgYnl0ZXMuDQogICAgaWYgJ3BhZGRpbmcnIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLnBhZGRpbmcgaXMgbm90IE5vbmU6DQogICAgICAgIHBhZGRpbmcgPSBpbnQoYXJndW1lbnRzLnBhZGRpbmcpDQogICAgZWxzZToNCiAgICAgICAgcGFkZGluZyA9IDANCg0KICAgICMgRGV0ZXJtaW5lIG91dHB1dCBmaWxlL2RpcmVjdG9yeSBhbmQgaW5wdXQgYXJjaGl2ZQ0KICAgIGlmIGFyZ3VtZW50cy5jcmVhdGU6DQogICAgICAgIGFyY2hpdmUgPSBOb25lDQogICAgICAgIG91dHB1dCA9IF91bmljb2RlKGFyZ3VtZW50cy5hcmNoaXZlKQ0KICAgIGVsc2U6DQogICAgICAgIGFyY2hpdmUgPSBfdW5pY29kZShhcmd1bWVudHMuYXJjaGl2ZSkNCiAgICAgICAgaWYgJ291dGZpbGUnIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLm91dGZpbGUgaXMgbm90IE5vbmU6DQogICAgICAgICAgICBvdXRwdXQgPSBfdW5pY29kZShhcmd1bWVudHMub3V0ZmlsZSkNCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgICMgRGVmYXVsdCBvdXRwdXQgZGlyZWN0b3J5IGZvciBleHRyYWN0aW9uIGlzIHRoZSBjdXJyZW50IGRpcmVjdG9yeS4NCiAgICAgICAgICAgIGlmIGFyZ3VtZW50cy5leHRyYWN0Og0KICAgICAgICAgICAgICAgIG91dHB1dCA9ICcuJw0KICAgICAgICAgICAgZWxzZToNCiAgICAgICAgICAgICAgICBvdXRwdXQgPSBfdW5pY29kZShhcmd1bWVudHMuYXJjaGl2ZSkNCg0KICAgICMgTm9ybWFsaXplIGZpbGVzLg0KICAgIGlmIGxlbihhcmd1bWVudHMuZmlsZXMpID4gMCBhbmQgaXNpbnN0YW5jZShhcmd1bWVudHMuZmlsZXNbMF0sIGxpc3QpOg0KICAgICAgICBhcmd1bWVudHMuZmlsZXMgPSBhcmd1bWVudHMuZmlsZXNbMF0NCg0KICAgIHRyeToNCiAgICAgICAgYXJjaGl2ZSA9IFJlblB5QXJjaGl2ZShhcmNoaXZlLCBwYWRsZW5ndGg9cGFkZGluZywga2V5PWtleSwgdmVyc2lvbj12ZXJzaW9uLCB2ZXJib3NlPWFyZ3VtZW50cy52ZXJib3NlKQ0KICAgIGV4Y2VwdCBJT0Vycm9yIGFzIGU6DQogICAgICAgIHByaW50KCdDb3VsZCBub3Qgb3BlbiBhcmNoaXZlIGZpbGUgezB9IGZvciByZWFkaW5nOiB7MX0nLmZvcm1hdChhcmNoaXZlLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgICAgICBzeXMuZXhpdCgxKQ0KDQogICAgaWYgYXJndW1lbnRzLmNyZWF0ZSBvciBhcmd1bWVudHMuYXBwZW5kOg0KICAgICAgICAjIFdlIG5lZWQgdGhpcyBzZXBlcmF0ZSBmdW5jdGlvbiB0byByZWN1cnNpdmVseSBwcm9jZXNzIGRpcmVjdG9yaWVzLg0KICAgICAgICBkZWYgYWRkX2ZpbGUoZmlsZW5hbWUpOg0KICAgICAgICAgICAgIyBJZiB0aGUgYXJjaGl2ZSBwYXRoIGRpZmZlcnMgZnJvbSB0aGUgYWN0dWFsIGZpbGUgcGF0aCwgYXMgZ2l2ZW4gaW4gdGhlIGFyZ3VtZW50LA0KICAgICAgICAgICAgIyBleHRyYWN0IHRoZSBhcmNoaXZlIHBhdGggYW5kIGFjdHVhbCBmaWxlIHBhdGguDQogICAgICAgICAgICBpZiBmaWxlbmFtZS5maW5kKCc9JykgIT0gLTE6DQogICAgICAgICAgICAgICAgKG91dGZpbGUsIGZpbGVuYW1lKSA9IGZpbGVuYW1lLnNwbGl0KCc9JywgMikNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgb3V0ZmlsZSA9IGZpbGVuYW1lDQoNCiAgICAgICAgICAgIGlmIG9zLnBhdGguaXNkaXIoZmlsZW5hbWUpOg0KICAgICAgICAgICAgICAgIGZvciBmaWxlIGluIG9zLmxpc3RkaXIoZmlsZW5hbWUpOg0KICAgICAgICAgICAgICAgICAgICAjIFdlIG5lZWQgdG8gZG8gdGhpcyBpbiBvcmRlciB0byBtYWludGFpbiBhIHBvc3NpYmxlIEFSQ0hJVkU9UkVBTCBtYXBwaW5nIGJldHdlZW4gZGlyZWN0b3JpZXMuDQogICAgICAgICAgICAgICAgICAgIGFkZF9maWxlKG91dGZpbGUgKyBvcy5zZXAgKyBmaWxlICsgJz0nICsgZmlsZW5hbWUgKyBvcy5zZXAgKyBmaWxlKQ0KICAgICAgICAgICAgZWxzZToNCiAgICAgICAgICAgICAgICB0cnk6DQogICAgICAgICAgICAgICAgICAgIHdpdGggb3BlbihmaWxlbmFtZSwgJ3JiJykgYXMgZmlsZToNCiAgICAgICAgICAgICAgICAgICAgICAgIGFyY2hpdmUuYWRkKG91dGZpbGUsIGZpbGUucmVhZCgpKQ0KICAgICAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToNCiAgICAgICAgICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBhZGQgZmlsZSB7MH0gdG8gYXJjaGl2ZTogezF9Jy5mb3JtYXQoZmlsZW5hbWUsIGUpLCBmaWxlPXN5cy5zdGRlcnIpDQoNCiAgICAgICAgIyBJdGVyYXRlIG92ZXIgdGhlIGdpdmVuIGZpbGVzIHRvIGFkZCB0byBhcmNoaXZlLg0KICAgICAgICBmb3IgZmlsZW5hbWUgaW4gYXJndW1lbnRzLmZpbGVzOg0KICAgICAgICAgICAgYWRkX2ZpbGUoX3VuaWNvZGUoZmlsZW5hbWUpKQ0KDQogICAgICAgICMgU2V0IHZlcnNpb24gZm9yIHNhdmluZywgYW5kIHNhdmUuDQogICAgICAgIGFyY2hpdmUudmVyc2lvbiA9IHZlcnNpb24NCiAgICAgICAgdHJ5Og0KICAgICAgICAgICAgYXJjaGl2ZS5zYXZlKG91dHB1dCkNCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBzYXZlIGFyY2hpdmUgZmlsZTogezB9Jy5mb3JtYXQoZSksIGZpbGU9c3lzLnN0ZGVycikNCiAgICBlbGlmIGFyZ3VtZW50cy5kZWxldGU6DQogICAgICAgICMgSXRlcmF0ZSBvdmVyIHRoZSBnaXZlbiBmaWxlcyB0byBkZWxldGUgZnJvbSB0aGUgYXJjaGl2ZS4NCiAgICAgICAgZm9yIGZpbGVuYW1lIGluIGFyZ3VtZW50cy5maWxlczoNCiAgICAgICAgICAgIHRyeToNCiAgICAgICAgICAgICAgICBhcmNoaXZlLnJlbW92ZShmaWxlbmFtZSkNCiAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToNCiAgICAgICAgICAgICAgICBwcmludCgnQ291bGQgbm90IGRlbGV0ZSBmaWxlIHswfSBmcm9tIGFyY2hpdmU6IHsxfScuZm9ybWF0KGZpbGVuYW1lLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KDQogICAgICAgICMgU2V0IHZlcnNpb24gZm9yIHNhdmluZywgYW5kIHNhdmUuDQogICAgICAgIGFyY2hpdmUudmVyc2lvbiA9IHZlcnNpb24NCiAgICAgICAgdHJ5Og0KICAgICAgICAgICAgYXJjaGl2ZS5zYXZlKG91dHB1dCkNCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBzYXZlIGFyY2hpdmUgZmlsZTogezB9Jy5mb3JtYXQoZSksIGZpbGU9c3lzLnN0ZGVycikNCiAgICBlbGlmIGFyZ3VtZW50cy5leHRyYWN0Og0KICAgICAgICAjIEVpdGhlciBleHRyYWN0IHRoZSBnaXZlbiBmaWxlcywgb3IgYWxsIGZpbGVzIGlmIG5vIGZpbGVzIGFyZSBnaXZlbi4NCiAgICAgICAgaWYgbGVuKGFyZ3VtZW50cy5maWxlcykgPiAwOg0KICAgICAgICAgICAgZmlsZXMgPSBhcmd1bWVudHMuZmlsZXMNCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIGZpbGVzID0gYXJjaGl2ZS5saXN0KCkNCg0KICAgICAgICAjIENyZWF0ZSBvdXRwdXQgZGlyZWN0b3J5IGlmIG5vdCBwcmVzZW50Lg0KICAgICAgICBpZiBub3Qgb3MucGF0aC5leGlzdHMob3V0cHV0KToNCiAgICAgICAgICAgIG9zLm1ha2VkaXJzKG91dHB1dCkNCg0KICAgICAgICAjIEl0ZXJhdGUgb3ZlciBmaWxlcyB0byBleHRyYWN0Lg0KICAgICAgICBmb3IgZmlsZW5hbWUgaW4gZmlsZXM6DQogICAgICAgICAgICBpZiBmaWxlbmFtZS5maW5kKCc9JykgIT0gLTE6DQogICAgICAgICAgICAgICAgKG91dGZpbGUsIGZpbGVuYW1lKSA9IGZpbGVuYW1lLnNwbGl0KCc9JywgMikNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgb3V0ZmlsZSA9IGZpbGVuYW1lDQoNCiAgICAgICAgICAgIHRyeToNCiAgICAgICAgICAgICAgICBjb250ZW50cyA9IGFyY2hpdmUucmVhZChmaWxlbmFtZSkNCg0KICAgICAgICAgICAgICAgICMgQ3JlYXRlIG91dHB1dCBkaXJlY3RvcnkgZm9yIGZpbGUgaWYgbm90IHByZXNlbnQuDQogICAgICAgICAgICAgICAgaWYgbm90IG9zLnBhdGguZXhpc3RzKG9zLnBhdGguZGlybmFtZShvcy5wYXRoLmpvaW4ob3V0cHV0LCBvdXRmaWxlKSkpOg0KICAgI
-        echo CAgICAgICAgICAgICAgICBvcy5tYWtlZGlycyhvcy5wYXRoLmRpcm5hbWUob3MucGF0aC5qb2luKG91dHB1dCwgb3V0ZmlsZSkpKQ0KDQogICAgICAgICAgICAgICAgd2l0aCBvcGVuKG9zLnBhdGguam9pbihvdXRwdXQsIG91dGZpbGUpLCAnd2InKSBhcyBmaWxlOg0KICAgICAgICAgICAgICAgICAgICBmaWxlLndyaXRlKGNvbnRlbnRzKQ0KICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgICAgIHByaW50KCdDb3VsZCBub3QgZXh0cmFjdCBmaWxlIHswfSBmcm9tIGFyY2hpdmU6IHsxfScuZm9ybWF0KGZpbGVuYW1lLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgIGVsaWYgYXJndW1lbnRzLmxpc3Q6DQogICAgICAgICMgUHJpbnQgdGhlIHNvcnRlZCBmaWxlIGxpc3QuDQogICAgICAgIGxpc3QgPSBhcmNoaXZlLmxpc3QoKQ0KICAgICAgICBsaXN0LnNvcnQoKQ0KICAgICAgICBmb3IgZmlsZSBpbiBsaXN0Og0KICAgICAgICAgICAgcHJpbnQoZmlsZSkNCiAgICBlbHNlOg0KICAgICAgICBwcmludCgnTm8gb3BlcmF0aW9uIGdpdmVuIDooJykNCiAgICAgICAgcHJpbnQoJ1VzZSB7MH0gLS1oZWxwIGZvciB1c2FnZSBkZXRhaWxzLicuZm9ybWF0KHN5cy5hcmd2WzBdKSkNCg0K
+        echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMw0KDQpmcm9tIF9fZnV0dXJlX18gaW1wb3J0IHByaW50X2Z1bmN0aW9uDQoNCmltcG9ydCBzeXMNCmltcG9ydCBvcw0KaW1wb3J0IGNvZGVjcw0KaW1wb3J0IHBpY2tsZQ0KaW1wb3J0IGVycm5vDQppbXBvcnQgcmFuZG9tDQp0cnk6DQogICAgaW1wb3J0IHBpY2tsZTUgYXMgcGlja2xlDQpleGNlcHQ6DQogICAgaW1wb3J0IHBpY2tsZQ0KICAgIGlmIHN5cy52ZXJzaW9uX2luZm8gPCAoMywgOCk6DQogICAgICAgIHByaW50KCd3YXJuaW5nOiBwaWNrbGU1IG1vZHVsZSBjb3VsZCBub3QgYmUgbG9hZGVkIGFuZCBQeXRob24gdmVyc2lvbiBpcyA8IDMuOCwnLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIHByaW50KCcgICAgICAgICBuZXdlciBSZW5cJ1B5IGdhbWVzIG1heSBmYWlsIHRvIHVucGFjayEnLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIGlmIHN5cy52ZXJzaW9uX2luZm8gPj0gKDMsIDUpOg0KICAgICAgICAgICAgcHJpbnQoJyAgICAgICAgIGlmIHRoaXMgb2NjdXJzLCBmaXggaXQgYnkgaW5zdGFsbGluZyBwaWNrbGU1OicsIGZpbGU9c3lzLnN0ZGVycikNCiAgICAgICAgICAgIHByaW50KCcgICAgICAgICAgICAge30gLW0gcGlwIGluc3RhbGwgcGlja2xlNScuZm9ybWF0KHN5cy5leGVjdXRhYmxlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgcHJpbnQoJyAgICAgICAgIGlmIHRoaXMgb2NjdXJzLCBwbGVhc2UgdXBncmFkZSB0byBhIG5ld2VyIFB5dGhvbiAoPj0gMy41KS4nLCBmaWxlPXN5cy5zdGRlcnIpDQogICAgICAgIHByaW50KGZpbGU9c3lzLnN0ZGVycikNCg0KDQppZiBzeXMudmVyc2lvbl9pbmZvWzBdID49IDM6DQogICAgZGVmIF91bmljb2RlKHRleHQpOg0KICAgICAgICByZXR1cm4gdGV4dA0KDQogICAgZGVmIF9wcmludGFibGUodGV4dCk6DQogICAgICAgIHJldHVybiB0ZXh0DQoNCiAgICBkZWYgX3VubWFuZ2xlKGRhdGEpOg0KICAgICAgICBpZiB0eXBlKGRhdGEpID09IGJ5dGVzOg0KICAgICAgICAgICAgcmV0dXJuIGRhdGENCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIHJldHVybiBkYXRhLmVuY29kZSgnbGF0aW4xJykNCg0KICAgIGRlZiBfdW5waWNrbGUoZGF0YSk6DQogICAgICAgICMgU3BlY2lmeSBsYXRpbjEgZW5jb2RpbmcgdG8gcHJldmVudCByYXcgYnl0ZSB2YWx1ZXMgZnJvbSBjYXVzaW5nIGFuIEFTQ0lJIGRlY29kZSBlcnJvci4NCiAgICAgICAgcmV0dXJuIHBpY2tsZS5sb2FkcyhkYXRhLCBlbmNvZGluZz0nbGF0aW4xJykNCmVsaWYgc3lzLnZlcnNpb25faW5mb1swXSA9PSAyOg0KICAgIGRlZiBfdW5pY29kZSh0ZXh0KToNCiAgICAgICAgaWYgaXNpbnN0YW5jZSh0ZXh0LCB1bmljb2RlKToNCiAgICAgICAgICAgIHJldHVybiB0ZXh0DQogICAgICAgIHJldHVybiB0ZXh0LmRlY29kZSgndXRmLTgnKQ0KDQogICAgZGVmIF9wcmludGFibGUodGV4dCk6DQogICAgICAgIHJldHVybiB0ZXh0LmVuY29kZSgndXRmLTgnKQ0KDQogICAgZGVmIF91bm1hbmdsZShkYXRhKToNCiAgICAgICAgcmV0dXJuIGRhdGENCg0KICAgIGRlZiBfdW5waWNrbGUoZGF0YSk6DQogICAgICAgIHJldHVybiBwaWNrbGUubG9hZHMoZGF0YSkNCg0KY2xhc3MgUmVuUHlBcmNoaXZlOg0KICAgIGZpbGUgPSBOb25lDQogICAgaGFuZGxlID0gTm9uZQ0KDQogICAgZmlsZXMgPSB7fQ0KICAgIGluZGV4ZXMgPSB7fQ0KDQogICAgdmVyc2lvbiA9IE5vbmUNCiAgICBwYWRsZW5ndGggPSAwDQogICAga2V5ID0gTm9uZQ0KICAgIHZlcmJvc2UgPSBGYWxzZQ0KDQogICAgUlBBMl9NQUdJQyA9ICdSUEEtMi4wICcNCiAgICBSUEEzX01BR0lDID0gJ1JQQS0zLjAgJw0KICAgIFJQQTNfMl9NQUdJQyA9ICdSUEEtMy4yICcNCiAgICBTVkFDMV9NQUdJQyA9ICdTVkFDLTEuMCAnDQoNCiAgICAjIEZvciBiYWNrd2FyZCBjb21wYXRpYmlsaXR5LCBvdGhlcndpc2UgUHl0aG9uMy1wYWNrZWQgYXJjaGl2ZXMgd29uJ3QgYmUgcmVhZCBieSBQeXRob24yDQogICAgUElDS0xFX1BST1RPQ09MID0gMg0KDQogICAgZGVmIF9faW5pdF9fKHNlbGYsIGZpbGUgPSBOb25lLCB2ZXJzaW9uID0gMywgcGFkbGVuZ3RoID0gMCwga2V5ID0gMHhERUFEQkVFRiwgdmVyYm9zZSA9IEZhbHNlKToNCiAgICAgICAgc2VsZi5wYWRsZW5ndGggPSBwYWRsZW5ndGgNCiAgICAgICAgc2VsZi5rZXkgPSBrZXkNCiAgICAgICAgc2VsZi52ZXJib3NlID0gdmVyYm9zZQ0KDQogICAgICAgIGlmIGZpbGUgaXMgbm90IE5vbmU6DQogICAgICAgICAgICBzZWxmLmxvYWQoZmlsZSkNCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIHNlbGYudmVyc2lvbiA9IHZlcnNpb24NCg0KICAgIGRlZiBfX2RlbF9fKHNlbGYpOg0KICAgICAgICBpZiBzZWxmLmhhbmRsZSBpcyBub3QgTm9uZToNCiAgICAgICAgICAgIHNlbGYuaGFuZGxlLmNsb3NlKCkNCg0KICAgICMgRGV0ZXJtaW5lIGFyY2hpdmUgdmVyc2lvbi4NCiAgICBkZWYgZ2V0X3ZlcnNpb24oc2VsZik6DQogICAgICAgIHNlbGYuaGFuZGxlLnNlZWsoMCkNCiAgICAgICAgbWFnaWMgPSBzZWxmLmhhbmRsZS5yZWFkbGluZSgpLmRlY29kZSgndXRmLTgnKQ0KDQogICAgICAgIGlmIG1hZ2ljLnN0YXJ0c3dpdGgoc2VsZi5TVkFDMV9NQUdJQyk6DQogICAgICAgICAgICBwYXJ0cyA9IG1hZ2ljLnNwbGl0KCkNCiAgICAgICAgICAgIGlmIGxlbihwYXJ0cykgPT0gNDoNCiAgICAgICAgICAgICAgICByZXR1cm4gNCAgICAgICMgdHJ1ZSBTVkFDLTEuMCBhcmNoaXZlDQogICAgICAgICAgICBlbHNlOg0KICAgICAgICAgICAgICAgIHJldHVybiAzICAgICMgZmFsc2UgU1ZBQywgYWN0dWFsbHkgUlBBLTMuMCB3aXRoIGEgY3VzdG9tIGhlYWRlcg0KICAgICAgICBlbGlmIG1hZ2ljLnN0YXJ0c3dpdGgoc2VsZi5SUEEzXzJfTUFHSUMpOg0KICAgICAgICAgICAgcmV0dXJuIDMuMg0KICAgICAgICBlbGlmIG1hZ2ljLnN0YXJ0c3dpdGgoc2VsZi5SUEEzX01BR0lDKToNCiAgICAgICAgICAgIHJldHVybiAzDQogICAgICAgIGVsaWYgbWFnaWMuc3RhcnRzd2l0aChzZWxmLlJQQTJfTUFHSUMpOg0KICAgICAgICAgICAgcmV0dXJuIDINCiAgICAgICAgZWxpZiBzZWxmLmZpbGUuZW5kc3dpdGgoJy5ycGknKToNCiAgICAgICAgICAgIHJldHVybiAxDQoNCiAgICAgICAgcmFpc2UgVmFsdWVFcnJvcigndGhlIGdpdmVuIGZpbGUgaXMgbm90IGEgdmFsaWQgUmVuXCdQeSBhcmNoaXZlLCBvciBhbiB1bnN1cHBvcnRlZCB2ZXJzaW9uJykNCg0KICAgICMgRXh0cmFjdCBmaWxlIGluZGV4ZXMgZnJvbSBvcGVuZWQgYXJjaGl2ZS4NCiAgICBkZWYgZXh0cmFjdF9pbmRleGVzKHNlbGYpOg0KICAgICAgICBzZWxmLmhhbmRsZS5zZWVrKDApDQogICAgICAgIGluZGV4ZXMgPSBOb25lDQoNCiAgICAgICAgaWYgc2VsZi52ZXJzaW9uIGluIFsyLCAzLCAzLjJdOg0KICAgICAgICAgICAgIyBGZXRjaCBtZXRhZGF0YS4NCiAgICAgICAgICAgIG1ldGFkYXRhID0gc2VsZi5oYW5kbGUucmVhZGxpbmUoKQ0KICAgICAgICAgICAgdmFscyA9IG1ldGFkYXRhLnNwbGl0KCkNCiAgICAgICAgICAgIG9mZnNldCA9IGludCh2YWxzWzFdLCAxNikNCiAgICAgICAgICAgIGlmIHNlbGYudmVyc2lvbiA9PSAzOg0KICAgICAgICAgICAgICAgIHNlbGYua2V5ID0gMA0KICAgICAgICAgICAgICAgIGZvciBzdWJrZXkgaW4gdmFsc1syOl06DQogICAgICAgICAgICAgICAgICAgIHNlbGYua2V5IF49IGludChzdWJrZXksIDE2KQ0KICAgICAgICAgICAgZWxpZiBzZWxmLnZlcnNpb24gPT0gMy4yOg0KICAgICAgICAgICAgICAgIHNlbGYua2V5ID0gMA0KICAgICAgICAgICAgICAgIGZvciBzdWJrZXkgaW4gdmFsc1szOl06DQogICAgICAgICAgICAgICAgICAgIHNlbGYua2V5IF49IGludChzdWJrZXksIDE2KQ0KDQogICAgICAgICAgICAjIExvYWQgaW4gaW5kZXhlcy4NCiAgICAgICAgICAgIHNlbGYuaGFuZGxlLnNlZWsob2Zmc2V0KQ0KICAgICAgICAgICAgY29udGVudHMgPSBjb2RlY3MuZGVjb2RlKHNlbGYuaGFuZGxlLnJlYWQoKSwgJ3psaWInKQ0KICAgICAgICAgICAgaW5kZXhlcyA9IF91bnBpY2tsZShjb250ZW50cykNCg0KICAgICAgICAgICAgIyBEZW9iZnVzY2F0ZSBpbmRleGVzLg0KICAgICAgICAgICAgaWYgc2VsZi52ZXJzaW9uIGluIFszLCAzLjJdOg0KICAgICAgICAgICAgICAgIG9iZnVzY2F0ZWRfaW5kZXhlcyA9IGluZGV4ZXMNCiAgICAgICAgICAgICAgICBpbmRleGVzID0ge30NCiAgICAgICAgICAgICAgICBmb3IgaSBpbiBvYmZ1c2NhdGVkX2luZGV4ZXMua2V5cygpOg0KICAgICAgICAgICAgICAgICAgICBpZiBsZW4ob2JmdXNjYXRlZF9pbmRleGVzW2ldWzBdKSA9PSAyOg0KICAgICAgICAgICAgICAgICAgICAgICAgaW5kZXhlc1tpXSA9IFsgKG9mZnNldCBeIHNlbGYua2V5LCBsZW5ndGggXiBzZWxmLmtleSkgZm9yIG9mZnNldCwgbGVuZ3RoIGluIG9iZnVzY2F0ZWRfaW5kZXhlc1tpXSBdDQogICAgICAgICAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgICAgICAgICBpbmRleGVzW2ldID0gWyAob2Zmc2V0IF4gc2VsZi5rZXksIGxlbmd0aCBeIHNlbGYua2V5LCBwcmVmaXgpIGZvciBvZmZzZXQsIGxlbmd0aCwgcHJlZml4IGluIG9iZnVzY2F0ZWRfaW5kZXhlc1tpXSBdDQogICAgICAgIGVsc2U6DQogICAgICAgICAgICBpbmRleGVzID0gcGlja2xlLmxvYWRzKGNvZGVjcy5kZWNvZGUoc2VsZi5oYW5kbGUucmVhZCgpLCAnemxpYicpKQ0KDQogICAgICAgIHJldHVybiBpbmRleGVzDQoNCiAgICAjIEdlbmVyYXRlIHBzZXVkb3JhbmRvbSBwYWRkaW5nIChmb3Igd2hhdGV2ZXIgcmVhc29uKS4NCiAgICBkZWYgZ2VuZXJhdGVfcGFkZGluZyhzZWxmKToNCiAgICAgICAgbGVuZ3RoID0gcmFuZG9tLnJhbmRpbnQoMSwgc2VsZi5wYWRsZW5ndGgpDQoNCiAgICAgICAgcGFkZGluZyA9ICcnDQogICAgICAgIHdoaWxlIGxlbmd0aCA+IDA6DQogICAgICAgICAgICBwYWRkaW5nICs9IGNocihyYW5kb20ucmFuZGludCgxLCAyNTUpKQ0KICAgICAgICAgICAgbGVuZ3RoIC09IDENCg0KICAgICAgICByZXR1cm4gYnl0ZXMocGFkZGluZywgJ3V0Zi04JykNCg0KICAgICMgQ29udmVydHMgYSBmaWxlbmFtZSB0byBhcmNoaXZlIGZvcm1hdC4NCiAgICBkZWYgY29udmVydF9maWxlbmFtZShzZWxmLCBmaWxlbmFtZSk6DQogICAgICAgIChkcml2ZSwgZmlsZW5hbWUpID0gb3MucGF0aC5zcGxpdGRyaXZlKG9zLnBhdGgubm9ybXBhdGgoZmlsZW5hbWUpLnJlcGxhY2Uob3Muc2VwLCAnLycpKQ0KICAgICAgICByZXR1cm4gZmlsZW5hbWUNCg0KICAgICMgRGVidWcgKHZlcmJvc2UpIG1lc3NhZ2VzLg0KICAgIGRlZiB2ZXJib3NlX3ByaW50KHNlbGYsIG1lc3NhZ2UpOg0KICAgICAgICBpZiBzZWxmLnZlcmJvc2U6DQogICAgICAgICAgICBwcmludChtZXNzYWdlKQ0KDQoNCiAgICAjIExpc3QgZmlsZXMgaW4gYXJjaGl2ZSBhbmQgY3VycmVudCBpbnRlcm5hbCBzdG9yYWdlLg0KICAgIGRlZiBsaXN0KHNlbGYpOg0KICAgICAgICByZXR1cm4gbGlzdChzZWxmLmluZGV4ZXMua2V5cygpKSArIGxpc3Qoc2VsZi5maWxlcy5rZXlzKCkpDQoNCiAgICAjIENoZWNrIGlmIGEgZmlsZSBleGlzdHMgaW4gdGhlIGFyY2hpdmUuDQogICAgZGVmIGhhc19maWxlKHNlbGYsIGZpbGVuYW1lKToNCiAgICAgICAgZmlsZW5hbWUgPSBfdW5pY29kZShmaWxlbmFtZSkNCiAgICAgICAgcmV0dXJuIGZpbGVuYW1lIGluIHNlbGYuaW5kZXhlcy5rZXlzKCkgb3IgZmlsZW5hbWUgaW4gc2VsZi5maWxlcy5rZXlzKCkNCg0KICAgICMgUmVhZCBmaWxlIGZyb20gYXJjaGl2ZSBvciBpbnRlcm5hbCBzdG9yYWdlLg0KICAgIGRlZiByZWFkKHNlbGYsIGZpbGVuYW1lKToNCiAgICAgICAgZmlsZW5hbWUgPSBzZWxmLmNvbnZlcnRfZmlsZW5hbWUoX3VuaWNvZGUoZmlsZW5hbWUpKQ0KDQogICAgICAgICMgQ2hlY2sgaWYgdGhlIGZpbGUgZXhpc3RzIGluIG91ciBpbmRleGVzLg0KICAgICAgICBpZiBmaWxlbmFtZSBub3QgaW4gc2VsZi5maWxlcyBhbmQgZmlsZW5hbWUgbm90IGluIHNlbGYuaW5kZXhlczoNCiAgICAgICAgICAgIHJhaXNlIElPRXJyb3IoZXJybm8uRU5PRU5ULCAndGhlIHJlcXVlc3RlZCBmaWxlIHswfSBkb2VzIG5vdCBleGlzdCBpbiB0aGUgZ2l2ZW4gUmVuXCdQeSBhcmN
+        echo oaXZlJy5mb3JtYXQoDQogICAgICAgICAgICAgICAgX3ByaW50YWJsZShmaWxlbmFtZSkpKQ0KDQogICAgICAgICMgSWYgaXQncyBpbiBvdXIgb3BlbmVkIGFyY2hpdmUgaW5kZXgsIGFuZCBvdXIgYXJjaGl2ZSBoYW5kbGUgaXNuJ3QgdmFsaWQsIHNvbWV0aGluZyBpcyBvYnZpb3VzbHkgd3JvbmcuDQogICAgICAgIGlmIGZpbGVuYW1lIG5vdCBpbiBzZWxmLmZpbGVzIGFuZCBmaWxlbmFtZSBpbiBzZWxmLmluZGV4ZXMgYW5kIHNlbGYuaGFuZGxlIGlzIE5vbmU6DQogICAgICAgICAgICByYWlzZSBJT0Vycm9yKGVycm5vLkVOT0VOVCwgJ3RoZSByZXF1ZXN0ZWQgZmlsZSB7MH0gZG9lcyBub3QgZXhpc3QgaW4gdGhlIGdpdmVuIFJlblwnUHkgYXJjaGl2ZScuZm9ybWF0KA0KICAgICAgICAgICAgICAgIF9wcmludGFibGUoZmlsZW5hbWUpKSkNCg0KICAgICAgICAjIENoZWNrIG91ciBzaW1wbGlmaWVkIGludGVybmFsIGluZGV4ZXMgZmlyc3QsIGluIGNhc2Ugc29tZW9uZSB3YW50cyB0byByZWFkIGEgZmlsZSB0aGV5IGFkZGVkIGJlZm9yZSB3aXRob3V0IHNhdmluZywgZm9yIHNvbWUgdW5ob2x5IHJlYXNvbi4NCiAgICAgICAgaWYgZmlsZW5hbWUgaW4gc2VsZi5maWxlczoNCiAgICAgICAgICAgIHNlbGYudmVyYm9zZV9wcmludCgnUmVhZGluZyBmaWxlIHswfSBmcm9tIGludGVybmFsIHN0b3JhZ2UuLi4nLmZvcm1hdChfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQogICAgICAgICAgICByZXR1cm4gc2VsZi5maWxlc1tmaWxlbmFtZV0NCiAgICAgICAgIyBXZSBuZWVkIHRvIHJlYWQgdGhlIGZpbGUgZnJvbSBvdXIgb3BlbiBhcmNoaXZlLg0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgIyBSZWFkIG9mZnNldCBhbmQgbGVuZ3RoLCBzZWVrIHRvIHRoZSBvZmZzZXQgYW5kIHJlYWQgdGhlIGZpbGUgY29udGVudHMuDQogICAgICAgICAgICBpZiBsZW4oc2VsZi5pbmRleGVzW2ZpbGVuYW1lXVswXSkgPT0gMzoNCiAgICAgICAgICAgICAgICAob2Zmc2V0LCBsZW5ndGgsIHByZWZpeCkgPSBzZWxmLmluZGV4ZXNbZmlsZW5hbWVdWzBdDQogICAgICAgICAgICBlbHNlOg0KICAgICAgICAgICAgICAgIChvZmZzZXQsIGxlbmd0aCkgPSBzZWxmLmluZGV4ZXNbZmlsZW5hbWVdWzBdDQogICAgICAgICAgICAgICAgcHJlZml4ID0gJycNCg0KICAgICAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdSZWFkaW5nIGZpbGUgezB9IGZyb20gZGF0YSBmaWxlIHsxfS4uLiAob2Zmc2V0ID0gezJ9LCBsZW5ndGggPSB7M30gYnl0ZXMpJy5mb3JtYXQoDQogICAgICAgICAgICAgICAgX3ByaW50YWJsZShmaWxlbmFtZSksIHNlbGYuZmlsZSwgb2Zmc2V0LCBsZW5ndGgpKQ0KICAgICAgICAgICAgc2VsZi5oYW5kbGUuc2VlayhvZmZzZXQpDQogICAgICAgICAgICByZXR1cm4gX3VubWFuZ2xlKHByZWZpeCkgKyBzZWxmLmhhbmRsZS5yZWFkKGxlbmd0aCAtIGxlbihwcmVmaXgpKQ0KDQogICAgIyBNb2RpZnkgYSBmaWxlIGluIGFyY2hpdmUgb3IgaW50ZXJuYWwgc3RvcmFnZS4NCiAgICBkZWYgY2hhbmdlKHNlbGYsIGZpbGVuYW1lLCBjb250ZW50cyk6DQogICAgICAgIGZpbGVuYW1lID0gX3VuaWNvZGUoZmlsZW5hbWUpDQoNCiAgICAgICAgIyBPdXIgJ2NoYW5nZScgaXMgYmFzaWNhbGx5IHJlbW92aW5nIHRoZSBmaWxlIGZyb20gb3VyIGluZGV4ZXMgZmlyc3QsIGFuZCB0aGVuIHJlLWFkZGluZyBpdC4NCiAgICAgICAgc2VsZi5yZW1vdmUoZmlsZW5hbWUpDQogICAgICAgIHNlbGYuYWRkKGZpbGVuYW1lLCBjb250ZW50cykNCg0KICAgICMgQWRkIGEgZmlsZSB0byB0aGUgaW50ZXJuYWwgc3RvcmFnZS4NCiAgICBkZWYgYWRkKHNlbGYsIGZpbGVuYW1lLCBjb250ZW50cyk6DQogICAgICAgIGZpbGVuYW1lID0gc2VsZi5jb252ZXJ0X2ZpbGVuYW1lKF91bmljb2RlKGZpbGVuYW1lKSkNCiAgICAgICAgaWYgZmlsZW5hbWUgaW4gc2VsZi5maWxlcyBvciBmaWxlbmFtZSBpbiBzZWxmLmluZGV4ZXM6DQogICAgICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCdmaWxlIHswfSBhbHJlYWR5IGV4aXN0cyBpbiBhcmNoaXZlJy5mb3JtYXQoX3ByaW50YWJsZShmaWxlbmFtZSkpKQ0KDQogICAgICAgIHNlbGYudmVyYm9zZV9wcmludCgnQWRkaW5nIGZpbGUgezB9IHRvIGFyY2hpdmUuLi4gKGxlbmd0aCA9IHsxfSBieXRlcyknLmZvcm1hdCgNCiAgICAgICAgICAgIF9wcmludGFibGUoZmlsZW5hbWUpLCBsZW4oY29udGVudHMpKSkNCiAgICAgICAgc2VsZi5maWxlc1tmaWxlbmFtZV0gPSBjb250ZW50cw0KDQogICAgIyBSZW1vdmUgYSBmaWxlIGZyb20gYXJjaGl2ZSBvciBpbnRlcm5hbCBzdG9yYWdlLg0KICAgIGRlZiByZW1vdmUoc2VsZiwgZmlsZW5hbWUpOg0KICAgICAgICBmaWxlbmFtZSA9IF91bmljb2RlKGZpbGVuYW1lKQ0KICAgICAgICBpZiBmaWxlbmFtZSBpbiBzZWxmLmZpbGVzOg0KICAgICAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdSZW1vdmluZyBmaWxlIHswfSBmcm9tIGludGVybmFsIHN0b3JhZ2UuLi4nLmZvcm1hdChfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQogICAgICAgICAgICBkZWwgc2VsZi5maWxlc1tmaWxlbmFtZV0NCiAgICAgICAgZWxpZiBmaWxlbmFtZSBpbiBzZWxmLmluZGV4ZXM6DQogICAgICAgICAgICBzZWxmLnZlcmJvc2VfcHJpbnQoJ1JlbW92aW5nIGZpbGUgezB9IGZyb20gYXJjaGl2ZSBpbmRleGVzLi4uJy5mb3JtYXQoX3ByaW50YWJsZShmaWxlbmFtZSkpKQ0KICAgICAgICAgICAgZGVsIHNlbGYuaW5kZXhlc1tmaWxlbmFtZV0NCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIHJhaXNlIElPRXJyb3IoZXJybm8uRU5PRU5ULCAndGhlIHJlcXVlc3RlZCBmaWxlIHswfSBkb2VzIG5vdCBleGlzdCBpbiB0aGlzIGFyY2hpdmUnLmZvcm1hdChfcHJpbnRhYmxlKGZpbGVuYW1lKSkpDQoNCiAgICAjIExvYWQgYXJjaGl2ZS4NCiAgICBkZWYgbG9hZChzZWxmLCBmaWxlbmFtZSk6DQogICAgICAgIGZpbGVuYW1lID0gX3VuaWNvZGUoZmlsZW5hbWUpDQoNCiAgICAgICAgaWYgc2VsZi5oYW5kbGUgaXMgbm90IE5vbmU6DQogICAgICAgICAgICBzZWxmLmhhbmRsZS5jbG9zZSgpDQogICAgICAgIHNlbGYuZmlsZSA9IGZpbGVuYW1lDQogICAgICAgIHNlbGYuZmlsZXMgPSB7fQ0KICAgICAgICBzZWxmLmhhbmRsZSA9IG9wZW4oc2VsZi5maWxlLCAncmInKQ0KICAgICAgICBzZWxmLnZlcnNpb24gPSBzZWxmLmdldF92ZXJzaW9uKCkNCiAgICAgICAgaWYgc2VsZi52ZXJzaW9uIGluIFsxLCAyLCAzLCAzLjJdOg0KICAgICAgICAgICAgc2VsZi5pbmRleGVzID0gc2VsZi5leHRyYWN0X2luZGV4ZXMoKQ0KICAgICAgICBlbGlmIHNlbGYudmVyc2lvbiA9PSA0Og0KICAgICAgICAgICAgc2VsZi5pbmRleGVzID0gc2VsZi5leHRyYWN0X3N2YWMxX2luZGV4ZXMoKQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcigndW5zdXBwb3J0ZWQgUmVuXCdQeSBhcmNoaXZlIHZlcnNpb24nKQ0KDQogICAgIyBFeHRyYWN0IGZpbGUgaW5kZXhlcyBmcm9tIG9wZW5lZCBTVkFDLTEuMCBhcmNoaXZlLg0KICAgIGRlZiBleHRyYWN0X3N2YWMxX2luZGV4ZXMoc2VsZik6DQogICAgICAgIGltcG9ydCBqc29uLCB6bGliDQoNCiAgICAgICAgc2VsZi5oYW5kbGUuc2VlaygwKQ0KICAgICAgICBoZWFkZXIgPSBzZWxmLmhhbmRsZS5yZWFkbGluZSgpLmRlY29kZSgndXRmLTgnKQ0KICAgICAgICBwYXJ0cyA9IGhlYWRlci5zcGxpdCgpDQoNCiAgICAgICAgIyBwYXJ0c1sxXSA9IG9mZnNldCBoZXgNCiAgICAgICAgaW5kZXhfb2Zmc2V0ID0gaW50KHBhcnRzWzFdLCAxNikNCg0KICAgICAgICAjIEdvIHRvIHRoZSBPZ2dTIGJsb2NrIGNvbnRhaW5pbmcgdGhlIGNvbXByZXNzZWQgSlNPTiBkYXRhLA0KICAgICAgICAjIHJlYWQgaXQgYW5kIHRyeSB0byBkZWNvZGUgaXQgYXMgemxpYiBmaXJzdCwgaWYgdGhhdCBmYWlscywNCiAgICAgICAgIyBkZWNvZGUgaXQgYXMgT2dnIGVuY2Fwc3VsYXRlZCBWb3JiaXMgY29tbWVudHMuDQogICAgICAgIHNlbGYuaGFuZGxlLnNlZWsoaW5kZXhfb2Zmc2V0KQ0KICAgICAgICBjb21wcmVzc2VkID0gc2VsZi5oYW5kbGUucmVhZCgpDQoNCiAgICAgICAgdHJ5Og0KICAgICAgICAgICAgIyBWYXJpYW50IEI6IERpcmVjdCB6bGliIHN0cmVhbSwgbm8gT2dnIGVuY2Fwc3VsYXRpb24NCiAgICAgICAgICAgIGpzb25fZGF0YSA9IHpsaWIuZGVjb21wcmVzcyhjb21wcmVzc2VkKS5kZWNvZGUoInV0Zi04IikNCiAgICAgICAgZXhjZXB0Og0KICAgICAgICAgICAgIyBWYXJpYW50IEE6IEVuY2Fwc3VsYXRlZCBPZ2cgc3RyZWFtLCBkZWNvZGUgaXQgdG8gZXh0cmFjdCB0aGUgSlNPTiBmcm9tIFZvcmJpcyBjb21tZW50cw0KICAgICAgICAgICAganNvbl9kYXRhID0gc2VsZi5kZWNvZGVfc3ZhYzFfb2dnKGNvbXByZXNzZWQpDQoNCiAgICAgICAgIyBEZWNvZGUgVm9yYmlzIHN0cmVhbSDihpIgSlNPTiBkYXRhDQogICAgICAgIGpzb25fZGF0YSA9IHNlbGYuZGVjb2RlX3N2YWMxX29nZyhvZ2dfZGF0YSkNCg0KICAgICAgICAjIExvYWQgSlNPTiBkYXRhIGludG8gYSBQeXRob24gZGljdA0KICAgICAgICByYXcgPSBqc29uLmxvYWRzKGpzb25fZGF0YSkNCg0KICAgICAgICAjIENvbnZlcnQgdG8gaW50ZXJuYWwgaW5kZXggZm9ybWF0DQogICAgICAgIGluZGV4ZXMgPSB7fQ0KICAgICAgICBmb3IgbmFtZSwgaW5mbyBpbiByYXdbImZpbGVzIl0uaXRlbXMoKToNCiAgICAgICAgICAgIG9mZnNldCwgbGVuZ3RoID0gaW5mbw0KICAgICAgICAgICAgaW5kZXhlc1tuYW1lXSA9IFsob2Zmc2V0LCBsZW5ndGgpXQ0KDQogICAgICAgIHJldHVybiBpbmRleGVzDQoNCiAgICBkZWYgZGVjb2RlX3N2YWMxX29nZyhzZWxmLCBkYXRhKToNCiAgICAgICAgIyBTZWFyY2ggZm9yIHBhY2tldCB0eXBlIDMg4oCcdm9yYmlz4oCdLCB3aGljaCBjb250YWlucyB0aGUgY29tbWVudHMgd2l0aCB0aGUgSlNPTiBkYXRhLg0KICAgICAgICBtYXJrZXIgPSBiIlx4MDN2b3JiaXMiDQogICAgICAgIHBvcyA9IGRhdGEuZmluZChtYXJrZXIpDQogICAgICAgIGlmIHBvcyA9PSAtMToNCiAgICAgICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoIlNWQUMtMS4wOiBWb3JiaXMgcGFja2FnZSAodHlwZSAzKSBub3QgZm91bmQgaW4gT2dnIHN0cmVhbSIpDQoNCiAgICAgICAgIyBBZnRlciB0aGUgbWFya2VyLCB0aGVyZSBpcyBhIOKAnHZlbmRvcl9sZW5ndGjigJ0gZmllbGQgKDQgbGl0dGxlLWVuZGlhbiBieXRlcykuDQogICAgICAgIHZlbmRvcl9sZW4gPSBpbnQuZnJvbV9ieXRlcyhkYXRhW3Bvcys3OnBvcysxMV0sICJsaXR0bGUiKQ0KDQogICAgICAgICMgU2tpcCB0aGUgdmVuZG9yIHN0cmluZyAodmVuZG9yX2xlbmd0aCBieXRlcykgdG8gZ2V0IHRvIHRoZSBjb21tZW50IGxpc3QuDQogICAgICAgIGNvbW1lbnRfc3RhcnQgPSBwb3MgKyAxMSArIHZlbmRvcl9sZW4NCg0KICAgICAgICAjIFJlYWQgdGhlIG51bWJlciBvZiBjb21tZW50cyAoNCBieXRlcyBMRSkNCiAgICAgICAgY29tbWVudF9jb3VudCA9IGludC5mcm9tX2J5dGVzKGRhdGFbY29tbWVudF9zdGFydDpjb21tZW50X3N0YXJ0KzRdLCAibGl0dGxlIikNCiAgICAgICAgcCA9IGNvbW1lbnRfc3RhcnQgKyA0DQoNCiAgICAgICAgIyBCcm93c2UgVm9yYmlzIGNvbW1lbnRzIHRvIGZpbmQgdGhlIG9uZSBzdGFydGluZyB3aXRoICJKU09OPSIsIHdoaWNoIGNvbnRhaW5zIHRoZSBKU09OIGRhdGEuDQogICAgICAgIGZvciBfIGluIHJhbmdlKGNvbW1lbnRfY291bnQpOg0KICAgICAgICAgICAgbGVuZ3RoID0gaW50LmZyb21fYnl0ZXMoZGF0YVtwOnArNF0sICJsaXR0bGUiKQ0KICAgICAgICAgICAgcCArPSA0DQogICAgICAgICAgICBjb21tZW50ID0gZGF0YVtwOnArbGVuZ3RoXQ0KICAgICAgICAgICAgcCArPSBsZW5ndGgNCg0KICAgICAgICAgICAgIyBUaGUgSlNPTiBpcyBpbiBhIGNvbW1lbnQuDQogICAgICAgICAgICBpZiBjb21tZW50LnN0YXJ0c3dpdGgoYiJKU09OPSIpOg0KICAgICAgICAgICAgICAgIHJldHVybiBjb21tZW50WzU6XS5kZWNvZGUoInV0Zi04IikNCg0KICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCJTVkFDLTEuMDogSlNPTiBub3QgZm91bmQgaW4gVm9yYmlzIGNvbW1lbnRzLiIpDQoNCiAgICAjIFNhdmUgY3VycmVudCBzdGF0ZSBpbnRvIGEgbmV3IGZpbG
+        echo UsIG1lcmdpbmcgYXJjaGl2ZSBhbmQgaW50ZXJuYWwgc3RvcmFnZSwgcmVidWlsZGluZyBpbmRleGVzLCBhbmQgb3B0aW9uYWxseSBzYXZpbmcgaW4gYW5vdGhlciBmb3JtYXQgdmVyc2lvbi4NCiAgICBkZWYgc2F2ZShzZWxmLCBmaWxlbmFtZSA9IE5vbmUpOg0KICAgICAgICBmaWxlbmFtZSA9IF91bmljb2RlKGZpbGVuYW1lKQ0KDQogICAgICAgIGlmIGZpbGVuYW1lIGlzIE5vbmU6DQogICAgICAgICAgICBmaWxlbmFtZSA9IHNlbGYuZmlsZQ0KICAgICAgICBpZiBmaWxlbmFtZSBpcyBOb25lOg0KICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcignbm8gdGFyZ2V0IGZpbGUgZm91bmQgZm9yIHNhdmluZyBhcmNoaXZlJykNCiAgICAgICAgaWYgc2VsZi52ZXJzaW9uICE9IDIgYW5kIHNlbGYudmVyc2lvbiAhPSAzOg0KICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcignc2F2aW5nIGlzIG9ubHkgc3VwcG9ydGVkIGZvciB2ZXJzaW9uIDIgYW5kIDMgYXJjaGl2ZXMnKQ0KDQogICAgICAgIHNlbGYudmVyYm9zZV9wcmludCgnUmVidWlsZGluZyBhcmNoaXZlIGluZGV4Li4uJykNCiAgICAgICAgIyBGaWxsIG91ciBvd24gZmlsZXMgc3RydWN0dXJlIHdpdGggdGhlIGZpbGVzIGFkZGVkIG9yIGNoYW5nZWQgaW4gdGhpcyBzZXNzaW9uLg0KICAgICAgICBmaWxlcyA9IHNlbGYuZmlsZXMNCiAgICAgICAgIyBGaXJzdCwgcmVhZCBmaWxlcyBmcm9tIHRoZSBjdXJyZW50IGFyY2hpdmUgaW50byBvdXIgZmlsZXMgc3RydWN0dXJlLg0KICAgICAgICBmb3IgZmlsZSBpbiBsaXN0KHNlbGYuaW5kZXhlcy5rZXlzKCkpOg0KICAgICAgICAgICAgY29udGVudCA9IHNlbGYucmVhZChmaWxlKQ0KICAgICAgICAgICAgIyBSZW1vdmUgZnJvbSBpbmRleGVzIGFycmF5IG9uY2UgcmVhZCwgYWRkIHRvIG91ciBvd24gYXJyYXkuDQogICAgICAgICAgICBkZWwgc2VsZi5pbmRleGVzW2ZpbGVdDQogICAgICAgICAgICBmaWxlc1tmaWxlXSA9IGNvbnRlbnQNCg0KICAgICAgICAjIFByZWRpY3QgaGVhZGVyIGxlbmd0aCwgd2UnbGwgd3JpdGUgdGhhdCBvbmUgbGFzdC4NCiAgICAgICAgb2Zmc2V0ID0gMA0KICAgICAgICBpZiBzZWxmLnZlcnNpb24gPT0gMzoNCiAgICAgICAgICAgIG9mZnNldCA9IDM0DQogICAgICAgIGVsaWYgc2VsZi52ZXJzaW9uID09IDI6DQogICAgICAgICAgICBvZmZzZXQgPSAyNQ0KICAgICAgICBhcmNoaXZlID0gb3BlbihmaWxlbmFtZSwgJ3diJykNCiAgICAgICAgYXJjaGl2ZS5zZWVrKG9mZnNldCkNCg0KICAgICAgICAjIEJ1aWxkIG91ciBvd24gaW5kZXhlcyB3aGlsZSB3cml0aW5nIGZpbGVzIHRvIHRoZSBhcmNoaXZlLg0KICAgICAgICBpbmRleGVzID0ge30NCiAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdXcml0aW5nIGZpbGVzIHRvIGFyY2hpdmUgZmlsZS4uLicpDQogICAgICAgIGZvciBmaWxlLCBjb250ZW50IGluIGZpbGVzLml0ZW1zKCk6DQogICAgICAgICAgICAjIEdlbmVyYXRlIHJhbmRvbSBwYWRkaW5nLCBmb3Igd2hhdGV2ZXIgcmVhc29uLg0KICAgICAgICAgICAgaWYgc2VsZi5wYWRsZW5ndGggPiAwOg0KICAgICAgICAgICAgICAgIHBhZGRpbmcgPSBzZWxmLmdlbmVyYXRlX3BhZGRpbmcoKQ0KICAgICAgICAgICAgICAgIGFyY2hpdmUud3JpdGUocGFkZGluZykNCiAgICAgICAgICAgICAgICBvZmZzZXQgKz0gbGVuKHBhZGRpbmcpDQoNCiAgICAgICAgICAgIGFyY2hpdmUud3JpdGUoY29udGVudCkNCiAgICAgICAgICAgICMgVXBkYXRlIGluZGV4Lg0KICAgICAgICAgICAgaWYgc2VsZi52ZXJzaW9uID09IDM6DQogICAgICAgICAgICAgICAgaW5kZXhlc1tmaWxlXSA9IFsgKG9mZnNldCBeIHNlbGYua2V5LCBsZW4oY29udGVudCkgXiBzZWxmLmtleSkgXQ0KICAgICAgICAgICAgZWxpZiBzZWxmLnZlcnNpb24gPT0gMjoNCiAgICAgICAgICAgICAgICBpbmRleGVzW2ZpbGVdID0gWyAob2Zmc2V0LCBsZW4oY29udGVudCkpIF0NCiAgICAgICAgICAgIG9mZnNldCArPSBsZW4oY29udGVudCkNCg0KICAgICAgICAjIFdyaXRlIHRoZSBpbmRleGVzLg0KICAgICAgICBzZWxmLnZlcmJvc2VfcHJpbnQoJ1dyaXRpbmcgYXJjaGl2ZSBpbmRleCB0byBhcmNoaXZlIGZpbGUuLi4nKQ0KICAgICAgICBhcmNoaXZlLndyaXRlKGNvZGVjcy5lbmNvZGUocGlja2xlLmR1bXBzKGluZGV4ZXMsIHNlbGYuUElDS0xFX1BST1RPQ09MKSwgJ3psaWInKSkNCiAgICAgICAgIyBOb3cgd3JpdGUgdGhlIGhlYWRlci4NCiAgICAgICAgc2VsZi52ZXJib3NlX3ByaW50KCdXcml0aW5nIGhlYWRlciB0byBhcmNoaXZlIGZpbGUuLi4gKHZlcnNpb24gPSBSUEF2ezB9KScuZm9ybWF0KHNlbGYudmVyc2lvbikpDQogICAgICAgIGFyY2hpdmUuc2VlaygwKQ0KICAgICAgICBpZiBzZWxmLnZlcnNpb24gPT0gMzoNCiAgICAgICAgICAgIGFyY2hpdmUud3JpdGUoY29kZWNzLmVuY29kZSgne317OjAxNnh9IHs6MDh4fVxuJy5mb3JtYXQoc2VsZi5SUEEzX01BR0lDLCBvZmZzZXQsIHNlbGYua2V5KSkpDQogICAgICAgIGVsc2U6DQogICAgICAgICAgICBhcmNoaXZlLndyaXRlKGNvZGVjcy5lbmNvZGUoJ3t9ezowMTZ4fVxuJy5mb3JtYXQoc2VsZi5SUEEyX01BR0lDLCBvZmZzZXQpKSkNCiAgICAgICAgIyBXZSdyZSBkb25lLCBjbG9zZSBpdC4NCiAgICAgICAgYXJjaGl2ZS5jbG9zZSgpDQoNCiAgICAgICAgIyBSZWxvYWQgdGhlIGZpbGUgaW4gb3VyIGlubmVyIGRhdGFiYXNlLg0KICAgICAgICBzZWxmLmxvYWQoZmlsZW5hbWUpDQoNCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6DQogICAgaW1wb3J0IGFyZ3BhcnNlDQoNCiAgICBwYXJzZXIgPSBhcmdwYXJzZS5Bcmd1bWVudFBhcnNlcigNCiAgICAgICAgZGVzY3JpcHRpb249J0EgdG9vbCBmb3Igd29ya2luZyB3aXRoIFJlblwnUHkgYXJjaGl2ZSBmaWxlcy4nLA0KICAgICAgICBlcGlsb2c9J1RoZSBGSUxFIGFyZ3VtZW50IGNhbiBvcHRpb25hbGx5IGJlIGluIEFSQ0hJVkU9UkVBTCBmb3JtYXQsIG1hcHBpbmcgYSBmaWxlIGluIHRoZSBhcmNoaXZlIGZpbGUgc3lzdGVtIHRvIGEgZmlsZSBvbiB5b3VyIHJlYWwgZmlsZSBzeXN0ZW0uIEFuIGV4YW1wbGUgb2YgdGhpczogcnBhdG9vbCAteCB0ZXN0LnJwYSBzY3JpcHQucnB5Yz0vaG9tZS9mb28vdGVzdC5ycHljJywNCiAgICAgICAgYWRkX2hlbHA9RmFsc2UpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCdhcmNoaXZlJywgbWV0YXZhcj0nQVJDSElWRScsIGhlbHA9J1RoZSBSZW5cJ3B5IGFyY2hpdmUgZmlsZSB0byBvcGVyYXRlIG9uLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnZmlsZXMnLCBtZXRhdmFyPSdGSUxFJywgbmFyZ3M9JyonLCBhY3Rpb249J2FwcGVuZCcsIGhlbHA9J1plcm8gb3IgbW9yZSBmaWxlcyB0byBvcGVyYXRlIG9uLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctbCcsICctLWxpc3QnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdMaXN0IGZpbGVzIGluIGFyY2hpdmUgQVJDSElWRS4nKQ0KICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy14JywgJy0tZXh0cmFjdCcsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0V4dHJhY3QgRklMRXMgZnJvbSBBUkNISVZFLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLWMnLCAnLS1jcmVhdGUnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdDcmVhdGl2ZSBBUkNISVZFIGZyb20gRklMRXMuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctZCcsICctLWRlbGV0ZScsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0RlbGV0ZSBGSUxFcyBmcm9tIEFSQ0hJVkUuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctYScsICctLWFwcGVuZCcsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J0FwcGVuZCBGSUxFcyB0byBBUkNISVZFLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctMicsICctLXR3bycsIGFjdGlvbj0nc3RvcmVfdHJ1ZScsIGhlbHA9J1VzZSB0aGUgUlBBdjIgZm9ybWF0IGZvciBjcmVhdGluZy9hcHBlbmRpbmcgdG8gYXJjaGl2ZXMuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctMycsICctLXRocmVlJywgYWN0aW9uPSdzdG9yZV90cnVlJywgaGVscD0nVXNlIHRoZSBSUEF2MyBmb3JtYXQgZm9yIGNyZWF0aW5nL2FwcGVuZGluZyB0byBhcmNoaXZlcyAoZGVmYXVsdCkuJykNCg0KICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy1rJywgJy0ta2V5JywgbWV0YXZhcj0nS0VZJywgaGVscD0nVGhlIG9iZnVzY2F0aW9uIGtleSB1c2VkIGZvciBjcmVhdGluZyBSUEF2MyBhcmNoaXZlcywgaW4gaGV4YWRlY2ltYWwgKGRlZmF1bHQ6IDB4REVBREJFRUYpLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLXAnLCAnLS1wYWRkaW5nJywgbWV0YXZhcj0nQ09VTlQnLCBoZWxwPSdUaGUgbWF4aW11bSBudW1iZXIgb2YgYnl0ZXMgb2YgcGFkZGluZyB0byBhZGQgYmV0d2VlbiBmaWxlcyAoZGVmYXVsdDogMCkuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctbycsICctLW91dGZpbGUnLCBoZWxwPSdBbiBhbHRlcm5hdGl2ZSBvdXRwdXQgYXJjaGl2ZSBmaWxlIHdoZW4gYXBwZW5kaW5nIHRvIG9yIGRlbGV0aW5nIGZyb20gYXJjaGl2ZXMsIG9yIG91dHB1dCBkaXJlY3Rvcnkgd2hlbiBleHRyYWN0aW5nLicpDQoNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctaCcsICctLWhlbHAnLCBhY3Rpb249J2hlbHAnLCBoZWxwPSdQcmludCB0aGlzIGhlbHAgYW5kIGV4aXQuJykNCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctdicsICctLXZlcmJvc2UnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdCZSBhIGJpdCBtb3JlIHZlcmJvc2Ugd2hpbGUgcGVyZm9ybWluZyBvcGVyYXRpb25zLicpDQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLVYnLCAnLS12ZXJzaW9uJywgYWN0aW9uPSd2ZXJzaW9uJywgdmVyc2lvbj0ncnBhdG9vbCB2MC44JywgaGVscD0nU2hvdyB2ZXJzaW9uIGluZm9ybWF0aW9uLicpDQogICAgYXJndW1lbnRzID0gcGFyc2VyLnBhcnNlX2FyZ3MoKQ0KDQogICAgIyBEZXRlcm1pbmUgUlBBIHZlcnNpb24uDQogICAgaWYgYXJndW1lbnRzLnR3bzoNCiAgICAgICAgdmVyc2lvbiA9IDINCiAgICBlbHNlOg0KICAgICAgICB2ZXJzaW9uID0gMw0KDQogICAgIyBEZXRlcm1pbmUgUlBBdjMga2V5Lg0KICAgIGlmICdrZXknIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLmtleSBpcyBub3QgTm9uZToNCiAgICAgICAga2V5ID0gaW50KGFyZ3VtZW50cy5rZXksIDE2KQ0KICAgIGVsc2U6DQogICAgICAgIGtleSA9IDB4REVBREJFRUYNCg0KICAgICMgRGV0ZXJtaW5lIHBhZGRpbmcgYnl0ZXMuDQogICAgaWYgJ3BhZGRpbmcnIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLnBhZGRpbmcgaXMgbm90IE5vbmU6DQogICAgICAgIHBhZGRpbmcgPSBpbnQoYXJndW1lbnRzLnBhZGRpbmcpDQogICAgZWxzZToNCiAgICAgICAgcGFkZGluZyA9IDANCg0KICAgICMgRGV0ZXJtaW5lIG91dHB1dCBmaWxlL2RpcmVjdG9yeSBhbmQgaW5wdXQgYXJjaGl2ZQ0KICAgIGlmIGFyZ3VtZW50cy5jcmVhdGU6DQogICAgICAgIGFyY2hpdmUgPSBOb25lDQogICAgICAgIG91dHB1dCA9IF91bmljb2RlKGFyZ3VtZW50cy5hcmNoaXZlKQ0KICAgIGVsc2U6DQogICAgICAgIGFyY2hpdmUgPSBfdW5pY29kZShhcmd1bWVudHMuYXJjaGl2ZSkNCiAgICAgICAgaWYgJ291dGZpbGUnIGluIGFyZ3VtZW50cyBhbmQgYXJndW1lbnRzLm91dGZpbGUgaXMgbm90IE5vbmU6DQogICAgICAgICAgICBvdXRwdXQgPSBfdW5pY29kZShhcmd1bWVudHMub3V0ZmlsZSkNCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgICMgRGVmYXVsdCBvdXRwdXQgZGlyZWN0b3J5IGZvciBleHRyYWN0aW9uIGlzIHRoZSBjdXJyZW50IGRpcmVjdG9yeS4NCiAgICAgICAgICAgIGlmIGFyZ3VtZW50cy5leHRyYWN0Og0KICAgICAgICAgICAgICAgIG91dHB1dCA9ICcuJw0KICAgICAgICAgICAgZWxzZToNCiAgICAgICAgICAgICAgICBvdXRwdXQgPSBfdW5pY29kZShhcmd1bWVudHMuYXJjaGl2ZSkNCg0KICAgICMgTm9ybWFsaXplIGZpbGVzLg0KICAgIGlmIGxlbihhcmd1bWVudHMuZmlsZXMpID4gMCBhbmQgaXNpbnN0YW5jZShhcmd1bWVudHMuZmlsZXNbMF0sIGxpc3QpOg0KICAgICAgICBhcmd1bWVudHMuZmlsZXMgPSBhcmd1bWVudHMuZmlsZ
+        echo XNbMF0NCg0KICAgIHRyeToNCiAgICAgICAgYXJjaGl2ZSA9IFJlblB5QXJjaGl2ZShhcmNoaXZlLCBwYWRsZW5ndGg9cGFkZGluZywga2V5PWtleSwgdmVyc2lvbj12ZXJzaW9uLCB2ZXJib3NlPWFyZ3VtZW50cy52ZXJib3NlKQ0KICAgIGV4Y2VwdCBJT0Vycm9yIGFzIGU6DQogICAgICAgIHByaW50KCdDb3VsZCBub3Qgb3BlbiBhcmNoaXZlIGZpbGUgezB9IGZvciByZWFkaW5nOiB7MX0nLmZvcm1hdChhcmNoaXZlLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgICAgICBzeXMuZXhpdCgxKQ0KDQogICAgaWYgYXJndW1lbnRzLmNyZWF0ZSBvciBhcmd1bWVudHMuYXBwZW5kOg0KICAgICAgICAjIFdlIG5lZWQgdGhpcyBzZXBlcmF0ZSBmdW5jdGlvbiB0byByZWN1cnNpdmVseSBwcm9jZXNzIGRpcmVjdG9yaWVzLg0KICAgICAgICBkZWYgYWRkX2ZpbGUoZmlsZW5hbWUpOg0KICAgICAgICAgICAgIyBJZiB0aGUgYXJjaGl2ZSBwYXRoIGRpZmZlcnMgZnJvbSB0aGUgYWN0dWFsIGZpbGUgcGF0aCwgYXMgZ2l2ZW4gaW4gdGhlIGFyZ3VtZW50LA0KICAgICAgICAgICAgIyBleHRyYWN0IHRoZSBhcmNoaXZlIHBhdGggYW5kIGFjdHVhbCBmaWxlIHBhdGguDQogICAgICAgICAgICBpZiBmaWxlbmFtZS5maW5kKCc9JykgIT0gLTE6DQogICAgICAgICAgICAgICAgKG91dGZpbGUsIGZpbGVuYW1lKSA9IGZpbGVuYW1lLnNwbGl0KCc9JywgMikNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgb3V0ZmlsZSA9IGZpbGVuYW1lDQoNCiAgICAgICAgICAgIGlmIG9zLnBhdGguaXNkaXIoZmlsZW5hbWUpOg0KICAgICAgICAgICAgICAgIGZvciBmaWxlIGluIG9zLmxpc3RkaXIoZmlsZW5hbWUpOg0KICAgICAgICAgICAgICAgICAgICAjIFdlIG5lZWQgdG8gZG8gdGhpcyBpbiBvcmRlciB0byBtYWludGFpbiBhIHBvc3NpYmxlIEFSQ0hJVkU9UkVBTCBtYXBwaW5nIGJldHdlZW4gZGlyZWN0b3JpZXMuDQogICAgICAgICAgICAgICAgICAgIGFkZF9maWxlKG91dGZpbGUgKyBvcy5zZXAgKyBmaWxlICsgJz0nICsgZmlsZW5hbWUgKyBvcy5zZXAgKyBmaWxlKQ0KICAgICAgICAgICAgZWxzZToNCiAgICAgICAgICAgICAgICB0cnk6DQogICAgICAgICAgICAgICAgICAgIHdpdGggb3BlbihmaWxlbmFtZSwgJ3JiJykgYXMgZmlsZToNCiAgICAgICAgICAgICAgICAgICAgICAgIGFyY2hpdmUuYWRkKG91dGZpbGUsIGZpbGUucmVhZCgpKQ0KICAgICAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToNCiAgICAgICAgICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBhZGQgZmlsZSB7MH0gdG8gYXJjaGl2ZTogezF9Jy5mb3JtYXQoZmlsZW5hbWUsIGUpLCBmaWxlPXN5cy5zdGRlcnIpDQoNCiAgICAgICAgIyBJdGVyYXRlIG92ZXIgdGhlIGdpdmVuIGZpbGVzIHRvIGFkZCB0byBhcmNoaXZlLg0KICAgICAgICBmb3IgZmlsZW5hbWUgaW4gYXJndW1lbnRzLmZpbGVzOg0KICAgICAgICAgICAgYWRkX2ZpbGUoX3VuaWNvZGUoZmlsZW5hbWUpKQ0KDQogICAgICAgICMgU2V0IHZlcnNpb24gZm9yIHNhdmluZywgYW5kIHNhdmUuDQogICAgICAgIGFyY2hpdmUudmVyc2lvbiA9IHZlcnNpb24NCiAgICAgICAgdHJ5Og0KICAgICAgICAgICAgYXJjaGl2ZS5zYXZlKG91dHB1dCkNCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBzYXZlIGFyY2hpdmUgZmlsZTogezB9Jy5mb3JtYXQoZSksIGZpbGU9c3lzLnN0ZGVycikNCiAgICBlbGlmIGFyZ3VtZW50cy5kZWxldGU6DQogICAgICAgICMgSXRlcmF0ZSBvdmVyIHRoZSBnaXZlbiBmaWxlcyB0byBkZWxldGUgZnJvbSB0aGUgYXJjaGl2ZS4NCiAgICAgICAgZm9yIGZpbGVuYW1lIGluIGFyZ3VtZW50cy5maWxlczoNCiAgICAgICAgICAgIHRyeToNCiAgICAgICAgICAgICAgICBhcmNoaXZlLnJlbW92ZShmaWxlbmFtZSkNCiAgICAgICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToNCiAgICAgICAgICAgICAgICBwcmludCgnQ291bGQgbm90IGRlbGV0ZSBmaWxlIHswfSBmcm9tIGFyY2hpdmU6IHsxfScuZm9ybWF0KGZpbGVuYW1lLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KDQogICAgICAgICMgU2V0IHZlcnNpb24gZm9yIHNhdmluZywgYW5kIHNhdmUuDQogICAgICAgIGFyY2hpdmUudmVyc2lvbiA9IHZlcnNpb24NCiAgICAgICAgdHJ5Og0KICAgICAgICAgICAgYXJjaGl2ZS5zYXZlKG91dHB1dCkNCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgcHJpbnQoJ0NvdWxkIG5vdCBzYXZlIGFyY2hpdmUgZmlsZTogezB9Jy5mb3JtYXQoZSksIGZpbGU9c3lzLnN0ZGVycikNCiAgICBlbGlmIGFyZ3VtZW50cy5leHRyYWN0Og0KICAgICAgICAjIEVpdGhlciBleHRyYWN0IHRoZSBnaXZlbiBmaWxlcywgb3IgYWxsIGZpbGVzIGlmIG5vIGZpbGVzIGFyZSBnaXZlbi4NCiAgICAgICAgaWYgbGVuKGFyZ3VtZW50cy5maWxlcykgPiAwOg0KICAgICAgICAgICAgZmlsZXMgPSBhcmd1bWVudHMuZmlsZXMNCiAgICAgICAgZWxzZToNCiAgICAgICAgICAgIGZpbGVzID0gYXJjaGl2ZS5saXN0KCkNCg0KICAgICAgICAjIENyZWF0ZSBvdXRwdXQgZGlyZWN0b3J5IGlmIG5vdCBwcmVzZW50Lg0KICAgICAgICBpZiBub3Qgb3MucGF0aC5leGlzdHMob3V0cHV0KToNCiAgICAgICAgICAgIG9zLm1ha2VkaXJzKG91dHB1dCkNCg0KICAgICAgICAjIEl0ZXJhdGUgb3ZlciBmaWxlcyB0byBleHRyYWN0Lg0KICAgICAgICBmb3IgZmlsZW5hbWUgaW4gZmlsZXM6DQogICAgICAgICAgICBpZiBmaWxlbmFtZS5maW5kKCc9JykgIT0gLTE6DQogICAgICAgICAgICAgICAgKG91dGZpbGUsIGZpbGVuYW1lKSA9IGZpbGVuYW1lLnNwbGl0KCc9JywgMikNCiAgICAgICAgICAgIGVsc2U6DQogICAgICAgICAgICAgICAgb3V0ZmlsZSA9IGZpbGVuYW1lDQoNCiAgICAgICAgICAgIHRyeToNCiAgICAgICAgICAgICAgICBjb250ZW50cyA9IGFyY2hpdmUucmVhZChmaWxlbmFtZSkNCg0KICAgICAgICAgICAgICAgICMgQ3JlYXRlIG91dHB1dCBkaXJlY3RvcnkgZm9yIGZpbGUgaWYgbm90IHByZXNlbnQuDQogICAgICAgICAgICAgICAgaWYgbm90IG9zLnBhdGguZXhpc3RzKG9zLnBhdGguZGlybmFtZShvcy5wYXRoLmpvaW4ob3V0cHV0LCBvdXRmaWxlKSkpOg0KICAgICAgICAgICAgICAgICAgICBvcy5tYWtlZGlycyhvcy5wYXRoLmRpcm5hbWUob3MucGF0aC5qb2luKG91dHB1dCwgb3V0ZmlsZSkpKQ0KDQogICAgICAgICAgICAgICAgd2l0aCBvcGVuKG9zLnBhdGguam9pbihvdXRwdXQsIG91dGZpbGUpLCAnd2InKSBhcyBmaWxlOg0KICAgICAgICAgICAgICAgICAgICBmaWxlLndyaXRlKGNvbnRlbnRzKQ0KICAgICAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOg0KICAgICAgICAgICAgICAgIHByaW50KCdDb3VsZCBub3QgZXh0cmFjdCBmaWxlIHswfSBmcm9tIGFyY2hpdmU6IHsxfScuZm9ybWF0KGZpbGVuYW1lLCBlKSwgZmlsZT1zeXMuc3RkZXJyKQ0KICAgIGVsaWYgYXJndW1lbnRzLmxpc3Q6DQogICAgICAgICMgUHJpbnQgdGhlIHNvcnRlZCBmaWxlIGxpc3QuDQogICAgICAgIGxpc3QgPSBhcmNoaXZlLmxpc3QoKQ0KICAgICAgICBsaXN0LnNvcnQoKQ0KICAgICAgICBmb3IgZmlsZSBpbiBsaXN0Og0KICAgICAgICAgICAgcHJpbnQoZmlsZSkNCiAgICBlbHNlOg0KICAgICAgICBwcmludCgnTm8gb3BlcmF0aW9uIGdpdmVuIDooJykNCiAgICAgICAgcHJpbnQoJ1VzZSB7MH0gLS1oZWxwIGZvciB1c2FnZSBkZXRhaWxzLicuZm9ybWF0KHN5cy5hcmd2WzBdKSkNCg0K
     )
 
     >"!altrpatool!.b64" (
@@ -1048,8 +1500,8 @@ set "rpatoolps=%rpatool:[=`[%"
 set "rpatoolps=%rpatoolps:]=`]%"
 set "rpatoolps=%rpatoolps:^=^^%"
 set "rpatoolps=%rpatoolps:&=^&%"
-echo powershell.exe -nologo -noprofile -noninteractive -command "& { [IO.File]::WriteAllBytes('!rpatoolps!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!rpatoolps!.b64'))) }" >> "%UNRENLOG%"
-powershell.exe -nologo -noprofile -noninteractive -command "& { [IO.File]::WriteAllBytes('!rpatoolps!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!rpatoolps!.b64'))) }"
+echo "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!rpatoolps!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!rpatoolps!.b64'))) }" >> "%UNRENLOG%"
+"%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!rpatoolps!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!rpatoolps!.b64'))) }" %DEBUGREDIR%
 del /f /q "%rpatoolps%.b64" %DEBUGREDIR%
 if not exist "!rpatoolps!.tmp" (
     call :elog " %RED%!FAIL.%LNG%!%RES%!extm7.%LNG%! %YEL%!rpatoolps!.tmp%RES%"
@@ -1057,8 +1509,8 @@ if not exist "!rpatoolps!.tmp" (
 ) else (
     move /y "!rpatoolps!.tmp" "!rpatoolps!" %DEBUGREDIR%
 )
-echo powershell.exe -nologo -noprofile -noninteractive -command "& { [IO.File]::WriteAllBytes('!altrpatool!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!altrpatool!.b64'))) }" >> "%UNRENLOG%"
-powershell.exe -nologo -noprofile -noninteractive -command "& { [IO.File]::WriteAllBytes('!altrpatool!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!altrpatool!.b64'))) }"
+echo "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!altrpatool!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!altrpatool!.b64'))) }" >> "%UNRENLOG%"
+"%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('!altrpatool!.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('!altrpatool!.b64'))) }" %DEBUGREDIR%
 del /f /q "%altrpatool%.b64" %DEBUGREDIR%
 if not exist "!altrpatool!.tmp" (
     call :elog " %RED%!FAIL.%LNG%!%RES%!extm7.%LNG%! %YEL%!altrpatool!.tmp%RES%"
@@ -1078,33 +1530,78 @@ for /R "game" %%f in (*.%rpaExt%) do (
     set "usealt=0"
 
     set "extm18.en=RPA file '!rpafile!' ignored."
-    set "extm18.zh=已忽略 RPA 文件 '!rpafile!'。"
+    set "extm18.fr=fichier RPA '!rpafile!' ignoré."
+    set "extm18.es=RPA archivo '!rpafile!' ignorado."
+    set "extm18.it=RPA file '!rpafile!' ignorato."
+    set "extm18.de=RPA Datei '!rpafile!' ignoriert."
+    set "extm18.ru=RPA файл '!rpafile!' проигнорирован."
+    set "extm18.zh=RPA 文件 '!rpafile!' 被忽略。"
 
     set "extm19.en=Error processing RPA !rpafile!."
+    set "extm19.fr=Erreur lors du traitement du fichier RPA !rpafile!."
+    set "extm19.es=Error al procesar el archivo RPA !rpafile!."
+    set "extm19.it=Errore durante l'elaborazione del file RPA !rpafile!."
+    set "extm19.de=Fehler beim Verarbeiten der RPA !rpafile!."
+    set "extm19.ru=Ошибка при обработке файла RPA !rpafile!."
     set "extm19.zh=处理 RPA 文件 !rpafile! 时出错。"
 
     set "extm20.en=RPA file unpacked: !relativePath!"
-    set "extm20.zh=RPA 文件已解包：!relativePath!"
+    set "extm20.fr=Fichier RPA décompressé : !relativePath!"
+    set "extm20.es=Archivo RPA descomprimido: !relativePath!"
+    set "extm20.it=File RPA decompresso: !relativePath!"
+    set "extm20.de=RPA-Datei entpackt: !relativePath!"
+    set "extm20.ru=Распакованный файл RPA: !relativePath!"
+    set "extm20.zh=RPA 文件已解包: !relativePath!"
 
     set "extm21.en=Deleting RPA file '!rpafile!'"
+    set "extm21.fr=Suppression de RPA fichier '!rpafile!'"
+    set "extm21.es=Eliminando RPA archivo '!rpafile!'"
+    set "extm21.it=Eliminazione di RPA file '!rpafile!'"
+    set "extm21.de=Löschen von RPA Datei '!rpafile!'"
+    set "extm21.ru=Удаление RPA файл '!rpafile!'"
     set "extm21.zh=正在删除 RPA 文件 '!rpafile!'"
 
-    set "extm22.en=Moving RPA file '!rpafile!' to '!WORKDIR!\rpa'"
-    set "extm22.zh=正在将 RPA 文件 '!rpafile!' 移动到 '!WORKDIR!\rpa'"
+    set "extm22.en=Moving RPA file '!rpafile!' to '%WORKDIR%\rpa'"
+    set "extm22.fr=Déplacement de RPA fichier '!rpafile!' vers '%WORKDIR%\rpa'"
+    set "extm22.es=Moviendo RPA archivo '!rpafile!' a '%WORKDIR%\rpa'"
+    set "extm22.it=Spostamento di RPA file '!rpafile!' in '%WORKDIR%\rpa'"
+    set "extm22.de=Verschieben von RPA Datei '!rpafile!' nach '%WORKDIR%\rpa'"
+    set "extm22.ru=Перемещение RPA файл '!rpafile!' в '%WORKDIR%\rpa'"
+    set "extm22.zh=正在移动 RPA 文件 '!rpafile!' 到 '%WORKDIR%\rpa'"
 
-    set "extm23.en=Error moving RPA file '!rpafile!' to '!WORKDIR!\rpa'."
-    set "extm23.zh=将 RPA 文件 '!rpafile!' 移动到 '!WORKDIR!\rpa' 时出错。"
+    set "extm23.en=Error moving RPA file '!rpafile!' to '%WORKDIR%\rpa'."
+    set "extm23.fr=Erreur lors du déplacement de RPA fichier '!rpafile!' vers '%WORKDIR%\rpa'."
+    set "extm23.es=Error al mover RPA archivo '!rpafile!' a '%WORKDIR%\rpa'."
+    set "extm23.it=Errore durante lo spostamento di RPA file '!rpafile!' in '%WORKDIR%\rpa'."
+    set "extm23.de=Fehler beim Verschieben von RPA Datei '!rpafile!' nach '%WORKDIR%\rpa'."
+    set "extm23.ru=Ошибка при перемещении RPA файл '!rpafile!' в '%WORKDIR%\rpa'."
+    set "extm23.zh=移动 RPA 文件 '!rpafile!' 到 '%WORKDIR%\rpa' 时出错。"
 
-    set "extm24.en=RPA file '!rpafile!' moved to '!WORKDIR!\rpa'."
-    set "extm24.zh=RPA 文件 '!rpafile!' 已移动到 '!WORKDIR!\rpa'。"
+    set "extm24.en=RPA file '!rpafile!' moved to '%WORKDIR%\rpa'."
+    set "extm24.fr=RPA fichier '!rpafile!' déplacé vers '%WORKDIR%\rpa'."
+    set "extm24.es=RPA archivo '!rpafile!' movido a '%WORKDIR%\rpa'."
+    set "extm24.it=RPA file '!rpafile!' spostato in '%WORKDIR%\rpa'."
+    set "extm24.de=RPA Datei '!rpafile!' nach '%WORKDIR%\rpa' verschoben."
+    set "extm24.ru=RPA файл '!rpafile!' перемещен в '%WORKDIR%\rpa'."
+    set "extm24.zh=RPA 文件 '!rpafile!' 已移动到 '%WORKDIR%\rpa'。"
 
     set "extm26.en=Modified %YEL%'!rpafile!'%RES% RPA archive detected, using altrpatool.py to extract."
-    set "extm26.zh=检测到被修改的 %YEL%'!rpafile!'%RES% RPA 归档，使用 altrpatool.py 解包。"
+    set "extm26.fr=Archive %YEL%'!rpafile!'%RES% RPA modifiée détectée, utilisation de altrpatool.py pour l'extraction."
+    set "extm26.es=Archivo %YEL%'!rpafile!'%RES% RPA modificado detectado, usando altrpatool.py para extraer."
+    set "extm26.it=Archivio %YEL%'!rpafile!'%RES% RPA modificato rilevato, utilizzando altrpatool.py per estrarre."
+    set "extm26.de=Modifizierte %YEL%'!rpafile!'%RES% RPA-Archiv erkannt, Verwendung von altrpatool.py zum Extrahieren."
+    set "extm26.ru=Обнаружен измененный архив %YEL%'!rpafile!'%RES% RPA, используется altrpatool.py для извлечения."
+    set "extm26.zh=检测到修改过的 %YEL%'!rpafile!'%RES% RPA 存档，使用 altrpatool.py 进行提取。"
 
+    if !OPTION! EQU 7 (
+        set "usealt=1"
+        call :elog .
+        call :elog "    !extm26.%LNG%!"
+    )
     if exist "!rpafile!" if not "!relativePath!" == "saves\persistent" (
-        echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!detect_archive_py!" "!rpafile!" >>"%UNRENLOG%"
-        "!PYTHONHOME!python.exe" !PYNOASSERT! "!detect_archive_py!" "!rpafile!" >>"%UNRENLOG%" 2>&1
-        if !errorlevel! EQU 1 (
+        echo "%PYTHONHOME%python.exe" %PYNOASSERT% "!detect_archive_py!" "!rpafile!" >>"%UNRENLOG%"
+        "%PYTHONHOME%python.exe" %PYNOASSERT% "!detect_archive_py!" "!rpafile!" >>"%UNRENLOG%" 2>&1
+        if !ERRORLEVEL! EQU 1 (
             set "usealt=1"
             call :elog .
             call :elog "    !extm26.%LNG%!"
@@ -1114,19 +1611,18 @@ for /R "game" %%f in (*.%rpaExt%) do (
             set "qmark=?"
             if "!LNG!"=="fr" set "qmark= ?"
             echo    !extm16.%LNG%! !relativePath!!qmark! >> "%UNRENLOG%"
-            <nul set /p=.    !extm16.%LNG%! !relativePath!!qmark! !ENTERYN.%LNG%!
-            !SystemRoot!\System32\choice.exe /C OSJYN /N /D N /T !CTIME!
+            call :choiceEx "    !extm16.%LNG%! !relativePath!!qmark! !ENTERYN.%LNG%!" "OSJYN" "N" "%CTIME%" "-rawMsg"
             if errorlevel 5 (
                 call :elog "    %YEL%- !extm18.%LNG%!%RES%"
             ) else (
                 if !usealt! EQU 0 (
-                    echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%"
-                    "!PYTHONHOME!python.exe" !PYNOASSERT! "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
-                    set "elevel=!errorlevel!"
+                    echo "%PYTHONHOME%python.exe" %PYNOASSERT% "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%"
+                    "%PYTHONHOME%python.exe" %PYNOASSERT% "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
+                    set "elevel=!ERRORLEVEL!"
                 ) else if !usealt! EQU 1 (
-                    echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%"
-                    "!PYTHONHOME!python.exe" !PYNOASSERT! "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
-                    set "elevel=!errorlevel!"
+                    echo "%PYTHONHOME%python.exe" %PYNOASSERT% "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%"
+                    "%PYTHONHOME%python.exe" %PYNOASSERT% "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
+                    set "elevel=!ERRORLEVEL!"
                 )
                 if !elevel! NEQ 0 (
                     call :elog "    %RED%- !extm19.%LNG%! %YEL%!LOGCHK!%RES%"
@@ -1136,12 +1632,12 @@ for /R "game" %%f in (*.%rpaExt%) do (
                         call :elog "    + !extm21.%LNG%!%RES%"
                         del /f /q "!rpafile!" %DEBUGREDIR%
                     ) else (
-                        call :elog "    + !extm22.%LNG%!" REM Moving RPA file '!rpafile!' to '!WORKDIR!\rpa'
-                        if not exist "!WORKDIR!\rpa" (
-                            mkdir "!WORKDIR!\rpa"
+                        call :elog "    + !extm22.%LNG%!" REM Moving RPA file '!rpafile!' to '%WORKDIR%\rpa'
+                        if not exist "%WORKDIR%\rpa" (
+                            mkdir "%WORKDIR%\rpa"
                         )
-                        move "!rpafile!" "!WORKDIR!\rpa" %DEBUGREDIR%
-                        if !errorlevel! NEQ 0 (
+                        move "!rpafile!" "%WORKDIR%\rpa" %DEBUGREDIR%
+                        if !ERRORLEVEL! NEQ 0 (
                             call :elog "    %RED%- !extm23.%LNG%! %YEL%!LOGCHK!%RES%"
                         ) else (
                             call :elog "    %GRE%+ !extm24.%LNG%!%RES%"
@@ -1154,13 +1650,13 @@ for /R "game" %%f in (*.%rpaExt%) do (
             call :elog "    + !extm16.%LNG%! !relativePath!"
             set "elevel=0"
             if !usealt! EQU 0 (
-                echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%"
-                "!PYTHONHOME!python.exe" !PYNOASSERT! "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
-                set "elevel=!errorlevel!"
+                echo "%PYTHONHOME%python.exe" %PYNOASSERT% "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%"
+                "%PYTHONHOME%python.exe" %PYNOASSERT% "!rpatool!" -o game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
+                set "elevel=!ERRORLEVEL!"
             ) else if !usealt! EQU 1 (
-                echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%"
-                "!PYTHONHOME!python.exe" !PYNOASSERT! "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
-                set "elevel=!errorlevel!"
+                echo "%PYTHONHOME%python.exe" %PYNOASSERT% "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%"
+                "%PYTHONHOME%python.exe" %PYNOASSERT% "!altrpatool!" -o .\game -x "!rpafile!" >>"%UNRENLOG%" 2>&1
+                set "elevel=!ERRORLEVEL!"
             )
             if !elevel! NEQ 0 (
                 call :elog "    %RED%- !extm19.%LNG%!%RES%"
@@ -1170,12 +1666,12 @@ for /R "game" %%f in (*.%rpaExt%) do (
                     call :elog "    + !extm21.%LNG%!%RES%"
                     del /f /q "!rpafile!" %DEBUGREDIR%
                 ) else (
-                    call :elog "    + !extm22.%LNG%!" REM Moving RPA file '!rpafile!' to '!WORKDIR!\rpa'
-                    if not exist "!WORKDIR!\rpa" (
-                        mkdir "!WORKDIR!\rpa"
+                    call :elog "    + !extm22.%LNG%!" REM Moving RPA file '!rpafile!' to '%WORKDIR%\rpa'
+                    if not exist "%WORKDIR%\rpa" (
+                        mkdir "%WORKDIR%\rpa"
                     )
-                    move "!rpafile!" "!WORKDIR!\rpa" %DEBUGREDIR%
-                    if !errorlevel! NEQ 0 (
+                    move "!rpafile!" "%WORKDIR%\rpa" %DEBUGREDIR%
+                    if !ERRORLEVEL! NEQ 0 (
                         call :elog "    %RED%- !extm23.%LNG%!%RES%"
                     ) else (
                         call :elog "    %GRE%+ !extm24.%LNG%!%RES%"
@@ -1190,15 +1686,11 @@ call :elog .
 :: Clean up
 :rpa_cleanup
 call :elog "!CLEANUP.%LNG%!"
-del /f /q "%rpatool%.tmp" %DEBUGREDIR%
-del /f /q "%rpatool%" %DEBUGREDIR%
-del /f /q "%altrpatool%.tmp" %DEBUGREDIR%
-del /f /q "%altrpatool%" %DEBUGREDIR%
-rmdir /Q /S "%WORKDIR%\__pycache__" %DEBUGREDIR%
-del /f /q "%detect_archive_py%.tmp" %DEBUGREDIR%
-del /f /q "%detect_archive_py%" %DEBUGREDIR%
-del /f /q "%detect_rpa_ext_py%.tmp" %DEBUGREDIR%
-del /f /q "%detect_rpa_ext_py%" %DEBUGREDIR%
+if not "%rpatool%" == "" del /f /q "%rpatool%" %DEBUGREDIR%
+if not "%altrpatool%" == "" del /f /q "%altrpatool%" %DEBUGREDIR%
+if exist "%WORKDIR%\__pycache__" rmdir /Q /S "%WORKDIR%\__pycache__" %DEBUGREDIR%
+if not "%detect_archive_py%" == "" del /f /q "%detect_archive_py%" %DEBUGREDIR%
+if not "%detect_rpa_ext_py%" == "" del /f /q "%detect_rpa_ext_py%" %DEBUGREDIR%
 
 call :elog "!DONE.%LNG%!"
 timeout /t 2 /nobreak >nul
@@ -1211,51 +1703,132 @@ goto :eof
 
 
 :: Use unrpa instead of rpatool which offer the ability to extract RPA archives with a different header.
+:extract_wkey
+call :elog .
+
+goto :eof
+
+
 :decompile
-set "decm1.en=Failed to create decomp.cab. !UNACONT.%LNG%!"
-set "decm1.zh=无法创建 decomp.cab。!UNACONT.%LNG%!"
+set "decm1.en=Failed to create decomp.cab."
+set "decm1.fr=Échec de la création de decomp.cab."
+set "decm1.es=Error al crear decomp.cab."
+set "decm1.it=Impossibile creare decomp.cab."
+set "decm1.de=Dekompilierung.cab konnte nicht erstellt werden."
+set "decm1.ru=Не удалось создать decomp.cab."
+set "decm1.zh=无法创建 decomp.cab。"
 
 set "decm2.en=Decompilation tool created successfully."
+set "decm2.fr=Outil de décompilation créé avec succès."
+set "decm2.es=Herramienta de descompilación creada con éxito."
+set "decm2.it=Strumento di decompilazione creato con successo."
+set "decm2.de=Dekompilierungswerkzeug erfolgreich erstellt."
+set "decm2.ru=Инструмент декомпиляции успешно создан."
 set "decm2.zh=反编译工具创建成功。"
 
 set "decm3.en=Overwrite RPY files after decompilation?"
-set "decm3.zh=反编译后是否覆盖已有 RPY 文件？"
+set "decm3.fr=Écraser les fichiers RPY après la décompilation ?"
+set "decm3.es=¿Sobrescribir archivos RPY después de la descompilación?"
+set "decm3.it=Sovrascrivere i file RPY dopo la decompilazione?"
+set "decm3.de=RPY-Dateien nach der Dekompilierung überschreiben?"
+set "decm3.ru=Перезаписать файлы RPY после декомпиляции?"
+set "decm3.zh=反编译后是否覆盖 RPY 文件？"
 
 set "decm4.en=Existing RPY files won't be overwritten."
-set "decm4.zh=不会覆盖已有 RPY 文件。"
+set "decm4.fr=Les fichiers RPY existants ne seront pas écrasés."
+set "decm4.es=Los archivos RPY existentes no se sobrescribirán."
+set "decm4.it=I file RPY esistenti non verranno sovrascritti."
+set "decm4.de=Vorhandene RPY-Dateien werden nicht überschrieben."
+set "decm4.ru=Существующие файлы RPY не будут перезаписаны."
+set "decm4.zh=现有的 RPY 文件不会被覆盖。"
 
 set "decm5.en=Existing RPY files will be overwritten after decompilation."
-set "decm5.zh=反编译后将覆盖已有 RPY 文件。"
+set "decm5.fr=Les fichiers RPY existants seront écrasés après la décompilation."
+set "decm5.es=Los archivos RPY existentes se sobrescribirán después de la descompilación."
+set "decm5.it=I file RPY esistenti verranno sovrascritti dopo la decompilazione."
+set "decm5.de=Vorhandene RPY-Dateien werden nach der Dekompilierung überschrieben."
+set "decm5.ru=Существующие файлы RPY будут перезаписаны после декомпиляции."
+set "decm5.zh=反编译后将覆盖现有的 RPY 文件。"
 
 set "decm6.en=Extracting decomp.cab..."
-set "decm6.zh=正在解压 decomp.cab..."
+set "decm6.fr=Extraction de decomp.cab..."
+set "decm6.es=Extrayendo decomp.cab..."
+set "decm6.it=Estrazione di decomp.cab..."
+set "decm6.de=Extrahieren von decomp.cab..."
+set "decm6.ru=Извлечение decomp.cab..."
+set "decm6.zh=正在提取 decomp.cab..."
 
 set "decm7.en=Unable to find:"
+set "decm7.fr=Impossible de trouver :"
+set "decm7.es=No se puede encontrar:"
+set "decm7.it=Impossibile trovare:"
+set "decm7.de=Nicht gefunden:"
+set "decm7.ru=Не удалось найти:"
 set "decm7.zh=找不到："
 
 set "decm8.en=Searching for RPYC files in the game directory..."
-set "decm8.zh=正在在 game 目录中搜索 RPYC 文件..."
+set "decm8.fr=Recherche de fichiers RPYC dans le répertoire du jeu..."
+set "decm8.es=Buscando archivos RPYC en el directorio del juego..."
+set "decm8.it=Cercando file RPYC nella directory di gioco..."
+set "decm8.de=Suche nach RPYC-Dateien im Spieledirectory..."
+set "decm8.ru=Поиск файлов RPYC в каталоге игры..."
+set "decm8.zh=在游戏目录中搜索 RPYC 文件..."
 
 set "decm9.en=Decompiling file:"
+set "decm9.fr=Décompilation du fichier :"
+set "decm9.es=Descompilando archivo:"
+set "decm9.it=Decompilazione del file:"
+set "decm9.de=Dekompilierung der Datei:"
+set "decm9.ru=Декомпиляция файла:"
 set "decm9.zh=正在反编译文件："
 
 set "decm10.en=Copy from"
-set "decm10.zh=从"
+set "decm10.fr=Copie de"
+set "decm10.es=Copiar de"
+set "decm10.it=Copia da"
+set "decm10.de=Kopieren von"
+set "decm10.ru=Копировать из"
+set "decm10.zh=从复制"
 
 set "decm10a.en=to"
+set "decm10a.fr=vers"
+set "decm10a.es=a"
+set "decm10a.it=a"
+set "decm10a.de=nach"
+set "decm10a.ru=в"
 set "decm10a.zh=到"
 
 set "decm11.en=Overwriting existing RPY file:"
-set "decm11.zh=覆盖已有 RPY 文件："
+set "decm11.fr=Écrasement du fichier RPY existant :"
+set "decm11.es=Sobrescribiendo el archivo RPY existente:"
+set "decm11.it=Sovrascrittura del file RPY esistente:"
+set "decm11.de=Überschreiben der vorhandenen RPY-Datei:"
+set "decm11.ru=Перезапись существующего файла RPY:"
+set "decm11.zh=正在覆盖现有的 RPY 文件："
 
 set "decm12.en=Skipping:"
-set "decm12.zh=跳过："
+set "decm12.fr=Ignore :"
+set "decm12.es=Saltando:"
+set "decm12.it=Ignorando:"
+set "decm12.de=Überspringen:"
+set "decm12.ru=Пропуск:"
+set "decm12.zh=正在跳过："
 
 set "decm12a.en=decompiled file already exists."
-set "decm12a.zh=已存在反编译后的文件。"
+set "decm12a.fr=le fichier décompilé existe déjà."
+set "decm12a.es=el archivo descompilado ya existe."
+set "decm12a.it=il file decompilato esiste già."
+set "decm12a.de=die dekompilierte Datei existiert bereits."
+set "decm12a.ru=декомпилированный файл уже существует."
+set "decm12a.zh=反编译的文件已存在。"
 
 set "decm13.en=Error processing:"
-set "decm13.zh=处理出错："
+set "decm13.fr=Erreur lors du traitement de :"
+set "decm13.es=Error al procesar:"
+set "decm13.it=Errore durante l'elaborazione di:"
+set "decm13.de=Fehler bei der Verarbeitung von:"
+set "decm13.ru=Ошибка при обработке:"
+set "decm13.zh=处理时出错："
 
 :: Write to temporary file first, then convert. Needed due to binary file and avoid antivirus false positive.
 set "decompcab=%WORKDIR%\decomp.cab"
@@ -1271,7 +1844,7 @@ del /f /q "%unrpycpy%.tmp" %DEBUGREDIR%
 del /f /q "%unrpycpy%" %DEBUGREDIR%
 del /f /q "%deobfuscate%" %DEBUGREDIR%
 
-if !RENPYVERSION! LSS 8 (
+if %RENPYVERSION% LSS 8 (
     REM unrpyc by CensoredUsername
     REM	https://github.com/CensoredUsername/unrpyc
     REM __title__ = "Unrpyc Legacy for Ren'Py v7 and lower"
@@ -1294,17 +1867,17 @@ if !RENPYVERSION! LSS 8 (
     REM unrpyc by CensoredUsername
     REM	https://github.com/CensoredUsername/unrpyc
     REM __title__ = "Unrpyc Master for Ren'Py v8"
-    REM __version__ = 'v2.0.2'
-    REM Modified to include PR# 248, 266 + Inceton.
+    REM __version__ = 'v2.0.4'
+    REM Modified to include Inceton + Version display.
     >"!decompcab!.tmp" (
-        echo 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
-        echo 3YZBt0oVSJpDLlqI+G5JD+beyK6G2Z561rjBnxyzpY3nFT474WAJED4UboqYijxGsY221G7ZkrAfYmzGpri7ClpAwznQTHugPNmHiOGZ1tqDCt5UNYJOLaxR+oASZncF9qyvMPxRx1MrS2e4L9g5mbPkrqZJyaXzwobPisr2Z1cUXXduKikvblPKrbV5DF524QcGU/C74YRuYemQxOA9qS/ZZXD6txsf0WuZsXXdrFly5rwTlFs6bmaTJ65SVxVKt+LZlOma4HDRJw/9r79p620au8Ht+Bcs8kGopbpzFAl0DWiCbCxBg2wbpFkFhGDItUYpgiVJFMY5h+L/3XGfODClbaLpveXEicW48M3Ou3znKQYRPD90ukmC+Og0hDjmu5QHj6LVQp77ShCL0deUMlWWFah4Irt/G5EdQDZvGZyeYkzUtBfGva46nga7CUnGzQTWBlkqxbfXbikoy9zeAhZW8CzI7fC8MPskpHZXJR4OJ57XBVL//Ziqm1I5oAS3CkeD0yDSWzAShof8N5oqHN/etqVvjidcyhe49MyktqwgvrL+quLry+H2lpaynVDxo4ilY/u5Oci4jyJOCNI1R3Nk3mM5XFbxHV+ewkABFzWBJhiKgas5bio6SBAN2Ck/YoMvIhwdBxRNHyYGiHtqPVbV5GUxQOzQ2P96rT1bcWIvqpuaIErmn9pwJSlDPTdVw5NRVqqkOCWdQDLFj8Tv2XP15rhRROhSORoxAbW3OTv8aptsbVUxjWy3C+9m+7EKtR8eOFDlQ+VrUpx2v82x4MB9gZU8lRVhHUZYktw+ZCd/XowwFbxdn1rAVUT5+XTmIynefVF32E3kzsPK6TPEsYJBU/wmFOot37CGOdDhZFFmnk9HuEB0DVEL9J9R4v+Heo4PdXigLL48eeHuETZHo8WDRiVBxDc3lx/RXGnsGVvk18gijxsb8I5Q5qNxSC46ceYFLX7qPgYTmqbyYfnZMGFLDRyUitYi+DMczwnmYfH/MHZtb5esPuFL7rpny4W9zDd3w/ZrysQQN4AsyY/kEpF6vQaNuN9G9+9g17hoh25WGIGgJCBEG5AtW7yrglV/xol6Zca985J3vySdeHsUWZtiK7EieKs+PLvZidTkahSOIB12ttIaS/atmRsziSu7XFY5uY1vRbRUmhFNgkYdwAV9HJGcon9Euxm0BwcJ9djyRAdEJuaUsrmAXQCAIHE6daWSN0bstM4sqkrNehJzB6BI644+R0ocTYEiXEyKxQaCc9n3TrBlil9iny3CYKN1d1iCnjkIJ0+i+5ch4MXKDr0FozNbFnzj2ULkItAhAVadM3Z7nLJVxxAn+GTczuEjzfY27jdaKe3ye5MzFXIvRg4TKwlX4wAVV2pKvtTph2LbnSGV2Tg/LdrdeAWkmaS+nSRpT2sHLoVQ97x5dZL+iG5kzrtC/zYXG2jXiQ3fr6o680Pt6uSI4PEU10ntdw0OaWZ+w0gKIwKJHFuKDl7hkBDqT1czrH/fXT08oy+wsMrc2AvxOQS26My5IssrDrtGLi9qpA1C7OLqiT2H8F2n/kLrOLyJYd9j17LGuZ492pbcauB0WSP8Ykjzc20FbjzeczijIxXktWPpv3PoBdP9Ti/l/nrz43ly4o0ilc+zeh4wk7qgcZd0B/5y2eVPArVwZR+lrVc7R5mOrjBvTmyAzybBDxnH1rMkUrrdtahVuWh8wPUvusfEDudgbzr8k9/oivW8e5GGbyqLQAMnDYgkIHlSU6qpZbC/OX15i7YT8xyL5uVdi5MhmLNLs3iFgYVYDfH3IQNa2BB2pv9az7qB5zQoiK39GXzfaV/sy9nMv0n9vO5KzoBZQdP7erPfBQwsVEgskrZbASCUJQBVuUHMvxrNL+DMGhW/MCh9+nOOf3SXr1Rf0F4xPFoWz2bTpNsiCPACR1eMd81CasXwlG/8BP+3zec1IWVjfJH3jFHPyCv7Anj02/HXx1Q5z0dz58YTNsFnmlT7Eik3gIPtvGgL7ZX8xjT7X690k1fgdiTFJr+CFlCbSRClKPm5CwgvBUG13Pf6Bawlt95RPVkk6OrSnwpfXXg80QdTjbzKemSVm47Go4+ZLINthkvW/51KVkwwT9evpAQz03sv+Q1X91qKGWlfTM3BCnrJYc0biFabeXkh7i0z9ItPejhAhKeaGqhFHK1pX3Vg8PjZ6IVV0xR6kZH6KiWNC5/6U19iFNHdKbI/qQ08CuseHEPSWwmAptlilYmLqeJwVcnlGIzsXuS8mcq3GwKhgh+TTL8lLZltnMeH+JRAPqX0KxxDawxmhYKQu/PgRf8OztuqCEUkJTPbzrWCaDdwcsbxdm1AsAkQIfiXwJrAXIki7maRr3Ah+Y9iti5wi3KLpEvZ+l2faQJyXWZFkr8jYpwupHtt9vaYoJpWEPoyxBzr9vC+bfMfHjsA8PALYtrf70ZcnXLj3UpFsu7DWYKF1tEnfVuAUI/vwQkaEOX77vAHd5w9Dj05hEVj9ktL5mH5YJwSLOCYtllpByYvBJpcui1nUtOs8H244ecCCk0XXEqHjez6C1UFyoSQqjVLL59/W6PWlMdnbOufA1ByerWYI/W272Wc0s8wMJI4YCKARzRXwcx/efZKUzXbMbooeJZ0D41sJKdeE7ydQknyMhOBcgIh/CzOIY7QtXCk7OiFSH3tj3xhRoWxIebYHStKiWw/uBzv2PJFFLyAH/ce6yT7ckT/eTCAGN1VDVac7JWPixa726C/FWkkE3UBpx5kk6y07/VE/Ql0Tt0L3i2xUMwNzp/YkOQPbg06gMTuBentkHERHd4kObm+bfr1TdlsoQ5HgOTHCZYeYYKIozpHwHAwFlUQexK9w/X0uQVjvAzrixhnJtL6t7mDrqkUtuXnsHiDUxV8Z1oDhcoq8Y3Uw3AEq7dntEe87w0eClTSTKAdmPJJHdOjt0cyB+j/d6ku1Jlgi17ldIxgC/kMF42fr7kAQs5P2hK2Fej9u12NjRfQUgchXkP5PetqrGarTLWYxUFS1rZG9CWolm4BMMORgUJEPRXm7n40IMpglNAVbtx/DESBohTWG+C4G4yrMta0xaTIYtpLraPGx8VRm9GDY3Rbt9hUFHjgvk1+rAipnhQfXOoHs3CLRqMmhugEC+5FzLmqkIhIZbfYC5edZhlpBhiZwJh49/iBF/00UZXTCWTiE0tPFgXoXdehJ/xQcU6n4KLwmIFcrL8/xFbCKmmWH9anEreSVbs3HkxgiOzWrICRpt1hUYEHv6nAHNJRP0iXHwloH+FD/iXwzARP0mFHopmSnJczMHjj8nDur7jVVIcJ0FIF9wmOUAderRiI77ZZ1/PmWwclU94LKLgAxDZQKqy8Aa0ceIWkPWH80dOUn7EuzHvyRw8W6UICJaewYvZ+nEkmPlBfqS1xeRS2wRGBVeFxFFyvTKHZCGmHFt9CEJp+Y1J8/nZNGN1kbHePPlzVGf3uzRrxM/Q1hXYJerYfBrpMjrtShxseLQAyU/xAv7vGaHzFmhBBsYE9OtxSgA24CvVYNQtFGQSof6CgV2mIg8OczMO3o52QwjefQmugZJ8ne1CwlS5sCCLMCR0IfOqbO5vW63oxKuGnb9Zc65/T7CYWWGUUOj/EC4tpK/COLQp101sEF+VJz68u4rhLPM0SWRfaeIE6EsyNwKpqX54SOga8eerAaGctTCo4QFR0cpJD7/7vV+oBxC/6tGT8liXt0cBj/BlHRlOPbIBABX5AcDWgWyO/ONKaojfc5YHovtCBj60AZK4MrYiQVrKFctQyEG4nKQl8KrArIfSHArCJRfNVlSMk7LBAm/UKnsJ8AFphHsQyq2njgLdWGQKOBln4SBoQ4ikNvz/Lwh2KIqEJl59kCY5WK9+KRIWYPbymZ2yWGYhkcjDL7ULU3FJfgmJaUdnqeXLFOnDgZQvt0xWJ4tyPcbNUisJYNTrF3SxdlknqfppAy1RwnvxHe7xDthM9psQd/4IPLSJ0HyKk3xFFIRxkgqC5LY0l0+UJiwg7e1j59nH+mBd+8TN6Q2IAx4CW4TmWzpUjhpqZzzo6vQoZj0yD098EhBRklNp/1q+rCTE4xc7B3hFOFeawEDx0Y6TAKTtm1d3twOWidahTF2327SdjumUkTX8iC7p3DOmhaiBty9GBPRABXX6QfuJIM2WUBKJnVEj90uCwYm8OEMHrpfbnvsQLp9WqpmHdKFm/qioHwsMnyq1Ccb8bpR+stqnerjVTQIysAC2myh0e9x7qRLj0J1GPgD7MVxsKSV1+2q7n7GSeal6qqyUpaVrvD21C2mDh+U99N1tXmel4lX8+Tr5Rbl4/gnynmUBda0JXZumIbnKI2FTVFg0J9rIQtDXxMMXievMNUAT9sgaeeLQUEF3FJGoTQ8y9+ySuFfbj8jhnzU83FF+TXprhs2EJ/1wpRKcTK++AmqujYYYSostUmsXxYUGrWjafmZNiETZtGPdCHrc3bhb4WjRBF6bnR38EKOXclIQ46g//pOXLJvgML4zVjp4rkb1FRAtaigryzlozZ6/pwizkY/p7lK8VjschjOghCix0KwvyY3YQIr5bRP3C0sVhfoYUQKBVeIVwyFg7bNfKBfkos4jL/xF+KO3NZE81yeMPbkNcoGKAPwpge1oXggvTsFxGXGcWLyF67vRFkFr6MnTwL0HbO7Any8uCBBteD7wPxI0s/j8Ox1EByXf80SRCB1pchA3fR/1xJbzCCYPQHaerbqcfF4Se/6gDrZEbp19UyVCi73RxRc3bgwQ7qMTPtFY5ni4cafjIIhiQU/UD70myLWd5QS//GfllPQ8AMwrCHYYpP9MvzAPua9mAsAyeXYysnnl5Jj8fwfrcRZIrmSvP5iaAvMjVTTlPaj/TGx4/25yKBx7pzxvtj/bmGy7H+Puft6CDPQsCMVRPuf/op+TP6bh7iB8eMfLctsJpNBebjqSN+kE2JtRJdpldK3AnQrr+YLrKXRoUht6atgDAUxoSbznSMVbdwdG5jBteitaRgspefs7e0QHWcRZmyGKVFgdK93YeLkGqpjy6C25hFyAmy6qQWWGDWZmeQ4/r4FNKoR0U56lVrYaaMT7UB1/Cd+qz28cn77Qfe1egv/tcNadYnXjQ1wk+LJm1NeoyrRqHhcRf3ajUPhqV8J0FKF9lOFutq+fSJGl6A5rkhGvyOlA0bBHKhTJOga1fgg9e9RQyfqIFFvGUpSBttypjASdr3lPxSzCz61brtkjgL+d1NtKTsT/GJoqrVDfstr7slcAssO1MkO/zVXVdyj3U29CTvaXx6nxUWheHqlMjZsukUtc/pNHPQFoSJgKJ1IEgNMr/bVfPjSyP849pPTCQGyHwvHfm9dOT30pFSOvK/jMFWu5UZAIBDS+1d6W8jx5X/rr+i3VyA7JiiJc2MHBPW7PoK1tnJ2ogm8AeZIFpic9QZslvhYY1C6H9PvaPuqu4mNcoBTIB4RLLu49U7f+8TdOTzQkeilm+03ZQLCbylvMZW3+ZwJ/4AQvwQnMZn39UVxA5XGIgHCmOp95ui1gpI7jD5NeC1aRYVdIYKWvmUhuTQOsVUwOLxRTwtsbjl+g5VXKtww+v8YQqxWWCUHSZklIBh87wCuGL4Fc+7viN0OPkbaPlEa5DFmnTMtfzlEsf6409yweT368WZgYlm/waYkgDHFS2Qbxbx38i5AqA9xaVFuM6rlL8U1y3FjKDwhzUC+MLvFr+VQhd8gO1OrXgOac+BXynKEf763mrCWEzIStBL/gSaBMRPEkeUyRnhDq1QiS72HJOsoxnVVs2x9ZRxn2QsqN6/LIK/Bk/BTL4uFwhEIIYGMaQYwu2fkIOCvCMh3urnrTg3PNj1EAGtspEapjlA428apfi/nQAluCoWVFZQdq5XdiFjVhiPrT45sFuevcz5hr2Hm+JcL+Ruycxl+pQYNWRQLNoUOWKxB6iiFNSK85WwX0YDNvHxUkbJKEdSod7mlbhAa8s2nRtwIncPCZrR0AmMIl8FzSnypR3B0mPVHzEbOah01hiLQzy2aAuVc+NkW10DLzol30gDZ4rtm4hnAoroQml6AeEVS8PPN6j5VHGX4J+GC8BA5UTpxJ5oojcwAN2ce+AvtXtA9Vp6Z9SvfGQflLtcMLyzKaqzJRqVfZIE4aUMIGI5qq2pJtZAdfl1sWgtVVY4qnA3jIrbUMI++SdO9Xq9oadkel3cAmSOV2SRh4qoVc9nv0FE1HRTYyFefPiTXK08cL5Ac8v8g+2wTiVVG8nnyeAExQZcWSHcTYlwTMVpKxdTFgfRQRVSn+qakL6ofcbQf3hww0ilrPUouetirIgBBQiAXRoL0AfQHcSaN2pmQ+9IDoNn0Cfk4VM4tM7d0D9osVWJduCtnkYPrpdCRmjGQ4wsgV0V/nt1MjGaXgmRAWwg7WCL9mWmpk4nbfeZyp1N2u80lXwxid1r+v3lpPFqU6FXk/bjTCXPJ+0Xj0p+OWlda3ct/dXGZ4zWOLdsnfLaMiENxh+rQfqF2uP73Q5Mgoe+BmsZtjnAZ3qw2d4BZacsloFBQMjttWASp0ZLHqZAjArlYKZcU7AoAkAn14u8eo80qXWZJS8wjDV/YWMgSBDIVQGo7DKlI6RoRO0Fitw4KtAIgJvnrEQE0AeIaZ7ViGxQ31s2GzTt4zLguPHETP+2LVyjytKxSGAV7Ay8gH6tepprQb9C9nPdEcr+4zjpjq0vztdvx9fiGIjH/+T0i5OzL87OEbg81DfgmDM2m+j1j3XxZrtaFgsOavpz0jt7+fuh+O+r0wT+OYfE1kLO/uHtT/9vtUlJOikGy6d/6TfSWWyW0Dd4S/HyY6pIDQlyvQCgcXDe4CZSfWkIKR6C9IJXBw287Ll9jMDF6M7MTwt6gc45LSU6NMr41nLloCz3ZLgKAk6QNx63wsDMlDm9WDrAE5AuM1+D7zwdy75+xvra+864YX5cJF45ZDZH4m9l0ipIYhwm+qdfSnKzkp/f4GpG8Gx0sZ9zMCLoz4Sn4tviQlfdfaWhvvdSq9KSBR0JGXgAC45UYYhrTw84Y/9vK0ieU2XGrkpW+pu3b0CvZKCA39b1e/dICMk3eCJcxujClpElAE+AsNqiikkwh35pJjyL4jc4zk6nw0Y2TDXmXM8YvbSgXHvI2uvIUAquAQB5kvucVSqXcDmk3Isf7IeHvhNvedhnEm1yxbsSTHLzPviAFqQk3KmKj/2mNEpcN03Y65GrnZhAsPc1+CxeePqhAdVGTwz46+r4FPPR9pO+C3WjZ3LWMBPsSOePEgRnp2o99u0HE8x1/OP5JEteu/i0TlvMMOxAy2HNVFR2mzaIARd6OUFdVtbYRV1hGjA15pfemPmHV92X4O812ll2qmbDMrzosAxCWPWX4IWzBMZjRDv8OTeDlTLP1ZN+RIChqSAvN3wV/kcSG4N2/rhECHP3Eogv48SCnyl8twbZUeCaD4IP6byPDYsJy/nCCMrlO4TBMV1WwetJ/CTDPsI7Y7UMniKyymhdb1c3RXN6Se5C0Lp4Dy4jME6z8O+awnKbWXzF8bUCI5W76hv5wxNX3niif0RHSDRPA/e4vFuUNxCTA4wFMxEEglLV1bFCm1qVtZjvg+WOhCEMCtKMvaK4oPPAq68FFUsj15hlpBVG8BinUYfNmyA6mH9VVXC3cQBFRqrXzy48JUXwvQcqiZcVauNiEHhEtLDi2yikDLxMiimlWR0Qw5b73L+zIOKg7uzhHnujNd4H64ir87GTlR/pzP+WI2sbuECGY2uXaxS0LgzshjLrgMH1UWGQY/aXPR8ZwOtd7lnTHWu8X/C4g8MFIluFn/bQFby8re/d2yc29T5+8ZrIGoQY3ifGsA3Cq06uyVwQ1UPWwhc5DcXB2M8gqRpuJlRJaBHlOcIrv3M7c3M+BrQYNvj7v3zzYzv7Bh790PYiN3DYHs/7uMnMTyBLD3+6jz8NcGp7gftvlf3oG5WycIP/tNW7KSqPGVjDl4feDKib+lOi0x/OhGo/FGqpQ/yev7KK5bO2yPbaNC8nHuk4k9B0pz7d8n/ZOf3fcuYd09tydugphaqH0u//yI0NrSloStw1xWwxYS0S2P/61H5fHw+wFIPTWmHi9EMrVvIthgNCIKl8LpiKe4rBW1GeQIwSgLwcm3n5wahIuQllxPqIMxlQH+h0z5mvSgwLvStWRrorxQ+Rei12SnvJZV4BV3YDDm
-        echo 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
-        echo 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
-        echo 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
-        echo CL+myIadyY+pcPIUASPTsxnsJRWUalnL1h/JfMGbIum9Tqi9M2EhuUXDwkBEcA3kqszmaqlMtKd9vaZSbMocRNPCF97H3VSVO5zNI3wgHGDm1QFFdcoOx7VQUfut3ZoTyqlsYrmXuETcU4wOQY4u5/pZfy/fmp2GUE4H8AK+398ARiaPO19XlfN2uJiSfgSEMJIQfHQzYFSa2LUw1M0JawbOVAnQ653gmh7oZBuKfPNF+8CfHZp1+a1Yz/gTAUxczxM4lXCP3Zv/yh6c9AaqWuVGGeLFNY4d0464LfqJhdDH6Ppo90G3f3Qs+/I1ICyxIYfQX4ywI7dIJZePmuvM1XFqsyPuUn3SEQIdIXKzFBKixEB7aA9cP52fqgf464+FUjz1Ef1he1GAYNTin8xckERQH3jOwjxkPitjgCnIGkfIzArwWjLyms4hgIHmZw2kpAg7eAhkeW7IfwzWQCnYL6wxCQ2b+YKT7nlXoZFNIoLMluGPTjFRdkFO1ml+Bm89s0yLbKcwn1nf2zfGpF18hTSLMAEjL8D3cWOAnTR81ynDpY9Uw9es/pIrC7N4Sh1S+/OElLvTY6zktv9N3lfrgr5hXGsPIiXCsryZdcClvErxHA4M7ECL7whsegVZfjLjCW+gcXBs/jnTOhe8vgC+is0Vv6J5wnmsAvij13Rbq6D+LeEJRo9ETpHALj8d6/NSeeKzaFwhGgmvJAHh0nEjGqw6AUhgbsJtVkLfhXbOYmx1Y9ItEDRh6Rh3+AhymaUasfyxC5zDUYOlFz+DacROzdk0NFLpf/e8TuNJjEBCZgU4wYbzq99hJ/KVeuDOJUiavLKx8V89kiUM5BCEZwBHMsPNkjfuMCYoN0vX3Fz5NNxfRvUjyNkUZX0PkyzuUHrJFu5FLZ0eoPRfryiIkuBM/sy0g48+bi3x405mmwg5SBxKdZD9St69mM/y67TacrB2Sf80BlAlDfS3sGXrPLQH2cl1ZLf9w/6n6XDsvhnM4EaBLp589CpWVGDCICEOUgY7W3PkJY9yaL0F27bPRMXrmCd3wCv636RV8lvdESW613AZ7y2OCbTPFjMsR2fM+18Vicb6bZlmWbpwxUhidZAHCRG4L8m/cdoGEH5QcRPPPoab8jikALka3PHnF+GN2a1sEnuoN5dsrAAfp+wT4HxVPacvaWSHe5w5P9zYqFqFJhYudWXQQv5nDAMcJDkkqoajKL6VvY9RbC7WMoJDco2yJuiJ70leSeKRewxAiUMOoiyEO3FeummGKwqrgO0ThZdqF/1Ggh1iFL8m7dZ7pm3CparpQVM87GAsvW9sv7Wm77LkOMktkSBRL7lV6bna/uWjrdic9DBOXKaOj86Z5KjC7EwtBy+Bw8U5C/Sw4IBoaqh8cPgDaxn4OAcOtWasBHH5aOrQXJRnv34rc7XFn2vG+QnuCfwYePeQJa3+Nj/5vHK3q+BFYDpS91bqicw3dsBEpwWYmlxuLG9fmU93h401zZp93Qm7y4fP4u3btH8ZmXImTmHJ5o1e+RtQGkKMKzikSqfBcBsGpAxf2Hq/R7BxV1+dZNTmbgHvezPRn1rDnAqneVAwUcY2bvtXqHBHvrqtOXxsJhav3xnfqKLMXaG6iEwp7dLmk/Qt6U54Khs5F7DP/Mo1OIujjANAM2GFPW9x/gQVky0J0AuqZKVDwzfTLf3OzhcmHfrnj6ZBLs9ea/LMEJeqqGGdfZHmW79PO0Q4RpbFRB3LBA7+hWe/3lY9Z37wp/VfpEGrnqIalupURfCS/pNtYfR9hcfGNejbVR3oi7iPV0nBldM4AhjtEZPCRKgyAYMmQ1CuMGyJILzgr4TTuYswTXxQy85PseHBnftNCbOO29rfnOT9Pi9dDcmYuxYfZwnPDg37zWz6Dhwc2i2WH26T95zdK1sk9WlXr9i1c+M9ZTsd9R37pFhzO2/Ic3wlCNoJsV8CsSHpQtS7razrnSAgGux1ckNh8ylRRY65G94vPe07Uw7WQnzxuxZ49HDnXZHiMfYGuFPkvSz/lOFcCfzn8IjgGsItT7xZ99zMHq6PDtYhojyn73s4oLNmNn8PFfF7bO3mCKjDjtUcTfdJH/4h6BubGLjLhu0l092H5cxfsRnOZTfZkK4FYeI7xNbDTyngB/O+v5g1BMBEAlCjd9us/NKeWGFA+DHFEVP+o4YHX7mVMxd/BBxuAJzQcvyCV+USpzsfjgWVV/P+2r+ejl2mOTLbdsOhHa5nvTVFee0eJj0y7ujv+ETdq5iN1qM33PMYy8yUdW3On8eAERU6hjs3IdTAQK+13g/SJHmJoXfTJdGPfHMi/+wqGtwh7Cvvtc+BhcqtIYOIB+/ZiJIVv9VXoo6F9/3gf5jQvelEy6H7/SsvrvXwTSuqRWh3pHa9wkHAIE9zYgP/sNWa+NLLUJaCRttuNqhNV9epmvNE1ngHEabW4+R9hKqAacyVzBpq7WdTu1VkwkLUmykwfUp0qjqMusXy/EqDeeracf9NfL63SnothyB2BBJt63Z3hl2aNEHUU6mEriFmkGUn8VJvvz2KTnoqSvCLk4B61GS9zlJWn75pTS2IkiR7geLwJSmS4VLt5Xp9tL4tQgh29lPRVpqf5rdcVI0R8zOEuYRGR8WaqFvbW64nPgRLz7E+j4PZXWaG1O2OnLRukjI5D1Zmh0dJ3L6rIE3kKfijmZOs7Lj6kqj5JRttnvnFJVLQq1LV1hZj77cWGU4SDXF5mfxGPO0x5YurEfHkEhSg0wUmSfGtGleGqZGZRO4HDT9NEYfeAOSkgLHy0z2JfjEaj19UagH2n2bfLc4R4R0+0pBrNah/zYHFzmu+fzVm+3mzBjR7MJXqOk7o5OczIHbCXl9kgOafcHFj9d+wLhhdmGDDVTt3BB4YoBU206+mXE6W1/aaUtTNNmnYBOVOw4vFJtwLtq1kogdOgPWvEbM14kZ+VZh7HPTaoheMhPysRrcYMxqJWbv/zxE0LIMa0tmvI8JS8ARiBm8Tu8te2WRZuKW1FqzaLmTXxqwTfdPlw3o40orps0ZqcC0keRX2TJAYjw/b1u5q2yBpXOjenVE7iidaYXIO6irKwva5H7OVIrPcmg2yqlGDMAnUX9YfzerUBzqNqmTewoIsbIxx1cpt9P8nIXEMo9+DI7AjQgKQgCzXRJyZql/BQ6xADtVli+M6S0fPLI9dydV2PGIhBEl2geI4A3iSMwSnCpwG4pwINoYRunS/14eacs6hJ3yACINTXy+yCIo76Rgb1E4BuqhzYJ6qyyJt4oTXDdtXNBIlmmVJdS0IuWAUaQ3gVMmMuOLP87CwwRUiKg17Rc5IdR79YkN21VNsl9aknEyitFvr6pO9OfkWBTszfl/pjHCWU4DmK54riMwFXAhLEzRdAZmfgPQQJ/irIPwVKmstttZ6bRbmE7bIRXHdRsMfrNutTqA68+fL49M3xqZYEHKV/8McfrrKyZX/KwprLCCyk/jOOz2rh8hKB8EgNaUevdF3wDkyC2v3h3pb+Cetd7UO2i+2rn9/T2KCMbZ+cPWHQByaxNuN7WACAk+SpPiScsXQsUOpqowSigDF484/WD7s6/pXTsuupOJ9P5NJoTjZrhwVm+hvcGljeeTiifHDyI1nw6CCKugM1hbqQT2saIk41n9aWDERU0Bj0V0rx0iyfmc5BejuQLnLWNeTjqXyXV+b9Ct/noNOfRKp4vt1swFMjP8MffWmugh+nipvTFbzJn1u/UacbRT6n96b8k2j575erLdluzN9e41CenqdK/9iaSwlMAnww9Se7yN/De5iEfWogjOU71/DT8tsrxIeM9ABqwMnbUTTS9I6ir8w1OLroXBSuyWu/tPjxli/MDyhs/spj84YvvCX3Cke7vF9hBAJNzDd8eAnvcyvDqmqa92XzHtMnJQZuyQa+8odPTs7ln9cNOC5dmr8SpfFVrH2u4UfTcPO8/WBquWg+1EE1BT/er4p3Z+2HCOXj4/1quIrXcLWjhv8yhP3fKPTGZ7PIl+YLkKL85ZQKtovF0FKYCswXiWV42YBnUN41oLeNLgO+Guj/a8OU4UzOL8AjNNY8vYh33pa+xh+R+eMXXnFyii8tJJSpwV5NVSWFeurV0C3m4KtfzefpbUTsez73J4/LnlXrHWXNF4myVzsKA+GkCzf1NUQMANXxT2fmiv5xfNRXq0vaf/QjRrar5P6DiIfyFeLw5vA7T40AX3oj6AWIwbUbWLhtU852rVpq4aDsu3aDc5/Tj1jvC3kXLw5JRKk8/IqRvLyKdB2Z4pmc9/ivmXfqM+e0h/6TaB3vq5VUYH6G3M++ia0h1GLuPrsn0XwU6wEi95jm8e84ART8MlIaCONs8MrD1JOeAl3FkyECDKr42LtZDtx4yYpDjpNRt8tQVo3YeDCfD+kxewznKnv5g7LSoDsgSDnSkYT7pU2x2vuTQP0KIDruzbjkHAl1g1o/aP2FY7PJJNQBVQCZ78bq+H2KW6Nk4lRaZdTiQKI6q9RUZmtxF7ejtpn5VO0QiY+opJjZXGIktJ4NlCsYRCx5Pm/qjfYmzeK+m+haSvKHqeEd+6S1OjHwolnWbkXu6k6zFy2lkVyCw99GqfwkcMYmM2aVam+104pJgCnAbIXvGB1Dwtms88lSp5ywRHGCzwONl3LbenOKVnq33+RojUVDl67P1OBZV3kt6ZdA50h+eUJfRKni78R6U8JPwgp66wlO/YweSseVvqLXqoP3Sv9d4ZT7wvDOLPSLpAHpL49cH3tSU7vRIP50zjbVpdKs0zbPN3hlRo6IKSSXpG/F1NSyR4Kaqi6sSGzMA7W9iBgZP2PCgASQMP04xc1mInH06JtoxyQux2DWvbmubnbaD7hzzmvpoZ7DQPMJhrA6+7r8+p//UD6dKj5Fu5ShXyoSwM8RmITU0EAhS8sFrG4c4dC0lQACQdvfqhtJ61ptymADzM5ucL2B0AtMDK/z5hg6wWdEHRhukFa+Yowe15t7RXNS/+Y7irNBCQuOx6SZ6p+AFkL6faqnNuDq8sAZHT7UG8asGj7L2YRFDbI5YWkrcZoCy1xv2Oyj+nAFwLSHdgkiOEQsyVCWASdau8BAhJctM0p9ron/PZEmLLb0oQxTxYHpcFGDDTLbrLfCbtpRN+FUdxfuBsa8hObUpsz1YqGl/HegxzeD7lZmOwCoANhmz4G2EBTEHMDtxDlHI3OPjAGjhJlvn5HWaG0T8vJJBfdrCjemVmFM3bkRZiTxnWNwQsCC+BneCdQJG5mwKdM2HOOqBjnVaXoofnESxtLJg1mznFGnLa5gbL9Q9oGuVnpgn+gin5DPerD39Kjkoa+w9ewnU8EKQZwdvkBoG59MMhAbTSLm6ZYMz4FJvr5q2q26LdVV1yxufOcxv+toR3lymg4pCqZVctUFE7pqV4WvrEQddqrNPwZzxm8evhfdXUYW0IFfZ5wKfB/TQ3tMtQ+T0+F9lx0JNt+NsqxC3nHPRAA2fN9OFnfog8/sdSVmDzsK1PrNJCtkR8/Mf2PoERxbgLhZF8EAI8rtRniCb1/U/fkjfxNXeQuaZxN9i87Xe1CS1AIG4rDjRztWjm6TBVYyIdOkTAxcSszh5szoOIi0efXTi5+m5nDZorcHOo9QLBUZ0l3LuqkyF9L9dyeCmO8pht0Yzs9SEcsnFtTF+R5pzXni8jivcuLiQv4AzwQT0SDYGDVAl0C4Gm0WGs1B1XN+vn2/XSAmKyKPUadVvT03364hINqaMvga0SNksieGkTX6LOamoiJ+zpTmj/Yn6TOxQ24K9YKvJPqJ9C36cAZrHH3BV67whLukZFV0wDnRrarztuu4swKymwbhpbH5Sh4LCMCHUT003Pj28nssXMp2s7+/cV9DqyweIdyWXE4TrcVXvG/MrsMke8MNng43yEtw6Oj8pTTtnu47ViCLe7dL/MNtdB+Gdq/Vja3D+C4rlnTGOISe7kFQiV0Bd5eTk8FzJTW4N09P7SxxD4+iFcTX5eFm/h775eE3TLKHRWL6Y1srLZgmFmJoI+59gNxt596ToO46fWRRSjCFA2flkG37OxJz2q/rARnpwOkZvy/fbcjqcvCalaIICNY1l0smGoJdMtc7T8oU3aTVTCLkTfYcMDQut3WnLy6MQGElyV7fKHmyHEVn/aEhyCp2+wR/cvJ9tdpjfXG7qpoFuiM7GmWUBDAFHiBcFs4FmufGD5qycob/4ZsGZEfnW8wiEPvu+PQoft75bIUcP62UMSwjJxr76vQodsI22T+dZE/i+2JgkNmXGYnPX0R8T9M7zdaolctHR7u2hOl/9EiI3mi6cahz3ly3PTUiCZpeyISCI/77qgedAerURDOfs8kEYY3Qz/nr8qtsu7quUIQAdfU5oMCi/+pqUZ2bvRGCYXTZW8JEeusFKUNgEIIMgx9Vu9QmE9Ir84ZcEBad3PhbNtO0hJPzturektiZvTU9emtdlJu+J47vN6q4oSYsiSYXUYJ7ASpmjFQlxuUTwprupZFczAguHeCazwyFkBf5uja7sYMBVosM4vxvMvJsU+omUleKnglyPHQt+BDW1/wtxf846yL1KzMJRb/IwN1KPeVVs3GqgvpHVTey369Iqx+YoWAdr+vF4ihUZ4HdYhpi7cgU9NAStpECZs6wHAC6Xrbby3fjZLsBem99XpG7OQNtCZKr2IOEQ+JOk8D3ElXCuIzVEtKbdGauvZqvMaAgPX4Q4pHyfeaFmmZv50537m173Pn2Je/qV7AFSE32+DRUQ9jgBd1nViBY8A+kwomMERcoVBgGTOgJMrw/ZX5H9xgja1eeTLIHGWacwUKIwg3wBQzQYaUEErt7EDs7gqG+oz6bCKbhyO3JVWUSwBLgEa9D3+3wxunrFxXs5ZLYNKSvXaQii0wIQjwg1AsNlNa6JBs5Il8jdvF2fabMrB2b9EZdpEbTEqiKADIFphqj6Mgs2yzP6s012r9toN5mhGkAIDwktlytkGCzvMMhmqKu5PQ8BNkpNld1e3K5GA9JXMEehoXoW0UwwKpT46u6f0zmsccgefuDOc5bIToq6CC9IF7R8qEqq3aHkerFuNso77eM/x+Yoz8Jj6zxb0FVXshiyOIi1zRxywHkSnvXRYB+vNau1i2Et7lGDDCS1msHAzaC8RbjjRlhScY2oBHrNLfYIfoneIw3T6euDY8xpvswkpll/ZDpaD0LzONcItLlSfgQQHE8KIcgIoQ8ASGfohPOwk6AaYiHrl5ZpE6I/TVT3hdnZxMz4twJv7LSK7SnpXyU8PGhNjIO6689aKkCiz/1LAE0Xy4YAOSKsV3dAymUej0ED+ooQjxPGe5WMnDaTGQxHg+guiAaMgB3mQp9YANf3RHqLCEHy3qTOYGzoGAncduRbaIid+UZmAm+5bDB5LqmqR+Xhx8qp6cTF3O/ZPD3eNBYDxyO8/3V6cSBr5gMxRAKULvXgclglKBTYWTE6eDCPhfjAJEm9FgHUhHPidlxLvmoHUvB4tEoRb2CsGqR3C//Srlf+kwvkyAPzGPul8fcL4+5Xx5zv9wr98uOpC0TTlA3q7vzalW7SU06ldSkA2+RTyK/yCvTF7C5/K5JRiKdeOhMIxtuQscNSJW/a4oPJoYHTPIRIOr1izMa73HfxHwgtsjfMB0ID728J/To3UA92Uo++mU5mn4SkJ0gJj0EbKfM5t4JKPbA9jNzdkvzKRD+09E4Da5rcRInlPWBp+fkONnZZyge+B0moeHQTrPIYeEHB+bqPw1f8xv/FXjdgU1D2SyGgxk2/Y1hAwG4sHl2aNPIVvZr+hmyuGDS8emhza+3y71m/K9g9AoRZVNArnu0jIX3avsHiJj028YwykPbxsJu0qBE268MfwxgQYVn7tcyOCozdpSRyzqQphA6aoBbMIKdcyspcoWRBhWNxx/z0d4MCKu8VZ3wwFwpfxHEl+yLQJ7J535HVVVuF4MTTqIiFXKsPNq7E21Hw5KCA4sJCA8BSKl5digZQVlpHFJRR6aUAm1BKTi03hl/dtsX+X2Wh0AK61WHPX4yVD19dmtLDMz7j0b08+cdUhweOu9QNlz0v9Nspc4FI4AH2O/n8PBurOLuXd97fQc5RI59zQc2K9Gl2qoPRdt/H56QbJAisVRz9GAAspI+yJO08PJ83Ya3hA6fHkrzVPpg8vwZBLoAhh0e7iGLlKiyGZRI0DlReRqaO3xmxAiN+EhKJ/QRhEUEgE
-        echo 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
-        echo AEEfYmTz9NNokp+UOYQLec+p0aCmzezNPG9pqpyKbP1TaldltxrkbHwqBt0xCW51LFTL8vVnkWdd9gCOktUs7WvE9ioyiqtNlNnd67H3o7lffGfdLOxgY8LnPKpWcLKouy2kNUCYx7vxNGBUtSsavteusvBRNC0idvRAqKY0BtiKNNZo1Rymjon/stStm4dfsRWL86AYr/VqgfAAZlcJTNWktm5OHHT2gFDI7XjqRO7IjPJqzGTnYR/P7Cw1RB9kRwnwb+t6DgJ1naWFXdViTGMmTzL7we3ebqs5X0RWOTRbQjvIA2fIGmXkiMRlKnzphtnQdRwEkHDdxuX7UgHz9qSviP60lL+11u6dnqd6QA0/kOWLJqbqXMM8MQ7CnzNkl2B5nrxfw==
+        echo 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
+        echo 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
+        echo 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
+        echo BS+BuYQ1uwVwUFr8g8CfqkyX1kOPFQAkIQvIjSy9+AKzhf0xQeot84MXvVPxqOTwTGaaqlQV9B6B6dZsQApBv5ut1AcxKeYHg/POZBhfkfOic/03/DmkwZ3cITb0MB7b8HraHifOiVg8OCT8SsYc7qwsUrgJ59z/5jydZeWm8dSVF2iVnTFfpNI4FdtMZn37fa1xVL0n8hal3kvL2bwqFEOARJMKDhB/XAb6QlBG/23ocZsZa0N5xLx1DcneP7EqcmA0WA3mLWNSmlNb6gUDS9KWcpcrKzIQrxNw2FCAUfss8QmeZBaFllua5UjWvx5skRD/DTOplRPh/TTEezQvGROQVF8RqKO7wUm6ENHxeprLuGWF5YGxFwP8LnfmHIYTWMUxnl6mh+xjxmemypy2wT18a5BMwbTplevYYuNYylizyI7Y6jvtqTOCH5GM+kgy8oh9mS1WXcPhnvlP6qURayFD8llQleUNKR8F7//9KM/xMZDfqv4SKf+86hWpWXYqdGA0OHRRrYgHIGYgcUGvP5m4sISqy/uRBJXoD8434oT2oHbb4PRZvG0qAeDbzcAUq27bGv62Aq3wcQnS0oFi/+EWRYuV8yPmm4CMyafqDRNqNwFJ0DO63KcMGzK0eiDzTJGL87pZG2727MExDRZjaBzKPuQofdlQPlW2FcX/V161/a+lzdl57i4lifZ8gI1FoEhR7OvyS2XkYx+rEvkONUOMTEEYay8QVZuMC9TQRGjreF0PPlHbrYEXLP3b2pc1W5I2NoPbhorPpNqhHt7zEtkPC7b6JkVKanmHfV536ne7dtP+WuU60nAiqkUkKhfX3jaQI+KC1/8w1MMHhBzVK3+H6Sr+uy2M4+6sf24jHZ51iR8udO2gkKQIW23Emd8Hw+xAIV/1cE8sdGWC0sR4GNri49zEy23/DjQw5cKq91CWXRVR/jfO+j8/o//tC3tUmWl4mdEAUHbDxonu1fyYbJTe7bGLWLjyCcckzd2xBeGR2cgxqJx+yoq3GadFT7cDqvWTvxG5N3bwEmcsUYFIdw4sjhMWm4vTgOFLxyZ1uk4TROJf/F0Ni8RgMk+HC5Rl4gek3w9RU30f/nho86txaqYpTLVwyOyN/NFxxmVvCyZbeGf7568X5E6jvV5VZHAAoT/9EDsQ6/11qK4fPy30kpTI0FbgtejINn2pPXnVufdY/SQobTr/sklKedyL01QPa6bpJVb0mnqcem22yCK9m/M6snYKmTVz19+EeTXJlt24OFsnQdY9ONJp5oi1Yv9s28A+42R3f3Dka1fUtXVVLeQ5LWF7QaIql71OOAtnfZtdTT1Svao+rlmTHeYthrH1CUtR3bW16FurHNQ2cSAXrGYvMGklfM0sMaLfiMBDnOmKyO5XcsNeaJpXTbApFxhgDzmEIA45kcUtRRSQdvehmeDphbmSKijE5VqBQq5/U2bdn21FTu2v/QfPOVq+3HdnhpSCj4y6dVUjEnLT5gjrmXPni9FPqP0qyPi2ri++sWmYq9qF5atckTd0GZEqeCw82WXlCq2vByvp46v7Zenkx5lW4pV8lx+nU2oEj3VUUm9Z9knzW5BKPtC1NGgyUEHIW+yhLxIfOFlRJbpOopIlJijm9yEEG7woJ8kJl+fSpb1x+8pCuCpI4YOKK9vtpZT+0kRSuSQMF2uNIQW7LUUKUGTUPcvQhTNZ8RREC82ra2+e3muo2Tmm4ykguNkXFQVpdAGbBqu8GR13CGdEW4rMjgYhxNPJdf1c7xOi/wuLVZNz3ZjO4xBRgqXOPK3PUn76llSkYjGcDslSThfsneJeKiJjSGew16Oi5wxLJsQdhgEQ6PYKSJMFiXRB4wes48k3AtaE7N8nMQ3aF9cNpzDgayIeO1mA4ZGSpDBiPZJuqCAfNh0lM+LlQPKVXdcUT38o1XVNLE2wGjgOu/+tvcYo/pLfvQt3aLV4VLu0rXjRoihSo9UpLGJYZrF3NKkxyurPThcu1MO2cq9aqhW0Op4lUzYY72WiVr5Afe8WiQiEmlL/Njsr1E+VbUuK7RQHuw+Vw3lkkVB+rFVUSiKoaTGGVurgLRFcytFfT3JauwjJeTYiLDdTqY+FUslbAR2B6jdDrIJNiLaisAqhyd4DP864/RQFaJGOVKy4Zky1Nyq62EPzBrw0KPiX+lUANqfrfXLvCVBqZXLMm5U5fgt9+G5fwu0ms1mzebAfzjMxfp8CJnsJ0/KJX5kW3IC35L2F3utWPwV5FajgUN0tpoNb6L1ZltShFu8z6wGtsU9aDFQV3WufMUlkY+1URH9IkpygDE4unU4tlpGk+qnIr2oGbn+I+sm7ZqVOPl/ukI3pmDnSy9tF2nJesQhmPb6jnJc0TElV1rN8bQTKMl5iyxDQQaf/7rAqqF1ERe86D3qdJEACXdB7N3TvYpazwOLNt0G0HY3hsabpx6icAiGWwVck1aH21fEW7Jv+7mNqngfcuTuZch388YG3zsWHxD0iLi8lDiA/Sc0BrlsVdkaZoqTfLQk6FOXnt3fLAdmgfhK/F3iudc9a0f8q9iPR8cgU4k742dH9RE4xGd+VVBsD7Yi/+QC3WrnERfDtdMXkvxJyfYZN8CAgjvUdZ1Kt0oF1t+jLNXeVIoBp9r5l6ZfClpzCriKabEmWYAg8MO+TatGDW8xtfiMa9sj+5F9HtVvVOVOqKskCXkth0IamF/uk6Sfl0KuK7Ua9pU0Q4GTJVboeNqpfE0C0eMZv8ue8W8XWRz8sxecTa9BuptjMMt3Z/nvzvLfneW/O8s/0FmeVDe9Beb4E+/4Qx2d9zzEPVHOogMzlkC2KGts7FLvC9izQ/XwMDXMcx/D9vwRd44DvsgC/fMjg7U1sgwqfu9WjFzRDdxgUCc80D+w8Zl3RnPJVes/T+kP1a1cBUAaMbBIVNJ8re2TLP39s3MNko8yoT4cQ+ZD2F55rjN19wuQmQ/JvpTguEvJbZJVCyq3aHOvSRW3JxipjBAKDMo1kg++pJrw+F4FkM8s6Muo6HHZBzYOYPBZSnW2i/A3uoGQMo/OIvriFHsozBhQmaC0woYLTjWZ22ITxR6gjpczqoXBaXhPuQt6YpcB6UY9YuOV6iK6Q05a58n2v2MSXaI+iMBnkYqypvQwXLoixDssyMdROKN0weQCKdVU0MP5LuCYVexiR15S+FyydOulVENd953vvMKB3hO+uCbCtS5U1qev4uwaRl1lS+wuKmXRHeddI7kfkRTNeUmIYpQP39HFuSlOPPlNPN6aYsAokp769BvkRPFNsD4nY32yGHHmcGmo9jbVl9N+hV12LKE6qm6oeMciWEXxYuU5mZQmh1VLSPUiCxt5EG4pU425kp2T9OtViun4pN72mXR0rVIJQs9554bz+DZUFfFMvkMru/Fc4U3Rr1rBQ+2qRmVVIU7nOc6j6BYFL3VTojJa6eLK8oezU1X2NEKfUy9ZA2lWK+TwMIb4G5R1LnepVI0csnJB0Syaz7QdZJomWKRlQUxZG2KlkAsm50b/JLxLlkDCoiSbIpCu3Wqh5xZy7FAVE6TwA1Md8EOYxDPh36oyVCuvhj3z1ZJNOfQtMGXwVTQnDRM96eq4HFK5M1tqokt6EwHMPQXBmTw4jz/tK2T36qsw4r0D/4/OHcpamptiiDgQM3KYGAUVyaFEM+x9xpqgKVgbt8Jm6nYvkCHa4zu+8n6T9IpL1irp7UmHtc6eZTKHKjmft5ELWq6+drEvc4I6Fr6YvxaICqly5i9dZ+Ygf+HdyiK0veboXEeLNfKJdN6rVDqufMO13FV3A/6KWc7q0ksxE3tFGQ0WGa7ccioGaDLOwntKeuA9meCCdDdWGSDrsk3aagZob3uewS6lhX9DNOAtABfxOcb7w51P1IE61zbGV4Z0u6VPQrqfnDPDk7LGlhqE5yVpehPMQUjLc3LQmS9vKVcpMnNeMQxSUGMPOvw+97Rj7zGQzgJLqx9V6aSfpK+HKjToPMtZN1XEkziJi2U5aRGRSgWllVI2ayrqhLH4qNmtduRHs0XGXqGu+lG1jrJ18E3LtQDVKypV9KS5FnOiZrMM1lkxsFasjpwq1DSoW03Uk0Jf4Q900ESMWkFL5VVq2KfqhzRZOJpDmY15U5pImTqmoQMZQ/MSVx1NPuf82E8jG/RlSzX9aPUr5dVFi8nctlHS77X7zDZWsCIMLbJRzi4ZkoRWYJfYiDWAwrQCAUletYqYBmQYsZqjFttzjnuGaoIoVzTtwUrLQUch2p0lxaxb201l2LUKjPCpsBX1VuXuLcV0OuAVnqZ/zURK3TxTQUnFCixVhNl4GhL1oO6TITBCqjJMeZQCDr2lc51FFyxKQI5XlEIRb3OoDne2FAyIubWKxeUliiPajQ1uW1mwW1lrQZbe94J2X/v4YDv7mNU8mW+Hosqn6G/mvHbp13tV6lU1cq+3jDYexhTri3KaIBzNeh0r8U40y8d3HGWmXOwtxEkj76yEtnnLFfvG1iJVi8OC4K6O8ndTn9+30IWblMaobqA6mE3s2awiWR7A0GAL2CKneddypVNlNYNgom7SxMR/CLycHwUkafmAzH6q66o40J2gjwHvnFSOkvuglh2kG16ywL9u7wrSg9hSEcjyKgmDfRVg+VxX/aWMT2ztsrLjglSX4HLt1eaE7jZXy2feXJ4imH1GJs8m63OanU10GDWoHVzHyawGtSm+86KG24requ1DPwDwatGWcZqaIbdaHU0RzvNyCu7KrGWE1fNO42lUO3F8uWLmOCFVh0JTAPvkmxDAk/1rQwLQGM0KP2CESHJ52ivLLp5c6Nz+U6uzcZbzColLc3hw0Zu12aJ/sLNFO9/uIfmdndtq3dKQZUb5B2oWiDSpdazbIPWggsFSpOHA9YXkGL3BB09RG8Er+vDgmjaXLerM2DiFImrweCHXmRpU1G3nodjo3B+aPOsQGtWhUoOEkbH1RpYCCBTZRGaOTFc6WB9nxwUPkvB2MguDeC/ALPtKRfo12cJlC6lEn2yvtdm2XUXGkzALkyRKaoh5J69rSepwRbYHfVWmqBD6plmWJurXYlqn0V0U1rGFjF4+UMjgztXCN/w8X1l0w2oHu1dp5vJFFtkpeqMPEkdinKFqZnke39ad2QW8enBCdOgrNXhiZnwe75W/+vM6fndP+e6e8t095bt7ygr3FFxgOpkiqps+UI6zIk2TnI0H4SUWOQ3nYbL8HRfoXTy9waAp2tnQAVjJLRrepmj6c5JDNk7ePkPr9jLvSeTWOJ5fpsGP+0H7GeUlOHm7S/nqigCa6r5ojNWpJXk4DbbIFtOi0dDp03bYuhV+gFs3BXO1qQAoqZs67OvxrPcXaEQqdL4m01MGmMST3m0IdzK4bS+Vg84rIgaWhG1wyjUeiqviwNkAuO5ZgFLV7zn62Q5HeEHnOivDUcMoCajxVL1QfXTDxngMBByPMWEd+6MkaYj1V+jfHP/ATzFWT/UP8wr9Upwf8IpBXYY30fgunN6EV6g7h3PzFjjK2H3MTV/AMyYANsRfJ6af9fMIho4yu9cBOu+cw7dTLenBi3BapNmy0lA1OiMur369CTM8btTP4dUc4y6tvq/ntCCgDWXAUw3lcUQPzmD+1gPujA9P5FHjPS587MfxOsZVhN2BxQ/JmRR5C5S8jyg5aVSE3Fyl/5M8nJcafJT3gvNUlQ0QF+OYDo1JVNyr6gd2B+Lte/Rj78J8kgvtDZAH00VewIqaRNfhhzhdYFqCgKuJs16VbYGcq5BOl5wPC3HtoDYc8hGQU7dypFJFoTim8uKCXvbGVOJsPL644KhzeLjkQBFoGf26CJMegxwkuXg/10JiZuOBRXCgMwG6uCA5yDQH2bXZayqHZIUQxpmWUbRQ2Ry6BUc/09WdVo3Gg73O2b4e5+aTdGGY/f2LC/z3T/LvdZhftzv8tyWtwxMaDR/CucyhZ/CQc7NmljcTmi6NsKCWklpJzqLRi9daNw11VVi9urDM+mI6xYrrbFhmGt5lURFx4AQ7IcRGO8lMMgmn+qkkq5XD5TqOsjCbXi/l85ynJmWtWfuwjTQh9d7qBst0QZbwKKa1yu5fdhPjx5WyGUCCZ42/nzUG+bKZyXKaTixtfN/jyPFZqpBgPzyZApqFCTiNbQFEIcxDGpMbVAef6/lFwSOG+khnpSfQ9xLEb00NoOPpitK1mSRQbY8Kbl5cOFuKu5iqVWQs4YdWkXHhX3zJCQO15FD8UwsDGd5Fz/WN3NFU42+HIicxFDvx7jy6H4/b0wRoJzoMNAp1rYDkrhC0GtpBKN0rqmHJT2N1N/0piqo5HuOO5m0IfJ9g2Tauy/gKb3N4XSD7jnzE+0h9F6wpRIW3UTp2nT/ExxFjUFU/vA3+povpccJGXh3TRUZlYdUAMcve0+s0j2zAs0WkBP7SB7HL9PFSWeIqsVlRHiiWY992DW7+sqeGZu+aBloTq3fyDyfmzm6iskEaCL4SO8hd6CRuN481pbSfqln1KEo6LCn4+ORTs3eJvqEFGYNd+yRS9xblOSc9t+XsiKuzt8la69TmhN5yccqIm4DQpWUsBl3ZJtGvJjs1MrVq7LPyuaTXXfw6stg3SaJn+Wya/vrr+iF8oTNxg+Cyhx3tLpepJZ8MosLHNRy7O57DAqDakw7pjXAsrS5eq+T3qLFTT6vDCCTFfFU37fFpUiTYo5SbS9CVPK2O0lY0MEw+qygP25ikt61awMi0pmHkSvop0TUu2zXYY8eOeC7lfApWoeJm3wnw+qcdqeIb9ujGS+N9SG52+gQUgRhfqfZKmuYuu5TNwriKAwN2j1B1cDY0E6LKQraA79xN2p1u8BE2zCydwm7ZoxOwDzPKoknKYdFyDFoHpityoTO6I4FwKn3f7aAB0D9ptmMtLXMP4WtSWw9RSl1cOXgfgUyB/zxC37GrvKRztOduM1FXkQr9UM5gCD7m77mQtZvA18kFkSlUxMbJfzGH8xNwRglWV6r5+BRm/nHXnAWEPmMvuHd8+8bZEVFBJ6nZDPjLnnOScguYOOU6cjTtTlhtiDpBSitIS5+17gSOUiRWtgO/fPfkvR2BWYZIpSEp13enDsDT1QCeagBlLT1jbM+Q/nWmSE/KvgqHqcmco3y1SeOjQXHKfvF9aeVK+FZIckqZigMIig0VinoSna9fRz3n03aCKwBdt4j0+hG2JJxTrYXOprEEY0pyPB73FnczKqxM3V1qKgJ57AuV7qqts5tFzfHNbGeOKPuqW9dQCNEjZPap7ffN/Z+6uc2q+mob2awqDV+WFtPpW9r0rMz8t+/5vS22IObAul/Vid9iov3773v3P3nv/l/ZVLaNwV9iS16ioO6q5Idu3SxLm0dq9FjsoXP4eavWBt5ftEumFCAytT1LccRVjYMEk4zJS3of7xjQKFwkkmts30j61idRE8H/PHIgPLIUjOEc0wdxmShx36JylbZRQQqk6T4FxxxZcdtOuAsQYoHWqX8Bjgkk2ScZAIBDS+1d628bOZL/7r9CUD5E8inaYG73LjDOi/VksjPe816C2NjFYWBILaltN9xS67pbiTWL+d+vXiSLbLZecR6z6y+JJXWTxSJZLNbjV856urJKGnr+MMB6KBY7uLAZE63Yr4yDgsECnaigeAEHTci8rJTng8Jb12iVI4+K0OC6HroldOyxz2NHYG2y9zUpTiUmOnM19Tw30L0K6TZh5Iti8UJzx2dtk0pmjFC0qjgzcpJKgp/tQF8eeerHA+9L0RXHuLH193ycjCmnW7EPxYZrHJl/MpbjgT0M9jsnnMdmkoQ76UNdJugKSurE2c/F8RtAtmCT4jaGVhKOIJA6EGbt8Cts2c5qY6yc5mlSdu6KjwzOg325+aPydGRSn6n5PqNa9ulDMqcKMpwVLl6v0MbvIqhRdrotjZd4tEqIrfKmKFz4nCnChyZxx6e6dCySR/i8qzrjcXeS/NIdj0/85EfjZih7bl5bqg25wxL7CQ1STdMZdeh15skE9B9Dv9eKaXmN4UBYIZZhstYup3CS+so+OydafEjGhnJysrF336oytaayQWfqLED8gSU8/23sbP3rqOTjFPqgL6pH0+tl6vVBJ3PGOUT4dKCg3ttBuJUIEmxTi5QgfZx10WkCZzLWJ/TKDU7Jfe/ZhZmmFlH+XuzYJnpJ1ozJVnGmc+cmgq12jC0fqy1BUoZfJaEmqsAkZTCpG9eYleoKeopLgmDD
+        echo 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
+        echo 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
+        echo 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
+        echo S7oWyhzcJgIJ6u9j8HeRyHicRcvF/XyRm4PI/0IKmY3hDDW65uLct6FyoWe+WasZozJyOYZft5R9EhU7ewG/yWUbAkMReCYEM0Ax/Yy+H1y+B2mfFciSOd4oUldQahrctLDDEBhgFBItHXjXVh1RwGSBGVANDTycANbCjoX8zxhm9fPotN+KBfgvLMArPiIYhRiL7QPGtenSA8MAWifBSw8d0QBGbO7QCQaFYRtU99sM4Gij/Yd9U0L5W2HaMTeSS4eJKyc5saIF/hgn9K2K7xu6MYoKKGJtJyaUBh2JpjOPdpUFQWIl6KgMbHSgtADyFqBxTBSYVL4ZkxRsfv4v1vH0aopqJZvHLU4ukif7fQLBJoVsdt9gLQHtV7Supnaaj+20zMhPpwdAWuC3w9aTxDi1Afsgw8qzploQXkXNcm3YkFbmHDTHgFd2S/6xMO6whAAvkWRRI0993TfjK3utI615UB1B0LgpLhsIGCH1hmi6giN/jpvikuVuhTil/Ee/g9aBtMsbdIYQ8P5N4m9pRUprCWqRdeM8GSnTQ20m8zLGiOwhGLpCKY8g1cghBGeu2a38Tv/xjShrawvs20Z08yCfoxGTvvmTdnmZajrKywBZ05+n7UAuOxJG3UTxoJUENJy0yZmclrzpm0wmYC5BuxJg9j5fEHPF57HA359oD0XRwExqHCSP34xDuKA7vLgT21dXorXIAIXUjNMgEEfavJpuk5Uvg+CDdEA9xkXCS7ezLzEd5qqynnMVteldldyp4XFwqNuxBHn41LHTj0nV3sWdV5hC+osUc3SvkpgoyqrtFpPndW5HnsrltfFf9CtxgY/LnLKpWYBK4ugbQHSAgMeb8XRgfBplrV9Ld2dwdShaRO3rQVGEc0bAijTy0ap5DR0Tv4XpSzd+vuIrV6cAcV+q6UOgAMyeUpmrCSzZ3Hi7msHDa2rHU+d3BWZ2b3aZLIR+HcDi1uN0WfJYRL8cUnHSTC2s6y4rUoMYMzkWX43uMnTRS2vi8Agj15DeAVpuARJs5RsieiZOm+6QRbUG85O0PjdNMu27AfP2pKuI/rSUt7XG6p2Op3pBLT5h1OyaK6nzjbAE28r8DVLdgWa58X/Aw==
     )
 
     set "OFFSET="
@@ -1313,22 +1886,23 @@ set "decompcabps=%decompcab:[=`[%"
 set "decompcabps=%decompcabps:]=`]%"
 set "decompcabps=%decompcabps:^=^^%"
 set "decompcabps=%decompcabps:&=^&%"
-powershell.exe -nologo -noprofile -noninteractive -command "& { [IO.File]::WriteAllBytes(\"%decompcab%\", [Convert]::FromBase64String([IO.File]::ReadAllText(\"%decompcab%.tmp\")))}"
+echo "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes(\"%decompcab%\", [Convert]::FromBase64String([IO.File]::ReadAllText(\"%decompcab%.tmp\")))}" >> "%UNRENLOG%"
+"%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes(\"%decompcab%\", [Convert]::FromBase64String([IO.File]::ReadAllText(\"%decompcab%.tmp\")))}" %DEBUGREDIR%
 call :elog .
 if not exist "!decompcab!" (
-	call :elog "%RED%!decm1.%LNG%!%RES%"
+	call :elog "%RED%!decm1.%LNG%!%RES% !UNACONT.%LNG%!"
 	call :elog .
 	pause>nul|set/p=.			!ANYKEY.%LNG%!
-	exit
+	call :exitn 3
 ) else (
+    del /f /q "%decompcab%.tmp" %DEBUGREDIR%
 	call :elog "%GRE%!decm2.%LNG%!%RES%"
 	call :elog .
 )
 
 call :elog .
 call :elog "!decm3.%LNG%!"
-<nul set /p="!ENTERYN.%LNG%! "
-%SystemRoot%\System32\choice.exe /C OSJYN /N /D N /T %CTIME%
+call :choiceEx "!ENTERYN.%LNG%! " "OSJYN" "N" "%CTIME%" "-rawMsg"
 if errorlevel 5 (
 	set "owrpy=n"
 	call :elog "    %YEL%!decm4.%LNG%!%RES%"
@@ -1350,7 +1924,7 @@ mkdir "%decompilerdir%"  >> "%UNRENLOG%" 2>&1
 expand -F:* "%decompcab%" "%decompilerdir%" >> "%UNRENLOG%" 2>&1
 move /y "%decompilerdir%\unrpyc.py" "%unrpycpy%" >> "%UNRENLOG%" 2>&1
 move /y "%decompilerdir%\deobfuscate.py" "%deobfuscate%" >> "%UNRENLOG%" 2>&1
-if not exist "!unrpycpy!" (
+if not exist "%unrpycpy%" (
     call :elog "    %RED%!decm7.%LNG%! %unrpycpy%. !UNACONT.%LNG%!%RES%"
     call :elog .
     pause>nul|set/p=.			!ANYKEY.%LNG%!
@@ -1358,7 +1932,7 @@ if not exist "!unrpycpy!" (
 ) else (
     set "found=1"
 )
-if not exist "!deobfuscate!" (
+if not exist "%deobfuscate%" (
     call :elog "    %RED%!decm7.%LNG%! %deobfuscate%. !UNACONT.%LNG%!%RES%"
     call :elog .
     pause>nul|set/p=.			!ANYKEY.%LNG%!
@@ -1384,13 +1958,13 @@ for /R "game" %%f in (*.rpyc) do (
 	if not exist !rpyfile! (
 		call :elog "    + !decm9.%LNG%! %YEL%'!relativePath!'%RES%"
 		if "!OPTION!" == "7" (
-			echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" !OFFSET! --try-harder "%%f" >>"%UNRENLOG%"
-			"!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" !OFFSET! --try-harder "%%f" >>"%UNRENLOG%" 2>&1
-			set "error=!errorlevel!"
+			echo "%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" !OFFSET! --try-harder "%%f" >>"%UNRENLOG%"
+			"%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" !OFFSET! --try-harder "%%f" >>"%UNRENLOG%" 2>&1
+			set "error=!ERRORLEVEL!"
 		) else (
-			echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" !OFFSET! "%%f" >>"%UNRENLOG%"
-			"!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" !OFFSET! "%%f" >>"%UNRENLOG%" 2>&1
-			set "error=!errorlevel!"
+			echo "%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" !OFFSET! "%%f" >>"%UNRENLOG%"
+			"%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" !OFFSET! "%%f" >>"%UNRENLOG%" 2>&1
+			set "error=!ERRORLEVEL!"
 		)
 	) else if exist !rpyfile! if "!owrpy!" == "y" (
 		if not exist "!rpyfile!.org" (
@@ -1401,13 +1975,13 @@ for /R "game" %%f in (*.rpyc) do (
 		call :elog "    + !decm11.%LNG%! %YEL%!relativePath!%RES%"
         if "!OPTION!" == "6" set "OPTION=4"
 		if "!OPTION!" == "4" (
-			echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" --clobber !OFFSET! --try-harder "%%f" >>"%UNRENLOG%"
-			"!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" --clobber !OFFSET! --try-harder "%%f" >>"%UNRENLOG%" 2>&1
-			set "error=!errorlevel!"
+			echo "%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" --clobber !OFFSET! --try-harder "%%f" >>"%UNRENLOG%"
+			"%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" --clobber !OFFSET! --try-harder "%%f" >>"%UNRENLOG%" 2>&1
+			set "error=!ERRORLEVEL!"
 		) else (
-			echo "!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" --clobber !OFFSET! "%%f" >>"%UNRENLOG%"
-			"!PYTHONHOME!python.exe" !PYNOASSERT! "!unrpycpy!" --clobber !OFFSET! "%%f" >>"%UNRENLOG%" 2>&1
-			set "error=!errorlevel!"
+			echo "%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" --clobber !OFFSET! "%%f" >>"%UNRENLOG%"
+			"%PYTHONHOME%python.exe" %PYNOASSERT% "%unrpycpy%" --clobber !OFFSET! "%%f" >>"%UNRENLOG%" 2>&1
+			set "error=!ERRORLEVEL!"
 		)
 	) else if exist !rpyfile! if "!owrpy!" == "n" (
 		call :elog "    + !decm12.%LNG%! %YEL%!relativePath!%RES%, %RES%!decm12a.%LNG%!%RES%"
@@ -1423,14 +1997,17 @@ call :elog .
 :: Clean up
 call :elog "!CLEANUP.%LNG%!"
 cd /d "%WORKDIR%"
-del /f /q "%unrpycpy%o" %DEBUGREDIR%
-del /f /q "%unrpycpy%" %DEBUGREDIR%
-del /f /q "%decompcab%.tmp" %DEBUGREDIR%
-del /f /q "%decompcab%" %DEBUGREDIR%
-del /f /q "%deobfuscate%" %DEBUGREDIR%
-del /f /q "%deobfuscate%o" %DEBUGREDIR%
+if not "%unrpycpy%" == "" (
+    del /f /q "%unrpycpy%o" %DEBUGREDIR%
+    del /f /q "%unrpycpy%" %DEBUGREDIR%
+)
+if not "%decompcab%" == "" del /f /q "%decompcab%" %DEBUGREDIR%
+if not "%deobfuscate%" == "" (
+    del /f /q "%deobfuscate%" %DEBUGREDIR%
+    del /f /q "%deobfuscate%o" %DEBUGREDIR%
+)
 rmdir /Q /S "__pycache__" %DEBUGREDIR%
-rmdir /Q /S "%decompilerdir%" %DEBUGREDIR%
+if not "%decompilerdir%" == "" rmdir /Q /S "%decompilerdir%" %DEBUGREDIR%
 
 call :elog "!DONE.%LNG%!"
 timeout /t 2 /nobreak >nul
@@ -1440,14 +2017,634 @@ goto :eof
 
 
 :: Drop our console/dev mode enabler into the game folder
-:unavailable
-if "!RENPYVERSION!" == "7" (
-    set "unavailable.en=This feature is unavailable in this version."
-    set "unavailable.zh=该功能暂不可用，需要更多代码实现。"
+:console
+set "unren-console=%WORKDIR%\game\unren-console.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-console%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-console%%RES%
+echo %YEL%%unren-console%c%RES%
+call :elog .
+call :elog .
+echo !choicea.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicea.%LNG%!... "
+if exist "%unren-console%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-console%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KZGVmaW5lIDk5OSBjb25maWcuY29uc29sZSA9IFRydWUNCmRlZmluZSA5OTkgY29uZmlnLmRldmVsb3BlciA9IFRydWUNCg==
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-console%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-console%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-console%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-console%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-console%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-console%.tmp" "%unren-console%" %DEBUGREDIR%
+        del /f /q "%unren-console%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
 )
-if "!RENPYVERSION!" == "8" (
+
+goto :eof
+
+
+:: Drop our debug mode enabler into the game folder
+:debug
+set "unren-debug=%WORKDIR%\game\unren-debug.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-debug%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-debug%%RES%
+echo %YEL%%unren-debug%c%RES%
+call :elog .
+call :elog .
+echo !choiceb.%LNG%!...  >> "%UNRENLOG%"
+<nul set /p="!choiceb.%LNG%!... "
+if exist "%unren-console%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-debug%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KZGVmaW5lIDk5OSBjb25maWcuZGVidWcgPSBUcnVlDQo=
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-debug%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-debug%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-debug%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-debug%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-debug%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-debug%.tmp" "%unren-debug%" %DEBUGREDIR%
+        del /f /q "%unren-debug%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Drop our skip file into the game folder
+:skip
+set "unren-skip=%WORKDIR%\game\unren-skip.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-skip%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-skip%%RES%
+echo %YEL%%unren-skip%c%RES%
+call :elog .
+call :elog .
+echo !choicec.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicec.%LNG%!... "
+
+if exist "%unren-skip%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-skip%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KaW5pdCA5OTkgcHl0aG9uOg0KICAgIF9wcmVmZXJlbmNlcy5za2lwX3Vuc2VlbiA9IFRydWUNCiAgICBjb25maWcuYWxsb3dfc2tpcHBpbmcgPSBUcnVlDQogICAgcmVucHkuZ2FtZS5wcmVmZXJlbmNlcy5za2lwX3Vuc2VlbiA9IFRydWUNCiAgICByZW5weS5nYW1lLnByZWZlcmVuY2VzLnNraXBfYWZ0ZXJfY2hvaWNlcyA9IFRydWUNCiAgICByZW5weS5jb25maWcuZmFzdF9za2lwcGluZyA9IFRydWUNCiAgICB0cnk6DQogICAgICAgIGNvbmZpZy5rZXltYXBbJ3NraXAnXSA9IFsgJ0tfTENUUkwnLCAnS19SQ1RSTCcgXQ0KICAgIGV4Y2VwdDoNCiAgICAgICAgcGFzcw0K
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-skip%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-skip%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-skip%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-skip%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-skip%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-skip%.tmp" "%unren-skip%" %DEBUGREDIR%
+        del /f /q "%unren-skip%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Drop our skip file into the game folder
+:skipall
+set "unren-skipall=%WORKDIR%\game\unren-skipall.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-skipall%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-skipall%%RES%
+echo %YEL%%unren-skipall%c%RES%
+call :elog .
+call :elog .
+echo !choiced.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choiced.%LNG%!... "
+
+if exist "%unren-skipall%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-skipall%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KaW5pdCA5OTkgcHl0aG9uOg0KICAgIF9wcmVmZXJlbmNlcy5za2lwX3Vuc2VlbiA9IFRydWUNCiAgICBjb25maWcuYWxsb3dfc2tpcHBpbmcgPSBUcnVlDQogICAgcmVucHkuZ2FtZS5wcmVmZXJlbmNlcy5za2lwX3Vuc2VlbiA9IFRydWUNCiAgICByZW5weS5nYW1lLnByZWZlcmVuY2VzLnNraXBfYWZ0ZXJfY2hvaWNlcyA9IFRydWUNCiAgICByZW5weS5jb25maWcuZmFzdF9za2lwcGluZyA9IFRydWUNCiAgICBwcmVmZXJlbmNlcy50cmFuc2l0aW9ucyA9IDANCiAgICB0cnk6DQogICAgICAgIGNvbmZpZy5rZXltYXBbJ3NraXAnXSA9IFsgJ0tfTENUUkwnLCAnS19SQ1RSTCcgXQ0KICAgIGV4Y2VwdDoNCiAgICAgICAgcGFzcw0K
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-skipall%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-skipall%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-skipall%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-skipall%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-skipall%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-skipall%.tmp" "%unren-skipall%" %DEBUGREDIR%
+        del /f /q "%unren-skipall%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Drop our rollback file into the game folder
+:rollback
+set "unren-rollback=%WORKDIR%\game\unren-rollback.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-rollback%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-rollback%%RES%
+echo %YEL%%unren-rollback%c%RES%
+call :elog .
+call :elog .
+echo !choicee.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicee.%LNG%!... "
+
+if exist "%unren-rollback%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    > "%unren-rollback%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KaW5pdCA5OTkgcHl0aG9uOg0KICAgIHJlbnB5LmNvbmZpZy5yb2xsYmFja19lbmFibGVkID0gVHJ1ZQ0KICAgIHJlbnB5LmNvbmZpZy5oYXJkX3JvbGxiYWNrX2xpbWl0ID0gMjU2DQogICAgcmVucHkuY29uZmlnLnJvbGxiYWNrX2xlbmd0aCA9IDI1Ng0KICAgIGRlZiB1bnJlbl9ub2Jsb2NrKCphcmdzLCAqKmt3YXJncyk6DQogICAgICAgIHJldHVybg0KICAgIHJlbnB5LmJsb2NrX3JvbGxiYWNrID0gdW5yZW5fbm9ibG9jaw0KICAgIHRyeToNCiAgICAgICAgY29uZmlnLmtleW1hcFsncm9sbGJhY2snXSA9IFsgJ0tfUEFHRVVQJywgJ3JlcGVhdF9LX1BBR0VVUCcsICdLX0FDX0JBQ0snLCAnbW91c2Vkb3duXzQnIF0NCiAgICBleGNlcHQ6DQogICAgICAgIHBhc3MNCg==
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-rollback%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-rollback%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-rollback%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-rollback%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-rollback%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-rollback%.tmp" "%unren-rollback%" %DEBUGREDIR%
+        del /f /q "%unren-rollback%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Drop our Quick Save/Load file into the game folder
+:quick
+set "unren-quick=%WORKDIR%\game\unren-quick.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-quick%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-quick%%RES%
+echo %YEL%%unren-quick%c%RES%
+call :elog .
+call :elog .
+echo !choicef.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicef.%LNG%!... "
+
+if exist "%unren-quick%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-quick%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KaW5pdCA5OTkgcHl0aG9uOg0KICAgIHRyeToNCiAgICAgICAgY29uZmlnLnVuZGVybGF5WzBdLmtleW1hcFsncXVpY2tTYXZlJ10gPSBRdWlja1NhdmUoKQ0KICAgICAgICBjb25maWcua2V5bWFwWydxdWlja1NhdmUnXSA9ICdLX0Y1Jw0KICAgICAgICBjb25maWcudW5kZXJsYXlbMF0ua2V5bWFwWydxdWlja0xvYWQnXSA9IFF1aWNrTG9hZCgpDQogICAgICAgIGNvbmZpZy5rZXltYXBbJ3F1aWNrTG9hZCddID0gJ0tfRjknDQogICAgZXhjZXB0Og0KICAgICAgICBwYXNzDQo=
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-quick%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-quick%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-quick%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-quick%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-quick%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-quick%.tmp" "%unren-quick%" %DEBUGREDIR%
+        del /f /q "%unren-quick%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Drop our Quick Menu file into the game folder
+:qmenu
+set "unren-qmenu=%WORKDIR%\game\unren-qmenu.rpy"
+echo %YEL%!TWADD.%LNG%! %unren-qmenu%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unren-qmenu%%RES%
+echo %YEL%%unren-qmenu%c%RES%
+call :elog .
+call :elog .
+echo !choiceg.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choiceg.%LNG%!... "
+
+if exist "%unren-qmenu%" (
+    call :elog "%YEL%!APRESENT.%LNG%!%RES%"
+) else (
+    >"%unren-qmenu%.b64" (
+        echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KaW5pdCBweXRob246DQogICAgZGVmIGFsd2F5c19lbmFibGVfcXVpY2tfbWVudSgpOg0KICAgICAgICBzdG9yZS5xdWlja19tZW51ID0gVHJ1ZQ0KICAgICAgICByZW5weS5zaG93X3NjcmVlbigicXVpY2tfbWVudSIpDQogICAgY29uZmlnLm92ZXJsYXlfZnVuY3Rpb25zLmFwcGVuZChhbHdheXNfZW5hYmxlX3F1aWNrX21lbnUpDQoNCiAgICBkZWYgZm9yY2VfcXVpY2tfbWVudV9vbl9pbnRlcmFjdCgpOg0KICAgICAgICBzdG9yZS5xdWlja19tZW51ID0gVHJ1ZQ0KICAgIGNvbmZpZy5pbnRlcmFjdF9jYWxsYmFja3MuYXBwZW5kKGZvcmNlX3F1aWNrX21lbnVfb25faW50ZXJhY3Qp
+    )
+    echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-qmenu%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-qmenu%.b64'))))" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllText('%unren-qmenu%.tmp', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content '%unren-qmenu%.b64'))))" %DEBUGREDIR%
+    if not exist "%unren-qmenu%.tmp" (
+        call :elog "%RED%!FAIL.%LNG%!%RES%"
+    ) else (
+        move /y "%unren-qmenu%.tmp" "%unren-qmenu%" %DEBUGREDIR%
+        del /f /q "%unren-qmenu%.b64" %DEBUGREDIR%
+        call :elog "%GRE%!PASS.%LNG%!%RES%"
+    )
+)
+
+goto :eof
+
+
+:: Replace MCName in game files
+:replace_mcname
+set "unr-mcchange=%WORKDIR%\game\unren-mcchange.rpy"
+
+set "rmcname.en=Please input the new name (without quotes): "
+set "rmcname.fr=Veuillez saisir le nouveau nom (sans guillemets) : "
+set "rmcname.es=Por favor ingrese el nuevo nombre (sin comillas): "
+set "rmcname.it=Si prega di inserire il nuovo nome (senza virgolette): "
+set "rmcname.de=Bitte geben Sie den neuen Namen (ohne Anführungszeichen) ein: "
+set "rmcname.ru=Пожалуйста, введите новое имя (без кавычек): "
+set "rmcname.zh=请输入新名称（不带引号）："
+
+set "rmcname2.en=No name provided."
+set "rmcname2.fr=Aucun nom fourni."
+set "rmcname2.es=No se proporcionó ningún nombre."
+set "rmcname2.it=Nome non fornito."
+set "rmcname2.de=Kein Name angegeben."
+set "rmcname2.ru=Имя не указано."
+set "rmcname2.zh=未提供名称。"
+
+set "rmcname3.en=Please input the old name (without quotes): "
+set "rmcname3.fr=Veuillez saisir l'ancien nom (sans guillemets) : "
+set "rmcname3.es=Por favor ingrese el nombre antiguo (sin comillas): "
+set "rmcname3.it=Si prega di inserire il vecchio nome (senza virgolette): "
+set "rmcname3.de=Bitte geben Sie den alten Namen (ohne Anführungszeichen) ein: "
+set "rmcname3.ru=Пожалуйста, введите старое имя (без кавычек): "
+set "rmcname3.zh=请输入旧名称（不带引号）："
+
+echo %YEL%!TWADD.%LNG%! %unr-mcchange%.%RES%
+echo %YEL%!INCASEDEL.%LNG%!%RES%
+echo %YEL%%unr-mcchange%%RES%
+echo %YEL%%unr-mcchange%c%RES%
+
+call :elog .
+call :elog .
+set "oldmcname="
+echo oldmcname=!rmcname3.%LNG%! >> "%UNRENLOG%"
+set /p "oldmcname=!rmcname3.%LNG%!"
+
+if "!oldmcname!" == "" (
+    echo %RED%!FAIL.%LNG%! !rmcname2.%LNG%!.%RES%
+    goto mcend
+) else (
+    echo oldmcname=!oldmcname! >> "%UNRENLOG%"
+)
+
+call :elog .
+set "newmcname="
+echo newmcname=!rmcname.%LNG%! >> "%UNRENLOG%"
+set /p "newmcname=!rmcname.%LNG%!"
+
+if "!newmcname!" == "" (
+    echo %RED%!FAIL.%LNG%! !rmcname2.%LNG%!.%RES%
+    goto mcend
+) else (
+    echo newmcname=!newmcname! >> "%UNRENLOG%"
+)
+
+call :elog .
+echo !choicel.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicel.%LNG%!... "
+
+>"%unr-mcchange%.b64" (
+    echo IyBNYWRlIGJ5IChTTSkgYWthIEpvZUx1cm1lbCBAIGY5NXpvbmUudG8NCg0KZGVmaW5lIDk5OSBtY25hbWUgPSAibmV3bWNuYW1lIg0KZGVmaW5lIDk5OSBNQyA9ICJuZXdtY25hbWUiDQpkZWZpbmUgOTk5IE1DX25hbWUgPSAibmV3bWNuYW1lIg0KZGVmaW5lIDk5OSBtY19uYW1lID0gIm5ld21jbmFtZSINCg0KaW5pdCA5OTkgcHl0aG9uOg0KICAgIGltcG9ydCByZQ0KDQogICAgIyBQbGFjZWhvbGRlcnMgcmVwbGFjZWQgYnkgUG93ZXJTaGVsbCBiZWZvcmUgZXhlY3V0aW9uDQogICAgT0xEID0gIm9sZG1jbmFtZSINCiAgICBORVcgPSAibmV3bWNuYW1lIg0KDQogICAgZGVmIF9jYXNlX2xpa2UocywgbW9kZWwpOg0KICAgICAgICAjIEFsaWduIHRoZSBjYXNlIG9mIHMgd2l0aCB0aGF0IG9mIG1vZGVsICh1cHBlciwgVGl0bGUsIGxvd2VyKQ0KICAgICAgICBpZiBtb2RlbC5pc3VwcGVyKCk6DQogICAgICAgICAgICByZXR1cm4gcy51cHBlcigpDQogICAgICAgIGVsaWYgbW9kZWxbOjFdLmlzdXBwZXIoKSBhbmQgbW9kZWxbMTpdLmlzbG93ZXIoKToNCiAgICAgICAgICAgIHJldHVybiBzLmNhcGl0YWxpemUoKQ0KICAgICAgICBlbHNlOg0KICAgICAgICAgICAgcmV0dXJuIHMubG93ZXIoKQ0KDQogICAgZGVmIHJlcGxhY2VfdGV4dCh0KToNCiAgICAgICAgb2xkID0gT0xEDQogICAgICAgIG5ldyA9IE5FVw0KDQogICAgICAgIG9fZXNjID0gcmUuZXNjYXBlKG9sZCkNCiAgICAgICAgZl9vbGQgPSBvbGRbOjFdDQogICAgICAgIGZfbmV3ID0gbmV3WzoxXQ0KDQogICAgICAgICMgMSkgUmVwbGFjZW1lbnQgb2YgdGhlIGVudGlyZSB3b3JkIChjYXNlLWluc2Vuc2l0aXZlKSB3aXRoIGNhc2UgcmVzdG9yYXRpb24NCiAgICAgICAgYmFzZV9wYXQgPSByZS5jb21waWxlKHJmIlxiKD9pOih7b19lc2N9KSlcYiIpDQogICAgICAgIGRlZiBiYXNlX3JlcGwobSk6DQogICAgICAgICAgICByZXR1cm4gX2Nhc2VfbGlrZShuZXcsIG0uZ3JvdXAoMSkpDQogICAgICAgIHQgPSBiYXNlX3BhdC5zdWIoYmFzZV9yZXBsLCB0KQ0KDQogICAgICAgICMgMikgU3R1dHRlcmluZyB0eXBlOiBjLWNvbm5vciDihpIgai1qb2UgKGFuZCBjYXNlIHZhcmlhbnRzKQ0KICAgICAgICBzdDFfcGF0ID0gcmUuY29tcGlsZShyZiJcYihbe2Zfb2xkLmxvd2VyKCl9e2Zfb2xkLnVwcGVyKCl9XSktKD9pOih7b19lc2N9KSlcYiIpDQogICAgICAgIGRlZiBzdDFfcmVwbChtKToNCiAgICAgICAgICAgIHByZWYgPSBtLmdyb3VwKDEpICAgICAgICMgcHJlZml4IGxldHRlciAoYy9DKQ0KICAgICAgICAgICAgb2xkX3BhcnQgPSBtLmdyb3VwKDIpICAgIyB3b3JkIChjb25ub3IvQ29ubm9yL0NPTk5PUikNCiAgICAgICAgICAgIG5ld193b3JkID0gX2Nhc2VfbGlrZShuZXcsIG9sZF9wYXJ0KQ0KICAgICAgICAgICAgbmV3X2ZpcnN0ID0gZl9uZXcudXBwZXIoKSBpZiBwcmVmLmlzdXBwZXIoKSBlbHNlIGZfbmV3Lmxvd2VyKCkNCiAgICAgICAgICAgIHJldHVybiBmIntuZXdfZmlyc3R9LXtuZXdfd29yZH0iDQogICAgICAgIHQgPSBzdDFfcGF0LnN1YihzdDFfcmVwbCwgdCkNCg0KICAgICAgICAjIDMpIFN0dXR0ZXJpbmcgdHlwZTogY28tY29ubm9yIOKGkiBqby1qb2UgKGFuZCBjYXNlIHZhcmlhbnRzKQ0KICAgICAgICBzdDJfcGF0ID0gcmUuY29tcGlsZShyZiJcYihbe2Zfb2xkLmxvd2VyKCl9e2Zfb2xkLnVwcGVyKCl9XSkoW29PXSktKD9pOih7b19lc2N9KSlcYiIpDQogICAgICAgIGRlZiBzdDJfcmVwbChtKToNCiAgICAgICAgICAgIHByZWYgPSBtLmdyb3VwKDEpICAgICAgICMgcHJlZml4IGxldHRlciAoYy9DKQ0KICAgICAgICAgICAgb2NoYXIgPSBtLmdyb3VwKDIpICAgICAgIyAnbycgb3IgJ08nDQogICAgICAgICAgICBvbGRfcGFydCA9IG0uZ3JvdXAoMykgICAjIHdvcmQgKGNvbm5vci9Db25ub3IvQ09OTk9SKQ0KICAgICAgICAgICAgbmV3X3dvcmQgPSBfY2FzZV9saWtlKG5ldywgb2xkX3BhcnQpDQogICAgICAgICAgICBuZXdfZmlyc3QgPSBmX25ldy51cHBlcigpIGlmIHByZWYuaXN1cHBlcigpIGVsc2UgZl9uZXcubG93ZXIoKQ0KICAgICAgICAgICAgIyBLZWVwIHRoZSBjYXNlIG9mIHRoZSAnbycgbGV0dGVyIGFzIGVuY291bnRlcmVkDQogICAgICAgICAgICByZXR1cm4gZiJ7bmV3X2ZpcnN0fXtvY2hhcn0te25ld193b3JkfSINCiAgICAgICAgdCA9IHN0Ml9wYXQuc3ViKHN0Ml9yZXBsLCB0KQ0KDQogICAgICAgIHJldHVybiB0DQoNCiAgICBjb25maWcucmVwbGFjZV90ZXh0ID0gcmVwbGFjZV90ZXh0DQogICAgZGVsIHJlcGxhY2VfdGV4dA0K
+)
+echo "%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllBytes('!unr-mcchange!.tmp', [Convert]::FromBase64String((Get-Content '!unr-mcchange!.b64' -Raw)))" >> "%UNRENLOG%"
+"%PWRSHELL%" -NoProfile -Command "[IO.File]::WriteAllBytes('!unr-mcchange!.tmp', [Convert]::FromBase64String((Get-Content '!unr-mcchange!.b64' -Raw)))" %DEBUGREDIR%
+if not exist "!unr-mcchange!.tmp" (
+    echo %RED%!FAIL.%LNG%!%RES% !MISSING.%LNG%! !unr-mcchange!.tmp
+    goto mcend
+) else (
+    del /f /q "!unr-mcchange!.b64" %DEBUGREDIR%
+    echo "%PWRSHELL%" -NoProfile -Command "(Get-Content '!unr-mcchange!.tmp') -replace 'newmcname', '!newmcname!' | Set-Content '!unr-mcchange!'" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "(Get-Content '!unr-mcchange!.tmp') -replace 'newmcname', '!newmcname!' | Set-Content '!unr-mcchange!'" %DEBUGREDIR%
+    echo "%PWRSHELL%" -NoProfile -Command "(Get-Content '!unr-mcchange!') -replace 'oldmcname', '!oldmcname!' | Set-Content '!unr-mcchange!'" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "(Get-Content '!unr-mcchange!') -replace 'oldmcname', '!oldmcname!' | Set-Content '!unr-mcchange!'" %DEBUGREDIR%
+    if not exist "!unr-mcchange!" (
+        echo %RED%!FAIL.%LNG%!%RES% !MISSING.%LNG%! !unr-mcchange!
+        goto mcend
+    )
+    del /f /q "!unr-mcchange!.tmp" %DEBUGREDIR%
+    echo %GRE%!PASS.%LNG%!%RES%
+)
+
+:mcend
+
+goto :eof
+
+
+:: Extract text for translation purpose
+:extract_text
+if "%LNG%" == "en"  set translation_lang=english
+if "%LNG%" == "fr"  set translation_lang=french
+if "%LNG%" == "es"  set translation_lang=spanish
+if "%LNG%" == "it"  set translation_lang=italian
+if "%LNG%" == "de"  set translation_lang=german
+if "%LNG%" == "ru"  set translation_lang=russian
+if "%LNG%" == "zh"  set translation_lang=chinese
+
+cd /d "%WORKDIR%"
+
+set "etext1.en=Searching for game name"
+set "etext1.fr=Recherche du nom du jeu"
+set "etext1.es=Buscando el nombre del juego"
+set "etext1.it=Cercando il nome del gioco"
+set "etext1.de=Suche nach dem Spieletitel"
+set "etext1.ru=Поиск названия игры"
+set "etext1.zh=正在搜索游戏名称"
+
+set "etext2.en=No game files found with .exe, .py or .sh extensions."
+set "etext2.fr=Aucun fichier de jeu trouvé avec les extensions .exe, .py ou .sh."
+set "etext2.es=No se encontraron archivos de juego con las extensiones .exe, .py o .sh."
+set "etext2.it=Nessun file di gioco trovato con le estensioni .exe, .py o .sh."
+set "etext2.de=Keine Spieldateien mit den Erweiterungen .exe, .py oder .sh gefunden."
+set "etext2.ru=Не найдено игровых файлов с расширениями .exe, .py или .sh."
+set "etext2.zh=未找到带有 .exe、.py 或 .sh 扩展名的游戏文件。"
+
+set "etext3.en=Enter the target translation language (%YEL%%translation_lang%%RES% by default): "
+set "etext3.fr=Entrez la langue de traduction cible (%YEL%%translation_lang%%RES% par défaut) : "
+set "etext3.es=Ingrese el idioma de traducción objetivo (%YEL%%translation_lang%%RES% por defecto): "
+set "etext3.it=Inserisci la lingua di traduzione di destinazione (%YEL%%translation_lang%%RES% per impostazione predefinita): "
+set "etext3.de=Geben Sie die Zielsprache für die Übersetzung ein (%YEL%%translation_lang%%RES% standardmäßig): "
+set "etext3.ru=Введите целевой язык перевода (%YEL%%translation_lang%%RES% по умолчанию): "
+set "etext3.zh=输入目标翻译语言（默认 %YEL%%translation_lang%%RES%）："
+
+set "etext4.en=Unable to extract text for translation."
+set "etext4.fr=Impossible d'extraire le texte pour la traduction."
+set "etext4.es=No se pudo extraer el texto para la traducción."
+set "etext4.it=Impossibile estrarre il testo per la traduzione."
+set "etext4.de=Fehler beim Extrahieren des Textes für die Übersetzung."
+set "etext4.ru=Не удалось извлечь текст для перевода."
+set "etext4.zh=无法提取文本用于翻译。"
+
+set "etext5.en=Please input the game name (without extension): "
+set "etext5.fr=Veuillez saisir le nom du jeu (sans extension) : "
+set "etext5.es=Por favor, ingrese el nombre del juego (sin extensión): "
+set "etext5.it=Si prega di inserire il nome del gioco (senza estensione): "
+set "etext5.de=Bitte geben Sie den Namen des Spiels ein (ohne Erweiterung): "
+set "etext5.ru=Пожалуйста, введите название игры (без расширения): "
+set "etext5.zh=请输入游戏名称（不带扩展名）："
+
+:: find the current game name by checking the presence of same name with .exe, .py and .sh extension
+call :elog .
+if not "!OPTION!" == "m" echo.
+<nul set /p="!etext1.%LNG%!... "
+
+set "processed="
+set "fname="
+
+:: Do not test with sh, it can be not shipped
+for %%e in (exe py) do (
+    for %%f in (*.%%e) do (
+        set "tempfname=%%~nf"
+
+        :: Check if this name has already been processed
+        echo !processed! | findstr /i "\!tempfname!" >nul
+        if errorlevel 1 (
+            :: Count how many files with this name exist
+            set /a count=0
+            for %%x in (exe py) do (
+                if exist "%%~dpf!tempfname!.%%x" (
+                    set /a count+=1
+                )
+            )
+            if !count! EQU 2 (
+                echo %YEL%!tempfname! %GRE%!PASS.%LNG%!%YEL%%RES%
+                set "processed=!processed! !tempfname!"
+                set "fname=!tempfname!"
+                goto found_name
+            )
+        )
+    )
+)
+
+:: If no name found, ask user to input the name
+if "%fname%"  == "" (
+    echo %RED%!FAIL.%LNG%! !etext2.%LNG%!%RES%
+    goto input_name
+)
+
+:input_name
+call :elog .
+set /p "fname=!etext5.%LNG%!"
+if "%fname%" == "" (
+    echo %RED%!FAIL.%LNG%! !etext2.%LNG%!%RES%
+    goto input_name
+) else (
+    REM set "fname=%fname:.=%"
+    if not exist "%WORKDIR%\%fname%.exe" (
+        echo %RED%!FAIL.%LNG%! !etext2.%LNG%!%RES%
+        goto input_name
+    )
+)
+
+:found_name
+call :elog .
+set /p "translation_lang=!etext3.%LNG%!"
+
+if not defined translation_lang (
+	set "translation_lang=french"
+)
+
+if not exist "%WORKDIR%\game\tl\" (
+	mkdir "%WORKDIR%\game\tl"
+)
+
+call :elog .
+call :elog .
+echo !choicet.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!choicet.%LNG%!... "
+
+cd /d "%WORKDIR%"
+echo "%PYTHONHOME%python.exe" %PYNOASSERT% "%fname%.py" game translate %translation_lang% >> "%UNRENLOG%"
+"%PYTHONHOME%python.exe" %PYNOASSERT% "%fname%.py" game translate %translation_lang% %DEBUGREDIR%
+if %ERRORLEVEL% NEQ 0 (
+	echo %RED%!FAIL.%LNG%! !etext4.%LNG%!%RES%
+) else (
+    echo %GRE%!PASS.%LNG%!%RES%
+)
+call :elog .
+
+goto :eof
+
+
+:: Add entry to registry
+:add_reg
+set "areg1.en=This will add an entry to the right-click menu for folders."
+set "areg1.fr=Cela ajoutera une entrée au menu contextuel pour les dossiers."
+set "areg1.es=Esto añadirá una entrada al menú contextual para las carpetas."
+set "areg1.it=Questo aggiungerà una voce al menu contestuale per le cartelle."
+set "areg1.de=Dies wird einen Eintrag zum Rechtsklick-Menü für Ordner hinzufügen."
+set "areg1.ru=Это добавит элемент в контекстное меню для папок."
+set "areg1.zh=这将为文件夹添加右键菜单项。"
+
+set "areg2.en=When you select this option,"
+set "areg2.fr=Lorsque vous sélectionnez cette option,"
+set "areg2.es=Cuando seleccione esta opción,"
+set "areg2.it=Quando selezioni questa opzione,"
+set "areg2.de=Wenn Sie diese Option auswählen,"
+set "areg2.ru=Когда вы выберете эту опцию,"
+set "areg2.zh=当您选择此选项时，"
+
+set "areg2a.en=the script "%SCRIPTDIR%%SCRIPTNAME%" will be executed."
+set "areg2a.fr=le script "%SCRIPTDIR%%SCRIPTNAME%" sera exécuté."
+set "areg2a.es=se ejecutará el script "%SCRIPTDIR%%SCRIPTNAME%"."
+set "areg2a.it=verrà eseguito lo script "%SCRIPTDIR%%SCRIPTNAME%"."
+set "areg2a.de=wird das Skript "%SCRIPTDIR%%SCRIPTNAME%" ausgeführt."
+set "areg2a.ru=будет выполнен скрипт "%SCRIPTDIR%%SCRIPTNAME%"."
+set "areg2a.zh=脚本 "%SCRIPTDIR%%SCRIPTNAME%" 将被执行。"
+
+set "areg3.en=Adding the right-click menu entry to the registry... "
+set "areg3.fr=Ajout de l'entrée de menu contextuel au registre... "
+set "areg3.es=Adding the right-click menu entry to the registry... "
+set "areg3.it=Aggiunta della voce del menu contestuale al registro... "
+set "areg3.de=Hinzufügen des Rechtsklick-Menüeintrags zur Registrierung... "
+set "areg3.ru=Добавление элемента контекстного меню в реестр... "
+set "areg3.zh=正在向注册表添加右键菜单项... "
+
+set "areg4.en=Run %SCRIPTNAME% Script"
+set "areg4.fr=Exécuter le script %SCRIPTNAME%"
+set "areg4.es=Ejecutar el script %SCRIPTNAME%"
+set "areg4.it=Esegui lo script %SCRIPTNAME%"
+set "areg4.de=Führen Sie das Skript %SCRIPTNAME% aus"
+set "areg4.ru=Запустить скрипт %SCRIPTNAME%"
+set "areg4.zh=运行 %SCRIPTNAME% 脚本"
+
+call :check_admin
+
+call :elog .
+echo %YEL%!areg1.%LNG%!%RES%
+echo %YEL%!areg2.%LNG%!%RES%
+echo %YEL%!areg2a.%LNG%!%RES%
+call :elog .
+echo !areg3.%LNG%! >> "%UNRENLOG%"
+<nul set /p="!areg3.%LNG%!"
+
+:: Add registry key
+reg add "HKCR\Directory\shell\Run%SCRIPTNAME%" /ve /d "!areg4.%LNG%!" /f %DEBUGREDIR%
+reg add "HKCR\Directory\shell\Run%SCRIPTNAME%" /v "Icon" /d "%SYSTEMROOT%\System32\shell32.dll,-154" /f %DEBUGREDIR%
+reg add "HKCR\Directory\shell\Run%SCRIPTNAME%\command" /ve /d "%SYSTEMROOT%\System32\cmd.exe /c cd /d \"%%V\" && \"%SCRIPTDIR%%SCRIPTNAME%\" \"%%V\"" /f %DEBUGREDIR%
+if %ERRORLEVEL% EQU 0 (
+	echo %GRE%!PASS.%LNG%!%RES%
+) else (
+	echo %RED%!FAIL.%LNG%!%RES%
+    call :elog .
+    echo !ARIGHT.%LNG%!
+    call :elog .
+    pause>nul|set/p=.      !ANYKEY.%LNG%!
+
+    call :exitn 3
+)
+
+goto :eof
+
+
+:: Remove entry from registry
+:remove_reg
+set "rreg1.en=This will remove the previously added entry from the right-click menu for folders."
+set "rreg1.fr=Cela supprimera l'entrée précédemment ajoutée du menu contextuel pour les dossiers."
+set "rreg1.es=Esto eliminará la entrada previamente añadida del menú contextual para las carpetas."
+set "rreg1.it=Questo rimuoverà la voce precedentemente aggiunta dal menu contestuale per le cartelle."
+set "rreg1.de=Dies wird den zuvor hinzugefügten Eintrag aus dem Rechtsklick-Menü für Ordner entfernen."
+set "rreg1.ru=Это удалит ранее добавленный элемент из контекстного меню для папок."
+set "rreg1.zh=这将移除先前为文件夹添加的右键菜单项。"
+
+set "rreg2.en=Removing the right-click menu entry from the registry... "
+set "rreg2.fr=Suppression de l'entrée de menu contextuel du registre... "
+set "rreg2.es=Eliminando la entrada del menú contextual del registro... "
+set "rreg2.it=Rimozione della voce del menu contestuale dal registro... "
+set "rreg2.de=Entfernen des Rechtsklick-Menüeintrags aus der Registrierung... "
+set "rreg2.ru=Удаление элемента контекстного меню из реестра... "
+set "rreg2.zh=正在从注册表中移除右键菜单项... "
+
+call :check_admin
+
+call :elog .
+echo %YEL%!rreg1.%LNG%!%RES%
+call :elog .
+echo !rreg2.%LNG%! >> "%UNRENLOG%"
+<nul set /p="!rreg2.%LNG%!"
+:: Remove registry key
+reg delete "HKCR\Directory\shell\RunUnrenForAll" /f %DEBUGREDIR%
+reg delete "HKCR\Directory\shell\Run%SCRIPTNAME%" /f %DEBUGREDIR%
+if %ERRORLEVEL% EQU 0 (
+	echo %GRE%!PASS.%LNG%!%RES%
+) else (
+	echo %RED%!FAIL.%LNG%!.%RES%
+    call :elog .
+    echo !ARIGHT.%LNG%!
+    call :elog .
+    pause>nul|set/p=.      !ANYKEY.%LNG%!
+
+    call :exitn 3
+)
+
+goto :eof
+
+
+:: Check for administrative privileges
+:check_admin
+set "admright.en=Check Admin right"
+set "admright.fr=Vérification des droits administrateur"
+set "admright.es=Comprobando derechos de administrador"
+set "admright.it=Controllo dei diritti di amministratore"
+set "admright.de=Überprüfung der Administratorrechte"
+set "admright.ru=Проверка прав администратора"
+set "admright.zh=检查管理员权限"
+
+set "admright2.en=You did not run this script with administrator privileges."
+set "admright2.fr=Vous n'avez pas lancé ce script avec des droits administrateur."
+set "admright2.es=No ha iniciado este script con derechos de administrador."
+set "admright2.it=Non hai avviato questo script con diritti di amministratore."
+set "admright2.de=Sie haben dieses Skript nicht mit Administratorrechten gestartet."
+set "admright2.ru=Вы не запустили этот скрипт с правами администратора."
+set "admright2.zh=您没有以管理员权限运行此脚本。"
+
+set "admright3.en=Restart the script with administrator rights."
+set "admright3.fr=Relance du script avec des droits administrateur."
+set "admright3.es=Reinicie el script con derechos de administrador."
+set "admright3.it=Riavvia lo script con diritti di amministratore."
+set "admright3.de=Starten Sie das Skript mit Administratorrechten neu."
+set "admright3.ru=Перезапустите скрипт с правами администратора."
+set "admright3.zh=请以管理员权限重新启动脚本。"
+
+call :elog .
+call :elog .
+echo !admright.%LNG%!... >> "%UNRENLOG%"
+<nul set /p="!admright.%LNG%!... "
+
+net session %DEBUGREDIR%
+if %ERRORLEVEL% EQU 0 (
+    echo %GRE%!PASS.%LNG%!%RES%
+) else (
+	echo %RED%!FAIL.%LNG%!.%RES%
+    call :elog .
+    echo !admright2.%LNG%!
+    echo !admright3.%LNG%!
+    call :elog .
+    timeout /t 2 >nul
+    echo "%PWRSHELL%" -NoProfile -Command "Start-Process '%~f0' -ArgumentList '%WORKDIR%' -Verb RunAs" >> "%UNRENLOG%"
+    "%PWRSHELL%" -NoProfile -Command "Start-Process '%~f0' -ArgumentList '%WORKDIR%' -Verb RunAs"
+
+    goto exitn
+)
+
+goto :eof
+
+
+:: When it's not unavailable, show message and exit
+:unavailable
+if "%RENPYVERSION%" == "7" (
+    set "unavailable.en=This feature is unavailable in this version."
+    set "unavailable.fr=Cette fonctionnalité n'est pas disponible dans cette version."
+    set "unavailable.es=Esta función no está disponible en esta versión."
+    set "unavailable.it=Questa funzione non è disponibile in questa versione."
+    set "unavailable.de=Diese Funktion ist in dieser Version nicht verfügbar."
+    set "unavailable.ru=Эта функция недоступна в этой версии."
+    set "unavailable.zh=此功能在此版本中不可用。"
+)
+if "%RENPYVERSION%" == "8" (
     set "unavailable.en=This feature is unavailable for now, need more coding."
-    set "unavailable.zh=该功能暂不可用，需要更多代码实现。"
+    set "unavailable.fr=Cette fonctionnalité n'est pas disponible pour le moment, nécessite plus de codage."
+    set "unavailable.es=Esta función no está disponible por ahora, necesita más codificación."
+    set "unavailable.it=Questa funzione non è disponibile per ora, necessita di più codice."
+    set "unavailable.de=Diese Funktion ist derzeit nicht verfügbar, es wird mehr Programmierung benötigt."
+    set "unavailable.ru=Эта функция недоступна, требуется больше кода."
+    set "unavailable.zh=此功能暂不可用，需要更多编码。"
 )
 
 call :elog .
@@ -1465,15 +2662,25 @@ exit /b
 :: Check if all files were downloaded successfully
 :check_all_files
 set "cfile.en=Verification that all files are present"
-set "cfile.zh=正在验证所有文件是否齐全"
+set "cfile.fr=Vérification que tous les fichiers sont présents"
+set "cfile.es=Verificación de que todos los archivos están presentes"
+set "cfile.it=Verifica che tutti i file siano presenti"
+set "cfile.de=Überprüfung, ob alle Dateien vorhanden sind"
+set "cfile.ru=Проверка наличия всех файлов"
+set "cfile.zh=验证所有文件是否存在"
 
 set "cdwnld.en=Download the missing file from:"
-set "cdwnld.zh=请从以下地址下载缺失文件："
+set "cdwnld.fr=Télécharger le fichier manquant depuis :"
+set "cdwnld.es=Descargar el archivo faltante de:"
+set "cdwnld.it=Scarica il file mancante da:"
+set "cdwnld.de=Fehlende Datei herunterladen von:"
+set "cdwnld.ru=Скачать недостающий файл с:"
+set "cdwnld.zh=从以下位置下载缺失的文件："
 
 echo !cfile.%LNG%!... >> "%UNRENLOG%"
 <nul set /p="!cfile.%LNG%!..."
 for %%F in (legacy current) do (
-    if not exist "!SCRIPTDIR!UnRen-%%~F.bat" (
+    if not exist "%SCRIPTDIR%UnRen-%%~F.bat" (
         call :elog "%RED% !FAIL.%LNG%! %YEL%!MISSING.%LNG%! UnRen-%%~F %RES%"
         call :elog "!cdwnld.%LNG%! %RES%"
         call :elog "%MAG%%URL_REF% %RES%"
@@ -1488,11 +2695,11 @@ for %%F in (legacy current) do (
 
 :: Cleaning after an update
 set "BASENAMENONEW=%BASENAME:-new=%"
-if exist "!SCRIPTDIR!!BASENAMENONEW!-new.bat" (
-    if "!SCRIPTNAME!" == "!BASENAMENONEW!-new.bat" (
-        copy /y "!SCRIPTDIR!!BASENAMENONEW!-new.bat" "!SCRIPTDIR!!BASENAMENONEW!.bat" %DEBUGREDIR%
+if exist "%SCRIPTDIR%%BASENAMENONEW%-new.bat" (
+    if "!SCRIPTNAME!" == "%BASENAMENONEW%-new.bat" (
+        copy /y "%SCRIPTDIR%%BASENAMENONEW%-new.bat" "%SCRIPTDIR%%BASENAMENONEW%.bat" %DEBUGREDIR%
     ) else (
-        del /f /q "!SCRIPTDIR!!BASENAME!-new.bat" %DEBUGREDIR%
+        del /f /q "%SCRIPTDIR%%BASENAME%-new.bat" %DEBUGREDIR%
     )
 )
 del /f /q "%SCRIPTDIR%%BASENAMENONEW%.old" %DEBUGREDIR%
@@ -1500,6 +2707,29 @@ del /f /q "%SCRIPTDIR%%BASENAMENONEW%.old" %DEBUGREDIR%
 call :elog "%GRE% !PASS.%LNG%!%RES%"
 
 exit /b
+
+
+:: Params:
+:: 1 - Message to display
+:: 2 - Choices list (e.g. "YN" for Yes/No)
+:: 3 - Default choice (e.g. "N" for No)
+:: 4 - Timeout in seconds (e.g. "10" for 10 seconds)
+:: 5 - Additional options (optional) (e.g. "-rawMsg" to not encapsulate the default choice in the choice list)
+:choiceEx
+    set "choiceEx_py=%TEMP%\choiceEx.py"
+    del /f /q "%choiceEx_py%" %DEBUGREDIR%
+    if not exist "%choiceEx_py%" (
+        >"%choiceEx_py%.b64" (
+            echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uDQojIC0qLSBjb2Rpbmc6IHV0Zi04IC0qLQ0KDQppbXBvcnQgc3lzDQppbXBvcnQgdGltZQ0KaW1wb3J0IG1zdmNydA0KaW1wb3J0IGNvZGVjcw0KDQppZiBzeXMudmVyc2lvbl9pbmZvWzBdIDwgMzoNCiAgICBpbXBvcnQgY3R5cGVzDQogICAgIyBGb3JjZSBsYSBjb25zb2xlIFdpbmRvd3MgZW4gVVRGLTgNCiAgICBjdHlwZXMud2luZGxsLmtlcm5lbDMyLlNldENvbnNvbGVDUCg2NTAwMSkNCiAgICBjdHlwZXMud2luZGxsLmtlcm5lbDMyLlNldENvbnNvbGVPdXRwdXRDUCg2NTAwMSkNCg0KICAgICMgQ1JVQ0lBTDogRW52ZWxvcHBlIHN0ZG91dCBhdmVjIHVuIHdyaXRlciBVVEYtOA0KICAgIHN5cy5zdGRvdXQgPSBjb2RlY3MuZ2V0d3JpdGVyKCd1dGYtOCcpKHN5cy5zdGRvdXQpDQogICAgc3lzLnN0ZGVyciA9IGNvZGVjcy5nZXR3cml0ZXIoJ3V0Zi04Jykoc3lzLnN0ZGVycikNCg0KIyBHw6hyZSBsZXMgZGV1eCBQeXRob24gMiBldCAzDQppZiBzeXMudmVyc2lvbl9pbmZvWzBdIDwgMzoNCiAgICBtc2cgPSBzeXMuYXJndlsxXS5kZWNvZGUoJ2xhdGluLTEnKSBpZiBpc2luc3RhbmNlKHN5cy5hcmd2WzFdLCBzdHIpIGVsc2Ugc3lzLmFyZ3ZbMV0NCmVsc2U6DQogICAgbXNnID0gc3lzLmFyZ3ZbMV0NCg0KY2hvaWNlcyAgICAgPSBzeXMuYXJndlsyXQ0KZGVmYXVsdCAgICAgPSBzeXMuYXJndlszXQ0KdGltZW91dCAgICAgPSBpbnQoc3lzLmFyZ3ZbNF0pDQpyYXcgICAgICAgICA9IChsZW4oc3lzLmFyZ3YpID4gNSBhbmQgc3lzLmFyZ3ZbNV0gPT0gIi1yYXdNc2ciKQ0KDQppZiByYXc6DQogICAgZGlzcGxheSA9IG1zZw0KZWxzZToNCiAgICBkaXNwID0gWyJbJXNdIiAlIGMgaWYgYyA9PSBkZWZhdWx0IGVsc2UgYyBmb3IgYyBpbiBjaG9pY2VzXQ0KICAgIGRpc3BsYXkgPSAiJXMgKCVzLCB0aW1lb3V0ICVzcykgOiAiICUgKG1zZywgJy8nLmpvaW4oZGlzcCksIHRpbWVvdXQpDQoNCnN5cy5zdGRvdXQud3JpdGUoZGlzcGxheSkNCnN5cy5zdGRvdXQuZmx1c2goKQ0KDQplbmQgPSB0aW1lLnRpbWUoKSArIHRpbWVvdXQNCnJlc3VsdCA9IGRlZmF1bHQNCg0Kd2hpbGUgdGltZS50aW1lKCkgPCBlbmQ6DQogICAgaWYgbXN2Y3J0LmtiaGl0KCk6DQogICAgICAgIGtleSA9IG1zdmNydC5nZXR3Y2goKQ0KICAgICAgICBpZiBrZXkgPT0gIlxyIjogICMgRW50ZXINCiAgICAgICAgICAgIGJyZWFrDQogICAgICAgIGtleSA9IGtleS51cHBlcigpDQogICAgICAgIGlmIGtleSBpbiBjaG9pY2VzOg0KICAgICAgICAgICAgcmVzdWx0ID0ga2V5DQogICAgICAgICAgICBicmVhaw0KICAgIHRpbWUuc2xlZXAoMC4wNSkNCg0Kc3lzLnN0ZG91dC53cml0ZShyZXN1bHQpDQpzeXMuc3Rkb3V0LndyaXRlKCJcbiIpDQpzeXMuZXhpdChjaG9pY2VzLmluZGV4KHJlc3VsdCkgKyAxKQ==
+        )
+        "%PWRSHELL%" -NoProfile -Command "& { [IO.File]::WriteAllBytes('%choiceEx_py%.tmp', [Convert]::FromBase64String([IO.File]::ReadAllText('%choiceEx_py%.b64')))}"
+        move /y "%choiceEx_py%.tmp" "%choiceEx_py%" %DEBUGREDIR%
+        del /f /q "%choiceEx_py%.b64" %DEBUGREDIR%
+    )
+    echo "%PYTHONHOME%\python.exe" %PYNOASSERT% "%choiceEx_py%" "%~1" "%~2" "%~3" "%~4" "%~5" >> "%UNRENLOG%"
+    "%PYTHONHOME%\python.exe" %PYNOASSERT% "%choiceEx_py%" "%~1" "%~2" "%~3" "%~4" "%~5"
+
+    exit /b %ERRORLEVEL%
 
 
 :: For debugging help
@@ -1529,7 +2759,7 @@ set "msg=%~1"
 if "!msg!" == "." (
     echo.
     if defined UNRENLOG (
-       echo. >> "!UNRENLOG!"
+       echo. >> "%UNRENLOG%"
     )
 ) else (
     echo !msg!
@@ -1540,7 +2770,7 @@ if "!msg!" == "." (
         for %%C in (GRY RED GRE YEL MAG CYA RES) do (
             call set "cleanmsg=%%cleanmsg:!%%C!=%%"
         )
-        echo !cleanmsg! >> "!UNRENLOG!"
+        echo !cleanmsg! >> "%UNRENLOG%"
     )
 )
 
@@ -1551,18 +2781,18 @@ exit /b
 :exitn
 set "val=%~1"
 
-if !debuglevel! GEQ 1 (
+if %DEBUGLEVEL% GEQ 1 (
     echo === Variables ===
     set
     echo === Variables ===
 )
 
 :: Restore modified configuration and we exit with the appropriate code
-chcp %OLD_CP% >nul
+%SYSTEMROOT%\System32\chcp.com %OLD_CP% >nul
 
 :: Restore original console mode
-if !debuglevel! EQU 0 (
-    mode con: cols=!ORIG_COLS! lines=!ORIG_LINES!
+if %DEBUGLEVEL% EQU 0 (
+    %SYSTEMROOT%\System32\mode.com con: cols=!ORIG_COLS! lines=!ORIG_LINES!
 
     REM Remove old bug entries
     reg delete "HKCU\Console\MyScript" /f %DEBUGREDIR%

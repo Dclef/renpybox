@@ -22,6 +22,9 @@ class FontReplacer:
     FONT_SUFFIXES = (".ttf", ".otf", ".ttc", ".otc")
     BACKUP_DIR_NAME = "fonts_backup"
     MAX_BACKUPS = 3  # 保留的最大备份数量
+    INLINE_FONT_TAG_PATTERN = re.compile(
+        r'\{font\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^}\s]+))\s*\}'
+    )
 
     def __init__(self):
         self.logger = LogManager.get()
@@ -73,6 +76,62 @@ class FontReplacer:
             return p
         except Exception:
             return Path(game_dir)
+
+    def _normalize_font_reference(self, font_ref: str) -> str:
+        """规范化脚本中提取到的字体引用。"""
+        normalized = font_ref.strip()
+        if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in ('"', "'"):
+            normalized = normalized[1:-1].strip()
+        return normalized
+
+    def _extract_font_references(self, content: str) -> List[str]:
+        """从 Ren'Py 脚本内容中提取字体引用。"""
+        fonts: List[str] = []
+
+        patterns = [
+            r'font\s*=\s*["\']([^"\']+)["\']',
+            r'FontGroup\s*\(\s*["\']([^"\']+)["\']',
+            r'font_name\s*=\s*["\']([^"\']+)["\']',
+            r'style\s+\w+\s+font\s*(?:=\s*)?["\']([^"\']+)["\']',
+            r'style\s+\w+\s+font_name\s*(?:=\s*)?["\']([^"\']+)["\']',
+            r'style\.[^\s]+\s*\[\s*["\']font["\']\s*\]\s*=\s*["\']([^"\']+)["\']',
+        ]
+
+        for pattern in patterns:
+            for match in re.findall(pattern, content):
+                font_ref = self._normalize_font_reference(match)
+                if font_ref:
+                    fonts.append(font_ref)
+
+        for match in self.INLINE_FONT_TAG_PATTERN.finditer(content):
+            font_ref = next((value for value in match.groups() if value), "")
+            font_ref = self._normalize_font_reference(font_ref)
+            if font_ref:
+                fonts.append(font_ref)
+
+        return fonts
+
+    def _replace_inline_font_tags(
+        self,
+        text: str,
+        original_font: str,
+        target_font: str,
+    ) -> Tuple[str, int]:
+        """替换文本标签中的字体引用，如 {font=xxx}。"""
+        normalized_original = self._normalize_font_reference(original_font)
+        replacement_count = 0
+
+        def replacer(match: re.Match) -> str:
+            nonlocal replacement_count
+            current_font = next((value for value in match.groups() if value), "")
+            if self._normalize_font_reference(current_font) != normalized_original:
+                return match.group(0)
+
+            replacement_count += 1
+            return f'{{font={target_font}}}'
+
+        new_text = self.INLINE_FONT_TAG_PATTERN.sub(replacer, text)
+        return new_text, replacement_count
 
     # ========== 备份与恢复功能 ==========
 
@@ -363,14 +422,28 @@ class FontReplacer:
                 content = f.read()
 
             # 替换字体引用
-            # 支持格式: font="xxx.ttf", FontGroup("xxx"), style font_name "xxx"
+            # 支持格式: font="xxx.ttf", FontGroup("xxx"), style font_name "xxx", {font=xxx}
             patterns = [
-                (r'font\s*=\s*["\']' + re.escape(original_font) + r'["\']',
-                 f'font="{target_font}"'),
-                (r'FontGroup\s*\(\s*["\']' + re.escape(original_font) + r'["\']',
-                 f'FontGroup("{target_font}"'),
-                (r'style\s+\w+\s+font_name\s+["\']' + re.escape(original_font) + r'["\']',
-                 f'style font_name "{target_font}"'),
+                (
+                    r'(font\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
+                    rf'\1"{target_font}"'
+                ),
+                (
+                    r'(FontGroup\s*\(\s*)["\']' + re.escape(original_font) + r'["\']',
+                    rf'\1"{target_font}"'
+                ),
+                (
+                    r'(font_name\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
+                    rf'\1"{target_font}"'
+                ),
+                (
+                    r'(style\s+\w+\s+font\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
+                    rf'\1"{target_font}"'
+                ),
+                (
+                    r'(style\s+\w+\s+font_name\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
+                    rf'\1"{target_font}"'
+                ),
             ]
 
             new_content = content
@@ -379,6 +452,13 @@ class FontReplacer:
             for pattern, replacement in patterns:
                 new_content, count = re.subn(pattern, replacement, new_content)
                 total_replacements += count
+
+            new_content, count = self._replace_inline_font_tags(
+                new_content,
+                original_font,
+                target_font,
+            )
+            total_replacements += count
 
             if total_replacements > 0:
                 with open(file_path, "w", encoding=encoding) as f:
@@ -448,25 +528,15 @@ class FontReplacer:
             字体名称列表
         """
         fonts = set()
-        rpy_files = list(Path(self._resolve_game_dir(folder_path)).rglob("*.rpy"))
+        game_path = Path(self._resolve_game_dir(folder_path))
+        script_files = list(game_path.rglob("*.rpy")) + list(game_path.rglob("*.rpym"))
 
-        for file_path in rpy_files:
+        for file_path in script_files:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
 
-                # 常见字体引用模式
-                patterns = [
-                    r'font\s*=\s*["\']([^"\']+)["\']',
-                    r'FontGroup\s*\(\s*["\']([^"\']+)["\']',
-                    r'style\s+\w+\s+font\s*=\s*["\']([^"\']+)["\']',
-                    r'style\.[^\s]+\s*\[\s*["\']font["\']\s*\]\s*=\s*["\']([^"\']+)["\']',
-                ]
-
-                for pattern in patterns:
-                    matches = re.findall(pattern, content)
-                    fonts.update(matches)
-
+                fonts.update(self._extract_font_references(content))
             except Exception:
                 continue
 
