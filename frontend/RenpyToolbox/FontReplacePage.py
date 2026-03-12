@@ -46,6 +46,7 @@ class FontReplacePage(Base, QWidget):
         self.replacer = FontReplacer()
         self.new_font_source_path: Optional[str] = None
         self.detected_fonts: List[str] = []
+        self.discovered_font_files: List[str] = []
         self.detected_languages: List[str] = []
 
         self._init_ui()
@@ -179,14 +180,21 @@ class FontReplacePage(Base, QWidget):
         font_row.addWidget(btn_browse_font)
         advanced_layout.addLayout(font_row)
 
-        # 检测到的字体列表
+        # 检测到的字体引用列表
         detected_row = QHBoxLayout()
-        detected_row.addWidget(QLabel("检测到的字体:"))
+        detected_row.addWidget(QLabel("检测到的字体引用:"))
         self.detected_font_combo = ComboBox(self)
         self.detected_font_combo.addItem("尚未扫描")
         self.detected_font_combo.setEnabled(False)
         detected_row.addWidget(self.detected_font_combo, 1)
         advanced_layout.addLayout(detected_row)
+
+        self.font_scan_summary_label = CaptionLabel(
+            "这里只显示脚本中实际引用到的字体；game/fonts 中存在但未被引用的字体会单独统计。",
+            self,
+        )
+        self.font_scan_summary_label.setWordWrap(True)
+        advanced_layout.addWidget(self.font_scan_summary_label)
 
         # 替换模式
         self.replace_all_check = CheckBox("替换所有检测到的字体")
@@ -275,9 +283,15 @@ class FontReplacePage(Base, QWidget):
                 self.status_label.setText("❌ 目录不存在")
                 return
 
-            # 扫描字体
+            # 扫描脚本里的字体引用
             detected_fonts = self.replacer.scan_fonts(game_dir)
             self.detected_fonts = detected_fonts
+
+            # 扫描游戏目录中的实际字体文件
+            discovered_font_files = [
+                rel_path for rel_path, _ in self.replacer.discover_font_files(game_dir)
+            ]
+            self.discovered_font_files = discovered_font_files
 
             # 扫描翻译语言
             detected_languages = self.replacer.get_translation_languages(game_dir)
@@ -293,7 +307,12 @@ class FontReplacePage(Base, QWidget):
                 self.detected_font_combo.addItems(detected_fonts)
                 self.detected_font_combo.setEnabled(True)
             else:
-                self.detected_font_combo.addItem("未检测到字体引用")
+                if discovered_font_files:
+                    self.detected_font_combo.addItem(
+                        f"未检测到字体引用（已发现 {len(discovered_font_files)} 个字体文件）"
+                    )
+                else:
+                    self.detected_font_combo.addItem("未检测到字体引用")
                 self.detected_font_combo.setEnabled(False)
             self.detected_font_combo.blockSignals(False)
 
@@ -312,13 +331,19 @@ class FontReplacePage(Base, QWidget):
 
             # 更新状态
             font_count = len(detected_fonts)
+            font_file_count = len(discovered_font_files)
             lang_count = len(detected_languages)
             self.status_label.setText(
-                f"✅ 扫描完成：检测到 {font_count} 个字体引用，{lang_count} 个翻译语言"
+                f"✅ 扫描完成：检测到 {font_count} 个字体引用，发现 {font_file_count} 个字体文件，{lang_count} 个翻译语言"
+            )
+
+            self.font_scan_summary_label.setText(
+                f"脚本中引用了 {font_count} 个字体；game/fonts、game/gui 等目录中共发现 {font_file_count} 个字体文件。"
+                "“替换所有检测到的字体”只会替换脚本中实际引用到的字体。"
             )
 
             LogManager.get().info(
-                f"游戏目录扫描完成: 字体 {font_count} 个, 语言 {lang_count} 个"
+                f"游戏目录扫描完成: 字体引用 {font_count} 个, 字体文件 {font_file_count} 个, 语言 {lang_count} 个"
             )
 
         except Exception as e:
