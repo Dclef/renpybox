@@ -139,6 +139,20 @@ class Packer:
             return current, major
         return None, major
 
+    def _get_unren_script_version_label(self, unren_bat: Path, major: int | None) -> str:
+        """返回更准确的 UnRen 版本标签。"""
+        name = unren_bat.name.lower()
+
+        if major is not None:
+            return f"游戏 Ren'Py {major}"
+
+        if "current" in name:
+            return "Ren'Py 8+"
+        if "legacy" in name:
+            return "Ren'Py <= 7"
+
+        return "Ren'Py 未知版本"
+
     def _run_unren_bat(
         self,
         unren_bat: Path,
@@ -188,7 +202,7 @@ class Packer:
         if not unren_bat:
             return False, ["UnRen 脚本不可用"]
 
-        version_label = f"Ren'Py {major}" if major is not None else "Ren'Py 未知版本"
+        version_label = self._get_unren_script_version_label(unren_bat, major)
         self.logger.info(f"UnRen {purpose}: {unren_bat.name} ({version_label})")
 
         result = self._run_unren_bat(
