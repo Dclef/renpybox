@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
 )
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from qfluentwidgets import (
     CardWidget,
     PrimaryPushButton,
@@ -37,6 +37,7 @@ from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
 from module.Text.SkipRules import should_skip_text
+from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
 
 try:
     from openpyxl import load_workbook, Workbook
@@ -234,7 +235,9 @@ class GlossaryLLMTranslateWorker(QThread):
 class LocalGlossaryPage(Base, QWidget):
     """本地词库管理页面"""
 
-    HEADERS = ("原文", "译文", "类别", "备注")  # 类别示例：角色/地名/物品/术语
+    HEADERS = ("原文", "译文", "类别", "备注", "命中数")  # 类别示例：角色/地名/物品/术语
+    STATS_COLUMN = 4
+    STATS_COLUMN_WIDTH = 88
     # 过滤器关键字（参考 AiNiee NER 过滤规则），命中则跳过
     FILTER_KEYWORDS = (
         '-', '…', '一', '―', '？', '©', '章　', 'ー', 'http', '！', '=', '"', '＋', '：', '『', 'ぃ', '～',
@@ -254,6 +257,9 @@ class LocalGlossaryPage(Base, QWidget):
         self._translate_worker: QThread | None = None
         self._translate_llm_button: PushButton | None = None
         self._translate_fast_button: PushButton | None = None
+        self._statistics_worker: QThread | None = None
+        self._statistics_button: PushButton | None = None
+        self._statistics_snapshot_keys: list[str] = []
 
         self._init_ui()
         self._load_from_config()
@@ -310,6 +316,12 @@ class LocalGlossaryPage(Base, QWidget):
         dedup_btn.setToolTip("按原文去重，优先保留已有译文/类别/备注")
         dedup_btn.clicked.connect(self._deduplicate_rows)
         row1.addWidget(dedup_btn)
+
+        statistics_btn = PushButton("统计命中", icon=FluentIcon.SEARCH)
+        statistics_btn.setToolTip("基于当前 output/cache 中的缓存条目统计每条术语命中的文本数量")
+        statistics_btn.clicked.connect(self._on_statistics_clicked)
+        row1.addWidget(statistics_btn)
+        self._statistics_button = statistics_btn
 
         row1.addStretch(1)
         v_layout.addLayout(row1)
@@ -370,13 +382,19 @@ class LocalGlossaryPage(Base, QWidget):
         self.table = QTableWidget(0, len(self.HEADERS), self)
         self.table.setHorizontalHeaderLabels(self.HEADERS)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.STATS_COLUMN, QHeaderView.Fixed)
         header.setMinimumSectionSize(100)
         header.setDefaultSectionSize(140)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.table.verticalHeader().setVisible(False)
+        self.table.setColumnWidth(self.STATS_COLUMN, self.STATS_COLUMN_WIDTH)
+        self.table.itemChanged.connect(self._on_table_item_changed)
         self._apply_table_theme()
         v_layout.addWidget(self.table)
 
@@ -442,13 +460,62 @@ class LocalGlossaryPage(Base, QWidget):
         """主题切换时同步更新表格样式"""
         self._apply_table_theme()
 
+    def _create_table_item(
+        self,
+        text: str = "",
+        *,
+        editable: bool = True,
+        user_data = None,
+    ) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        if user_data is not None:
+            item.setData(Qt.UserRole, user_data)
+        if not editable:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(Qt.AlignCenter)
+        return item
+
+    def _build_statistics_entry_key(self, item: Dict[str, str]) -> str:
+        src = re.sub(r"\s+", " ", str(item.get("src", "") or "")).strip()
+        case_sensitive = bool(item.get("case_sensitive", False))
+        return f"{src}|{int(case_sensitive)}"
+
+    def _set_statistics_buttons_enabled(self, enabled: bool) -> None:
+        if self._statistics_button is not None:
+            self._statistics_button.setEnabled(enabled)
+
+    def _invalidate_statistics(self) -> None:
+        self._statistics_snapshot_keys = []
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, self.STATS_COLUMN)
+                if item is None:
+                    item = self._create_table_item("", editable=False)
+                    self.table.setItem(row, self.STATS_COLUMN, item)
+                else:
+                    item.setText("")
+        finally:
+            self.table.blockSignals(False)
+
+    def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item is None:
+            return
+        if item.column() != 0:
+            return
+        self._invalidate_statistics()
+
     # --- 数据操作 ---
     def _add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        for col in range(len(self.HEADERS)):
-            self.table.setItem(row, col, QTableWidgetItem(""))
+        self.table.setItem(row, 0, self._create_table_item("", user_data={"case_sensitive": False}))
+        self.table.setItem(row, 1, self._create_table_item(""))
+        self.table.setItem(row, 2, self._create_table_item(""))
+        self.table.setItem(row, 3, self._create_table_item(""))
+        self.table.setItem(row, self.STATS_COLUMN, self._create_table_item("", editable=False))
         self.table.setCurrentCell(row, 0)
+        self._invalidate_statistics()
 
     def _remove_selected_rows(self):
         row = self.table.currentRow()
@@ -456,6 +523,7 @@ class LocalGlossaryPage(Base, QWidget):
             InfoBar.warning("提示", "请选择需要删除的条目", parent=self)
             return
         self.table.removeRow(row)
+        self._invalidate_statistics()
 
     def _deduplicate_rows(self):
         """按原文去重，尽量保留已有译文/类别/备注"""
@@ -497,6 +565,7 @@ class LocalGlossaryPage(Base, QWidget):
         self.config.glossary_data = []
         self.config.glossary_enable = False
         self.config.save()
+        self._invalidate_statistics()
         InfoBar.success("已清空", "已删除所有术语并写入配置", parent=self)
 
     @staticmethod
@@ -691,6 +760,82 @@ class LocalGlossaryPage(Base, QWidget):
         else:
             InfoBar.info("翻译完成", "翻译已结束，但没有产生可用译文（可能接口返回原文）", parent=self)
 
+    def _on_statistics_clicked(self) -> None:
+        if self._statistics_worker and self._statistics_worker.isRunning():
+            InfoBar.info("提示", "命中统计正在进行中，请稍候…", parent=self)
+            return
+
+        entries = self._collect_table_data()
+        if not entries:
+            InfoBar.info("提示", "当前术语表为空，暂无可统计的数据", parent=self)
+            return
+
+        config = Config().load()
+        self._statistics_snapshot_keys = [
+            self._build_statistics_entry_key(entry) for entry in entries
+        ]
+        self._set_statistics_buttons_enabled(False)
+
+        worker = RuleStatisticsWorker(
+            mode = RuleStatisticsWorker.MODE_GLOSSARY,
+            config = config,
+            entries = entries,
+            parent = self,
+        )
+        worker.finished.connect(self._on_statistics_finished)
+        self._statistics_worker = worker
+
+        worker.start()
+
+    def _on_statistics_finished(self, success: bool, message: str, payload) -> None:
+        self._set_statistics_buttons_enabled(True)
+
+        worker = self._statistics_worker
+        self._statistics_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if success == False:
+            InfoBar.warning("统计失败", message, parent=self)
+            return
+
+        if not isinstance(payload, dict):
+            InfoBar.warning("统计失败", "统计结果格式无效", parent=self)
+            return
+
+        counts = payload.get("counts", [])
+        if not isinstance(counts, list):
+            InfoBar.warning("统计失败", "统计结果缺少命中数", parent=self)
+            return
+
+        current_entries = self._collect_table_data()
+        current_keys = [self._build_statistics_entry_key(entry) for entry in current_entries]
+        if current_keys != self._statistics_snapshot_keys:
+            self._invalidate_statistics()
+            InfoBar.warning("提示", "术语表内容已变化，请重新执行一次统计", parent=self)
+            return
+
+        self.table.blockSignals(True)
+        try:
+            for row, count in enumerate(counts):
+                if row >= self.table.rowCount():
+                    break
+
+                item = self.table.item(row, self.STATS_COLUMN)
+                if item is None:
+                    item = self._create_table_item("", editable=False)
+                    self.table.setItem(row, self.STATS_COLUMN, item)
+                item.setText(str(max(0, int(count))))
+        finally:
+            self.table.blockSignals(False)
+
+        counted_item_total = int(payload.get("counted_item_total", 0))
+        InfoBar.success(
+            "统计完成",
+            f"已统计 {len(counts)} 条术语，样本条目 {counted_item_total} 条",
+            parent=self,
+        )
+
     def _load_from_config(self):
         data = getattr(self.config, "glossary_data", []) or []
         converted = []
@@ -701,7 +846,8 @@ class LocalGlossaryPage(Base, QWidget):
                         "src": item.get("src", ""),
                         "dst": item.get("dst", ""),
                         "type": item.get("type", item.get("category", "")),
-                        "comment": item.get("comment", ""),
+                        "comment": item.get("comment", item.get("info", "")),
+                        "case_sensitive": bool(item.get("case_sensitive", False)),
                     }
                 )
         self._set_table_data(converted)
@@ -777,7 +923,7 @@ class LocalGlossaryPage(Base, QWidget):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "Glossary"
-            sheet.append(list(self.HEADERS))
+            sheet.append(list(self.HEADERS[:-1]))
             for item in entries:
                 sheet.append([item.get("src", ""), item.get("dst", ""), item.get("type", ""), item.get("comment", "")])
             workbook.save(path)
@@ -788,14 +934,27 @@ class LocalGlossaryPage(Base, QWidget):
 
     # --- 工具方法 ---
     def _set_table_data(self, items: List[Dict[str, str]]):
-        self.table.setRowCount(0)
-        for item in items:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(item.get("src", "")))
-            self.table.setItem(row, 1, QTableWidgetItem(item.get("dst", "")))
-            self.table.setItem(row, 2, QTableWidgetItem(item.get("type", "")))
-            self.table.setItem(row, 3, QTableWidgetItem(item.get("comment", "")))
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
+            for item in items:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(
+                    row,
+                    0,
+                    self._create_table_item(
+                        item.get("src", ""),
+                        user_data={"case_sensitive": bool(item.get("case_sensitive", False))},
+                    ),
+                )
+                self.table.setItem(row, 1, self._create_table_item(item.get("dst", "")))
+                self.table.setItem(row, 2, self._create_table_item(item.get("type", "")))
+                self.table.setItem(row, 3, self._create_table_item(item.get("comment", "")))
+                self.table.setItem(row, self.STATS_COLUMN, self._create_table_item("", editable=False))
+        finally:
+            self.table.blockSignals(False)
+        self._invalidate_statistics()
 
     def _collect_table_data(self) -> List[Dict[str, str]]:
         results: List[Dict[str, str]] = []
@@ -809,9 +968,23 @@ class LocalGlossaryPage(Base, QWidget):
             dst = (dst_item.text() if dst_item else "").strip()
             type_ = (type_item.text() if type_item else "").strip()
             comment = (comment_item.text() if comment_item else "").strip()
+            case_sensitive = False
+            if src_item is not None:
+                user_data = src_item.data(Qt.UserRole)
+                if isinstance(user_data, dict):
+                    case_sensitive = bool(user_data.get("case_sensitive", False))
             if not src:
                 continue
-            results.append({"src": src, "dst": dst, "type": type_, "comment": comment})
+            results.append(
+                {
+                    "src": src,
+                    "dst": dst,
+                    "type": type_,
+                    "comment": comment,
+                    "info": comment,
+                    "case_sensitive": case_sensitive,
+                }
+            )
         return results
 
     @staticmethod
@@ -832,12 +1005,14 @@ class LocalGlossaryPage(Base, QWidget):
             "dst": _clean(base.get("dst")),
             "type": _clean(base.get("type")),
             "comment": _clean(base.get("comment")),
+            "case_sensitive": bool(base.get("case_sensitive", False)),
         }
         incoming_cleaned = {
             "src": _clean(incoming.get("src")),
             "dst": _clean(incoming.get("dst")),
             "type": _clean(incoming.get("type")),
             "comment": _clean(incoming.get("comment")),
+            "case_sensitive": bool(incoming.get("case_sensitive", False)),
         }
 
         if incoming_cleaned["dst"]:
@@ -855,6 +1030,9 @@ class LocalGlossaryPage(Base, QWidget):
 
         if incoming_cleaned["src"] and not merged["src"]:
             merged["src"] = incoming_cleaned["src"]
+
+        if incoming_cleaned["case_sensitive"]:
+            merged["case_sensitive"] = True
 
         return merged
 

@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
 )
+from PyQt5.QtCore import Qt
 from qfluentwidgets import (
     CardWidget,
     PrimaryPushButton,
@@ -32,6 +33,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
+from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
 
 try:
     from openpyxl import load_workbook, Workbook
@@ -43,7 +45,9 @@ except ImportError:
 class TextPreservePage(Base, QWidget):
     """文本保留管理页面"""
 
-    HEADERS = ("原文", "备注")
+    HEADERS = ("原文", "备注", "命中数")
+    STATS_COLUMN = 2
+    STATS_COLUMN_WIDTH = 88
 
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
@@ -53,6 +57,9 @@ class TextPreservePage(Base, QWidget):
 
         self.config = Config().load()
         self.logger = LogManager.get()
+        self._statistics_worker = None
+        self._statistics_button: PushButton | None = None
+        self._statistics_snapshot_keys: List[str] = []
 
         self._init_ui()
         self._load_from_config()
@@ -130,6 +137,12 @@ class TextPreservePage(Base, QWidget):
         clear_btn.clicked.connect(self._clear_all)
         row2.addWidget(clear_btn)
 
+        statistics_btn = PushButton("统计命中", icon=FluentIcon.SEARCH)
+        statistics_btn.setToolTip("基于当前 output/cache 中的缓存条目统计每条禁翻规则命中的文本数量")
+        statistics_btn.clicked.connect(self._on_statistics_clicked)
+        row2.addWidget(statistics_btn)
+        self._statistics_button = statistics_btn
+
         scan_btn = PushButton("重新扫描变量", icon=FluentIcon.SYNC)
         scan_btn.setToolTip("扫描游戏目录，自动提取[variable]变量引用（清空旧数据）")
         scan_btn.clicked.connect(self._on_rescan_variables)
@@ -151,11 +164,16 @@ class TextPreservePage(Base, QWidget):
 
         self.table = QTableWidget(0, len(self.HEADERS), self)
         self.table.setHorizontalHeaderLabels(self.HEADERS)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(self.STATS_COLUMN, QHeaderView.Fixed)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.table.verticalHeader().setVisible(False)
+        self.table.setColumnWidth(self.STATS_COLUMN, self.STATS_COLUMN_WIDTH)
+        self.table.itemChanged.connect(self._on_table_item_changed)
         self._apply_table_theme()
         v_layout.addWidget(self.table)
 
@@ -221,13 +239,50 @@ class TextPreservePage(Base, QWidget):
         """主题切换时同步更新表格样式"""
         self._apply_table_theme()
 
+    def _create_table_item(self, text: str = "", *, editable: bool = True) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        if not editable:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            item.setTextAlignment(Qt.AlignCenter)
+        return item
+
+    def _build_statistics_entry_key(self, item: Dict[str, str]) -> str:
+        return self._normalize_src(str(item.get("src", "") or ""))
+
+    def _set_statistics_buttons_enabled(self, enabled: bool) -> None:
+        if self._statistics_button is not None:
+            self._statistics_button.setEnabled(enabled)
+
+    def _invalidate_statistics(self) -> None:
+        self._statistics_snapshot_keys = []
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, self.STATS_COLUMN)
+                if item is None:
+                    item = self._create_table_item("", editable=False)
+                    self.table.setItem(row, self.STATS_COLUMN, item)
+                else:
+                    item.setText("")
+        finally:
+            self.table.blockSignals(False)
+
+    def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item is None:
+            return
+        if item.column() != 0:
+            return
+        self._invalidate_statistics()
+
     # --- 数据操作 ---
     def _add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        for col in range(len(self.HEADERS)):
-            self.table.setItem(row, col, QTableWidgetItem(""))
+        self.table.setItem(row, 0, self._create_table_item(""))
+        self.table.setItem(row, 1, self._create_table_item(""))
+        self.table.setItem(row, self.STATS_COLUMN, self._create_table_item("", editable=False))
         self.table.setCurrentCell(row, 0)
+        self._invalidate_statistics()
 
     def _remove_selected_rows(self):
         row = self.table.currentRow()
@@ -235,6 +290,7 @@ class TextPreservePage(Base, QWidget):
             InfoBar.warning("提示", "请选择需要删除的条目", parent=self)
             return
         self.table.removeRow(row)
+        self._invalidate_statistics()
 
     def _deduplicate_rows(self):
         """按原文去重，优先保留有备注的条目"""
@@ -271,6 +327,7 @@ class TextPreservePage(Base, QWidget):
         self.config.text_preserve_data = []
         self.config.text_preserve_enable = False
         self.config.save()
+        self._invalidate_statistics()
         InfoBar.success("已清空", "已删除所有保留文本并写入配置", parent=self)
 
     def _load_from_config(self):
@@ -281,7 +338,7 @@ class TextPreservePage(Base, QWidget):
                 converted.append(
                     {
                         "src": item.get("src", ""),
-                        "comment": item.get("comment", ""),
+                        "comment": item.get("comment", item.get("info", "")),
                     }
                 )
             elif isinstance(item, str): # 兼容旧格式或纯字符串列表
@@ -362,7 +419,7 @@ class TextPreservePage(Base, QWidget):
             workbook = Workbook()
             sheet = workbook.active
             sheet.title = "TextPreserve"
-            sheet.append(list(self.HEADERS))
+            sheet.append(list(self.HEADERS[:-1]))
             for item in entries:
                 sheet.append([item.get("src", ""), item.get("comment", "")])
             workbook.save(path)
@@ -371,14 +428,96 @@ class TextPreservePage(Base, QWidget):
             self.logger.error(f"导出失败: {e}")
             InfoBar.error("错误", f"导出失败: {e}", parent=self)
 
+    def _on_statistics_clicked(self) -> None:
+        if self._statistics_worker and self._statistics_worker.isRunning():
+            InfoBar.info("提示", "命中统计正在进行中，请稍候…", parent=self)
+            return
+
+        entries = self._collect_table_data()
+        if not entries:
+            InfoBar.info("提示", "当前禁翻表为空，暂无可统计的数据", parent=self)
+            return
+
+        config = Config().load()
+        self._statistics_snapshot_keys = [
+            self._build_statistics_entry_key(entry) for entry in entries
+        ]
+        self._set_statistics_buttons_enabled(False)
+
+        worker = RuleStatisticsWorker(
+            mode = RuleStatisticsWorker.MODE_TEXT_PRESERVE,
+            config = config,
+            entries = entries,
+            parent = self,
+        )
+        worker.finished.connect(self._on_statistics_finished)
+        self._statistics_worker = worker
+
+        worker.start()
+
+    def _on_statistics_finished(self, success: bool, message: str, payload) -> None:
+        self._set_statistics_buttons_enabled(True)
+
+        worker = self._statistics_worker
+        self._statistics_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if success == False:
+            InfoBar.warning("统计失败", message, parent=self)
+            return
+
+        if not isinstance(payload, dict):
+            InfoBar.warning("统计失败", "统计结果格式无效", parent=self)
+            return
+
+        counts = payload.get("counts", [])
+        if not isinstance(counts, list):
+            InfoBar.warning("统计失败", "统计结果缺少命中数", parent=self)
+            return
+
+        current_entries = self._collect_table_data()
+        current_keys = [self._build_statistics_entry_key(entry) for entry in current_entries]
+        if current_keys != self._statistics_snapshot_keys:
+            self._invalidate_statistics()
+            InfoBar.warning("提示", "禁翻表内容已变化，请重新执行一次统计", parent=self)
+            return
+
+        self.table.blockSignals(True)
+        try:
+            for row, count in enumerate(counts):
+                if row >= self.table.rowCount():
+                    break
+
+                item = self.table.item(row, self.STATS_COLUMN)
+                if item is None:
+                    item = self._create_table_item("", editable=False)
+                    self.table.setItem(row, self.STATS_COLUMN, item)
+                item.setText(str(max(0, int(count))))
+        finally:
+            self.table.blockSignals(False)
+
+        counted_item_total = int(payload.get("counted_item_total", 0))
+        InfoBar.success(
+            "统计完成",
+            f"已统计 {len(counts)} 条禁翻规则，样本条目 {counted_item_total} 条",
+            parent=self,
+        )
+
     # --- 工具方法 ---
     def _set_table_data(self, items: List[Dict[str, str]]):
-        self.table.setRowCount(0)
-        for item in items:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(item.get("src", "")))
-            self.table.setItem(row, 1, QTableWidgetItem(item.get("comment", "")))
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
+            for item in items:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                self.table.setItem(row, 0, self._create_table_item(item.get("src", "")))
+                self.table.setItem(row, 1, self._create_table_item(item.get("comment", "")))
+                self.table.setItem(row, self.STATS_COLUMN, self._create_table_item("", editable=False))
+        finally:
+            self.table.blockSignals(False)
+        self._invalidate_statistics()
 
     def _collect_table_data(self) -> List[Dict[str, str]]:
         results: List[Dict[str, str]] = []
@@ -390,7 +529,7 @@ class TextPreservePage(Base, QWidget):
             comment = (comment_item.text() if comment_item else "").strip()
             if not src:
                 continue
-            results.append({"src": src, "comment": comment})
+            results.append({"src": src, "comment": comment, "info": comment})
         return results
 
     @staticmethod
