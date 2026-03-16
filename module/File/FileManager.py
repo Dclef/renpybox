@@ -123,10 +123,10 @@ class FileManager(Base):
             EPUB(self.config).write_to_path(items)
             XLSX(self.config).write_to_path(items)
             WOLFXLSX(self.config).write_to_path(items)
-            if getattr(self.config, "renpy_source_translate", False):
-                RENPYSOURCE(self.config).write_to_path(items)
-            else:
-                RENPY(self.config).write_to_path(items)
+            # 按条目类型分别写回，避免“从缓存重新注入”时因配置开关不一致导致
+            # RENPYSOURCE / RENPY 写回分支走错。
+            RENPYSOURCE(self.config).write_to_path(items)
+            RENPY(self.config).write_to_path(items)
             TRANS(self.config).write_to_path(items)
             KVJSON(self.config).write_to_path(items)
             MESSAGEJSON(self.config).write_to_path(items)

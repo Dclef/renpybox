@@ -16,6 +16,7 @@ from qfluentwidgets import (
     FluentIcon,
     InfoBar,
     LineEdit,
+    MessageBox,
     PrimaryPushButton,
     ProgressBar,
     PushButton,
@@ -43,6 +44,7 @@ class SourceTranslatePage(Base, QWidget):
 
         self.window = parent
         self.logger = LogManager.get()
+        self._output_hint_text = ""
 
         self._init_ui()
 
@@ -104,6 +106,7 @@ class SourceTranslatePage(Base, QWidget):
         row1.addWidget(QLabel("game 目录:"))
         self.game_dir_edit = LineEdit()
         self.game_dir_edit.setPlaceholderText("选择游戏的 game 目录")
+        self.game_dir_edit.textChanged.connect(self._refresh_output_hint)
         btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_game_dir)
         row1.addWidget(self.game_dir_edit, 1)
@@ -117,12 +120,18 @@ class SourceTranslatePage(Base, QWidget):
         file_row.addWidget(QLabel(".rpy 文件:"))
         self.single_file_edit = LineEdit()
         self.single_file_edit.setPlaceholderText("选择要翻译的单个 .rpy 文件")
+        self.single_file_edit.textChanged.connect(self._refresh_output_hint)
         btn_browse_file = PushButton("浏览", icon=FluentIcon.DOCUMENT)
         btn_browse_file.clicked.connect(self._browse_single_rpy_file)
         file_row.addWidget(self.single_file_edit, 1)
         file_row.addWidget(btn_browse_file)
         self.single_file_row.setVisible(False)
         box.addWidget(self.single_file_row)
+
+        self.output_hint_label = CaptionLabel("")
+        self.output_hint_label.setWordWrap(True)
+        self.output_hint_label.setStyleSheet("color: #8fb3ff;")
+        box.addWidget(self.output_hint_label)
 
         # 源语言
         src_lang_row = QHBoxLayout()
@@ -202,6 +211,7 @@ class SourceTranslatePage(Base, QWidget):
     def _on_single_file_changed(self, checked: bool):
         self.game_dir_row.setVisible(not checked)
         self.single_file_row.setVisible(checked)
+        self._refresh_output_hint()
 
     def _browse_single_rpy_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -222,6 +232,75 @@ class SourceTranslatePage(Base, QWidget):
         if directory:
             self.backup_external_edit.setText(directory)
 
+    def _build_safe_output_dir(self, target_path: Path, single_file: bool) -> Path:
+        if single_file:
+            return target_path.parent / f"{target_path.stem}_source_out"
+        return target_path.parent / f"{target_path.name}_source_out"
+
+    def _is_relative_to(self, path: Path, other: Path) -> bool:
+        try:
+            path.resolve().relative_to(other.resolve())
+            return True
+        except Exception:
+            return False
+
+    def _validate_source_output_layout(self, target_path: Path, output_dir: Path, single_file: bool) -> tuple[bool, str]:
+        try:
+            target_resolved = target_path.resolve()
+            output_resolved = output_dir.resolve()
+        except Exception:
+            target_resolved = target_path
+            output_resolved = output_dir
+
+        if single_file:
+            output_file = output_resolved / target_path.name
+            try:
+                if output_file.resolve() == target_resolved:
+                    return False, "源码翻译的输出目录不能直接写回原文件所在位置，请使用独立输出目录。"
+            except Exception:
+                if str(output_file) == str(target_resolved):
+                    return False, "源码翻译的输出目录不能直接写回原文件所在位置，请使用独立输出目录。"
+            return True, ""
+
+        if output_resolved == target_resolved:
+            return False, "源码翻译要求输入目录和输出目录分离，不能写回到原 game 目录。"
+        if self._is_relative_to(output_resolved, target_resolved):
+            return False, "输出目录不能放在输入目录内部，否则后续重新扫描时会污染原文缓存。"
+        if self._is_relative_to(target_resolved, output_resolved):
+            return False, "输入目录不能放在输出目录内部，请使用完全分离的目录。"
+        return True, ""
+
+    def _get_current_target_and_output(self) -> tuple[Optional[Path], Optional[Path], bool]:
+        single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
+        if single_file:
+            file_path = self.single_file_edit.text().strip()
+            if file_path == "":
+                return None, None, True
+            target_path = Path(file_path)
+            if target_path.suffix.lower() != ".rpy":
+                return target_path, None, True
+            return target_path, self._build_safe_output_dir(target_path, True), True
+
+        game_dir = self.game_dir_edit.text().strip()
+        if game_dir == "":
+            return None, None, False
+        target_path = Path(game_dir)
+        return target_path, self._build_safe_output_dir(target_path, False), False
+
+    def _refresh_output_hint(self):
+        target_path, output_dir, single_file = self._get_current_target_and_output()
+        if target_path is None or output_dir is None:
+            self.output_hint_text = ""
+            self.output_hint_label.setText("")
+            return
+
+        ok, message = self._validate_source_output_layout(target_path, output_dir, single_file)
+        if ok:
+            self._output_hint_text = f"源码翻译输出目录将自动写入：{output_dir}"
+        else:
+            self._output_hint_text = f"路径配置无效：{message}"
+        self.output_hint_label.setText(self._output_hint_text)
+
     def _start_translation(self):
         single_file = bool(getattr(self, "single_file_switch", None) and self.single_file_switch.isChecked())
 
@@ -239,7 +318,7 @@ class SourceTranslatePage(Base, QWidget):
             if target_path.suffix.lower() != ".rpy":
                 InfoBar.error("错误", "请选择 .rpy 文件", parent=self)
                 return
-            output_dir = target_path.parent
+            output_dir = self._build_safe_output_dir(target_path, True)
         else:
             game_dir = self.game_dir_edit.text().strip()
             if not game_dir:
@@ -249,7 +328,15 @@ class SourceTranslatePage(Base, QWidget):
             if not target_path.exists():
                 InfoBar.error("错误", "目录不存在", parent=self)
                 return
-            output_dir = target_path
+            output_dir = self._build_safe_output_dir(target_path, False)
+
+        valid_layout, layout_message = self._validate_source_output_layout(target_path, output_dir, single_file)
+        if not valid_layout:
+            message_box = MessageBox("路径冲突", layout_message, self.window or self)
+            message_box.yesButton.setText("知道了")
+            message_box.cancelButton.hide()
+            message_box.exec()
+            return
 
         backup = self.backup_switch.isChecked()
         backup_root = None
@@ -302,7 +389,7 @@ class SourceTranslatePage(Base, QWidget):
                 "source_language": config.source_language,
                 "target_language": config.target_language,
             })
-            InfoBar.success("已开始", "已切换到统一翻译流程，进度见日志/进度条。", parent=self)
+            InfoBar.success("已开始", f"已切换到统一翻译流程，输出目录：{output_dir}", parent=self)
 
         # 简单备份（外部目录或本地 .bak）
         if backup or backup_root:

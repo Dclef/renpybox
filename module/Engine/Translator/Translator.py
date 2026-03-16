@@ -243,6 +243,37 @@ class Translator(Base):
             )
         )
 
+    def _is_relative_to(self, path_a: str, path_b: str) -> bool:
+        try:
+            return os.path.commonpath([os.path.abspath(path_a), os.path.abspath(path_b)]) == os.path.abspath(path_b)
+        except Exception:
+            return False
+
+    def _validate_renpy_source_io_layout(self) -> tuple[bool, str]:
+        input_folder = str(getattr(self.config, "input_folder", "") or "").strip()
+        output_folder = str(getattr(self.config, "output_folder", "") or "").strip()
+
+        if input_folder == "" or output_folder == "":
+            return False, "源码翻译缺少输入目录或输出目录。"
+
+        input_path = os.path.abspath(input_folder)
+        output_path = os.path.abspath(output_folder)
+
+        if os.path.isfile(input_path):
+            input_dir = os.path.dirname(input_path)
+            target_output_file = os.path.join(output_path, os.path.basename(input_path))
+            if os.path.abspath(target_output_file) == input_path:
+                return False, "源码翻译禁止直接覆盖原始 .rpy 文件，请使用独立输出目录。"
+            return True, ""
+
+        if input_path == output_path:
+            return False, "源码翻译要求输入目录和输出目录分离，不能直接写回原 game 目录。"
+        if self._is_relative_to(output_path, input_path):
+            return False, "源码翻译的输出目录不能放在输入目录内部，否则会污染原文缓存。"
+        if self._is_relative_to(input_path, output_path):
+            return False, "源码翻译的输入目录不能放在输出目录内部，请使用完全分离的目录。"
+        return True, ""
+
     # 实际的翻译流程
     def translation_start_task(self, event: str, data: dict) -> None:
         try:
@@ -275,6 +306,18 @@ class Translator(Base):
             self._last_runtime_output_folder = self.config.output_folder
             local_flag = self.initialize_local_flag()
             max_workers, rpm_threshold = self.initialize_max_workers()
+
+            if getattr(self.config, "renpy_source_translate", False):
+                valid_layout, layout_message = self._validate_renpy_source_io_layout()
+                if not valid_layout:
+                    self.warning(f"[INIT] 已阻止不安全的源码翻译路径: {layout_message}")
+                    self.emit(Base.Event.APP_TOAST_SHOW, {
+                        "type": Base.ToastType.WARNING,
+                        "message": layout_message,
+                    })
+                    Engine.get().set_status(Engine.Status.IDLE)
+                    self.emit(Base.Event.TRANSLATION_DONE, {})
+                    return None
             
             # 添加初始化日志
             self.info(f"[INIT] 配置加载完成: platform={self.platform.get('name', 'unknown')}, model={self.platform.get('model', 'unknown')}")
