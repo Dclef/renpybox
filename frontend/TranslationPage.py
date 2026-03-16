@@ -246,7 +246,9 @@ class TranslationPage(QWidget, Base):
         self.update_button_status(event, data)
 
         # 更新继续翻译按钮状态
-        self.emit(Base.Event.PROJECT_STATUS, {})
+        self.emit(Base.Event.PROJECT_STATUS, {
+            "prefer_runtime_output": True,
+        })
 
     # 更新时间
     def update_time(self, data: dict) -> None:

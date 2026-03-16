@@ -8,6 +8,7 @@ from typing import List, Set
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
+from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
 
 
@@ -63,7 +64,18 @@ class RENPYSOURCE(Base):
         if preserves and hasattr(parser, "set_text_preserve"):
             parser.set_text_preserve(preserves)
 
-        for abs_path in abs_paths:
+        total_files = len(abs_paths)
+        for index, abs_path in enumerate(abs_paths, start = 1):
+            if Engine.get().get_status() == Engine.Status.STOPPING:
+                self.info("源码扫描已停止")
+                break
+
+            if index == 1 or index % 5 == 0 or index == total_files:
+                self.emit(Base.Event.TRANSLATION_UPDATE, {
+                    "phase": "preparing",
+                    "message": f"正在扫描源码文件… {index}/{total_files}",
+                })
+
             path = Path(abs_path)
             if not path.is_file():
                 continue

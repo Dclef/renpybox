@@ -4,9 +4,12 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
+import contextlib
 import ctypes
+import io
 import signal
 import time
+import warnings
 from pathlib import Path
 from types import TracebackType
 
@@ -26,9 +29,20 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
-from qfluentwidgets import Theme
-from qfluentwidgets import setTheme
 from rich.console import Console
+
+# 屏蔽 requests 在冻结环境中的依赖兼容警告，避免启动时污染控制台。
+warnings.filterwarnings(
+    "ignore",
+    message = r"urllib3 .* or chardet .*/charset_normalizer .* doesn't match a supported version!",
+    category = Warning,
+    module = r"requests(\..*)?$",
+)
+
+# qfluentwidgets 导入时会直接 print Pro 提示，这里在启动阶段静默处理。
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    from qfluentwidgets import Theme
+    from qfluentwidgets import setTheme
 
 from base.Base import Base
 from base.CLIManager import CLIManager
