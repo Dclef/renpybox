@@ -54,6 +54,10 @@ class RenpyDecompiler:
             raise FileNotFoundError("Could not locate python.exe in the game folder.")
 
         python_exe = Path(python_path)
+        python_major = self._detect_embedded_python_major(python_exe)
+        if python_major == 2:
+            raise RuntimeError("检测到游戏内置 Python 2（通常对应 Ren'Py 7）。当前内置的 unrpyc v2 仅支持 Python 3，请优先使用 UnRen-legacy.bat 进行反编译。")
+
         renpy_common = root_dir / "renpy" / "common"
         if not renpy_common.exists():
             raise FileNotFoundError(f"Missing renpy/common directory: {renpy_common}")
@@ -86,7 +90,7 @@ class RenpyDecompiler:
         if unrpyc_error is None:
             return
 
-        renpy_version = self._read_renpy_version(root_dir) or "unknown"
+        renpy_version = self._read_renpy_version(root_dir) or self._infer_renpy_version_from_python(python_exe) or "unknown"
         detail = ""
         if unrpyc_output:
             detail += f"\n\n[unrpyc output]\n{unrpyc_output.strip()}"
@@ -114,6 +118,48 @@ class RenpyDecompiler:
             return None
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         return lines[0] if lines else None
+
+    def _detect_embedded_python_major(self, python_exe: Path) -> int | None:
+        python_path = str(python_exe).replace("\\", "/").lower()
+        if "/py2-" in python_path or "python2" in python_path:
+            return 2
+        if "/py3-" in python_path or "python3" in python_path:
+            return 3
+
+        creationflags = 0
+        if os.name == "nt":
+            try:
+                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except Exception:
+                creationflags = 0
+
+        try:
+            result = subprocess.run(
+                [str(python_exe), "-c", "import sys; print(sys.version_info[0])"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                creationflags=creationflags,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                value = (result.stdout or "").strip()
+                if value in ("2", "3"):
+                    return int(value)
+        except Exception as exc:
+            self.logger.debug(f"检测游戏内置 Python 主版本失败: {exc}")
+
+        return None
+
+    def _infer_renpy_version_from_python(self, python_exe: Path) -> str | None:
+        python_major = self._detect_embedded_python_major(python_exe)
+        if python_major == 2:
+            return "inferred-7.x (Python 2)"
+        if python_major == 3:
+            return "inferred-8.x (Python 3)"
+        return None
 
     def _resolve_game_root(self, target: Path) -> tuple[Path, Path]:
         target = target.resolve()
