@@ -55,6 +55,12 @@ class RENPYSOURCE(Base):
             return self.input_path
         return self.input_path / rel_path
 
+    def _resolve_reference_path(self, rel_path: str) -> Path:
+        """返回原始输入源码路径，用于写回时恢复代码骨架。"""
+        if self.input_path.is_file():
+            return self.input_path
+        return self.input_path / rel_path
+
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """读取 .rpy 源码并生成 CacheItem"""
         items: List[CacheItem] = []
@@ -136,11 +142,21 @@ class RENPYSOURCE(Base):
                 self.warning(f"RENPY 源码不存在: {source_path}")
                 continue
 
+            reference_path = self._resolve_reference_path(rel_path)
+
             try:
                 text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
                 self.error(f"读取 Ren'Py 源码失败: {source_path}", exc)
                 continue
+
+            reference_lines: list[str] | None = None
+            if reference_path.exists():
+                try:
+                    reference_text = reference_path.read_text(encoding="utf-8", errors="replace")
+                    reference_lines = reference_text.split("\n")
+                except Exception:
+                    reference_lines = None
 
             lines = text.split("\n")
             applied = 0
@@ -168,6 +184,9 @@ class RENPYSOURCE(Base):
 
                 original_line = lines[row - 1]
                 new_line = translator._replace_text_in_line(original_line, src, dst)
+                if reference_lines is not None and row <= len(reference_lines):
+                    # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
+                    new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
                 if new_line == original_line:
                     skipped += 1
                     continue

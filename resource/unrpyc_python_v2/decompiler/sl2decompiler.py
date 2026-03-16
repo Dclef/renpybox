@@ -247,6 +247,9 @@ class SL2Decompiler(DecompilerBase):
             self.write(" " + " ".join(ast.positional))
 
         atl_transform = getattr(ast, 'atl_transform', None)
+        child_atl_transform = None
+        if len(ast.children) == 1 and isinstance(ast.children[0], sl2.slast.SLDisplayable):
+            child_atl_transform = getattr(ast.children[0], 'atl_transform', None)
         # The AST contains no indication of whether or not "has" blocks
         # were used. We'll use one any time it's possible (except for
         # directly nesting them, or if they wouldn't contain any children),
@@ -260,6 +263,7 @@ class SL2Decompiler(DecompilerBase):
                 and len(ast.children) == 1
                 and isinstance(ast.children[0], sl2.slast.SLDisplayable)
                 and ast.children[0].children
+                and child_atl_transform is None
                 and (not ast.keyword
                      # this line shoudln't be necessary, but guards against broken keywords
                      or (ast.keyword[-1][1] is not None and

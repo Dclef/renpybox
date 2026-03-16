@@ -252,6 +252,8 @@ class RenpySourceParser:
         self._in_choice_menu_item = False
         self._choice_menu_item_paren_balance = 0
         self._choice_menu_item_text_found = False
+        self._in_condition_switch = False
+        self._condition_switch_paren_balance = 0
         self._python_strings_map: Dict[int, List[str]] = {}
     
     def _should_skip_text(self, text: str) -> bool:
@@ -449,6 +451,8 @@ class RenpySourceParser:
         self._in_choice_menu_item = False
         self._choice_menu_item_paren_balance = 0
         self._choice_menu_item_text_found = False
+        self._in_condition_switch = False
+        self._condition_switch_paren_balance = 0
         self._python_strings_map = {}
     
     def _get_indent(self, line: str) -> int:
@@ -482,6 +486,35 @@ class RenpySourceParser:
         
         # 检查块状态退出
         self._check_block_exit(indent)
+
+        # ConditionSwitch 的多行参数属于代码，不能把条件字符串和图片标识符当成可翻译文本。
+        if 'ConditionSwitch(' in line:
+            self._in_condition_switch = True
+            segment = line[line.find('ConditionSwitch('):]
+            self._condition_switch_paren_balance = segment.count('(') - segment.count(')')
+            if self._condition_switch_paren_balance <= 0:
+                self._in_condition_switch = False
+                self._condition_switch_paren_balance = 0
+            return [TranslationEntry(
+                line_number=line_num,
+                line_type=LineType.CODE,
+                original_line=line,
+                speaker=None,
+                text="",
+            )]
+
+        if self._in_condition_switch:
+            self._condition_switch_paren_balance += line.count('(') - line.count(')')
+            if self._condition_switch_paren_balance <= 0:
+                self._in_condition_switch = False
+                self._condition_switch_paren_balance = 0
+            return [TranslationEntry(
+                line_number=line_num,
+                line_type=LineType.CODE,
+                original_line=line,
+                speaker=None,
+                text="",
+            )]
         
         # Python 块内 - 尝试提取可翻译文本
         if self._in_python_block:
@@ -946,6 +979,13 @@ class RenpySourceParser:
 
 class RenpySourceTranslator:
     """Ren'Py 源码翻译器"""
+
+    RE_SINGLE_LINE_STRING_LITERAL = re.compile(
+        r'(?:[fFrRuU]?)'
+        r'(?P<quote>["\'])'
+        r'(?P<text>(?:\\.|[^\\])*?)'
+        r'(?P=quote)'
+    )
     
     def __init__(self):
         self.logger = LogManager.get()
@@ -1195,6 +1235,31 @@ class RenpySourceTranslator:
         
         # 无法替换，返回原行
         return line
+
+    def _restore_non_literal_structure(self, reference_line: str, translated_line: str) -> str:
+        """用参考行的非字符串结构，重建当前行。
+
+        这个保护主要用于源码直翻写回阶段：
+        - 保留译文行中的字符串字面量内容；
+        - 恢复原始源码中的可执行代码骨架；
+        - 避免 `action Skip()` 这类标识符被误写成中文。
+        """
+        ref_literals = list(self.RE_SINGLE_LINE_STRING_LITERAL.finditer(reference_line))
+        translated_literals = list(self.RE_SINGLE_LINE_STRING_LITERAL.finditer(translated_line))
+
+        if not ref_literals or len(ref_literals) != len(translated_literals):
+            return translated_line
+
+        rebuilt: list[str] = []
+        last_ref_end = 0
+
+        for ref_match, translated_match in zip(ref_literals, translated_literals):
+            rebuilt.append(reference_line[last_ref_end:ref_match.start()])
+            rebuilt.append(translated_line[translated_match.start():translated_match.end()])
+            last_ref_end = ref_match.end()
+
+        rebuilt.append(reference_line[last_ref_end:])
+        return "".join(rebuilt)
     
     def set_glossary(self, glossary: Dict[str, str]):
         """设置专有名词词典"""
