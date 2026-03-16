@@ -1151,22 +1151,47 @@ class RenpySourceTranslator:
         translated_text: str,
     ) -> str:
         """在行中替换文本，保持结构"""
+        def escape_renpy_string_text(text: str, quote_char: str) -> str:
+            """将译文转义为可安全写回 Ren'Py 单行字符串的内容。"""
+            if not isinstance(text, str):
+                text = str(text)
+
+            # 先统一换行，避免写回后把一条对话拆成多行导致脚本结构损坏。
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+            # 反斜杠必须优先转义，否则后续新增的转义序列会被再次吞掉。
+            text = text.replace("\\", "\\\\")
+
+            # Ren'Py 单行字符串内的真实换行统一写成 \n。
+            text = text.replace("\n", "\\n")
+            text = text.replace("\t", "\\t")
+
+            if quote_char == '"':
+                text = text.replace('"', '\\"')
+            elif quote_char == "'":
+                text = text.replace("'", "\\'")
+
+            return text
+
         # 转义原文本中的特殊正则字符
         escaped_original = re.escape(original_text)
         
         # 尝试双引号替换
         pattern_double = f'"{escaped_original}"'
         if re.search(pattern_double, line):
-            return re.sub(pattern_double, f'"{translated_text}"', line, count=1)
+            escaped_translated = escape_renpy_string_text(translated_text, '"')
+            return re.sub(pattern_double, lambda _: f'"{escaped_translated}"', line, count=1)
         
         # 尝试单引号替换
         pattern_single = f"'{escaped_original}'"
         if re.search(pattern_single, line):
-            return re.sub(pattern_single, f"'{translated_text}'", line, count=1)
+            escaped_translated = escape_renpy_string_text(translated_text, "'")
+            return re.sub(pattern_single, lambda _: f"'{escaped_translated}'", line, count=1)
         
         # 如果都不匹配，尝试直接替换文本（作为后备）
         if original_text in line:
-            return line.replace(original_text, translated_text, 1)
+            escaped_translated = escape_renpy_string_text(translated_text, '"')
+            return line.replace(original_text, escaped_translated, 1)
         
         # 无法替换，返回原行
         return line

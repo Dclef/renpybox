@@ -17,16 +17,196 @@ from utils.call_game_python import get_python_path_from_game_path, get_py_path
 class ErrorRepairer:
     """错误修复器"""
 
+    # 识别 Ren'Py 对话/翻译行中最外层字符串的简单模式。
+    # 使用贪婪主体，配合后续“正文内仍存在未转义同引号”判断，可定位
+    # doctor "..."、"..."、old "..."、new "..." 这类常见写法。
+    RE_RENPY_STRING_LINE = re.compile(
+        r'^(?P<prefix>\s*(?:[\w\.\[\]]+\s+)*)?(?P<quote>["\'])(?P<body>.*)(?P=quote)(?P<suffix>[^\r\n]*)$'
+    )
+    SCREEN_BLOCK_PREFIXES = (
+        "textbutton",
+        "imagebutton",
+        "text",
+        "frame",
+        "hbox",
+        "vbox",
+        "grid",
+        "fixed",
+        "window",
+        "viewport",
+        "use",
+        "button",
+        "image",
+        "add",
+    )
+
     def __init__(self):
         self.logger = LogManager.get()
         self.errors_found = []
+
+    def _split_line_ending(self, line: str) -> tuple[str, str]:
+        """拆分行内容和换行符，修复后保持原始换行风格。"""
+        if line.endswith("\r\n"):
+            return line[:-2], "\r\n"
+        if line.endswith("\n"):
+            return line[:-1], "\n"
+        if line.endswith("\r"):
+            return line[:-1], "\r"
+        return line, ""
+
+    def _has_unescaped_quote(self, text: str, quote_char: str) -> bool:
+        escaped = False
+        for ch in text:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == quote_char:
+                return True
+        return False
+
+    def _escape_unescaped_quotes(self, text: str, quote_char: str) -> tuple[str, bool]:
+        result: list[str] = []
+        escaped = False
+        changed = False
+
+        for ch in text:
+            if escaped:
+                result.append(ch)
+                escaped = False
+                continue
+
+            if ch == "\\":
+                result.append(ch)
+                escaped = True
+                continue
+
+            if ch == quote_char:
+                result.append("\\")
+                result.append(ch)
+                changed = True
+                continue
+
+            result.append(ch)
+
+        return "".join(result), changed
+
+    def _looks_like_renpy_string_statement(self, prefix: str) -> bool:
+        """仅对类似对话/翻译语句的行执行未转义引号修复。"""
+        stripped = (prefix or "").strip()
+        if stripped == "":
+            return True
+
+        # 避免误伤 Python 赋值、函数调用、列表/字典等结构。
+        if any(token in stripped for token in ("=", "+", ",", "(", "[", "{")):
+            return False
+        if stripped.endswith(":"):
+            return False
+
+        return True
+
+    def repair_unescaped_dialogue_quotes(self, line: str) -> tuple[str, bool]:
+        """修复 Ren'Py 对话行中未转义的内层引号。"""
+        content, line_ending = self._split_line_ending(line)
+        if content.strip() == "" or content.lstrip().startswith("#"):
+            return line, False
+
+        match = self.RE_RENPY_STRING_LINE.match(content)
+        if not match:
+            return line, False
+
+        prefix = match.group("prefix") or ""
+        quote_char = match.group("quote")
+        body = match.group("body")
+        suffix = match.group("suffix") or ""
+
+        if not self._looks_like_renpy_string_statement(prefix):
+            return line, False
+        if not self._has_unescaped_quote(body, quote_char):
+            return line, False
+
+        escaped_body, changed = self._escape_unescaped_quotes(body, quote_char)
+        if not changed:
+            return line, False
+
+        repaired = f"{prefix}{quote_char}{escaped_body}{quote_char}{suffix}{line_ending}"
+        return repaired, True
+
+    def _get_indent_width(self, line: str) -> int:
+        expanded = line.expandtabs(4)
+        return len(expanded) - len(expanded.lstrip(" "))
+
+    def _is_blank_or_comment(self, line: str) -> bool:
+        stripped = line.strip()
+        return stripped == "" or stripped.startswith("#")
+
+    def _find_previous_non_empty_index(self, lines: List[str], idx: int) -> Optional[int]:
+        for current in range(idx - 1, -1, -1):
+            if not self._is_blank_or_comment(lines[current]):
+                return current
+        return None
+
+    def _find_previous_block_indent_less_than(self, lines: List[str], idx: int, indent_limit: int) -> Optional[int]:
+        for current in range(idx - 1, -1, -1):
+            line = lines[current]
+            if self._is_blank_or_comment(line):
+                continue
+            content, _ = self._split_line_ending(line)
+            stripped = content.lstrip(" \t")
+            indent = self._get_indent_width(content)
+            if indent < indent_limit and stripped.endswith(":"):
+                return indent
+        return None
+
+    def _looks_like_screen_block_line(self, stripped: str) -> bool:
+        token = stripped.split(maxsplit = 1)[0] if stripped else ""
+        return token in self.SCREEN_BLOCK_PREFIXES or stripped.startswith(("if ", "elif ", "else:", "for ", "while "))
+
+    def repair_indentation_level(self, lines: List[str], idx: int) -> tuple[str, bool]:
+        """尝试修复明显错位的块级缩进。"""
+        if idx < 0 or idx >= len(lines):
+            return lines[idx], False
+
+        original_line = lines[idx]
+        content, line_ending = self._split_line_ending(original_line)
+        if self._is_blank_or_comment(content):
+            return original_line, False
+
+        stripped = content.lstrip(" \t")
+        current_indent = self._get_indent_width(content)
+        prev_idx = self._find_previous_non_empty_index(lines, idx)
+        if prev_idx is None:
+            return original_line, False
+
+        prev_content, _ = self._split_line_ending(lines[prev_idx])
+        prev_stripped = prev_content.lstrip(" \t")
+        prev_indent = self._get_indent_width(prev_content)
+
+        # 情况 1：上一行是块起始，当前行应作为其子块，统一为 +4 空格。
+        if prev_stripped.endswith(":") and not re.match(r"^(elif|else|except|finally)\b", stripped):
+            expected_indent = prev_indent + 4
+            if current_indent != expected_indent:
+                return (" " * expected_indent) + stripped + line_ending, True
+
+        # 情况 2：当前行自身是块起始，但前一段刚从深层子块退出。
+        # 这时按最近父块缩进回退一层，适合修复 screen 里 displayable / textbutton 错位。
+        if stripped.endswith(":") and self._looks_like_screen_block_line(stripped) and prev_indent >= current_indent + 8:
+            parent_indent = self._find_previous_block_indent_less_than(lines, idx, current_indent)
+            if parent_indent is not None and parent_indent != current_indent:
+                return (" " * parent_indent) + stripped + line_ending, True
+
+        return original_line, False
 
     def check_file(
         self,
         file_path: str,
         check_syntax: bool = True,
         check_indent: bool = True,
+        check_indent_level: bool = True,
         check_quotes: bool = True,
+        check_dialogue_quotes: bool = True,
         encoding: str = "utf-8"
     ) -> List[Dict[str, any]]:
         """
@@ -81,6 +261,16 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
+                if check_indent_level:
+                    _, changed = self.repair_indentation_level(lines, line_num - 1)
+                    if changed:
+                        errors.append({
+                            "line": line_num,
+                            "type": "indentation_level",
+                            "message": "疑似块级缩进层级错误",
+                            "content": line.strip()
+                        })
+
                 # 引号匹配检查
                 if check_quotes:
                     # 统计引号数量
@@ -103,6 +293,16 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
+                if check_dialogue_quotes:
+                    _, changed = self.repair_unescaped_dialogue_quotes(line)
+                    if changed:
+                        errors.append({
+                            "line": line_num,
+                            "type": "unescaped_dialogue_quotes",
+                            "message": "Ren'Py 对话行存在未转义引号",
+                            "content": line.strip()
+                        })
+
         except Exception as e:
             self.logger.error(f"检查文件失败 {file_path}: {e}")
 
@@ -113,7 +313,9 @@ class ErrorRepairer:
         folder_path: str,
         check_syntax: bool = True,
         check_indent: bool = True,
+        check_indent_level: bool = True,
         check_quotes: bool = True,
+        check_dialogue_quotes: bool = True,
         encoding: str = "utf-8"
     ) -> Dict[str, List[Dict]]:
         """
@@ -139,7 +341,9 @@ class ErrorRepairer:
                 str(file_path),
                 check_syntax,
                 check_indent,
+                check_indent_level,
                 check_quotes,
+                check_dialogue_quotes,
                 encoding
             )
 
@@ -155,7 +359,9 @@ class ErrorRepairer:
         self,
         file_path: str,
         fix_indent: bool = True,
+        fix_indent_level: bool = False,
         fix_quotes: bool = False,
+        fix_dialogue_quotes: bool = False,
         encoding: str = "utf-8"
     ) -> Tuple[bool, int]:
         """
@@ -177,7 +383,7 @@ class ErrorRepairer:
             new_lines = []
             fix_count = 0
 
-            for line in lines:
+            for idx, line in enumerate(lines):
                 new_line = line
 
                 # 修复缩进: Tab 转空格
@@ -187,11 +393,29 @@ class ErrorRepairer:
 
                 # 修复引号 (简单替换: 中文引号转英文引号)
                 if fix_quotes:
-                    if """ in new_line or """ in new_line:
-                        new_line = new_line.replace(""", '"').replace(""", '"')
+                    old_line = new_line
+                    new_line = (
+                        new_line
+                        .replace("“", '"')
+                        .replace("”", '"')
+                        .replace("‘", "'")
+                        .replace("’", "'")
+                    )
+                    if new_line != old_line:
                         fix_count += 1
-                    if "'" in new_line or "'" in new_line:
-                        new_line = new_line.replace("'", "'").replace("'", "'")
+
+                if fix_dialogue_quotes:
+                    repaired_line, changed = self.repair_unescaped_dialogue_quotes(new_line)
+                    if changed:
+                        new_line = repaired_line
+                        fix_count += 1
+
+                if fix_indent_level:
+                    temp_lines = list(lines)
+                    temp_lines[idx] = new_line
+                    repaired_line, changed = self.repair_indentation_level(temp_lines, idx)
+                    if changed:
+                        new_line = repaired_line
                         fix_count += 1
 
                 new_lines.append(new_line)
@@ -377,7 +601,9 @@ class ErrorRepairer:
                 error_info["type"] = "expected_statement"
             elif 'Could not parse string' in line:
                 error_info["type"] = "parse_error"
-                
+            elif 'Indentation mismatch' in line:
+                error_info["type"] = "indentation_mismatch"
+                 
             errors.append(error_info)
             
         return errors
@@ -494,11 +720,41 @@ class ErrorRepairer:
                 lines[idx] = '\n'
                 
             elif error_type in ("unterminated_string", "parse_error"):
-                # 字符串未结束：替换为空字符串
-                if lines[idx].strip().startswith('translate'):
-                    lines[idx] = '\n'
+                repaired_line, changed = self.repair_unescaped_dialogue_quotes(lines[idx])
+                if changed:
+                    lines[idx] = repaired_line
+                else:
+                    # 字符串未结束：替换为空字符串
+                    if lines[idx].strip().startswith('translate'):
+                        lines[idx] = '\n'
+                    else:
+                        lines[idx] = '    ""\n'
+                    
+            elif error_type == "syntax_error":
+                repaired_line, changed = self.repair_unescaped_dialogue_quotes(lines[idx])
+                if changed:
+                    lines[idx] = repaired_line
+                elif idx > 0:
+                    repaired_prev, changed_prev = self.repair_unescaped_dialogue_quotes(lines[idx - 1])
+                    if changed_prev:
+                        lines[idx - 1] = repaired_prev
+                    else:
+                        lines[idx] = '    ""\n'
                 else:
                     lines[idx] = '    ""\n'
+
+            elif error_type in ("indentation_mismatch", "indentation_level"):
+                repaired_line, changed = self.repair_indentation_level(lines, idx)
+                if changed:
+                    lines[idx] = repaired_line
+                elif idx > 0:
+                    repaired_prev, changed_prev = self.repair_indentation_level(lines, idx - 1)
+                    if changed_prev:
+                        lines[idx - 1] = repaired_prev
+                    else:
+                        return False
+                else:
+                    return False
                     
             else:
                 # 默认：替换为空字符串
