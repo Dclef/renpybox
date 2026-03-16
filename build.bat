@@ -11,6 +11,12 @@ if exist log\\*.log.* del /q log\\*.log.* 2>nul
 echo Building RenpyBox...
 pyinstaller main.spec --clean --noconfirm
 
+set "OPENCC_T2S=dist\RenpyBox\_internal\opencc\clib\share\opencc\t2s.json"
+if not exist "%OPENCC_T2S%" (
+  echo [ERROR] Missing OpenCC config: %OPENCC_T2S%
+  exit /b 1
+)
+
 rem Move updater under _internal to reduce accidental clicks
 if not exist dist\\RenpyBox\\_internal mkdir dist\\RenpyBox\\_internal
 if exist dist\\RenpyBox\\RenpyBoxUpdater.exe (
