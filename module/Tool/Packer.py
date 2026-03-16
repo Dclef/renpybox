@@ -102,42 +102,81 @@ class Packer:
 
     def _detect_renpy_major(self, root_dir: Path) -> int | None:
         version = self._read_renpy_version(root_dir)
-        if not version:
-            return None
-        match = re.search(r"(\d+)(?:\.\d+)?", version)
-        if not match:
-            return None
-        try:
-            return int(match.group(1))
-        except Exception:
+        if version:
+            match = re.search(r"(\d+)(?:\.\d+)?", version)
+            if match:
+                try:
+                    return int(match.group(1))
+                except Exception:
+                    pass
+
+        # version.txt 缺失时，退回到游戏内置 Python 版本做推断：
+        # Python 2 基本对应 Ren'Py 7，Python 3 基本对应 Ren'Py 8。
+        python_major = self._detect_embedded_python_major(root_dir)
+        if python_major == 2:
+            return 7
+        if python_major and python_major >= 3:
+            return 8
+        return None
+
+    def _detect_embedded_python_major(self, root_dir: Path) -> int | None:
+        python_exe = self._get_game_python(root_dir)
+        if not python_exe:
             return None
 
-    def _select_unren_bat(self, root_dir: Path) -> tuple[Path | None, int | None]:
+        python_path = str(python_exe).replace("\\", "/").lower()
+        if "/py2-" in python_path or "python2" in python_path:
+            return 2
+        if "/py3-" in python_path or "python3" in python_path:
+            return 3
+
+        try:
+            result = subprocess.run(
+                [str(python_exe), "-c", "import sys; print(sys.version_info[0])"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=5,
+                creationflags=self._creationflags_no_window(),
+            )
+            if result.returncode == 0:
+                value = (result.stdout or "").strip()
+                if value in ("2", "3"):
+                    return int(value)
+        except Exception as exc:
+            self.logger.debug(f"检测游戏内置 Python 主版本失败: {exc}")
+
+        return None
+
+    def _select_unren_bats(self, root_dir: Path) -> tuple[list[Path], int | None]:
         major = self._detect_renpy_major(root_dir)
         legacy_res = Path(get_resource_path("resource", "UnRen-legacy.bat"))
         current_res = Path(get_resource_path("resource", "UnRen-current.bat"))
         legacy = legacy_res if legacy_res.exists() else (self.base_dir / "dist" / "UnRen-legacy.bat")
         current = current_res if current_res.exists() else (self.base_dir / "dist" / "UnRen-current.bat")
+        candidates: list[Path] = []
+
+        def add_candidate(path: Path) -> None:
+            if path.exists() and path not in candidates:
+                candidates.append(path)
 
         if major is None:
-            if current.exists():
-                return current, major
-            if legacy.exists():
-                return legacy, major
-            return None, major
+            # 真正无法识别时，先尝试 legacy，再尝试 current。
+            # 对 Ren'Py 7 项目更稳妥，同时保留 8 的自动兜底。
+            add_candidate(legacy)
+            add_candidate(current)
+            return candidates, major
 
         if major >= 8:
-            if current.exists():
-                return current, major
-            if legacy.exists():
-                return legacy, major
-            return None, major
+            add_candidate(current)
+            add_candidate(legacy)
+            return candidates, major
 
-        if legacy.exists():
-            return legacy, major
-        if current.exists():
-            return current, major
-        return None, major
+        add_candidate(legacy)
+        add_candidate(current)
+        return candidates, major
 
     def _get_unren_script_version_label(self, unren_bat: Path, major: int | None) -> str:
         """返回更准确的 UnRen 版本标签。"""
@@ -198,44 +237,60 @@ class Packer:
             raise FileNotFoundError(f"目录不存在: {game_path}")
 
         game_root = game_path.parent
-        unren_bat, major = self._select_unren_bat(game_root)
-        if not unren_bat:
+        unren_bats, major = self._select_unren_bats(game_root)
+        if not unren_bats:
             return False, ["UnRen 脚本不可用"]
 
-        version_label = self._get_unren_script_version_label(unren_bat, major)
-        self.logger.info(f"UnRen {purpose}: {unren_bat.name} ({version_label})")
+        last_lines: list[str] = []
+        for index, unren_bat in enumerate(unren_bats):
+            version_label = self._get_unren_script_version_label(unren_bat, major)
+            if index == 0:
+                self.logger.info(f"UnRen {purpose}: {unren_bat.name} ({version_label})")
+            else:
+                self.logger.warning(f"UnRen {purpose} 重试: {unren_bat.name} ({version_label})")
 
-        result = self._run_unren_bat(
-            unren_bat,
-            game_root,
-            options=options,
-            lang=lang,
-            timeout_s=timeout_s,
-        )
-        if result is None:
-            return False, ["UnRen 启动失败"]
+            result = self._run_unren_bat(
+                unren_bat,
+                game_root,
+                options=options,
+                lang=lang,
+                timeout_s=timeout_s,
+            )
+            if result is None:
+                last_lines = ["UnRen 启动失败"]
+                continue
 
-        output = (result.stdout or "").strip()
-        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
-        detected_version = None
-        if lines:
-            ansi_re = re.compile(r"\x1b\[[0-9;]*m")
-            for line in lines:
-                clean = ansi_re.sub("", line)
-                m = re.search(r"Ren'Py version found:\s*(\S+)", clean)
-                if not m:
-                    m = re.search(r"检测到 Ren'Py 版本：\s*(\S+)", clean)
-                if m:
-                    detected_version = m.group(1)
-                    break
-        if detected_version:
-            self.logger.info(f"UnRen 检测到 Ren'Py 版本: {detected_version}")
-        ok = result.returncode == 0
-        if not ok and output:
-            success_markers = ("Operation completed.", "操作完成。", "操作完成")
-            if any(marker in output for marker in success_markers):
-                ok = True
-        return ok, lines
+            output = (result.stdout or "").strip()
+            lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+            detected_version = None
+            if lines:
+                ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+                for line in lines:
+                    clean = ansi_re.sub("", line)
+                    m = re.search(r"Ren'Py version found:\s*(\S+)", clean)
+                    if not m:
+                        m = re.search(r"检测到 Ren'Py 版本：\s*(\S+)", clean)
+                    if m:
+                        detected_version = m.group(1)
+                        break
+            if detected_version:
+                self.logger.info(f"UnRen 检测到 Ren'Py 版本: {detected_version}")
+
+            ok = result.returncode == 0
+            if not ok and output:
+                success_markers = ("Operation completed.", "操作完成。", "操作完成")
+                if any(marker in output for marker in success_markers):
+                    ok = True
+
+            if ok:
+                return True, lines
+
+            last_lines = lines
+            if index + 1 < len(unren_bats):
+                next_bat = unren_bats[index + 1]
+                self.logger.warning(f"{unren_bat.name} 执行失败，准备切换到 {next_bat.name}")
+
+        return False, last_lines
 
     def unpack_all_unren(
         self,
