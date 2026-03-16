@@ -8,6 +8,8 @@ on:
     paths:
       - "base/Version.py"
       - "version.txt"
+      - "main.spec"
+      - "build.bat"
       - ".github/workflows/build.yml"
 
 jobs:

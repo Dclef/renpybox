@@ -104,9 +104,10 @@ internal_modules = ['base', 'widget', 'utils', 'frontend', 'module']
 # 新增问题时只需在此 dict 中追加，无需修改其他代码。
 # -------------------------------------------------------------------
 MANUAL_DATA_DIRS = {
-    # opencc-python-reimplemented：JSON 转换配置存放在 cLib/ 下，collect_all 会遗漏
+    # opencc 运行时会从 opencc/clib/share/opencc 读取配置和词典文件
+    # 某些环境下 collect_all 可能遗漏这一层数据，这里按运行时实际查找路径兜底补齐
     'opencc': [
-        ('cLib', 'opencc/cLib'),
+        ('clib/share/opencc', 'opencc/clib/share/opencc'),
     ],
     # tiktoken_ext 是独立命名空间包，collect_all('tiktoken') 不会一并处理
     'tiktoken': [
