@@ -36,6 +36,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
+from module.OpenCCHelper import OpenCCHelper
 from module.Text.SkipRules import should_skip_text
 from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
 
@@ -155,17 +156,9 @@ class GlossaryLLMTranslateWorker(QThread):
         if str(getattr(config, "target_language", "")).upper() != str(BaseLanguage.Enum.ZH):
             return text
 
-        try:
-            import opencc
-        except Exception:
-            return text
-
-        try:
-            if bool(getattr(config, "traditional_chinese_enable", False)):
-                return opencc.OpenCC("s2tw").convert(text)
-            return opencc.OpenCC("t2s").convert(text)
-        except Exception:
-            return text
+        if bool(getattr(config, "traditional_chinese_enable", False)):
+            return OpenCCHelper.convert("s2tw", text)
+        return OpenCCHelper.convert("t2s", text)
 
     def run(self):
         try:

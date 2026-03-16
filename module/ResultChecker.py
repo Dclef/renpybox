@@ -3,14 +3,13 @@ import json
 import re
 import time
 
-import opencc
-
 from base.Base import Base
 from base.compat import StrEnum
 from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
+from module.OpenCCHelper import OpenCCHelper
 from module.Response.ResponseChecker import ResponseChecker
 from module.Localizer.Localizer import Localizer
 from module.TextProcessor import TextProcessor
@@ -25,10 +24,6 @@ class WarningType(StrEnum):
     RETRY_THRESHOLD = "RETRY_THRESHOLD"     # 重试次数达阈值
 
 class ResultChecker(Base):
-
-    # 类变量
-    OPENCCT2S = opencc.OpenCC("t2s")
-    OPENCCS2T = opencc.OpenCC("s2tw")
     
     # 检测"英文单词+中文"异常翻译模式的正则
     # 匹配：句首英文单词(2-15个字母)后面直接跟中文字符
@@ -118,11 +113,11 @@ class ResultChecker(Base):
         if self.config.glossary_enable == False or len(self.config.glossary_data) == 0:
             return []
 
-        converter = ResultChecker.OPENCCS2T if self.config.traditional_chinese_enable == True else ResultChecker.OPENCCT2S
+        config_name = "s2tw" if self.config.traditional_chinese_enable == True else "t2s"
         return [
             {
                 "src": v.get("src", ""),
-                "dst": converter.convert(v.get("dst", "")),
+                "dst": OpenCCHelper.convert(config_name, v.get("dst", "")),
                 "info": v.get("info", ""),
                 "case_sensitive": v.get("case_sensitive", False),
             }

@@ -22,12 +22,31 @@ from module.Tool.rpatool_core import RenPyArchive
 
 
 class Packer:
+    # 记录当前会话内各游戏目录最稳定的 UnRen 版本，避免同一项目重复先撞错脚本。
+    UNREN_COMPAT_CACHE: dict[str, str] = {}
+
     def __init__(self) -> None:
         self.logger = LogManager.get()
         # Base project directory (oldcatporject/)
         self.base_dir = Path(__file__).resolve().parents[2]
         self.root_dir = self.base_dir.parent
         self.resource_dir = Path(get_resource_path("resource"))
+
+    def _get_unren_cache_key(self, root_dir: Path) -> str:
+        return str(root_dir.resolve()).replace("\\", "/").lower()
+
+    def _get_cached_unren_preference(self, root_dir: Path) -> str | None:
+        return __class__.UNREN_COMPAT_CACHE.get(self._get_unren_cache_key(root_dir))
+
+    def _set_cached_unren_preference(self, root_dir: Path, unren_bat: Path) -> None:
+        name = unren_bat.name.lower()
+        if "legacy" in name:
+            value = "legacy"
+        elif "current" in name:
+            value = "current"
+        else:
+            return
+        __class__.UNREN_COMPAT_CACHE[self._get_unren_cache_key(root_dir)] = value
 
     def _creationflags_no_window(self) -> int:
         if os.name != "nt":
@@ -157,10 +176,21 @@ class Packer:
         legacy = legacy_res if legacy_res.exists() else (self.base_dir / "dist" / "UnRen-legacy.bat")
         current = current_res if current_res.exists() else (self.base_dir / "dist" / "UnRen-current.bat")
         candidates: list[Path] = []
+        cached = self._get_cached_unren_preference(root_dir)
 
         def add_candidate(path: Path) -> None:
             if path.exists() and path not in candidates:
                 candidates.append(path)
+
+        if cached == "legacy":
+            add_candidate(legacy)
+            add_candidate(current)
+            return candidates, major
+
+        if cached == "current":
+            add_candidate(current)
+            add_candidate(legacy)
+            return candidates, major
 
         if major is None:
             # 真正无法识别时，先尝试 legacy，再尝试 current。
@@ -241,9 +271,15 @@ class Packer:
         if not unren_bats:
             return False, ["UnRen 脚本不可用"]
 
+        cached = self._get_cached_unren_preference(game_root)
+        if cached is not None:
+            self.logger.info(f"命中 UnRen 兼容缓存: {cached}")
+
         last_lines: list[str] = []
         for index, unren_bat in enumerate(unren_bats):
             version_label = self._get_unren_script_version_label(unren_bat, major)
+            if cached is not None and index == 0:
+                version_label = f"{version_label}, 兼容缓存"
             if index == 0:
                 self.logger.info(f"UnRen {purpose}: {unren_bat.name} ({version_label})")
             else:
@@ -283,6 +319,7 @@ class Packer:
                     ok = True
 
             if ok:
+                self._set_cached_unren_preference(game_root, unren_bat)
                 return True, lines
 
             last_lines = lines

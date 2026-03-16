@@ -37,12 +37,14 @@ class Translator(Base):
 
         # 初始化
         self.cache_manager = CacheManager(service = True)
+        self._last_runtime_output_folder: str = ""
 
         # 线程锁
         self.data_lock = threading.Lock()
 
         # 运行中的线程池（用于停止任务时快速取消）
         self._active_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._translation_thread: threading.Thread | None = None
 
         # 注册事件
         self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
@@ -104,13 +106,19 @@ class Translator(Base):
         except Exception:
             pass
 
+    def _should_stop_requested(self) -> bool:
+        return Engine.get().get_status() == Engine.Status.STOPPING
+
     # 翻译开始事件
     def translation_start(self, event: str, data: dict) -> None:
         if Engine.get().get_status() == Engine.Status.IDLE:
-            threading.Thread(
+            thread = threading.Thread(
                 target = self.translation_start_task,
                 args = (event, data),
-            ).start()
+                name = f"{Engine.TASK_PREFIX}MAIN",
+            )
+            self._translation_thread = thread
+            thread.start()
         else:
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
@@ -173,285 +181,354 @@ class Translator(Base):
         def task(event: str, data: dict) -> None:
             if Engine.get().get_status() != Engine.Status.IDLE:
                 status = Base.TranslationStatus.UNTRANSLATED
+                extras = {}
             else:
+                output_folder = self._resolve_project_status_output_folder(data)
                 cache_manager = CacheManager(service = False)
-                cache_manager.load_project_from_file(Config().load().output_folder)
+                cache_manager.load_project_from_file(output_folder)
                 status = cache_manager.get_project().get_status()
+                extras = cache_manager.get_project().get_extras() or {}
 
-            self.emit(Base.Event.PROJECT_STATUS_CHECK_DONE, {
+            payload = {
                 "status" : status,
-            })
+            }
+            if isinstance(extras, dict):
+                payload.update(extras)
+            self.emit(Base.Event.PROJECT_STATUS_CHECK_DONE, payload)
         threading.Thread(target = task, args = (event, data)).start()
+
+    def _resolve_project_status_output_folder(self, data: dict) -> str:
+        current_output = Config().load().output_folder
+        runtime_output = getattr(self, "_last_runtime_output_folder", "")
+        requested_output = ""
+        prefer_runtime = False
+
+        if isinstance(data, dict):
+            requested_output = str(data.get("output_folder", "") or "").strip()
+            prefer_runtime = bool(data.get("prefer_runtime_output", False))
+
+        candidates: list[str] = []
+
+        def add_candidate(path: str) -> None:
+            path = str(path or "").strip()
+            if path != "" and path not in candidates:
+                candidates.append(path)
+
+        add_candidate(requested_output)
+        if prefer_runtime:
+            add_candidate(runtime_output)
+            add_candidate(current_output)
+        else:
+            add_candidate(current_output)
+            add_candidate(runtime_output)
+
+        for path in candidates:
+            if self._has_cache_snapshot(path):
+                return path
+
+        return candidates[0] if len(candidates) > 0 else current_output
+
+    def _has_cache_snapshot(self, output_folder: str) -> bool:
+        path = str(output_folder or "").strip()
+        if path == "":
+            return False
+
+        cache_dir = os.path.join(path, "cache")
+        return any(
+            os.path.isfile(candidate)
+            for candidate in (
+                os.path.join(cache_dir, "project.json"),
+                os.path.join(cache_dir, "items.json"),
+                os.path.join(cache_dir, CacheManager.CACHE_DB_NAME),
+            )
+        )
 
     # 实际的翻译流程
     def translation_start_task(self, event: str, data: dict) -> None:
-        config: Base.TranslationStatus = data.get("config")
-        status: Base.TranslationStatus = data.get("status")
-
-        # 更新运行状态
-        Engine.get().set_status(Engine.Status.TRANSLATING)
-
-        # 初始化
-        self.config = config if isinstance(config, Config) else Config().load()
-        # 预处理提示（解析/生成任务阶段）
-        self.emit(Base.Event.TRANSLATION_UPDATE, {
-            "phase": "preparing",
-            "message": "预处理中…",
-        })
-        override_input = data.get("input_folder")
-        override_output = data.get("output_folder")
-        override_source = data.get("source_language")
-        override_target = data.get("target_language")
-        if override_input:
-            self.config.input_folder = str(override_input)
-        if override_output:
-            self.config.output_folder = str(override_output)
-        if override_source:
-            self.config.source_language = override_source
-        if override_target:
-            self.config.target_language = override_target
-        self.platform = self.config.get_platform(self.config.activate_platform)
-        local_flag = self.initialize_local_flag()
-        max_workers, rpm_threshold = self.initialize_max_workers()
-        
-        # 添加初始化日志
-        self.info(f"[INIT] 配置加载完成: platform={self.platform.get('name', 'unknown')}, model={self.platform.get('model', 'unknown')}")
-        self.info(f"[INIT] 最大并发: {max_workers}, RPM限制: {rpm_threshold}")
-
-        # 重置
-        TextProcessor.reset()
-        TaskRequester.reset()
-        PromptBuilder.reset()
-
-        # 生成缓存列表
         try:
-            # 根据 status 判断是否为继续翻译
-            if status == Base.TranslationStatus.TRANSLATING:
-                self.cache_manager.load_from_file(self.config.output_folder)
-            else:
-                shutil.rmtree(f"{self.config.output_folder}/cache", ignore_errors = True)
-                project, items = FileManager(self.config).read_from_path()
-                self.cache_manager.set_items(items)
-                self.cache_manager.set_project(project)
-        except Exception as e:
-            self.error(f"{Localizer.get().log_read_file_fail}", e)
-            return None
+            config: Base.TranslationStatus = data.get("config")
+            status: Base.TranslationStatus = data.get("status")
 
-        # 检查数据是否为空
-        if self.cache_manager.get_item_count() == 0:
-            # 通知
-            self.emit(Base.Event.APP_TOAST_SHOW, {
-                "type": Base.ToastType.WARNING,
-                "message": Localizer.get().translator_no_items,
+            # 更新运行状态
+            Engine.get().set_status(Engine.Status.TRANSLATING)
+
+            # 初始化
+            self.config = config if isinstance(config, Config) else Config().load()
+            # 预处理提示（解析/生成任务阶段）
+            self.emit(Base.Event.TRANSLATION_UPDATE, {
+                "phase": "preparing",
+                "message": "预处理中…",
             })
-
-            self.emit(Base.Event.TRANSLATION_STOP, {})
-            return None
-
-        # 从头翻译时加载默认数据
-        if status == Base.TranslationStatus.TRANSLATING:
-            self.extras = self.cache_manager.get_project().get_extras()
-            self.extras["start_time"] = time.time() - self.extras.get("time", 0)
-            # 根据实际的 Item 状态重新计算 line，避免缓存与项目数据不一致
-            self.extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
-            self.extras.setdefault("total_tokens", 0)
-            self.extras.setdefault("total_input_tokens", 0)
-            self.extras.setdefault("total_output_tokens", 0)
-        else:
-            # 修复: 计算实际的总行数，而不是硬编码为0
-            total_untranslated = self.cache_manager.get_item_count_by_status(
-                Base.TranslationStatus.UNTRANSLATED
-            )
-            self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
+            override_input = data.get("input_folder")
+            override_output = data.get("output_folder")
+            override_source = data.get("source_language")
+            override_target = data.get("target_language")
+            if override_input:
+                self.config.input_folder = str(override_input)
+            if override_output:
+                self.config.output_folder = str(override_output)
+            if override_source:
+                self.config.source_language = override_source
+            if override_target:
+                self.config.target_language = override_target
+            self.platform = self.config.get_platform(self.config.activate_platform)
+            self._last_runtime_output_folder = self.config.output_folder
+            local_flag = self.initialize_local_flag()
+            max_workers, rpm_threshold = self.initialize_max_workers()
             
-            self.extras = {
-                "start_time": time.time(),
-                "total_line": total_untranslated,  # 使用实际值
-                "line": 0,
-                "total_tokens": 0,
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "time": 0,
-            }
+            # 添加初始化日志
+            self.info(f"[INIT] 配置加载完成: platform={self.platform.get('name', 'unknown')}, model={self.platform.get('model', 'unknown')}")
+            self.info(f"[INIT] 最大并发: {max_workers}, RPM限制: {rpm_threshold}")
 
-        # 更新翻译进度
-        self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
+            # 重置
+            TextProcessor.reset()
+            TaskRequester.reset()
+            PromptBuilder.reset()
 
-        # 规则过滤
-        self.rule_filter(self.cache_manager.get_items())
-
-        # 语言过滤
-        self.language_filter(self.cache_manager.get_items())
-
-        # MTool 优化器预处理
-        self.mtool_optimizer_preprocess(self.cache_manager.get_items())
-
-        # 开始循环
-        for current_round in range(self.config.max_round):
-            if current_round == 0:
-                self.emit(Base.Event.TRANSLATION_UPDATE, {
-                    "phase": "preparing",
-                    "message": "生成任务中…",
-                })
-            # 检测是否需要停止任务
-            # 目的是避免用户正好在两轮之间停止任务
-            if Engine.get().get_status() == Engine.Status.STOPPING:
+            # 生成缓存列表
+            try:
+                # 根据 status 判断是否为继续翻译
+                if status == Base.TranslationStatus.TRANSLATING:
+                    self.cache_manager.load_from_file(self.config.output_folder)
+                else:
+                    shutil.rmtree(f"{self.config.output_folder}/cache", ignore_errors = True)
+                    project, items = FileManager(self.config).read_from_path()
+                    self.cache_manager.set_items(items)
+                    self.cache_manager.set_project(project)
+            except Exception as e:
+                self.error(f"{Localizer.get().log_read_file_fail}", e)
                 return None
 
-            # 第一轮且不是继续翻译时，记录任务的总行数
-            if current_round == 0:
-                remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
-                if status == Base.TranslationStatus.UNTRANSLATED:
-                    self.extras["total_line"] = remaining
-                else:
-                    self.extras["total_line"] = self.extras.get("line", 0) + remaining
+            if self._should_stop_requested():
+                return None
 
-            # 第二轮开始切分
-            if current_round > 0:
-                self.config.token_threshold = max(1, int(self.config.token_threshold / 3))
+            if self.cache_manager.get_item_count() == 0:
+                # 通知
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.WARNING,
+                    "message": Localizer.get().translator_no_items,
+                })
 
-            # 生成缓存数据条目片段
-            chunks, precedings = self.cache_manager.generate_item_chunks(
-                self.config.token_threshold,
-                self.config.preceding_lines_threshold,
-            )
+                self.emit(Base.Event.TRANSLATION_STOP, {})
+                return None
 
-            # 仅在第一轮启用参考上文功能
-            if current_round > 0:
-                precedings = [[] for _ in range(len(precedings))]
-
-            # 生成翻译任务
-            self.print("")
-            tasks: list[TranslatorTask] = []
-            with ProgressBar(transient = False) as progress:
-                pid = progress.new()
-                for items, precedings in zip(chunks, precedings):
-                    progress.update(pid, advance = 1, total = len(chunks))
-                    tasks.append(TranslatorTask(self.config, self.platform, local_flag, items, precedings))
-
-            # 打印日志
-            self.info(Localizer.get().translator_task_generation_log.replace("{COUNT}", str(len(chunks))))
-
-            # 输出开始翻译的日志
-            self.print("")
-            self.print("")
-            self.info(f"{Localizer.get().translator_current_round} - {current_round + 1}")
-            self.info(f"{Localizer.get().translator_max_round} - {self.config.max_round}")
-            self.print("")
-            self.info(f"{Localizer.get().translator_name} - {self.platform.get('name')}")
-            self.info(f"{Localizer.get().translator_api_url} - {self.platform.get('api_url')}")
-            self.info(f"{Localizer.get().translator_model} - {self.platform.get('model')}")
-            self.print("")
-            if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
-                self.info(PromptBuilder(self.config).build_main())
-                self.print("")
-
-            # 开始执行翻译任务
-            task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold, max_concurrency = max_workers)
-            with ProgressBar(transient = True) as progress:
-                pid = progress.new()
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers = max_workers,
-                    thread_name_prefix = Engine.TASK_PREFIX,
+            # 从头翻译时加载默认数据
+            if status == Base.TranslationStatus.TRANSLATING:
+                self.extras = self.cache_manager.get_project().get_extras()
+                self.extras["start_time"] = time.time() - self.extras.get("time", 0)
+                # 根据实际的 Item 状态重新计算 line，避免缓存与项目数据不一致
+                self.extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
+                self.extras.setdefault("total_tokens", 0)
+                self.extras.setdefault("total_input_tokens", 0)
+                self.extras.setdefault("total_output_tokens", 0)
+            else:
+                # 修复: 计算实际的总行数，而不是硬编码为0
+                total_untranslated = self.cache_manager.get_item_count_by_status(
+                    Base.TranslationStatus.UNTRANSLATED
                 )
-                with self.data_lock:
-                    self._active_executor = executor
+                self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
+                
+                self.extras = {
+                    "start_time": time.time(),
+                    "total_line": total_untranslated,  # 使用实际值
+                    "line": 0,
+                    "total_tokens": 0,
+                    "total_input_tokens": 0,
+                    "total_output_tokens": 0,
+                    "time": 0,
+                }
 
-                stopping = False
-                try:
-                    for task in tasks:
-                        # 检测是否需要停止任务
-                        # 目的是绕过限流器，快速结束所有剩余任务
-                        if Engine.get().get_status() == Engine.Status.STOPPING:
-                            stopping = True
-                            break
+            # 更新翻译进度
+            self.cache_manager.get_project().set_extras(self.extras)
+            self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATING)
+            self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
 
-                        if not task_limiter.acquire(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
-                            stopping = True
-                            break
+            if self._should_stop_requested():
+                return None
 
-                        if not task_limiter.wait(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
-                            task_limiter.release()
-                            stopping = True
-                            break
+            # 规则过滤
+            self.rule_filter(self.cache_manager.get_items())
+            if self._should_stop_requested():
+                return None
 
-                        try:
-                            future = executor.submit(task.start, current_round)
-                        except RuntimeError:
-                            task_limiter.release()
-                            stopping = True
-                            break
-                        future.add_done_callback(task_limiter.release)
-                        future.add_done_callback(lambda future: self.task_done_callback(future, pid, progress))
-                finally:
-                    with self.data_lock:
-                        if self._active_executor is executor:
-                            self._active_executor = None
+            # 语言过滤
+            self.language_filter(self.cache_manager.get_items())
+            if self._should_stop_requested():
+                return None
 
-                    if stopping:
-                        try:
-                            executor.shutdown(wait = False, cancel_futures = True)
-                        except Exception:
-                            pass
+            # MTool 优化器预处理
+            self.mtool_optimizer_preprocess(self.cache_manager.get_items())
+            if self._should_stop_requested():
+                return None
+
+            # 开始循环
+            for current_round in range(self.config.max_round):
+                if current_round == 0:
+                    self.emit(Base.Event.TRANSLATION_UPDATE, {
+                        "phase": "preparing",
+                        "message": "生成任务中…",
+                    })
+                # 检测是否需要停止任务
+                # 目的是避免用户正好在两轮之间停止任务
+                if self._should_stop_requested():
+                    return None
+
+                # 第一轮且不是继续翻译时，记录任务的总行数
+                if current_round == 0:
+                    remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
+                    if status == Base.TranslationStatus.UNTRANSLATED:
+                        self.extras["total_line"] = remaining
                     else:
-                        executor.shutdown(wait = True)
+                        self.extras["total_line"] = self.extras.get("line", 0) + remaining
+
+                # 第二轮开始切分
+                if current_round > 0:
+                    self.config.token_threshold = max(1, int(self.config.token_threshold / 3))
+
+                # 生成缓存数据条目片段
+                chunks, precedings = self.cache_manager.generate_item_chunks(
+                    self.config.token_threshold,
+                    self.config.preceding_lines_threshold,
+                )
+
+                # 仅在第一轮启用参考上文功能
+                if current_round > 0:
+                    precedings = [[] for _ in range(len(precedings))]
+
+                # 生成翻译任务
+                self.print("")
+                tasks: list[TranslatorTask] = []
+                with ProgressBar(transient = False) as progress:
+                    pid = progress.new()
+                    for items, precedings in zip(chunks, precedings):
+                        progress.update(pid, advance = 1, total = len(chunks))
+                        tasks.append(TranslatorTask(self.config, self.platform, local_flag, items, precedings))
+
+                # 打印日志
+                self.info(Localizer.get().translator_task_generation_log.replace("{COUNT}", str(len(chunks))))
+
+                # 输出开始翻译的日志
+                self.print("")
+                self.print("")
+                self.info(f"{Localizer.get().translator_current_round} - {current_round + 1}")
+                self.info(f"{Localizer.get().translator_max_round} - {self.config.max_round}")
+                self.print("")
+                self.info(f"{Localizer.get().translator_name} - {self.platform.get('name')}")
+                self.info(f"{Localizer.get().translator_api_url} - {self.platform.get('api_url')}")
+                self.info(f"{Localizer.get().translator_model} - {self.platform.get('model')}")
+                self.print("")
+                if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
+                    self.info(PromptBuilder(self.config).build_main())
+                    self.print("")
+
+                # 开始执行翻译任务
+                task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold, max_concurrency = max_workers)
+                with ProgressBar(transient = True) as progress:
+                    pid = progress.new()
+                    executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers = max_workers,
+                        thread_name_prefix = Engine.TASK_PREFIX,
+                    )
+                    with self.data_lock:
+                        self._active_executor = executor
+
+                    stopping = False
+                    try:
+                        for task in tasks:
+                            # 检测是否需要停止任务
+                            # 目的是绕过限流器，快速结束所有剩余任务
+                            if Engine.get().get_status() == Engine.Status.STOPPING:
+                                stopping = True
+                                break
+
+                            if not task_limiter.acquire(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                                stopping = True
+                                break
+
+                            if not task_limiter.wait(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                                task_limiter.release()
+                                stopping = True
+                                break
+
+                            try:
+                                future = executor.submit(task.start, current_round)
+                            except RuntimeError:
+                                task_limiter.release()
+                                stopping = True
+                                break
+                            future.add_done_callback(task_limiter.release)
+                            future.add_done_callback(lambda future: self.task_done_callback(future, pid, progress))
+                    finally:
+                        with self.data_lock:
+                            if self._active_executor is executor:
+                                self._active_executor = None
+
+                        if stopping:
+                            try:
+                                executor.shutdown(wait = False, cancel_futures = True)
+                            except Exception:
+                                pass
+                        else:
+                            executor.shutdown(wait = True)
 
                 if stopping:
                     return None
 
-            # 判断是否需要继续翻译
-            if self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED) == 0:
-                self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATED)
+                # 判断是否需要继续翻译
+                if self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED) == 0:
+                    self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATED)
 
-                # 日志
-                self.print("")
-                self.info(Localizer.get().translator_done)
-                self.info(Localizer.get().translator_writing)
-                self.print("")
+                    # 日志
+                    self.print("")
+                    self.info(Localizer.get().translator_done)
+                    self.info(Localizer.get().translator_writing)
+                    self.print("")
 
-                # 通知
-                self.emit(Base.Event.APP_TOAST_SHOW, {
-                    "type": Base.ToastType.SUCCESS,
-                    "message": Localizer.get().translator_done,
-                })
-                break
+                    # 通知
+                    self.emit(Base.Event.APP_TOAST_SHOW, {
+                        "type": Base.ToastType.SUCCESS,
+                        "message": Localizer.get().translator_done,
+                    })
+                    break
 
-            # 检查是否达到最大轮次
-            if current_round >= self.config.max_round - 1:
-                # 日志
-                self.print("")
-                self.warning(Localizer.get().translator_fail)
-                self.warning(Localizer.get().translator_writing)
-                self.print("")
+                # 检查是否达到最大轮次
+                if current_round >= self.config.max_round - 1:
+                    # 日志
+                    self.print("")
+                    self.warning(Localizer.get().translator_fail)
+                    self.warning(Localizer.get().translator_writing)
+                    self.print("")
 
-                # 通知
-                self.emit(Base.Event.APP_TOAST_SHOW, {
-                    "type": Base.ToastType.SUCCESS,
-                    "message": Localizer.get().translator_fail,
-                })
-                break
+                    # 通知
+                    self.emit(Base.Event.APP_TOAST_SHOW, {
+                        "type": Base.ToastType.SUCCESS,
+                        "message": Localizer.get().translator_fail,
+                    })
+                    break
 
-        # 等待回调执行完毕
-        time.sleep(1.0)
+            # 等待回调执行完毕
+            time.sleep(1.0)
 
-        # MTool 优化器后处理
-        self.mtool_optimizer_postprocess(self.cache_manager.get_items())
+            # MTool 优化器后处理
+            self.mtool_optimizer_postprocess(self.cache_manager.get_items())
 
-        # 写入缓存
-        self.cache_manager.save_to_file(
-            project = self.cache_manager.get_project(),
-            items = self.cache_manager.get_items(),
-            output_folder = self.config.output_folder,
-        )
+            # 写入缓存
+            self.cache_manager.save_to_file(
+                project = self.cache_manager.get_project(),
+                items = self.cache_manager.get_items(),
+                output_folder = self.config.output_folder,
+            )
 
-        # 检查结果并写入文件
-        self.check_and_wirte_result(self.cache_manager.get_items())
+            # 检查结果并写入文件
+            self.check_and_wirte_result(self.cache_manager.get_items())
 
-        # 重置内部状态（正常完成翻译）
-        Engine.get().set_status(Engine.Status.IDLE)
+            # 重置内部状态（正常完成翻译）
+            Engine.get().set_status(Engine.Status.IDLE)
 
-        # 触发翻译停止完成的事件
-        self.emit(Base.Event.TRANSLATION_DONE, {})
+            # 触发翻译停止完成的事件
+            self.emit(Base.Event.TRANSLATION_DONE, {})
+        finally:
+            self._translation_thread = None
 
     # 初始化本地标识
     def initialize_local_flag(self) -> bool:
@@ -501,6 +578,8 @@ class Translator(Base):
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
             for item in items:
+                if self._should_stop_requested():
+                    return None
                 progress.update(pid, advance = 1, total = len(items))
                 if RuleFilter.filter(item.get_src()) == True:
                     count = count + 1
@@ -520,6 +599,8 @@ class Translator(Base):
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
             for item in items:
+                if self._should_stop_requested():
+                    return None
                 progress.update(pid, advance = 1, total = len(items))
                 if LanguageFilter.filter(item.get_src(), self.config.source_language) == True:
                     count = count + 1
@@ -540,6 +621,8 @@ class Translator(Base):
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
             for item in items:
+                if self._should_stop_requested():
+                    return None
                 progress.update(pid, advance = 1, total = len(items))
                 if item.get_file_type() == CacheItem.FileType.KVJSON:
                     items_kvjson.append(item)
