@@ -106,9 +106,17 @@ class ErrorRepairPage(Base, QWidget):
         self.fix_indent_check.setChecked(True)
         layout.addWidget(self.fix_indent_check)
 
+        self.fix_indent_level_check = CheckBox("修复缩进层级问题（按父块回退）")
+        self.fix_indent_level_check.setChecked(False)
+        layout.addWidget(self.fix_indent_level_check)
+
         self.fix_quotes_check = CheckBox("修复引号问题")
         self.fix_quotes_check.setChecked(True)
         layout.addWidget(self.fix_quotes_check)
+
+        self.fix_dialogue_quotes_check = CheckBox("修复未转义引号（源码翻译）")
+        self.fix_dialogue_quotes_check.setChecked(True)
+        layout.addWidget(self.fix_dialogue_quotes_check)
 
         self.fix_encoding_check = CheckBox("修复编码问题")
         self.fix_encoding_check.setChecked(False)
@@ -124,7 +132,7 @@ class ErrorRepairPage(Base, QWidget):
 
         layout.addWidget(StrongBodyLabel("🔍 深度 Lint 检查"))
 
-        desc = CaptionLabel("调用 Ren'Py 内置 lint 命令进行深度语法检查和自动修复", self)
+        desc = CaptionLabel("调用 Ren'Py 内置 lint 命令进行深度语法检查", self)
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -144,12 +152,8 @@ class ErrorRepairPage(Base, QWidget):
         
         self.lint_check_button = PushButton("执行 Lint 检查", icon=FluentIcon.SEARCH)
         self.lint_check_button.clicked.connect(self._run_lint_check)
-        
-        self.lint_fix_button = PrimaryPushButton("自动修复 Lint 错误", icon=FluentIcon.ACCEPT)
-        self.lint_fix_button.clicked.connect(self._run_lint_fix)
-        
+
         btn_row.addWidget(self.lint_check_button)
-        btn_row.addWidget(self.lint_fix_button)
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
@@ -191,9 +195,16 @@ class ErrorRepairPage(Base, QWidget):
                 return
 
             LogManager.get().info(f"开始扫描错误: {game_dir}")
-            
+             
             repairer = ErrorRepairer()
-            report = repairer.check_folder(game_dir, encoding="utf-8")
+            report = repairer.check_folder(
+                game_dir,
+                check_indent=self.fix_indent_check.isChecked(),
+                check_indent_level=self.fix_indent_level_check.isChecked(),
+                check_quotes=self.fix_quotes_check.isChecked(),
+                check_dialogue_quotes=self.fix_dialogue_quotes_check.isChecked(),
+                encoding="utf-8",
+            )
             
             total_issues = sum(len(issues) for issues in report.values())
             LogManager.get().info(f"扫描完成，发现 {total_issues} 个问题")
@@ -225,7 +236,9 @@ class ErrorRepairPage(Base, QWidget):
                 success, count = repairer.auto_fix_file(
                     str(rpy_file),
                     fix_indent=self.fix_indent_check.isChecked(),
+                    fix_indent_level=self.fix_indent_level_check.isChecked(),
                     fix_quotes=self.fix_quotes_check.isChecked(),
+                    fix_dialogue_quotes=self.fix_dialogue_quotes_check.isChecked(),
                     encoding="utf-8"
                 )
                 if success and count > 0:
@@ -275,29 +288,3 @@ class ErrorRepairPage(Base, QWidget):
             LogManager.get().error(f"Lint 检查失败: {e}")
             InfoBar.error("错误", f"Lint 检查失败: {e}", parent=self)
 
-    def _run_lint_fix(self):
-        """自动修复 Lint 错误"""
-        try:
-            game_exe = self.game_exe_edit.text().strip()
-            if not game_exe:
-                InfoBar.warning("提示", "请选择游戏主程序", parent=self)
-                return
-
-            if not Path(game_exe).exists():
-                InfoBar.error("错误", "游戏主程序不存在", parent=self)
-                return
-
-            LogManager.get().info(f"开始自动修复 Lint 错误: {game_exe}")
-            
-            repairer = ErrorRepairer()
-            success, fixed_count = repairer.fix_by_lint(game_exe, max_iterations=16)
-            
-            if success:
-                LogManager.get().info(f"Lint 修复完成，共修复 {fixed_count} 处")
-                InfoBar.success("修复完成", f"共修复 {fixed_count} 处错误", parent=self)
-            else:
-                InfoBar.error("错误", "修复过程中出现问题", parent=self)
-                
-        except Exception as e:
-            LogManager.get().error(f"Lint 修复失败: {e}")
-            InfoBar.error("错误", f"Lint 修复失败: {e}", parent=self)
