@@ -151,6 +151,17 @@ class RenpySourceParser:
         + STRING_PREFIX +
         r'(?P<quote>["\'])(?P<text>(?:\\.|[^\\])*?)(?P=quote)(?P<trailing>.*)$'
     )
+
+    # 条件提示元组: ("条件表达式", "显示文本", ...)
+    # 常见于 whattodo.rpy 这类待办提示表，第一段字符串是条件代码，第二段才是用户可见文本。
+    RE_CONDITION_TEXT_TUPLE = re.compile(
+        r'^\s*\(\s*'
+        + STRING_PREFIX +
+        r'(?P<cond_quote>["\'])(?P<condition>(?:\\.|[^\\])*?)(?P=cond_quote)\s*,\s*'
+        + STRING_PREFIX +
+        r'(?P<text_quote>["\'])(?P<text>(?:\\.|[^\\])*?)(?P=text_quote)'
+        r'(?P<trailing>.*)$'
+    )
     
     # ========== 新增：renpy.notify 和字典字段模式 ==========
     # $renpy.notify("...") 语句
@@ -768,6 +779,22 @@ class RenpySourceParser:
                 speaker=None,
                 text="",
             )]
+
+        # 条件提示元组：只提取第二段用户可见文本，第一段条件表达式必须保持原样。
+        match_condition_tuple = self.RE_CONDITION_TEXT_TUPLE.match(line)
+        if match_condition_tuple:
+            condition = match_condition_tuple.group("condition")
+            text = match_condition_tuple.group("text")
+            if self._looks_like_condition_expr(condition) and text.strip() and not self._should_skip_text(text):
+                protected = self._extract_protected_tags(text)
+                return [TranslationEntry(
+                    line_number=line_num,
+                    line_type=LineType.NARRATION,
+                    original_line=line,
+                    speaker=None,
+                    text=text,
+                    protected_tags=protected,
+                )]
         
         # 对话行
         match_dialogue = self.RE_DIALOGUE.match(line)
@@ -975,6 +1002,18 @@ class RenpySourceParser:
     def _extract_protected_tags(self, text: str) -> List[str]:
         """提取需要保护的标签"""
         return self.RE_PROTECTED_TAGS.findall(text)
+
+    def _looks_like_condition_expr(self, text: str) -> bool:
+        """判断字符串是否像 Ren'Py/Python 条件表达式。"""
+        candidate = (text or "").strip()
+        if not candidate:
+            return False
+
+        try:
+            ast.parse(candidate, mode="eval")
+            return True
+        except SyntaxError:
+            return False
 
 
 class RenpySourceTranslator:
