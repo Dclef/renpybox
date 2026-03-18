@@ -16,8 +16,9 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Any, List, Optional, Sequence, Set, Tuple
 
+from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Text.SkipRules import should_skip_text
@@ -29,6 +30,7 @@ MISS_RPY = "miss_ready_replace.rpy"
 LEGACY_MISS_TXT = "miss_ready_replace.txt"
 MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
+HOOK_MANIFEST = "hook_translate_manifest.json"
 REGEX_CACHE_VERSION = 1
 
 
@@ -541,6 +543,135 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
     return result
 
 
+def _detect_missing_character_names(strings: Set[str]) -> Set[str]:
+    """从缺失文本中识别可回填到术语库的角色名。"""
+    detected: Set[str] = set()
+    for text in strings:
+        if not _is_character_name(text):
+            continue
+        clean_name = _strip_format_tags(text)
+        if clean_name and not should_skip_text(clean_name):
+            detected.add(clean_name)
+    return detected
+
+
+def _write_hook_manifest(
+    manifest_path: Path,
+    *,
+    target_path: str | Path,
+    tl_name: str,
+    entries: Sequence[dict[str, Any]],
+    stats: dict[str, Any],
+) -> Path:
+    """Write a JSON manifest for HOOK scan/debug purposes."""
+
+    payload = {
+        "version": 1,
+        "target_path": str(target_path),
+        "tl_name": tl_name,
+        "regex_count": int(stats.get("regex_count", 0) or 0),
+        "covered_count": int(stats.get("covered_count", 0) or 0),
+        "missing_count": int(stats.get("missing_count", 0) or 0),
+        "auto_filled_count": int(stats.get("auto_filled_count", 0) or 0),
+        "detected_names_count": int(stats.get("detected_names_count", 0) or 0),
+        "added_names_count": int(stats.get("added_names_count", 0) or 0),
+        "hook_output_path": str(stats.get("hook_output_path", "")),
+        "entries": [
+            {
+                "src": str(entry.get("src", "")),
+                "dst": str(entry.get("dst", "")),
+                "status": str(entry.get("status", "")),
+                "prefilled": bool(entry.get("prefilled", False)),
+            }
+            for entry in entries
+        ],
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def collect_hook_translation_entries(
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    write_manifest: bool = True,
+    auto_update_glossary: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Scan official-TL misses and convert them into Engine-friendly HOOK entries."""
+
+    logger = LogManager.get()
+    game_dir = _get_game_dir(target_path)
+    tl_dir = game_dir / "tl" / tl_name
+    tl_dir.mkdir(parents=True, exist_ok=True)
+    miss_dir = tl_dir / MISS_DIR
+    miss_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("正在扫描 HOOK 缺失文本...")
+    regex_all = _extract_all_strings_regex(game_dir, cache_path=miss_dir / REGEX_CACHE)
+    regex_filtered = _filter_valid_strings(regex_all)
+
+    logger.info("正在读取 tl 已覆盖文本...")
+    tl_covered = _get_tl_covered_strings(target_path, tl_name)
+    missing = regex_filtered - tl_covered
+    glossary_map = _load_glossary_map()
+
+    detected_names = _detect_missing_character_names(missing)
+    added_names = 0
+    if auto_update_glossary and detected_names:
+        added_names = add_names_to_glossary(detected_names)
+
+    auto_filled_count = 0
+    entries: list[dict[str, Any]] = []
+    for text in sorted(missing, key=lambda value: (-len(value), value)):
+        translated = glossary_map.get(text, "")
+        prefilled = bool(translated and translated != text)
+        if prefilled:
+            auto_filled_count += 1
+        entries.append(
+            {
+                "src": text,
+                "dst": translated if prefilled else text,
+                "status": (
+                    Base.TranslationStatus.TRANSLATED_IN_PAST
+                    if prefilled
+                    else Base.TranslationStatus.UNTRANSLATED
+                ),
+                "prefilled": prefilled,
+            }
+        )
+
+    stats: dict[str, Any] = {
+        "regex_count": len(regex_filtered),
+        "covered_count": len(tl_covered),
+        "missing_count": len(missing),
+        "auto_filled_count": auto_filled_count,
+        "detected_names_count": len(detected_names),
+        "added_names_count": added_names,
+        "hook_output_path": str(tl_dir / "replace_text_auto.rpy"),
+        "manifest_path": str(miss_dir / HOOK_MANIFEST),
+    }
+
+    if write_manifest:
+        _write_hook_manifest(
+            miss_dir / HOOK_MANIFEST,
+            target_path=target_path,
+            tl_name=tl_name,
+            entries=entries,
+            stats=stats,
+        )
+
+    logger.info(
+        f"HOOK 扫描统计: 正则={len(regex_filtered)}, "
+        f"tl覆盖={len(tl_covered)}, 缺失={len(missing)}, 术语预填={auto_filled_count}"
+    )
+
+    return entries, stats
+
+
 def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path | None, int, int, int, Set[str]]:
     """【一键操作】自动生成缺失补丁。
     
@@ -956,44 +1087,86 @@ def parse_miss_rpy(game_dir: str | Path, tl_name: str) -> List[Pair]:
     return pairs
 
 
+def build_replace_pairs_from_entries(entries: Sequence[Any]) -> List[Pair]:
+    """Collect translated replace pairs from dict/cache-item style entries."""
+
+    mapping: dict[str, str] = {}
+    for entry in entries:
+        if hasattr(entry, "get_src") and hasattr(entry, "get_dst"):
+            original = entry.get_src()
+            translation = entry.get_dst()
+        elif isinstance(entry, dict):
+            original = entry.get("src", "")
+            translation = entry.get("dst", "")
+        else:
+            continue
+
+        if not isinstance(original, str) or not isinstance(translation, str):
+            continue
+        if original == "" or translation == "" or original == translation:
+            continue
+
+        mapping[original] = translation
+
+    return sorted(mapping.items(), key=lambda item: (-len(item[0]), item[0]))
+
+
 def render_replace_script(
     pairs: Sequence[Pair],
     *,
-    function_name: str = "replace_text",
+    function_name: str = "renpybox_replace_text_auto",
+    previous_name: str = "_renpybox_replace_text_previous",
     target_name: str = "t",
     assign_to_config: bool = True,
     language: str | None = "chinese",
+    use_translate_python: bool = True,
+    wrap_existing: bool = True,
 ) -> str:
     """Render a Ren'Py script that defines a ``replace_text`` hook."""
 
+    normalized_pairs = sorted(dict(pairs).items(), key=lambda item: (-len(item[0]), item[0]))
+    block_header = (
+        f"translate {language} python:"
+        if use_translate_python and language
+        else "init python:"
+    )
     lines: List[str] = [
         "# Auto-generated replace_text hook",
         "# 用于替换官方抽取无法覆盖的文本",
         "",
-        "init python:",
-        "",
-        "    import re",
-        f"    def {function_name}({target_name}):",
+        block_header,
         "",
     ]
 
-    if language:
-        lines.append(f"        if _preferences.language == \"{language}\":")
-        if not pairs:
-            lines.append("            pass")
-        else:
-            for original, translation in pairs:
-                escaped_old = _escape_string(original)
-                escaped_new = _escape_string(translation)
-                lines.append(f'            {target_name} = {target_name}.replace("{escaped_old}" , "{escaped_new}")')
+    if wrap_existing:
+        lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
         lines.append("")
+
+    lines.extend([
+        f"    def {function_name}({target_name}):",
+        "",
+        f"        if not isinstance({target_name}, str):",
+        f"            return {target_name}",
+        "",
+    ])
+
+    if wrap_existing:
+        lines.extend([
+            f"        if callable({previous_name}) and {previous_name} is not {function_name}:",
+            f"            {target_name} = {previous_name}({target_name})",
+            f"            if not isinstance({target_name}, str):",
+            f"                return {target_name}",
+            "",
+        ])
+
+    if normalized_pairs:
+        for original, translation in normalized_pairs:
+            escaped_old = _escape_string(original)
+            escaped_new = _escape_string(translation)
+            lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
     else:
-        if pairs:
-            for original, translation in pairs:
-                escaped_old = _escape_string(original)
-                escaped_new = _escape_string(translation)
-                lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}" , "{escaped_new}")')
-            lines.append("")
+        lines.append("        pass")
+    lines.append("")
 
     lines.append(f"        return {target_name}")
 

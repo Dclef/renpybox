@@ -13,6 +13,7 @@ from module.File.KVJSON import KVJSON
 from module.File.MD import MD
 from module.File.MESSAGEJSON import MESSAGEJSON
 from module.File.RENPY import RENPY
+from module.File.RENPYHOOK import RENPYHOOK
 from module.File.RENPYSOURCE import RENPYSOURCE
 from module.File.SRT import SRT
 from module.File.TRANS.TRANS import TRANS
@@ -81,6 +82,10 @@ class FileManager(Base):
 
         items: list[CacheItem] = []
         try:
+            if getattr(self.config, "renpy_hook_translate", False):
+                items.extend(RENPYHOOK(self.config).read_from_path([]))
+                return project, items
+
             # 源码翻译模式：仅处理 .rpy 源码
             if getattr(self.config, "renpy_source_translate", False):
                 rpy_paths = self._collect_source_rpy_paths(self.config.input_folder)
@@ -125,6 +130,7 @@ class FileManager(Base):
             WOLFXLSX(self.config).write_to_path(items)
             # 按条目类型分别写回，避免“从缓存重新注入”时因配置开关不一致导致
             # RENPYSOURCE / RENPY 写回分支走错。
+            RENPYHOOK(self.config).write_to_path(items)
             RENPYSOURCE(self.config).write_to_path(items)
             RENPY(self.config).write_to_path(items)
             TRANS(self.config).write_to_path(items)

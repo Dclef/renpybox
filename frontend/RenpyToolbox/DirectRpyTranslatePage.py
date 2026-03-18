@@ -206,6 +206,7 @@ class DirectRpyTranslatePage(Base, QWidget):
             config.renpy_backup_original = self.backup_switch.isChecked()
             # 直接翻译 tl/.rpy，必须关闭源码翻译模式，否则 FileManager 会走 RENPYSOURCE 分支
             config.renpy_source_translate = False
+            config.renpy_hook_translate = False
 
             lang_map = {
                 "简体中文": "ZH",

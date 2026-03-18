@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
 from qfluentwidgets import (
     FluentIcon,
@@ -25,20 +25,12 @@ from qfluentwidgets import (
     CaptionLabel,
     ProgressBar,
     InfoBar,
-    InfoBarPosition,
     SingleDirectionScrollArea,
 )
 
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.UnifiedExtractor import UnifiedExtractor
-from module.Extract.ReplaceGenerator import (
-    scan_missing_and_update_glossary,
-    check_miss_rpy_status,
-    parse_miss_rpy,
-    write_replace_script,
-    sync_miss_rpy_with_glossary,
-)
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -49,9 +41,6 @@ class RenpyTranslationPage(QWidget):
         super().__init__(parent=parent)
         self.logger = LogManager.get()
         self.config = Config().load()
-        self._miss_status_timer = QTimer(self)
-        self._miss_status_timer.setSingleShot(True)
-        self._miss_status_timer.timeout.connect(self._update_miss_status)
         # 保底：至少开启补充抽取，避免全关导致不会跑
         if not self.config.extract_use_official and not self.config.extract_use_custom:
             self.config.extract_use_custom = True
@@ -97,24 +86,6 @@ class RenpyTranslationPage(QWidget):
         self.progress_bar = ProgressBar(self)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
-
-        # 输入变化时自动刷新缺失状态（避免返回页面后还要手动点“扫描缺失”）
-        try:
-            self.game_dir_edit.textChanged.connect(self._schedule_miss_status_update)
-            self.tl_name_edit.textChanged.connect(self._schedule_miss_status_update)
-        except Exception:
-            pass
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        # 页面回到前台时刷新 miss 状态
-        self._schedule_miss_status_update()
-
-    def _schedule_miss_status_update(self) -> None:
-        if not hasattr(self, "miss_status"):
-            return
-        # 轻量防抖：用户粘贴/输入路径时避免高频 IO
-        self._miss_status_timer.start(200)
 
     def _create_main_card(self) -> CardWidget:
         """主功能卡片 - 极简"""
@@ -259,50 +230,11 @@ class RenpyTranslationPage(QWidget):
         restore_tip.setWordWrap(True)
         adv_layout.addWidget(restore_tip)
 
-        # === 缺失补丁工具 ===
-        adv_layout.addWidget(self._create_miss_section())
-
         layout.addWidget(self.advanced_widget)
         self.advanced_widget.setVisible(False)  # 默认折叠
         self._refresh_option_state()
 
         return card
-
-    def _create_miss_section(self) -> QWidget:
-        """缺失补丁区域"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(6)
-
-        # 分隔说明
-        sep = CaptionLabel("── 缺失补丁工具 ──")
-        sep.setStyleSheet("color: #888;")
-        layout.addWidget(sep)
-
-        desc = CaptionLabel("检测官方抽取遗漏的文本，生成 replace_text 钩子修复")
-        desc.setStyleSheet("color: #666; font-size: 11px;")
-        layout.addWidget(desc)
-
-        # 状态
-        self.miss_status = CaptionLabel("")
-        layout.addWidget(self.miss_status)
-
-        # 按钮
-        btn_row = QHBoxLayout()
-        self.scan_btn = PushButton(FluentIcon.SEARCH, "扫描缺失")
-        self.scan_btn.clicked.connect(self._scan_missing)
-        btn_row.addWidget(self.scan_btn)
-
-        self.hook_btn = PushButton(FluentIcon.EDIT, "生成钩子")
-        self.hook_btn.clicked.connect(self._generate_hook)
-        self.hook_btn.setEnabled(False)
-        btn_row.addWidget(self.hook_btn)
-
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-
-        return widget
 
     def _toggle_advanced(self):
         """切换高级选项显示"""
@@ -453,86 +385,11 @@ class RenpyTranslationPage(QWidget):
             
             if result.success:
                 InfoBar.success("抽取完成", result.message, parent=self)
-                # 更新缺失状态
-                if hasattr(self, 'miss_status'):
-                    self._update_miss_status()
             else:
                 InfoBar.error("抽取失败", result.message, parent=self)
 
         except Exception as e:
             self.logger.error(f"抽取失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
-            self._end(False)
-
-    def _scan_missing(self):
-        """扫描缺失文本并反补角色名到术语库"""
-        try:
-            target, tl, _ = self._resolve_paths()
-            self._begin("正在扫描…")
-
-            miss_path, count, added_names = scan_missing_and_update_glossary(target, tl)
-            self._update_miss_status()
-
-            if count == 0:
-                InfoBar.success(
-                    "扫描完成",
-                    "未发现缺失文本",
-                    parent=self
-                )
-            else:
-                msg = f"发现 {count} 条缺失文本"
-                if added_names > 0:
-                    msg += f"，已将 {added_names} 个角色名添加到术语库"
-                InfoBar.success("扫描完成", msg, parent=self)
-            self._end(True)
-        except Exception as e:
-            self.logger.error(f"扫描失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
-            self._end(False)
-
-    def _generate_hook(self):
-        """生成 replace 钩子"""
-        try:
-            target, tl, project_root = self._resolve_paths()
-            self._begin("正在生成钩子…")
-
-            tl_dir = project_root / "game" / "tl" / tl
-            status = check_miss_rpy_status(target, tl)
-            miss_path = status.get("path") if isinstance(status, dict) else None
-            if not status.get("exists"):
-                self.progress_bar.setVisible(False)
-                InfoBar.warning(
-                    "提示",
-                    "请先点击「扫描缺失」生成 miss_ready_replace.rpy",
-                    parent=self
-                )
-                return
-            
-            # 先同步术语库翻译到 miss_ready_replace.rpy
-            synced = sync_miss_rpy_with_glossary(project_root / "game", tl)
-            if synced > 0:
-                self.logger.info(f"已从术语库同步 {synced} 条翻译到 miss_ready_replace.rpy")
-            
-            pairs = parse_miss_rpy(project_root / "game", tl)
-
-            if not pairs:
-                self.progress_bar.setVisible(False)
-                InfoBar.warning(
-                    "提示",
-                    f"请先编辑 {miss_path or 'miss_ready_replace.rpy'}，将 new 字段改为译文",
-                    parent=self
-                )
-                return
-
-            output = tl_dir / "replace_text_auto.rpy"
-            write_replace_script(output, pairs)
-
-            self._end(True)
-            self._update_miss_status()
-            InfoBar.success("完成", f"已生成钩子 ({len(pairs)} 条)", parent=self)
-
-        except Exception as e:
-            self.logger.error(f"生成钩子失败: {e}")
             InfoBar.error("错误", str(e), parent=self)
             self._end(False)
 
@@ -620,32 +477,6 @@ class RenpyTranslationPage(QWidget):
             InfoBar.error("错误", str(e), parent=self)
             self._end(False)
 
-    def _update_miss_status(self):
-        """更新缺失状态显示"""
-        try:
-            target, tl, _ = self._resolve_paths()
-            status = check_miss_rpy_status(target, tl)
-
-            if not status["exists"]:
-                self.miss_status.setText("状态: 尚未扫描")
-                self.miss_status.setStyleSheet("color: #666;")
-                self.hook_btn.setEnabled(False)
-            else:
-                total = status["total_count"]
-                done = status["translated_count"]
-                if done == 0:
-                    self.miss_status.setText(f"状态: {total} 条待翻译")
-                    self.miss_status.setStyleSheet("color: #e0a000;")
-                    self.hook_btn.setEnabled(False)
-                else:
-                    self.miss_status.setText(f"状态: 已翻译 {done}/{total}")
-                    self.miss_status.setStyleSheet("color: #20a050;")
-                    self.hook_btn.setEnabled(True)
-        except Exception:
-            self.miss_status.setText("状态: 请先选择游戏")
-            self.miss_status.setStyleSheet("color: #666;")
-            self.hook_btn.setEnabled(False)
-
     # ==================== 工具方法 ====================
 
     def _resolve_paths(self) -> tuple[str, str, Path]:
@@ -681,8 +512,6 @@ class RenpyTranslationPage(QWidget):
             self.game_dir_edit.setText(path)
             self.config.renpy_game_folder = path
             self.config.save()
-            if hasattr(self, 'miss_status'):
-                self._update_miss_status()
 
     def _browse_exe(self, edit: LineEdit):
         path, _ = QFileDialog.getOpenFileName(
@@ -714,15 +543,6 @@ class RenpyTranslationPage(QWidget):
                     self.exe_edit.setPlaceholderText("仅勾选官方抽取时需要，留空自动查找 .exe")
                 else:
                     self.exe_edit.setPlaceholderText("留空自动查找 .exe")
-
-            # 缺失补丁工具依赖官方抽取结果，未开启时禁用
-            if hasattr(self, 'scan_btn') and hasattr(self, 'hook_btn'):
-                enable_missing = use_official
-                self.scan_btn.setEnabled(enable_missing)
-                self.hook_btn.setEnabled(enable_missing and self.hook_btn.isEnabled())
-                if not enable_missing:
-                    self.miss_status.setText("状态: 需先开启官方抽取")
-                    self.miss_status.setStyleSheet("color: #666;")
 
             # 至少保证有一种抽取方式
             if not use_official and not use_custom:
