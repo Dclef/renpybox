@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -37,6 +37,12 @@ from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 class HookTranslatePage(Base, QWidget):
     """Runtime EXE hook translation flow for Ren'Py."""
 
+    # 运行时线程 -> UI 主线程：状态/结果信号
+    runtime_status_signal = pyqtSignal(str)
+    runtime_failed_signal = pyqtSignal(str)
+    runtime_cancelled_signal = pyqtSignal()
+    runtime_extracted_signal = pyqtSignal(object, object)
+
     def __init__(self, object_name: str, parent: Optional[QWidget] = None) -> None:
         Base.__init__(self)
         QWidget.__init__(self, parent)
@@ -53,6 +59,10 @@ class HookTranslatePage(Base, QWidget):
         self._runtime_thread: threading.Thread | None = None
 
         self._init_ui()
+        self.runtime_status_signal.connect(self._set_runtime_status)
+        self.runtime_failed_signal.connect(self._finish_runtime_failed)
+        self.runtime_cancelled_signal.connect(self._finish_runtime_cancelled)
+        self.runtime_extracted_signal.connect(self._start_engine_translation)
 
         self.subscribe(Base.Event.TRANSLATION_UPDATE, self._on_engine_update)
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_engine_done)
@@ -374,21 +384,18 @@ class HookTranslatePage(Base, QWidget):
                 should_stop = self._stop_requested.is_set,
             )
             if self._stop_requested.is_set():
-                QTimer.singleShot(0, self._finish_runtime_cancelled)
+                self.runtime_cancelled_signal.emit()
                 return
-            QTimer.singleShot(
-                0,
-                lambda cfg = config, out_dir = tl_dir: self._start_engine_translation(cfg, out_dir),
-            )
+            self.runtime_extracted_signal.emit(config, tl_dir)
         except Exception as exc:
             message = str(exc)
             if self._stop_requested.is_set() or "已取消" in message:
-                QTimer.singleShot(0, self._finish_runtime_cancelled)
+                self.runtime_cancelled_signal.emit()
                 return
-            QTimer.singleShot(0, lambda msg = message: self._finish_runtime_failed(msg))
+            self.runtime_failed_signal.emit(message)
 
     def _queue_runtime_status(self, message: str) -> None:
-        QTimer.singleShot(0, lambda msg = message: self._set_runtime_status(msg))
+        self.runtime_status_signal.emit(message)
 
     def _set_runtime_status(self, message: str) -> None:
         if self._state != "extracting":
