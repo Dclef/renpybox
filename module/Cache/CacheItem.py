@@ -31,6 +31,7 @@ class CacheItem():
         WOLFXLSX = "WOLFXLSX"                      # .xlsx WOLF 官方翻译工具导出文件
         RENPY = "RENPY"                            # .rpy RenPy
         RENPYSOURCE = "RENPYSOURCE"                # .rpy 源码翻译
+        RENPYHOOK = "RENPYHOOK"                    # Ren'Py replace_text 补全
         TRANS = "TRANS"                            # .trans Translator++
         KVJSON = "KVJSON"                          # .json MTool
         MESSAGEJSON = "MESSAGEJSON"                # .json SExtractor

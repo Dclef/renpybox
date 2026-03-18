@@ -135,6 +135,7 @@ class Config():
     renpy_backup_original: bool = True
     # 源码翻译：引擎读取 .rpy 源码
     renpy_source_translate: bool = False
+    renpy_hook_translate: bool = False  # replace_text 补全模式
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
     # 删除与 translate 块重复的 strings 项，避免双份：保留块翻译，移除 old/new

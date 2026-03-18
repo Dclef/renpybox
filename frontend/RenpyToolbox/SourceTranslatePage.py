@@ -366,6 +366,7 @@ class SourceTranslatePage(Base, QWidget):
             config.renpy_backup_original = bool(backup)
             # 源码翻译走引擎时，启用源码解析模式
             config.renpy_source_translate = True
+            config.renpy_hook_translate = False
         except Exception as exc:
             self.logger.error(f"加载/写入配置失败: {exc}")
             InfoBar.error("错误", f"加载配置失败: {exc}", parent=self)
