@@ -85,6 +85,7 @@
     "renpy_extract_screens": true,
     "renpy_backup_original": true,
     "renpy_source_translate": false,
+    "renpy_hook_translate": false,
     "renpy_auto_detect_encoding": true,
     "renpy_default_encoding": "utf-8",
     "renpy_remove_string_duplicates": true,

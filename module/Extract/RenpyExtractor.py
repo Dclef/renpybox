@@ -190,6 +190,9 @@ class RenpyExtractor:
         game_dir = project / "game"
         if not game_dir.exists():
             raise FileNotFoundError(f"未找到 game 目录: {game_dir}")
+        normalized_tl_name = (tl_name or "").strip() or "chinese"
+        target_tl_dir = game_dir / "tl" / normalized_tl_name
+        target_tl_dir.mkdir(parents=True, exist_ok=True)
 
         hook_source = Path(
             get_resource_path("resource", "hooks", "hook_runtime_extract.rpy")
@@ -206,13 +209,16 @@ class RenpyExtractor:
 
         self._cleanup_runtime_files(hook_target, hook_compiled, result_path)
         shutil.copyfile(hook_source, hook_target)
-        self._report_progress(progress_callback, "已注入运行时 hook，准备启动游戏 EXE")
+        self._report_progress(
+            progress_callback,
+            f"已注入运行时 hook，目标目录：{target_tl_dir}，准备启动游戏 EXE",
+        )
 
         creationflags = 0x08000000 if os.name == "nt" else 0
         launch_env = os.environ.copy()
-        launch_env["RENPYBOX_TL_NAME"] = tl_name
-        launch_env["RENPY_UPDATE_STRINGS"] = "1"
-        launch_env["RENPY_LANGUAGE"] = tl_name
+        launch_env["RENPYBOX_TL_NAME"] = normalized_tl_name
+        # 避免 Ren'Py 把字符串更新写到“当前语言目录”而不是用户指定目录。
+        launch_env.pop("RENPY_UPDATE_STRINGS", None)
         process = subprocess.Popen(
             [str(exe)],
             cwd = str(project),
@@ -238,7 +244,7 @@ class RenpyExtractor:
 
             runtime_data = self._load_runtime_mapping(result_path, project)
             self._report_progress(progress_callback, "运行时抽取完成，正在写入 tl 目录")
-            tl_dir = self._write_runtime_tl(project, tl_name, runtime_data, generate_empty)
+            tl_dir = self._write_runtime_tl(project, normalized_tl_name, runtime_data, generate_empty)
             self._report_progress(progress_callback, f"已写入 tl 目录：{tl_dir}")
             return tl_dir
         finally:
