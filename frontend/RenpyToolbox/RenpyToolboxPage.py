@@ -131,6 +131,8 @@ class RenpyToolboxPage(Base, QWidget):
         card_specs.extend([
             ("⭐ 一键翻译", "小白推荐：选择游戏目录 → 自动抽取 → 开始翻译", self._open_one_key_translate),
             ("📄 直接翻译RPY", "直接翻译 tl/*.rpy 文件（高级用户）", self._open_direct_rpy_translate),
+            ("HOOK翻译", "启动游戏 EXE 做运行时 hook 抽取，再直接翻译 tl/<lang>", self._open_hook_translate),
+            ("补全翻译", "扫描漏提文本并生成 replace_text_auto.rpy", self._open_hook_supplement),
             ("源码翻译", "直接翻译 game/*.rpy 源码，无需 tl 目录", self._open_source_translate),
             ("翻译抽取到TL", "高级：官方抽取、运行时抽取等", self._open_extract_to_tl),
             ("错误校对", "基于缓存进行校对、筛选与重译", self._open_proofreading_task),
@@ -214,6 +216,36 @@ class RenpyToolboxPage(Base, QWidget):
             from qfluentwidgets import InfoBar
             LogManager.get().error(f"打开直接翻译RPY页面失败: {e}")
             InfoBar.error("错误", f"打开页面失败: {e}", parent=self)
+
+    def _open_hook_translate(self, card):
+        """打开 HOOK 翻译页面"""
+        try:
+            from frontend.RenpyToolbox.HookTranslatePage import HookTranslatePage
+
+            if not hasattr(self.window, "hook_translate_page"):
+                self.window.hook_translate_page = HookTranslatePage("hook-translate", self.window)
+                self._mark_toolbox_widget(self.window.hook_translate_page)
+            self._goto_widget("HOOK翻译", self.window.hook_translate_page)
+        except Exception as e:
+            from qfluentwidgets import InfoBar
+
+            LogManager.get().error(f"打开 HOOK 翻译页面失败: {e}")
+            InfoBar.error("错误", f"打开页面失败: {e}", parent=self)
+
+    def _open_hook_supplement(self, card):
+        """打开补全翻译页面"""
+        try:
+            from frontend.RenpyToolbox.HookSupplementPage import HookSupplementPage
+
+            if not hasattr(self.window, "hook_supplement_page"):
+                self.window.hook_supplement_page = HookSupplementPage("hook-supplement", self.window)
+                self._mark_toolbox_widget(self.window.hook_supplement_page)
+            self._goto_widget("补全翻译", self.window.hook_supplement_page)
+        except Exception as e:
+            from qfluentwidgets import InfoBar
+
+            LogManager.get().error(f"打开补全翻译页面失败: {e}")
+            InfoBar.error("错误", f"打开页面失败: {e}", parent = self)
 
     def _open_source_translate(self, card):
         """打开源码翻译页面"""
