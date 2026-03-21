@@ -118,6 +118,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.incremental_mode = False     # 是否使用增量抽取
         self._ner_model = None            # 懒加载的 NER 模型
         self._ner_model_loaded = False
+        # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
@@ -1521,6 +1522,7 @@ class YiJianFanyiPage(Base, QWidget):
             self._reset_auto_hook_state()
 
     def _reset_auto_hook_state(self):
+        """重置自动补全漏翻相关状态。"""
         self._onekey_translation_started = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
