@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Set
 
 from base.LogManager import LogManager
-from module.Text.SkipRules import should_skip_text
+from module.Text.SkipRules import is_path_like, is_resource_name, should_skip_text
 
 
 class LineType(Enum):
@@ -152,6 +152,15 @@ class RenpySourceParser:
         r'(?P<quote>["\'])(?P<text>(?:\\.|[^\\])*?)(?P=quote)(?P<trailing>.*)$'
     )
 
+    # 明确承载用户可见文本的函数调用（如任务/提示文本）
+    RE_TEXT_FUNCTION_CALL = re.compile(
+        r'^\s*\$?\s*(?:[\w.]+\.)?'
+        r'(?P<func>addquest|addobjective|setobjective|setquest|addtask|settask)\s*\(\s*(?:_\s*\(\s*)?'
+        + STRING_PREFIX +
+        r'(?P<quote>["\'])(?P<text>(?:\\.|[^\\])*?)(?P=quote)\s*\)?(?P<trailing>.*)$',
+        re.IGNORECASE,
+    )
+
     # 条件提示元组: ("条件表达式", "显示文本", ...)
     # 常见于 whattodo.rpy 这类待办提示表，第一段字符串是条件代码，第二段才是用户可见文本。
     RE_CONDITION_TEXT_TUPLE = re.compile(
@@ -270,12 +279,48 @@ class RenpySourceParser:
     def _should_skip_text(self, text: str) -> bool:
         """检查文本是否应该跳过翻译"""
         if should_skip_text(text):
-            return True
+            # 源码翻译比常规抽取更贴近“实际台词”，
+            # 这里为 Ah...No... 这类短促语气词保留一个局部放宽口子。
+            if not self._looks_like_spoken_text(text):
+                return True
         text_lower = (text or "").lower().strip()
         # 补充：一些通用资源/路径关键词
         for ext in self.FILE_EXTENSIONS:
             if ext in text_lower:
                 return True
+        return False
+
+    def _looks_like_spoken_text(self, text: str) -> bool:
+        """判断文本是否像可见台词，而不是代码标识符。
+
+        典型目标：
+        - Ah...No...
+        - Huh?!
+        - I'm sorry...
+        """
+        candidate = (text or "").strip()
+        if not candidate:
+            return False
+
+        if is_resource_name(candidate) or is_path_like(candidate):
+            return False
+
+        if not any(ch.isalpha() for ch in candidate):
+            return False
+
+        # 纯标识符/单词不在这里放宽，避免把 gallery / persistent 之类放进来。
+        if re.fullmatch(r"[A-Za-z0-9_]+", candidate):
+            return False
+
+        if " " in candidate:
+            return True
+
+        if re.search(r"[.!?…]{2,}", candidate):
+            return True
+
+        if re.search(r"[A-Za-z]['’][A-Za-z]", candidate):
+            return True
+
         return False
     
     def _is_no_translate_line(self, line: str) -> bool:
@@ -691,6 +736,21 @@ class RenpySourceParser:
             if match_var:
                 text = match_var.group("text")
                 if text.strip():
+                    protected = self._extract_protected_tags(text)
+                    entries_list.append(TranslationEntry(
+                        line_number=line_num,
+                        line_type=LineType.NARRATION,
+                        original_line=line,
+                        speaker=None,
+                        text=text,
+                        protected_tags=protected,
+                    ))
+
+            # 检查是否有显式的文本函数调用（如 log.addquest("...")）
+            match_text_func = self.RE_TEXT_FUNCTION_CALL.match(line)
+            if match_text_func:
+                text = match_text_func.group("text")
+                if text.strip() and not self._should_skip_text(text):
                     protected = self._extract_protected_tags(text)
                     entries_list.append(TranslationEntry(
                         line_number=line_num,

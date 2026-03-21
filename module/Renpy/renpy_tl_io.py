@@ -189,14 +189,14 @@ class RenpyTlItemExtractor(Base):
             return []
 
         name_index = self._find_character_name_lit_index(stmt)
-        tail_group = self._find_tail_string_group(stmt)
-        if not tail_group:
+        dialogue_group = self._find_dialogue_string_group(stmt, name_index)
+        if not dialogue_group:
             return []
 
-        dialogue_index = tail_group[-1]
-        tail_name_index: int | None = None
-        if len(tail_group) >= 2:
-            tail_name_index = tail_group[-2]
+        dialogue_index = dialogue_group[-1]
+        dialogue_name_index: int | None = None
+        if len(dialogue_group) >= 2:
+            dialogue_name_index = dialogue_group[-2]
 
         dialogue_value = stmt.literals[dialogue_index].value
         if is_resource_path(dialogue_value):
@@ -205,8 +205,8 @@ class RenpyTlItemExtractor(Base):
             return []
 
         slots: list[TlSlot] = []
-        if name_index is None and tail_name_index is not None:
-            name_index = tail_name_index
+        if name_index is None and dialogue_name_index is not None:
+            name_index = dialogue_name_index
 
         if name_index is not None:
             name_value = stmt.literals[name_index].value
@@ -216,22 +216,44 @@ class RenpyTlItemExtractor(Base):
         slots.append(TlSlot(role=TlSlotRole.DIALOGUE, lit_index=dialogue_index))
         return slots
 
-    def _find_tail_string_group(self, stmt: TlStatement) -> list[int]:
+    def _find_dialogue_string_group(
+        self,
+        stmt: TlStatement,
+        name_index: int | None = None,
+    ) -> list[int]:
         if not stmt.literals:
             return []
 
-        indices = [len(stmt.literals) - 1]
-        for idx in range(len(stmt.literals) - 2, -1, -1):
-            prev_lit = stmt.literals[idx]
-            next_lit = stmt.literals[idx + 1]
-            between = stmt.code[prev_lit.end_col: next_lit.start_col]
-            if between.strip() == "":
-                indices.append(idx)
-                continue
-            break
+        start_col = self._get_dialogue_start_col(stmt, name_index)
+        if start_col is None:
+            return []
 
-        indices.reverse()
+        start_index = self._find_first_string_after_col(stmt, start_col)
+        if start_index is None:
+            return []
+
+        # 只把中间全是空白的连续字符串视为“姓名 + 正文”，
+        # 避免把 cb_name="mr"、PushMove("x") 等尾随参数里的字符串误判为正文。
+        indices = [start_index]
+        for idx in range(start_index + 1, len(stmt.literals)):
+            prev_lit = stmt.literals[idx - 1]
+            next_lit = stmt.literals[idx]
+            between = stmt.code[prev_lit.end_col: next_lit.start_col]
+            if between.strip() != "":
+                break
+            indices.append(idx)
+
         return indices
+
+    def _find_first_string_after_col(
+        self,
+        stmt: TlStatement,
+        start_col: int,
+    ) -> int | None:
+        for idx, lit in enumerate(stmt.literals):
+            if lit.start_col >= start_col:
+                return idx
+        return None
 
     def _find_character_name_lit_index(self, stmt: TlStatement) -> int | None:
         code = stmt.code.lstrip()
@@ -273,6 +295,25 @@ class RenpyTlItemExtractor(Base):
             i += 1
 
         return None
+
+    def _get_dialogue_start_col(
+        self,
+        stmt: TlStatement,
+        name_index: int | None = None,
+    ) -> int | None:
+        if name_index is None:
+            return 0
+
+        open_pos = stmt.code.find("(")
+        if open_pos < 0:
+            return None
+
+        close_pos = self._find_matching_paren(stmt, open_pos)
+        if close_pos is None:
+            return None
+
+        # Character(...) 中的字符串属于角色声明，不应和后面的对白正文混在一起。
+        return close_pos + 1
 
 
 class RenpyTlLineUpdater(Base):

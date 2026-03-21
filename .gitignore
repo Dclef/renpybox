@@ -2,7 +2,6 @@
 /.vscode
 /__pycache__/
 *.pyc
-
 # Runtime directories
 /log
 /input
@@ -21,3 +20,7 @@ config.json
 
 # Local test sandbox
 /.test
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/

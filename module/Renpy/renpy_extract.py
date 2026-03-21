@@ -31,6 +31,14 @@ RE_DICT_STRING_FIELD = re.compile(
     r'["\'](?:name|description|title|text|message|label|hint|tooltip|caption|content|summary|info|note|prompt|dialog|dialogue|speech)["\']'
     r'\s*:\s*["\']+((?:[^"\'\\]|\\.)*)["\']+'
 )
+RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
+    r'^(?!.*#)(?!\s*translate\s+\w+\b)(?=.*\b[A-Za-z]{3,}\b).*$',
+    re.IGNORECASE,
+)
+RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
+RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
+RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
+RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
 # ============================================
 
 # 检测字符串是否包含中文字符（或其他CJK字符）
@@ -102,6 +110,55 @@ def is_builtin_ui_file(path: str, tl_dir: str | None = None) -> bool:
 def is_ui_keyword(text: str) -> bool:
     """判断是否为常见 UI 关键词（忽略大小写和首尾空白）"""
     return text.strip().lower() in UI_KEYWORDS
+
+
+def extract_relaxed_english_line_literals(line_content: str, filter_length: int) -> set[str]:
+    """按宽松英文行规则补抓引号文本。
+
+    说明：
+    - 对应用户提供的规则：`^(?!.*#)^(?!.*translate schinese)(?=.*\\b[A-Za-z]{3,}\\b).*$`
+    - 实现时将 `translate schinese` 泛化为 `translate <lang>` 头
+    - 只提取引号内容，不把整行代码直接当作文本
+    """
+    stripped = line_content.strip()
+    if not stripped:
+        return set()
+    if RE_RELAXED_ENGLISH_SOURCE_LINE.match(stripped) is None:
+        return set()
+
+    result = set()
+    for pattern in (RE_RELAXED_DOUBLE_QUOTED, RE_RELAXED_SINGLE_QUOTED):
+        for match in pattern.finditer(line_content):
+            prefix = line_content[:match.start()].rstrip()
+            # 宽松补抓不处理明显的函数参数字符串，避免误提取菜单 ID 等内部标识。
+            if RE_RELAXED_FUNCTION_CALL_PREFIX.search(prefix):
+                continue
+            text = replace_unescaped_quotes(match.group(1))
+            text = text.replace("\\'", "'")
+            candidate = text.strip()
+            if not candidate:
+                continue
+            if RE_RELAXED_ENGLISH_WORD.search(candidate) is None:
+                continue
+
+            cmp_text = candidate.lower()
+            if is_path_or_dir_string(cmp_text) or is_resource_filename(cmp_text):
+                continue
+            if should_skip_text(candidate):
+                continue
+            if re.search(r'\[\s*\w+\.\w+.*?\]', candidate):
+                continue
+
+            effective_filter_length = filter_length
+            if contains_cjk(candidate):
+                effective_filter_length = max(2, filter_length // 3)
+            if not is_ui_keyword(candidate):
+                if len(replace_all_blank(candidate)) < effective_filter_length:
+                    continue
+
+            result.add(text)
+
+    return result
 
 
 class ExtractTlThread(threading.Thread):
@@ -570,6 +627,11 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
         cmp_line_content = remove_upprintable_chars(stripped_line)
         if cmp_line_content.startswith('#') or len(stripped_line) == 0:
             continue
+
+        # 宽松英文行补抓：只补抓该行里的引号文本，用于兜住常规规则漏掉的场景。
+        if is_open_filter:
+            for extra_text in extract_relaxed_english_line_literals(line_content, filter_length):
+                e.add(extra_text)
 
         if '_p("""' in line_content:
             is_in__p = True

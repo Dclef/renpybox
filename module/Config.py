@@ -150,6 +150,7 @@ class Config():
 
     # 一键翻译选项
     onekey_inject_base_box: bool = False
+    onekey_auto_hook_supplement: bool = False
 
     # AndroidBuildPage
     renpy_sdk_path: str = ""
