@@ -32,6 +32,14 @@ MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
 HOOK_MANIFEST = "hook_translate_manifest.json"
 REGEX_CACHE_VERSION = 1
+RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
+    r'^(?!.*#)(?!\s*translate\s+\w+\b)(?=.*\b[A-Za-z]{3,}\b).*$',
+    re.IGNORECASE,
+)
+RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
+RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
+RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
+RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
 
 
 def _get_miss_candidates(tl_dir: Path) -> List[Path]:
@@ -187,6 +195,37 @@ def _strip_format_tags(text: str) -> str:
     # 去除所有 {xxx} 和 {/xxx} 标签
     cleaned = re.sub(r'\{/?[^}]+\}', '', text)
     return cleaned.strip()
+
+
+def _extract_relaxed_english_line_literals(line: str) -> Set[str]:
+    """补抓宽松英文行里的引号文本。
+
+    说明：
+    - 对应用户提供的规则：`^(?!.*#)^(?!.*translate schinese)(?=.*\\b[A-Za-z]{3,}\\b).*$`
+    - 这里将 `translate schinese` 泛化为 `translate <lang>`，避免只对某个语言标签生效
+    - 命中后只提取引号里的文本，不把整行代码直接当作待翻译文本
+    """
+    stripped = line.strip()
+    if not stripped:
+        return set()
+    if RE_RELAXED_ENGLISH_SOURCE_LINE.match(stripped) is None:
+        return set()
+
+    result: Set[str] = set()
+    for pattern in (RE_RELAXED_DOUBLE_QUOTED, RE_RELAXED_SINGLE_QUOTED):
+        for match in pattern.finditer(line):
+            prefix = line[:match.start()].rstrip()
+            # 宽松补抓不处理明显的函数参数字符串，避免把 ShowMenu("gallery") 之类带进来。
+            if RE_RELAXED_FUNCTION_CALL_PREFIX.search(prefix):
+                continue
+            text = _unescape(match.group(1))
+            if not text:
+                continue
+            if RE_RELAXED_ENGLISH_WORD.search(text) is None:
+                continue
+            result.add(text)
+
+    return result
 
 
 def _is_character_name(text: str) -> bool:
@@ -366,6 +405,10 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
                     text = _unescape(match.group(2))
                     if text and len(text) > 1:
                         all_strings.add(text)
+
+            # 4.1 宽松英文行补抓：匹配整行后，再提取其中的引号文本。
+            for text in _extract_relaxed_english_line_literals(line):
+                all_strings.add(text)
 
         # 5. 三引号多行字符串（简单捕获）
         for match in re.finditer(r'"""(.*?)"""', content, re.DOTALL):

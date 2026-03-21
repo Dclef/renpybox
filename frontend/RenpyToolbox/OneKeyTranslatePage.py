@@ -118,8 +118,13 @@ class YiJianFanyiPage(Base, QWidget):
         self.incremental_mode = False     # 是否使用增量抽取
         self._ner_model = None            # 懒加载的 NER 模型
         self._ner_model_loaded = False
+        self._onekey_translation_started = False
+        self._auto_hook_pending = False
+        self._auto_hook_running = False
         
         self._init_ui()
+        self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
+        self.subscribe(Base.Event.TRANSLATION_STOP, self._on_translation_stop)
     
     def _init_ui(self):
         """初始化界面"""
@@ -712,6 +717,21 @@ class YiJianFanyiPage(Base, QWidget):
 
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        from module.Config import Config
+        auto_hook_row = QHBoxLayout()
+        self.auto_hook_supplement_chk = CheckBox("翻译完成后自动补全漏翻（replace_text）")
+        self.auto_hook_supplement_chk.setChecked(
+            getattr(Config().load(), "onekey_auto_hook_supplement", False)
+        )
+        self.auto_hook_supplement_chk.setToolTip(
+            "默认关闭。\n"
+            "开启后，主翻译完成会自动再跑一轮补全漏翻，生成/翻译 replace_text_auto.rpy。"
+        )
+        self.auto_hook_supplement_chk.stateChanged.connect(self._on_auto_hook_supplement_changed)
+        auto_hook_row.addWidget(self.auto_hook_supplement_chk)
+        auto_hook_row.addStretch(1)
+        layout.addLayout(auto_hook_row)
         
         layout.addStretch(1)
         
@@ -738,6 +758,9 @@ class YiJianFanyiPage(Base, QWidget):
         
         layout.addWidget(SubtitleLabel("🎉 翻译流程结束"))
         layout.addWidget(BodyLabel("你可以使用以下工具进行后续处理："))
+        layout.addWidget(
+            CaptionLabel("如果切换到中文后仍有漏翻文本，优先使用“补全漏翻”生成 replace_text_auto.rpy。")
+        )
         
         # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -758,6 +781,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 工具卡片
         tools = [
+            ("补全漏翻", "扫描 tl 未覆盖的文本并生成 replace_text_auto.rpy", self._tool_hook_supplement),
             ("应用翻译到游戏", "将翻译结果复制到游戏 tl 目录", self._tool_apply_translation),
             ("检测/修复报错", "修复缩进和格式问题", self._tool_fix_errors),
             ("设置默认语言", "设置游戏启动时的默认语言", self._tool_set_default_lang),
@@ -1398,7 +1422,21 @@ class YiJianFanyiPage(Base, QWidget):
         msg_box.cancelButton.setText("取消")
         
         if msg_box.exec():
+            self._onekey_translation_started = True
+            self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
+            self._auto_hook_running = False
             self._open_legacy_translation_page()
+
+    def _on_auto_hook_supplement_changed(self, state):
+        """保存一键翻译后的自动补漏开关。"""
+        try:
+            from module.Config import Config
+
+            config = Config().load()
+            config.onekey_auto_hook_supplement = bool(state)
+            config.save()
+        except Exception as e:
+            self.logger.warning(f"保存自动补全漏翻配置失败: {e}")
         
     def _open_legacy_translation_page(self):
         """打开传统翻译页面，保留续翻译能力"""
@@ -1435,6 +1473,77 @@ class YiJianFanyiPage(Base, QWidget):
         self.current_step = 5
         self.stacked.setCurrentIndex(4)
         self.step5_page.progress_bar.setValue(100)
+
+    def _start_auto_hook_supplement(self):
+        """主翻译完成后自动执行补全漏翻。"""
+        try:
+            from module.Config import Config
+
+            if not self.game_dir:
+                self._reset_auto_hook_state()
+                return
+
+            project_root = Path(self.game_dir)
+            tl_name = self.tl_folder_edit.text().strip() or "chinese"
+            tl_dir = project_root / "game" / "tl" / tl_name
+            if not tl_dir.exists():
+                InfoBar.warning("提示", f"未找到 tl 目录，已跳过自动补全：{tl_dir}", parent=self)
+                self._reset_auto_hook_state()
+                return
+
+            self._sync_game_dir_to_config(self.game_dir)
+
+            config = Config().load()
+            config.input_folder = str(tl_dir)
+            config.output_folder = str(tl_dir)
+            config.renpy_game_folder = str(project_root)
+            config.renpy_tl_folder = str(tl_dir)
+            config.renpy_hook_translate = True
+            config.renpy_source_translate = False
+
+            self._auto_hook_running = True
+
+            self.emit(
+                Base.Event.TRANSLATION_START,
+                {
+                    "config": config,
+                    "status": Base.TranslationStatus.UNTRANSLATED,
+                    "input_folder": str(tl_dir),
+                    "output_folder": str(tl_dir),
+                    "source_language": config.source_language,
+                    "target_language": config.target_language,
+                },
+            )
+            InfoBar.success("已开始", "主翻译完成，正在自动补全漏翻…", parent=self)
+        except Exception as e:
+            self.logger.error(f"自动补全漏翻启动失败: {e}")
+            InfoBar.error("错误", f"自动补全漏翻启动失败: {e}", parent=self)
+            self._reset_auto_hook_state()
+
+    def _reset_auto_hook_state(self):
+        self._onekey_translation_started = False
+        self._auto_hook_pending = False
+        self._auto_hook_running = False
+
+    def _on_translation_done(self, event, data):
+        """监听翻译完成，按需接续 replace_text 补漏。"""
+        if self._auto_hook_running:
+            self._reset_auto_hook_state()
+            InfoBar.success("完成", "自动补全漏翻完成", parent=self)
+            return
+
+        if self._onekey_translation_started and self._auto_hook_pending:
+            self._auto_hook_pending = False
+            QTimer.singleShot(0, self._start_auto_hook_supplement)
+            return
+
+        if self._onekey_translation_started:
+            self._reset_auto_hook_state()
+
+    def _on_translation_stop(self, event, data):
+        """翻译停止时清理一键翻译的自动补漏状态。"""
+        if self._onekey_translation_started or self._auto_hook_pending or self._auto_hook_running:
+            self._reset_auto_hook_state()
     
     def _refresh_step4_ready(self) -> bool:
         """检查翻译前的必备配置"""
@@ -1606,6 +1715,35 @@ class YiJianFanyiPage(Base, QWidget):
             import traceback
             traceback.print_exc()
             InfoBar.error("错误", f"应用翻译失败：{e}", parent=self)
+
+    def _tool_hook_supplement(self, card):
+        """打开补全漏翻页面，并沿用当前项目上下文。"""
+        try:
+            from module.Config import Config
+            from frontend.RenpyToolbox.HookSupplementPage import HookSupplementPage
+
+            config = Config().load()
+            if self.game_dir:
+                self._sync_game_dir_to_config(self.game_dir)
+                config = Config().load()
+
+            if not hasattr(self.window, "hook_supplement_page"):
+                self.window.hook_supplement_page = HookSupplementPage("hook-supplement", self.window)
+
+            if hasattr(self.window, "navigate_to_page"):
+                self.window.navigate_to_page(self.window.hook_supplement_page)
+            elif hasattr(self.window, "stackedWidget"):
+                if self.window.hook_supplement_page not in [
+                    self.window.stackedWidget.widget(i)
+                    for i in range(self.window.stackedWidget.count())
+                ]:
+                    self.window.stackedWidget.addWidget(self.window.hook_supplement_page)
+                self.window.stackedWidget.setCurrentWidget(self.window.hook_supplement_page)
+            else:
+                InfoBar.info("提示", "已准备好补全翻译参数，请从工具箱打开“补全翻译”", parent=self)
+        except Exception as e:
+            self.logger.error(f"打开补全翻译页面失败: {e}")
+            InfoBar.error("错误", f"打开补全翻译页面失败: {e}", parent=self)
     
     def _tool_fix_errors(self, card):
         # ... (Keep existing implementation or simplify)
