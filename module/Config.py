@@ -150,6 +150,7 @@ class Config():
 
     # 一键翻译选项
     onekey_inject_base_box: bool = False
+    # 一键翻译完成后，是否自动执行 replace_text 补全漏翻
     onekey_auto_hook_supplement: bool = False
 
     # AndroidBuildPage
