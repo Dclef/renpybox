@@ -12,6 +12,7 @@
 
 ## README 🌍
 - 中文（本页）
+- 请不要有中文路径
 
 ## 概述 📢
 - RenpyBox：PyQt + Fluent UI 打造的 Ren'Py 本地化工具箱，提取、翻译、修复、打包于一体的Ren'Py 专用翻译解决方案
