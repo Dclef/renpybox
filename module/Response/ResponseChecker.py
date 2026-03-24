@@ -76,9 +76,12 @@ class ResponseChecker(Base):
         if len(dsts) == 0 or all(v == "" or v == None for v in dsts):
             return [__class__.Error.FAIL_DATA] * len(srcs)
 
-        # 当翻译任务为单条目任务，且此条目已经是第二次单独重试时，直接返回，不进行后续判断
-        if len(self.items) == 1 and self.items[0].get_retry_count() >= __class__.RETRY_COUNT_THRESHOLD:
-            return [__class__.Error.NONE] * len(srcs)
+        # 单条目达到重试阈值后，允许放宽部分容易误判的行级检查，
+        # 但“原文照抄 / 空译文 / 明显退化”等硬错误仍然保留，避免直接写回未翻译内容。
+        threshold_reached = (
+            len(self.items) == 1
+            and self.items[0].get_retry_count() >= __class__.RETRY_COUNT_THRESHOLD
+        )
 
         # 行数检查
         if len(srcs) != len(dsts):
@@ -86,6 +89,8 @@ class ResponseChecker(Base):
 
         # 逐行检查
         checks = self.check_lines(srcs, dsts, text_type)
+        if threshold_reached:
+            checks = self.relax_checks_after_retry_threshold(srcs, dsts, checks)
         if any(v != __class__.Error.NONE for v in checks):
             return checks
 
@@ -203,6 +208,49 @@ class ResponseChecker(Base):
         text = cls.RE_PRESERVE_TOKEN.sub("", text)
         text = cls.RE_MULTI_SPACE.sub(" ", text)
         return text.strip()
+
+    @classmethod
+    def relax_checks_after_retry_threshold(
+        cls,
+        srcs: list[str],
+        dsts: list[str],
+        checks: list[Error],
+    ) -> list[Error]:
+        """达到重试阈值后，仅放宽部分可能的误判，不放行明显未翻译结果。"""
+        relaxed: list[ResponseChecker.Error] = []
+        for src, dst, error in zip(srcs, dsts, checks):
+            if error in cls.LINE_ERROR and cls.should_keep_line_error_after_retry_threshold(src, dst, error) == False:
+                relaxed.append(cls.Error.NONE)
+            else:
+                relaxed.append(error)
+        return relaxed
+
+    @classmethod
+    def should_keep_line_error_after_retry_threshold(cls, src: str, dst: str, error: Error) -> bool:
+        """达到重试阈值后，判断哪些行级错误仍必须保留。"""
+        if error in (
+            cls.Error.LINE_ERROR_EMPTY_LINE,
+            cls.Error.LINE_ERROR_KANA,
+            cls.Error.LINE_ERROR_HANGEUL,
+            cls.Error.LINE_ERROR_DEGRADATION,
+            cls.Error.LINE_ERROR_FAKE_REPLY,
+        ):
+            return True
+
+        if error != cls.Error.LINE_ERROR_SIMILARITY:
+            return False
+
+        src_compare = cls.normalize_for_compare(src).casefold()
+        dst_compare = cls.normalize_for_compare(dst).casefold()
+        if src_compare == "" or dst_compare == "":
+            return True
+
+        # 对于“完全照抄 / 明显包含原文”的情况，仍视为未翻译。
+        return (
+            src_compare == dst_compare
+            or src_compare in dst_compare
+            or dst_compare in src_compare
+        )
 
     @classmethod
     def is_likely_non_translatable_text(cls, text: str) -> bool:

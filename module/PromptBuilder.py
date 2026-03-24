@@ -402,6 +402,36 @@ class PromptBuilder(Base):
                 "\n" + "```"
             )
 
+    def build_retry_hint(self, items: list[CacheItem] | None) -> str:
+        """为已重试的条目追加更强的翻译约束，降低原文照抄概率。"""
+        if not items:
+            return ""
+
+        retry_items = [item for item in items if item is not None and item.get_retry_count() > 0]
+        if retry_items == []:
+            return ""
+
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            return (
+                "重试要求：以下内容此前未通过结果检查。"
+                "\n"
+                "若原文属于自然语言文本（对话、旁白、UI、描述），本次必须完整翻译成中文。"
+                "\n"
+                "禁止直接复述英文/日文/韩文原文，禁止只做轻微改写，禁止输出与原文基本一致的句子。"
+                "\n"
+                "只有变量、标签、占位符、代码片段、明确无需翻译的人名/专有名词，才允许按规则保留原样。"
+            )
+
+        return (
+            "Retry Requirement: the following content failed the previous validation."
+            "\n"
+            "If the source is natural language text such as dialogue, narration, UI, or descriptions, you must fully translate it into the target language."
+            "\n"
+            "Do not repeat the original text, do not lightly paraphrase it, and do not return a sentence that is still substantially the same as the source."
+            "\n"
+            "Only variables, tags, placeholders, code fragments, or clearly non-translatable proper nouns may remain unchanged."
+        )
+
     # 生成提示词
     def generate_prompt(
         self,
@@ -425,6 +455,11 @@ class PromptBuilder(Base):
             extra_log.append(result)
 
         result = self.build_character_context(srcs, items)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        result = self.build_retry_hint(items)
         if result != "":
             content = content + "\n" + result
             extra_log.append(result)
@@ -492,6 +527,10 @@ class PromptBuilder(Base):
             content_lines.append(result)
             extra_log.append(result)
         result = self.build_character_context(srcs, items)
+        if result != "":
+            content_lines.append(result)
+            extra_log.append(result)
+        result = self.build_retry_hint(items)
         if result != "":
             content_lines.append(result)
             extra_log.append(result)
