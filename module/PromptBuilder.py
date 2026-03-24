@@ -8,6 +8,7 @@ from base.BaseLanguage import BaseLanguage
 from base.PathHelper import get_resource_path
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
+from module.Workbench.WorkbenchData import normalize_character_cards, normalize_text, normalize_text_list, normalize_worldbook
 
 class PromptBuilder(Base):
 
@@ -88,6 +89,172 @@ class PromptBuilder(Base):
         full_prompt = full_prompt.replace("{target_language}", target_language)
 
         return full_prompt
+
+    def build_worldbook_context(self) -> str:
+        """构建世界观上下文。"""
+        if getattr(self.config, "renpy_workbench_worldbook_enable", False) is not True:
+            return ""
+
+        worldbook = normalize_worldbook(getattr(self.config, "renpy_workbench_worldbook_data", {}))
+        if not any(worldbook.values()):
+            return ""
+
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            lines = [
+                "世界观设定：",
+                f"项目名：{worldbook.get('project_name', '') or '未指定'}",
+                f"类型：{worldbook.get('genre', '') or '未指定'}",
+                f"背景摘要：{worldbook.get('setting_summary', '') or '未指定'}",
+                f"时代与环境：{worldbook.get('era_background', '') or '未指定'}",
+                f"整体语气：{worldbook.get('tone_style', '') or '未指定'}",
+                f"叙事规则：{worldbook.get('narrative_rules', '') or '未指定'}",
+                f"格式规则：{worldbook.get('format_rules', '') or '未指定'}",
+            ]
+            spoiler_notes = worldbook.get("spoiler_notes", "")
+            if spoiler_notes:
+                lines.append(f"剧透备注（仅供译者把握身份/关系，不要外显）：{spoiler_notes}")
+            return "\n".join(lines)
+
+        lines = [
+            "Worldbook Context:",
+            f"Project: {worldbook.get('project_name', '') or 'Unknown'}",
+            f"Genre: {worldbook.get('genre', '') or 'Unknown'}",
+            f"Setting Summary: {worldbook.get('setting_summary', '') or 'Unknown'}",
+            f"Era and Environment: {worldbook.get('era_background', '') or 'Unknown'}",
+            f"Tone Style: {worldbook.get('tone_style', '') or 'Unknown'}",
+            f"Narrative Rules: {worldbook.get('narrative_rules', '') or 'Unknown'}",
+            f"Formatting Rules: {worldbook.get('format_rules', '') or 'Unknown'}",
+        ]
+        spoiler_notes = worldbook.get("spoiler_notes", "")
+        if spoiler_notes:
+            lines.append(f"Spoiler Notes (translator-only): {spoiler_notes}")
+        return "\n".join(lines)
+
+    def _text_contains_term(self, haystack: str, term: str) -> bool:
+        """判断文本中是否命中候选词。"""
+        full = normalize_text(haystack)
+        needle = normalize_text(term)
+        if full == "" or needle == "":
+            return False
+
+        if re.fullmatch(r"[A-Za-z0-9_ .'’-]+", needle):
+            pattern = rf"(?<![A-Za-z0-9_]){re.escape(needle)}(?![A-Za-z0-9_])"
+            return re.search(pattern, full, flags = re.IGNORECASE) is not None
+        return needle.casefold() in full.casefold()
+
+    def match_character_cards(
+        self,
+        srcs: list[str],
+        items: list[CacheItem] | None,
+    ) -> list[dict]:
+        """匹配当前批次命中的角色卡。"""
+        if getattr(self.config, "renpy_workbench_character_cards_enable", False) is not True:
+            return []
+
+        cards = [
+            card
+            for card in normalize_character_cards(getattr(self.config, "renpy_workbench_character_cards", []))
+            if card.get("enabled", True)
+        ]
+        if cards == []:
+            return []
+
+        items = items or []
+        speaker_names = {
+            normalize_text(item.get_first_name_src()).casefold()
+            for item in items
+            if normalize_text(item.get_first_name_src()) != ""
+        }
+        merged_text = "\n".join(normalize_text_list(srcs, unique = False))
+
+        matched: list[dict] = []
+        for card in cards:
+            name = normalize_text(card.get("name", ""))
+            aliases = normalize_text_list(card.get("aliases", []))
+            keywords = normalize_text_list(card.get("match_keywords", []))
+
+            name_hits = {name.casefold()} if name else set()
+            name_hits.update(alias.casefold() for alias in aliases)
+            if speaker_names & name_hits:
+                matched.append(card)
+                continue
+
+            tokens = normalize_text_list([name] + aliases + keywords)
+            if any(self._text_contains_term(merged_text, token) for token in tokens):
+                matched.append(card)
+
+        matched.sort(
+            key = lambda card: (
+                0 if card.get("is_primary", False) else 1,
+                normalize_text(card.get("name", "")).casefold(),
+            )
+        )
+        return matched
+
+    def build_character_context(
+        self,
+        srcs: list[str],
+        items: list[CacheItem] | None,
+    ) -> str:
+        """构建命中角色卡上下文。"""
+        matched = self.match_character_cards(srcs, items)
+        if matched == []:
+            return ""
+
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            blocks = ["命中角色卡："]
+            for card in matched:
+                lines = [
+                    f"角色：{normalize_text(card.get('name', ''))}",
+                ]
+                translation = normalize_text(card.get("name_translation", ""))
+                if translation:
+                    lines.append(f"推荐译名：{translation}")
+                aliases = normalize_text_list(card.get("aliases", []))
+                if aliases:
+                    lines.append(f"别名：{'、'.join(aliases)}")
+                lines.append(f"身份：{normalize_text(card.get('identity', '')) or '未指定'}")
+                lines.append(f"性格：{normalize_text(card.get('personality', '')) or '未指定'}")
+                lines.append(f"说话风格：{normalize_text(card.get('speech_style', '')) or '未指定'}")
+                relation = normalize_text(card.get("relationship_notes", ""))
+                if relation:
+                    lines.append(f"关系备注：{relation}")
+                prompt_notes = normalize_text(card.get("prompt_notes", ""))
+                if prompt_notes:
+                    lines.append(f"翻译提示：{prompt_notes}")
+                sample_lines = normalize_text_list(card.get("sample_lines", []))
+                if sample_lines:
+                    lines.append("代表台词：")
+                    lines.extend(f"- {line}" for line in sample_lines[:4])
+                blocks.append("\n".join(lines))
+            return "\n\n".join(blocks)
+
+        blocks = ["Matched Character Cards:"]
+        for card in matched:
+            lines = [
+                f"Character: {normalize_text(card.get('name', ''))}",
+                f"Identity: {normalize_text(card.get('identity', '')) or 'Unknown'}",
+                f"Personality: {normalize_text(card.get('personality', '')) or 'Unknown'}",
+                f"Speech Style: {normalize_text(card.get('speech_style', '')) or 'Unknown'}",
+            ]
+            translation = normalize_text(card.get("name_translation", ""))
+            if translation:
+                lines.append(f"Preferred Translation: {translation}")
+            aliases = normalize_text_list(card.get("aliases", []))
+            if aliases:
+                lines.append(f"Aliases: {', '.join(aliases)}")
+            relation = normalize_text(card.get("relationship_notes", ""))
+            if relation:
+                lines.append(f"Relationship Notes: {relation}")
+            prompt_notes = normalize_text(card.get("prompt_notes", ""))
+            if prompt_notes:
+                lines.append(f"Prompt Notes: {prompt_notes}")
+            sample_lines = normalize_text_list(card.get("sample_lines", []))
+            if sample_lines:
+                lines.append("Representative Lines:")
+                lines.extend(f"- {line}" for line in sample_lines[:4])
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     # 构造参考上文
     def build_preceding(self, precedings: list[CacheItem]) -> str:
@@ -236,13 +403,31 @@ class PromptBuilder(Base):
             )
 
     # 生成提示词
-    def generate_prompt(self, srcs: list[str], samples: list[str], precedings: list[CacheItem], local_flag: bool) -> tuple[list[dict], list[str]]:
+    def generate_prompt(
+        self,
+        srcs: list[str],
+        samples: list[str],
+        precedings: list[CacheItem],
+        local_flag: bool,
+        items: list[CacheItem] | None = None,
+    ) -> tuple[list[dict], list[str]]:
         # 初始化
         messages: list[dict[str, str]] = []
         extra_log: list[str] = []
 
         # 基础提示词
         content = self.build_main()
+
+        # 工作台上下文
+        result = self.build_worldbook_context()
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        result = self.build_character_context(srcs, items)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
 
         # 参考上文
         if local_flag == False or self.config.enable_preceding_on_local == True:
@@ -278,7 +463,11 @@ class PromptBuilder(Base):
         return messages, extra_log
 
     # 生成提示词 - Sakura
-    def generate_prompt_sakura(self, srcs: list[str]) -> tuple[list[dict], list[str]]:
+    def generate_prompt_sakura(
+        self,
+        srcs: list[str],
+        items: list[CacheItem] | None = None,
+    ) -> tuple[list[dict], list[str]]:
         # 初始化
         messages: list[dict[str, str]] = []
         extra_log: list[str] = []
@@ -298,6 +487,14 @@ class PromptBuilder(Base):
             "【重要】对话和描述性内容必须完整翻译，不可保留英文原文。",
             "【允许】人名可以保留英文或音译为中文，由模型自行判断。",
         ]
+        result = self.build_worldbook_context()
+        if result != "":
+            content_lines.append(result)
+            extra_log.append(result)
+        result = self.build_character_context(srcs, items)
+        if result != "":
+            content_lines.append(result)
+            extra_log.append(result)
         if self.config.glossary_enable == True:
             result = self.build_glossary_sakura(srcs)
             if result != "":

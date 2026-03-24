@@ -116,9 +116,18 @@ class TranslatorTask(Base):
         # 生成请求提示词
         self.debug(f"[REQUEST] 生成提示词: srcs={len(srcs)}, api_format={self.platform.get('api_format')}")
         if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
-            self.messages, console_log = self.prompt_builder.generate_prompt(srcs, samples, precedings, local_flag)
+            self.messages, console_log = self.prompt_builder.generate_prompt(
+                srcs,
+                samples,
+                precedings,
+                local_flag,
+                items = self.items,
+            )
         else:
-            self.messages, console_log = self.prompt_builder.generate_prompt_sakura(srcs)
+            self.messages, console_log = self.prompt_builder.generate_prompt_sakura(
+                srcs,
+                items = self.items,
+            )
         
         # 验证消息是否生成成功
         if not isinstance(self.messages, list) or len(self.messages) == 0:

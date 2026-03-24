@@ -153,6 +153,15 @@ class Config():
     # 一键翻译完成后，是否自动执行 replace_text 补全漏翻
     onekey_auto_hook_supplement: bool = False
 
+    # 角色 / 世界观工作台
+    renpy_workbench_worldbook_enable: bool = False
+    renpy_workbench_worldbook_data: dict[str, Any] = dataclasses.field(default_factory = dict)
+    renpy_workbench_character_cards_enable: bool = False
+    renpy_workbench_character_cards: list[dict[str, Any]] = dataclasses.field(default_factory = list)
+    renpy_workbench_last_analysis_scope: str = "current"
+    renpy_workbench_generated_worldbook_draft: dict[str, Any] = dataclasses.field(default_factory = dict)
+    renpy_workbench_generated_character_drafts: list[dict[str, Any]] = dataclasses.field(default_factory = list)
+
     # AndroidBuildPage
     renpy_sdk_path: str = ""
     android_app_name: str = ""

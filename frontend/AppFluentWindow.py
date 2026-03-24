@@ -30,6 +30,7 @@ from frontend.Project.ProjectPage import ProjectPage
 from frontend.Setting.BasicSettingsPage import BasicSettingsPage
 from frontend.Setting.CustomPromptPage import CustomPromptPage
 from frontend.Setting.ExpertSettingsPage import ExpertSettingsPage
+from frontend.Workbench.RenpyWorkbenchPage import RenpyWorkbenchPage
 from frontend.TranslationPage import TranslationPage
 from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
 from module.Config import Config
@@ -273,6 +274,8 @@ class AppFluentWindow(FluentWindow, Base):
     def add_pages(self) -> None:
         self.add_project_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
+        self.add_workbench_pages()
+        self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
         self.add_renpy_pages()  # 新增 Ren'Py 页面
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
         self.add_task_pages()
@@ -341,6 +344,15 @@ class AppFluentWindow(FluentWindow, Base):
             FluentIcon.GAME,
             "Ren'Py 百宝箱",
             NavigationItemPosition.SCROLL
+        )
+
+    # 添加角色 / 世界观工作台页面
+    def add_workbench_pages(self) -> None:
+        self.addSubInterface(
+            RenpyWorkbenchPage("renpy_workbench_page", self),
+            FluentIcon.PEOPLE,
+            "角色/世界观工作台",
+            NavigationItemPosition.SCROLL,
         )
 
     # 添加任务类页面
