@@ -61,6 +61,7 @@ class ResponseChecker(Base):
     )
     # 行内占位符一致性检查
     RE_PRESERVE_TOKEN = re.compile(r"__RBX_PRESERVE_\d+_\d+__", flags = re.IGNORECASE)
+    RE_MULTI_SPACE = re.compile(r"\s+")
 
     def __init__(self, config: Config, items: list[CacheItem]) -> None:
         super().__init__()
@@ -124,8 +125,12 @@ class ResponseChecker(Base):
                 checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 
+            # 相似度与退化判断前先去掉保护占位符，避免被大段占位符误判。
+            src_compare = self.normalize_for_compare(src)
+            dst_compare = self.normalize_for_compare(dst)
+
             # 当原文中不包含重复文本但是译文中包含重复文本时，判断为 退化
-            if __class__.RE_DEGRADATION.search(src) == None and __class__.RE_DEGRADATION.search(dst) != None:
+            if __class__.RE_DEGRADATION.search(src_compare) == None and __class__.RE_DEGRADATION.search(dst_compare) != None:
                 checks.append(__class__.Error.LINE_ERROR_DEGRADATION)
                 continue
 
@@ -135,41 +140,47 @@ class ResponseChecker(Base):
                 text_type = text_type,
             )
             if rule is not None:
-                src = rule.sub("", src)
-                dst = rule.sub("", dst)
+                src_compare = rule.sub("", src_compare)
+                dst_compare = rule.sub("", dst_compare)
 
             # 如果排除代码段后没有有效文本，则无需做相似度判断
-            if src == "" or dst == "":
+            src_compare = self.normalize_for_compare(src_compare)
+            dst_compare = self.normalize_for_compare(dst_compare)
+            if src_compare == "" or dst_compare == "":
                 checks.append(__class__.Error.NONE)
                 continue
 
             # 当原文语言为日语，且译文中包含平假名或片假名字符时，判断为 假名残留
-            if self.config.source_language == BaseLanguage.Enum.JA and (TextHelper.JA.any_hiragana(dst) or TextHelper.JA.any_katakana(dst)):
+            if self.config.source_language == BaseLanguage.Enum.JA and (TextHelper.JA.any_hiragana(dst_compare) or TextHelper.JA.any_katakana(dst_compare)):
                 checks.append(__class__.Error.LINE_ERROR_KANA)
                 continue
 
             # 当原文语言为韩语，且译文中包含谚文字符时，判断为 谚文残留
-            if self.config.source_language == BaseLanguage.Enum.KO and TextHelper.KO.any_hangeul(dst):
+            if self.config.source_language == BaseLanguage.Enum.KO and TextHelper.KO.any_hangeul(dst_compare):
                 checks.append(__class__.Error.LINE_ERROR_HANGEUL)
                 continue
 
             # 判断是否包含或相似
-            is_similar = src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
+            is_similar = (
+                src_compare in dst_compare
+                or dst_compare in src_compare
+                or TextHelper.check_similarity_by_jaccard(src_compare, dst_compare) > 0.80
+            )
 
             # 对“看起来像代码/标识符/按键名”的文本，允许原样保留，避免无意义重试。
-            if is_similar and self.is_likely_non_translatable_text(src):
+            if is_similar and self.is_likely_non_translatable_text(src_compare):
                 checks.append(__class__.Error.NONE)
                 continue
 
             if is_similar:
                 # 日翻中时，只有译文至少包含一个平假名或片假名字符时，才判断为 相似
                 if self.config.source_language == BaseLanguage.Enum.JA and self.config.target_language == BaseLanguage.Enum.ZH:
-                    if TextHelper.JA.any_hiragana(dst) or TextHelper.JA.any_katakana(dst):
+                    if TextHelper.JA.any_hiragana(dst_compare) or TextHelper.JA.any_katakana(dst_compare):
                         checks.append(__class__.Error.LINE_ERROR_SIMILARITY)
                         continue
                 # 韩翻中时，只有译文至少包含一个谚文字符时，才判断为 相似
                 elif self.config.source_language == BaseLanguage.Enum.KO and self.config.target_language == BaseLanguage.Enum.ZH:
-                    if TextHelper.KO.any_hangeul(dst):
+                    if TextHelper.KO.any_hangeul(dst_compare):
                         checks.append(__class__.Error.LINE_ERROR_SIMILARITY)
                         continue
                 # 其他情况，只要原文译文相同或相似就可以判断为 相似
@@ -182,6 +193,16 @@ class ResponseChecker(Base):
 
         # 返回结果
         return checks
+
+    @classmethod
+    def normalize_for_compare(cls, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        # 去掉保护占位符，并压缩多余空白，避免影响后续相似度判断。
+        text = cls.RE_PRESERVE_TOKEN.sub("", text)
+        text = cls.RE_MULTI_SPACE.sub(" ", text)
+        return text.strip()
 
     @classmethod
     def is_likely_non_translatable_text(cls, text: str) -> bool:

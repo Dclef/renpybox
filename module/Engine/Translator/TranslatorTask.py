@@ -245,6 +245,9 @@ class TranslatorTask(Base):
             file_log.append(Localizer.get().translator_task_response_result + response_result)
             console_log.append(Localizer.get().translator_task_response_result + response_result) if LogManager.get().is_expert_mode() else None
 
+        # 日志展示使用恢复后的文本，避免保护占位符影响排查。
+        log_srcs, log_dsts = self.build_log_lines(processors, srcs, dsts)
+
         # 如果有任何正确的条目，则处理结果
         updated_count = 0
         if any(v == ResponseChecker.Error.NONE for v in checks):
@@ -277,8 +280,8 @@ class TranslatorTask(Base):
             start_time,
             input_tokens,
             output_tokens,
-            [line.strip() for line in srcs],
-            [line.strip() for line in dsts],
+            log_srcs,
+            log_dsts,
             file_log,
             console_log
         )
@@ -296,6 +299,34 @@ class TranslatorTask(Base):
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+
+    def build_log_lines(self, processors: list[TextProcessor], srcs: list[str], dsts: list[str]) -> tuple[list[str], list[str]]:
+        """构造日志展示文本，尽量还原保护占位符后的可读内容。"""
+        log_srcs: list[str] = []
+        log_dsts: list[str] = []
+        offset = 0
+
+        for processor in processors:
+            length = len(processor.srcs)
+            src_slice = srcs[offset:offset + length]
+            dst_slice = dsts[offset:offset + length]
+
+            log_srcs.extend(processor.restore_lines_for_log(src_slice))
+            log_dsts.extend(processor.restore_lines_for_log(dst_slice))
+            offset += length
+
+        if offset < len(srcs):
+            log_srcs.extend([
+                line.strip() if isinstance(line, str) else ""
+                for line in srcs[offset:]
+            ])
+        if offset < len(dsts):
+            log_dsts.extend([
+                line.strip() if isinstance(line, str) else ""
+                for line in dsts[offset:]
+            ])
+
+        return log_srcs, log_dsts
 
     # 合并术语表
     def merge_glossary(self, glossary_list: list[dict[str, str]], last_save_time: float) -> float:
