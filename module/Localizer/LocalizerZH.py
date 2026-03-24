@@ -449,9 +449,9 @@ class LocalizerZH():
     expert_settings_page_result_checker_retry_count_threshold_desc: str = (
         "是否在结果检查报告里面输出 <font color='darkgoldenrod'><b>重试次数达到阈值</b></font> 的条目列表"
         "<br>"
-        "• 在进行翻译结果检查时，如果重试达阈值依然未通过检查，就会取最后一次的结果"
+        "• 在进行翻译结果检查时，重试达阈值后会放宽部分检查，但原文照抄、空译文等明显异常仍不会直接通过"
         "<br>"
-        "• 通过此功能，就可以逐一确认最后的取值实际上是否正确的"
+        "• 通过此功能，就可以逐一确认这些条目的最终取值是否可靠"
     )
 
     # 质量类通用

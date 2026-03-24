@@ -445,9 +445,9 @@ class LocalizerEN(LocalizerZH):
     expert_settings_page_result_checker_retry_count_threshold_desc: str = (
         "Include a list of items that <font color='darkgoldenrod'><b>reached the retry threshold</b></font> in the result check report, disabled by default"
         "<br>"
-        "• During translation result checks, if an item still fails after reaching the retry threshold, the last result is used"
+        "• After the retry threshold is reached, some checks are relaxed, but obvious failures such as copied source text or empty translations still do not pass directly"
         "<br>"
-        "• This feature allows you to individually verify if the final result taken is actually correct"
+        "• This feature allows you to individually verify whether the final result of these items is actually reliable"
     )
 
     # 质量类通用
