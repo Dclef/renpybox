@@ -602,6 +602,31 @@ class TextProcessor(Base):
 
         return name, "\n".join(results)
 
+    def restore_lines_for_log(self, lines: list[str]) -> list[str]:
+        """恢复日志展示用的保护文本，避免控制台充满占位符。"""
+        results: list[str] = []
+        valid_indexes = sorted(self.vaild_index)
+
+        for i, line in zip(valid_indexes, lines):
+            restored = line.strip() if isinstance(line, str) else ""
+            restored = self._restore_inline_tags(i, restored)
+            restored = self._bridge_honorific_placeholders_post(i, restored)
+
+            if i in self.prefix_codes:
+                restored = "".join(self.prefix_codes.get(i)) + restored
+            if i in self.suffix_codes:
+                restored = restored + "".join(self.suffix_codes.get(i))
+
+            results.append(restored)
+
+        if len(lines) > len(valid_indexes):
+            results.extend([
+                line.strip() if isinstance(line, str) else ""
+                for line in lines[len(valid_indexes):]
+            ])
+
+        return results
+
     # 检查代码段
     def check(self, src: str, dst: str, text_type: CacheItem.TextType) -> bool:
         x: list[str] = []
