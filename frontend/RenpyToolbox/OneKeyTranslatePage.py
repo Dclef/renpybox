@@ -659,7 +659,7 @@ class YiJianFanyiPage(Base, QWidget):
         page, layout = self._create_page_container("术语表设置", 3)
         
         layout.addWidget(SubtitleLabel("术语表与禁翻表"))
-        layout.addWidget(BodyLabel("术语表可以帮助你统一专有名词的翻译，禁翻表可以防止翻译不需要翻译的内容。"))
+        layout.addWidget(BodyLabel("术语表可以帮助你统一专有名词的翻译，禁翻表可以防止翻译不需要翻译的内容。本地词库页还支持手动扫描术语候选。"))
         
         layout.addSpacing(16)
         
@@ -670,6 +670,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         btn_row = QHBoxLayout()
         self.open_glossary_btn = PushButton("📂 打开本地词库管理")
+        self.open_glossary_btn.setToolTip("可在本地词库页手动执行“扫描术语候选”，补齐角色名之外的正文专名")
         self.open_glossary_btn.clicked.connect(self._open_local_glossary)
         btn_row.addWidget(self.open_glossary_btn)
         

@@ -40,6 +40,75 @@ RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
 RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
+COMMON_NON_NAME_WORDS = {
+    "about",
+    "access",
+    "accesses",
+    "after",
+    "all",
+    "answer",
+    "auto",
+    "automatic",
+    "back",
+    "before",
+    "calibrate",
+    "camera",
+    "chat",
+    "contacts",
+    "continue",
+    "ctrl",
+    "enter",
+    "escape",
+    "example",
+    "exit",
+    "follower",
+    "followers",
+    "following",
+    "fullscreen",
+    "gallery",
+    "gamepad",
+    "help",
+    "history",
+    "keyboard",
+    "load",
+    "menu",
+    "mouse",
+    "preferences",
+    "return",
+    "save",
+    "shift",
+    "skip",
+    "space",
+    "start",
+}
+UI_NAME_PATTERNS = (
+    "click",
+    "trigger",
+    "shoulder",
+    "arrow key",
+    "auto-forward",
+    "name box",
+    "main menu",
+    "game menu",
+)
+GENERIC_NON_NAME_SUFFIXES = {
+    "bikini",
+    "dress",
+    "shirt",
+    "skirt",
+    "pants",
+    "shorts",
+    "bra",
+    "panties",
+    "swimsuit",
+    "outfit",
+    "menu",
+    "button",
+    "box",
+    "camera",
+    "keyboard",
+    "mouse",
+}
 
 
 def _get_miss_candidates(tl_dir: Path) -> List[Path]:
@@ -229,7 +298,7 @@ def _extract_relaxed_english_line_literals(line: str) -> Set[str]:
 
 
 def _is_character_name(text: str) -> bool:
-    """判断是否像角色名 - 简单过滤，保留更多候选"""
+    """判断是否像角色名。"""
     if not text:
         return False
     
@@ -237,44 +306,58 @@ def _is_character_name(text: str) -> bool:
     cleaned = re.sub(r'\{[^}]+\}', '', text).strip()
     if not cleaned:
         return False
-    
-    # 排除单字符（如 "A", "I", "Q"）
-    if len(cleaned) <= 1:
+
+    if len(cleaned) <= 1 or len(cleaned) > 40 or "\n" in cleaned:
         return False
-    
-    # 排除太长的（超过 40 字符不像名字）
-    if len(cleaned) > 40:
+
+    # 明显不是名字的句子/说明文本
+    if any(ch in cleaned for ch in (".", "?", "!", ":", "；", "。", "！", "？")):
         return False
-    
-    # 排除明显是代码/变量的
-    if '_' in cleaned:  # 蛇形命名
+    if any(ch.isdigit() for ch in cleaned):
         return False
-    if cleaned.startswith('[') or cleaned.endswith(']'):  # 变量插值
+    if '_' in cleaned:
         return False
-    if cleaned.startswith('{') or cleaned.endswith('}'):  # 标签
+    if cleaned.startswith('[') or cleaned.endswith(']'):
         return False
-    if '.' in cleaned and not cleaned.endswith('.'):  # 属性访问（但允许 "Mr."）
+    if cleaned.startswith('{') or cleaned.endswith('}'):
         return False
-    if '(' in cleaned or ')' in cleaned:  # 函数调用
+    if any(ch in cleaned for ch in ("(", ")", "/", "\\", "@", "#")):
         return False
-    
+
+    lower_cleaned = cleaned.casefold()
+    if lower_cleaned in COMMON_NON_NAME_WORDS:
+        return False
+    if any(pattern in lower_cleaned for pattern in UI_NAME_PATTERNS):
+        return False
+    if should_skip_text(cleaned):
+        return False
+
+    words = cleaned.split()
+    if not words or len(words) > 4:
+        return False
+    if words[-1].casefold() in GENERIC_NON_NAME_SUFFIXES:
+        return False
+
+    allow_connectors = {"of", "the", "and"}
+
     # 检查是否包含非 ASCII 字符（日文、中文等名字）
     has_non_ascii = any(ord(c) > 127 for c in cleaned)
     if has_non_ascii:
-        # 非 ASCII 名字：不过长，不含数字和特殊符号
         if len(cleaned) <= 15 and not re.search(r'[\d!@#$%^&*()+=\[\]{}|\\:";\'<>,./]', cleaned):
             return True
         return False
-    
-    # 英文名字必须首字母大写
-    if not cleaned[0].isupper():
+
+    if len(words) == 1 and len(cleaned) < 3:
         return False
-    
-    # 检查是否是名字格式（允许字母、空格、连字符、撇号、符号#和数字）
-    if re.match(r'^[A-Z][a-zA-Z\-\'\s#\d\.]+$', cleaned):
-        return True
-    
-    return False
+
+    # 英文名字：每个词首字母大写或全大写，允许少量连接词
+    for word in words:
+        if word.lower() in allow_connectors:
+            continue
+        if not (word[:1].isupper() or word.isupper()):
+            return False
+
+    return True
 
 
 def extract_names_from_game(game_dir: Path) -> Set[str]:
@@ -586,6 +669,31 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
     return result
 
 
+def _get_regex_cache_path(game_dir: Path, tl_name: str = "chinese") -> Path:
+    """返回正则候选文本缓存路径。"""
+    normalized_tl_name = str(tl_name or "chinese").strip() or "chinese"
+    try:
+        path_name = Path(normalized_tl_name).name
+        if path_name:
+            normalized_tl_name = path_name
+    except Exception:
+        pass
+    return game_dir / "tl" / normalized_tl_name / MISS_DIR / REGEX_CACHE
+
+
+def collect_glossary_candidate_texts(
+    target_path: str | Path,
+    *,
+    tl_name: str = "chinese",
+) -> tuple[str, ...]:
+    """收集术语候选扫描使用的源码文本。"""
+    game_dir = _get_game_dir(target_path)
+    cache_path = _get_regex_cache_path(game_dir, tl_name)
+    regex_all = _extract_all_strings_regex(game_dir, cache_path = cache_path)
+    regex_filtered = _filter_valid_strings(regex_all)
+    return tuple(sorted(regex_filtered))
+
+
 def _detect_missing_character_names(strings: Set[str]) -> Set[str]:
     """从缺失文本中识别可回填到术语库的角色名。"""
     detected: Set[str] = set()
@@ -654,8 +762,7 @@ def collect_hook_translation_entries(
     miss_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("正在扫描 HOOK 缺失文本...")
-    regex_all = _extract_all_strings_regex(game_dir, cache_path=miss_dir / REGEX_CACHE)
-    regex_filtered = _filter_valid_strings(regex_all)
+    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
@@ -735,8 +842,7 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     
     # 1. 正则全量扫描
     logger.info("正在使用正则扫描源码...")
-    regex_all = _extract_all_strings_regex(game_dir, cache_path=miss_dir / REGEX_CACHE)
-    regex_filtered = _filter_valid_strings(regex_all)
+    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
     
     # 2. tl 覆盖（已抽取的文本）
     logger.info("正在读取 tl 已覆盖文本...")

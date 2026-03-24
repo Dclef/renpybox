@@ -7,12 +7,11 @@ import dataclasses
 import time
 import re
 from pathlib import Path
-from typing import List, Dict
+from typing import Any, List, Dict
 
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
     QFileDialog,
     QTableWidget,
     QTableWidgetItem,
@@ -26,6 +25,7 @@ from qfluentwidgets import (
     PushButton,
     InfoBar,
     FluentIcon,
+    FlowLayout,
     TitleLabel,
     CaptionLabel,
     StrongBodyLabel,
@@ -36,6 +36,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
+from module.Extract.GlossaryCandidateService import extract_glossary_candidates
 from module.OpenCCHelper import OpenCCHelper
 from module.Text.SkipRules import should_skip_text
 from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
@@ -225,6 +226,50 @@ class GlossaryLLMTranslateWorker(QThread):
             self.finished.emit(False, str(exc), [])
 
 
+class GlossaryCandidateWorker(QThread):
+    progress = pyqtSignal(str, int)  # message, percent
+    finished = pyqtSignal(bool, str, object)  # success, message, payload
+
+    def __init__(
+        self,
+        *,
+        config: Config,
+        target_path: str,
+        platform: dict[str, Any] | None,
+        parent = None,
+    ):
+        super().__init__(parent)
+        self.config = config
+        self.target_path = target_path
+        self.platform = platform
+        self._logger = LogManager.get()
+
+    def run(self):
+        try:
+            payload = extract_glossary_candidates(
+                config = self.config,
+                target_path = self.target_path,
+                platform = self.platform,
+                progress_callback = self._emit_progress,
+            )
+
+            entries = payload.get("entries", []) if isinstance(payload, dict) else []
+            if isinstance(entries, list) == False or len(entries) == 0:
+                warnings = payload.get("warnings", []) if isinstance(payload, dict) else []
+                warning_text = "；".join(str(item) for item in warnings if str(item).strip())
+                message = warning_text or "未生成可用的术语候选"
+                self.finished.emit(False, message, payload)
+                return
+
+            self.finished.emit(True, "术语候选扫描完成", payload)
+        except Exception as exc:
+            self._logger.error(f"术语候选扫描失败: {exc}")
+            self.finished.emit(False, str(exc), {})
+
+    def _emit_progress(self, message: str, percent: int) -> None:
+        self.progress.emit(message, percent)
+
+
 class LocalGlossaryPage(Base, QWidget):
     """本地词库管理页面"""
 
@@ -250,6 +295,8 @@ class LocalGlossaryPage(Base, QWidget):
         self._translate_worker: QThread | None = None
         self._translate_llm_button: PushButton | None = None
         self._translate_fast_button: PushButton | None = None
+        self._candidate_worker: QThread | None = None
+        self._candidate_button: PushButton | None = None
         self._statistics_worker: QThread | None = None
         self._statistics_button: PushButton | None = None
         self._statistics_snapshot_keys: list[str] = []
@@ -283,85 +330,107 @@ class LocalGlossaryPage(Base, QWidget):
         card = CardWidget(self)
         v_layout = QVBoxLayout(card)
         v_layout.setContentsMargins(16, 12, 16, 12)
-        v_layout.setSpacing(6)
+        v_layout.setSpacing(12)
 
-        # 第一排：导入/导出/保存/加载/去重
-        row1 = QHBoxLayout()
-        row1.setSpacing(12)
+        group1, flow1 = self._create_toolbar_group("配置与同步")
 
         import_btn = PrimaryPushButton("导入 Excel", icon=FluentIcon.DOWNLOAD)
         import_btn.clicked.connect(self._on_import_excel)
-        row1.addWidget(import_btn)
+        flow1.addWidget(import_btn)
 
         export_btn = PushButton("导出 Excel", icon=FluentIcon.SHARE)
         export_btn.clicked.connect(self._on_export_excel)
-        row1.addWidget(export_btn)
+        flow1.addWidget(export_btn)
 
         save_btn = PrimaryPushButton("保存到配置", icon=FluentIcon.SAVE)
         save_btn.clicked.connect(self._save_to_config)
-        row1.addWidget(save_btn)
+        flow1.addWidget(save_btn)
 
         load_btn = PushButton("从配置加载", icon=FluentIcon.HISTORY)
         load_btn.clicked.connect(self._load_from_config)
-        row1.addWidget(load_btn)
-
-        dedup_btn = PushButton("去重重复", icon=FluentIcon.FILTER)
-        dedup_btn.setToolTip("按原文去重，优先保留已有译文/类别/备注")
-        dedup_btn.clicked.connect(self._deduplicate_rows)
-        row1.addWidget(dedup_btn)
+        flow1.addWidget(load_btn)
 
         statistics_btn = PushButton("统计命中", icon=FluentIcon.SEARCH)
         statistics_btn.setToolTip("基于当前 output/cache 中的缓存条目统计每条术语命中的文本数量")
         statistics_btn.clicked.connect(self._on_statistics_clicked)
-        row1.addWidget(statistics_btn)
+        flow1.addWidget(statistics_btn)
         self._statistics_button = statistics_btn
 
-        row1.addStretch(1)
-        v_layout.addLayout(row1)
+        v_layout.addWidget(group1)
 
-        # 第二排：新增/删除/清空/自动分类/重新扫描角色名
-        row2 = QHBoxLayout()
-        row2.setSpacing(12)
+        group2, flow2 = self._create_toolbar_group("表格维护")
+
+        dedup_btn = PushButton("去重重复", icon=FluentIcon.FILTER)
+        dedup_btn.setToolTip("按原文去重，优先保留已有译文/类别/备注")
+        dedup_btn.clicked.connect(self._deduplicate_rows)
+        flow2.addWidget(dedup_btn)
 
         add_btn = PushButton("新增条目", icon=FluentIcon.ADD)
         add_btn.clicked.connect(self._add_row)
-        row2.addWidget(add_btn)
+        flow2.addWidget(add_btn)
 
         delete_btn = PushButton("删除选中", icon=FluentIcon.DELETE)
         delete_btn.clicked.connect(self._remove_selected_rows)
-        row2.addWidget(delete_btn)
+        flow2.addWidget(delete_btn)
 
         clear_btn = PushButton("清空全部", icon=FluentIcon.CLOSE)
         clear_btn.setToolTip("删除所有术语并写入配置")
         clear_btn.clicked.connect(self._clear_all)
-        row2.addWidget(clear_btn)
+        flow2.addWidget(clear_btn)
 
         auto_type_btn = PushButton("自动分类", icon=FluentIcon.TAG)
         auto_type_btn.setToolTip("先尝试 NER（需模型），再用关键词规则填充空白类别")
         auto_type_btn.clicked.connect(self._auto_classify_entries)
-        row2.addWidget(auto_type_btn)
+        flow2.addWidget(auto_type_btn)
 
-        scan_btn = PushButton("重新扫描角色名", icon=FluentIcon.SYNC)
+        v_layout.addWidget(group2)
+
+        group3, flow3 = self._create_toolbar_group("扫描与翻译")
+
+        scan_terms_btn = PrimaryPushButton("扫描术语候选", icon=FluentIcon.SEARCH)
+        scan_terms_btn.setToolTip("扫描游戏源码中的专有名词候选；配置了 LLM 时会进一步提升召回率")
+        scan_terms_btn.clicked.connect(self._on_scan_glossary_candidates)
+        flow3.addWidget(scan_terms_btn)
+        self._candidate_button = scan_terms_btn
+
+        scan_btn = PushButton("扫描角色名", icon=FluentIcon.SYNC)
         scan_btn.setToolTip("扫描游戏目录，自动提取角色名到术语表（清空旧的自动提取数据）")
         scan_btn.clicked.connect(self._on_rescan_characters)
-        row2.addWidget(scan_btn)
+        flow3.addWidget(scan_btn)
 
-        translate_llm_btn = PrimaryPushButton("LLM 翻译空译文", icon=FluentIcon.SEND)
+        translate_llm_btn = PrimaryPushButton("LLM 批量翻译", icon=FluentIcon.SEND)
         translate_llm_btn.setToolTip("使用已配置的翻译引擎（LLM/API）批量翻译空译文/占位译文，不会覆盖已有译文")
         translate_llm_btn.clicked.connect(self._on_translate_glossary_llm)
-        row2.addWidget(translate_llm_btn)
+        flow3.addWidget(translate_llm_btn)
         self._translate_llm_button = translate_llm_btn
 
-        translate_fast_btn = PushButton("极速翻译空译文", icon=FluentIcon.GLOBE)
+        translate_fast_btn = PushButton("极速批量翻译", icon=FluentIcon.GLOBE)
         translate_fast_btn.setToolTip("使用 Google/Bing 进行批量翻译（更快），不覆盖已有译文")
         translate_fast_btn.clicked.connect(self._on_translate_glossary_fast)
-        row2.addWidget(translate_fast_btn)
+        flow3.addWidget(translate_fast_btn)
         self._translate_fast_button = translate_fast_btn
 
-        row2.addStretch(1)
-        v_layout.addLayout(row2)
+        v_layout.addWidget(group3)
 
         return card
+
+    def _create_toolbar_group(self, title: str) -> tuple[QWidget, FlowLayout]:
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        label = CaptionLabel(title, container)
+        layout.addWidget(label)
+
+        flow_container = QWidget(container)
+        flow_layout = FlowLayout(flow_container, needAni=False)
+        flow_layout.setContentsMargins(0, 0, 0, 0)
+        flow_layout.setHorizontalSpacing(12)
+        flow_layout.setVerticalSpacing(10)
+        layout.addWidget(flow_container)
+
+        return container, flow_layout
 
     def _build_table_card(self) -> CardWidget:
         card = CardWidget(self)
@@ -753,6 +822,213 @@ class LocalGlossaryPage(Base, QWidget):
         else:
             InfoBar.info("翻译完成", "翻译已结束，但没有产生可用译文（可能接口返回原文）", parent=self)
 
+    def _set_candidate_button_enabled(self, enabled: bool) -> None:
+        if self._candidate_button is not None:
+            self._candidate_button.setEnabled(enabled)
+
+    def _resolve_game_target_path(self) -> str | None:
+        self.config = Config().load()
+        game_folder = str(getattr(self.config, "renpy_game_folder", "") or "").strip()
+        if game_folder == "":
+            folder = QFileDialog.getExistingDirectory(self, "选择游戏目录（包含 game 子目录）")
+            if folder:
+                game_folder = folder
+                self.config.renpy_game_folder = game_folder
+                self.config.save()
+                InfoBar.info("提示", f"已设置游戏目录为: {game_folder}", parent=self)
+            else:
+                InfoBar.warning("警告", "请先选择游戏目录", parent=self)
+                return None
+
+        target_path = Path(game_folder)
+        if target_path.exists() == False:
+            InfoBar.error("错误", f"游戏目录不存在: {game_folder}", parent=self)
+            return None
+
+        return str(target_path)
+
+    def _get_effective_tl_name(self) -> str:
+        raw_value = str(getattr(self.config, "renpy_tl_folder", "") or "").strip()
+        if raw_value == "":
+            return "chinese"
+        try:
+            path_name = Path(raw_value).name
+            if path_name:
+                return path_name
+        except Exception:
+            pass
+        return raw_value
+
+    def _on_scan_glossary_candidates(self) -> None:
+        if self._candidate_worker and self._candidate_worker.isRunning():
+            InfoBar.info("提示", "术语候选扫描正在进行中，请稍候…", parent=self)
+            return
+
+        target_path = self._resolve_game_target_path()
+        if target_path is None:
+            return
+
+        config = Config().load()
+        try:
+            platform = config.get_platform(getattr(config, "activate_platform", 0))
+        except Exception:
+            platform = None
+
+        supported_formats = {
+            Base.APIFormat.OPENAI,
+            Base.APIFormat.GOOGLE,
+            Base.APIFormat.ANTHROPIC,
+            Base.APIFormat.SAKURALLM,
+        }
+        if not platform:
+            InfoBar.warning("提示", "未找到可用 LLM，将仅使用规则候选扫描。", parent=self)
+        elif platform.get("api_format") not in supported_formats:
+            InfoBar.warning("提示", "当前平台不支持术语抽取，将仅使用规则候选扫描。", parent=self)
+            platform = None
+
+        self._set_candidate_button_enabled(False)
+
+        worker = GlossaryCandidateWorker(
+            config = config,
+            target_path = target_path,
+            platform = platform,
+            parent = self,
+        )
+        worker.progress.connect(self._on_scan_glossary_candidates_progress)
+        worker.finished.connect(self._on_scan_glossary_candidates_finished)
+        self._candidate_worker = worker
+
+        InfoBar.info("开始扫描", "正在扫描游戏源码中的术语候选…", parent=self)
+        worker.start()
+
+    def _on_scan_glossary_candidates_progress(self, message: str, percent: int) -> None:
+        self.logger.info(f"[GlossaryCandidate] {percent}% {message}")
+
+    def _on_scan_glossary_candidates_finished(self, success: bool, message: str, payload: Any) -> None:
+        self._set_candidate_button_enabled(True)
+
+        worker = self._candidate_worker
+        self._candidate_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        if success == False:
+            InfoBar.warning("扫描失败", message, parent=self)
+            return
+
+        if not isinstance(payload, dict):
+            InfoBar.warning("扫描失败", "扫描结果格式无效", parent=self)
+            return
+
+        entries = payload.get("entries", [])
+        if not isinstance(entries, list) or entries == []:
+            warning_text = "；".join(
+                str(item) for item in payload.get("warnings", []) if str(item).strip()
+            )
+            InfoBar.info("扫描完成", warning_text or "未生成可用的术语候选", parent=self)
+            return
+
+        added_count, updated_count = self._merge_candidate_entries(entries)
+        llm_chunks_total = int(payload.get("llm_chunks_total", 0) or 0)
+        llm_chunks_success = int(payload.get("llm_chunks_success", 0) or 0)
+        used_llm = bool(payload.get("used_llm", False)) and llm_chunks_success > 0
+        warning_text = "；".join(
+            str(item) for item in payload.get("warnings", []) if str(item).strip()
+        )
+
+        summary = (
+            f"已合并 {added_count} 条新候选，补全 {updated_count} 条现有条目，"
+            f"候选文本 {int(payload.get('corpus_count', 0) or 0)} 条。"
+        )
+        if used_llm:
+            summary += f" LLM 分块成功 {llm_chunks_success}/{max(llm_chunks_total, llm_chunks_success)}。"
+        if warning_text:
+            summary += f"\n{warning_text}"
+
+        if warning_text:
+            InfoBar.warning("扫描完成", summary, parent=self)
+        else:
+            InfoBar.success("扫描完成", summary, parent=self)
+
+    def _merge_candidate_entries(self, entries: List[Dict[str, Any]]) -> tuple[int, int]:
+        current_entries = self._collect_table_data()
+        merged_entries: List[Dict[str, Any]] = []
+        key_index: Dict[str, int] = {}
+
+        for item in current_entries:
+            copied = {
+                "src": str(item.get("src", "") or "").strip(),
+                "dst": str(item.get("dst", "") or "").strip(),
+                "type": str(item.get("type", "") or "").strip(),
+                "comment": str(item.get("comment", "") or "").strip(),
+                "case_sensitive": bool(item.get("case_sensitive", False)),
+            }
+            key = self._normalize_src(copied.get("src", ""))
+            if not key:
+                continue
+            if key not in key_index:
+                merged_entries.append(copied)
+                key_index[key] = len(merged_entries) - 1
+                continue
+
+            merged_entries[key_index[key]] = self._merge_entries(
+                merged_entries[key_index[key]],
+                copied,
+            )
+
+        added_count = 0
+        updated_count = 0
+        count_map: Dict[str, int] = {}
+
+        for entry in entries:
+            prepared = {
+                "src": str(entry.get("src", "") or "").strip(),
+                "dst": "",
+                "type": str(entry.get("type", "") or "").strip(),
+                "comment": str(entry.get("comment", "") or entry.get("info", "") or "术语候选 (自动提取)").strip(),
+                "case_sensitive": False,
+            }
+            key = self._normalize_src(prepared.get("src", ""))
+            if not key:
+                continue
+
+            count_map[key] = max(count_map.get(key, 0), int(entry.get("count", 0) or 0))
+
+            if key not in key_index:
+                merged_entries.append(prepared)
+                key_index[key] = len(merged_entries) - 1
+                added_count += 1
+                continue
+
+            current = merged_entries[key_index[key]]
+            merged = self._merge_entries(current, prepared)
+            if merged != current:
+                updated_count += 1
+            merged_entries[key_index[key]] = merged
+
+        self._set_table_data(merged_entries)
+        self._apply_candidate_counts(count_map)
+        return added_count, updated_count
+
+    def _apply_candidate_counts(self, count_map: Dict[str, int]) -> None:
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                src_item = self.table.item(row, 0)
+                stats_item = self.table.item(row, self.STATS_COLUMN)
+                if stats_item is None:
+                    stats_item = self._create_table_item("", editable=False)
+                    self.table.setItem(row, self.STATS_COLUMN, stats_item)
+
+                src = (src_item.text() if src_item else "").strip()
+                key = self._normalize_src(src)
+                if key in count_map:
+                    stats_item.setText(str(max(0, int(count_map[key]))))
+                else:
+                    stats_item.setText("")
+        finally:
+            self.table.blockSignals(False)
+
     def _on_statistics_clicked(self) -> None:
         if self._statistics_worker and self._statistics_worker.isRunning():
             InfoBar.info("提示", "命中统计正在进行中，请稍候…", parent=self)
@@ -1090,7 +1366,7 @@ class LocalGlossaryPage(Base, QWidget):
         auto_cache.pop(cache_key, None)
         self.config.glossary_auto_scan_cache = auto_cache
 
-        tl_name = getattr(self.config, "renpy_tl_folder", "") or "chinese"
+        tl_name = self._get_effective_tl_name()
 
         # 方法1: 从 miss_ready_replace 文件提取
         miss_names = self._extract_names_from_miss_files(game_path, tl_name)
