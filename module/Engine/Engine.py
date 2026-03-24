@@ -101,9 +101,13 @@ class Engine():
                         samples = processor.samples,
                         precedings = [],
                         local_flag = False,
+                        items = [item],
                     )
                 else:
-                    messages, _ = prompt_builder.generate_prompt_sakura(processor.srcs)
+                    messages, _ = prompt_builder.generate_prompt_sakura(
+                        processor.srcs,
+                        items = [item],
+                    )
 
                 requester = TaskRequester(config, platform, 0)
                 skip, _, response_result, _, _ = requester.request(messages)
