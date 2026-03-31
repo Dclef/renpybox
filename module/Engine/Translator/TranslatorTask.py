@@ -508,6 +508,8 @@ class TranslatorTask(Base):
             return Localizer.get().response_checker_line_error_fake_reply
         elif error == ResponseChecker.Error.LINE_ERROR_EMPTY_LINE:
             return Localizer.get().response_checker_line_error_empty_line
+        elif error == ResponseChecker.Error.LINE_ERROR_MIXED_LANGUAGE:
+            return Localizer.get().response_checker_line_error_mixed_language
         elif error == ResponseChecker.Error.LINE_ERROR_SIMILARITY:
             return Localizer.get().response_checker_line_error_similarity
         elif error == ResponseChecker.Error.LINE_ERROR_DEGRADATION:

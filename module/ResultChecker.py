@@ -527,18 +527,10 @@ class ResultChecker(Base):
             "说明": "以下译文可能存在翻译错误：英文单词未被翻译，直接拼接了中文译文",
         }
 
-        for item in self.items_translated:
-            dst = item.get_dst()
-            # 按行检查每一行
-            for line in dst.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                # 检测异常模式
-                if self.RE_MIXED_TRANSLATION.search(line):
-                    count += 1
-                    result.setdefault(item.get_file_path(), {})[item.get_src()] = item.get_dst()
-                    break  # 同一条目只计数一次
+        for item, src_repl, dst_repl in zip(self.items_translated, self.src_repls, self.dst_repls):
+            if ResponseChecker.has_mixed_language_leakage(src_repl, dst_repl):
+                count += 1
+                result.setdefault(item.get_file_path(), {})[item.get_src()] = item.get_dst()
 
         if count == 0:
             self.info(Localizer.get().file_checker_mixed_translation)

@@ -168,6 +168,7 @@ class LocalizerZH():
     response_checker_line_error_hangeul: str = "谚文残留"
     response_checker_line_error_fake_reply: str = "伪回复残留"
     response_checker_line_error_empty_line: str = "存在空行"
+    response_checker_line_error_mixed_language: str = "中英混杂残留"
     response_checker_line_error_similarity: str = "较高相似度"
     response_checker_line_error_degradation: str = "发生退化现象"
     response_decoder_glossary_by_json: str = "术语数据 -> 反序列化，共 {COUNT} 条"

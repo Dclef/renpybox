@@ -22,6 +22,7 @@ class ResponseChecker(Base):
         LINE_ERROR_HANGEUL = "LINE_ERROR_HANGEUL"
         LINE_ERROR_FAKE_REPLY = "LINE_ERROR_FAKE_REPLY"
         LINE_ERROR_EMPTY_LINE = "LINE_ERROR_EMPTY_LINE"
+        LINE_ERROR_MIXED_LANGUAGE = "LINE_ERROR_MIXED_LANGUAGE"
         LINE_ERROR_SIMILARITY = "LINE_ERROR_SIMILARITY"
         LINE_ERROR_DEGRADATION = "LINE_ERROR_DEGRADATION"
 
@@ -30,6 +31,7 @@ class ResponseChecker(Base):
         Error.LINE_ERROR_HANGEUL,
         Error.LINE_ERROR_FAKE_REPLY,
         Error.LINE_ERROR_EMPTY_LINE,
+        Error.LINE_ERROR_MIXED_LANGUAGE,
         Error.LINE_ERROR_SIMILARITY,
         Error.LINE_ERROR_DEGRADATION,
     )
@@ -62,6 +64,10 @@ class ResponseChecker(Base):
     # 行内占位符一致性检查
     RE_PRESERVE_TOKEN = re.compile(r"__RBX_PRESERVE_\d+_\d+__", flags = re.IGNORECASE)
     RE_MULTI_SPACE = re.compile(r"\s+")
+    RE_IGNORE_SEGMENTS = re.compile(r"\[[^\]\n]*\]|\{[^}\n]*\}")
+    RE_LATIN_FRAGMENT = re.compile(r"[A-Za-z]{2,}")
+    RE_CAMEL_CASE_TOKEN = re.compile(r"^[a-z]+[A-Z][A-Za-z]*$")
+    RE_CAPITALIZED_LATIN_TOKEN = re.compile(r"^[A-Z][A-Za-z'\-]{2,}$")
 
     def __init__(self, config: Config, items: list[CacheItem]) -> None:
         super().__init__()
@@ -155,6 +161,10 @@ class ResponseChecker(Base):
                 checks.append(__class__.Error.NONE)
                 continue
 
+            if self.has_mixed_language_leakage(src, dst):
+                checks.append(__class__.Error.LINE_ERROR_MIXED_LANGUAGE)
+                continue
+
             # 当原文语言为日语，且译文中包含平假名或片假名字符时，判断为 假名残留
             if self.config.source_language == BaseLanguage.Enum.JA and (TextHelper.JA.any_hiragana(dst_compare) or TextHelper.JA.any_katakana(dst_compare)):
                 checks.append(__class__.Error.LINE_ERROR_KANA)
@@ -210,6 +220,78 @@ class ResponseChecker(Base):
         return text.strip()
 
     @classmethod
+    def _strip_for_mixed_language_check(cls, text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+
+        text = cls.RE_PRESERVE_TOKEN.sub("", text)
+        text = cls.RE_IGNORE_SEGMENTS.sub("", text)
+        text = cls.RE_MULTI_SPACE.sub(" ", text)
+        return text.strip()
+
+    @classmethod
+    def _is_suspicious_latin_fragment(cls, fragment: str) -> bool:
+        if not isinstance(fragment, str):
+            return False
+        if len(fragment) < 2:
+            return False
+        if fragment.isupper():
+            return False
+        if cls.RE_CAPITALIZED_LATIN_TOKEN.fullmatch(fragment) is not None:
+            return False
+        if cls.RE_CAMEL_CASE_TOKEN.fullmatch(fragment) is not None:
+            return False
+        return any(ch.islower() for ch in fragment)
+
+    @classmethod
+    def has_mixed_language_leakage(cls, src: str, dst: str) -> bool:
+        clean_src = cls._strip_for_mixed_language_check(src)
+        clean_dst = cls._strip_for_mixed_language_check(dst)
+
+        if clean_src == "" or clean_dst == "":
+            return False
+        if TextHelper.CJK.any(clean_dst) == False or TextHelper.Latin.any(clean_dst) == False:
+            return False
+
+        source_tokens = [
+            token.lower()
+            for token in cls.RE_LATIN_FRAGMENT.findall(clean_src)
+            if len(token) >= 2
+        ]
+        if source_tokens == []:
+            return False
+
+        suspicious_count = 0
+        suspicious_chars = 0
+
+        for match in cls.RE_LATIN_FRAGMENT.finditer(clean_dst):
+            fragment = match.group(0)
+            if cls._is_suspicious_latin_fragment(fragment) == False:
+                continue
+
+            prev_char = clean_dst[match.start() - 1] if match.start() > 0 else ""
+            next_char = clean_dst[match.end()] if match.end() < len(clean_dst) else ""
+            touches_cjk = (
+                (prev_char != "" and TextHelper.CJK.char(prev_char))
+                or (next_char != "" and TextHelper.CJK.char(next_char))
+            )
+            if touches_cjk == False:
+                continue
+
+            fragment_lower = fragment.lower()
+            overlaps_source = any(
+                fragment_lower in token or token in fragment_lower
+                for token in source_tokens
+            )
+            if overlaps_source == False and len(fragment) < 4:
+                continue
+
+            suspicious_count += 1
+            suspicious_chars += len(fragment)
+
+        return suspicious_count >= 2 or suspicious_chars >= 4
+
+    @classmethod
     def relax_checks_after_retry_threshold(
         cls,
         srcs: list[str],
@@ -234,6 +316,7 @@ class ResponseChecker(Base):
             cls.Error.LINE_ERROR_HANGEUL,
             cls.Error.LINE_ERROR_DEGRADATION,
             cls.Error.LINE_ERROR_FAKE_REPLY,
+            cls.Error.LINE_ERROR_MIXED_LANGUAGE,
         ):
             return True
 
