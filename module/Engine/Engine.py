@@ -71,6 +71,7 @@ class Engine():
             # 延迟导入避免循环依赖
             from module.Engine.TaskRequester import TaskRequester
             from module.PromptBuilder import PromptBuilder
+            from module.Response.ResponseChecker import ResponseChecker
             from module.Response.ResponseDecoder import ResponseDecoder
             from module.TextProcessor import TextProcessor
 
@@ -117,6 +118,15 @@ class Engine():
                 dsts, _ = ResponseDecoder().decode(response_result)
                 if len(dsts) < len(processor.srcs):
                     dsts.extend([""] * (len(processor.srcs) - len(dsts)))
+
+                checks = ResponseChecker(config, [item]).check(
+                    processor.srcs,
+                    dsts[: len(processor.srcs)],
+                    item.get_text_type(),
+                )
+                dst_text = "\n".join(processor.restore_lines_for_log(dsts[: len(processor.srcs)]))
+                if any(v != ResponseChecker.Error.NONE for v in checks):
+                    return
 
                 name, dst = processor.post_process(dsts[: len(processor.srcs)])
                 item.set_dst(dst)
