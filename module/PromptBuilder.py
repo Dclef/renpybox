@@ -445,54 +445,61 @@ class PromptBuilder(Base):
         messages: list[dict[str, str]] = []
         extra_log: list[str] = []
 
-        # 基础提示词
-        content = self.build_main()
+        # === system 消息：固定指令 + 世界观/角色卡等上下文 ===
+        system_content = self.build_main()
 
-        # 工作台上下文
+        # 工作台上下文（相对稳定，适合放在 system 中以利用 API prompt cache）
         result = self.build_worldbook_context()
         if result != "":
-            content = content + "\n" + result
+            system_content = system_content + "\n" + result
             extra_log.append(result)
 
         result = self.build_character_context(srcs, items)
         if result != "":
-            content = content + "\n" + result
+            system_content = system_content + "\n" + result
             extra_log.append(result)
+
+        messages.append({
+            "role": "system",
+            "content": system_content,
+        })
+
+        # === user 消息：每批次变化的内容 ===
+        user_content = ""
 
         result = self.build_retry_hint(items)
         if result != "":
-            content = content + "\n" + result
+            user_content = user_content + result
             extra_log.append(result)
 
         # 参考上文
         if local_flag == False or self.config.enable_preceding_on_local == True:
             result = self.build_preceding(precedings)
             if result != "":
-                content = content + "\n" + result
+                user_content = (user_content + "\n" + result) if user_content else result
                 extra_log.append(result)
 
         # 术语表
         if self.config.glossary_enable == True:
             result = self.build_glossary(srcs)
             if result != "":
-                content = content + "\n" + result
+                user_content = (user_content + "\n" + result) if user_content else result
                 extra_log.append(result)
 
         # 控制字符示例
-        result = self.build_control_characters_samples(content, samples)
+        result = self.build_control_characters_samples(system_content, samples)
         if result != "":
-            content = content + "\n" + result
+            user_content = (user_content + "\n" + result) if user_content else result
             extra_log.append(result)
 
         # 输入
         result = self.build_inputs(srcs)
         if result != "":
-            content = content + "\n" + result
+            user_content = (user_content + "\n" + result) if user_content else result
 
-        # 构建提示词列表
         messages.append({
             "role": "user",
-            "content": content,
+            "content": user_content,
         })
 
         return messages, extra_log

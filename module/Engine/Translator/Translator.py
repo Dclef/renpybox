@@ -404,6 +404,9 @@ class Translator(Base):
             if self._should_stop_requested():
                 return None
 
+            # 保存初始 token_threshold，避免多轮累积除法导致值趋近于 1
+            self._initial_token_threshold = self.config.token_threshold
+
             # 开始循环
             for current_round in range(self.config.max_round):
                 if current_round == 0:
@@ -424,9 +427,9 @@ class Translator(Base):
                     else:
                         self.extras["total_line"] = self.extras.get("line", 0) + remaining
 
-                # 第二轮开始切分
+                # 第二轮开始切分（基于初始值计算，避免累积除法）
                 if current_round > 0:
-                    self.config.token_threshold = max(1, int(self.config.token_threshold / 3))
+                    self.config.token_threshold = max(1, int(self._initial_token_threshold / (3 ** current_round)))
 
                 # 生成缓存数据条目片段
                 chunks, precedings = self.cache_manager.generate_item_chunks(
