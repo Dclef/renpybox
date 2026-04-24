@@ -16,6 +16,7 @@ from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from base.compat import StrEnum
 from module.Config import Config
+from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 
@@ -327,38 +328,65 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            # 发起请求
-            response = client.chat.completions.create(
-                **self.generate_sakura_args(messages, thinking_level, args)
-            )
+            sakura_args = self.generate_sakura_args(messages, thinking_level, args)
+            sakura_args["stream"] = True
+            sakura_args["stream_options"] = {"include_usage": True}
 
-            # 提取回复内容（支持 Qwen3 的 <think> 标签）
-            message = response.choices[0].message
-            if hasattr(message, "reasoning_content") and isinstance(message.reasoning_content, str):
-                response_think = __class__.RE_LINE_BREAK.sub("\n", message.reasoning_content.strip())
-                response_result = message.content.strip()
-            elif "</think>" in message.content:
-                splited = message.content.split("</think>")
+            # 流式请求
+            stream = client.chat.completions.create(**sakura_args)
+
+            response_think_parts: list[str] = []
+            response_result_parts: list[str] = []
+            input_tokens = 0
+            output_tokens = 0
+            detector = DegradationDetector()
+            degraded = False
+
+            for chunk in stream:
+                # 用户中断检测
+                if Engine.get().get_status() == Engine.Status.STOPPING:
+                    stream.close()
+                    return True, None, None, None, None
+
+                if not chunk.choices and hasattr(chunk, 'usage') and chunk.usage is not None:
+                    input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or 0
+                    output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or 0
+                    continue
+
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+
+                reasoning = getattr(delta, 'reasoning_content', None)
+                if isinstance(reasoning, str) and reasoning:
+                    response_think_parts.append(reasoning)
+
+                content = getattr(delta, 'content', None)
+                if isinstance(content, str) and content:
+                    response_result_parts.append(content)
+                    if detector.feed(content):
+                        degraded = True
+                        self.warning("[STREAM] 检测到输出退化，提前中断")
+                        stream.close()
+                        break
+
+            response_think = __class__.RE_LINE_BREAK.sub("\n", "".join(response_think_parts).strip())
+            response_result = "".join(response_result_parts).strip()
+
+            if not response_think and "</think>" in response_result:
+                splited = response_result.split("</think>")
                 response_think = __class__.RE_LINE_BREAK.sub("\n", splited[0].removeprefix("<think>").strip())
                 response_result = splited[-1].strip()
-            else:
-                response_think = ""
-                response_result = message.content.strip()
+
+            if degraded:
+                return False, "", response_result, 0, 0
+
         except Exception as e:
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
-
-        # 获取输入消耗
-        try:
-            input_tokens = int(response.usage.prompt_tokens)
-        except Exception:
-            input_tokens = 0
-
-        # 获取输出消耗
-        try:
-            output_tokens = int(response.usage.completion_tokens)
-        except Exception:
-            output_tokens = 0
 
         return False, "", response_result, input_tokens, output_tokens
 
@@ -421,7 +449,7 @@ class TaskRequester(Base):
 
         return args
 
-    # 发起请求
+    # 发起请求（流式 + 退化检测）
     def request_openai(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
@@ -433,38 +461,71 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            # 发起请求
-            response = client.chat.completions.create(
-                **self.generate_openai_args(messages, thinking_level, args)
-            )
+            openai_args = self.generate_openai_args(messages, thinking_level, args)
+            openai_args["stream"] = True
+            openai_args["stream_options"] = {"include_usage": True}
 
-            # 提取回复内容
-            message = response.choices[0].message
-            if hasattr(message, "reasoning_content") and isinstance(message.reasoning_content, str):
-                response_think = __class__.RE_LINE_BREAK.sub("\n", message.reasoning_content.strip())
-                response_result = message.content.strip()
-            elif "</think>" in message.content:
-                splited = message.content.split("</think>")
+            # 流式请求
+            stream = client.chat.completions.create(**openai_args)
+
+            response_think_parts: list[str] = []
+            response_result_parts: list[str] = []
+            input_tokens = 0
+            output_tokens = 0
+            detector = DegradationDetector()
+            degraded = False
+
+            for chunk in stream:
+                # 用户中断检测
+                if Engine.get().get_status() == Engine.Status.STOPPING:
+                    stream.close()
+                    return True, None, None, None, None
+
+                if not chunk.choices and hasattr(chunk, 'usage') and chunk.usage is not None:
+                    # 最终的 usage 块（无 choices）
+                    input_tokens = getattr(chunk.usage, 'prompt_tokens', 0) or 0
+                    output_tokens = getattr(chunk.usage, 'completion_tokens', 0) or 0
+                    continue
+
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+
+                # reasoning_content（思考内容）
+                reasoning = getattr(delta, 'reasoning_content', None)
+                if isinstance(reasoning, str) and reasoning:
+                    response_think_parts.append(reasoning)
+
+                # content（正文内容）
+                content = getattr(delta, 'content', None)
+                if isinstance(content, str) and content:
+                    response_result_parts.append(content)
+                    # 退化检测
+                    if detector.feed(content):
+                        degraded = True
+                        self.warning("[STREAM] 检测到输出退化，提前中断")
+                        stream.close()
+                        break
+
+            response_think = __class__.RE_LINE_BREAK.sub("\n", "".join(response_think_parts).strip())
+            response_result = "".join(response_result_parts).strip()
+
+            # 处理 <think> 标签（部分模型不通过 reasoning_content 返回）
+            if not response_think and "</think>" in response_result:
+                splited = response_result.split("</think>")
                 response_think = __class__.RE_LINE_BREAK.sub("\n", splited[0].removeprefix("<think>").strip())
                 response_result = splited[-1].strip()
-            else:
-                response_think = ""
-                response_result = message.content.strip()
+
+            # 退化的响应仍然返回（让 ResponseChecker 做最终判定），但标记 token 为 0
+            if degraded:
+                return False, response_think, response_result, 0, 0
+
         except Exception as e:
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
-
-        # 获取输入消耗
-        try:
-            input_tokens = int(response.usage.prompt_tokens)
-        except Exception:
-            input_tokens = 0
-
-        # 获取输出消耗
-        try:
-            output_tokens = int(response.usage.completion_tokens)
-        except Exception:
-            output_tokens = 0
 
         return False, response_think, response_result, input_tokens, output_tokens
 
@@ -598,9 +659,7 @@ class TaskRequester(Base):
             "config": types.GenerateContentConfig(**args),
         }
 
-    # 发起请求
-
-
+    # 发起请求（流式 + 退化检测）
     def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
@@ -612,51 +671,87 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            # 发起请求
-            response = client.models.generate_content(
-                **self.generate_google_args(messages, thinking_level, args)
-            )
+            google_args = self.generate_google_args(messages, thinking_level, args)
 
-            # 获取回复内容
-            response_think = ""
-            response_result = ""
-            candidate = response.candidates[-1] if getattr(response, 'candidates', None) else None
-            parts = []
-            if candidate is not None:
-                content = getattr(candidate, 'content', None)
-                parts = getattr(content, 'parts', None) or []
+            # 流式请求
+            stream = client.models.generate_content_stream(**google_args)
 
-            if parts:
-                think_messages = [v for v in parts if getattr(v, 'thought', False)]
-                if think_messages:
-                    response_think = __class__.RE_LINE_BREAK.sub("\n", think_messages[-1].text.strip())
-                result_messages = [v for v in parts if not getattr(v, 'thought', False)]
-                if result_messages:
-                    response_result = result_messages[-1].text.strip()
+            response_think_parts: list[str] = []
+            response_result_parts: list[str] = []
+            input_tokens = 0
+            output_tokens = 0
+            detector = DegradationDetector()
+            degraded = False
+            finish_reason = None
+            prompt_feedback = None
+
+            for chunk in stream:
+                # 用户中断检测
+                if Engine.get().get_status() == Engine.Status.STOPPING:
+                    return True, None, None, None, None
+
+                # 记录安全过滤信息
+                candidate = chunk.candidates[-1] if getattr(chunk, 'candidates', None) else None
+                if candidate is not None:
+                    fr = getattr(candidate, 'finish_reason', None)
+                    if fr is not None:
+                        finish_reason = fr
+
+                pf = getattr(chunk, 'prompt_feedback', None)
+                if pf is not None:
+                    prompt_feedback = pf
+
+                # 提取 usage
+                usage = getattr(chunk, 'usage_metadata', None)
+                if usage is not None:
+                    pt = getattr(usage, 'prompt_token_count', None)
+                    tt = getattr(usage, 'total_token_count', None)
+                    if pt is not None:
+                        input_tokens = int(pt)
+                    if tt is not None and pt is not None:
+                        output_tokens = int(tt) - int(pt)
+
+                # 提取文本
+                parts = []
+                if candidate is not None:
+                    content = getattr(candidate, 'content', None)
+                    parts = getattr(content, 'parts', None) or []
+
+                for part in parts:
+                    text = getattr(part, 'text', None)
+                    if not isinstance(text, str) or not text:
+                        continue
+                    if getattr(part, 'thought', False):
+                        response_think_parts.append(text)
+                    else:
+                        response_result_parts.append(text)
+                        if detector.feed(text):
+                            degraded = True
+                            self.warning("[STREAM] 检测到输出退化，提前中断")
+                            break
+
+                if degraded:
+                    break
+
+            response_think = __class__.RE_LINE_BREAK.sub("\n", "".join(response_think_parts).strip())
+            response_result = "".join(response_result_parts).strip()
+
+            if degraded:
+                return False, response_think, response_result, 0, 0
 
             if not response_result:
-                response_result = (getattr(response, 'text', None) or "").strip()
-
-            if not response_result:
-                finish_reason = getattr(candidate, 'finish_reason', None) if candidate else None
-                prompt_feedback = getattr(response, 'prompt_feedback', None)
-                
                 # 检查是否是内容审查导致的阻止
                 is_prohibited = False
                 if finish_reason and 'PROHIBITED' in str(finish_reason):
                     is_prohibited = True
                 if prompt_feedback and 'PROHIBITED' in str(prompt_feedback):
                     is_prohibited = True
-                
+
                 if is_prohibited:
-                    # 内容被审查:返回特殊标记,表示内容被阻止
-                    # TranslatorTask 会检测到这个标记并跳过这批内容
                     self.warning(f"Content blocked by safety filter (PROHIBITED_CONTENT), marking batch as blocked")
-                    # 使用特殊的响应格式来标记内容被阻止
                     response_result = '{"translations":[],"glossary":[],"blocked":true}'
                     return False, "", response_result, 0, 0
                 else:
-                    # 其他错误:记录日志并重试
                     self.warning(
                         f"Gemini response empty content, finish_reason={finish_reason}, prompt_feedback={prompt_feedback}"
                     )
@@ -664,20 +759,6 @@ class TaskRequester(Base):
         except Exception as e:
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
-
-        # 获取消耗的输入 Token
-        try:
-            input_tokens = int(response.usage_metadata.prompt_token_count)
-        except Exception:
-            input_tokens = 0
-
-        # 获取消耗的输出 Token
-        try:
-            total_token_count = int(response.usage_metadata.total_token_count)
-            prompt_token_count = int(response.usage_metadata.prompt_token_count)
-            output_tokens = total_token_count - prompt_token_count
-        except Exception:
-            output_tokens = 0
 
         return False, response_think, response_result, input_tokens, output_tokens
 
@@ -730,7 +811,7 @@ class TaskRequester(Base):
 
         return args
 
-    # 发起请求
+    # 发起请求（流式 + 退化检测）
     def request_anthropic(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
@@ -742,39 +823,61 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            # 发起请求
-            response = client.messages.create(
-                **self.generate_anthropic_args(messages, thinking_level, args)
-            )
+            anthropic_args = self.generate_anthropic_args(messages, thinking_level, args)
 
-            # 提取回复内容
-            text_messages = [msg for msg in response.content if hasattr(msg, "text") and isinstance(msg.text, str)]
-            think_messages = [msg for msg in response.content if hasattr(msg, "thinking") and isinstance(msg.thinking, str)]
+            # 流式请求：text_stream 实时退化检测，最终消息提取思考内容和 usage
+            detector = DegradationDetector()
+            degraded = False
+            response_result_parts: list[str] = []
 
-            if text_messages != []:
-                response_result = text_messages[-1].text.strip()
-            else:
-                response_result = ""
+            with client.messages.stream(**anthropic_args) as stream:
+                for text in stream.text_stream:
+                    # 用户中断检测
+                    if Engine.get().get_status() == Engine.Status.STOPPING:
+                        return True, None, None, None, None
 
-            if think_messages != []:
-                response_think = __class__.RE_LINE_BREAK.sub("\n", think_messages[-1].thinking.strip())
-            else:
-                response_think = ""
+                    if not isinstance(text, str) or not text:
+                        continue
+
+                    response_result_parts.append(text)
+                    if detector.feed(text):
+                        degraded = True
+                        self.warning("[STREAM] 检测到输出退化，提前中断")
+                        break
+
+                # 获取最终消息（包含 thinking 和 usage）
+                if not degraded:
+                    final_message = stream.get_final_message()
+                else:
+                    final_message = None
+
+            response_result = "".join(response_result_parts).strip()
+
+            if degraded:
+                return False, "", response_result, 0, 0
+
+            # 从最终消息提取思考内容
+            response_think = ""
+            if final_message is not None:
+                think_messages = [
+                    msg for msg in final_message.content
+                    if hasattr(msg, "thinking") and isinstance(msg.thinking, str)
+                ]
+                if think_messages:
+                    response_think = __class__.RE_LINE_BREAK.sub("\n", think_messages[-1].thinking.strip())
+
+            # 获取 token 使用量
+            input_tokens = 0
+            output_tokens = 0
+            if final_message is not None:
+                usage = getattr(final_message, 'usage', None)
+                if usage is not None:
+                    input_tokens = getattr(usage, 'input_tokens', 0) or 0
+                    output_tokens = getattr(usage, 'output_tokens', 0) or 0
+
         except Exception as e:
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
-
-        # 获取输入消耗
-        try:
-            input_tokens = int(response.usage.input_tokens)
-        except Exception:
-            input_tokens = 0
-
-        # 获取输出消耗
-        try:
-            output_tokens = int(response.usage.output_tokens)
-        except Exception:
-            output_tokens = 0
 
         return False, response_think, response_result, input_tokens, output_tokens
 
