@@ -495,7 +495,7 @@ class TextProcessor(Base):
         codes: list[tuple[str, str]] = []
 
         def repl(match: re.Match) -> str:
-            placeholder = f"__RBX_PRESERVE_{i}_{len(codes)}__"
+            placeholder = f"_RENPYBOX_{i}_{len(codes)}_"
             codes.append((placeholder, match.group(0)))
             return placeholder
 

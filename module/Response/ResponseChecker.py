@@ -62,7 +62,7 @@ class ResponseChecker(Base):
         flags = re.IGNORECASE,
     )
     # 行内占位符一致性检查
-    RE_PRESERVE_TOKEN = re.compile(r"__RBX_PRESERVE_\d+_\d+__", flags = re.IGNORECASE)
+    RE_PRESERVE_TOKEN = re.compile(r"_RENPYBOX_\d+_\d+_", flags = re.IGNORECASE)
     RE_MULTI_SPACE = re.compile(r"\s+")
     RE_IGNORE_SEGMENTS = re.compile(r"\[[^\]\n]*\]|\{[^}\n]*\}")
     RE_LATIN_FRAGMENT = re.compile(r"[A-Za-z]{2,}")
@@ -132,7 +132,7 @@ class ResponseChecker(Base):
                 if sorted(src_preserves) != sorted(dst_preserves):
                     checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                     continue
-            elif "__RBX_PRESERVE_" in dst:
+            elif "_RENPYBOX_" in dst:
                 checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 
