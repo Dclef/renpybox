@@ -696,7 +696,16 @@ class TaskRequester(Base):
         }
 
         if system_parts:
-            args["system"] = "\n".join(system_parts)
+            system_text = "\n".join(system_parts)
+            # Anthropic Prompt Caching：将 system 消息标记为可缓存，
+            # 大批量翻译时相同的 system 指令只在首次请求中计费输入 token。
+            args["system"] = [
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
 
         # 移除 Anthropic 模型不支持的参数
         args.pop("presence_penalty", None)

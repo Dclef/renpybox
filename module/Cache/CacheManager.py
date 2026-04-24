@@ -275,11 +275,15 @@ class CacheManager(Base):
 
     # 生成缓存数据条目片段
     def generate_item_chunks(self, line_threshold: int, preceding_lines_threshold: int) -> list[list[CacheItem]]:
-        # 直接使用行数阈值
+        # 行数上限：line_threshold 是用户设置的"每批最多 N 行"
         line_limit = max(1, line_threshold)
+        # Token 上限：按行数阈值乘以经验系数推算；单行平均约 30-50 token，
+        # 乘 16 使短文本不会因 token 超限而过度切分。
+        token_limit = max(64, line_threshold * 16)
 
         skip: int = 0
         line_length: int = 0
+        token_length: int = 0
         chunk: list[CacheItem] = []
         chunks: list[list[CacheItem]] = []
         preceding_chunks: list[list[CacheItem]] = []
@@ -299,11 +303,13 @@ class CacheManager(Base):
 
             # 每个片段的第一条不判断是否超限，以避免特别长的文本导致死循环
             current_line_length = sum(1 for line in src_text.splitlines() if line.strip())
+            current_token_length = item.get_token_count()
             if len(chunk) == 0:
                 pass
-            # 如果 行数超限 或 数据来源跨文件，则结束此片段
+            # 如果 行数超限 或 Token 超限 或 数据来源跨文件，则结束此片段
             elif (
                 line_length + current_line_length > line_limit
+                or token_length + current_token_length > token_limit
                 or item.get_file_path() != chunk[-1].get_file_path()
             ):
                 chunks.append(chunk)
@@ -312,9 +318,11 @@ class CacheManager(Base):
 
                 chunk = []
                 line_length = 0
+                token_length = 0
 
             chunk.append(item)
             line_length = line_length + current_line_length
+            token_length = token_length + current_token_length
 
         # 如果还有剩余数据，则添加到列表中
         if len(chunk) > 0:
