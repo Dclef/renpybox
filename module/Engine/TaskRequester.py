@@ -243,7 +243,7 @@ class TaskRequester(Base):
         return client
 
     # 发起请求
-    def request(self, messages: list[dict]) -> tuple[bool, str, int, int]:
+    def request(self, messages: list[dict]) -> tuple[bool, str, str, int, int]:
         # 添加请求入口日志
         self.debug(f"[API-REQUEST] 准备请求: model={self.platform.get('model')}, "
                    f"api_format={self.platform.get('api_format')}, "
@@ -301,7 +301,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
-            "max_tokens": max(512, self.config.token_threshold),
+            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)"
             }
@@ -516,7 +516,9 @@ class TaskRequester(Base):
 
         # Gemini
         if __class__.RE_GEMINI_3_1_PRO.search(model) is not None:
-            if thinking_level in (ThinkingLevel.OFF, ThinkingLevel.LOW):
+            if thinking_level == ThinkingLevel.OFF:
+                set_google_thinking_config_by_level("MINIMAL", 0, False)
+            elif thinking_level == ThinkingLevel.LOW:
                 set_google_thinking_config_by_level("LOW", 384, True)
             elif thinking_level == ThinkingLevel.MEDIUM:
                 set_google_thinking_config_by_level("MEDIUM", 768, True)
@@ -524,14 +526,16 @@ class TaskRequester(Base):
                 set_google_thinking_config_by_level("HIGH", 1024, True)
 
         elif __class__.RE_GEMINI_3_PRO.search(model) is not None:
-            if thinking_level in (ThinkingLevel.OFF, ThinkingLevel.LOW, ThinkingLevel.MEDIUM):
+            if thinking_level == ThinkingLevel.OFF:
+                set_google_thinking_config_by_level("MINIMAL", 0, False)
+            elif thinking_level in (ThinkingLevel.LOW, ThinkingLevel.MEDIUM):
                 set_google_thinking_config_by_level("LOW", 384, True)
             elif thinking_level == ThinkingLevel.HIGH:
                 set_google_thinking_config_by_level("HIGH", 1024, True)
 
         elif __class__.RE_GEMINI_3_FLASH.search(model) is not None:
             if thinking_level == ThinkingLevel.OFF:
-                set_google_thinking_config_by_level("MINIMAL", 128, True)
+                set_google_thinking_config_by_level("MINIMAL", 0, False)
             elif thinking_level == ThinkingLevel.LOW:
                 set_google_thinking_config_by_level("LOW", 384, True)
             elif thinking_level == ThinkingLevel.MEDIUM:
@@ -542,8 +546,8 @@ class TaskRequester(Base):
         elif __class__.RE_GEMINI_2_5_PRO.search(model) is not None:
             if thinking_level == ThinkingLevel.OFF:
                 args["thinking_config"] = types.ThinkingConfig(
-                    thinking_budget = 128,
-                    include_thoughts = True,
+                    thinking_budget = 0,
+                    include_thoughts = False,
                 )
             elif thinking_level == ThinkingLevel.LOW:
                 args["thinking_config"] = types.ThinkingConfig(
@@ -583,6 +587,11 @@ class TaskRequester(Base):
                     include_thoughts = True,
                 )
 
+        # 将 system 消息传为 Google 的 system_instruction
+        system_parts = [v.get('content') for v in messages if v.get('role') == "system"]
+        if system_parts:
+            args["system_instruction"] = "\n".join(system_parts)
+
         return {
             "model": self.platform.get('model'),
             "contents": [v.get('content') for v in messages if v.get('role') == "user"],
@@ -592,7 +601,7 @@ class TaskRequester(Base):
     # 发起请求
 
 
-    def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, int, int]:
+    def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
         try:
             # 获取客户端
             with __class__.LOCK:
@@ -673,14 +682,21 @@ class TaskRequester(Base):
         return False, response_think, response_result, input_tokens, output_tokens
 
     def generate_anthropic_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
+        # 提取 system 消息作为 Anthropic 的 system 参数
+        system_parts = [v.get('content') for v in messages if v.get('role') == "system"]
+        non_system_messages = [v for v in messages if v.get('role') != "system"]
+
         args: dict = args | {
             "model": self.platform.get('model'),
-            "messages": messages,
+            "messages": non_system_messages,
             "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox"
             }
         }
+
+        if system_parts:
+            args["system"] = "\n".join(system_parts)
 
         # 移除 Anthropic 模型不支持的参数
         args.pop("presence_penalty", None)
