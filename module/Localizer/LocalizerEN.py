@@ -133,6 +133,8 @@ class LocalizerEN(LocalizerZH):
     translator_response_check_fail: str = "Translated text failed check, will automatically retry in the next round of translation"
     translator_response_check_fail_all: str = "All translated text failed check, will automatically retry in the next round of translation"
     translator_response_check_fail_part: str = "Partial translated text failed check, will automatically retry in the next round of translation"
+    translator_response_check_fail_line_stats: str = "failed lines {FAILED}/{TOTAL}"
+    translator_single_line_mode_summary: str = "Single-line mode: requested {REQUESTED} lines, plain-text fallback {FALLBACK} lines, failed {FAILED} lines, parse failures {MISMATCH} lines"
     translator_task_success: str = "Task time {TIME} seconds, {LINES} lines of text, input tokens {PT}, output tokens {CT}"
     translator_too_many_task: str = "Too many real-time tasks. Details hidden for performance …"
     translator_no_items: str = "No translatable data was found. Please check that the input file and project settings are correct …"
@@ -386,6 +388,12 @@ class LocalizerEN(LocalizerZH):
     expert_settings_page_preceding_lines_threshold_desc: str = "Maximum number of preceding lines to include as context for each translation task, disabled by default"
     expert_settings_page_preceding_disable_on_local: str = "Enable Preceding Lines for Local Interface"
     expert_settings_page_preceding_disable_on_local_desc: str = "Local models perform relatively poorly, so the preceding Lines feature often has negative effects, disabled by default"
+    expert_settings_page_single_line_translation: str = "Single-Line Translation Mode"
+    expert_settings_page_single_line_translation_desc: str = (
+        "When enabled, each request sends only one source line and accepts plain translated text as fallback"
+        "<br>"
+        "Useful for fast small models such as Tencent hy1.5 that often misalign batch JSONLINE output; this increases request count but reduces line-count mismatches"
+    )
     expert_settings_page_clean_ruby: str = "Clean Ruby Text"
     expert_settings_page_clean_ruby_desc: str = (
         "Removes the phonetic ruby characters from annotations, retaining only the main text, enabled by default"

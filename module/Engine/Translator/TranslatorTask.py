@@ -58,6 +58,165 @@ class TranslatorTask(Base):
         self.prompt_builder = PromptBuilder(self.config)
         self.response_checker = ResponseChecker(self.config, items)
 
+    def should_use_single_line_translation(self) -> bool:
+        """判断是否启用单行翻译模式。"""
+        if getattr(self.config, "single_line_translation_enable", False) != True:
+            return False
+
+        return self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+
+    def request_single_line(
+        self,
+        items: list[CacheItem],
+        processors: list[TextProcessor],
+        precedings: list[CacheItem],
+        local_flag: bool,
+        current_round: int,
+        start_time: float,
+    ) -> dict[str, str]:
+        """单行翻译模式：每次请求只处理一行原文。"""
+        requester = TaskRequester(self.config, self.platform, current_round)
+        total_input_tokens = 0
+        total_output_tokens = 0
+        updated_count = 0
+        failed_line_count = 0
+        fallback_line_count = 0
+        line_count_mismatch_count = 0
+
+        all_srcs: list[str] = []
+        all_dsts: list[str] = []
+        all_checks: list[str] = []
+        file_log: list[str] = []
+        console_log: list[str] = []
+        all_glossarys: list[dict[str, str]] = []
+        pending_updates: list[tuple[CacheItem, TextProcessor, list[str]]] = []
+
+        # 先逐条请求，再统一写回，避免中途更新导致日志和缓存状态不一致。
+        for item, processor in zip(items, processors):
+            item_srcs = list(processor.srcs)
+            item_dsts: list[str] = []
+            item_checks: list[str] = []
+            item_checker = ResponseChecker(self.config, [item])
+
+            if len(item_srcs) == 0:
+                pending_updates.append((item, processor, []))
+                continue
+
+            for line_index, src in enumerate(item_srcs):
+                messages, extra_log = self.prompt_builder.generate_single_line_prompt(
+                    src = src,
+                    samples = processor.samples,
+                    precedings = precedings,
+                    local_flag = local_flag,
+                    item = item,
+                )
+
+                if line_index == 0:
+                    file_log.extend(extra_log)
+                    console_log.extend(extra_log)
+
+                skip, response_think, response_result, input_tokens, output_tokens = requester.request(messages)
+                total_input_tokens = total_input_tokens + int(input_tokens or 0)
+                total_output_tokens = total_output_tokens + int(output_tokens or 0)
+
+                if skip == True or not isinstance(response_result, str) or response_result.strip() == "":
+                    failed_line_count = failed_line_count + 1
+                    line_count_mismatch_count = line_count_mismatch_count + 1
+                    item_dsts.append("")
+                    item_checks.append(ResponseChecker.Error.UNKNOWN)
+                    all_srcs.append(src)
+                    all_dsts.append("")
+                    all_checks.append(ResponseChecker.Error.UNKNOWN)
+                    continue
+
+                decoder = ResponseDecoder()
+                dsts, glossarys = decoder.decode(response_result, 1, allow_plain_text_single = True)
+                if decoder.last_method == "PLAIN_TEXT":
+                    fallback_line_count = fallback_line_count + 1
+                if glossarys != []:
+                    all_glossarys.extend(glossarys)
+
+                if len(dsts) != 1:
+                    failed_line_count = failed_line_count + 1
+                    line_count_mismatch_count = line_count_mismatch_count + 1
+                    item_dsts.append("")
+                    item_checks.append(ResponseChecker.Error.FAIL_DATA)
+                    all_srcs.append(src)
+                    all_dsts.append("")
+                    all_checks.append(ResponseChecker.Error.FAIL_DATA)
+                    continue
+
+                dst = dsts[0]
+                check = item_checker.check([src], [dst], item.get_text_type())[0]
+                if check != ResponseChecker.Error.NONE:
+                    failed_line_count = failed_line_count + 1
+
+                item_dsts.append(dst)
+                item_checks.append(check)
+                all_srcs.append(src)
+                all_dsts.append(dst)
+                all_checks.append(check)
+
+                if response_think != "":
+                    file_log.append(Localizer.get().translator_task_response_think + response_think)
+                    if LogManager.get().is_expert_mode():
+                        console_log.append(Localizer.get().translator_task_response_think + response_think)
+
+                if response_result != "":
+                    if LogManager.get().is_expert_mode() or decoder.last_method == "PLAIN_TEXT" or check != ResponseChecker.Error.NONE:
+                        file_log.append(Localizer.get().translator_task_response_result + response_result)
+                        if LogManager.get().is_expert_mode():
+                            console_log.append(Localizer.get().translator_task_response_result + response_result)
+
+            if all(v == ResponseChecker.Error.NONE for v in item_checks):
+                pending_updates.append((item, processor, item_dsts.copy()))
+            else:
+                if len(self.items) == 1:
+                    item.set_retry_count(item.get_retry_count() + 1)
+
+        log_srcs, log_dsts = self.build_log_lines(processors, all_srcs, all_dsts)
+
+        for item, processor, item_dsts in pending_updates:
+            name, dst = processor.post_process(item_dsts.copy())
+            item.set_dst(dst)
+            if name is not None:
+                item.set_first_name_dst(name)
+            item.set_status(Base.TranslationStatus.TRANSLATED)
+            updated_count = updated_count + 1
+
+        if updated_count > 0 and all_glossarys != []:
+            with __class__.GLOSSARY_SAVE_LOCK:
+                __class__.GLOSSARY_SAVE_TIME = self.merge_glossary(all_glossarys, __class__.GLOSSARY_SAVE_TIME)
+
+        summary = Localizer.get().translator_single_line_mode_summary
+        summary = summary.replace("{REQUESTED}", str(len(all_srcs)))
+        summary = summary.replace("{FALLBACK}", str(fallback_line_count))
+        summary = summary.replace("{FAILED}", str(failed_line_count))
+        summary = summary.replace("{MISMATCH}", str(line_count_mismatch_count))
+        file_log.insert(0, summary)
+        console_log.insert(0, summary)
+
+        self.print_log_table(
+            all_checks,
+            start_time,
+            total_input_tokens,
+            total_output_tokens,
+            log_srcs,
+            log_dsts,
+            file_log,
+            console_log,
+        )
+
+        return {
+            "row_count": updated_count,
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "failed_line_count": failed_line_count,
+            "fallback_line_count": fallback_line_count,
+            "line_count_mismatch_count": line_count_mismatch_count,
+            "requested_line_count": len(all_srcs),
+        }
+
     # 启动任务
     def start(self, current_round: int) -> dict[str, str]:
         """
@@ -112,6 +271,18 @@ class TranslatorTask(Base):
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+
+        # 单行模式直接转入逐行请求流程，避免批量 JSONLINE 格式对齐失败。
+        if self.should_use_single_line_translation():
+            self.debug(f"[REQUEST] 启用单行翻译模式")
+            return self.request_single_line(
+                items,
+                processors,
+                precedings,
+                local_flag,
+                current_round,
+                start_time,
+            )
 
         # 生成请求提示词
         self.debug(f"[REQUEST] 生成提示词: srcs={len(srcs)}, api_format={self.platform.get('api_format')}")
@@ -292,12 +463,18 @@ class TranslatorTask(Base):
                 "row_count": updated_count,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "failed_line_count": sum(1 for v in checks if v != ResponseChecker.Error.NONE),
+                "line_count_mismatch_count": sum(1 for v in checks if v == ResponseChecker.Error.FAIL_LINE_COUNT),
+                "requested_line_count": len(srcs),
             }
         else:
             return {
                 "row_count": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "failed_line_count": sum(1 for v in checks if v != ResponseChecker.Error.NONE),
+                "line_count_mismatch_count": sum(1 for v in checks if v == ResponseChecker.Error.FAIL_LINE_COUNT),
+                "requested_line_count": len(srcs),
             }
 
     def build_log_lines(self, processors: list[TextProcessor], srcs: list[str], dsts: list[str]) -> tuple[list[str], list[str]]:
@@ -401,25 +578,34 @@ class TranslatorTask(Base):
             }
             reason = f"（{'、'.join(error_texts)}）"
 
+        failed_count = sum(1 for v in checks if v != ResponseChecker.Error.NONE)
+        line_stats = ""
+        if failed_count > 0:
+            line_stats = (
+                "（"
+                + Localizer.get().translator_response_check_fail_line_stats.replace("{FAILED}", str(failed_count)).replace("{TOTAL}", str(len(srcs)))
+                + "）"
+            )
+
         if all(v == ResponseChecker.Error.UNKNOWN for v in checks):
             style = "red"
-            message = f"{Localizer.get().translator_response_check_fail} {reason}"
+            message = f"{Localizer.get().translator_response_check_fail} {reason}{line_stats}"
             log_func = self.error
         elif all(v == ResponseChecker.Error.FAIL_DATA for v in checks):
             style = "red"
-            message = f"{Localizer.get().translator_response_check_fail} {reason}"
+            message = f"{Localizer.get().translator_response_check_fail} {reason}{line_stats}"
             log_func = self.error
         elif all(v == ResponseChecker.Error.FAIL_LINE_COUNT for v in checks):
             style = "red"
-            message = f"{Localizer.get().translator_response_check_fail} {reason}"
+            message = f"{Localizer.get().translator_response_check_fail} {reason}{line_stats}"
             log_func = self.error
         elif all(v in ResponseChecker.LINE_ERROR for v in checks):
             style = "red"
-            message = f"{Localizer.get().translator_response_check_fail_all} {reason}"
+            message = f"{Localizer.get().translator_response_check_fail_all} {reason}{line_stats}"
             log_func = self.error
         elif any(v in ResponseChecker.LINE_ERROR for v in checks):
             style = "yellow"
-            message = f"{Localizer.get().translator_response_check_fail_part} {reason}"
+            message = f"{Localizer.get().translator_response_check_fail_part} {reason}{line_stats}"
             log_func = self.warning
         else:
             style = "green"

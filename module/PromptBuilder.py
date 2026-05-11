@@ -90,6 +90,21 @@ class PromptBuilder(Base):
 
         return full_prompt
 
+    def get_prompt_language_and_names(self) -> tuple[BaseLanguage.Enum, str, str]:
+        """获取提示词语言，以及原文/译文语言名称。"""
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            return (
+                BaseLanguage.Enum.ZH,
+                BaseLanguage.get_name_zh(self.config.source_language),
+                BaseLanguage.get_name_zh(self.config.target_language),
+            )
+
+        return (
+            BaseLanguage.Enum.EN,
+            BaseLanguage.get_name_en(self.config.source_language),
+            BaseLanguage.get_name_en(self.config.target_language),
+        )
+
     def build_worldbook_context(self) -> str:
         """构建世界观上下文。"""
         if getattr(self.config, "renpy_workbench_worldbook_enable", False) is not True:
@@ -401,6 +416,104 @@ class PromptBuilder(Base):
                 "\n" + f"{inputs}"
                 "\n" + "```"
             )
+
+    def build_single_line_instruction(self) -> str:
+        """构建单行翻译模式的极简提示，避免小模型被 JSONLINE 格式拖垮。"""
+        prompt_language, source_language, target_language = self.get_prompt_language_and_names()
+
+        if prompt_language == BaseLanguage.Enum.ZH:
+            return (
+                f"你是游戏文本翻译器。将下面这一行{source_language}原文翻译成{target_language}。"
+                "\n"
+                "只输出译文文本本身，不要编号、不要 JSON、不要解释、不要额外换行。"
+                "\n"
+                "保留原文中的控制字符、变量、标签、占位符和代码片段（如 {name}、[player]、%s、\\n）原样不变。"
+                "\n"
+                "自然语言、对话、旁白和 UI 文本必须翻译；只有明确无需翻译的人名、品牌、代码或占位符可以保留。"
+            )
+
+        return (
+            f"You are a game localization translator. Translate this single {source_language} line into {target_language}."
+            "\n"
+            "Output only the translated text itself. Do not output numbering, JSON, explanations, or extra line breaks."
+            "\n"
+            "Preserve control characters, variables, tags, placeholders, and code fragments exactly as-is, such as {name}, [player], %s, and \\n."
+            "\n"
+            "Natural language, dialogue, narration, and UI text must be translated. Only clear proper names, brands, code, or placeholders may remain unchanged."
+        )
+
+    def build_single_line_input(self, src: str) -> str:
+        prompt_language, _, _ = self.get_prompt_language_and_names()
+        if prompt_language == BaseLanguage.Enum.ZH:
+            return "原文：\n```text\n" + src + "\n```"
+
+        return "Source:\n```text\n" + src + "\n```"
+
+    def build_single_line_control_samples(self, samples: list[str]) -> str:
+        samples = sorted({v.strip() for v in samples if isinstance(v, str) and v.strip() != ""})
+        if len(samples) == 0:
+            return ""
+
+        prompt_language, _, _ = self.get_prompt_language_and_names()
+        if prompt_language == BaseLanguage.Enum.ZH:
+            return "需要原样保留的控制字符示例：\n" + ", ".join(samples)
+
+        return "Control character examples that must be preserved:\n" + ", ".join(samples)
+
+    def generate_single_line_prompt(
+        self,
+        src: str,
+        samples: list[str],
+        precedings: list[CacheItem],
+        local_flag: bool,
+        item: CacheItem | None = None,
+    ) -> tuple[list[dict], list[str]]:
+        """生成单行翻译提示词：单请求单原文，允许模型直接输出纯文本。"""
+        messages: list[dict[str, str]] = []
+        extra_log: list[str] = []
+        items = [item] if item is not None else None
+
+        content = self.build_single_line_instruction()
+
+        result = self.build_worldbook_context()
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        result = self.build_character_context([src], items)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        result = self.build_retry_hint(items)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        if local_flag == False or self.config.enable_preceding_on_local == True:
+            result = self.build_preceding(precedings)
+            if result != "":
+                content = content + "\n" + result
+                extra_log.append(result)
+
+        if self.config.glossary_enable == True:
+            result = self.build_glossary([src])
+            if result != "":
+                content = content + "\n" + result
+                extra_log.append(result)
+
+        result = self.build_single_line_control_samples(samples)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        content = content + "\n" + self.build_single_line_input(src)
+        messages.append({
+            "role": "user",
+            "content": content,
+        })
+
+        return messages, extra_log
 
     def build_retry_hint(self, items: list[CacheItem] | None) -> str:
         """为已重试的条目追加更强的翻译约束，降低原文照抄概率。"""

@@ -134,6 +134,8 @@ class LocalizerZH():
     translator_response_check_fail: str = "译文文本未通过检查，将在下一轮次的翻译中自动重试"
     translator_response_check_fail_all: str = "全部译文文本未通过检查，将在下一轮次的翻译中自动重试"
     translator_response_check_fail_part: str = "部分译文文本未通过检查，将在下一轮次的翻译中自动重试"
+    translator_response_check_fail_line_stats: str = "失败行数 {FAILED}/{TOTAL}"
+    translator_single_line_mode_summary: str = "单行模式：请求 {REQUESTED} 行，纯文本兜底 {FALLBACK} 行，失败 {FAILED} 行，解析失败 {MISMATCH} 行"
     translator_task_success: str = "任务耗时 {TIME} 秒，文本行数 {LINES} 行，输入消耗 {PT} Tokens，输出消耗 {CT} Tokens"
     translator_too_many_task: str = "实时任务数较多，暂时停止显示详细结果以提升性能 …"
     translator_no_items: str = "没有找到需要翻译的数据，请确认输入文件与项目设置是否正确 …"
@@ -387,6 +389,12 @@ class LocalizerZH():
     expert_settings_page_preceding_lines_threshold_desc: str = "每个翻译任务最多可携带的参考上文的行数，默认禁用"
     expert_settings_page_preceding_disable_on_local: str = "本地接口启用参考上文"
     expert_settings_page_preceding_disable_on_local_desc: str = "本地模型性能较差，参考上文功能大部分时候是负面效果，默认禁用"
+    expert_settings_page_single_line_translation: str = "单行翻译模式"
+    expert_settings_page_single_line_translation_desc: str = (
+        "启用后，每次请求只提交一行原文，并允许模型直接返回纯文本译文"
+        "<br>"
+        "适合腾讯 hy1.5 等速度快但批量 JSONLINE 格式容易错位的小模型；会增加请求次数，但可显著降低行数不一致"
+    )
     expert_settings_page_clean_ruby: str = "清理原文中的注音文本"
     expert_settings_page_clean_ruby_desc: str = (
         "移除注音上标中的注音部分，仅保留正文部分，默认启用"

@@ -42,6 +42,7 @@ class ExpertSettingsPage(QWidget, Base):
         # 添加控件
         self.add_widget_preceding_lines_threshold(scroll_area_vbox, config, window)
         self.add_widget_preceding_disable_on_local(scroll_area_vbox, config, window)
+        self.add_widget_single_line_translation(scroll_area_vbox, config, window)
         self.add_widget_clean_ruby(scroll_area_vbox, config, window)
         self.add_widget_deduplication_in_trans(scroll_area_vbox, config, window)
         self.add_widget_deduplication_in_bilingual(scroll_area_vbox, config, window)
@@ -91,6 +92,28 @@ class ExpertSettingsPage(QWidget, Base):
             SwitchButtonCard(
                 title = Localizer.get().expert_settings_page_preceding_disable_on_local,
                 description = Localizer.get().expert_settings_page_preceding_disable_on_local_desc,
+                init = init,
+                checked_changed = checked_changed,
+            )
+        )
+
+    # 单行翻译模式
+    def add_widget_single_line_translation(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+
+        def init(widget: SwitchButtonCard) -> None:
+            widget.get_switch_button().setChecked(
+                config.single_line_translation_enable
+            )
+
+        def checked_changed(widget: SwitchButtonCard) -> None:
+            config = Config().load()
+            config.single_line_translation_enable = widget.get_switch_button().isChecked()
+            config.save()
+
+        parent.addWidget(
+            SwitchButtonCard(
+                title = Localizer.get().expert_settings_page_single_line_translation,
+                description = Localizer.get().expert_settings_page_single_line_translation_desc,
                 init = init,
                 checked_changed = checked_changed,
             )

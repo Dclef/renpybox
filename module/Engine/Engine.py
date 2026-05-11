@@ -96,28 +96,49 @@ class Engine():
                     return
 
                 prompt_builder = PromptBuilder(config)
-                if platform.get("api_format") != Base.APIFormat.SAKURALLM:
-                    messages, _ = prompt_builder.generate_prompt(
-                        srcs = processor.srcs,
-                        samples = processor.samples,
-                        precedings = [],
-                        local_flag = False,
-                        items = [item],
-                    )
+                if getattr(config, "single_line_translation_enable", False) and platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+                    requester = TaskRequester(config, platform, 0)
+                    dsts: list[str] = []
+                    for src_line in processor.srcs:
+                        messages, _ = prompt_builder.generate_single_line_prompt(
+                            src = src_line,
+                            samples = processor.samples,
+                            precedings = [],
+                            local_flag = False,
+                            item = item,
+                        )
+                        skip, _, response_result, _, _ = requester.request(messages)
+                        if skip or not isinstance(response_result, str) or response_result.strip() == "":
+                            return
+
+                        decoder = ResponseDecoder()
+                        line_dsts, _ = decoder.decode(response_result, 1, allow_plain_text_single = True)
+                        if len(line_dsts) != 1:
+                            return
+                        dsts.extend(line_dsts)
                 else:
-                    messages, _ = prompt_builder.generate_prompt_sakura(
-                        processor.srcs,
-                        items = [item],
-                    )
+                    if platform.get("api_format") != Base.APIFormat.SAKURALLM:
+                        messages, _ = prompt_builder.generate_prompt(
+                            srcs = processor.srcs,
+                            samples = processor.samples,
+                            precedings = [],
+                            local_flag = False,
+                            items = [item],
+                        )
+                    else:
+                        messages, _ = prompt_builder.generate_prompt_sakura(
+                            processor.srcs,
+                            items = [item],
+                        )
 
-                requester = TaskRequester(config, platform, 0)
-                skip, _, response_result, _, _ = requester.request(messages)
-                if skip:
-                    return
+                    requester = TaskRequester(config, platform, 0)
+                    skip, _, response_result, _, _ = requester.request(messages)
+                    if skip:
+                        return
 
-                dsts, _ = ResponseDecoder().decode(response_result)
-                if len(dsts) < len(processor.srcs):
-                    dsts.extend([""] * (len(processor.srcs) - len(dsts)))
+                    dsts, _ = ResponseDecoder().decode(response_result)
+                    if len(dsts) < len(processor.srcs):
+                        dsts.extend([""] * (len(processor.srcs) - len(dsts)))
 
                 checks = ResponseChecker(config, [item]).check(
                     processor.srcs,
