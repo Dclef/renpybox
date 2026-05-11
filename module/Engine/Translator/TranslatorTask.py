@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import itertools
 import threading
@@ -22,6 +23,41 @@ from module.Response.ResponseChecker import ResponseChecker
 from module.Response.ResponseDecoder import ResponseDecoder
 from module.Text.TextHelper import TextHelper
 from module.TextProcessor import TextProcessor
+
+@dataclasses.dataclass
+class TranslatorTaskResult:
+    """翻译任务返回结果。"""
+
+    row_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    failed_line_count: int = 0
+    fallback_line_count: int = 0
+    line_count_mismatch_count: int = 0
+    requested_line_count: int = 0
+    error: bool = False
+    error_msg: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class SingleLineTranslationOutcome:
+    """单行翻译结果。"""
+
+    dst: str = ""
+    check: ResponseChecker.Error = ResponseChecker.Error.UNKNOWN
+    failed: bool = False
+    mismatch: bool = False
+    fallback: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    response_think: str = ""
+    response_result: str = ""
+    decoder_method: str = ""
+    glossarys: list[dict[str, str]] = dataclasses.field(default_factory = list)
+
 
 class TranslatorTask(Base):
 
@@ -73,15 +109,11 @@ class TranslatorTask(Base):
         local_flag: bool,
         current_round: int,
         start_time: float,
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         """单行翻译模式：每次请求只处理一行原文。"""
         requester = TaskRequester(self.config, self.platform, current_round)
-        total_input_tokens = 0
-        total_output_tokens = 0
+        stats = TranslatorTaskResult()
         updated_count = 0
-        failed_line_count = 0
-        fallback_line_count = 0
-        line_count_mismatch_count = 0
 
         all_srcs: list[str] = []
         all_dsts: list[str] = []
@@ -96,77 +128,52 @@ class TranslatorTask(Base):
             item_srcs = list(processor.srcs)
             item_dsts: list[str] = []
             item_checks: list[str] = []
-            item_checker = ResponseChecker(self.config, [item])
 
             if len(item_srcs) == 0:
                 pending_updates.append((item, processor, []))
                 continue
 
             for line_index, src in enumerate(item_srcs):
-                messages, extra_log = self.prompt_builder.generate_single_line_prompt(
+                outcome, extra_log = self.request_single_line_line(
+                    requester = requester,
+                    item = item,
                     src = src,
                     samples = processor.samples,
                     precedings = precedings,
                     local_flag = local_flag,
-                    item = item,
                 )
 
                 if line_index == 0:
                     file_log.extend(extra_log)
                     console_log.extend(extra_log)
 
-                skip, response_think, response_result, input_tokens, output_tokens = requester.request(messages)
-                total_input_tokens = total_input_tokens + int(input_tokens or 0)
-                total_output_tokens = total_output_tokens + int(output_tokens or 0)
+                stats.input_tokens = stats.input_tokens + outcome.input_tokens
+                stats.output_tokens = stats.output_tokens + outcome.output_tokens
+                if outcome.failed:
+                    stats.failed_line_count = stats.failed_line_count + 1
+                if outcome.fallback:
+                    stats.fallback_line_count = stats.fallback_line_count + 1
+                if outcome.mismatch:
+                    stats.line_count_mismatch_count = stats.line_count_mismatch_count + 1
+                if outcome.glossarys != []:
+                    all_glossarys.extend(outcome.glossarys)
 
-                if skip == True or not isinstance(response_result, str) or response_result.strip() == "":
-                    failed_line_count = failed_line_count + 1
-                    line_count_mismatch_count = line_count_mismatch_count + 1
-                    item_dsts.append("")
-                    item_checks.append(ResponseChecker.Error.UNKNOWN)
-                    all_srcs.append(src)
-                    all_dsts.append("")
-                    all_checks.append(ResponseChecker.Error.UNKNOWN)
-                    continue
-
-                decoder = ResponseDecoder()
-                dsts, glossarys = decoder.decode(response_result, 1, allow_plain_text_single = True)
-                if decoder.last_method == "PLAIN_TEXT":
-                    fallback_line_count = fallback_line_count + 1
-                if glossarys != []:
-                    all_glossarys.extend(glossarys)
-
-                if len(dsts) != 1:
-                    failed_line_count = failed_line_count + 1
-                    line_count_mismatch_count = line_count_mismatch_count + 1
-                    item_dsts.append("")
-                    item_checks.append(ResponseChecker.Error.FAIL_DATA)
-                    all_srcs.append(src)
-                    all_dsts.append("")
-                    all_checks.append(ResponseChecker.Error.FAIL_DATA)
-                    continue
-
-                dst = dsts[0]
-                check = item_checker.check([src], [dst], item.get_text_type())[0]
-                if check != ResponseChecker.Error.NONE:
-                    failed_line_count = failed_line_count + 1
-
-                item_dsts.append(dst)
-                item_checks.append(check)
+                item_dsts.append(outcome.dst)
+                item_checks.append(outcome.check)
                 all_srcs.append(src)
-                all_dsts.append(dst)
-                all_checks.append(check)
+                all_dsts.append(outcome.dst)
+                all_checks.append(outcome.check)
 
-                if response_think != "":
-                    file_log.append(Localizer.get().translator_task_response_think + response_think)
+                if outcome.response_think != "":
+                    file_log.append(Localizer.get().translator_task_response_think + outcome.response_think)
                     if LogManager.get().is_expert_mode():
-                        console_log.append(Localizer.get().translator_task_response_think + response_think)
+                        console_log.append(Localizer.get().translator_task_response_think + outcome.response_think)
 
-                if response_result != "":
-                    if LogManager.get().is_expert_mode() or decoder.last_method == "PLAIN_TEXT" or check != ResponseChecker.Error.NONE:
-                        file_log.append(Localizer.get().translator_task_response_result + response_result)
+                if outcome.response_result != "":
+                    if LogManager.get().is_expert_mode() or outcome.decoder_method == "PLAIN_TEXT" or outcome.check != ResponseChecker.Error.NONE:
+                        file_log.append(Localizer.get().translator_task_response_result + outcome.response_result)
                         if LogManager.get().is_expert_mode():
-                            console_log.append(Localizer.get().translator_task_response_result + response_result)
+                            console_log.append(Localizer.get().translator_task_response_result + outcome.response_result)
 
             if all(v == ResponseChecker.Error.NONE for v in item_checks):
                 pending_updates.append((item, processor, item_dsts.copy()))
@@ -190,35 +197,100 @@ class TranslatorTask(Base):
 
         summary = Localizer.get().translator_single_line_mode_summary
         summary = summary.replace("{REQUESTED}", str(len(all_srcs)))
-        summary = summary.replace("{FALLBACK}", str(fallback_line_count))
-        summary = summary.replace("{FAILED}", str(failed_line_count))
-        summary = summary.replace("{MISMATCH}", str(line_count_mismatch_count))
+        summary = summary.replace("{FALLBACK}", str(stats.fallback_line_count))
+        summary = summary.replace("{FAILED}", str(stats.failed_line_count))
+        summary = summary.replace("{MISMATCH}", str(stats.line_count_mismatch_count))
         file_log.insert(0, summary)
         console_log.insert(0, summary)
 
         self.print_log_table(
             all_checks,
             start_time,
-            total_input_tokens,
-            total_output_tokens,
+            stats.input_tokens,
+            stats.output_tokens,
             log_srcs,
             log_dsts,
             file_log,
             console_log,
         )
 
-        return {
-            "row_count": updated_count,
-            "input_tokens": total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "failed_line_count": failed_line_count,
-            "fallback_line_count": fallback_line_count,
-            "line_count_mismatch_count": line_count_mismatch_count,
-            "requested_line_count": len(all_srcs),
-        }
+        stats.row_count = updated_count
+        stats.requested_line_count = len(all_srcs)
+        return stats.as_dict()
+
+    def request_single_line_line(
+        self,
+        requester: TaskRequester,
+        item: CacheItem,
+        src: str,
+        samples: list[str],
+        precedings: list[CacheItem],
+        local_flag: bool,
+    ) -> tuple[SingleLineTranslationOutcome, list[str]]:
+        """执行单行请求、解析和校验。"""
+        messages, extra_log = self.prompt_builder.generate_single_line_prompt(
+            src = src,
+            samples = samples,
+            precedings = precedings,
+            local_flag = local_flag,
+            item = item,
+        )
+
+        skip, response_think, response_result, input_tokens, output_tokens = requester.request(messages)
+        response_think = response_think or ""
+        response_result = response_result or ""
+        input_tokens = int(input_tokens or 0)
+        output_tokens = int(output_tokens or 0)
+
+        if skip == True or response_result.strip() == "":
+            return SingleLineTranslationOutcome(
+                check = ResponseChecker.Error.UNKNOWN,
+                failed = True,
+                mismatch = True,
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                response_think = response_think,
+                response_result = response_result,
+            ), extra_log
+
+        decoder = ResponseDecoder()
+        decode_result = decoder.decode_result(response_result, 1, allow_plain_text_single = True)
+        if decode_result.glossarys != []:
+            glossarys = decode_result.glossarys.copy()
+        else:
+            glossarys = []
+
+        if len(decode_result.dsts) != 1:
+            return SingleLineTranslationOutcome(
+                check = ResponseChecker.Error.FAIL_DATA,
+                failed = True,
+                mismatch = True,
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                response_think = response_think,
+                response_result = response_result,
+                decoder_method = decode_result.method,
+                glossarys = glossarys,
+            ), extra_log
+
+        dst = decode_result.dsts[0]
+        check = ResponseChecker(self.config, [item]).check([src], [dst], item.get_text_type())[0]
+        return SingleLineTranslationOutcome(
+            dst = dst,
+            check = check,
+            failed = check != ResponseChecker.Error.NONE,
+            mismatch = False,
+            fallback = decode_result.method == "PLAIN_TEXT",
+            input_tokens = input_tokens,
+            output_tokens = output_tokens,
+            response_think = response_think,
+            response_result = response_result,
+            decoder_method = decode_result.method,
+            glossarys = glossarys,
+        ), extra_log
 
     # 启动任务
-    def start(self, current_round: int) -> dict[str, str]:
+    def start(self, current_round: int) -> dict[str, object]:
         """
         启动翻译任务，包含异常捕获确保线程不会静默死亡
         """
@@ -233,16 +305,10 @@ class TranslatorTask(Base):
             self.error(f"[TASK-CRASH] 完整堆栈:\n{traceback.format_exc()}")
             
             # 确保返回有效结果，防止主线程无限等待
-            return {
-                "row_count": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "error": True,
-                "error_msg": error_msg,
-            }
+            return TranslatorTaskResult(error = True, error_msg = error_msg).as_dict()
 
     # 请求
-    def request(self, items: list[CacheItem], processors: list[TextProcessor], precedings: list[CacheItem], local_flag: bool, current_round: int) -> dict[str, str]:
+    def request(self, items: list[CacheItem], processors: list[TextProcessor], precedings: list[CacheItem], local_flag: bool, current_round: int) -> dict[str, object]:
         # 任务开始的时间
         start_time = time.time()
         

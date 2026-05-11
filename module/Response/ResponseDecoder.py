@@ -1,7 +1,17 @@
+import dataclasses
 import re
 import json_repair as repair
 
 from base.Base import Base
+
+@dataclasses.dataclass(frozen = True)
+class ResponseDecodeResult:
+    """模型回复解析结果。"""
+
+    dsts: list[str]
+    glossarys: list[dict[str, str]]
+    method: str
+
 
 class ResponseDecoder(Base):
     """
@@ -22,6 +32,7 @@ class ResponseDecoder(Base):
 
     def __init__(self) -> None:
         super().__init__()
+        # 兼容旧调用方；新代码应使用 decode_result() 返回的 method。
         self.last_method: str = ""
 
     def decode(
@@ -30,6 +41,19 @@ class ResponseDecoder(Base):
         expected_count: int = 0,
         allow_plain_text_single: bool = False,
     ) -> tuple[list[str], list[dict[str, str]]]:
+        result = self.decode_result(
+            response,
+            expected_count = expected_count,
+            allow_plain_text_single = allow_plain_text_single,
+        )
+        return result.dsts, result.glossarys
+
+    def decode_result(
+        self,
+        response: str,
+        expected_count: int = 0,
+        allow_plain_text_single: bool = False,
+    ) -> ResponseDecodeResult:
         """
         解析响应文本，按优先级尝试多种格式
         
@@ -42,8 +66,7 @@ class ResponseDecoder(Base):
         """
         if not response or not isinstance(response, str):
             self.warning(f"[DECODE] 响应为空或类型错误: type={type(response)}")
-            self.last_method = "FAIL"
-            return [], []
+            return self._make_result([], [], "FAIL")
 
         dsts: list[str] = []
         glossarys: list[dict[str, str]] = []
@@ -52,44 +75,43 @@ class ResponseDecoder(Base):
         # 1. 标准 JSONLINE 解析
         dsts, glossarys = self._parse_jsonline(response)
         if self._validate_count(dsts, expected_count, "JSONLINE"):
-            self.last_method = "JSONLINE"
-            return dsts, glossarys
+            return self._make_result(dsts, glossarys, "JSONLINE")
         
         # 2. 去掉 Markdown 围栏后重试
         cleaned = self._strip_markdown_fence(response)
         if cleaned != response:
             dsts, glossarys = self._parse_jsonline(cleaned)
             if self._validate_count(dsts, expected_count, "Markdown-JSONLINE"):
-                self.last_method = "MARKDOWN_JSONLINE"
-                return dsts, glossarys
+                return self._make_result(dsts, glossarys, "MARKDOWN_JSONLINE")
 
         # 3. 单一 JSON 字典
         target_text = cleaned if cleaned != response else response
         dsts = self._parse_json_dict(target_text)
         if self._validate_count(dsts, expected_count, "JSON-Dict"):
-            self.last_method = "JSON_DICT"
-            return dsts, glossarys
+            return self._make_result(dsts, glossarys, "JSON_DICT")
 
         # 4. 编号文本（可选，用于某些模型不遵守格式时）
         dsts = self._parse_numbered_text(response)
         if self._validate_count(dsts, expected_count, "Numbered-Text"):
             self.warning(f"[DECODE] 使用编号文本解析（非标准格式）")
-            self.last_method = "NUMBERED_TEXT"
-            return dsts, glossarys
+            return self._make_result(dsts, glossarys, "NUMBERED_TEXT")
 
         # 5. 单行纯文本兜底：适合小模型只返回译文正文的情况
         if expected_count == 1 and allow_plain_text_single == True:
             plain_text = self._parse_single_plain_text(cleaned if cleaned != response else response)
             if plain_text != "":
                 self.debug(f"[DECODE] 使用单行纯文本兜底解析")
-                self.last_method = "PLAIN_TEXT"
-                return [plain_text], glossarys
+                return self._make_result([plain_text], glossarys, "PLAIN_TEXT")
 
         # 全部失败，返回空
         preview = response[:200].replace('\n', '\\n') if len(response) > 200 else response.replace('\n', '\\n')
         self.warning(f"[DECODE] 所有解析方式均失败, 响应预览: {preview}")
-        self.last_method = "FAIL"
-        return [], glossarys
+        return self._make_result([], glossarys, "FAIL")
+
+    def _make_result(self, dsts: list[str], glossarys: list[dict[str, str]], method: str) -> ResponseDecodeResult:
+        """创建解析结果，并同步旧的 last_method 字段。"""
+        self.last_method = method
+        return ResponseDecodeResult(dsts, glossarys, method)
     
     def _parse_jsonline(self, text: str) -> tuple[list[str], list[dict]]:
         """标准 JSONLINE 解析"""
