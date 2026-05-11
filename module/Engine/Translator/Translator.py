@@ -364,6 +364,10 @@ class Translator(Base):
                 self.extras.setdefault("total_tokens", 0)
                 self.extras.setdefault("total_input_tokens", 0)
                 self.extras.setdefault("total_output_tokens", 0)
+                self.extras.setdefault("failed_line_count", 0)
+                self.extras.setdefault("fallback_line_count", 0)
+                self.extras.setdefault("line_count_mismatch_count", 0)
+                self.extras.setdefault("requested_line_count", 0)
             else:
                 # 修复: 计算实际的总行数，而不是硬编码为0
                 total_untranslated = self.cache_manager.get_item_count_by_status(
@@ -378,6 +382,10 @@ class Translator(Base):
                     "total_tokens": 0,
                     "total_input_tokens": 0,
                     "total_output_tokens": 0,
+                    "failed_line_count": 0,
+                    "fallback_line_count": 0,
+                    "line_count_mismatch_count": 0,
+                    "requested_line_count": 0,
                     "time": 0,
                 }
 
@@ -432,8 +440,11 @@ class Translator(Base):
                     self.config.token_threshold = max(1, int(self._initial_token_threshold / (3 ** current_round)))
 
                 # 生成缓存数据条目片段
+                chunk_line_threshold = self.config.token_threshold
+                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+                    chunk_line_threshold = 1
                 chunks, precedings = self.cache_manager.generate_item_chunks(
-                    self.config.token_threshold,
+                    chunk_line_threshold,
                     self.config.preceding_lines_threshold,
                 )
 
@@ -462,6 +473,8 @@ class Translator(Base):
                 self.info(f"{Localizer.get().translator_name} - {self.platform.get('name')}")
                 self.info(f"{Localizer.get().translator_api_url} - {self.platform.get('api_url')}")
                 self.info(f"{Localizer.get().translator_model} - {self.platform.get('model')}")
+                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+                    self.info("[INIT] 单行翻译模式已启用：每次请求只处理一行文本")
                 self.print("")
                 if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
                     self.info(PromptBuilder(self.config).build_main())
@@ -831,6 +844,10 @@ class Translator(Base):
                 new["total_tokens"] = self.extras.get("total_tokens", 0) + result.get("input_tokens", 0) + result.get("output_tokens", 0)
                 new["total_input_tokens"] = self.extras.get("total_input_tokens", 0) + result.get("input_tokens", 0)
                 new["total_output_tokens"] = self.extras.get("total_output_tokens", 0) + result.get("output_tokens", 0)
+                new["failed_line_count"] = self.extras.get("failed_line_count", 0) + result.get("failed_line_count", 0)
+                new["fallback_line_count"] = self.extras.get("fallback_line_count", 0) + result.get("fallback_line_count", 0)
+                new["line_count_mismatch_count"] = self.extras.get("line_count_mismatch_count", 0) + result.get("line_count_mismatch_count", 0)
+                new["requested_line_count"] = self.extras.get("requested_line_count", 0) + result.get("requested_line_count", 0)
                 new["time"] = time.time() - self.extras.get("start_time", 0)
                 self.extras = new
 
