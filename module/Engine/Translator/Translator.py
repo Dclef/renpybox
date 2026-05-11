@@ -243,6 +243,64 @@ class Translator(Base):
             )
         )
 
+    def _new_progress_extras(self, total_line: int) -> dict:
+        """创建新的翻译进度统计。"""
+        return {
+            "start_time": time.time(),
+            "total_line": total_line,
+            "line": 0,
+            "total_tokens": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "failed_line_count": 0,
+            "fallback_line_count": 0,
+            "line_count_mismatch_count": 0,
+            "requested_line_count": 0,
+            "time": 0,
+        }
+
+    def _resume_progress_extras(self) -> dict:
+        """从缓存恢复翻译进度，并按当前条目状态修正已完成行数。"""
+        extras = dict(self.cache_manager.get_project().get_extras() or {})
+        elapsed = extras.get("time", 0) or 0
+        extras["start_time"] = time.time() - elapsed
+        extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
+
+        for key in (
+            "total_line",
+            "total_tokens",
+            "total_input_tokens",
+            "total_output_tokens",
+            "failed_line_count",
+            "fallback_line_count",
+            "line_count_mismatch_count",
+            "requested_line_count",
+            "time",
+        ):
+            extras.setdefault(key, 0)
+
+        return extras
+
+    def _merge_task_result_into_progress(self, result: dict) -> dict:
+        """把单个 TranslatorTask 的返回值累加到全局进度。"""
+        input_tokens = int(result.get("input_tokens", 0) or 0)
+        output_tokens = int(result.get("output_tokens", 0) or 0)
+        start_time = self.extras.get("start_time", time.time())
+
+        return {
+            "start_time": start_time,
+            "total_line": self.extras.get("total_line", 0),
+            "line": self.extras.get("line", 0) + int(result.get("row_count", 0) or 0),
+            "total_tokens": self.extras.get("total_tokens", 0) + input_tokens + output_tokens,
+            "total_input_tokens": self.extras.get("total_input_tokens", 0) + input_tokens,
+            "total_output_tokens": self.extras.get("total_output_tokens", 0) + output_tokens,
+            "failed_line_count": self.extras.get("failed_line_count", 0) + int(result.get("failed_line_count", 0) or 0),
+            "fallback_line_count": self.extras.get("fallback_line_count", 0) + int(result.get("fallback_line_count", 0) or 0),
+            "line_count_mismatch_count": self.extras.get("line_count_mismatch_count", 0) + int(result.get("line_count_mismatch_count", 0) or 0),
+            "requested_line_count": self.extras.get("requested_line_count", 0) + int(result.get("requested_line_count", 0) or 0),
+            "time": time.time() - start_time,
+        }
+
     def _is_relative_to(self, path_a: str, path_b: str) -> bool:
         try:
             return os.path.commonpath([os.path.abspath(path_a), os.path.abspath(path_b)]) == os.path.abspath(path_b)
@@ -357,37 +415,14 @@ class Translator(Base):
 
             # 从头翻译时加载默认数据
             if status == Base.TranslationStatus.TRANSLATING:
-                self.extras = self.cache_manager.get_project().get_extras()
-                self.extras["start_time"] = time.time() - self.extras.get("time", 0)
-                # 根据实际的 Item 状态重新计算 line，避免缓存与项目数据不一致
-                self.extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
-                self.extras.setdefault("total_tokens", 0)
-                self.extras.setdefault("total_input_tokens", 0)
-                self.extras.setdefault("total_output_tokens", 0)
-                self.extras.setdefault("failed_line_count", 0)
-                self.extras.setdefault("fallback_line_count", 0)
-                self.extras.setdefault("line_count_mismatch_count", 0)
-                self.extras.setdefault("requested_line_count", 0)
+                self.extras = self._resume_progress_extras()
             else:
                 # 修复: 计算实际的总行数，而不是硬编码为0
                 total_untranslated = self.cache_manager.get_item_count_by_status(
                     Base.TranslationStatus.UNTRANSLATED
                 )
                 self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
-                
-                self.extras = {
-                    "start_time": time.time(),
-                    "total_line": total_untranslated,  # 使用实际值
-                    "line": 0,
-                    "total_tokens": 0,
-                    "total_input_tokens": 0,
-                    "total_output_tokens": 0,
-                    "failed_line_count": 0,
-                    "fallback_line_count": 0,
-                    "line_count_mismatch_count": 0,
-                    "requested_line_count": 0,
-                    "time": 0,
-                }
+                self.extras = self._new_progress_extras(total_untranslated)
 
             # 更新翻译进度
             self.cache_manager.get_project().set_extras(self.extras)
@@ -837,19 +872,7 @@ class Translator(Base):
 
             # 记录数据
             with self.data_lock:
-                new = {}
-                new["start_time"] = self.extras.get("start_time", 0)
-                new["total_line"] = self.extras.get("total_line", 0)
-                new["line"] = self.extras.get("line", 0) + result.get("row_count", 0)
-                new["total_tokens"] = self.extras.get("total_tokens", 0) + result.get("input_tokens", 0) + result.get("output_tokens", 0)
-                new["total_input_tokens"] = self.extras.get("total_input_tokens", 0) + result.get("input_tokens", 0)
-                new["total_output_tokens"] = self.extras.get("total_output_tokens", 0) + result.get("output_tokens", 0)
-                new["failed_line_count"] = self.extras.get("failed_line_count", 0) + result.get("failed_line_count", 0)
-                new["fallback_line_count"] = self.extras.get("fallback_line_count", 0) + result.get("fallback_line_count", 0)
-                new["line_count_mismatch_count"] = self.extras.get("line_count_mismatch_count", 0) + result.get("line_count_mismatch_count", 0)
-                new["requested_line_count"] = self.extras.get("requested_line_count", 0) + result.get("requested_line_count", 0)
-                new["time"] = time.time() - self.extras.get("start_time", 0)
-                self.extras = new
+                self.extras = self._merge_task_result_into_progress(result)
 
             # 更新翻译进度
             self.cache_manager.get_project().set_extras(self.extras)
