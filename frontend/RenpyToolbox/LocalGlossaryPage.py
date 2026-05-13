@@ -89,9 +89,12 @@ class GlossaryTranslateWorker(QThread):
             self.progress.emit("术语库翻译完成", 100)
             self.finished.emit(True, f"Translated {len(results)} items", results)
 
-        except Exception as exc:
+        except BaseException as exc:
             self._logger.error(f"术语库翻译失败: {exc}")
-            self.finished.emit(False, str(exc), [])
+            try:
+                self.finished.emit(False, str(exc), [])
+            except Exception:
+                pass
 
 
 class GlossaryLLMTranslateWorker(QThread):
@@ -221,9 +224,12 @@ class GlossaryLLMTranslateWorker(QThread):
             self.progress.emit("术语库翻译完成", 100)
             self.finished.emit(True, f"Translated {len(all_results)} items", all_results)
 
-        except Exception as exc:
+        except BaseException as exc:
             self._logger.error(f"术语库 LLM 翻译失败: {exc}")
-            self.finished.emit(False, str(exc), [])
+            try:
+                self.finished.emit(False, str(exc), [])
+            except Exception:
+                pass
 
 
 class GlossaryCandidateWorker(QThread):
@@ -262,9 +268,12 @@ class GlossaryCandidateWorker(QThread):
                 return
 
             self.finished.emit(True, "术语候选扫描完成", payload)
-        except Exception as exc:
+        except BaseException as exc:
             self._logger.error(f"术语候选扫描失败: {exc}")
-            self.finished.emit(False, str(exc), {})
+            try:
+                self.finished.emit(False, str(exc), {})
+            except Exception:
+                pass
 
     def _emit_progress(self, message: str, percent: int) -> None:
         self.progress.emit(message, percent)
