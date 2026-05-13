@@ -200,15 +200,87 @@ class WorkbenchAnalysisService(Base):
         )
         return [candidate]
 
+    @staticmethod
+    def _normalize_existing_path(raw: Any) -> Path | None:
+        """把配置路径解析为已存在的 Path。"""
+        text = normalize_text(raw)
+        if text == "":
+            return None
+        try:
+            path = Path(text).expanduser().resolve()
+        except Exception:
+            path = Path(text)
+        return path if path.exists() else None
+
+    def _collect_project_candidates(self, config: Config) -> list[Path]:
+        """按优先级收集可能的项目根目录候选。"""
+        raws = [
+            getattr(config, "input_folder", ""),
+            getattr(config, "output_folder", ""),
+            getattr(config, "renpy_tl_folder", ""),
+            getattr(config, "renpy_game_folder", ""),
+            getattr(config, "renpy_project_path", ""),
+        ]
+        candidates: list[Path] = []
+        for raw in raws:
+            path = self._normalize_existing_path(raw)
+            if path is None:
+                continue
+
+            if path.is_file():
+                path = path.parent
+
+            if path.parent.name.lower() == "tl":
+                if path.parent.parent.name.lower() == "game":
+                    candidates.append(path.parent.parent.parent)
+                else:
+                    candidates.append(path.parent.parent)
+                continue
+
+            if path.name.lower() == "tl":
+                if path.parent.name.lower() == "game":
+                    candidates.append(path.parent.parent)
+                else:
+                    candidates.append(path.parent)
+                continue
+
+            if path.name.lower() == "game":
+                candidates.append(path.parent)
+                continue
+
+            if (path / "game").is_dir():
+                candidates.append(path)
+                continue
+
+            candidates.append(path)
+
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                key = str(candidate.resolve()).lower()
+            except Exception:
+                key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        return deduped
+
     def resolve_project_root(self, config: Config) -> Path | None:
         """解析项目根目录。"""
-        raw = normalize_text(getattr(config, "renpy_game_folder", ""))
-        if raw == "":
+        candidates = self._collect_project_candidates(config)
+        if candidates == []:
             return None
-        path = Path(raw)
-        if path.name.lower() == "game":
-            return path.parent
-        return path
+
+        for candidate in candidates:
+            if (candidate / "game").is_dir():
+                return candidate
+
+        fallback = candidates[0]
+        if fallback.name.lower() == "game":
+            return fallback.parent
+        return fallback
 
     def load_scope_items(self, config: Config, scope: str) -> tuple[list[CacheItem], str]:
         """按范围载入分析语料。"""

@@ -4,6 +4,7 @@ import os
 import threading
 from typing import Any
 from typing import ClassVar
+from typing import Optional
 from base.compat import Self
 
 from base.BaseLanguage import BaseLanguage
@@ -264,14 +265,20 @@ class Config():
         self.text_preserve_data: list[Any] = []
 
     # 获取平台配置
-    def get_platform(self, id: int) -> dict[str, Any]:
+    def get_platform(self, id: int) -> Optional[dict[str, Any]]:
+        if isinstance(self.platforms, list) is False:
+            return None
+
         item: dict[str, str | bool | int | float | list[str]] = None
         for item in self.platforms:
             if item.get("id", 0) == id:
                 return item
+        return None
 
     # 更新平台配置
     def set_platform(self, platform: dict[str, Any]) -> None:
+        if isinstance(self.platforms, list) is False:
+            self.platforms = []
         for i, item in enumerate(self.platforms):
             if item.get("id", 0) == platform.get("id", 0):
                 self.platforms[i] = platform

@@ -586,6 +586,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         draft_scope = normalize_analysis_scope(getattr(config, "renpy_workbench_last_analysis_scope", ANALYSIS_SCOPE_CURRENT))
         draft_text = f"世界观草稿：{'有' if any(normalize_worldbook(getattr(config, 'renpy_workbench_generated_worldbook_draft', {})).values()) else '无'}"
         draft_text += f"；角色草稿：{len(drafts)} 张；最近范围：{'当前范围' if draft_scope == ANALYSIS_SCOPE_CURRENT else '全项目'}"
+        resolved_project_root = self.analysis_service.resolve_project_root(config)
 
         summary = {
             "platform": platform_name or "未配置",
@@ -593,7 +594,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             "source_target": f"{config.source_language} -> {config.target_language}",
             "input_folder": normalize_text(config.input_folder) or "未设置",
             "output_folder": normalize_text(config.output_folder) or "未设置",
-            "project_root": normalize_text(config.renpy_game_folder) or "未设置",
+            "project_root": str(resolved_project_root) if resolved_project_root else (normalize_text(config.renpy_game_folder) or "未设置"),
             "tl_folder": normalize_text(config.renpy_tl_folder) or "未设置",
             "worldbook": world_ready,
             "characters": f"共 {len(cards)} 张，启用 {enabled_cards} 张",
