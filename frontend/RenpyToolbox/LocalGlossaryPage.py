@@ -192,9 +192,10 @@ class GlossaryLLMTranslateWorker(QThread):
                 start = batch_index * self.batch_size
                 batch = self.tasks[start:start + self.batch_size]
                 srcs = [src for _, src in batch]
+                batch_label = f"第 {batch_index + 1}/{total_batches} 批，{len(srcs)} 条"
 
                 self.progress.emit(
-                    f"正在使用 LLM 翻译术语库… ({min(start, total)}/{total})",
+                    f"正在使用 LLM 翻译术语库… ({batch_label})",
                     int(batch_index / max(1, total_batches) * 100),
                 )
 
@@ -202,6 +203,11 @@ class GlossaryLLMTranslateWorker(QThread):
                     messages, _ = prompt_builder.generate_prompt(srcs, [], [], False)
                 else:
                     messages, _ = prompt_builder.generate_prompt_sakura(srcs)
+
+                self.progress.emit(
+                    f"正在等待模型返回… ({batch_label})",
+                    min(95, int((batch_index + 0.5) / max(1, total_batches) * 100)),
+                )
 
                 requester = TaskRequester(config_for_prompt, self.platform, batch_index)
                 skip, _, response_text, _, _ = requester.request(messages)
@@ -219,6 +225,11 @@ class GlossaryLLMTranslateWorker(QThread):
 
                 for (row, _), dst in zip(batch, translated):
                     all_results.append((row, dst))
+
+                self.progress.emit(
+                    f"已完成术语翻译 {min(start + len(batch), total)}/{total}",
+                    min(99, int((batch_index + 1) / max(1, total_batches) * 100)),
+                )
 
             self.progress.emit("术语库翻译完成", 100)
             self.finished.emit(True, f"Translated {len(all_results)} items", all_results)
