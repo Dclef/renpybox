@@ -243,12 +243,14 @@ class PlatformEditPage(MessageBoxBase, Base):
             "LOW": 1,
             "MEDIUM": 2,
             "HIGH": 3,
+            "MAX": 4,
         }
         index_to_level = {
             0: "OFF",
             1: "LOW",
             2: "MEDIUM",
             3: "HIGH",
+            4: "MAX",
         }
 
         def normalize_level() -> str:
@@ -284,6 +286,7 @@ class PlatformEditPage(MessageBoxBase, Base):
                     Localizer.get().platform_edit_page_thinking_low,
                     Localizer.get().platform_edit_page_thinking_medium,
                     Localizer.get().platform_edit_page_thinking_high,
+                    Localizer.get().platform_edit_page_thinking_max,
                 ],
                 init = init,
                 current_changed = current_changed,

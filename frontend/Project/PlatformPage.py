@@ -108,7 +108,7 @@ class PlatformPage(QWidget, Base):
 
             if isinstance(raw_thinking, dict):
                 raw_level = str(raw_thinking.get("level", "OFF")).upper().strip()
-                level = raw_level if raw_level in ("OFF", "LOW", "MEDIUM", "HIGH") else "OFF"
+                level = raw_level if raw_level in ("OFF", "LOW", "MEDIUM", "HIGH", "MAX") else "OFF"
             elif raw_thinking == True:
                 level = "HIGH"
 

@@ -2,7 +2,6 @@ import json
 import re
 import threading
 import time
-from functools import lru_cache
 from typing import Any
 
 import anthropic
@@ -28,6 +27,7 @@ class ThinkingLevel(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+    MAX = "MAX"
 
 
 class TaskRequester(Base):
@@ -97,6 +97,49 @@ class TaskRequester(Base):
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
 
+    @classmethod
+    def _is_client_closed(cls, client: Any) -> bool:
+        """尽量兼容不同 SDK，判断底层客户端是否已关闭。"""
+        if client is None:
+            return True
+
+        try:
+            direct_flag = getattr(client, "is_closed", None)
+            if isinstance(direct_flag, bool):
+                return direct_flag
+        except Exception:
+            pass
+
+        inner = getattr(client, "_client", None)
+        if inner is not None:
+            try:
+                inner_flag = getattr(inner, "is_closed", None)
+                if isinstance(inner_flag, bool):
+                    return inner_flag
+            except Exception:
+                pass
+
+        return False
+
+    @classmethod
+    def _discard_client(cls, url: str, key: str, format: Base.APIFormat, timeout: int, client: Any = None) -> None:
+        """从缓存中移除指定客户端，并尽量安全关闭。"""
+        cache_key = (url, key, format, timeout)
+
+        with cls.LOCK:
+            cached = cls.CLIENT_REGISTRY.pop(cache_key, None)
+
+        target = client if client is not None else cached
+        if target is None:
+            return
+
+        try:
+            close = getattr(target, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
     def __init__(self, config: Config, platform: dict[str, Any], current_round: int) -> None:
         super().__init__()
 
@@ -141,7 +184,6 @@ class TaskRequester(Base):
                     pass
 
             cls.CLIENT_REGISTRY.clear()
-            cls.get_client.cache_clear()
 
     @classmethod
     def get_key(cls, keys: list[str]) -> str:
@@ -159,7 +201,6 @@ class TaskRequester(Base):
 
     # 获取客户端
     @classmethod
-    @lru_cache(maxsize = None)
     def get_client(cls, url: str, key: str, format: Base.APIFormat, timeout: int):
         # connect (连接超时):
         #   建议值: 5.0 到 10.0 秒。
@@ -177,6 +218,13 @@ class TaskRequester(Base):
         #   建议值: 5.0 到 10.0 秒 (如果并发量高，可以适当增加)。
         #   解释: 如果你使用 httpx.Client 并且并发发起大量请求，可能会耗尽连接池中的连接。此参数定义了等待可用连接的最长时间。
         cache_key = (url, key, format, timeout)
+
+        cached = cls.CLIENT_REGISTRY.get(cache_key)
+        if cached is not None:
+            if cls._is_client_closed(cached):
+                cls.CLIENT_REGISTRY.pop(cache_key, None)
+            else:
+                return cached
 
         if format == Base.APIFormat.SAKURALLM:
             client = openai.OpenAI(
@@ -297,6 +345,33 @@ class TaskRequester(Base):
         self.warning(f"[API-REQUEST] 请求失败，已达最大重试次数")
         return last_result
 
+    def _recover_closed_cached_client(self, exc: BaseException) -> bool:
+        """命中“client 已关闭”类错误时，清理缓存并允许上层重试。"""
+        message = str(exc or "")
+        lowered = message.lower()
+        markers = (
+            "client has been closed",
+            "cannot send a request, as the client has been closed",
+            "closed client",
+        )
+        if any(marker in lowered for marker in markers) is False:
+            return False
+
+        try:
+            url = self.platform.get('api_url')
+            format = self.platform.get('api_format')
+            timeout = self.config.request_timeout
+            self.warning("[API-REQUEST] 检测到已关闭的缓存客户端，正在丢弃并等待重试")
+            api_keys = self.platform.get('api_key') or []
+            if isinstance(api_keys, list) and api_keys:
+                for key in api_keys:
+                    __class__._discard_client(url, key, format, timeout)
+            else:
+                __class__._discard_client(url, "no_key_required", format, timeout)
+        except Exception:
+            pass
+        return True
+
     # 生成请求参数
     def generate_sakura_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
         args: dict = args | {
@@ -385,6 +460,7 @@ class TaskRequester(Base):
                 return False, "", response_result, 0, 0
 
         except Exception as e:
+            self._recover_closed_cached_client(e)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -437,6 +513,13 @@ class TaskRequester(Base):
                 extra_body["thinking"] = {"type": "disabled"}
             else:
                 extra_body["thinking"] = {"type": "enabled"}
+                # DeepSeek V4 已支持 reasoning_effort=high/max。
+                # 这里仅对 DeepSeek 追加该参数，避免把未验证字段传给 GLM / Kimi。
+                if "deepseek" in model.lower():
+                    if thinking_level == ThinkingLevel.MAX:
+                        extra_body["reasoning_effort"] = "max"
+                    else:
+                        extra_body["reasoning_effort"] = "high"
 
         # 本地 qwen3 / Sakura 兼容源沿用 /no_think 兜底语义，避免破坏旧接口行为。
         elif __class__.RE_QWEN3.search(model) is not None:
@@ -524,6 +607,7 @@ class TaskRequester(Base):
                 return False, response_think, response_result, 0, 0
 
         except Exception as e:
+            self._recover_closed_cached_client(e)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -757,6 +841,7 @@ class TaskRequester(Base):
                     )
                     return True, None, None, None, None
         except Exception as e:
+            self._recover_closed_cached_client(e)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -876,6 +961,7 @@ class TaskRequester(Base):
                     output_tokens = getattr(usage, 'output_tokens', 0) or 0
 
         except Exception as e:
+            self._recover_closed_cached_client(e)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -1040,6 +1126,7 @@ class TaskRequester(Base):
                 self.warning(f"DeepL 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
+            self._recover_closed_cached_client(e)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
