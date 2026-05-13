@@ -69,6 +69,10 @@ def excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_trac
         LogManager.get().warning(f"[UI] 忽略非致命异常: {exc_value}")
         return
 
+    if isinstance(exc_value, RuntimeError) and "has been deleted" in str(exc_value):
+        LogManager.get().warning(f"[UI] 忽略非致命异常: {exc_value}")
+        return
+
     LogManager.get().error(Localizer.get().log_crash, exc_value)
 
     if not isinstance(exc_value, KeyboardInterrupt):
@@ -79,9 +83,18 @@ def excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_trac
 
     os.kill(os.getpid(), signal.SIGTERM)
 
+def _threading_excepthook(args) -> None:
+    if args.exc_type is SystemExit:
+        return
+    LogManager.get().error(f"[Thread-{args.thread and args.thread.name}] 子线程未捕获异常", args.exc_value)
+
 if __name__ == "__main__":
     # 捕获全局异常
     sys.excepthook = lambda exc_type, exc_value, exc_traceback: excepthook(exc_type, exc_value, exc_traceback)
+
+    # 捕获子线程未处理异常，避免子线程异常导致主进程崩溃
+    import threading
+    threading.excepthook = _threading_excepthook
 
     # 当运行在 Windows 系统且没有运行在新终端时，禁用快速编辑模式
     if os.name == "nt" and Console().color_system != "truecolor":
