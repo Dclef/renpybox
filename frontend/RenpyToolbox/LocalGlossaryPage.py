@@ -29,6 +29,7 @@ from qfluentwidgets import (
     TitleLabel,
     CaptionLabel,
     StrongBodyLabel,
+    ProgressBar,
     isDarkTheme,
     qconfig,
 )
@@ -240,12 +241,14 @@ class GlossaryCandidateWorker(QThread):
         config: Config,
         target_path: str,
         platform: dict[str, Any] | None,
+        cancel_callback = None,
         parent = None,
     ):
         super().__init__(parent)
         self.config = config
         self.target_path = target_path
         self.platform = platform
+        self.cancel_callback = cancel_callback
         self._logger = LogManager.get()
 
     def run(self):
@@ -255,6 +258,7 @@ class GlossaryCandidateWorker(QThread):
                 target_path = self.target_path,
                 platform = self.platform,
                 progress_callback = self._emit_progress,
+                cancel_callback = self.cancel_callback,
             )
 
             entries = payload.get("entries", []) if isinstance(payload, dict) else []
@@ -304,6 +308,10 @@ class LocalGlossaryPage(Base, QWidget):
         self._translate_fast_button: PushButton | None = None
         self._candidate_worker: QThread | None = None
         self._candidate_button: PushButton | None = None
+        self._candidate_stop_button: PushButton | None = None
+        self._candidate_progress_bar: ProgressBar | None = None
+        self._candidate_progress_label: CaptionLabel | None = None
+        self._candidate_scan_cancelled = False
         self._statistics_worker: QThread | None = None
         self._statistics_button: PushButton | None = None
         self._statistics_snapshot_keys: list[str] = []
@@ -400,6 +408,13 @@ class LocalGlossaryPage(Base, QWidget):
         flow3.addWidget(scan_terms_btn)
         self._candidate_button = scan_terms_btn
 
+        stop_scan_btn = PushButton("停止扫描", icon=FluentIcon.CANCEL)
+        stop_scan_btn.setToolTip("请求停止当前术语候选扫描；若正在等待某个 LLM 分块响应，将在该分块结束后停止")
+        stop_scan_btn.clicked.connect(self._on_stop_glossary_candidates)
+        stop_scan_btn.setEnabled(False)
+        flow3.addWidget(stop_scan_btn)
+        self._candidate_stop_button = stop_scan_btn
+
         scan_btn = PushButton("扫描角色名", icon=FluentIcon.SYNC)
         scan_btn.setToolTip("扫描游戏目录，自动提取角色名到术语表（清空旧的自动提取数据）")
         scan_btn.clicked.connect(self._on_rescan_characters)
@@ -418,6 +433,16 @@ class LocalGlossaryPage(Base, QWidget):
         self._translate_fast_button = translate_fast_btn
 
         v_layout.addWidget(group3)
+
+        self._candidate_progress_label = CaptionLabel("术语候选扫描未开始")
+        self._candidate_progress_label.setWordWrap(True)
+        v_layout.addWidget(self._candidate_progress_label)
+
+        self._candidate_progress_bar = ProgressBar()
+        self._candidate_progress_bar.setRange(0, 100)
+        self._candidate_progress_bar.setValue(0)
+        self._candidate_progress_bar.setVisible(False)
+        v_layout.addWidget(self._candidate_progress_bar)
 
         return card
 
@@ -832,39 +857,222 @@ class LocalGlossaryPage(Base, QWidget):
     def _set_candidate_button_enabled(self, enabled: bool) -> None:
         if self._candidate_button is not None:
             self._candidate_button.setEnabled(enabled)
+        if self._candidate_stop_button is not None:
+            self._candidate_stop_button.setEnabled(enabled == False)
+
+    def _update_candidate_progress(self, message: str, percent: int, *, running: bool) -> None:
+        if self._candidate_progress_label is not None:
+            self._candidate_progress_label.setText(message)
+        if self._candidate_progress_bar is not None:
+            self._candidate_progress_bar.setVisible(running)
+            self._candidate_progress_bar.setValue(max(0, min(100, int(percent))))
+
+    @staticmethod
+    def _normalize_existing_path(path_text: str) -> Path | None:
+        raw = str(path_text or "").strip()
+        if raw == "":
+            return None
+        try:
+            path = Path(raw).expanduser().resolve()
+        except Exception:
+            path = Path(raw)
+        return path if path.exists() else None
+
+    @classmethod
+    def _list_renpy_scan_candidates(cls, config: Config) -> list[Path]:
+        """根据当前配置推断 Ren'Py 扫描候选目录，优先使用当前项目相关路径。"""
+        raws = [
+            getattr(config, "input_folder", ""),
+            getattr(config, "output_folder", ""),
+            getattr(config, "renpy_tl_folder", ""),
+            getattr(config, "renpy_game_folder", ""),
+            getattr(config, "renpy_project_path", ""),
+        ]
+        candidates: list[Path] = []
+        for raw in raws:
+            path = cls._normalize_existing_path(raw)
+            if path is None:
+                continue
+
+            if path.is_file():
+                candidates.append(path.parent)
+                continue
+
+            # 语言目录：game/tl/<lang> 或 tl/<lang>
+            if path.parent.name.lower() == "tl":
+                if path.parent.parent.name.lower() == "game":
+                    candidates.append(path.parent.parent)
+                    candidates.append(path.parent.parent.parent)
+                else:
+                    candidates.append(path.parent.parent)
+                continue
+
+            # tl 根目录
+            if path.name.lower() == "tl":
+                if path.parent.name.lower() == "game":
+                    candidates.append(path.parent)
+                    candidates.append(path.parent.parent)
+                else:
+                    candidates.append(path.parent)
+                continue
+
+            # 项目根目录
+            game_child = path / "game"
+            if game_child.is_dir():
+                candidates.append(game_child)
+                candidates.append(path)
+                continue
+
+            candidates.append(path)
+
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                key = str(candidate.resolve()).lower()
+            except Exception:
+                key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        return deduped
+
+    @staticmethod
+    def _count_source_rpy_files(root: Path) -> int:
+        """统计目录下可扫描的源码 rpy 数量（排除 tl 目录）。"""
+        count = 0
+        try:
+            for rpy_file in root.rglob("*.rpy"):
+                if "tl" in [part.lower() for part in rpy_file.parts]:
+                    continue
+                count += 1
+        except Exception:
+            return -1
+        return count
+
+    @staticmethod
+    def _is_tl_dir_for_source_root(source_root: Path, tl_root: Path) -> bool:
+        """判断 tl 目录是否属于当前源码根目录对应的项目。"""
+        try:
+            source = source_root.resolve()
+            tl_dir = tl_root.resolve()
+        except Exception:
+            source = source_root
+            tl_dir = tl_root
+
+        if source.name.lower() == "game":
+            allowed_prefixes = (
+                source / "tl",
+                source.parent / "tl",
+            )
+        else:
+            allowed_prefixes = (
+                source / "game" / "tl",
+                source / "tl",
+            )
+
+        for prefix in allowed_prefixes:
+            try:
+                prefix_resolved = prefix.resolve()
+            except Exception:
+                prefix_resolved = prefix
+            if tl_dir.parent == prefix_resolved:
+                return True
+        return False
+
+    def _resolve_current_renpy_paths(self) -> tuple[Path | None, Path | None]:
+        """解析当前应使用的源码扫描目录与 tl 语言目录。"""
+        self.config = Config().load()
+        candidates = self._list_renpy_scan_candidates(self.config)
+        if candidates == []:
+            return None, None
+
+        source_root: Path | None = None
+        fallback_root: Path | None = None
+        for candidate in candidates:
+            if fallback_root is None:
+                fallback_root = candidate
+            count = self._count_source_rpy_files(candidate)
+            if count > 0:
+                source_root = candidate
+                break
+
+        if source_root is None:
+            source_root = fallback_root
+        if source_root is None:
+            return None, None
+
+        tl_root: Path | None = None
+        configured_tl = self._normalize_existing_path(getattr(self.config, "renpy_tl_folder", ""))
+        if configured_tl is not None and configured_tl.is_dir() and self._is_tl_dir_for_source_root(source_root, configured_tl):
+            tl_root = configured_tl
+        else:
+            possible_roots = [source_root]
+            if source_root.name.lower() == "game" and source_root.parent.exists():
+                possible_roots.append(source_root.parent)
+            for base in possible_roots:
+                for tl_dir in (base / "game" / "tl", base / "tl"):
+                    if tl_dir.exists() is False or tl_dir.is_dir() is False:
+                        continue
+                    for preferred in ("chinese", "schinese", "tchinese", "english", "japanese", "korean"):
+                        candidate = tl_dir / preferred
+                        if candidate.is_dir():
+                            tl_root = candidate
+                            break
+                    if tl_root is None:
+                        children = sorted(
+                            [child for child in tl_dir.iterdir() if child.is_dir()],
+                            key = lambda item: item.name.lower(),
+                        )
+                        if children:
+                            tl_root = children[0]
+                    if tl_root is not None:
+                        break
+                if tl_root is not None:
+                    break
+
+        return source_root, tl_root
+
+    def _sync_resolved_renpy_paths_to_config(self, source_root: Path, tl_root: Path | None) -> None:
+        """把解析出的当前项目路径回写到配置，避免后续页面继续读取历史目录。"""
+        self.config.renpy_game_folder = str(source_root.parent if source_root.name.lower() == "game" else source_root)
+        self.config.renpy_project_path = self.config.renpy_game_folder
+
+        if tl_root is not None and tl_root.exists():
+            self.config.renpy_tl_folder = str(tl_root)
+
+        self.config.save()
 
     def _resolve_game_target_path(self) -> str | None:
         self.config = Config().load()
-        game_folder = str(getattr(self.config, "renpy_game_folder", "") or "").strip()
-        if game_folder == "":
+        source_root, tl_root = self._resolve_current_renpy_paths()
+        if source_root is None:
             folder = QFileDialog.getExistingDirectory(self, "选择游戏目录（包含 game 子目录）")
             if folder:
-                game_folder = folder
-                self.config.renpy_game_folder = game_folder
-                self.config.save()
-                InfoBar.info("提示", f"已设置游戏目录为: {game_folder}", parent=self)
+                source_root = Path(folder)
+                tl_root = None
+                self._sync_resolved_renpy_paths_to_config(source_root, tl_root)
+                InfoBar.info("提示", f"已设置游戏目录为: {source_root}", parent=self)
             else:
                 InfoBar.warning("警告", "请先选择游戏目录", parent=self)
                 return None
 
-        target_path = Path(game_folder)
+        target_path = source_root
         if target_path.exists() == False:
-            InfoBar.error("错误", f"游戏目录不存在: {game_folder}", parent=self)
+            InfoBar.error("错误", f"游戏目录不存在: {target_path}", parent=self)
             return None
+
+        self._sync_resolved_renpy_paths_to_config(target_path, tl_root)
 
         return str(target_path)
 
     def _get_effective_tl_name(self) -> str:
+        _, tl_root = self._resolve_current_renpy_paths()
+        if tl_root is not None and tl_root.name:
+            return tl_root.name
         raw_value = str(getattr(self.config, "renpy_tl_folder", "") or "").strip()
-        if raw_value == "":
-            return "chinese"
-        try:
-            path_name = Path(raw_value).name
-            if path_name:
-                return path_name
-        except Exception:
-            pass
-        return raw_value
+        return Path(raw_value).name if raw_value else "chinese"
 
     def _on_scan_glossary_candidates(self) -> None:
         if self._candidate_worker and self._candidate_worker.isRunning():
@@ -893,12 +1101,15 @@ class LocalGlossaryPage(Base, QWidget):
             InfoBar.warning("提示", "当前平台不支持术语抽取，将仅使用规则候选扫描。", parent=self)
             platform = None
 
+        self._candidate_scan_cancelled = False
         self._set_candidate_button_enabled(False)
+        self._update_candidate_progress("正在准备术语候选扫描…", 0, running=True)
 
         worker = GlossaryCandidateWorker(
             config = config,
             target_path = target_path,
             platform = platform,
+            cancel_callback = lambda: self._candidate_scan_cancelled,
             parent = self,
         )
         worker.progress.connect(self._on_scan_glossary_candidates_progress)
@@ -908,8 +1119,18 @@ class LocalGlossaryPage(Base, QWidget):
         InfoBar.info("开始扫描", "正在扫描游戏源码中的术语候选…", parent=self)
         worker.start()
 
+    def _on_stop_glossary_candidates(self) -> None:
+        if self._candidate_worker is None or self._candidate_worker.isRunning() is False:
+            InfoBar.info("提示", "当前没有正在运行的术语候选扫描", parent=self)
+            return
+
+        self._candidate_scan_cancelled = True
+        self._update_candidate_progress("正在请求停止术语候选扫描…", 0, running=True)
+        InfoBar.info("提示", "已请求停止术语候选扫描，当前分块结束后会停止", parent=self)
+
     def _on_scan_glossary_candidates_progress(self, message: str, percent: int) -> None:
         self.logger.info(f"[GlossaryCandidate] {percent}% {message}")
+        self._update_candidate_progress(message, percent, running=True)
 
     def _on_scan_glossary_candidates_finished(self, success: bool, message: str, payload: Any) -> None:
         self._set_candidate_button_enabled(True)
@@ -919,11 +1140,21 @@ class LocalGlossaryPage(Base, QWidget):
         if worker is not None:
             worker.deleteLater()
 
+        was_cancelled = self._candidate_scan_cancelled
+        self._candidate_scan_cancelled = False
+
+        if was_cancelled and success == False and "已停止" in str(message):
+            self._update_candidate_progress("术语候选扫描已停止", 0, running=False)
+            InfoBar.info("已停止", "术语候选扫描已停止", parent=self)
+            return
+
         if success == False:
+            self._update_candidate_progress("术语候选扫描失败", 0, running=False)
             InfoBar.warning("扫描失败", message, parent=self)
             return
 
         if not isinstance(payload, dict):
+            self._update_candidate_progress("术语候选扫描失败", 0, running=False)
             InfoBar.warning("扫描失败", "扫描结果格式无效", parent=self)
             return
 
@@ -932,6 +1163,7 @@ class LocalGlossaryPage(Base, QWidget):
             warning_text = "；".join(
                 str(item) for item in payload.get("warnings", []) if str(item).strip()
             )
+            self._update_candidate_progress("术语候选扫描完成，但没有生成可用条目", 100, running=False)
             InfoBar.info("扫描完成", warning_text or "未生成可用的术语候选", parent=self)
             return
 
@@ -952,6 +1184,7 @@ class LocalGlossaryPage(Base, QWidget):
         if warning_text:
             summary += f"\n{warning_text}"
 
+        self._update_candidate_progress("术语候选扫描完成", 100, running=False)
         if warning_text:
             InfoBar.warning("扫描完成", summary, parent=self)
         else:
@@ -1339,33 +1572,29 @@ class LocalGlossaryPage(Base, QWidget):
 
     def _on_rescan_characters(self):
         """重新扫描游戏目录，提取角色名到术语表（清空旧的自动提取数据）"""
-        import re
-        from pathlib import Path
         from module.Text.SkipRules import should_skip_text
         
         # 重新加载配置以获取最新的游戏目录
         self.config = Config().load()
         
-        # 获取游戏目录
-        game_folder = self.config.renpy_game_folder
-        if not game_folder:
-            # 尝试让用户选择一次游戏目录
+        source_root, tl_root = self._resolve_current_renpy_paths()
+        if source_root is None:
             folder = QFileDialog.getExistingDirectory(self, "选择游戏目录（包含 game 子目录）")
             if folder:
-                game_folder = folder
-                self.config.renpy_game_folder = game_folder
-                self.config.save()
-                InfoBar.info("提示", f"已设置游戏目录为: {game_folder}", parent=self)
+                source_root = Path(folder)
+                tl_root = None
+                self._sync_resolved_renpy_paths_to_config(source_root, tl_root)
+                InfoBar.info("提示", f"已设置游戏目录为: {source_root}", parent=self)
             else:
                 InfoBar.warning("警告", "请先选择游戏目录", parent=self)
                 return
-            
-        game_path = Path(game_folder) / "game"
-        if not game_path.exists():
-            game_path = Path(game_folder)
-            if not game_path.exists():
-                InfoBar.error("错误", f"游戏目录不存在: {game_folder}", parent=self)
-                return
+
+        game_path = source_root
+        if game_path.exists() is False:
+            InfoBar.error("错误", f"游戏目录不存在: {game_path}", parent=self)
+            return
+
+        self._sync_resolved_renpy_paths_to_config(game_path, tl_root)
         
         found_names = set()
         cache_key = str(game_path.resolve())
@@ -1373,7 +1602,7 @@ class LocalGlossaryPage(Base, QWidget):
         auto_cache.pop(cache_key, None)
         self.config.glossary_auto_scan_cache = auto_cache
 
-        tl_name = self._get_effective_tl_name()
+        tl_name = tl_root.name if tl_root is not None else self._get_effective_tl_name()
 
         # 方法1: 从 miss_ready_replace 文件提取
         miss_names = self._extract_names_from_miss_files(game_path, tl_name)
@@ -1755,6 +1984,10 @@ class LocalGlossaryPage(Base, QWidget):
         """从 miss_ready_replace*.txt 提取可能的人名"""
         names = set()
         tl_root = game_path / "tl" / tl_name
+        if tl_root.exists() is False:
+            alt_tl_root = game_path / "game" / "tl" / tl_name
+            if alt_tl_root.exists():
+                tl_root = alt_tl_root
         if not tl_root.exists():
             self.logger.info(f"[Glossary] tl path not found: {tl_root}")
             return names

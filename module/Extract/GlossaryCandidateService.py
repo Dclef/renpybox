@@ -26,6 +26,7 @@ AUTO_COMMENT = "术语候选 (自动提取)"
 DEFAULT_TL_NAME = "chinese"
 
 ProgressCallback = Callable[[str, int], None]
+CancelCallback = Callable[[], bool]
 
 
 class GlossaryCandidateDecoder(Base):
@@ -397,23 +398,28 @@ class GlossaryCandidateService(Base):
         target_path: str | Path,
         platform: dict[str, Any] | None,
         progress_callback: ProgressCallback | None = None,
+        cancel_callback: CancelCallback | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.target_path = str(target_path)
         self.platform = platform if isinstance(platform, dict) else None
         self.progress_callback = progress_callback
+        self.cancel_callback = cancel_callback
         self.decoder = GlossaryCandidateDecoder()
 
     def run(self) -> dict[str, Any]:
         game_dir = _get_game_dir(self.target_path)
         tl_name = str(getattr(self.config, "renpy_tl_folder", "") or DEFAULT_TL_NAME).strip() or DEFAULT_TL_NAME
+        tl_name = self._normalize_tl_name(tl_name)
 
+        self._ensure_not_cancelled()
         self._report("正在扫描源码候选文本...", 5)
         corpus_texts = collect_glossary_candidate_texts(self.target_path, tl_name = tl_name)
         if corpus_texts == ():
             raise ValueError("未在游戏源码中找到可用于术语扫描的文本")
 
+        self._ensure_not_cancelled()
         self._report(f"已扫描 {len(corpus_texts)} 条候选文本，正在生成规则候选...", 20)
         rule_candidates = self._collect_rule_candidates(corpus_texts, game_dir)
 
@@ -428,6 +434,7 @@ class GlossaryCandidateService(Base):
             chunks = self._build_prompt_chunks(corpus_texts)
             llm_chunks_total = len(chunks)
             for index, chunk in enumerate(chunks):
+                self._ensure_not_cancelled()
                 percent = 20 + int(((index + 1) / max(1, llm_chunks_total)) * 60)
                 self._report(
                     f"正在使用 LLM 抽取术语候选... ({index + 1}/{llm_chunks_total})",
@@ -442,10 +449,13 @@ class GlossaryCandidateService(Base):
         else:
             warnings.append("未找到支持术语抽取的 LLM，已仅使用规则候选。")
 
+        self._ensure_not_cancelled()
         self._report("正在聚合候选术语...", 88)
         merged = self._merge_candidates(rule_candidates, llm_candidates)
+        self._ensure_not_cancelled()
         enriched = self._attach_counts_and_contexts(merged, corpus_texts)
 
+        self._ensure_not_cancelled()
         self._report("术语候选扫描完成", 100)
         return {
             "entries": enriched,
@@ -462,6 +472,25 @@ class GlossaryCandidateService(Base):
         if callable(self.progress_callback):
             self.progress_callback(message, percent)
         self.info(f"[GlossaryCandidate] {percent}% {message}")
+
+    def _ensure_not_cancelled(self) -> None:
+        """在关键阶段检查是否已请求取消。"""
+        if callable(self.cancel_callback) and self.cancel_callback():
+            raise InterruptedError("术语候选扫描已停止")
+
+    @staticmethod
+    def _normalize_tl_name(raw_tl: str) -> str:
+        """兼容保存了完整 tl 路径的配置，仅保留语言目录名。"""
+        raw_value = str(raw_tl or "").strip()
+        if raw_value == "":
+            return DEFAULT_TL_NAME
+        try:
+            path_name = Path(raw_value).name
+            if path_name:
+                return path_name
+        except Exception:
+            pass
+        return raw_value
 
     def _can_use_llm_platform(self, platform: dict[str, Any] | None) -> bool:
         if not isinstance(platform, dict):
@@ -564,6 +593,7 @@ class GlossaryCandidateService(Base):
         seen: set[str] = set()
 
         for name in sorted(extract_names_from_game(game_dir)):
+            self._ensure_not_cancelled()
             src = self._normalize_candidate_text(name)
             if not self._is_viable_candidate_text(src):
                 continue
@@ -584,6 +614,7 @@ class GlossaryCandidateService(Base):
             )
 
         for raw_text in texts:
+            self._ensure_not_cancelled()
             direct = self._normalize_candidate_text(raw_text)
             if self._should_keep_direct_candidate(direct):
                 key = self._normalize_key(direct)
@@ -694,6 +725,7 @@ class GlossaryCandidateService(Base):
         )
 
         for candidate in candidates_sorted:
+            self._ensure_not_cancelled()
             src = str(candidate.get("src", "") or "").strip()
             if src == "":
                 continue
@@ -970,6 +1002,7 @@ def extract_glossary_candidates(
     target_path: str | Path,
     platform: dict[str, Any] | None,
     progress_callback: ProgressCallback | None = None,
+    cancel_callback: CancelCallback | None = None,
 ) -> dict[str, Any]:
     """执行术语候选抽取。"""
     service = GlossaryCandidateService(
@@ -977,5 +1010,6 @@ def extract_glossary_candidates(
         target_path = target_path,
         platform = platform,
         progress_callback = progress_callback,
+        cancel_callback = cancel_callback,
     )
     return service.run()
