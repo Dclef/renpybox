@@ -1,8 +1,10 @@
+import copy
 import os
 import random
 from datetime import datetime
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from module.Engine.Engine import Engine
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheProject import CacheProject
@@ -22,6 +24,7 @@ from module.File.WOLFXLSX import WOLFXLSX
 from module.File.XLSX import XLSX
 from module.File.RENpyTranslationsJSON import RENPYTRANSLATIONSJSON
 from module.Localizer.Localizer import Localizer
+from module.OpenCCHelper import OpenCCHelper
 
 class FileManager(Base):
 
@@ -36,6 +39,39 @@ class FileManager(Base):
             return Engine.get().get_status() == Engine.Status.STOPPING
         except Exception:
             return False
+
+    def _should_apply_traditional_output(self) -> bool:
+        return (
+            self.config.target_language == BaseLanguage.Enum.ZH
+            and self.config.traditional_chinese_enable == True
+        )
+
+    def _convert_text_for_write(self, text: str) -> str:
+        if not isinstance(text, str) or text == "":
+            return text
+        return OpenCCHelper.convert("s2tw", text)
+
+    def _prepare_items_for_write(self, items: list[CacheItem]) -> list[CacheItem]:
+        if self._should_apply_traditional_output() == False:
+            return items
+
+        prepared_items: list[CacheItem] = []
+        for item in items:
+            cloned = CacheItem.from_dict(copy.deepcopy(item.asdict()))
+            cloned.set_dst(self._convert_text_for_write(cloned.get_dst()))
+
+            name_dst = cloned.get_name_dst()
+            if isinstance(name_dst, str):
+                cloned.set_name_dst(self._convert_text_for_write(name_dst))
+            elif isinstance(name_dst, list):
+                cloned.set_name_dst([
+                    self._convert_text_for_write(value) if isinstance(value, str) else value
+                    for value in name_dst
+                ])
+
+            prepared_items.append(cloned)
+
+        return prepared_items
 
     def _collect_source_rpy_paths(self, input_folder: str) -> list[str]:
         paths: list[str] = []
@@ -120,21 +156,23 @@ class FileManager(Base):
     # 写
     def write_to_path(self, items: list[CacheItem]) -> None:
         try:
-            RENPYTRANSLATIONSJSON(self.config).write_to_path(items)
-            MD(self.config).write_to_path(items)
-            TXT(self.config).write_to_path(items)
-            ASS(self.config).write_to_path(items)
-            SRT(self.config).write_to_path(items)
-            EPUB(self.config).write_to_path(items)
-            XLSX(self.config).write_to_path(items)
-            WOLFXLSX(self.config).write_to_path(items)
+            items_to_write = self._prepare_items_for_write(items)
+
+            RENPYTRANSLATIONSJSON(self.config).write_to_path(items_to_write)
+            MD(self.config).write_to_path(items_to_write)
+            TXT(self.config).write_to_path(items_to_write)
+            ASS(self.config).write_to_path(items_to_write)
+            SRT(self.config).write_to_path(items_to_write)
+            EPUB(self.config).write_to_path(items_to_write)
+            XLSX(self.config).write_to_path(items_to_write)
+            WOLFXLSX(self.config).write_to_path(items_to_write)
             # 按条目类型分别写回，避免“从缓存重新注入”时因配置开关不一致导致
             # RENPYSOURCE / RENPY 写回分支走错。
-            RENPYHOOK(self.config).write_to_path(items)
-            RENPYSOURCE(self.config).write_to_path(items)
-            RENPY(self.config).write_to_path(items)
-            TRANS(self.config).write_to_path(items)
-            KVJSON(self.config).write_to_path(items)
-            MESSAGEJSON(self.config).write_to_path(items)
+            RENPYHOOK(self.config).write_to_path(items_to_write)
+            RENPYSOURCE(self.config).write_to_path(items_to_write)
+            RENPY(self.config).write_to_path(items_to_write)
+            TRANS(self.config).write_to_path(items_to_write)
+            KVJSON(self.config).write_to_path(items_to_write)
+            MESSAGEJSON(self.config).write_to_path(items_to_write)
         except Exception as e:
             self.error(f"{Localizer.get().log_write_file_fail}", e)

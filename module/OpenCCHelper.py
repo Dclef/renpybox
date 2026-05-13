@@ -31,14 +31,21 @@ class OpenCCHelper:
         if text == "":
             return text
 
-        converter = cls.get_converter(config)
+        key = cls._normalize_config_key(config)
+
+        # 简体输出不再走 OpenCC 运行时转换，避免在热路径里触发原生库调用。
+        if key == "t2s":
+            return text
+
+        converter = cls.get_converter(key)
         if converter is None:
             return text
 
         try:
-            return converter.convert(text)
+            with cls._LOCK:
+                return converter.convert(text)
         except Exception as exc:
-            cls._log_failure_once(config, "OpenCC 转换失败，已回退为原文", exc)
+            cls._log_failure_once(key, "OpenCC 转换失败，已回退为原文", exc)
             return text
 
     @classmethod
