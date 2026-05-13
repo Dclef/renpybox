@@ -9,7 +9,6 @@ from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
-from module.OpenCCHelper import OpenCCHelper
 from module.Response.ResponseChecker import ResponseChecker
 from module.Localizer.Localizer import Localizer
 from module.TextProcessor import TextProcessor
@@ -113,11 +112,10 @@ class ResultChecker(Base):
         if self.config.glossary_enable == False or len(self.config.glossary_data) == 0:
             return []
 
-        config_name = "s2tw" if self.config.traditional_chinese_enable == True else "t2s"
         return [
             {
                 "src": v.get("src", ""),
-                "dst": OpenCCHelper.convert(config_name, v.get("dst", "")),
+                "dst": v.get("dst", ""),
                 "info": v.get("info", ""),
                 "case_sensitive": v.get("case_sensitive", False),
             }

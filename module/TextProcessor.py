@@ -17,7 +17,6 @@ from module.Fixer.NumberFixer import NumberFixer
 from module.Fixer.PunctuationFixer import PunctuationFixer
 from module.Localizer.Localizer import Localizer
 from module.Normalizer import Normalizer
-from module.OpenCCHelper import OpenCCHelper
 from module.RubyCleaner import RubyCleaner
 
 class TextProcessor(Base):
@@ -425,10 +424,8 @@ class TextProcessor(Base):
         if self.config.target_language != BaseLanguage.Enum.ZH:
             return dst
 
-        if self.config.traditional_chinese_enable == True:
-            return OpenCCHelper.convert("s2tw", dst)
-        else:
-            return OpenCCHelper.convert("t2s", dst)
+        # 简体输出直接保留模型结果；繁体输出延后到写文件阶段统一转换，避免热路径并发调用 OpenCC。
+        return dst
 
     # 处理前后缀代码段
     def prefix_suffix_process(self, i: int, src: str, text_type: CacheItem.TextType) -> None:
