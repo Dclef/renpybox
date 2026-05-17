@@ -56,10 +56,20 @@ class ResponseChecker(Base):
         r"^(Ctrl|Alt|Shift|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2})$",
         flags = re.IGNORECASE,
     )
-    # 单词型专有名（首字母大写或全大写）
-    RE_PROPER_NOUN_TOKEN = re.compile(
-        r"^(?:[A-Z][A-Za-z'\-]{2,}|[A-Z]{2,})$",
+    # 模型按提示词输出的翻译失败标记。这不是“相似度高”，应优先归类为异常回复。
+    RE_TRANSLATION_ERROR_MARKER = re.compile(
+        r"\[!!!\s*TRANSLATION ERROR\b.*?!!!\]",
         flags = re.IGNORECASE,
+    )
+    # 只有来源明确的姓名/角色名才允许原样保留，避免按单词形态误放行 UI 文本。
+    EXPLICIT_PROPER_NOUN_MARKERS: tuple[str, ...] = (
+        "角色",
+        "人名",
+        "姓名",
+        "character",
+        "person",
+        "name",
+        "npc",
     )
     # 行内占位符一致性检查
     RE_PRESERVE_TOKEN = re.compile(r"_RENPYBOX_\d+_\d+_", flags = re.IGNORECASE)
@@ -77,7 +87,13 @@ class ResponseChecker(Base):
         self.config = config
 
     # 检查
-    def check(self, srcs: list[str], dsts: list[str], text_type: CacheItem.TextType) -> list[str]:
+    def check(
+        self,
+        srcs: list[str],
+        dsts: list[str],
+        text_type: CacheItem.TextType,
+        line_items: list[CacheItem | None] | None = None,
+    ) -> list[str]:
         # 数据解析失败
         if len(dsts) == 0 or all(v == "" or v == None for v in dsts):
             return [__class__.Error.FAIL_DATA] * len(srcs)
@@ -94,7 +110,7 @@ class ResponseChecker(Base):
             return [__class__.Error.FAIL_LINE_COUNT] * len(srcs)
 
         # 逐行检查
-        checks = self.check_lines(srcs, dsts, text_type)
+        checks = self.check_lines(srcs, dsts, text_type, line_items = line_items)
         if threshold_reached:
             checks = self.relax_checks_after_retry_threshold(srcs, dsts, checks)
         if any(v != __class__.Error.NONE for v in checks):
@@ -104,9 +120,16 @@ class ResponseChecker(Base):
         return [__class__.Error.NONE] * len(srcs)
 
     # 逐行检查错误
-    def check_lines(self, srcs: list[str], dsts: list[str], text_type: CacheItem.TextType) -> list[Error]:
+    def check_lines(
+        self,
+        srcs: list[str],
+        dsts: list[str],
+        text_type: CacheItem.TextType,
+        line_items: list[CacheItem | None] | None = None,
+    ) -> list[Error]:
         checks: list[__class__.Error] = []
-        for src, dst in zip(srcs, dsts):
+        line_items = self.resolve_line_items(srcs, line_items)
+        for src, dst, item in zip(srcs, dsts, line_items):
             src = src.strip()
             dst = dst.strip()
 
@@ -136,9 +159,14 @@ class ResponseChecker(Base):
                 checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 
+            if self.has_translation_error_marker(dst):
+                checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
+                continue
+
             # 相似度与退化判断前先去掉保护占位符，避免被大段占位符误判。
             src_compare = self.normalize_for_compare(src)
             dst_compare = self.normalize_for_compare(dst)
+            src_nontranslatable_hint = src_compare
 
             # 当原文中不包含重复文本但是译文中包含重复文本时，判断为 退化
             if __class__.RE_DEGRADATION.search(src_compare) == None and __class__.RE_DEGRADATION.search(dst_compare) != None:
@@ -176,14 +204,10 @@ class ResponseChecker(Base):
                 continue
 
             # 判断是否包含或相似
-            is_similar = (
-                src_compare in dst_compare
-                or dst_compare in src_compare
-                or TextHelper.check_similarity_by_jaccard(src_compare, dst_compare) > 0.80
-            )
+            is_similar = self.has_high_similarity(src_compare, dst_compare)
 
-            # 对“看起来像代码/标识符/按键名”的文本，允许原样保留，避免无意义重试。
-            if is_similar and self.is_likely_non_translatable_text(src_compare):
+            # 只有结构性文本或有明确来源的专有名才允许原样保留。
+            if is_similar and self.is_preserve_allowed(src_nontranslatable_hint, dst, item):
                 checks.append(__class__.Error.NONE)
                 continue
 
@@ -209,6 +233,20 @@ class ResponseChecker(Base):
         # 返回结果
         return checks
 
+    def resolve_line_items(
+        self,
+        srcs: list[str],
+        line_items: list[CacheItem | None] | None,
+    ) -> list[CacheItem | None]:
+        """为每条预处理后的原文补充来源条目，用于显式姓名/术语判断。"""
+        if line_items is not None and len(line_items) == len(srcs):
+            return line_items
+        if len(self.items) == len(srcs):
+            return list(self.items)
+        if len(self.items) == 1:
+            return [self.items[0]] * len(srcs)
+        return [None] * len(srcs)
+
     @classmethod
     def normalize_for_compare(cls, text: str) -> str:
         if not isinstance(text, str):
@@ -218,6 +256,37 @@ class ResponseChecker(Base):
         text = cls.RE_PRESERVE_TOKEN.sub("", text)
         text = cls.RE_MULTI_SPACE.sub(" ", text)
         return text.strip()
+
+    @classmethod
+    def has_translation_error_marker(cls, text: str) -> bool:
+        if not isinstance(text, str):
+            return False
+        return cls.RE_TRANSLATION_ERROR_MARKER.search(text) is not None
+
+    @classmethod
+    def has_high_similarity(cls, src: str, dst: str) -> bool:
+        if not isinstance(src, str) or not isinstance(dst, str):
+            return False
+
+        src = src.strip()
+        dst = dst.strip()
+        if src == "" or dst == "":
+            return False
+
+        return (
+            src in dst
+            or dst in src
+            or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
+        )
+
+    @classmethod
+    def normalize_preserve_key(cls, text: str) -> str:
+        """标准化用于“是否允许原样保留”的精确匹配文本。"""
+        if not isinstance(text, str):
+            return ""
+        text = cls.normalize_for_compare(text)
+        text = text.strip().strip("\"'“”‘’")
+        return text.casefold()
 
     @classmethod
     def _strip_for_mixed_language_check(cls, text: str) -> str:
@@ -335,8 +404,20 @@ class ResponseChecker(Base):
             or dst_compare in src_compare
         )
 
+    def is_preserve_allowed(
+        self,
+        src: str,
+        dst: str,
+        item: CacheItem | None = None,
+    ) -> bool:
+        """判断相似文本是否可接受为原样保留。"""
+        if self.is_structural_text(src):
+            return True
+        return self.is_explicit_proper_noun(src, dst, item)
+
     @classmethod
-    def is_likely_non_translatable_text(cls, text: str) -> bool:
+    def is_structural_text(cls, text: str) -> bool:
+        """代码、按键、标识符等结构性文本允许原样保留。"""
         s = text.strip()
         if s == "":
             return True
@@ -353,13 +434,58 @@ class ResponseChecker(Base):
         if cls.RE_KEY_NAME.fullmatch(s) is not None:
             return True
 
-        # 单词型专有名词（如 Spatium）
-        words = s.split()
-        if len(words) == 1 and cls.RE_PROPER_NOUN_TOKEN.fullmatch(words[0]) is not None:
-            return True
-
         # 邮箱/句柄类文本（如 Karl Casey @ White Bat Audio）
         if "@" in s and not s.startswith("@"):
             return True
 
         return False
+
+    def is_explicit_proper_noun(
+        self,
+        src: str,
+        dst: str,
+        item: CacheItem | None = None,
+    ) -> bool:
+        """只根据姓名字段或术语表类别放行人名/角色名。"""
+        src_key = self.normalize_preserve_key(src)
+        if src_key == "":
+            return False
+
+        if item is not None:
+            for name in self.iter_item_name_sources(item):
+                if src_key == self.normalize_preserve_key(name):
+                    return True
+
+        for glossary_item in self.config.glossary_data or []:
+            if self.is_glossary_proper_noun_entry(glossary_item) == False:
+                continue
+            glossary_src = str(glossary_item.get("src", "") or "")
+            if src_key != self.normalize_preserve_key(glossary_src):
+                continue
+
+            glossary_dst = str(glossary_item.get("dst", "") or "").strip()
+            if glossary_dst == "":
+                return True
+            dst_key = self.normalize_preserve_key(dst)
+            return dst_key == src_key or self.normalize_preserve_key(glossary_dst) in dst_key
+
+        return False
+
+    @classmethod
+    def iter_item_name_sources(cls, item: CacheItem) -> list[str]:
+        names: list[str] = []
+        raw = item.get_name_src()
+        if isinstance(raw, str):
+            names.append(raw)
+        elif isinstance(raw, list):
+            names.extend([str(v) for v in raw if v is not None])
+        return names
+
+    @classmethod
+    def is_glossary_proper_noun_entry(cls, item: dict) -> bool:
+        text = " ".join([
+            str(item.get("type", "") or ""),
+            str(item.get("info", "") or ""),
+            str(item.get("comment", "") or ""),
+        ]).casefold()
+        return any(marker.casefold() in text for marker in cls.EXPLICIT_PROPER_NOUN_MARKERS)

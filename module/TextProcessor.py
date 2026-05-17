@@ -67,6 +67,8 @@ class TextProcessor(Base):
         "Evan",
         "Taylor",
     )
+    PLACEHOLDER_TOKEN_PATTERN: str = r"\[[^\]\n]+\]|【[^】\n]+】"
+    ENGLISH_APOSTROPHE_CHARS: str = "'’‘ʼ＇"
 
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
@@ -87,6 +89,7 @@ class TextProcessor(Base):
         self.suffix_codes: dict[int, list[str]] = {}
         self.inline_codes: dict[int, list[tuple[str, str]]] = {}
         self.honorific_placeholder_bridges: dict[int, list[tuple[str, str]]] = {}
+        self.placeholder_contraction_bridges: dict[int, list[tuple[str, str]]] = {}
         self.honorific_placeholder_re: re.Pattern | None = None
         self.honorific_placeholder_re_key: tuple[str, ...] | None = None
         self.inline_preserve_re = None
@@ -116,7 +119,7 @@ class TextProcessor(Base):
         pattern = (
             r"(?P<title>\b(?:"
             + "|".join(escaped_titles)
-            + r")\.?\s*)(?P<placeholder>\[[^\]\n]+\]|【[^】\n]+】)"
+            + rf")\.?\s*)(?P<placeholder>{__class__.PLACEHOLDER_TOKEN_PATTERN})"
         )
         self.honorific_placeholder_re = re.compile(pattern, flags = re.IGNORECASE)
         self.honorific_placeholder_re_key = key
@@ -129,6 +132,12 @@ class TextProcessor(Base):
             if len(result) > 0:
                 return result
         return list(__class__.DEFAULT_HONORIFIC_ALIAS_NAMES)
+
+    @classmethod
+    def _replace_alias_with_placeholder(cls, text: str, alias: str, placeholder: str) -> str:
+        """在中文等无空格文本中也能还原临时人名别名。"""
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])"
+        return re.sub(pattern, placeholder, text, flags = re.IGNORECASE)
 
     def _bridge_honorific_placeholders_pre(self, i: int, src: str) -> str:
         if getattr(self.config, "honorific_placeholder_bridge_enable", True) != True:
@@ -188,8 +197,77 @@ class TextProcessor(Base):
             return dst
 
         for alias, placeholder in bridges:
-            pattern = rf"\b{re.escape(alias)}\b"
-            dst = re.sub(pattern, placeholder, dst, flags = re.IGNORECASE)
+            dst = self._replace_alias_with_placeholder(dst, alias, placeholder)
+
+        return dst
+
+    def _bridge_placeholder_contractions_pre(self, i: int, src: str) -> str:
+        if getattr(self.config, "honorific_placeholder_bridge_enable", True) != True:
+            return src
+        if src == "":
+            return src
+
+        # 将 [name]'s / [name] 're 等桥接成 David's / David're，避免模型只看到残片 's / 're。
+        apostrophes = re.escape(__class__.ENGLISH_APOSTROPHE_CHARS)
+        pattern = re.compile(
+            rf"(?P<placeholder>{__class__.PLACEHOLDER_TOKEN_PATTERN})"
+            rf"(?P<space>[ \t\u00a0\u3000]*)"
+            rf"(?P<suffix>[{apostrophes}](?:s|m|re|ve|d|ll))\b",
+            flags = re.IGNORECASE,
+        )
+        if pattern.search(src) is None:
+            return src
+
+        aliases = self._get_honorific_alias_names()
+        src_lower = src.lower()
+        placeholder_to_alias: dict[str, str] = {
+            placeholder: alias
+            for alias, placeholder in self.honorific_placeholder_bridges.get(i, [])
+        }
+        used_aliases: set[str] = {alias.lower() for alias in placeholder_to_alias.values()}
+        bridges: list[tuple[str, str]] = []
+        alias_index = 0
+
+        def pick_alias() -> str:
+            nonlocal alias_index
+
+            for _ in range(len(aliases)):
+                alias = aliases[alias_index % len(aliases)]
+                alias_index += 1
+                if alias.lower() in src_lower:
+                    continue
+                if alias.lower() in used_aliases:
+                    continue
+                used_aliases.add(alias.lower())
+                return alias
+
+            alias = f"RbxName{len(used_aliases) + 1}"
+            used_aliases.add(alias.lower())
+            return alias
+
+        def repl(match: re.Match) -> str:
+            placeholder = match.group("placeholder")
+            suffix = match.group("suffix")
+            alias = placeholder_to_alias.get(placeholder)
+            if alias is None:
+                alias = pick_alias()
+                placeholder_to_alias[placeholder] = alias
+                bridges.append((alias, placeholder))
+            # 英文缩写前的空格通常来自文本保护后的残片，桥接时去掉以提升可读性。
+            return f"{alias}{suffix}"
+
+        new_src = pattern.sub(repl, src)
+        if len(bridges) > 0:
+            self.placeholder_contraction_bridges[i] = bridges
+        return new_src
+
+    def _bridge_placeholder_contractions_post(self, i: int, dst: str) -> str:
+        bridges = self.placeholder_contraction_bridges.get(i, [])
+        if len(bridges) == 0:
+            return dst
+
+        for alias, placeholder in bridges:
+            dst = self._replace_alias_with_placeholder(dst, alias, placeholder)
 
         return dst
 
@@ -522,6 +600,8 @@ class TextProcessor(Base):
                 src = self.prefix_suffix_process(i, src, text_type)
                 # 称呼 + 变量桥接（如 Mr.[xx] -> Mr.David）
                 src = self._bridge_honorific_placeholders_pre(i, src)
+                # 变量 + 英文缩写桥接（如 [name]'s -> David's）
+                src = self._bridge_placeholder_contractions_pre(i, src)
                 # 行内禁翻库保护
                 src = self._protect_inline_tags(i, src, text_type)
 
@@ -577,6 +657,8 @@ class TextProcessor(Base):
                 dst = dsts.pop(0).strip()
                 # 还原行内标签
                 dst = self._restore_inline_tags(i, dst)
+                # 还原变量缩写桥接（如 David的 -> [xx]的）
+                dst = self._bridge_placeholder_contractions_post(i, dst)
                 # 还原称呼变量桥接（如 David先生 -> [xx]先生）
                 dst = self._bridge_honorific_placeholders_post(i, dst)
 
@@ -607,6 +689,7 @@ class TextProcessor(Base):
         for i, line in zip(valid_indexes, lines):
             restored = line.strip() if isinstance(line, str) else ""
             restored = self._restore_inline_tags(i, restored)
+            restored = self._bridge_placeholder_contractions_post(i, restored)
             restored = self._bridge_honorific_placeholders_post(i, restored)
 
             if i in self.prefix_codes:
