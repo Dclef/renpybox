@@ -178,8 +178,7 @@ class TranslatorTask(Base):
             if all(v == ResponseChecker.Error.NONE for v in item_checks):
                 pending_updates.append((item, processor, item_dsts.copy()))
             else:
-                if len(self.items) == 1:
-                    item.set_retry_count(item.get_retry_count() + 1)
+                self.record_failed_item_retry(item, item_checks, item_dsts)
 
         log_srcs, log_dsts = self.build_log_lines(processors, all_srcs, all_dsts)
 
@@ -317,12 +316,14 @@ class TranslatorTask(Base):
 
         # 文本预处理
         srcs: list[str] = []
+        line_items: list[CacheItem] = []
         samples: list[str] = []
-        for processor in processors:
+        for item, processor in zip(items, processors):
             processor.pre_process()
 
             # 获取预处理后的数据
             srcs.extend(processor.srcs)
+            line_items.extend([item] * len(processor.srcs))
             samples.extend(processor.samples)
 
         # 如果没有任何有效原文文本，则直接完成当前任务
@@ -466,11 +467,15 @@ class TranslatorTask(Base):
 
         # 检查回复内容
         # TODO - 当前逻辑下任务不会跨文件，所以一个任务的 TextType 都是一样的，有效，但是十分的 UGLY
-        checks = self.response_checker.check(srcs, dsts, self.items[0].get_text_type())
+        checks = self.response_checker.check(
+            srcs,
+            dsts,
+            self.items[0].get_text_type(),
+            line_items = line_items,
+        )
 
-        # 当任务失败且是单条目任务时，更新重试次数
-        if len(self.items) == 1 and any(v != ResponseChecker.Error.NONE for v in checks):
-            self.items[0].set_retry_count(self.items[0].get_retry_count() + 1)
+        # 记录失败条目的重试次数；明确的翻译失败标记达到阈值后排除，避免反复重试到最大轮次。
+        self.record_failed_item_retries(items, processors, checks, dsts)
 
         # 模型回复日志
         # 在这里将日志分成打印在控制台和写入文件的两份，按不同逻辑处理
@@ -542,6 +547,64 @@ class TranslatorTask(Base):
                 "line_count_mismatch_count": sum(1 for v in checks if v == ResponseChecker.Error.FAIL_LINE_COUNT),
                 "requested_line_count": len(srcs),
             }
+
+    def record_failed_item_retries(
+        self,
+        items: list[CacheItem],
+        processors: list[TextProcessor],
+        checks: list[ResponseChecker.Error],
+        dsts: list[str],
+    ) -> None:
+        checks_cp = checks.copy()
+        dsts_cp = dsts.copy()
+        total_length = sum(len(processor.srcs) for processor in processors)
+        if len(checks_cp) < total_length:
+            checks_cp.extend([ResponseChecker.Error.UNKNOWN] * (total_length - len(checks_cp)))
+        if len(dsts_cp) < total_length:
+            dsts_cp.extend([""] * (total_length - len(dsts_cp)))
+
+        for item, processor in zip(items, processors):
+            length = len(processor.srcs)
+            if length == 0:
+                continue
+            item_checks = [checks_cp.pop(0) for _ in range(length)]
+            item_dsts = [dsts_cp.pop(0) for _ in range(length)]
+            self.record_failed_item_retry(item, item_checks, item_dsts)
+
+    def record_failed_item_retry(
+        self,
+        item: CacheItem,
+        checks: list[ResponseChecker.Error],
+        dsts: list[str],
+    ) -> None:
+        if checks == [] or all(v == ResponseChecker.Error.NONE for v in checks):
+            return
+
+        retry_count = item.get_retry_count() + 1
+        item.set_retry_count(retry_count)
+
+        if self.should_exclude_terminal_translation_error(checks, dsts, retry_count):
+            item.set_dst("")
+            item.set_status(Base.TranslationStatus.EXCLUDED)
+            preview = (item.get_src() or "").replace("\n", " ").strip()
+            if len(preview) > 120:
+                preview = preview[:120] + "…"
+            self.warning(f"[REQUEST] 翻译失败标记已达到重试阈值，已排除: {preview}")
+
+    @classmethod
+    def should_exclude_terminal_translation_error(
+        cls,
+        checks: list[ResponseChecker.Error],
+        dsts: list[str],
+        retry_count: int,
+    ) -> bool:
+        if retry_count < ResponseChecker.RETRY_COUNT_THRESHOLD:
+            return False
+        if checks == []:
+            return False
+        if all(v == ResponseChecker.Error.LINE_ERROR_FAKE_REPLY for v in checks) == False:
+            return False
+        return all(ResponseChecker.has_translation_error_marker(dst) for dst in dsts)
 
     def build_log_lines(self, processors: list[TextProcessor], srcs: list[str], dsts: list[str]) -> tuple[list[str], list[str]]:
         """构造日志展示文本，尽量还原保护占位符后的可读内容。"""

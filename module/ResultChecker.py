@@ -148,10 +148,17 @@ class ResultChecker(Base):
     def _has_text_preserve_error(self, item: CacheItem, src_repl: str, dst_repl: str) -> bool:
         return not self.text_processor.check(src_repl, dst_repl, item.get_text_type())
 
-    def _has_similarity_error(self, src_repl: str, dst_repl: str) -> bool:
-        src: str = src_repl.strip()
-        dst: str = dst_repl.strip()
-        return src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
+    def _has_similarity_error(self, src_repl: str, dst_repl: str, item: CacheItem | None = None) -> bool:
+        src: str = ResponseChecker.normalize_for_compare(src_repl)
+        dst: str = ResponseChecker.normalize_for_compare(dst_repl)
+        if src == "" or dst == "":
+            return False
+        if ResponseChecker.has_translation_error_marker(dst):
+            return True
+        if ResponseChecker.has_high_similarity(src, dst) == False:
+            return False
+        checker = ResponseChecker(self.config, [item] if item is not None else [])
+        return checker.is_preserve_allowed(src_repl, dst_repl, item) == False
 
     def _has_glossary_error(self, src_repl: str, dst_repl: str) -> bool:
         if not self._prepared_glossary_data:
@@ -280,7 +287,7 @@ class ResultChecker(Base):
             warnings.append(WarningType.HANGEUL)
         if self._has_text_preserve_error(item, src_repl, dst_repl):
             warnings.append(WarningType.TEXT_PRESERVE)
-        if self._has_similarity_error(src_repl, dst_repl):
+        if self._has_similarity_error(src_repl, dst_repl, item):
             warnings.append(WarningType.SIMILARITY)
         if self._has_glossary_error(src_repl, dst_repl):
             warnings.append(WarningType.GLOSSARY)
@@ -399,7 +406,7 @@ class ResultChecker(Base):
             dst: str = dst_repl.strip()
 
             # 判断是否包含或相似
-            if src in dst or dst in src or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80:
+            if self._has_similarity_error(src, dst, item):
                 count = count + 1
                 result.setdefault(item.get_file_path(), {})[item.get_src()] = item.get_dst()
 

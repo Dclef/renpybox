@@ -32,6 +32,7 @@ class VersionManager(Base):
     # URL 地址
     API_URL: str = "https://api.github.com/repos/dclef/RenpyBox/releases/latest"
     RELEASE_URL: str = "https://github.com/dclef/RenpyBox/releases/latest"
+    VERSION_RE: re.Pattern = re.compile(r"^v?(\d+(?:\.\d+){2,3})$")
 
     def __init__(self) -> None:
         super().__init__()
@@ -55,6 +56,18 @@ class VersionManager(Base):
             cls.__instance__ = cls()
 
         return cls.__instance__
+
+    @classmethod
+    def parse_version(cls, version: str) -> tuple[int, int, int, int]:
+        """解析三段或四段版本号，统一补齐为四段用于比较。"""
+        result = cls.VERSION_RE.match(str(version).strip())
+        if result is None:
+            return (0, 0, 0, 0)
+
+        parts = [int(v) for v in result.group(1).split(".")]
+        while len(parts) < 4:
+            parts.append(0)
+        return (parts[0], parts[1], parts[2], parts[3])
 
     # 解压
     def app_update_extract(self, event: str, data: dict) -> None:
@@ -185,18 +198,13 @@ class VersionManager(Base):
             response.raise_for_status()
 
             result: dict = response.json()
-            a, b, c = re.findall(r"v(\d+)\.(\d+)\.(\d+)$", VersionManager.get().get_version())[-1]
-            x, y, z = re.findall(r"v(\d+)\.(\d+)\.(\d+)$", result.get("tag_name", "v0.0.0"))[-1]
+            latest_version = result.get("tag_name", "v0.0.0")
 
-            if (
-                int(a) < int(x)
-                or (int(a) == int(x) and int(b) < int(y))
-                or (int(a) == int(x) and int(b) == int(y) and int(c) < int(z))
-            ):
+            if VersionManager.parse_version(VersionManager.get().get_version()) < VersionManager.parse_version(latest_version):
                 self.set_status(VersionManager.Status.NEW_VERSION)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.SUCCESS,
-                    "message": Localizer.get().app_new_version_toast.replace("{VERSION}", f"v{x}.{y}.{z}"),
+                    "message": Localizer.get().app_new_version_toast.replace("{VERSION}", latest_version),
                     "duration": 60 * 1000,
                 })
                 self.emit(Base.Event.APP_UPDATE_CHECK_DONE, {
