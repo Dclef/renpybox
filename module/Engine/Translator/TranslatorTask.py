@@ -441,11 +441,15 @@ class TranslatorTask(Base):
                 }
 
         # 提取回复内容
-        dsts, glossarys = ResponseDecoder().decode(response_result, len(srcs))
+        dsts, glossarys = ResponseDecoder().decode(
+            response_result, len(srcs),
+            structured = self.config.structured_output_enable,
+        )
 
-        # Sakura JSONLINE 解析失败时尝试格式化重试
+        # Sakura JSONLINE 解析失败时尝试格式化重试（结构化模式下跳过）
         if (
-            self.platform.get("api_format") == Base.APIFormat.SAKURALLM
+            not self.config.structured_output_enable
+            and self.platform.get("api_format") == Base.APIFormat.SAKURALLM
             and self.config.sakura_jsonline_retry_enable == True
             and (len(dsts) == 0 or all(v == "" or v == None for v in dsts))
         ):

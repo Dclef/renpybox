@@ -397,6 +397,23 @@ class PromptBuilder(Base):
 
     # 构建输入
     def build_inputs(self, srcs: list[str]) -> str:
+        # 结构化输出模式：纯文本输入 + 简要 JSON 指令（格式由 API schema 保证）
+        if self.config.structured_output_enable:
+            lines = "\n".join(srcs)
+            if self.config.target_language == BaseLanguage.Enum.ZH:
+                return (
+                    "以 JSON 格式返回，包含 translations 数组，每个元素对应一行译文。"
+                    "\n" + "原文："
+                    "\n" + lines
+                )
+            else:
+                return (
+                    "Return JSON with a translations array, each element is the translation of the corresponding line."
+                    "\n" + "Source:"
+                    "\n" + lines
+                )
+
+        # 传统 JSONLINE 模式
         inputs = "\n".join(
             json.dumps({str(i): line}, indent = None, ensure_ascii = False)
             for i, line in enumerate(srcs)

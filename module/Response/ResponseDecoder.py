@@ -40,11 +40,13 @@ class ResponseDecoder(Base):
         response: str,
         expected_count: int = 0,
         allow_plain_text_single: bool = False,
+        structured: bool = False,
     ) -> tuple[list[str], list[dict[str, str]]]:
         result = self.decode_result(
             response,
             expected_count = expected_count,
             allow_plain_text_single = allow_plain_text_single,
+            structured = structured,
         )
         return result.dsts, result.glossarys
 
@@ -53,6 +55,7 @@ class ResponseDecoder(Base):
         response: str,
         expected_count: int = 0,
         allow_plain_text_single: bool = False,
+        structured: bool = False,
     ) -> ResponseDecodeResult:
         """
         解析响应文本，按优先级尝试多种格式
@@ -71,6 +74,12 @@ class ResponseDecoder(Base):
         dsts: list[str] = []
         glossarys: list[dict[str, str]] = []
         self.last_method = ""
+
+        # 0. 结构化输出优先解析 {"translations": [...]}
+        if structured:
+            dsts = self._parse_structured(response)
+            if self._validate_count(dsts, expected_count, "STRUCTURED"):
+                return self._make_result(dsts, glossarys, "STRUCTURED")
         
         # 1. 标准 JSONLINE 解析
         dsts, glossarys = self._parse_jsonline(response)
@@ -112,6 +121,19 @@ class ResponseDecoder(Base):
         """创建解析结果，并同步旧的 last_method 字段。"""
         self.last_method = method
         return ResponseDecodeResult(dsts, glossarys, method)
+
+    def _parse_structured(self, text: str) -> list[str]:
+        """解析结构化输出 {"translations": [...]}"""
+        try:
+            cleaned = self._strip_markdown_fence(text)
+            json_data = repair.loads(cleaned)
+            if isinstance(json_data, dict):
+                translations = json_data.get("translations")
+                if isinstance(translations, list):
+                    return [str(item) for item in translations]
+        except Exception:
+            pass
+        return []
     
     def _parse_jsonline(self, text: str) -> tuple[list[str], list[dict]]:
         """标准 JSONLINE 解析"""

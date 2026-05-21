@@ -49,6 +49,7 @@ class Config():
     preceding_lines_threshold: int = 0
     enable_preceding_on_local: bool = False
     single_line_translation_enable: bool = False
+    structured_output_enable: bool = True
     clean_ruby: bool = True
     deduplication_in_trans: bool = True
     deduplication_in_bilingual: bool = True
