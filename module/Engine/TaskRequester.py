@@ -18,6 +18,7 @@ from module.Config import Config
 from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+from module.Schema import TranslationResult
 
 
 class ThinkingLevel(StrEnum):
@@ -530,6 +531,10 @@ class TaskRequester(Base):
         if extra_body != {}:
             args["extra_body"] = extra_body
 
+        # 结构化输出：让 API 保证返回合法 JSON
+        if self.config.structured_output_enable:
+            args["response_format"] = {"type": "json_object"}
+
         return args
 
     # 发起请求（流式 + 退化检测）
@@ -736,6 +741,11 @@ class TaskRequester(Base):
         system_parts = [v.get('content') for v in messages if v.get('role') == "system"]
         if system_parts:
             args["system_instruction"] = "\n".join(system_parts)
+
+        # 结构化输出：让 Gemini 保证返回合法 JSON
+        if self.config.structured_output_enable:
+            args["response_mime_type"] = "application/json"
+            args["response_schema"] = TranslationResult.model_json_schema()
 
         return {
             "model": self.platform.get('model'),

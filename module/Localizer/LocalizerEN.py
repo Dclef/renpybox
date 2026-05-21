@@ -395,6 +395,12 @@ class LocalizerEN(LocalizerZH):
         "<br>"
         "Useful for fast small models such as Tencent hy1.5 that often misalign batch JSONLINE output; this increases request count but reduces line-count mismatches"
     )
+    expert_settings_page_structured_output: str = "Structured Output"
+    expert_settings_page_structured_output_desc: str = (
+        "When enabled, uses API-level JSON format enforcement (response_format) to guarantee valid output structure"
+        "<br>"
+        "Reduces parsing failures for capable models; disable as fallback if your API provider does not support it"
+    )
     expert_settings_page_clean_ruby: str = "Clean Ruby Text"
     expert_settings_page_clean_ruby_desc: str = (
         "Removes the phonetic ruby characters from annotations, retaining only the main text, enabled by default"

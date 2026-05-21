@@ -396,6 +396,12 @@ class LocalizerZH():
         "<br>"
         "适合腾讯 hy1.5 等速度快但批量 JSONLINE 格式容易错位的小模型；会增加请求次数，但可显著降低行数不一致"
     )
+    expert_settings_page_structured_output: str = "结构化输出"
+    expert_settings_page_structured_output_desc: str = (
+        "启用后，通过 API 级别的 JSON 格式约束（response_format）保证输出结构合法"
+        "<br>"
+        "可减少强模型的解析失败；若 API 提供商不支持此功能，请关闭作为保底"
+    )
     expert_settings_page_clean_ruby: str = "清理原文中的注音文本"
     expert_settings_page_clean_ruby_desc: str = (
         "移除注音上标中的注音部分，仅保留正文部分，默认启用"
