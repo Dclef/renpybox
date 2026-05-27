@@ -74,11 +74,11 @@ class Config():
         "master",
     ])
     honorific_placeholder_alias_names: list[str] = dataclasses.field(default_factory = lambda: [
-        "David",
-        "Alex",
-        "Chris",
-        "Evan",
-        "Taylor",
+        "Xelvorn",
+        "Qithrax",
+        "Zyvrek",
+        "Wythnal",
+        "Jaxfyn",
     ])
 
     # ProjectPage

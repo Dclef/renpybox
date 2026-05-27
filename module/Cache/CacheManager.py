@@ -356,11 +356,9 @@ class CacheManager(Base):
             if item.get_file_path() != chunk[-1].get_file_path():
                 break
 
-            # 候选数据以指定标点结尾时，添加到结果中
+            # 候选数据以指定标点结尾时，添加到结果中；不以标点结尾时跳过继续搜索
             if src.endswith(__class__.END_LINE_PUNCTUATION):
                 result.append(item)
-            else:
-                break
 
         # 简单逆序
         return result[::-1]

@@ -483,8 +483,8 @@ class Translator(Base):
                     self.config.preceding_lines_threshold,
                 )
 
-                # 仅在第一轮启用参考上文功能
-                if current_round > 0:
+                # 仅在第三轮开始禁用参考上文功能（第一轮重试仍保留上下文）
+                if current_round >= 2:
                     precedings = [[] for _ in range(len(precedings))]
 
                 # 生成翻译任务

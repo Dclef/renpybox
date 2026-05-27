@@ -582,7 +582,15 @@ class TextProcessor(Base):
 
     def _restore_inline_tags(self, i: int, dst: str) -> str:
         for placeholder, original in self.inline_codes.get(i, []):
-            dst = dst.replace(placeholder, original)
+            if placeholder in dst:
+                dst = dst.replace(placeholder, original)
+            else:
+                # 容错：模型可能修改占位符格式（加空格、大写、去斜杠等）
+                seq = placeholder[2:-2]  # 从 <v0/> 提取 "0"
+                fuzzy_re = re.compile(
+                    rf"<\s*[vV]\s*{re.escape(seq)}\s*/?\s*>",
+                )
+                dst = fuzzy_re.sub(original, dst, count=1)
         return dst
 
     # 预处理
