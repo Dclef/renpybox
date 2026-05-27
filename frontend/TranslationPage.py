@@ -36,6 +36,7 @@ from module.Engine.Engine import Engine
 from module.Cache.CacheManager import CacheManager
 from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
+from module.TokenEstimator import TokenEstimator
 from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
@@ -448,6 +449,7 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_export(self.command_bar_card, config, window)
         self.add_command_bar_action_reinject_cache(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
+        self.add_command_bar_action_estimate(self.command_bar_card, config, window)
         self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
         # 添加信息条
@@ -732,6 +734,70 @@ class TranslationPage(QWidget, Base):
         self.action_reinject_cache.installEventFilter(ToolTipFilter(self.action_reinject_cache, 300, ToolTipPosition.TOP))
         self.action_reinject_cache.setToolTip(Localizer.get().translation_page_reinject_cache_tooltip)
         self.action_reinject_cache.setEnabled(False)
+
+    def add_command_bar_action_estimate(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
+
+        def triggered() -> None:
+            current_config = Config().load()
+            platform = current_config.get_platform(current_config.activate_platform)
+            if platform is None:
+                InfoBar.warning(
+                    title="估算失败",
+                    content="未找到激活的平台配置",
+                    parent=window,
+                    duration=3000,
+                )
+                return
+
+            cache_manager = CacheManager(service=True)
+            items = cache_manager.get_items()
+            if not items:
+                InfoBar.info(
+                    title="无数据",
+                    content="当前没有加载翻译数据，请先开始翻译或载入项目",
+                    parent=window,
+                    duration=3000,
+                )
+                return
+
+            estimator = TokenEstimator(current_config, platform, items)
+            result = estimator.estimate()
+
+            if result.untranslated_count == 0:
+                InfoBar.info(
+                    title="无需翻译",
+                    content="所有条目已翻译完成",
+                    parent=window,
+                    duration=3000,
+                )
+                return
+
+            def format_tokens(n: int) -> str:
+                if n < 1000:
+                    return f"{n}"
+                elif n < 1_000_000:
+                    return f"{n / 1000:.1f}K"
+                else:
+                    return f"{n / 1_000_000:.2f}M"
+
+            lines = [
+                f"待翻译条目: {result.untranslated_count}",
+                f"预估批次数: {result.batch_count}",
+                f"原文 Token: ~{format_tokens(result.total_source_tokens)}",
+                f"预估输入 Token: ~{format_tokens(result.estimated_input_tokens)}",
+                f"预估输出 Token: ~{format_tokens(result.estimated_output_tokens)}",
+            ]
+            if result.estimated_cost > 0:
+                lines.append(f"预估费用: ${result.estimated_cost:.4f}")
+
+            message_box = MessageBox("Token 估算", "\n".join(lines), window)
+            message_box.yesButton.setText("确定")
+            message_box.cancelButton.hide()
+            message_box.exec()
+
+        self.action_estimate = parent.add_action(
+            Action(FluentIcon.CALORIES, "Token 估算", parent, triggered=triggered),
+        )
 
     # 定时器
     def add_command_bar_action_timer(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:

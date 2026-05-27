@@ -57,6 +57,7 @@ class Config():
     result_checker_retry_count_threshold: bool = False
     auto_process_prefix_suffix_preserved_text: bool = False
     sakura_jsonline_retry_enable: bool = True
+    token_estimation_output_ratio: float = 1.2
     honorific_placeholder_bridge_enable: bool = True
     honorific_placeholder_titles: list[str] = dataclasses.field(default_factory = lambda: [
         "mr",

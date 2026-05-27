@@ -4,6 +4,7 @@ from base.compat import StrEnum
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
+from module.Text.TextBase import TextBase
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Filter.RuleFilter import RuleFilter
@@ -72,7 +73,7 @@ class ResponseChecker(Base):
         "npc",
     )
     # 行内占位符一致性检查
-    RE_PRESERVE_TOKEN = re.compile(r"_RENPYBOX_\d+_\d+_", flags = re.IGNORECASE)
+    RE_PRESERVE_TOKEN = re.compile(r"_RENPYBOX_\d+_\d+_|<v\d+/>", flags = re.IGNORECASE)
     RE_MULTI_SPACE = re.compile(r"\s+")
     RE_IGNORE_SEGMENTS = re.compile(r"\[[^\]\n]*\]|\{[^}\n]*\}")
     RE_LATIN_FRAGMENT = re.compile(r"[A-Za-z]{2,}")
@@ -155,7 +156,7 @@ class ResponseChecker(Base):
                 if sorted(src_preserves) != sorted(dst_preserves):
                     checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                     continue
-            elif "_RENPYBOX_" in dst:
+            elif __class__.RE_PRESERVE_TOKEN.search(dst) is not None:
                 checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 
@@ -273,11 +274,31 @@ class ResponseChecker(Base):
         if src == "" or dst == "":
             return False
 
-        return (
-            src in dst
-            or dst in src
-            or TextHelper.check_similarity_by_jaccard(src, dst) > 0.80
-        )
+        if src == dst:
+            return True
+
+        len_ratio = len(dst) / max(1, len(src))
+        if len_ratio < 0.3 or len_ratio > 3.0:
+            return False
+
+        src_has_cjk = any(c in TextBase.CJK_SET for c in src)
+        dst_has_cjk = any(c in TextBase.CJK_SET for c in dst)
+        if src_has_cjk and dst_has_cjk:
+            if src in dst and len(src) / max(1, len(dst)) > 0.85:
+                return True
+            if dst in src and len(dst) / max(1, len(src)) > 0.85:
+                return True
+        else:
+            if src in dst or dst in src:
+                return True
+
+        if TextHelper.check_similarity_by_sequence(src, dst) > 0.85:
+            return True
+
+        if TextHelper.check_similarity_by_ngram_jaccard(src, dst) > 0.80:
+            return True
+
+        return False
 
     @classmethod
     def normalize_preserve_key(cls, text: str) -> str:
@@ -397,12 +418,12 @@ class ResponseChecker(Base):
         if src_compare == "" or dst_compare == "":
             return True
 
-        # 对于“完全照抄 / 明显包含原文”的情况，仍视为未翻译。
-        return (
-            src_compare == dst_compare
-            or src_compare in dst_compare
-            or dst_compare in src_compare
-        )
+        # 对于”完全照抄 / 明显包含原文”的情况，仍视为未翻译。
+        if src_compare == dst_compare:
+            return True
+        if TextHelper.check_similarity_by_sequence(src_compare, dst_compare) > 0.92:
+            return True
+        return False
 
     def is_preserve_allowed(
         self,
