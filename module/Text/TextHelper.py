@@ -2,6 +2,8 @@ import codecs
 import locale
 import re
 import unicodedata
+from collections import Counter
+from difflib import SequenceMatcher
 
 # 打包环境下 charset_normalizer 的 mypyc 扩展有概率缺失，这里降级为可选依赖。
 try:
@@ -184,6 +186,20 @@ class TextHelper:
         intersection = len(set_x & set_y)
 
         # 计算并返回相似度，完全一致是 1，完全不同是 0
+        return intersection / union if union > 0 else 0.0
+
+    @classmethod
+    def check_similarity_by_sequence(cls, x: str, y: str) -> float:
+        return SequenceMatcher(None, x, y).ratio()
+
+    @classmethod
+    def check_similarity_by_ngram_jaccard(cls, x: str, y: str, n: int = 2) -> float:
+        if len(x) < n or len(y) < n:
+            return 0.0
+        ngrams_x = Counter(x[i:i+n] for i in range(len(x) - n + 1))
+        ngrams_y = Counter(y[i:i+n] for i in range(len(y) - n + 1))
+        intersection = sum((ngrams_x & ngrams_y).values())
+        union = sum((ngrams_x | ngrams_y).values())
         return intersection / union if union > 0 else 0.0
 
     # 通过 BOM 判断编码

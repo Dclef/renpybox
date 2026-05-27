@@ -570,14 +570,13 @@ class TextProcessor(Base):
         codes: list[tuple[str, str]] = []
 
         def repl(match: re.Match) -> str:
-            placeholder = f"_RENPYBOX_{i}_{len(codes)}_"
+            placeholder = f"<v{len(codes)}/>"
             codes.append((placeholder, match.group(0)))
             return placeholder
 
         new_src = rule.sub(repl, src)
         if codes:
             self.inline_codes[i] = codes
-            # 记录命中的禁翻片段，便于提示词增强
             self.samples.extend([orig for _, orig in codes if orig.strip() != ""])
         return new_src
 
