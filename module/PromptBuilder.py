@@ -15,6 +15,7 @@ class PromptBuilder(Base):
     # 类线程锁
     LOCK: threading.Lock = threading.Lock()
     RE_GLOSSARY_IGNORE_SEGMENTS = re.compile(r"\[[^\]]*]|\{[^}]*}")
+    RE_LATIN_ONLY = re.compile(r"^[A-Za-z\s'\-]+$")
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -275,16 +276,20 @@ class PromptBuilder(Base):
     def build_preceding(self, precedings: list[CacheItem]) -> str:
         if len(precedings) == 0:
             return ""
-        elif self.config.target_language == BaseLanguage.Enum.ZH:
-            return (
-                "参考上文："
-                + "\n" + "\n".join([item.get_src().strip().replace("\n", "\\n") for item in precedings])
-            )
+
+        lines = []
+        for item in precedings:
+            src = item.get_src().strip().replace("\n", "\\n")
+            dst = (item.get_dst() or "").strip().replace("\n", "\\n")
+            if dst and dst != src:
+                lines.append(f"{src} -> {dst}")
+            else:
+                lines.append(src)
+
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            return "参考上文（原文 -> 译文）：\n" + "\n".join(lines)
         else:
-            return (
-                "Preceding Context:"
-                + "\n" + "\n".join([item.get_src().strip().replace("\n", "\\n") for item in precedings])
-            )
+            return "Preceding Context (Source -> Translation):\n" + "\n".join(lines)
 
     # 构造术语表
     def build_glossary(self, srcs: list[str]) -> str:
@@ -301,7 +306,13 @@ class PromptBuilder(Base):
             # 若术语本身带占位字符，按原文匹配；普通术语按清洗后文本匹配。
             target_full = full if any(ch in src for ch in "[]{}") else full_clean
             is_case_sensitive = v.get("case_sensitive", False)
-            if is_case_sensitive:
+            # 纯拉丁术语使用词边界匹配，避免 "an" 匹配 "Another"
+            use_word_boundary = bool(__class__.RE_LATIN_ONLY.match(src)) and len(src) <= 20
+            if use_word_boundary:
+                flags = 0 if is_case_sensitive else re.IGNORECASE
+                if re.search(r"\b" + re.escape(src) + r"\b", target_full, flags):
+                    glossary.append(v)
+            elif is_case_sensitive:
                 if src in target_full:
                     glossary.append(v)
             else:
@@ -348,7 +359,12 @@ class PromptBuilder(Base):
                 continue
             target_full = full if any(ch in src for ch in "[]{}") else full_clean
             is_case_sensitive = v.get("case_sensitive", False)
-            if is_case_sensitive:
+            use_word_boundary = bool(__class__.RE_LATIN_ONLY.match(src)) and len(src) <= 20
+            if use_word_boundary:
+                flags = 0 if is_case_sensitive else re.IGNORECASE
+                if re.search(r"\b" + re.escape(src) + r"\b", target_full, flags):
+                    glossary.append(v)
+            elif is_case_sensitive:
                 if src in target_full:
                     glossary.append(v)
             else:

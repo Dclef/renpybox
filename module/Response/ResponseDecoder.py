@@ -235,10 +235,18 @@ class ResponseDecoder(Base):
                 self.debug(f"[DECODE] {method} 解析成功: {len(dsts)} 行")
                 return True
             return False
-        
+
         if len(dsts) == expected:
             self.debug(f"[DECODE] {method} 解析成功: {len(dsts)}/{expected} 行")
             return True
-        elif len(dsts) > 0:
+
+        # 允许少量缺失（最多差2行且至少80%行数），补空行
+        missing = expected - len(dsts)
+        if 0 < missing <= 2 and len(dsts) >= expected * 0.8:
+            self.warning(f"[DECODE] {method} 行数略少: {len(dsts)}/{expected}，补 {missing} 行空行")
+            dsts.extend([""] * missing)
+            return True
+
+        if len(dsts) > 0:
             self.debug(f"[DECODE] {method} 数量不匹配: {len(dsts)}/{expected} 行，继续尝试其他方式")
         return False
