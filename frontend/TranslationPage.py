@@ -438,7 +438,7 @@ class TranslationPage(QWidget, Base):
         self.command_bar_card = CommandBarCard()
         parent.addWidget(self.command_bar_card)
 
-        # 添加命令
+        # 第一行：主控制命令
         self.command_bar_card.set_minimum_width(640)
         self.add_command_bar_action_start(self.command_bar_card, config, window)
         self.add_command_bar_action_stop(self.command_bar_card, config, window)
@@ -447,10 +447,6 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_retry_failed(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_export(self.command_bar_card, config, window)
-        self.add_command_bar_action_reinject_cache(self.command_bar_card, config, window)
-        self.command_bar_card.add_separator()
-        self.add_command_bar_action_estimate(self.command_bar_card, config, window)
-        self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
         # 添加信息条
         self.indeterminate = IndeterminateProgressRing()
@@ -465,6 +461,15 @@ class TranslationPage(QWidget, Base):
         self.command_bar_card.add_widget(self.info_label)
         self.command_bar_card.add_spacing(4)
         self.command_bar_card.add_widget(self.indeterminate)
+
+        # 第二行：工具命令（直接展开，不折叠入 ...）
+        self.command_bar_card2 = CommandBarCard()
+        parent.addWidget(self.command_bar_card2)
+        self.command_bar_card2.set_minimum_width(640)
+        self.add_command_bar_action_reinject_cache(self.command_bar_card2, config, window)
+        self.command_bar_card2.add_separator()
+        self.add_command_bar_action_estimate(self.command_bar_card2, config, window)
+        self.add_command_bar_action_timer(self.command_bar_card2, config, window)
 
     # 累计时间
     def add_time_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
