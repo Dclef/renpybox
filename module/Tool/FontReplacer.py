@@ -25,6 +25,12 @@ class FontReplacer:
     INLINE_FONT_TAG_PATTERN = re.compile(
         r'\{font\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^}\s]+))\s*\}'
     )
+    # 匹配任意以字体后缀结尾的“文件名 token”，用于从已编译的 .rpyc 二进制
+    # 中直接捞取字体文件名（编译后字符串不再带引号）。
+    RE_FONT_FILE_TOKEN = re.compile(
+        r"[\w \u4e00-\u9fff\-./\\]{1,200}?\.(?:ttf|otf|ttc|otc)",
+        flags = re.IGNORECASE,
+    )
 
     def __init__(self):
         self.logger = LogManager.get()
@@ -95,6 +101,9 @@ class FontReplacer:
             r'style\s+\w+\s+font\s*(?:=\s*)?["\']([^"\']+)["\']',
             r'style\s+\w+\s+font_name\s*(?:=\s*)?["\']([^"\']+)["\']',
             r'style\.[^\s]+\s*\[\s*["\']font["\']\s*\]\s*=\s*["\']([^"\']+)["\']',
+            # 任意以字体后缀结尾的字符串字面量，覆盖 define 常量、字体列表、
+            # FontGroup 的多个参数等通过变量/常量间接引用字体的写法。
+            r'["\']([^"\']*?\.(?i:ttf|otf|ttc|otc))["\']',
         ]
 
         for pattern in patterns:
@@ -517,9 +526,22 @@ class FontReplacer:
         self.logger.info(f"字体替换完成: {success_count} 个文件, {total_replacements} 处替换")
         return success_count, total_replacements
 
+    def _extract_font_file_tokens(self, blob: str) -> List[str]:
+        """从 .rpyc 解码内容中捞取字体文件名 token（编译后字符串不再带引号）。"""
+        tokens: List[str] = []
+        for match in self.RE_FONT_FILE_TOKEN.findall(blob):
+            token = match.strip().strip("\"'").replace("\\", "/").lstrip("/")
+            # 过滤明显异常的超长/含控制字符的结果
+            if token and "\n" not in token and "\x00" not in token and len(token) <= 200:
+                tokens.append(token)
+        return tokens
+
     def scan_fonts(self, folder_path: str) -> List[str]:
         """
         扫描文件夹中使用的所有字体
+
+        除 .rpy/.rpym 源码外，同时扫描已编译的 .rpyc/.rpymc，
+        以便在仅发布编译脚本的游戏中也能发现字体引用。
 
         Args:
             folder_path: 文件夹路径
@@ -529,14 +551,24 @@ class FontReplacer:
         """
         fonts = set()
         game_path = Path(self._resolve_game_dir(folder_path))
-        script_files = list(game_path.rglob("*.rpy")) + list(game_path.rglob("*.rpym"))
 
-        for file_path in script_files:
+        # 源码脚本：使用精确的引用提取
+        source_files = list(game_path.rglob("*.rpy")) + list(game_path.rglob("*.rpym"))
+        for file_path in source_files:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-
                 fonts.update(self._extract_font_references(content))
+            except Exception:
+                continue
+
+        # 已编译脚本：二进制按字体后缀 token 捞取（编译后字符串不再带引号）
+        compiled_files = list(game_path.rglob("*.rpyc")) + list(game_path.rglob("*.rpymc"))
+        for file_path in compiled_files:
+            try:
+                with open(file_path, "rb") as f:
+                    blob = f.read().decode("utf-8", errors="ignore")
+                fonts.update(self._extract_font_file_tokens(blob))
             except Exception:
                 continue
 
