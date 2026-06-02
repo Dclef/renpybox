@@ -12,7 +12,9 @@ class DegradationDetector:
     """
 
     # 触发退化判定的重复次数阈值
-    THRESHOLD: int = 50
+    # 由 50 下调至 24：合法文本（如省略号、分隔线、连续叹号）极少连续重复达到该量级，
+    # 但模型陷入死循环时能更早中断，减少无效流式输出与等待。
+    THRESHOLD: int = 24
 
     def __init__(self) -> None:
         self.reset()
