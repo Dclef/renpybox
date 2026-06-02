@@ -269,8 +269,10 @@ class ResponseChecker(Base):
         if not isinstance(src, str) or not isinstance(dst, str):
             return False
 
-        src = src.strip()
-        dst = dst.strip()
+        # 先剥离 Ren'Py 占位符 [name] 与标签 {b} 等再比较，
+        # 否则译文中保留的占位符/变量会让相似度虚高，把正常译文误判为“原文照抄”。
+        src = cls.RE_IGNORE_SEGMENTS.sub("", src).strip()
+        dst = cls.RE_IGNORE_SEGMENTS.sub("", dst).strip()
         if src == "" or dst == "":
             return False
 
@@ -289,13 +291,16 @@ class ResponseChecker(Base):
             if dst in src and len(dst) / max(1, len(src)) > 0.85:
                 return True
         else:
-            if src in dst or dst in src:
+            # 非 CJK 文本同样需要长度门槛，否则 "v1" ⊂ "版本 v1.0" 之类会被误判为相似。
+            if src in dst and len(src) / max(1, len(dst)) > 0.85:
+                return True
+            if dst in src and len(dst) / max(1, len(src)) > 0.85:
                 return True
 
-        if TextHelper.check_similarity_by_sequence(src, dst) > 0.85:
+        if TextHelper.check_similarity_by_sequence(src, dst) > 0.90:
             return True
 
-        if TextHelper.check_similarity_by_ngram_jaccard(src, dst) > 0.80:
+        if TextHelper.check_similarity_by_ngram_jaccard(src, dst) > 0.85:
             return True
 
         return False

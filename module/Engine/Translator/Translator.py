@@ -471,8 +471,10 @@ class Translator(Base):
                         self.extras["total_line"] = self.extras.get("line", 0) + remaining
 
                 # 第二轮开始切分（基于初始值计算，避免累积除法）
+                # 采用 2 倍率衰减而非 3 倍率，避免重试时批次过快坍缩到单行，
+                # 在保证最终能逐行隔离顽固错误的同时，显著减少串行化、提升吞吐。
                 if current_round > 0:
-                    self.config.token_threshold = max(1, int(self._initial_token_threshold / (3 ** current_round)))
+                    self.config.token_threshold = max(1, int(self._initial_token_threshold / (2 ** current_round)))
 
                 # 生成缓存数据条目片段
                 chunk_line_threshold = self.config.token_threshold
@@ -483,8 +485,8 @@ class Translator(Base):
                     self.config.preceding_lines_threshold,
                 )
 
-                # 仅在第三轮开始禁用参考上文功能（第一轮重试仍保留上下文）
-                if current_round >= 2:
+                # 第四轮开始才禁用参考上文（多保留一轮上下文以提升重试译文质量）
+                if current_round >= 3:
                     precedings = [[] for _ in range(len(precedings))]
 
                 # 生成翻译任务
