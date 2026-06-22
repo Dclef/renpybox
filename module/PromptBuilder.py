@@ -16,6 +16,7 @@ class PromptBuilder(Base):
     LOCK: threading.Lock = threading.Lock()
     RE_GLOSSARY_IGNORE_SEGMENTS = re.compile(r"\[[^\]]*]|\{[^}]*}")
     RE_LATIN_ONLY = re.compile(r"^[A-Za-z\s'\-]+$")
+    RE_STRUCTURED_PLACEHOLDER = re.compile(r"<\s*n\s*(\d+)\s*/?\s*>", flags = re.IGNORECASE)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -460,7 +461,7 @@ class PromptBuilder(Base):
                 "\n"
                 "只输出译文文本本身，不要编号、不要 JSON、不要解释、不要额外换行。"
                 "\n"
-                "保留原文中的控制字符、变量、标签、占位符和代码片段（如 {name}、[player]、%s、\\n）原样不变。"
+                "保留原文中的控制字符、变量、标签、占位符和代码片段（如 {name}、[player]、<v0/>、<n0/>、%s、\\n）原样不变。"
                 "\n"
                 "自然语言、对话、旁白和 UI 文本必须翻译；只有明确无需翻译的人名、品牌、代码或占位符可以保留。"
             )
@@ -470,7 +471,7 @@ class PromptBuilder(Base):
             "\n"
             "Output only the translated text itself. Do not output numbering, JSON, explanations, or extra line breaks."
             "\n"
-            "Preserve control characters, variables, tags, placeholders, and code fragments exactly as-is, such as {name}, [player], %s, and \\n."
+            "Preserve control characters, variables, tags, placeholders, and code fragments exactly as-is, such as {name}, [player], <v0/>, <n0/>, %s, and \\n."
             "\n"
             "Natural language, dialogue, narration, and UI text must be translated. Only clear proper names, brands, code, or placeholders may remain unchanged."
         )
@@ -492,6 +493,33 @@ class PromptBuilder(Base):
             return "需要原样保留的控制字符示例：\n" + ", ".join(samples)
 
         return "Control character examples that must be preserved:\n" + ", ".join(samples)
+
+    def build_structured_placeholder_context(self, srcs: list[str]) -> str:
+        """构建结构化占位符上下文，避免把临时 token 当自然语言翻译。"""
+        tokens: dict[int, str] = {}
+        for src in srcs:
+            if not isinstance(src, str):
+                continue
+            for match in __class__.RE_STRUCTURED_PLACEHOLDER.finditer(src):
+                index = int(match.group(1))
+                tokens[index] = f"<n{index}/>"
+
+        if tokens == {}:
+            return ""
+
+        token_text = ", ".join(tokens[index] for index in sorted(tokens))
+        if self.config.target_language == BaseLanguage.Enum.ZH:
+            return (
+                "结构化占位符协议："
+                + token_text
+                + " 是程序临时变量占位符，不是自然语言。翻译时可按目标语语序移动它们，但输出时必须逐字符原样保留，禁止翻译、音译、改写、加空格或补闭合标签。"
+            )
+
+        return (
+            "Structured Placeholder Protocol: "
+            + token_text
+            + " are temporary program placeholders, not natural language. You may move them to fit target-language word order, but must output each token byte-for-byte unchanged; do not translate, transliterate, rewrite, add spaces, or add closing tags."
+        )
 
     def generate_single_line_prompt(
         self,
@@ -536,6 +564,11 @@ class PromptBuilder(Base):
                 extra_log.append(result)
 
         result = self.build_single_line_control_samples(samples)
+        if result != "":
+            content = content + "\n" + result
+            extra_log.append(result)
+
+        result = self.build_structured_placeholder_context([src])
         if result != "":
             content = content + "\n" + result
             extra_log.append(result)
@@ -605,6 +638,11 @@ class PromptBuilder(Base):
             system_content = system_content + "\n" + result
             extra_log.append(result)
 
+        result = self.build_structured_placeholder_context(srcs)
+        if result != "":
+            system_content = system_content + "\n" + result
+            extra_log.append(result)
+
         messages.append({
             "role": "system",
             "content": system_content,
@@ -670,7 +708,7 @@ class PromptBuilder(Base):
             "只输出 JSONLINE，每行一个 JSON 对象，格式为 {\"序号\":\"译文\"}。",
             "输入是 JSONLINE 包装，值为原文文本；不要翻译 JSON 结构或序号。",
             "输出行数必须与输入行数一致，不要附加原文/英文/解释。",
-            "保留原文中的控制字符/标签/变量（如 {w}、{...}、[...]）原样输出。",
+            "保留原文中的控制字符/标签/变量（如 {w}、{...}、[...]、<v0/>、<n0/>）原样输出，禁止修改或翻译。",
             "【重要】游戏 UI 文本（如 NEW GAME, CONTINUE, OPTIONS）必须翻译成中文（如 新游戏、继续、选项）。",
             "【重要】对话和描述性内容必须完整翻译，不可保留英文原文。",
             "【允许】人名可以保留英文或音译为中文，由模型自行判断。",
@@ -684,6 +722,10 @@ class PromptBuilder(Base):
             content_lines.append(result)
             extra_log.append(result)
         result = self.build_retry_hint(items)
+        if result != "":
+            content_lines.append(result)
+            extra_log.append(result)
+        result = self.build_structured_placeholder_context(srcs)
         if result != "":
             content_lines.append(result)
             extra_log.append(result)

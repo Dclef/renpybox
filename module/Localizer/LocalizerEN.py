@@ -443,7 +443,7 @@ class LocalizerEN(LocalizerZH):
     expert_settings_page_honorific_placeholder_bridge_desc: str = (
         "Automatically handles honorific + variable patterns (e.g., Mr.[xx]) to avoid placeholder loss and fix Chinese word order, enabled by default"
         "<br>"
-        "• Before translation, placeholders are temporarily replaced by person-name aliases to encourage “name + title” output"
+        "• Before translation, placeholders are temporarily replaced with structured tokens to prevent variable translation or rewriting"
         "<br>"
         "• After translation, aliases are restored to original placeholders (e.g., [xx]先生), no manual glossary/search-replace needed"
     )

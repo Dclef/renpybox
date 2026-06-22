@@ -1,7 +1,7 @@
 """
 称呼变量智能桥接管理页面
 管理用于识别"称呼 + 变量"结构的称呼词列表，支持自定义增删改。
-翻译时将 Mr.[xx] 等模式临时替换为人名占位词，译后自动还原并修正中文语序。
+翻译时将 Mr.[xx] 等模式临时替换为结构化占位符，译后自动还原并修正中文语序。
 """
 
 from typing import List
@@ -67,7 +67,7 @@ class HonorificPlaceholderPage(Base, QWidget):
         # 描述
         desc = CaptionLabel(
             "管理用于识别「称呼 + 变量」结构的称呼词列表。"
-            + "翻译时将 Mr.[xx] 等模式临时替换为人名占位词，译后自动还原并修正中文语序（如 [xx]先生）。"
+            + "翻译时将 Mr.[xx] 等模式临时替换为结构化占位符，译后自动还原并修正中文语序（如 [xx]先生）。"
         )
         desc.setWordWrap(True)
         layout.addWidget(desc)

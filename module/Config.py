@@ -73,14 +73,6 @@ class Config():
         "lady",
         "master",
     ])
-    honorific_placeholder_alias_names: list[str] = dataclasses.field(default_factory = lambda: [
-        "Xelvorn",
-        "Qithrax",
-        "Zyvrek",
-        "Wythnal",
-        "Jaxfyn",
-    ])
-
     # ProjectPage
     # 默认原文语言改为英文，避免误将非日文项目设为日文
     source_language: BaseLanguage.Enum = BaseLanguage.Enum.EN
@@ -254,14 +246,6 @@ class Config():
             "lady",
             "master",
         ]
-        self.honorific_placeholder_alias_names: list[str] = [
-            "David",
-            "Alex",
-            "Chris",
-            "Evan",
-            "Taylor",
-        ]
-
         # TextPreservePage
         self.text_preserve_enable: bool = False
         self.text_preserve_data: list[Any] = []

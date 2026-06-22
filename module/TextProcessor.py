@@ -44,7 +44,8 @@ class TextProcessor(Base):
         SUFFIX = "SUFFIX"
 
     # 正则表达式
-    RE_NAME = re.compile(r"^【(.*?)】\s*|\[(.*?)\]\s*", flags = re.IGNORECASE)
+    # 强制匹配且仅匹配字符串开头的【】或[]，避免大模型自由发挥时破坏正则表达式边界
+    RE_NAME = re.compile(r"^\s*(?:【(.*?)】|\[(.*?)\])\s*", flags = re.IGNORECASE)
     RE_BLANK: re.Pattern = re.compile(r"\s+", re.IGNORECASE)
     DEFAULT_HONORIFIC_TITLES: tuple[str, ...] = (
         "mr",
@@ -60,13 +61,7 @@ class TextProcessor(Base):
         "lady",
         "master",
     )
-    DEFAULT_HONORIFIC_ALIAS_NAMES: tuple[str, ...] = (
-        "David",
-        "Alex",
-        "Chris",
-        "Evan",
-        "Taylor",
-    )
+    STRUCTURED_PLACEHOLDER_PREFIX: str = "n"
     PLACEHOLDER_TOKEN_PATTERN: str = r"\[[^\]\n]+\]|【[^】\n]+】"
     ENGLISH_APOSTROPHE_CHARS: str = "'’‘ʼ＇"
 
@@ -125,19 +120,29 @@ class TextProcessor(Base):
         self.honorific_placeholder_re_key = key
         return self.honorific_placeholder_re
 
-    def _get_honorific_alias_names(self) -> list[str]:
-        names = getattr(self.config, "honorific_placeholder_alias_names", None)
-        if isinstance(names, list):
-            result = [str(v).strip() for v in names if str(v).strip() != ""]
-            if len(result) > 0:
-                return result
-        return list(__class__.DEFAULT_HONORIFIC_ALIAS_NAMES)
+    @classmethod
+    def _make_structured_placeholder_token(cls, index: int) -> str:
+        return f"<{cls.STRUCTURED_PLACEHOLDER_PREFIX}{index}/>"
 
     @classmethod
-    def _replace_alias_with_placeholder(cls, text: str, alias: str, placeholder: str) -> str:
-        """在中文等无空格文本中也能还原临时人名别名。"""
-        pattern = rf"(?<![A-Za-z0-9_]){re.escape(alias)}(?![A-Za-z0-9_])"
-        return re.sub(pattern, placeholder, text, flags = re.IGNORECASE)
+    def _replace_bridge_token_with_placeholder(cls, text: str, token: str, placeholder: str) -> str:
+        """还原结构化占位符，并容忍模型只做了轻微格式改写。"""
+        text = text.replace(token, placeholder)
+
+        match = re.fullmatch(
+            rf"<{re.escape(cls.STRUCTURED_PLACEHOLDER_PREFIX)}(\d+)/>",
+            token,
+            flags = re.IGNORECASE,
+        )
+        if match is None:
+            return text.replace(token, placeholder)
+
+        index = match.group(1)
+        fuzzy_re = re.compile(
+            rf"<\s*{re.escape(cls.STRUCTURED_PLACEHOLDER_PREFIX)}\s*{re.escape(index)}\s*/?\s*>",
+            flags = re.IGNORECASE,
+        )
+        return fuzzy_re.sub(placeholder, text)
 
     def _bridge_honorific_placeholders_pre(self, i: int, src: str) -> str:
         if getattr(self.config, "honorific_placeholder_bridge_enable", True) != True:
@@ -149,41 +154,37 @@ class TextProcessor(Base):
         if honorific_re is None:
             return src
 
-        aliases = self._get_honorific_alias_names()
         src_lower = src.lower()
-        used_aliases: set[str] = set()
-        placeholder_to_alias: dict[str, str] = {}
+        used_tokens: set[str] = set()
+        placeholder_to_token: dict[str, str] = {}
         bridges: list[tuple[str, str]] = []
-        alias_index = 0
+        token_index = 0
 
-        def pick_alias() -> str:
-            nonlocal alias_index
+        def pick_token() -> str:
+            nonlocal token_index
 
-            for _ in range(len(aliases)):
-                alias = aliases[alias_index % len(aliases)]
-                alias_index += 1
-                if alias.lower() in src_lower:
+            while True:
+                token = __class__._make_structured_placeholder_token(token_index)
+                token_index += 1
+                token_lower = token.lower()
+                if token_lower in src_lower:
                     continue
-                if alias.lower() in used_aliases:
+                if token_lower in used_tokens:
                     continue
-                used_aliases.add(alias.lower())
-                return alias
-
-            alias = f"RbxName{len(used_aliases) + 1}"
-            used_aliases.add(alias.lower())
-            return alias
+                used_tokens.add(token_lower)
+                return token
 
         def repl(match: re.Match) -> str:
             title = match.group("title")
             placeholder = match.group("placeholder")
 
-            alias = placeholder_to_alias.get(placeholder)
-            if alias is None:
-                alias = pick_alias()
-                placeholder_to_alias[placeholder] = alias
-                bridges.append((alias, placeholder))
+            token = placeholder_to_token.get(placeholder)
+            if token is None:
+                token = pick_token()
+                placeholder_to_token[placeholder] = token
+                bridges.append((token, placeholder))
 
-            return f"{title}{alias}"
+            return f"{title}{token}"
 
         new_src = honorific_re.sub(repl, src)
         if len(bridges) > 0:
@@ -196,8 +197,8 @@ class TextProcessor(Base):
         if len(bridges) == 0:
             return dst
 
-        for alias, placeholder in bridges:
-            dst = self._replace_alias_with_placeholder(dst, alias, placeholder)
+        for token, placeholder in bridges:
+            dst = self._replace_bridge_token_with_placeholder(dst, token, placeholder)
 
         return dst
 
@@ -207,7 +208,7 @@ class TextProcessor(Base):
         if src == "":
             return src
 
-        # 将 [name]'s / [name] 're 等桥接成 David's / David're，避免模型只看到残片 's / 're。
+        # 将 [name]'s / [name] 're 等桥接成 <n0/>'s，避免模型只看到残片 's / 're。
         apostrophes = re.escape(__class__.ENGLISH_APOSTROPHE_CHARS)
         pattern = re.compile(
             rf"(?P<placeholder>{__class__.PLACEHOLDER_TOKEN_PATTERN})"
@@ -218,43 +219,39 @@ class TextProcessor(Base):
         if pattern.search(src) is None:
             return src
 
-        aliases = self._get_honorific_alias_names()
         src_lower = src.lower()
-        placeholder_to_alias: dict[str, str] = {
-            placeholder: alias
-            for alias, placeholder in self.honorific_placeholder_bridges.get(i, [])
+        placeholder_to_token: dict[str, str] = {
+            placeholder: token
+            for token, placeholder in self.honorific_placeholder_bridges.get(i, [])
         }
-        used_aliases: set[str] = {alias.lower() for alias in placeholder_to_alias.values()}
+        used_tokens: set[str] = {token.lower() for token in placeholder_to_token.values()}
         bridges: list[tuple[str, str]] = []
-        alias_index = 0
+        token_index = 0
 
-        def pick_alias() -> str:
-            nonlocal alias_index
+        def pick_token() -> str:
+            nonlocal token_index
 
-            for _ in range(len(aliases)):
-                alias = aliases[alias_index % len(aliases)]
-                alias_index += 1
-                if alias.lower() in src_lower:
+            while True:
+                token = __class__._make_structured_placeholder_token(token_index)
+                token_index += 1
+                token_lower = token.lower()
+                if token_lower in src_lower:
                     continue
-                if alias.lower() in used_aliases:
+                if token_lower in used_tokens:
                     continue
-                used_aliases.add(alias.lower())
-                return alias
-
-            alias = f"RbxName{len(used_aliases) + 1}"
-            used_aliases.add(alias.lower())
-            return alias
+                used_tokens.add(token_lower)
+                return token
 
         def repl(match: re.Match) -> str:
             placeholder = match.group("placeholder")
             suffix = match.group("suffix")
-            alias = placeholder_to_alias.get(placeholder)
-            if alias is None:
-                alias = pick_alias()
-                placeholder_to_alias[placeholder] = alias
-                bridges.append((alias, placeholder))
+            token = placeholder_to_token.get(placeholder)
+            if token is None:
+                token = pick_token()
+                placeholder_to_token[placeholder] = token
+                bridges.append((token, placeholder))
             # 英文缩写前的空格通常来自文本保护后的残片，桥接时去掉以提升可读性。
-            return f"{alias}{suffix}"
+            return f"{token}{suffix}"
 
         new_src = pattern.sub(repl, src)
         if len(bridges) > 0:
@@ -266,8 +263,8 @@ class TextProcessor(Base):
         if len(bridges) == 0:
             return dst
 
-        for alias, placeholder in bridges:
-            dst = self._replace_alias_with_placeholder(dst, alias, placeholder)
+        for token, placeholder in bridges:
+            dst = self._replace_bridge_token_with_placeholder(dst, token, placeholder)
 
         return dst
 
@@ -605,9 +602,9 @@ class TextProcessor(Base):
             else:
                 # 处理前后缀代码段
                 src = self.prefix_suffix_process(i, src, text_type)
-                # 称呼 + 变量桥接（如 Mr.[xx] -> Mr.David）
+                # 称呼 + 变量桥接（如 Mr.[xx] -> Mr.<n0/>）
                 src = self._bridge_honorific_placeholders_pre(i, src)
-                # 变量 + 英文缩写桥接（如 [name]'s -> David's）
+                # 变量 + 英文缩写桥接（如 [name]'s -> <n0/>'s）
                 src = self._bridge_placeholder_contractions_pre(i, src)
                 # 行内禁翻库保护
                 src = self._protect_inline_tags(i, src, text_type)
@@ -664,9 +661,9 @@ class TextProcessor(Base):
                 dst = dsts.pop(0).strip()
                 # 还原行内标签
                 dst = self._restore_inline_tags(i, dst)
-                # 还原变量缩写桥接（如 David的 -> [xx]的）
+                # 还原变量缩写桥接（如 <n0/>的 -> [xx]的）
                 dst = self._bridge_placeholder_contractions_post(i, dst)
-                # 还原称呼变量桥接（如 David先生 -> [xx]先生）
+                # 还原称呼变量桥接（如 <n0/>先生 -> [xx]先生）
                 dst = self._bridge_honorific_placeholders_post(i, dst)
 
                 # 自动修复

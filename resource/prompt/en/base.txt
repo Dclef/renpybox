@@ -14,7 +14,7 @@ Output:
 
 【Tag & Variable Preservation Protocol】
 - Tags in curly braces ({b}, {/b}, {w=1.5}, {color=#fff}) and square bracket variables ([player_name], [renpy.version]) MUST be copied exactly as-is into the translation.
-- XML placeholders like <v0/>, <v1/> MUST be preserved exactly without any modification.
+- XML placeholders like <v0/>, <v1/>, <n0/> MUST be preserved exactly without any modification.
 - Never translate, reorder, add spaces to, or remove any tags/variables.
 - Escaping: preserve \" and \\ exactly as they appear in the source.
 
