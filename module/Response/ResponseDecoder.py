@@ -21,19 +21,33 @@ class ResponseDecoder(Base):
     1. JSONLINE: {"0": "译文"}\n{"1": "译文"}
     2. Markdown代码块包裹的JSON
     3. 单一JSON字典: {"0": "译文", "1": "译文"}
-    4. 编号文本: 1. 译文 / 1: 译文
     """
     
     # Markdown 代码块正则
     RE_MARKDOWN_FENCE = re.compile(r"```(?:json|jsonline)?\s*\n?(.*?)\n?```", re.DOTALL | re.IGNORECASE)
-    
-    # 编号文本正则 (1. / 1: / 1： / 【1】/ [1])
-    RE_NUMBERED_LINE = re.compile(r"^(?:(\d+)[\.\:：\】\]]|\【(\d+)\】|\[(\d+)\])\s*(.+)$", re.MULTILINE)
+    TARGET_VALUE_KEYS: tuple[str, ...] = ("translation", "target", "dst", "content", "text", "value")
+    NOISE_KEYS: frozenset[str] = frozenset((
+        "index",
+        "id",
+        "no",
+        "number",
+        "line",
+        "comment",
+        "comments",
+        "note",
+        "notes",
+        "src",
+        "source",
+        "original",
+        "speaker",
+        "role",
+        "name",
+        "gender",
+        "glossary",
+    ))
 
     def __init__(self) -> None:
         super().__init__()
-        # 兼容旧调用方；新代码应使用 decode_result() 返回的 method。
-        self.last_method: str = ""
 
     def decode(
         self,
@@ -73,11 +87,12 @@ class ResponseDecoder(Base):
 
         dsts: list[str] = []
         glossarys: list[dict[str, str]] = []
-        self.last_method = ""
+        cleaned = self._strip_markdown_fence(response)
+        json_response = self._is_explicit_json_response(response, cleaned)
 
         # 0. 结构化输出优先解析 {"translations": [...]}
         if structured:
-            dsts = self._parse_structured(response)
+            dsts = self._parse_structured(cleaned)
             if self._validate_count(dsts, expected_count, "STRUCTURED"):
                 return self._make_result(dsts, glossarys, "STRUCTURED")
         
@@ -87,7 +102,6 @@ class ResponseDecoder(Base):
             return self._make_result(dsts, glossarys, "JSONLINE")
         
         # 2. 去掉 Markdown 围栏后重试
-        cleaned = self._strip_markdown_fence(response)
         if cleaned != response:
             dsts, glossarys = self._parse_jsonline(cleaned)
             if self._validate_count(dsts, expected_count, "Markdown-JSONLINE"):
@@ -99,13 +113,11 @@ class ResponseDecoder(Base):
         if self._validate_count(dsts, expected_count, "JSON-Dict"):
             return self._make_result(dsts, glossarys, "JSON_DICT")
 
-        # 4. 编号文本（可选，用于某些模型不遵守格式时）
-        dsts = self._parse_numbered_text(response)
-        if self._validate_count(dsts, expected_count, "Numbered-Text"):
-            self.warning(f"[DECODE] 使用编号文本解析（非标准格式）")
-            return self._make_result(dsts, glossarys, "NUMBERED_TEXT")
+        if json_response:
+            self.warning("[DECODE] 检测到明确 JSON 响应，但未能提取有效译文，已阻断文本兜底解析")
+            return self._make_result([], glossarys, "JSON_FAIL")
 
-        # 5. 单行纯文本兜底：适合小模型只返回译文正文的情况
+        # 4. 单行纯文本兜底：仅适合单行模式下小模型只返回译文正文的情况
         if expected_count == 1 and allow_plain_text_single == True:
             plain_text = self._parse_single_plain_text(cleaned if cleaned != response else response)
             if plain_text != "":
@@ -118,19 +130,56 @@ class ResponseDecoder(Base):
         return self._make_result([], glossarys, "FAIL")
 
     def _make_result(self, dsts: list[str], glossarys: list[dict[str, str]], method: str) -> ResponseDecodeResult:
-        """创建解析结果，并同步旧的 last_method 字段。"""
-        self.last_method = method
+        """创建解析结果。"""
+        dsts = self._sanitize_nested_json_in_dsts(dsts)
         return ResponseDecodeResult(dsts, glossarys, method)
+
+    # 某些模型（尤其 DeepSeek 不开思考时）会在 JSONLINE 值中嵌套输出
+    # 完整的 JSON/dict 字符串，如 {"0": "{'index':1,'translation':'你好'}"}。
+    # 解析后 dsts 中会残留 {'index':1,'translation':'你好'} 这类原始字符串。
+    RE_NESTED_DICT_LIKE = re.compile(r"^\s*(?:\{.+\}|\[.+\])\s*$", re.DOTALL)
+
+    def _sanitize_nested_json_in_dsts(self, dsts: list[str]) -> list[str]:
+        """检测并清洗译文列表中残留的嵌套 JSON/dict 字符串。"""
+        result: list[str] = []
+        for dst in dsts:
+            if not isinstance(dst, str):
+                result.append(dst)
+                continue
+            stripped = dst.strip()
+            if not self.RE_NESTED_DICT_LIKE.match(stripped):
+                result.append(dst)
+                continue
+            if not self._is_explicit_json_response(stripped, stripped):
+                result.append(dst)
+                continue
+            try:
+                inner = repair.loads(stripped)
+            except Exception:
+                result.append(dst)
+                continue
+            if not isinstance(inner, (dict, list)):
+                result.append(dst)
+                continue
+
+            translations = self._extract_json_translations(inner)
+            if len(translations) > 0:
+                result.append(translations[0])
+            else:
+                result.append("")
+        return result
 
     def _parse_structured(self, text: str) -> list[str]:
         """解析结构化输出 {"translations": [...]}"""
         try:
-            cleaned = self._strip_markdown_fence(text)
-            json_data = repair.loads(cleaned)
+            json_data = repair.loads(text)
             if isinstance(json_data, dict):
                 translations = json_data.get("translations")
                 if isinstance(translations, list):
-                    return [str(item) for item in translations]
+                    return [
+                        value if value is not None else ""
+                        for value in (self._extract_translation_leaf(item) for item in translations)
+                    ]
         except Exception:
             pass
         return []
@@ -143,39 +192,108 @@ class ResponseDecoder(Base):
             line = line.strip()
             if not line:
                 continue
+            if not self._is_explicit_json_response(line, line):
+                continue
             try:
                 json_data = repair.loads(line)
                 if isinstance(json_data, dict):
-                    # 翻译结果 (单键值对)
-                    if len(json_data) == 1:
-                        _, v = list(json_data.items())[0]
-                        if isinstance(v, str):
-                            dsts.append(v)
                     # 术语表条目 (三键值对)
-                    elif len(json_data) == 3 and all(k in json_data for k in ("src", "dst", "gender")):
+                    if len(json_data) == 3 and all(k in json_data for k in ("src", "dst", "gender")):
                         glossarys.append({
                             "src": str(json_data.get("src", "")),
                             "dst": str(json_data.get("dst", "")),
                             "info": str(json_data.get("gender", "")),
                         })
+                        continue
+
+                    translation = self._extract_translation_leaf(json_data)
+                    if translation is not None:
+                        dsts.append(translation)
             except Exception:
                 pass
         return dsts, glossarys
     
     def _parse_json_dict(self, text: str) -> list[str]:
         """单一 JSON 字典解析，按键排序"""
+        if not self._is_explicit_json_response(text, text):
+            return []
         try:
             json_data = repair.loads(text)
-            if isinstance(json_data, dict):
-                # 尝试按数字键排序
-                try:
-                    sorted_items = sorted(json_data.items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else float('inf'))
-                except (ValueError, TypeError):
-                    sorted_items = list(json_data.items())
-                return [str(v) for k, v in sorted_items if isinstance(v, str)]
+            return self._extract_json_translations(json_data)
         except Exception:
             pass
         return []
+
+    @classmethod
+    def _extract_json_translations(cls, json_data) -> list[str]:
+        if isinstance(json_data, dict):
+            translations = json_data.get("translations")
+            if isinstance(translations, list):
+                return [
+                    value if value is not None else ""
+                    for value in (cls._extract_translation_leaf(item) for item in translations)
+                ]
+
+            numeric_items = [
+                (int(str(k)), v)
+                for k, v in json_data.items()
+                if str(k).isdigit()
+            ]
+            if len(numeric_items) > 0 and len(numeric_items) == len(json_data):
+                numeric_items.sort(key = lambda item: item[0])
+                return [
+                    value
+                    for value in (cls._extract_translation_leaf(v) for _, v in numeric_items)
+                    if value is not None
+                ]
+
+            leaf = cls._extract_translation_leaf(json_data)
+            if leaf is not None:
+                return [leaf]
+
+        if isinstance(json_data, list):
+            return [
+                value if value is not None else ""
+                for value in (cls._extract_translation_leaf(item) for item in json_data)
+            ]
+
+        return []
+
+    @classmethod
+    def _extract_translation_leaf(cls, value) -> str | None:
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            if len(value) == 1:
+                return cls._extract_translation_leaf(value[0])
+            return None
+        if not isinstance(value, dict):
+            return None
+
+        lowered = {str(k).lower(): k for k in value.keys()}
+        for target_key in cls.TARGET_VALUE_KEYS:
+            original_key = lowered.get(target_key)
+            if original_key is not None:
+                return cls._extract_translation_leaf(value.get(original_key))
+
+        candidates = {
+            k: v
+            for k, v in value.items()
+            if str(k).lower() not in cls.NOISE_KEYS
+        }
+        if len(candidates) == 1:
+            _, candidate = next(iter(candidates.items()))
+            return cls._extract_translation_leaf(candidate)
+
+        if len(value) == 1:
+            _, candidate = next(iter(value.items()))
+            return cls._extract_translation_leaf(candidate)
+
+        return None
     
     def _strip_markdown_fence(self, text: str) -> str:
         """去除 Markdown 代码围栏"""
@@ -183,21 +301,49 @@ class ResponseDecoder(Base):
         if match:
             return match.group(1).strip()
         return text
-    
-    def _parse_numbered_text(self, text: str) -> list[str]:
-        """解析编号文本格式 (1. 译文 / 1: 译文 / 【1】译文)"""
-        results = []
-        for match in self.RE_NUMBERED_LINE.finditer(text):
-            # 提取编号和内容
-            num = match.group(1) or match.group(2) or match.group(3)
-            content = match.group(4).strip()
-            if content:
-                results.append((int(num), content))
-        
-        # 按编号排序
-        results.sort(key=lambda x: x[0])
-        return [content for _, content in results]
 
+    def _is_explicit_json_response(self, text: str, cleaned: str) -> bool:
+        """判断本次响应是否明确声明为 JSON，防止 JSON 失败后落入文本兜底。"""
+        if not isinstance(text, str):
+            return False
+
+        if re.search(r"```(?:json|jsonline)", text, flags = re.IGNORECASE) is not None:
+            return True
+
+        candidate = cleaned.strip() if isinstance(cleaned, str) else text.strip()
+        if candidate == "":
+            return False
+
+        if candidate.startswith("{"):
+            inner = candidate[1:].lstrip()
+            if not (
+                inner.startswith(('"', "'"))
+                or re.match(r"[A-Za-z_][A-Za-z0-9_-]*\s*:", inner) is not None
+                or ":" in candidate
+            ):
+                return False
+            return True
+
+        if candidate.startswith("["):
+            inner = candidate[1:].lstrip().lower()
+            if not (
+                inner.startswith(("{", "[", '"', "'", "]"))
+                or re.match(r"-?\d", inner) is not None
+                or inner.startswith(("true", "false", "null"))
+            ):
+                return False
+            try:
+                parsed = repair.loads(candidate)
+            except Exception:
+                return False
+            return isinstance(parsed, (dict, list))
+
+        try:
+            parsed = repair.loads(candidate)
+        except Exception:
+            return False
+        return isinstance(parsed, (dict, list))
+    
     def _parse_single_plain_text(self, text: str) -> str:
         """解析单行纯文本兜底结果。"""
         if not isinstance(text, str):
@@ -220,9 +366,7 @@ class ResponseDecoder(Base):
             return ""
 
         # JSON 样式的输出不应走纯文本兜底，避免把错误的结构直接写回。
-        if candidate.startswith("{") and candidate.endswith("}"):
-            return ""
-        if candidate.startswith("[") and candidate.endswith("]"):
+        if self._is_explicit_json_response(candidate, candidate):
             return ""
 
         return candidate

@@ -444,7 +444,7 @@ class LocalizerZH():
     expert_settings_page_honorific_placeholder_bridge_desc: str = (
         "自动处理称呼 + 变量场景（如 Mr.[xx]），避免模型丢失变量并修正中文语序，默认启用"
         "<br>"
-        "• 译前会将变量临时替换为人名占位，帮助模型产生“人名 + 称呼”结构"
+        "• 译前会将变量临时替换为结构化占位符，避免模型翻译或改写变量"
         "<br>"
         "• 译后会自动还原为原变量（如 [xx]先生），无需手工术语和搜索替换"
     )
