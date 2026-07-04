@@ -663,6 +663,9 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
             if line_content.strip().startswith('default '):
                 continue
         # log.debug(line_content)
+        # 检测当前行是否为菜单选项（如 "No." 等短文本不被 filter_length 过滤）
+        # 正则匹配 "文本": 或 "文本"(param=...): 或 "文本" if cond:
+        is_menu_option = bool(re.match(r'^\s*"[^"]*"\s*(?:\([^)]*\)|(?:\s+if\s+.*))?\s*:\s*$', line_content))
         is_add = False
         d = EncodeBracketContent(line_content, '"', '"')
         if 'oriList' in d.keys() and len(d['oriList']) > 0:
@@ -707,7 +710,7 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                         effective_filter_length = filter_length
                         if contains_cjk(strip_i):
                             effective_filter_length = max(2, filter_length // 3)  # 中文长度限制降为1/3
-                        if not is_ui_keyword(strip_i.strip('"')):
+                        if not is_menu_option and not is_ui_keyword(strip_i.strip('"')):
                             if len(_strip_i) < effective_filter_length:
                                 continue
                         e.add(i)
@@ -717,7 +720,39 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                         is_add = True
         if is_add:
             continue
-        d = EncodeBracketContent(line_content, "'", "'")
+        # 处理逻辑控制行（if/elif/while）：
+        # - 裸条件行（冒号后无语句），跳过整行，避免将条件中的单引号变量值误提取
+        # - 带 inline 语句的行（冒号后还有 Ren'Py 代码），将 line_content 截取到冒号后，
+        #   让单引号提取器只扫描 inline 代码段，条件部分的变量值自然被排除
+        _stripped = line_content.lstrip()
+        _is_control_line = _stripped.startswith('if ') or _stripped.startswith('elif ') or _stripped.startswith('while ')
+        if _is_control_line:
+            _colon_pos = _stripped.find(':')
+            if _colon_pos != -1:
+                _after_colon = _stripped[_colon_pos+1:].strip()
+                # 裸条件行（冒号后为空或仅注释），跳过整行
+                if not _after_colon or _after_colon.startswith('#'):
+                    continue
+                # 有 inline 语句：只对冒号后的部分执行单引号提取
+                # 将 line_content 替换为冒号后的部分，让单引号提取器只扫描 inline 代码
+                line_content = _stripped[_colon_pos+1:]
+            else:
+                # 没有冒号就不是标准 Ren'Py 控制行，不处理
+                pass
+        # 屏蔽双引号内的单引号（如 don't），避免单引号提取器被缩写词中的撇号误导
+        masked_line = line_content
+        _in_double = False
+        _masked_chars = []
+        for _ci, _c in enumerate(line_content):
+            if _c == '"' and (_ci == 0 or line_content[_ci-1] != '\\'):
+                _in_double = not _in_double
+                _masked_chars.append(_c)
+            elif _c == "'" and _in_double and (_ci == 0 or line_content[_ci-1] != '\\'):
+                _masked_chars.append('\x00')
+            else:
+                _masked_chars.append(_c)
+        masked_line = ''.join(_masked_chars)
+        d = EncodeBracketContent(masked_line, "'", "'")
         if 'oriList' in d.keys() and len(d['oriList']) > 0:
             for i in d['oriList']:
                 if len(i) > 2:
@@ -752,6 +787,7 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                     i = i[1:-1]
                     i = replace_unescaped_quotes(i)
                     i = i.replace("\\'", "'")
+                    i = i.replace('\x00', "'")
                     # 检查是否包含技术性插值 [xx.xx]
                     has_tech_interpolation = bool(re.search(r'\[\s*\w+\.\w+.*?\]', strip_i))
 
