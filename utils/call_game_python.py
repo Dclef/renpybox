@@ -1,8 +1,5 @@
-import io
 import os
 import platform
-import shutil
-import subprocess
 
 
 def is_64_bit():
@@ -65,10 +62,6 @@ def is_python2_from_game_path(game_path):
 def get_py_path(game_path):
     base_name = os.path.splitext(game_path)[0]
     return base_name + '.py'
-
-
-def copy_files_under_directory_to_directory(src_dir, desc_dir):
-    shutil.copytree(src_dir, desc_dir, dirs_exist_ok=True)
 
 
 def get_game_path_from_game_dir(game_dir):

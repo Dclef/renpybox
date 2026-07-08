@@ -7,18 +7,12 @@ import zipfile
 def zip_dir(dirname: str, zipfilename: str) -> None:
     """打包目录/文件到 zip，保持相对路径。"""
     src = Path(dirname)
-    filelist: list[Path] = []
-
-    if src.is_file():
-        filelist.append(src)
-    else:
-        for path in src.rglob("*"):
-            if path.is_file():
-                filelist.append(path)
+    root = src.parent if src.is_file() else src
+    files = (src,) if src.is_file() else (path for path in src.rglob("*") if path.is_file())
 
     with zipfile.ZipFile(zipfilename, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in filelist:
-            arcname = file_path.relative_to(src)
+        for file_path in files:
+            arcname = file_path.relative_to(root)
             zf.write(file_path, arcname)
 
 
