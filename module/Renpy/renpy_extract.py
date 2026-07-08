@@ -663,6 +663,7 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
             if line_content.strip().startswith('default '):
                 continue
         # log.debug(line_content)
+        is_menu_option = bool(re.match(r'^\s*"[^"]*"\s*(?:\([^)]*\)|\s+if\s+.*)?\s*:\s*$', line_content))
         is_add = False
         d = EncodeBracketContent(line_content, '"', '"')
         if 'oriList' in d.keys() and len(d['oriList']) > 0:
@@ -707,7 +708,7 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                         effective_filter_length = filter_length
                         if contains_cjk(strip_i):
                             effective_filter_length = max(2, filter_length // 3)  # 中文长度限制降为1/3
-                        if not is_ui_keyword(strip_i.strip('"')):
+                        if not is_menu_option and not is_ui_keyword(strip_i.strip('"')):
                             if len(_strip_i) < effective_filter_length:
                                 continue
                         e.add(i)
@@ -717,7 +718,13 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                         is_add = True
         if is_add:
             continue
-        d = EncodeBracketContent(line_content, "'", "'")
+        single_quote_line = d.get('encoded', line_content)
+        control_match = re.match(r'^\s*(?:if|elif|while)\b.*:\s*(.*)$', single_quote_line)
+        if control_match:
+            single_quote_line = control_match.group(1)
+            if not single_quote_line or single_quote_line.startswith('#'):
+                continue
+        d = EncodeBracketContent(single_quote_line, "'", "'")
         if 'oriList' in d.keys() and len(d['oriList']) > 0:
             for i in d['oriList']:
                 if len(i) > 2:
