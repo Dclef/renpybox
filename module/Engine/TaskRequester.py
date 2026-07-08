@@ -18,7 +18,6 @@ from module.Config import Config
 from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
-from module.Schema import TranslationResult
 
 
 class ThinkingLevel(StrEnum):
@@ -38,6 +37,16 @@ class TaskRequester(Base):
     MAX_REQUEST_RETRY: int = 3
     DEFAULT_MAX_OUTPUT_TOKENS: int = 4 * 1024
     GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS: int = 16 * 1024
+    TRANSLATION_RESULT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "translations": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["translations"],
+    }
 
     # 连接缓存（用于停止任务时快速中断网络请求）
     CLIENT_REGISTRY: dict[tuple[str, str, Base.APIFormat, int], Any] = {}
@@ -745,7 +754,7 @@ class TaskRequester(Base):
         # 结构化输出：让 Gemini 保证返回合法 JSON
         if self.config.structured_output_enable:
             args["response_mime_type"] = "application/json"
-            args["response_schema"] = TranslationResult.model_json_schema()
+            args["response_schema"] = __class__.TRANSLATION_RESULT_SCHEMA
 
         return {
             "model": self.platform.get('model'),

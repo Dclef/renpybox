@@ -58,10 +58,6 @@ class Base():
         EXCLUDED = "EXCLUDED"                                               # 已排除
         DUPLICATED = "DUPLICATED"                                           # 重复条目
 
-    # 构造函数
-    def __init__(self) -> None:
-        pass
-
     # PRINT
     def print(self, msg: str, e: Exception = None, file: bool = True, console: bool = True) -> None:
         LogManager.get().print(msg, e, file, console)

@@ -16,7 +16,6 @@ from pathlib import Path
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
 from utils.call_game_python import (
-    copy_files_under_directory_to_directory,
     get_game_path_from_game_dir,
     get_python_path_from_game_path,
 )
@@ -185,7 +184,7 @@ class RenpyDecompiler:
 
     def _copy_unrpyc_resources(self, root_dir: Path) -> None:
         self.logger.debug(f"Copying {self.RESOURCE_VARIANT} resources -> {root_dir}")
-        copy_files_under_directory_to_directory(str(self.resource_dir), str(root_dir))
+        shutil.copytree(self.resource_dir, root_dir, dirs_exist_ok=True)
 
     def _run_unrpyc(
         self, python_exe: Path, root_dir: Path, game_dir: Path, overwrite: bool
