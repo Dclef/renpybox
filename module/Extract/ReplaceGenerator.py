@@ -21,6 +21,7 @@ from typing import Any, List, Optional, Sequence, Set, Tuple
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import should_skip_text
 
 Pair = Tuple[str, str]
@@ -31,7 +32,7 @@ LEGACY_MISS_TXT = "miss_ready_replace.txt"
 MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
 HOOK_MANIFEST = "hook_translate_manifest.json"
-REGEX_CACHE_VERSION = 1
+REGEX_CACHE_VERSION = 2  # 宽松引号扫描规则已修正，必须作废旧候选缓存。
 RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
     r'^(?!.*#)(?!\s*translate\s+\w+\b)(?=.*\b[A-Za-z]{3,}\b).*$',
     re.IGNORECASE,
@@ -271,8 +272,9 @@ def _extract_relaxed_english_line_literals(line: str) -> Set[str]:
 
     说明：
     - 对应用户提供的规则：`^(?!.*#)^(?!.*translate schinese)(?=.*\\b[A-Za-z]{3,}\\b).*$`
-    - 这里将 `translate schinese` 泛化为 `translate <lang>`，避免只对某个语言标签生效
-    - 命中后只提取引号里的文本，不把整行代码直接当作待翻译文本
+    - 这里将 `translate schinese` 泛化为 `translate <lang>`，避免只对某个语言标签生效。
+    - 命中后只提取引号里的文本，不把整行代码直接当作待翻译文本。
+    - 单引号需额外判断是否处于双引号台词内，避免缩写被误抽取。
     """
     stripped = line.strip()
     if not stripped:
@@ -280,21 +282,13 @@ def _extract_relaxed_english_line_literals(line: str) -> Set[str]:
     if RE_RELAXED_ENGLISH_SOURCE_LINE.match(stripped) is None:
         return set()
 
-    result: Set[str] = set()
-    for pattern in (RE_RELAXED_DOUBLE_QUOTED, RE_RELAXED_SINGLE_QUOTED):
-        for match in pattern.finditer(line):
-            prefix = line[:match.start()].rstrip()
-            # 宽松补抓不处理明显的函数参数字符串，避免把 ShowMenu("gallery") 之类带进来。
-            if RE_RELAXED_FUNCTION_CALL_PREFIX.search(prefix):
-                continue
-            text = _unescape(match.group(1))
-            if not text:
-                continue
-            if RE_RELAXED_ENGLISH_WORD.search(text) is None:
-                continue
-            result.add(text)
-
-    return result
+    # 复用标准 Ren'Py 补充抽取器的宽松规则，避免「补全翻译」钩子流程
+    # 与标准/增量 TL 流程对单引号、缩写、行内语句的判断出现分叉。
+    return {
+        _unescape(text)
+        for text in rx.extract_relaxed_english_line_literals(line, filter_length=4)
+        if text and RE_RELAXED_ENGLISH_WORD.search(_unescape(text)) is not None
+    }
 
 
 def _is_character_name(text: str) -> bool:
@@ -763,6 +757,8 @@ def collect_hook_translation_entries(
 
     logger.info("正在扫描 HOOK 缺失文本...")
     regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
+    # 可写入标准 TL 的静态文本必须由增量抽取处理，不能落入 replace_text。
+    regex_filtered -= set(rx.collect_static_source_strings(game_dir).keys())
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
@@ -1260,6 +1256,44 @@ def build_replace_pairs_from_entries(entries: Sequence[Any]) -> List[Pair]:
     return sorted(mapping.items(), key=lambda item: (-len(item[0]), item[0]))
 
 
+def filter_replace_pairs_covered_by_tl(
+    pairs: Sequence[Pair], target_path: str | Path, tl_name: str
+) -> List[Pair]:
+    """Drop hook replacements that became covered by normal TL before writeback."""
+    covered = _get_tl_covered_strings(target_path, tl_name)
+    game_dir = _get_game_dir(target_path)
+    old_re = re.compile(r'^\s*old\s+["\'](?P<text>.*)["\']\s*$')
+    tl_dir = game_dir / "tl" / tl_name
+    for tl_file in tl_dir.rglob("*.rpy") if tl_dir.is_dir() else ():
+        try:
+            for line in tl_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                match = old_re.match(line)
+                if match:
+                    covered.add(match.group("text"))
+        except Exception:
+            continue
+    for source_file in game_dir.rglob("*.rpy"):
+        try:
+            relative = source_file.relative_to(game_dir)
+            if relative.parts and relative.parts[0].lower() == "tl":
+                continue
+            for line in source_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                match = old_re.match(line)
+                if match:
+                    covered.add(match.group("text"))
+        except Exception:
+            continue
+    return [
+        (original, translation)
+        for original, translation in pairs
+        if not any(original == text or original in text for text in covered)
+    ]
+
+
 def render_replace_script(
     pairs: Sequence[Pair],
     *,
@@ -1289,10 +1323,28 @@ def render_replace_script(
 
     if wrap_existing:
         lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
+        lines.append("    _renpybox_seen_hooks = set()")
+        lines.append(f"    while getattr({previous_name}, \"_renpybox_auto_hook\", False):")
+        lines.append(f"        if id({previous_name}) in _renpybox_seen_hooks:")
+        lines.append(f"            {previous_name} = None")
+        lines.append("            break")
+        lines.append(f"        _renpybox_seen_hooks.add(id({previous_name}))")
+        lines.append(
+            f"        _renpybox_next_hook = getattr({previous_name}, \"_renpybox_previous\", None)"
+        )
+        lines.append(f"        if _renpybox_next_hook is {previous_name}:")
+        lines.append(f"            {previous_name} = None")
+        lines.append("            break")
+        lines.append(f"        {previous_name} = _renpybox_next_hook")
         lines.append("")
 
+    function_args = (
+        f"{target_name}, _renpybox_previous={previous_name}"
+        if wrap_existing
+        else target_name
+    )
     lines.extend([
-        f"    def {function_name}({target_name}):",
+        f"    def {function_name}({function_args}):",
         "",
         f"        if not isinstance({target_name}, str):",
         f"            return {target_name}",
@@ -1301,8 +1353,8 @@ def render_replace_script(
 
     if wrap_existing:
         lines.extend([
-            f"        if callable({previous_name}) and {previous_name} is not {function_name}:",
-            f"            {target_name} = {previous_name}({target_name})",
+            f"        if callable(_renpybox_previous) and _renpybox_previous is not {function_name}:",
+            f"            {target_name} = _renpybox_previous({target_name})",
             f"            if not isinstance({target_name}, str):",
             f"                return {target_name}",
             "",
@@ -1321,6 +1373,8 @@ def render_replace_script(
 
     if assign_to_config:
         lines.append("")
+        lines.append(f"    {function_name}._renpybox_auto_hook = True")
+        lines.append(f"    {function_name}._renpybox_previous = {previous_name}")
         lines.append(f"    config.replace_text = {function_name}")
 
     lines.append("")
