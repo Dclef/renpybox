@@ -12,6 +12,7 @@ from module.Extract.ReplaceGenerator import (
     MISS_DIR,
     build_replace_pairs_from_entries,
     collect_hook_translation_entries,
+    filter_replace_pairs_covered_by_tl,
     write_replace_script,
 )
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
@@ -110,6 +111,7 @@ class RENPYHOOK(Base):
         tl_name = output_path.parent.name or "chinese"
 
         pairs = build_replace_pairs_from_entries(target_items)
+        pairs = filter_replace_pairs_covered_by_tl(pairs, target_path, tl_name)
         if pairs:
             write_replace_script(
                 output_path,
