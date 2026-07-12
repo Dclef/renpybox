@@ -4,6 +4,7 @@ YiJianFanyiPage - 一键翻译向导页面
 """
 
 import os
+import shutil
 import time
 from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
@@ -49,6 +50,17 @@ from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy import renpy_extract as rx
 from frontend.TranslationPage import TranslationPage
+
+
+def configure_incremental_translation_paths(config, game_dir, tl_name, incremental_dir):
+    """Point translation at the extracted delta while preserving the main TL target."""
+    project_root = Path(game_dir)
+    main_tl_dir = project_root / "game" / "tl" / tl_name
+    delta_dir = Path(incremental_dir)
+    output_dir = project_root / "RenpyBox_Translation" / f"{tl_name}_new"
+    config.input_folder = str(delta_dir)
+    config.output_folder = str(output_dir)
+    return main_tl_dir, output_dir
 
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):
@@ -1017,23 +1029,24 @@ class YiJianFanyiPage(Base, QWidget):
                     f"原有翻译保持不变，可分别处理新增内容。"
                 )
                 self._incremental_dir = result.incremental_dir
-                try:
-                    from module.Config import Config
-                    auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", True)
-                except Exception:
-                    auto_merge_enabled = False
-                if auto_merge_enabled:
-                    tl_name = self.tl_folder_edit.text().strip() or "chinese"
-                    merge_result = self.unified_extractor.merge_incremental_folder(
-                        self.game_dir,
-                        tl_name,
-                        result.incremental_dir,
-                        clean_duplicates=True,
-                    )
-                    if merge_result.success:
-                        detail_msg = detail_msg + f"\n✅ 已自动合并并清理重复：{merge_result.message}"
-                    else:
-                        detail_msg = detail_msg + f"\n⚠ 自动合并失败：{merge_result.message}"
+                # Keep the staging directory until it has been translated.  Merging
+                # here deletes it and makes the translation page fall back to the
+                # complete main language directory.
+                from module.Config import Config
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                config = Config().load()
+                apply_target, delta_output = configure_incremental_translation_paths(
+                    config, self.game_dir, tl_name, result.incremental_dir
+                )
+                shutil.rmtree(str(delta_output), ignore_errors=True)
+                delta_output.mkdir(parents=True, exist_ok=True)
+                config.save()
+                self._apply_target_dir = apply_target
+                self._incremental_output_dir = delta_output
+                detail_msg += (
+                    f"\n增量翻译输入：{result.incremental_dir.name}/"
+                    f"\n增量翻译输出：{delta_output.name}/"
+                )
             else:
                 detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
                 self._incremental_dir = None
@@ -1640,8 +1653,9 @@ class YiJianFanyiPage(Base, QWidget):
         config = Config().load()
         
         # 验证路径
-        output_dir = Path(config.output_folder)
-        input_dir = Path(config.input_folder)
+        incremental_output = getattr(self, "_incremental_output_dir", None)
+        output_dir = Path(incremental_output or config.output_folder)
+        input_dir = Path(getattr(self, "_apply_target_dir", config.input_folder))
         
         if not output_dir.exists():
             InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
@@ -1677,7 +1691,34 @@ class YiJianFanyiPage(Base, QWidget):
         if not msg_box.exec():
             return
         
-        # 执行复制
+        # Apply translated incremental files through the semantic merger.  A
+        # delta file contains only selected entries and must never overwrite the
+        # complete target file byte-for-byte.
+        if incremental_output:
+            try:
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                merge_result = self.unified_extractor.merge_incremental_folder(
+                    self.game_dir,
+                    tl_name,
+                    output_dir,
+                    clean_duplicates=True,
+                )
+                if not merge_result.success:
+                    InfoBar.warning("合并失败", merge_result.message, parent=self)
+                    return
+                staging_input = getattr(self, "_incremental_dir", None)
+                if staging_input and Path(staging_input).exists():
+                    shutil.rmtree(str(staging_input), ignore_errors=True)
+                self._incremental_dir = None
+                self._incremental_output_dir = None
+                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=self)
+                return
+            except Exception as e:
+                self.logger.error(f"应用增量翻译失败: {e}")
+                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=self)
+                return
+
+        # Full translation mode keeps the legacy whole-file copy behavior.
         try:
             success_count = 0
             failed_files = []
@@ -1789,4 +1830,3 @@ class YiJianFanyiPage(Base, QWidget):
 # 兼容旧引用
 OneKeyTranslatePage = YiJianFanyiPage
 __all__ = ["YiJianFanyiPage", "OneKeyTranslatePage"]
-
