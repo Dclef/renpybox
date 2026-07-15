@@ -1005,8 +1005,8 @@ def collect_static_menu_strings(game_dir):
     # 菜单项既可能带选择参数，也可能由 `if` 条件保护；两种形式都必须
     # 进入 strings 翻译，否则同文对话块会让菜单文本被误判为已覆盖。
     menu_choice_re = re.compile(
-        r'^\s*"(?P<text>(?:\\.|[^"\\])*)"\s*(?:\([^)]*\))?'
-        r'\s*(?:if\s+.+?)?\s*:\s*(?:#.*)?$'
+        r'^\s*(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)'
+        r'(?P=quote)\s*(?:\([^)]*\))?\s*(?:if\s+.+?)?\s*:\s*(?:#.*)?$'
     )
     if not source_root.is_dir():
         return result
@@ -1022,9 +1022,10 @@ def collect_static_menu_strings(game_dir):
             match = menu_choice_re.match(line)
             if not match:
                 continue
+            quote = match.group("quote")
             raw = match.group("text")
             try:
-                text = ast.literal_eval(f'"{raw}"')
+                text = ast.literal_eval(f"{quote}{raw}{quote}")
             except Exception:
                 text = raw.replace('\\"', '"').replace("\\'", "'")
             if text:

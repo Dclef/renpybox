@@ -1761,13 +1761,26 @@ class UnifiedExtractor:
                     continue
                 source_text = source_literals[-1].value
 
-                # Header, blank lines, then the official template comment.
+                # 官方对话锚点后允许经过一个 translate 头和空行再到模板注释；
+                # old/new、新位置锚点或第二个 translate 头都表示已离开当前条目。
+                seen_header = False
                 for probe in range(index + 1, min(index + 10, len(lines))):
                     stripped = lines[probe].lstrip()
-                    if probe > index + 1 and stripped.startswith("translate "):
+                    if not stripped:
                         continue
-                    if not stripped.startswith("#") or stripped.startswith("# game/"):
-                        continue
+                    if stripped.startswith("# game/"):
+                        break
+                    if stripped.startswith("translate "):
+                        if not seen_header:
+                            seen_header = True
+                            continue
+                        break
+                    if self.OLD_LINE_RE.match(lines[probe]) or self.NEW_LINE_RE.match(
+                        lines[probe]
+                    ):
+                        break
+                    if not stripped.startswith("#"):
+                        break
                     comment_literals = scan_quoted_literals(lines[probe])
                     if not comment_literals:
                         continue

@@ -230,6 +230,37 @@ def test_incremental_repairs_official_comment_from_anchored_source_line(tmp_path
     assert '# narrator "( We finally crossed the portal with [story.partner]! )"' in repaired
 
 
+def test_comment_repair_does_not_cross_from_strings_entry_into_dialogue(tmp_path):
+    project = tmp_path / "project"
+    source = project / "game" / "src" / "plot" / "chapter_beta.rpy"
+    tl = project / "game" / "tl" / "chinese" / "src" / "plot" / "chapter_beta.rpy"
+    source.parent.mkdir(parents=True)
+    tl.parent.mkdir(parents=True)
+    source.write_text(
+        'menu:\n    "Proceed.":\n        pass\n'
+        'narrator "Dialogue remains unchanged."\n',
+        encoding="utf-8",
+    )
+    tl.write_text(
+        'translate chinese strings:\n\n'
+        '    # game/src/plot/chapter_beta.rpy:2\n'
+        '    old "Proceed."\n'
+        '    new "继续。"\n\n'
+        '# game/src/plot/chapter_beta.rpy:4\n'
+        'translate chinese chapter_beta_demo:\n\n'
+        '    # narrator "Dialogue remains unchanged."\n'
+        '    narrator "对话保持不变。"\n',
+        encoding="utf-8",
+    )
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+
+    assert extractor._repair_block_comments_from_source(
+        project, project / "game" / "tl" / "chinese"
+    ) == 0
+    content = tl.read_text(encoding="utf-8")
+    assert '# narrator "Dialogue remains unchanged."' in content
+
+
 def test_collect_block_originals_accepts_legacy_enum_string_form(tmp_path, monkeypatch):
     class LegacyKind(Enum):
         LABEL = "LABEL"
@@ -659,6 +690,25 @@ def test_static_candidates_prefer_menu_location_and_keep_short_choices(tmp_path)
     assert added >= 2
     assert 'old "Proceed."' in content
     assert 'old "Decline."' in content
+
+
+def test_static_menu_candidates_accept_single_quoted_choices(tmp_path):
+    project = tmp_path / "project"
+    source = project / "game" / "src" / "plot" / "chapter_gamma.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "menu:\n"
+        "    'Proceed.':\n"
+        "        pass\n"
+        "    'Pilot\\'s route.' if route_ready:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    candidates = rx.collect_static_menu_strings(project)
+
+    assert candidates["Proceed."] == "src/plot/chapter_gamma.rpy"
+    assert candidates["Pilot's route."] == "src/plot/chapter_gamma.rpy"
 
 
 def test_replace_hook_unwraps_previous_generated_hook_on_reload():
