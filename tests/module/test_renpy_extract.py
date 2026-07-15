@@ -263,6 +263,7 @@ def test_collect_block_originals_accepts_legacy_enum_string_form(tmp_path, monke
 def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_path):
     from frontend.RenpyToolbox.OneKeyTranslatePage import (
         configure_incremental_translation_paths,
+        resolve_translation_apply_paths,
     )
 
     project = tmp_path / "project"
@@ -277,6 +278,32 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
     assert Path(config.output_folder) == project / "RenpyBox_Translation" / "chinese_new"
     assert output == Path(config.output_folder)
     assert apply_target == project / "game" / "tl" / "chinese"
+
+    resolved_output, resolved_target = resolve_translation_apply_paths(
+        config, output, apply_target
+    )
+    assert resolved_output == output
+    assert resolved_target == apply_target
+
+
+def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
+    from frontend.RenpyToolbox.OneKeyTranslatePage import (
+        resolve_translation_apply_paths,
+    )
+
+    current_output = tmp_path / "current-output"
+    current_target = tmp_path / "current-input"
+    stale_target = tmp_path / "previous-project" / "game" / "tl" / "chinese"
+    config = types.SimpleNamespace(
+        input_folder=str(current_target), output_folder=str(current_output)
+    )
+
+    output, target = resolve_translation_apply_paths(
+        config, incremental_output=None, incremental_target=stale_target
+    )
+
+    assert output == current_output
+    assert target == current_target
 
 
 def test_replace_text_rebuilds_outdated_regex_cache(tmp_path):

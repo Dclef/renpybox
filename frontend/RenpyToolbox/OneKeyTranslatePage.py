@@ -62,6 +62,13 @@ def configure_incremental_translation_paths(config, game_dir, tl_name, increment
     config.output_folder = str(output_dir)
     return main_tl_dir, output_dir
 
+
+def resolve_translation_apply_paths(config, incremental_output=None, incremental_target=None):
+    """仅在增量输出有效时使用增量目标，避免复用页面时串用旧目录。"""
+    if incremental_output:
+        return Path(incremental_output), Path(incremental_target)
+    return Path(config.output_folder), Path(config.input_folder)
+
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):
     progress = pyqtSignal(str, int) # message, percent
@@ -134,6 +141,9 @@ class YiJianFanyiPage(Base, QWidget):
         self._onekey_translation_started = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
+        self._incremental_dir = None
+        self._incremental_output_dir = None
+        self._apply_target_dir = None
         
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
@@ -646,6 +656,15 @@ class YiJianFanyiPage(Base, QWidget):
     def _merge_incremental_dir(self):
         """合并增量目录并清理重复"""
         try:
+            # 新流程必须先翻译到独立输出目录，再由“应用翻译”语义合并。
+            # 禁止旧入口提前合并并删除仍作为翻译输入的 chinese_new。
+            if self._incremental_output_dir:
+                InfoBar.warning(
+                    "请先完成翻译",
+                    "当前增量内容尚未应用，请完成翻译后点击“应用翻译到游戏”。",
+                    parent=self,
+                )
+                return
             if not self.game_dir:
                 InfoBar.warning("提示", "请先选择游戏目录", parent=self)
                 return
@@ -912,6 +931,11 @@ class YiJianFanyiPage(Base, QWidget):
             InfoBar.warning("提示", "抽取正在进行中，请等待完成后再操作。", parent=self)
             return
 
+        # 每次重新抽取都建立全新的路径上下文，不能沿用上一次项目的增量目标。
+        self._incremental_dir = None
+        self._incremental_output_dir = None
+        self._apply_target_dir = None
+
         self.current_step = 2
         self.stacked.setCurrentIndex(1)
 
@@ -1050,6 +1074,8 @@ class YiJianFanyiPage(Base, QWidget):
             else:
                 detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
                 self._incremental_dir = None
+                self._incremental_output_dir = None
+                self._apply_target_dir = None
             
             self.step2_desc.setText(detail_msg)
             self.step2_page.progress_bar.setValue(100)
@@ -1060,8 +1086,9 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setVisible(False)
             self.step2_skip_btn.setEnabled(False)
             self.step2_next_btn.setText("开始翻译 →")
-            self.step2_merge_btn.setVisible(bool(result and result.incremental_dir and result.incremental_dir.exists()))
-            self.step2_merge_btn.setEnabled(bool(result and result.incremental_dir and result.incremental_dir.exists()))
+            # 增量暂存目录是后续翻译输入，翻译前不能通过旧按钮直接合并或删除。
+            self.step2_merge_btn.setVisible(False)
+            self.step2_merge_btn.setEnabled(False)
             
             # 自动执行角色名和禁翻表扫描（仅第一次执行，避免重复卡顿）
             self._extract_character_names()
@@ -1653,9 +1680,10 @@ class YiJianFanyiPage(Base, QWidget):
         config = Config().load()
         
         # 验证路径
-        incremental_output = getattr(self, "_incremental_output_dir", None)
-        output_dir = Path(incremental_output or config.output_folder)
-        input_dir = Path(getattr(self, "_apply_target_dir", config.input_folder))
+        incremental_output = self._incremental_output_dir
+        output_dir, input_dir = resolve_translation_apply_paths(
+            config, incremental_output, self._apply_target_dir
+        )
         
         if not output_dir.exists():
             InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
@@ -1711,6 +1739,7 @@ class YiJianFanyiPage(Base, QWidget):
                     shutil.rmtree(str(staging_input), ignore_errors=True)
                 self._incremental_dir = None
                 self._incremental_output_dir = None
+                self._apply_target_dir = None
                 InfoBar.success("应用成功", merge_result.message, duration=5000, parent=self)
                 return
             except Exception as e:
