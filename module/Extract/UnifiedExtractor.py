@@ -448,13 +448,14 @@ class UnifiedExtractor:
         return olds
 
     def _remove_placeholder_duplicates_for_base_box(self, tl_dir: Path, tl_name: str) -> int:
-        """按 base_box 优先清理占位重复（仅删除 new==old 或 new=="" 的条目）。"""
+        """清理 base_box 重复；有效人工译文先迁移到 base_box 再删除重复项。"""
         base_old_set = self._collect_base_box_old_values(tl_dir)
         if not base_old_set:
             return 0
 
         removed_total = 0
-        for rpy_file in tl_dir.rglob("*.rpy"):
+        translation_overrides: Dict[str, str] = {}
+        for rpy_file in sorted(tl_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
             try:
                 rel = rpy_file.relative_to(tl_dir)
                 if any(part.lower() == "base_box" for part in rel.parts):
@@ -491,6 +492,10 @@ class UnifiedExtractor:
                             new_value = self._decode_literal_value(new_match.group(1), new_match.group("text"))
 
                     if old_value in base_old_set:
+                        if new_value and new_value != old_value:
+                            # 普通 TL 中的有效人工译文优先于内置包；先暂存，
+                            # 稍后覆盖 base_box，再删除此处重复以保持全局唯一。
+                            translation_overrides.setdefault(old_value, new_value)
                         removed_total += 1
                         changed = True
                         i = j + 1 if j > i else i + 1
@@ -509,6 +514,46 @@ class UnifiedExtractor:
                     cleaned.append(line)
                     prev_empty = is_empty
                 rpy_file.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
+
+        if translation_overrides:
+            base_dir = tl_dir / "base_box"
+            for base_file in sorted(base_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
+                try:
+                    lines = base_file.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                except Exception:
+                    continue
+                changed = False
+                i = 0
+                while i < len(lines):
+                    old_match = self.OLD_LINE_RE.match(lines[i])
+                    if not old_match:
+                        i += 1
+                        continue
+                    old_value = self._decode_literal_value(
+                        old_match.group(1), old_match.group("text")
+                    )
+                    override = translation_overrides.get(old_value)
+                    if override is None:
+                        i += 1
+                        continue
+                    j = i + 1
+                    while j < len(lines) and (
+                        not lines[j].strip() or lines[j].lstrip().startswith("#")
+                    ):
+                        j += 1
+                    if j < len(lines) and self.NEW_LINE_RE.match(lines[j]):
+                        indent = lines[j][: len(lines[j]) - len(lines[j].lstrip())]
+                        lines[j] = f'{indent}new "{self._escape_rpy_string(override)}"'
+                        changed = True
+                        i = j + 1
+                        continue
+                    i += 1
+                if changed:
+                    base_file.write_text(
+                        "\n".join(lines).rstrip() + "\n", encoding="utf-8"
+                    )
 
         if removed_total:
             try:
@@ -1678,6 +1723,12 @@ class UnifiedExtractor:
                 self.logger.info(
                     f"已清理 {removed_truncated} 条由官方截断注释造成的伪 strings 重复"
                 )
+                # 截断重复可能是 strings 块内唯一条目，删除后需再次清理空块。
+                removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
+                if removed_blocks:
+                    self.logger.info(
+                        f"截断重复清理后又移除 {removed_blocks} 个空的 translate strings 块"
+                    )
 
         # 合并与去重成功后，增量目录不再是可加载的翻译来源，
         # 避免遗留目录造成重复加载和困惑。
