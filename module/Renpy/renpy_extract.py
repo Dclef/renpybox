@@ -600,7 +600,9 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     if remove_duplicates:
         remove_repeat_for_file(p)
     e = set()
-    f = io.open(p, 'r+', encoding='utf-8')
+    # 仅去重路径需要写权限；静态补充抽取只读取游戏源码，必须兼容只读文件。
+    open_mode = 'r+' if remove_duplicates else 'r'
+    f = io.open(p, open_mode, encoding='utf-8')
     _read = f.read()
     f.close()
     # print(_read)
