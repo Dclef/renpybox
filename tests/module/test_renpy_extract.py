@@ -337,6 +337,30 @@ def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
     assert target == current_target
 
 
+def test_onekey_defers_auto_hook_while_incremental_output_is_unmerged(
+    tmp_path, monkeypatch
+):
+    from frontend.RenpyToolbox import OneKeyTranslatePage as page_module
+
+    scheduled = []
+    monkeypatch.setattr(
+        page_module.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
+    page._auto_hook_running = False
+    page._onekey_translation_started = True
+    page._auto_hook_pending = True
+    page._incremental_output_dir = tmp_path / "translated-delta"
+    page._start_auto_hook_supplement = lambda: None
+
+    page._on_translation_done(None, None)
+
+    assert page._auto_hook_pending is True
+    assert scheduled == []
+
+
 def test_replace_text_rebuilds_outdated_regex_cache(tmp_path):
     cache_path = tmp_path / "regex_extracted.json"
     cache_path.write_text(
@@ -709,6 +733,28 @@ def test_static_menu_candidates_accept_single_quoted_choices(tmp_path):
 
     assert candidates["Proceed."] == "src/plot/chapter_gamma.rpy"
     assert candidates["Pilot's route."] == "src/plot/chapter_gamma.rpy"
+
+
+def test_static_source_scan_opens_original_file_read_only(monkeypatch):
+    opened_modes = []
+
+    def fake_open(path, mode, encoding):
+        opened_modes.append(mode)
+        return rx.io.StringIO('label start:\n    narrator "Read only source text."\n')
+
+    monkeypatch.setattr(rx.io, "open", fake_open)
+
+    rx.ExtractFromFile(
+        "readonly.rpy",
+        is_open_filter=True,
+        filter_length=4,
+        is_skip_underline=False,
+        is_py2=False,
+        skip_translate_block=True,
+        remove_duplicates=False,
+    )
+
+    assert opened_modes == ["r"]
 
 
 def test_replace_hook_unwraps_previous_generated_hook_on_reload():

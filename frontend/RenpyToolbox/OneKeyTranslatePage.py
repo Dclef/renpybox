@@ -1576,6 +1576,10 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         if self._onekey_translation_started and self._auto_hook_pending:
+            # 增量输出尚未合并回主 TL 时不能补漏，否则扫描依据仍是旧翻译。
+            # 保留 pending，待“应用翻译到游戏”语义合并成功后再启动。
+            if self._incremental_output_dir:
+                return
             self._auto_hook_pending = False
             QTimer.singleShot(0, self._start_auto_hook_supplement)
             return
@@ -1741,6 +1745,11 @@ class YiJianFanyiPage(Base, QWidget):
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
                 InfoBar.success("应用成功", merge_result.message, duration=5000, parent=self)
+                if self._onekey_translation_started and self._auto_hook_pending:
+                    self._auto_hook_pending = False
+                    QTimer.singleShot(0, self._start_auto_hook_supplement)
+                elif self._onekey_translation_started:
+                    self._reset_auto_hook_state()
                 return
             except Exception as e:
                 self.logger.error(f"应用增量翻译失败: {e}")
