@@ -32,7 +32,7 @@ class VersionManager(Base):
     # URL 地址
     API_URL: str = "https://api.github.com/repos/dclef/RenpyBox/releases/latest"
     RELEASE_URL: str = "https://github.com/dclef/RenpyBox/releases/latest"
-    VERSION_RE: re.Pattern = re.compile(r"^v?(\d+(?:\.\d+){2,3})$")
+    VERSION_RE: re.Pattern = re.compile(r"^(?:RenpyBox_)?v?(\d+(?:\.\d+){1,3})$")
 
     def __init__(self) -> None:
         super().__init__()
@@ -59,7 +59,7 @@ class VersionManager(Base):
 
     @classmethod
     def parse_version(cls, version: str) -> tuple[int, int, int, int]:
-        """解析三段或四段版本号，统一补齐为四段用于比较。"""
+        """解析应用版本或发布标签，统一补齐为四段用于比较。"""
         result = cls.VERSION_RE.match(str(version).strip())
         if result is None:
             return (0, 0, 0, 0)
