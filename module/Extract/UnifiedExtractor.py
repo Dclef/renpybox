@@ -564,7 +564,7 @@ class UnifiedExtractor:
         return removed_total
 
     def _collect_source_registered_old_values(self, game_dir: Path, tl_name: str) -> Set[str]:
-        """Collect strings already registered by translate blocks outside game/tl."""
+        """收集 game/tl 外源码 translate strings 块已经注册的原文。"""
         game_root = game_dir / "game"
         if not game_root.is_dir():
             return set()
@@ -603,7 +603,7 @@ class UnifiedExtractor:
     def _remove_source_registered_string_duplicates(
         self, game_dir: Path, tl_dir: Path, tl_name: str
     ) -> int:
-        """Remove TL old/new entries already registered directly by game source."""
+        """删除已由游戏源码直接注册的 TL old/new 重复条目。"""
         source_values = self._collect_source_registered_old_values(game_dir, tl_name)
         if not source_values:
             return 0
@@ -747,12 +747,11 @@ class UnifiedExtractor:
 
     @classmethod
     def _canonical_rpy_string(cls, quote: str, value: str) -> str:
-        """Decode a TL literal and collapse legacy double-escaped quotes."""
+        """解码 TL 字面量，并折叠旧增量输出中的双重转义引号。"""
         decoded = cls._decode_rpy_string(quote, value)
-        # Older incremental output escaped an already escaped raw literal.  Ren'Py
-        # then sees ``\\\"`` as a literal backslash followed by a quote, while the
-        # original source value is just the quote.  Canonicalize before comparing
-        # or re-emitting so both spellings have one global owner.
+        # 旧版增量输出会再次转义已经转义过的原始字面量，导致 Ren'Py 将
+        # ``\\\"`` 视为反斜杠加引号，而源码值只有引号。比较或重新输出前
+        # 先规范化，确保两种写法只保留一个全局条目。
         previous = None
         while decoded != previous:
             previous = decoded
@@ -1422,10 +1421,8 @@ class UnifiedExtractor:
                 if output_to_separate_folder and getattr(config, "renpy_incremental_include_untranslated", False):
                     # tl 已存在但没翻译过/只有占位（new==old/new==""）时，把这些也纳入待翻译包
                     pending_originals = self._get_untranslated_originals(tl_dir)
-                    # Dialogue coverage suppresses synthetic dialogue placeholders,
-                    # but an explicit strings placeholder (for example a menu
-                    # choice) must still be translated even when equal dialogue
-                    # exists elsewhere.
+                    # 对话块覆盖可以排除合成的对话占位，但显式 strings 占位
+                    # （例如菜单选项）即使与其他对话同文，也仍需翻译。
                     pending_originals -= block_originals - existing_string_originals
                     pending_originals -= set(existing_translations.keys())
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
@@ -1746,7 +1743,7 @@ class UnifiedExtractor:
         return result
 
     def _get_file_block_originals(self, rpy_file: Path) -> Set[str]:
-        """??????????? translate ?????????"""
+        """读取单个文件中 translate 对话块注释里的原文。"""
         if not rpy_file.exists():
             return set()
         try:
@@ -1776,7 +1773,7 @@ class UnifiedExtractor:
         return originals
 
     def _repair_block_comments_from_source(self, game_dir: Path, tl_dir: Path) -> int:
-        """Repair official TL template comments using their game/path:line anchors."""
+        """按 game/路径:行号锚点修复官方 TL 模板注释。"""
         repaired = 0
         location_re = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
         source_cache: Dict[Path, List[str]] = {}
@@ -1860,7 +1857,7 @@ class UnifiedExtractor:
         static_candidates: Dict[str, str],
         tl_dir: Path,
     ) -> Set[str]:
-        """Select real incremental work without losing same-text menu strings."""
+        """选择真实增量任务，同时保留与对话同文的菜单 strings。"""
         selected = extracted_originals - existing_string_originals - block_originals
         menu_candidates = set(rx.collect_static_menu_strings(tl_dir.parents[2]))
         file_block_cache: Dict[Path, Set[str]] = {}
@@ -1885,7 +1882,7 @@ class UnifiedExtractor:
 
     @staticmethod
     def _is_covered_by_file_block(original: str, file_blocks: Set[str]) -> bool:
-        """Match exact blocks plus official comments truncated at closing wrappers."""
+        """匹配完整块，以及结尾封装符被官方注释截断的块。"""
         if original in file_blocks:
             return True
 
@@ -1900,7 +1897,7 @@ class UnifiedExtractor:
         return any(without_trailing_wrapper(value) == normalized for value in file_blocks)
 
     def _remove_strings_covered_by_truncated_block_comment(self, tl_dir: Path) -> int:
-        """Remove only wrapper-mismatch duplicates; exact same-text menus remain."""
+        """只删除封装符截断造成的重复，保留同文菜单条目。"""
         removed = 0
         for rpy_file in self._iter_rpy_files(tl_dir):
             file_blocks = self._get_file_block_originals(rpy_file)
@@ -1921,9 +1918,8 @@ class UnifiedExtractor:
                 old_text = self._canonical_rpy_string(
                     old_match.group(1), old_match.group("text")
                 )
-                # Exact equality may be a real menu string.  Only remove the
-                # narrow case where coverage exists after dropping a final
-                # wrapper from the official block comment.
+                # 完全相同的文本可能是真实菜单项；只有去掉官方块注释末尾的
+                # 封装符后才匹配时，才视为应删除的截断重复。
                 if old_text in file_blocks or not self._is_covered_by_file_block(old_text, file_blocks):
                     i += 1
                     continue
@@ -1961,7 +1957,7 @@ class UnifiedExtractor:
                 continue
 
             target_file = tl_dir / relative_path
-            # ??????????????????????????????????
+            # 非菜单静态文本若已由同文件对话块覆盖则跳过；菜单必须保留 strings。
             if (
                 original not in menu_candidates
                 and self._is_covered_by_file_block(
@@ -2333,7 +2329,7 @@ class UnifiedExtractor:
     def _annotate_incremental_string_locations(
         self, game_dir: Path, target_dir: Path
     ) -> int:
-        """Add source file and line comments to incremental old/new entries."""
+        """为增量 old/new 条目补充源文件和行号注释。"""
         added = 0
         for target_file in self._iter_rpy_files(target_dir):
             try:
@@ -2617,9 +2613,9 @@ class UnifiedExtractor:
         return block_originals
 
     def _remove_string_duplicates_with_blocks(self, tl_dir: Path) -> int:
-        """?? strings ???????????????? old ?????"""
+        """保留与对话块同文的 strings 条目，避免误删菜单等静态文本。"""
         del tl_dir
-        # Ren'Py ??? translate ??????? old ??????????????
+        # Ren'Py 允许对话块和 strings 同时存在，仅按 old 文本去重会误删菜单。
         return 0
 
     def _backup_tl_dir(self, game_dir: Path, tl_name: str):

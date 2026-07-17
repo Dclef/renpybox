@@ -294,6 +294,7 @@ def test_collect_block_originals_accepts_legacy_enum_string_form(tmp_path, monke
 def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_path):
     from frontend.RenpyToolbox.OneKeyTranslatePage import (
         configure_incremental_translation_paths,
+        configure_main_translation_paths,
         resolve_translation_apply_paths,
     )
 
@@ -315,6 +316,11 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
     )
     assert resolved_output == output
     assert resolved_target == apply_target
+
+    main_input, main_output = configure_main_translation_paths(config, project, "chinese")
+    assert Path(config.input_folder) == main_input == apply_target
+    assert Path(config.output_folder) == main_output
+    assert main_output == project / "RenpyBox_Translation" / "chinese"
 
 
 def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
@@ -845,6 +851,55 @@ def test_replace_hook_omits_untranslated_old_placeholder(tmp_path):
     )
 
     assert pairs == [("Hook only", "仅钩子")]
+
+
+def test_replace_hook_keeps_pair_from_miss_work_file(tmp_path):
+    game = tmp_path / "game"
+    miss_file = game / "tl" / "chinese" / "miss" / "miss_ready_replace.rpy"
+    miss_file.parent.mkdir(parents=True)
+    miss_file.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Hook only"\n'
+        '    new "仅钩子"\n',
+        encoding="utf-8",
+    )
+
+    pairs = filter_replace_pairs_covered_by_tl(
+        [("Hook only", "仅钩子")], game, "chinese"
+    )
+
+    assert pairs == [("Hook only", "仅钩子")]
+
+
+def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    text = "Standalone display text"
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "collect_glossary_candidate_texts",
+        lambda *args, **kwargs: {text},
+    )
+    monkeypatch.setattr(
+        generator.rx,
+        "collect_static_source_strings",
+        lambda *args, **kwargs: {text: "script.rpy"},
+    )
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+    )
+
+    assert [entry["src"] for entry in entries] == [text]
+    assert stats["missing_count"] == 1
 
 
 def test_menu_string_is_incremental_even_when_dialogue_block_exists(tmp_path):

@@ -291,7 +291,7 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
     # 第二步：收集所有文件中的 old/new 对，用于跨文件去重
     # 同时收集 dialogue 块中的原文，用于删除 strings 中的冗余
     global_old_entries = {}  # {old_text: [(file_path, first_occurrence_line), ...]}
-    block_originals = set()  # Legacy scan result; intentionally excluded from strings de-duplication.
+    block_originals = set()  # 旧扫描结果；strings 去重有意不使用它。
     
     if cross_file_dedup:
         for file_path in rpy_files:
@@ -998,7 +998,7 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
 
 
 def collect_static_menu_strings(game_dir):
-    """Collect menu-choice text and prefer its first real source location."""
+    """收集菜单选项文本，并优先保留首次出现的真实源码位置。"""
     from pathlib import Path
 
     root = Path(game_dir)
