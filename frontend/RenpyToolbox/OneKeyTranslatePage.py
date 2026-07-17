@@ -4,6 +4,7 @@ YiJianFanyiPage - 一键翻译向导页面
 """
 
 import os
+import shutil
 import time
 from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
@@ -49,6 +50,33 @@ from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy import renpy_extract as rx
 from frontend.TranslationPage import TranslationPage
+
+
+def configure_main_translation_paths(config, game_dir, tl_name):
+    """将翻译输入和输出恢复到主语言目录。"""
+    project_root = Path(game_dir)
+    main_tl_dir = project_root / "game" / "tl" / tl_name
+    output_dir = project_root / "RenpyBox_Translation" / tl_name
+    config.input_folder = str(main_tl_dir)
+    config.output_folder = str(output_dir)
+    return main_tl_dir, output_dir
+
+
+def configure_incremental_translation_paths(config, game_dir, tl_name, incremental_dir):
+    """将翻译指向增量目录，同时保留主 TL 合并目标。"""
+    main_tl_dir, _ = configure_main_translation_paths(config, game_dir, tl_name)
+    delta_dir = Path(incremental_dir)
+    output_dir = Path(game_dir) / "RenpyBox_Translation" / f"{tl_name}_new"
+    config.input_folder = str(delta_dir)
+    config.output_folder = str(output_dir)
+    return main_tl_dir, output_dir
+
+
+def resolve_translation_apply_paths(config, incremental_output=None, incremental_target=None):
+    """仅在增量输出有效时使用增量目标，避免复用页面时串用旧目录。"""
+    if incremental_output:
+        return Path(incremental_output), Path(incremental_target)
+    return Path(config.output_folder), Path(config.input_folder)
 
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):
@@ -122,6 +150,9 @@ class YiJianFanyiPage(Base, QWidget):
         self._onekey_translation_started = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
+        self._incremental_dir = None
+        self._incremental_output_dir = None
+        self._apply_target_dir = None
         
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
@@ -509,24 +540,17 @@ class YiJianFanyiPage(Base, QWidget):
         if not tl_name:
             tl_name = "chinese"
         
-        tl_dir = Path(game_dir) / "game" / "tl" / tl_name
+        tl_dir, output_dir = configure_main_translation_paths(config, game_dir, tl_name)
         config.renpy_tl_folder = str(tl_dir)
         
-        # 输入：tl 目录（待翻译文件）
-        config.input_folder = str(tl_dir)
-        
-        # 输出：游戏根目录下的独立文件夹（不会被 Ren'Py 引擎识别）
-        output_base = Path(game_dir) / "RenpyBox_Translation"
-        config.output_folder = str(output_base / tl_name)
-        
         # 确保输出目录存在
-        Path(config.output_folder).mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # 保存输出根目录，用于后续显示
         if not hasattr(config, 'renpybox_output_root'):
             # 动态添加属性（如果配置类不支持，可以忽略）
             try:
-                config.renpybox_output_root = str(output_base)
+                config.renpybox_output_root = str(output_dir.parent)
             except:
                 pass
         
@@ -634,6 +658,15 @@ class YiJianFanyiPage(Base, QWidget):
     def _merge_incremental_dir(self):
         """合并增量目录并清理重复"""
         try:
+            # 新流程必须先翻译到独立输出目录，再由“应用翻译”语义合并。
+            # 禁止旧入口提前合并并删除仍作为翻译输入的 chinese_new。
+            if self._incremental_output_dir:
+                InfoBar.warning(
+                    "请先完成翻译",
+                    "当前增量内容尚未应用，请完成翻译后点击“应用翻译到游戏”。",
+                    parent=self,
+                )
+                return
             if not self.game_dir:
                 InfoBar.warning("提示", "请先选择游戏目录", parent=self)
                 return
@@ -900,6 +933,11 @@ class YiJianFanyiPage(Base, QWidget):
             InfoBar.warning("提示", "抽取正在进行中，请等待完成后再操作。", parent=self)
             return
 
+        # 每次重新抽取都建立全新的路径上下文，不能沿用上一次项目的增量目标。
+        self._incremental_dir = None
+        self._incremental_output_dir = None
+        self._apply_target_dir = None
+
         self.current_step = 2
         self.stacked.setCurrentIndex(1)
 
@@ -1017,26 +1055,28 @@ class YiJianFanyiPage(Base, QWidget):
                     f"原有翻译保持不变，可分别处理新增内容。"
                 )
                 self._incremental_dir = result.incremental_dir
-                try:
-                    from module.Config import Config
-                    auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", True)
-                except Exception:
-                    auto_merge_enabled = False
-                if auto_merge_enabled:
-                    tl_name = self.tl_folder_edit.text().strip() or "chinese"
-                    merge_result = self.unified_extractor.merge_incremental_folder(
-                        self.game_dir,
-                        tl_name,
-                        result.incremental_dir,
-                        clean_duplicates=True,
-                    )
-                    if merge_result.success:
-                        detail_msg = detail_msg + f"\n✅ 已自动合并并清理重复：{merge_result.message}"
-                    else:
-                        detail_msg = detail_msg + f"\n⚠ 自动合并失败：{merge_result.message}"
+                # 暂存目录需要保留到翻译完成；提前合并会删除它，
+                # 导致翻译页面回退到完整的主语言目录。
+                from module.Config import Config
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                config = Config().load()
+                apply_target, delta_output = configure_incremental_translation_paths(
+                    config, self.game_dir, tl_name, result.incremental_dir
+                )
+                shutil.rmtree(str(delta_output), ignore_errors=True)
+                delta_output.mkdir(parents=True, exist_ok=True)
+                config.save()
+                self._apply_target_dir = apply_target
+                self._incremental_output_dir = delta_output
+                detail_msg += (
+                    f"\n增量翻译输入：{result.incremental_dir.name}/"
+                    f"\n增量翻译输出：{delta_output.name}/"
+                )
             else:
                 detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
                 self._incremental_dir = None
+                self._incremental_output_dir = None
+                self._apply_target_dir = None
             
             self.step2_desc.setText(detail_msg)
             self.step2_page.progress_bar.setValue(100)
@@ -1047,8 +1087,9 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setVisible(False)
             self.step2_skip_btn.setEnabled(False)
             self.step2_next_btn.setText("开始翻译 →")
-            self.step2_merge_btn.setVisible(bool(result and result.incremental_dir and result.incremental_dir.exists()))
-            self.step2_merge_btn.setEnabled(bool(result and result.incremental_dir and result.incremental_dir.exists()))
+            # 增量暂存目录是后续翻译输入，翻译前不能通过旧按钮直接合并或删除。
+            self.step2_merge_btn.setVisible(False)
+            self.step2_merge_btn.setEnabled(False)
             
             # 自动执行角色名和禁翻表扫描（仅第一次执行，避免重复卡顿）
             self._extract_character_names()
@@ -1536,6 +1577,10 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         if self._onekey_translation_started and self._auto_hook_pending:
+            # 增量输出尚未合并回主 TL 时不能补漏，否则扫描依据仍是旧翻译。
+            # 保留 pending，待“应用翻译到游戏”语义合并成功后再启动。
+            if self._incremental_output_dir:
+                return
             self._auto_hook_pending = False
             QTimer.singleShot(0, self._start_auto_hook_supplement)
             return
@@ -1640,8 +1685,10 @@ class YiJianFanyiPage(Base, QWidget):
         config = Config().load()
         
         # 验证路径
-        output_dir = Path(config.output_folder)
-        input_dir = Path(config.input_folder)
+        incremental_output = self._incremental_output_dir
+        output_dir, input_dir = resolve_translation_apply_paths(
+            config, incremental_output, self._apply_target_dir
+        )
         
         if not output_dir.exists():
             InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
@@ -1677,7 +1724,40 @@ class YiJianFanyiPage(Base, QWidget):
         if not msg_box.exec():
             return
         
-        # 执行复制
+        # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
+        if incremental_output:
+            try:
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                merge_result = self.unified_extractor.merge_incremental_folder(
+                    self.game_dir,
+                    tl_name,
+                    output_dir,
+                    clean_duplicates=True,
+                )
+                if not merge_result.success:
+                    InfoBar.warning("合并失败", merge_result.message, parent=self)
+                    return
+                staging_input = getattr(self, "_incremental_dir", None)
+                if staging_input and Path(staging_input).exists():
+                    shutil.rmtree(str(staging_input), ignore_errors=True)
+                configure_main_translation_paths(config, self.game_dir, tl_name)
+                config.save()
+                self._incremental_dir = None
+                self._incremental_output_dir = None
+                self._apply_target_dir = None
+                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=self)
+                if self._onekey_translation_started and self._auto_hook_pending:
+                    self._auto_hook_pending = False
+                    QTimer.singleShot(0, self._start_auto_hook_supplement)
+                elif self._onekey_translation_started:
+                    self._reset_auto_hook_state()
+                return
+            except Exception as e:
+                self.logger.error(f"应用增量翻译失败: {e}")
+                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=self)
+                return
+
+        # 全量翻译沿用整文件复制行为。
         try:
             success_count = 0
             failed_files = []
@@ -1789,4 +1869,3 @@ class YiJianFanyiPage(Base, QWidget):
 # 兼容旧引用
 OneKeyTranslatePage = YiJianFanyiPage
 __all__ = ["YiJianFanyiPage", "OneKeyTranslatePage"]
-

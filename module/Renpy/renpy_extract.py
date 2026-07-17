@@ -8,6 +8,7 @@ import time
 import re
 import traceback
 import pathlib
+import ast
 
 from module.Text.SkipRules import is_path_like, is_resource_name, should_skip_text
 from utils.call_game_python import is_python2_from_game_dir
@@ -36,7 +37,6 @@ RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
     re.IGNORECASE,
 )
 RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
-RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
 # ============================================
@@ -112,6 +112,53 @@ def is_ui_keyword(text: str) -> bool:
     return text.strip().lower() in UI_KEYWORDS
 
 
+def iter_relaxed_single_quoted_literals(line_content: str):
+    """遍历双引号外、可独立成立的单引号文本。"""
+    control_match = re.match(r'^\s*(?:if|elif|while)\b.*?:\s*(.*)$', line_content)
+    if control_match:
+        scan_line = control_match.group(1)
+        if not scan_line or scan_line.lstrip().startswith('#'):
+            return
+    else:
+        scan_line = line_content
+
+    in_double_quote = False
+    quote_start = None
+    escaped = False
+
+    for index, char in enumerate(scan_line):
+        if escaped:
+            escaped = False
+            continue
+        if char == '\\':
+            escaped = True
+            continue
+        if char == '"' and quote_start is None:
+            in_double_quote = not in_double_quote
+            continue
+        if char != "'" or in_double_quote:
+            continue
+
+        prev_char = scan_line[index - 1] if index > 0 else ''
+        next_char = scan_line[index + 1] if index + 1 < len(scan_line) else ''
+        if prev_char.isalpha() and next_char.isalpha():
+            continue
+
+        if quote_start is None:
+            if not next_char or next_char.isspace() or next_char in ",:)]}":
+                continue
+            if prev_char.isalnum() or (prev_char and prev_char in "_)]}\""):
+                continue
+            quote_start = index
+            continue
+
+        if not prev_char or prev_char.isspace() or prev_char in "([{,:":
+            continue
+        if next_char.isalnum() or next_char == '_':
+            continue
+        yield scan_line[quote_start + 1:index]
+        quote_start = None
+
 def extract_relaxed_english_line_literals(line_content: str, filter_length: int) -> set[str]:
     """按宽松英文行规则补抓引号文本。
 
@@ -127,36 +174,43 @@ def extract_relaxed_english_line_literals(line_content: str, filter_length: int)
         return set()
 
     result = set()
-    for pattern in (RE_RELAXED_DOUBLE_QUOTED, RE_RELAXED_SINGLE_QUOTED):
-        for match in pattern.finditer(line_content):
-            prefix = line_content[:match.start()].rstrip()
-            # 宽松补抓不处理明显的函数参数字符串，避免误提取菜单 ID 等内部标识。
-            if RE_RELAXED_FUNCTION_CALL_PREFIX.search(prefix):
-                continue
-            text = replace_unescaped_quotes(match.group(1))
-            text = text.replace("\\'", "'")
-            candidate = text.strip()
-            if not candidate:
-                continue
-            if RE_RELAXED_ENGLISH_WORD.search(candidate) is None:
-                continue
 
-            cmp_text = candidate.lower()
-            if is_path_or_dir_string(cmp_text) or is_resource_filename(cmp_text):
-                continue
-            if should_skip_text(candidate):
-                continue
-            if re.search(r'\[\s*\w+\.\w+.*?\]', candidate):
-                continue
+    def maybe_add_candidate(text: str):
+        candidate = text.strip()
+        if not candidate:
+            return
+        if RE_RELAXED_ENGLISH_WORD.search(candidate) is None:
+            return
 
-            effective_filter_length = filter_length
-            if contains_cjk(candidate):
-                effective_filter_length = max(2, filter_length // 3)
-            if not is_ui_keyword(candidate):
-                if len(replace_all_blank(candidate)) < effective_filter_length:
-                    continue
+        cmp_text = candidate.lower()
+        if is_path_or_dir_string(cmp_text) or is_resource_filename(cmp_text):
+            return
+        if should_skip_text(candidate):
+            return
+        if re.search(r'\[\s*\w+\.\w+.*?\]', candidate):
+            return
 
-            result.add(text)
+        effective_filter_length = filter_length
+        if contains_cjk(candidate):
+            effective_filter_length = max(2, filter_length // 3)
+        if not is_ui_keyword(candidate):
+            if len(replace_all_blank(candidate)) < effective_filter_length:
+                return
+
+        result.add(text)
+
+    for match in RE_RELAXED_DOUBLE_QUOTED.finditer(line_content):
+        prefix = line_content[:match.start()].rstrip()
+        if RE_RELAXED_FUNCTION_CALL_PREFIX.search(prefix):
+            continue
+        text = replace_unescaped_quotes(match.group(1))
+        text = text.replace("\\'", "'")
+        maybe_add_candidate(text)
+
+    for text in iter_relaxed_single_quoted_literals(line_content):
+        text = replace_unescaped_quotes(text)
+        text = text.replace("\\'", "'")
+        maybe_add_candidate(text)
 
     return result
 
@@ -237,7 +291,7 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
     # 第二步：收集所有文件中的 old/new 对，用于跨文件去重
     # 同时收集 dialogue 块中的原文，用于删除 strings 中的冗余
     global_old_entries = {}  # {old_text: [(file_path, first_occurrence_line), ...]}
-    block_originals = set()  # {dialogue_original_text}
+    block_originals = set()  # 旧扫描结果；strings 去重有意不使用它。
     
     if cross_file_dedup:
         for file_path in rpy_files:
@@ -297,13 +351,6 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
         
         for old_text, occurrences in global_old_entries.items():
             # 情况1：如果该文本已经存在于 dialogue 翻译块中，删除 strings 中的所有条目
-            if old_text in block_originals:
-                for file_path, line_idx in occurrences:
-                    if file_path not in duplicates_to_remove:
-                        duplicates_to_remove[file_path] = set()
-                    duplicates_to_remove[file_path].add(line_idx)
-                continue
-
             # 情况2：strings 中出现多次，保留第一次
             if len(occurrences) > 1:
                 # 保留第一次出现，其余标记为待删除
@@ -549,10 +596,13 @@ def is_resource_filename(_string):
     return is_resource_name(_string)
 
 
-def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False):
-    remove_repeat_for_file(p)
+def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True):
+    if remove_duplicates:
+        remove_repeat_for_file(p)
     e = set()
-    f = io.open(p, 'r+', encoding='utf-8')
+    # 仅去重路径需要写权限；静态补充抽取只读取游戏源码，必须兼容只读文件。
+    open_mode = 'r+' if remove_duplicates else 'r'
+    f = io.open(p, open_mode, encoding='utf-8')
     _read = f.read()
     f.close()
     # print(_read)
@@ -719,10 +769,10 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
         if is_add:
             continue
         single_quote_line = d.get('encoded', line_content)
-        control_match = re.match(r'^\s*(?:if|elif|while)\b.*:\s*(.*)$', single_quote_line)
+        control_match = re.match(r'^\s*(?:if|elif|while)\b.*?:\s*(.*)$', single_quote_line)
         if control_match:
             single_quote_line = control_match.group(1)
-            if not single_quote_line or single_quote_line.startswith('#'):
+            if not single_quote_line or single_quote_line.lstrip().startswith('#'):
                 continue
         d = EncodeBracketContent(single_quote_line, "'", "'")
         if 'oriList' in d.keys() and len(d['oriList']) > 0:
@@ -945,6 +995,82 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
     global_e = global_e | extractedSet
     log.info(target + ' extracted success!')
     return global_e
+
+
+def collect_static_menu_strings(game_dir):
+    """收集菜单选项文本，并优先保留首次出现的真实源码位置。"""
+    from pathlib import Path
+
+    root = Path(game_dir)
+    source_root = root / "game" if (root / "game").is_dir() else root
+    result = {}
+    # 菜单项既可能带选择参数，也可能由 `if` 条件保护；两种形式都必须
+    # 进入 strings 翻译，否则同文对话块会让菜单文本被误判为已覆盖。
+    menu_choice_re = re.compile(
+        r'^\s*(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)'
+        r'(?P=quote)\s*(?:\([^)]*\))?\s*(?:if\s+.+?)?\s*:\s*(?:#.*)?$'
+    )
+    if not source_root.is_dir():
+        return result
+    for source_file in sorted(source_root.rglob("*.rpy"), key=lambda item: item.as_posix()):
+        relative = source_file.relative_to(source_root)
+        if relative.parts and relative.parts[0].lower() == "tl":
+            continue
+        try:
+            lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        for line in lines:
+            match = menu_choice_re.match(line)
+            if not match:
+                continue
+            quote = match.group("quote")
+            raw = match.group("text")
+            try:
+                text = ast.literal_eval(f"{quote}{raw}{quote}")
+            except Exception:
+                text = raw.replace('\\"', '"').replace("\\'", "'")
+            if text:
+                result.setdefault(text, relative.as_posix())
+    return result
+
+
+def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False):
+    """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
+    from pathlib import Path
+
+    root = Path(game_dir)
+    source_root = root / "game" if (root / "game").is_dir() else root
+    candidates = {}
+    if not source_root.is_dir():
+        return candidates
+
+    is_py2 = is_python2_from_game_dir(str(source_root))
+    menu_map = collect_static_menu_strings(game_dir)
+    menu_candidates = set(menu_map)
+    for source_file in sorted(source_root.rglob("*.rpy"), key=lambda item: item.as_posix()):
+        try:
+            relative = source_file.relative_to(source_root)
+        except ValueError:
+            continue
+        if relative.parts and relative.parts[0].lower() == "tl":
+            continue
+        try:
+            # 源码扫描不可调用带写入前处理的旧接口，避免修改游戏原文。
+            texts = ExtractFromFile(
+                str(source_file), is_open_filter, filter_length, is_skip_underline,
+                is_py2, True, False,
+            )
+        except Exception:
+            continue
+        # 菜单选项必须使用 strings 翻译；即使同文先作为对话出现，也应以
+        # 真实菜单位置为准，并保留简短选项文本。
+        for text in sorted(texts):
+            text = text.replace('\\"', '"').replace("\\'", "'")
+            if text and not should_skip_text(text):
+                candidates.setdefault(text, relative.as_posix())
+    candidates.update(menu_map)
+    return candidates
 
 
 def ExtractAllFilesInDir(dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline):
