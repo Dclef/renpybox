@@ -32,7 +32,7 @@ class VersionManager(Base):
     # URL 地址
     API_URL: str = "https://api.github.com/repos/dclef/RenpyBox/releases/latest"
     RELEASE_URL: str = "https://github.com/dclef/RenpyBox/releases/latest"
-    VERSION_RE: re.Pattern = re.compile(r"^(?:RenpyBox_)?v?(\d+(?:\.\d+){1,3})$")
+    VERSION_RE: re.Pattern = re.compile(r"^(?:RenpyBox_)?v?(\d+(?:\.\d+){2,3})$")
 
     def __init__(self) -> None:
         super().__init__()
