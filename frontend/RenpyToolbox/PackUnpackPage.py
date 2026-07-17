@@ -120,7 +120,7 @@ class UnpackWorker(QThread):
             ok, _lines = packer.unpack_all_unren_bat(
                 self.game_dir,
                 lang="zh",
-                options="3x",
+                options="1x",
                 timeout_s=60 * 60,
             )
             if ok:

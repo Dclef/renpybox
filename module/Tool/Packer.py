@@ -237,7 +237,7 @@ class Packer:
             return None
         try:
             return subprocess.run(
-                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang],
+                ["cmd.exe", "/c", str(unren_bat), str(game_root), lang, "--auto"],
                 cwd=str(game_root),
                 input=f"{options}\n",
                 stdout=subprocess.PIPE,
