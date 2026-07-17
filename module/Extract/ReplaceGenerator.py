@@ -746,7 +746,7 @@ def collect_hook_translation_entries(
     write_manifest: bool = True,
     auto_update_glossary: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Scan official-TL misses and convert them into Engine-friendly HOOK entries."""
+    """扫描标准 TL 缺失文本，并转换为翻译引擎可处理的 HOOK 条目。"""
 
     logger = LogManager.get()
     game_dir = _get_game_dir(target_path)
@@ -757,8 +757,6 @@ def collect_hook_translation_entries(
 
     logger.info("正在扫描 HOOK 缺失文本...")
     regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
-    # 可写入标准 TL 的静态文本必须由增量抽取处理，不能落入 replace_text。
-    regex_filtered -= set(rx.collect_static_source_strings(game_dir).keys())
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
@@ -1259,12 +1257,19 @@ def build_replace_pairs_from_entries(entries: Sequence[Any]) -> List[Pair]:
 def filter_replace_pairs_covered_by_tl(
     pairs: Sequence[Pair], target_path: str | Path, tl_name: str
 ) -> List[Pair]:
-    """Drop hook replacements that became covered by normal TL before writeback."""
+    """写回前移除已经由标准 TL 或源码翻译块覆盖的 hook 替换。"""
     covered = _get_tl_covered_strings(target_path, tl_name)
     game_dir = _get_game_dir(target_path)
     old_re = re.compile(r'^\s*old\s+["\'](?P<text>.*)["\']\s*$')
     tl_dir = game_dir / "tl" / tl_name
     for tl_file in tl_dir.rglob("*.rpy") if tl_dir.is_dir() else ():
+        name = tl_file.name.lower()
+        if (
+            name.startswith("miss_ready_replace")
+            or name.startswith("hook_")
+            or name in {"replace_text_auto.rpy", "set_default_language_at_startup.rpy"}
+        ):
+            continue
         try:
             for line in tl_file.read_text(
                 encoding="utf-8", errors="replace"

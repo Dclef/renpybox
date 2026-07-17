@@ -52,12 +52,21 @@ from module.Renpy import renpy_extract as rx
 from frontend.TranslationPage import TranslationPage
 
 
-def configure_incremental_translation_paths(config, game_dir, tl_name, incremental_dir):
-    """Point translation at the extracted delta while preserving the main TL target."""
+def configure_main_translation_paths(config, game_dir, tl_name):
+    """将翻译输入和输出恢复到主语言目录。"""
     project_root = Path(game_dir)
     main_tl_dir = project_root / "game" / "tl" / tl_name
+    output_dir = project_root / "RenpyBox_Translation" / tl_name
+    config.input_folder = str(main_tl_dir)
+    config.output_folder = str(output_dir)
+    return main_tl_dir, output_dir
+
+
+def configure_incremental_translation_paths(config, game_dir, tl_name, incremental_dir):
+    """将翻译指向增量目录，同时保留主 TL 合并目标。"""
+    main_tl_dir, _ = configure_main_translation_paths(config, game_dir, tl_name)
     delta_dir = Path(incremental_dir)
-    output_dir = project_root / "RenpyBox_Translation" / f"{tl_name}_new"
+    output_dir = Path(game_dir) / "RenpyBox_Translation" / f"{tl_name}_new"
     config.input_folder = str(delta_dir)
     config.output_folder = str(output_dir)
     return main_tl_dir, output_dir
@@ -531,24 +540,17 @@ class YiJianFanyiPage(Base, QWidget):
         if not tl_name:
             tl_name = "chinese"
         
-        tl_dir = Path(game_dir) / "game" / "tl" / tl_name
+        tl_dir, output_dir = configure_main_translation_paths(config, game_dir, tl_name)
         config.renpy_tl_folder = str(tl_dir)
         
-        # 输入：tl 目录（待翻译文件）
-        config.input_folder = str(tl_dir)
-        
-        # 输出：游戏根目录下的独立文件夹（不会被 Ren'Py 引擎识别）
-        output_base = Path(game_dir) / "RenpyBox_Translation"
-        config.output_folder = str(output_base / tl_name)
-        
         # 确保输出目录存在
-        Path(config.output_folder).mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # 保存输出根目录，用于后续显示
         if not hasattr(config, 'renpybox_output_root'):
             # 动态添加属性（如果配置类不支持，可以忽略）
             try:
-                config.renpybox_output_root = str(output_base)
+                config.renpybox_output_root = str(output_dir.parent)
             except:
                 pass
         
@@ -1053,9 +1055,8 @@ class YiJianFanyiPage(Base, QWidget):
                     f"原有翻译保持不变，可分别处理新增内容。"
                 )
                 self._incremental_dir = result.incremental_dir
-                # Keep the staging directory until it has been translated.  Merging
-                # here deletes it and makes the translation page fall back to the
-                # complete main language directory.
+                # 暂存目录需要保留到翻译完成；提前合并会删除它，
+                # 导致翻译页面回退到完整的主语言目录。
                 from module.Config import Config
                 tl_name = self.tl_folder_edit.text().strip() or "chinese"
                 config = Config().load()
@@ -1723,9 +1724,7 @@ class YiJianFanyiPage(Base, QWidget):
         if not msg_box.exec():
             return
         
-        # Apply translated incremental files through the semantic merger.  A
-        # delta file contains only selected entries and must never overwrite the
-        # complete target file byte-for-byte.
+        # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
         if incremental_output:
             try:
                 tl_name = self.tl_folder_edit.text().strip() or "chinese"
@@ -1741,6 +1740,8 @@ class YiJianFanyiPage(Base, QWidget):
                 staging_input = getattr(self, "_incremental_dir", None)
                 if staging_input and Path(staging_input).exists():
                     shutil.rmtree(str(staging_input), ignore_errors=True)
+                configure_main_translation_paths(config, self.game_dir, tl_name)
+                config.save()
                 self._incremental_dir = None
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
@@ -1756,7 +1757,7 @@ class YiJianFanyiPage(Base, QWidget):
                 InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=self)
                 return
 
-        # Full translation mode keeps the legacy whole-file copy behavior.
+        # 全量翻译沿用整文件复制行为。
         try:
             success_count = 0
             failed_files = []

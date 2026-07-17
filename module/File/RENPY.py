@@ -342,7 +342,6 @@ class RENPY(Base):
     def _resolve_source_path(self, rel_path: str) -> Path:
         input_path = self.input_path / rel_path
         target_path = self.output_path / rel_path
-        # Cache metadata is built from the current input file.  Reusing a stale
-        # file left in the output directory shifts line numbers and hashes, which
-        # causes line_out_of_range/writeback mismatches on incremental reruns.
+        # 缓存元数据来自当前输入文件。复用输出目录中的旧文件会错开行号和哈希，
+        # 导致增量重跑时出现行号越界或写回不匹配。
         return input_path if input_path.exists() else target_path
