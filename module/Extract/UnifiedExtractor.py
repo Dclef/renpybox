@@ -27,7 +27,11 @@ from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Extract.MaExtractor import MaExtractor
 from module.Extract.JsonExtractor import JsonExtractor
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
-from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_core import (
+    parse_tl_document,
+    scan_quoted_literals,
+    escape_tl_string,
+)
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 from module.Renpy.renpy_tl_core import TlStmtKind
 from module.Renpy import renpy_extract as rx
@@ -444,13 +448,14 @@ class UnifiedExtractor:
         return olds
 
     def _remove_placeholder_duplicates_for_base_box(self, tl_dir: Path, tl_name: str) -> int:
-        """按 base_box 优先清理占位重复（仅删除 new==old 或 new=="" 的条目）。"""
+        """清理 base_box 重复；有效人工译文先迁移到 base_box 再删除重复项。"""
         base_old_set = self._collect_base_box_old_values(tl_dir)
         if not base_old_set:
             return 0
 
         removed_total = 0
-        for rpy_file in tl_dir.rglob("*.rpy"):
+        translation_overrides: Dict[str, str] = {}
+        for rpy_file in sorted(tl_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
             try:
                 rel = rpy_file.relative_to(tl_dir)
                 if any(part.lower() == "base_box" for part in rel.parts):
@@ -486,7 +491,11 @@ class UnifiedExtractor:
                         if new_match:
                             new_value = self._decode_literal_value(new_match.group(1), new_match.group("text"))
 
-                    if old_value in base_old_set and (not new_value or new_value == old_value):
+                    if old_value in base_old_set:
+                        if new_value and new_value != old_value:
+                            # 普通 TL 中的有效人工译文优先于内置包；先暂存，
+                            # 稍后覆盖 base_box，再删除此处重复以保持全局唯一。
+                            translation_overrides.setdefault(old_value, new_value)
                         removed_total += 1
                         changed = True
                         i = j + 1 if j > i else i + 1
@@ -506,6 +515,46 @@ class UnifiedExtractor:
                     prev_empty = is_empty
                 rpy_file.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
 
+        if translation_overrides:
+            base_dir = tl_dir / "base_box"
+            for base_file in sorted(base_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
+                try:
+                    lines = base_file.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                except Exception:
+                    continue
+                changed = False
+                i = 0
+                while i < len(lines):
+                    old_match = self.OLD_LINE_RE.match(lines[i])
+                    if not old_match:
+                        i += 1
+                        continue
+                    old_value = self._decode_literal_value(
+                        old_match.group(1), old_match.group("text")
+                    )
+                    override = translation_overrides.get(old_value)
+                    if override is None:
+                        i += 1
+                        continue
+                    j = i + 1
+                    while j < len(lines) and (
+                        not lines[j].strip() or lines[j].lstrip().startswith("#")
+                    ):
+                        j += 1
+                    if j < len(lines) and self.NEW_LINE_RE.match(lines[j]):
+                        indent = lines[j][: len(lines[j]) - len(lines[j].lstrip())]
+                        lines[j] = f'{indent}new "{self._escape_rpy_string(override)}"'
+                        changed = True
+                        i = j + 1
+                        continue
+                    i += 1
+                if changed:
+                    base_file.write_text(
+                        "\n".join(lines).rstrip() + "\n", encoding="utf-8"
+                    )
+
         if removed_total:
             try:
                 self._remove_empty_translate_blocks(tl_dir, tl_name)
@@ -513,6 +562,94 @@ class UnifiedExtractor:
                 pass
 
         return removed_total
+
+    def _collect_source_registered_old_values(self, game_dir: Path, tl_name: str) -> Set[str]:
+        """收集 game/tl 外源码 translate strings 块已经注册的原文。"""
+        game_root = game_dir / "game"
+        if not game_root.is_dir():
+            return set()
+        header_re = re.compile(
+            rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
+        )
+        values: Set[str] = set()
+        for source_file in game_root.rglob("*.rpy"):
+            try:
+                relative = source_file.relative_to(game_root)
+                if relative.parts and relative.parts[0].lower() == "tl":
+                    continue
+                lines = source_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except Exception:
+                continue
+            in_strings = False
+            for line in lines:
+                if header_re.match(line):
+                    in_strings = True
+                    continue
+                if in_strings and re.match(r"^\s*translate\s+", line):
+                    in_strings = False
+                if not in_strings:
+                    continue
+                old_match = self.OLD_LINE_RE.match(line)
+                if old_match:
+                    values.add(
+                        self._decode_literal_value(
+                            old_match.group(1), old_match.group("text")
+                        )
+                    )
+        return values
+
+    def _remove_source_registered_string_duplicates(
+        self, game_dir: Path, tl_dir: Path, tl_name: str
+    ) -> int:
+        """删除已由游戏源码直接注册的 TL old/new 重复条目。"""
+        source_values = self._collect_source_registered_old_values(game_dir, tl_name)
+        if not source_values:
+            return 0
+        removed = 0
+        for rpy_file in tl_dir.rglob("*.rpy"):
+            try:
+                lines = rpy_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except Exception:
+                continue
+            output: List[str] = []
+            i = 0
+            changed = False
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if old_match:
+                    old_value = self._decode_literal_value(
+                        old_match.group(1), old_match.group("text")
+                    )
+                    j = i + 1
+                    while j < len(lines) and (
+                        not lines[j].strip() or lines[j].lstrip().startswith("#")
+                    ):
+                        j += 1
+                    if (
+                        old_value in source_values
+                        and j < len(lines)
+                        and self.NEW_LINE_RE.match(lines[j])
+                    ):
+                        while output and (
+                            not output[-1].strip()
+                            or output[-1].lstrip().startswith("# game/")
+                        ):
+                            output.pop()
+                        removed += 1
+                        changed = True
+                        i = j + 1
+                        continue
+                output.append(lines[i])
+                i += 1
+            if changed:
+                rpy_file.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+        if removed:
+            self._remove_empty_translate_blocks(tl_dir, tl_name)
+        return removed
 
     def _load_glossary_map(self, config: Config) -> Dict[str, str]:
         """加载用户术语库，返回 {原文: 译文}。"""
@@ -607,6 +744,19 @@ class UnifiedExtractor:
             return decoded if isinstance(decoded, str) else str(decoded)
         except Exception:
             return value.replace('\\"', '"').replace("\\'", "'")
+
+    @classmethod
+    def _canonical_rpy_string(cls, quote: str, value: str) -> str:
+        """解码 TL 字面量，并折叠旧增量输出中的双重转义引号。"""
+        decoded = cls._decode_rpy_string(quote, value)
+        # 旧版增量输出会再次转义已经转义过的原始字面量，导致 Ren'Py 将
+        # ``\\\"`` 视为反斜杠加引号，而源码值只有引号。比较或重新输出前
+        # 先规范化，确保两种写法只保留一个全局条目。
+        previous = None
+        while decoded != previous:
+            previous = decoded
+            decoded = decoded.replace('\\"', '"').replace("\\'", "'")
+        return decoded
 
     def get_last_suspicious_manifest(self) -> Optional[Path]:
         return self._last_suspicious_manifest
@@ -1087,9 +1237,12 @@ class UnifiedExtractor:
             else:
                 self.logger.info("根据配置跳过补充抽取阶段")
             
-            # 4. 过滤与清理 + 终极结构导出
+            # 4. 静态补充抽取：把官方/自定义流程仍可能漏掉的源码文本写入标准 TL。
+            self._append_static_supplement_entries(game_dir, tl_dir, tl_name)
+
+            # 5. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
-            # 5. 注入内置 UI 包（common_box/screens_box）
+            # 6. 注入内置 UI 包（common_box/screens_box）
             injected_ui = 0
             if getattr(config, "onekey_inject_base_box", False):
                 injected_ui = self._deploy_builtin_ui_pack(tl_dir, tl_name)
@@ -1159,6 +1312,10 @@ class UnifiedExtractor:
                 return result
 
             self._emit_progress("正在分析已有翻译...", 10)
+
+            repaired_comments = self._repair_block_comments_from_source(game_dir, tl_dir)
+            if repaired_comments:
+                self.logger.info(f"已按游戏源码修正 {repaired_comments} 条翻译块原文注释")
             
             # 1. 获取已翻译内容 {original: translated}
             existing_translations = self._get_existing_translations(tl_dir)
@@ -1168,13 +1325,14 @@ class UnifiedExtractor:
             
             # 2. 获取当前所有原文（用于后续对比新增）
             existing_originals = set(existing_translations.keys())
-            all_current_originals = self._get_all_originals(tl_dir)
+            existing_string_originals = self._get_all_originals(tl_dir)
             block_originals = self._collect_block_originals(tl_dir)
-            if block_originals:
-                all_current_originals |= block_originals
-                self.logger.info(f"翻译块原文 {len(block_originals)} 条已计入已存在集合")
-            self.logger.info(f"当前共 {len(all_current_originals)} 条原文")
-            
+            all_current_originals = existing_string_originals | block_originals
+            self.logger.info(
+                f"当前覆盖 {len(all_current_originals)} 条原文 "
+                f"(strings={len(existing_string_originals)}, blocks={len(block_originals)})"
+            )
+
             # 3. 创建临时目录进行抽取
             temp_extract_dir = game_dir / f"_temp_extract_{tl_name}_{int(time.time())}"
             temp_tl_dir = temp_extract_dir / "game" / "tl" / tl_name
@@ -1242,11 +1400,20 @@ class UnifiedExtractor:
                     _relocate_dir(temp_backup_dir, tl_dir, remove_src=True)
                 
                 # 6. 获取新抽取的所有原文
+                # 静态源码文本必须写入标准 TL，不交给 replace_text。
+                static_candidates = rx.collect_static_source_strings(game_dir)
+                self._append_static_supplement_entries(game_dir, temp_tl_dir, tl_name)
                 new_extracted_originals = self._get_all_originals(temp_tl_dir)
                 self.logger.info(f"新抽取共 {len(new_extracted_originals)} 条原文")
                 
                 # 7. 计算新增原文
-                new_originals = new_extracted_originals - all_current_originals
+                new_originals = self._select_incremental_originals(
+                    new_extracted_originals,
+                    existing_string_originals,
+                    block_originals,
+                    static_candidates,
+                    tl_dir,
+                )
                 self.logger.info(f"检测到 {len(new_originals)} 条新增原文")
                 result.new_strings = len(new_originals)
 
@@ -1254,8 +1421,9 @@ class UnifiedExtractor:
                 if output_to_separate_folder and getattr(config, "renpy_incremental_include_untranslated", False):
                     # tl 已存在但没翻译过/只有占位（new==old/new==""）时，把这些也纳入待翻译包
                     pending_originals = self._get_untranslated_originals(tl_dir)
-                    if block_originals:
-                        pending_originals -= block_originals
+                    # 对话块覆盖可以排除合成的对话占位，但显式 strings 占位
+                    # （例如菜单选项）即使与其他对话同文，也仍需翻译。
+                    pending_originals -= block_originals - existing_string_originals
                     pending_originals -= set(existing_translations.keys())
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
 
@@ -1269,7 +1437,7 @@ class UnifiedExtractor:
                     incremental_dir.mkdir(parents=True, exist_ok=True)
                     
                     self._extract_new_entries_to_folder(
-                        temp_tl_dir, incremental_dir, selected_originals, tl_name
+                        temp_tl_dir, incremental_dir, selected_originals, tl_name, game_dir
                     )
                     
                     # 统计输出文件
@@ -1371,14 +1539,10 @@ class UnifiedExtractor:
             return result
 
         def decode_literal(quote: str, text: str) -> str:
-            literal = f"{quote}{text}{quote}"
-            try:
-                return ast.literal_eval(literal)
-            except Exception:
-                return text.replace('\\"', '"').replace("\\'", "'")
+            return self._canonical_rpy_string(quote, text)
 
-        def collect_pairs(lines: List[str]) -> List[Tuple[str, str]]:
-            pairs: List[Tuple[str, str]] = []
+        def collect_pairs(lines: List[str]) -> List[Tuple[str, str, List[str]]]:
+            pairs: List[Tuple[str, str, List[str]]] = []
             i = 0
             while i < len(lines):
                 old_match = self.OLD_LINE_RE.match(lines[i])
@@ -1397,7 +1561,15 @@ class UnifiedExtractor:
                     if new_match:
                         old_value = decode_literal(old_match.group(1), old_match.group("text"))
                         new_value = decode_literal(new_match.group(1), new_match.group("text"))
-                        pairs.append((old_value, new_value))
+                        comments: List[str] = []
+                        back = i - 1
+                        while back >= 0 and (
+                            not lines[back].strip() or lines[back].lstrip().startswith("#")
+                        ):
+                            if lines[back].lstrip().startswith("# game/"):
+                                comments.insert(0, lines[back].strip())
+                            back -= 1
+                        pairs.append((old_value, new_value, comments))
                         i = j + 1
                         continue
                 i += 1
@@ -1464,10 +1636,10 @@ class UnifiedExtractor:
                 continue
 
             target_map = collect_target_map(target_lines)
-            new_entries: List[Tuple[str, str]] = []
+            new_entries: List[Tuple[str, str, List[str]]] = []
             changed = False
 
-            for old_text, new_text in inc_pairs:
+            for old_text, new_text, comments in inc_pairs:
                 if old_text in target_map:
                     current_new, new_line_idx = target_map[old_text]
                     if (not current_new or current_new == old_text) and new_text and new_text != old_text:
@@ -1479,17 +1651,36 @@ class UnifiedExtractor:
                         updated_entries += 1
                         changed = True
                     continue
-                new_entries.append((old_text, new_text))
+                new_entries.append((old_text, new_text, comments))
 
             if new_entries:
-                append_lines = ["", "# 增量合并", f"translate {tl_name} strings:", ""]
-                for old_text, new_text in new_entries:
+                append_lines: List[str] = []
+                for old_text, new_text, comments in new_entries:
+                    append_lines.extend(f"    {comment}" for comment in comments)
                     escaped_old = self._escape_rpy_string(old_text)
                     escaped_new = self._escape_rpy_string(new_text) if new_text else ""
                     append_lines.append(f'    old "{escaped_old}"')
                     append_lines.append(f'    new "{escaped_new}"')
                     append_lines.append("")
-                target_lines.extend(append_lines)
+
+                strings_header = re.compile(
+                    rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
+                )
+                header_indexes = [
+                    index for index, line in enumerate(target_lines) if strings_header.match(line)
+                ]
+                if header_indexes:
+                    header_index = header_indexes[-1]
+                    insert_at = len(target_lines)
+                    for index in range(header_index + 1, len(target_lines)):
+                        if re.match(r"^\s*translate\s+", target_lines[index]):
+                            insert_at = index
+                            break
+                    while insert_at > header_index + 1 and not target_lines[insert_at - 1].strip():
+                        insert_at -= 1
+                    target_lines[insert_at:insert_at] = [""] + append_lines
+                else:
+                    target_lines.extend(["", f"translate {tl_name} strings:", ""] + append_lines)
                 added_entries += len(new_entries)
                 changed = True
 
@@ -1507,50 +1698,321 @@ class UnifiedExtractor:
                 removed = self._remove_string_duplicates_with_blocks(tl_dir)
                 if removed:
                     self.logger.info(f"已移除 {removed} 条与翻译块重复的 strings 翻译")
-            if getattr(config, "onekey_inject_base_box", False):
+            # base_box 一旦存在就会被 Ren'Py 加载；即使本次未启用注入，
+            # 也要清理它与增量占位条目的重复。
+            if (tl_dir / "base_box").exists():
                 removed_ui = self._remove_placeholder_duplicates_for_base_box(tl_dir, tl_name)
                 if removed_ui:
                     self.logger.info(f"已按 base_box 优先清理占位重复 {removed_ui} 条")
+            removed_source = self._remove_source_registered_string_duplicates(
+                game_dir, tl_dir, tl_name
+            )
+            if removed_source:
+                self.logger.info(f"已清理与游戏源码翻译重复的 strings 条目 {removed_source} 条")
             try:
                 removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
                 if removed_blocks:
                     self.logger.info(f"已移除 {removed_blocks} 个空的 translate strings 块")
             except Exception:
                 pass
+            removed_truncated = self._remove_strings_covered_by_truncated_block_comment(tl_dir)
+            if removed_truncated:
+                self.logger.info(
+                    f"已清理 {removed_truncated} 条由官方截断注释造成的伪 strings 重复"
+                )
+                # 截断重复可能是 strings 块内唯一条目，删除后需再次清理空块。
+                removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
+                if removed_blocks:
+                    self.logger.info(
+                        f"截断重复清理后又移除 {removed_blocks} 个空的 translate strings 块"
+                    )
+
+        # 合并与去重成功后，增量目录不再是可加载的翻译来源，
+        # 避免遗留目录造成重复加载和困惑。
+        try:
+            shutil.rmtree(str(incremental_dir))
+        except Exception as exc:
+            self.logger.warning(f"合并完成但清理增量目录失败 {incremental_dir}: {exc}")
 
         result.success = True
         result.total_files = len(list(self._iter_rpy_files(tl_dir)))
         result.message = (
             f"合并完成：更新占位 {updated_entries} 条，"
-            f"新增 {added_entries} 条，涉及 {merged_files} 个文件"
+            f"新增 {added_entries} 条，涉及 {merged_files} 个文件；已清理 {incremental_dir.name}"
         )
         return result
 
+    def _get_file_block_originals(self, rpy_file: Path) -> Set[str]:
+        """读取单个文件中 translate 对话块注释里的原文。"""
+        if not rpy_file.exists():
+            return set()
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return set()
+
+        originals: Set[str] = set()
+        in_block = False
+        block_indent = 0
+        for line in lines:
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+            if stripped.startswith("translate ") and stripped.endswith(":"):
+                in_block = not stripped.endswith(" strings:")
+                block_indent = indent
+                continue
+            if not in_block:
+                continue
+            if stripped and indent <= block_indent:
+                in_block = False
+                continue
+            if stripped.startswith("#"):
+                match = re.search(r'"((?:\\.|[^"])*)"', stripped)
+                if match:
+                    originals.add(match.group(1).replace('\\"', '"').replace("\\'", "'"))
+        return originals
+
+    def _repair_block_comments_from_source(self, game_dir: Path, tl_dir: Path) -> int:
+        """按 game/路径:行号锚点修复官方 TL 模板注释。"""
+        repaired = 0
+        location_re = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
+        source_cache: Dict[Path, List[str]] = {}
+
+        for tl_file in self._iter_rpy_files(tl_dir):
+            try:
+                lines = tl_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+            changed = False
+
+            for index, line in enumerate(lines):
+                location = location_re.match(line)
+                if not location:
+                    continue
+                source_file = game_dir / location.group(1)
+                source_line_no = int(location.group(2))
+                if not source_file.is_file() or source_line_no <= 0:
+                    continue
+                source_lines = source_cache.get(source_file)
+                if source_lines is None:
+                    try:
+                        source_lines = source_file.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).splitlines()
+                    except Exception:
+                        continue
+                    source_cache[source_file] = source_lines
+                if source_line_no > len(source_lines):
+                    continue
+                source_literals = scan_quoted_literals(source_lines[source_line_no - 1])
+                if not source_literals:
+                    continue
+                source_text = source_literals[-1].value
+
+                # 官方对话锚点后允许经过一个 translate 头和空行再到模板注释；
+                # old/new、新位置锚点或第二个 translate 头都表示已离开当前条目。
+                seen_header = False
+                for probe in range(index + 1, min(index + 10, len(lines))):
+                    stripped = lines[probe].lstrip()
+                    if not stripped:
+                        continue
+                    if stripped.startswith("# game/"):
+                        break
+                    if stripped.startswith("translate "):
+                        if not seen_header:
+                            seen_header = True
+                            continue
+                        break
+                    if self.OLD_LINE_RE.match(lines[probe]) or self.NEW_LINE_RE.match(
+                        lines[probe]
+                    ):
+                        break
+                    if not stripped.startswith("#"):
+                        break
+                    comment_literals = scan_quoted_literals(lines[probe])
+                    if not comment_literals:
+                        continue
+                    literal = comment_literals[-1]
+                    if literal.value == source_text:
+                        break
+                    replacement = f'"{escape_tl_string(source_text)}"'
+                    lines[probe] = (
+                        lines[probe][:literal.start_col]
+                        + replacement
+                        + lines[probe][literal.end_col:]
+                    )
+                    repaired += 1
+                    changed = True
+                    break
+
+            if changed:
+                tl_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        return repaired
+
+    def _select_incremental_originals(
+        self,
+        extracted_originals: Set[str],
+        existing_string_originals: Set[str],
+        block_originals: Set[str],
+        static_candidates: Dict[str, str],
+        tl_dir: Path,
+    ) -> Set[str]:
+        """选择真实增量任务，同时保留与对话同文的菜单 strings。"""
+        selected = extracted_originals - existing_string_originals - block_originals
+        menu_candidates = set(rx.collect_static_menu_strings(tl_dir.parents[2]))
+        file_block_cache: Dict[Path, Set[str]] = {}
+
+        # 对话块通常表示文本已有翻译，但菜单选项仍需要独立的 strings 条目，
+        # 因此不能仅凭同文对话块就把菜单文本排除出增量任务。
+        for original, relative_path in static_candidates.items():
+            if original not in extracted_originals or original in existing_string_originals:
+                continue
+            if original in menu_candidates:
+                selected.add(original)
+                continue
+            target_file = tl_dir / relative_path
+            file_blocks = file_block_cache.get(target_file)
+            if file_blocks is None:
+                file_blocks = self._get_file_block_originals(target_file)
+                file_block_cache[target_file] = file_blocks
+            if self._is_covered_by_file_block(original, file_blocks):
+                continue
+            selected.add(original)
+        return selected
+
+    @staticmethod
+    def _is_covered_by_file_block(original: str, file_blocks: Set[str]) -> bool:
+        """匹配完整块，以及结尾封装符被官方注释截断的块。"""
+        if original in file_blocks:
+            return True
+
+        # 官方抽取注释偶尔会丢失括号文本末尾的封装符。仅在这一种窄化场景
+        # 下把截断注释视为已覆盖，避免扩大模糊匹配范围。
+        def without_trailing_wrapper(value: str) -> str:
+            return re.sub(r"\s*[\)\]\}]\s*$", "", value).rstrip()
+
+        normalized = without_trailing_wrapper(original)
+        if normalized == original.rstrip():
+            return False
+        return any(without_trailing_wrapper(value) == normalized for value in file_blocks)
+
+    def _remove_strings_covered_by_truncated_block_comment(self, tl_dir: Path) -> int:
+        """只删除封装符截断造成的重复，保留同文菜单条目。"""
+        removed = 0
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            file_blocks = self._get_file_block_originals(rpy_file)
+            if not file_blocks:
+                continue
+            try:
+                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            indexes: Set[int] = set()
+            i = 0
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if not old_match:
+                    i += 1
+                    continue
+                old_text = self._canonical_rpy_string(
+                    old_match.group(1), old_match.group("text")
+                )
+                # 完全相同的文本可能是真实菜单项；只有去掉官方块注释末尾的
+                # 封装符后才匹配时，才视为应删除的截断重复。
+                if old_text in file_blocks or not self._is_covered_by_file_block(old_text, file_blocks):
+                    i += 1
+                    continue
+                j = i + 1
+                while j < len(lines) and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+                    j += 1
+                if j < len(lines) and self.NEW_LINE_RE.match(lines[j]):
+                    indexes.update(range(i, j + 1))
+                    removed += 1
+                    i = j + 1
+                    continue
+                i += 1
+
+            if indexes:
+                kept = [line for index, line in enumerate(lines) if index not in indexes]
+                rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        return removed
+
+    def _append_static_supplement_entries(
+        self,
+        game_dir: Path,
+        tl_dir: Path,
+        tl_name: str,
+    ) -> int:
+        """把静态漏抽文本写入其首次出现的标准翻译文件。"""
+        candidates = rx.collect_static_source_strings(game_dir)
+        menu_candidates = set(rx.collect_static_menu_strings(game_dir))
+        if not candidates:
+            return 0
+
+        existing = self._get_all_originals(tl_dir)
+        added = 0
+        for original, relative_path in candidates.items():
+            if original in existing:
+                continue
+
+            target_file = tl_dir / relative_path
+            # 非菜单静态文本若已由同文件对话块覆盖则跳过；菜单必须保留 strings。
+            if (
+                original not in menu_candidates
+                and self._is_covered_by_file_block(
+                    original, self._get_file_block_originals(target_file)
+                )
+            ):
+                continue
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            escaped = self._escape_rpy_string(original)
+            source_file = (game_dir / "game" / relative_path)
+            source_line = self._find_source_text_line(source_file, original)
+            location_comment = (
+                f"    # game/{relative_path}:{source_line}\n"
+                if source_line is not None
+                else ""
+            )
+            with target_file.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"\ntranslate {tl_name} strings:\n\n"
+                    f"{location_comment}"
+                    f'    old "{escaped}"\n'
+                    f'    new "{escaped}"\n'
+                )
+            existing.add(original)
+            added += 1
+
+        if added:
+            self.logger.info(f"标准补充抽取：已添加 {added} 条静态翻译条目")
+        return added
+
+    @staticmethod
+    def _find_source_text_line(source_file: Path, original: str) -> Optional[int]:
+        try:
+            lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return None
+        for line_no, line in enumerate(lines, 1):
+            if any(literal.value == original for literal in scan_quoted_literals(line)):
+                return line_no
+        return None
+
     def _get_all_originals(self, tl_dir: Path) -> Set[str]:
-        """获取 tl 目录中所有的原文"""
-        originals = set()
+        """获取 translate strings 中真实 old 条目的原文。"""
+        originals: Set[str] = set()
         if not tl_dir.exists():
             return originals
 
-        extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
-                doc = parse_tl_document(content.splitlines())
-                items = extractor.extract(doc, str(rpy_file))
-                for item in items:
-                    originals.add(item.get_src())
-                continue
-            except Exception:
-                pass
-
-            try:
-                content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 for match in self.OLD_LINE_RE.finditer(content):
-                    old_text = match.group("text").replace('\\"', '"').replace("\\'", "'")
+                    old_text = self._canonical_rpy_string(match.group(1), match.group("text"))
                     originals.add(old_text)
             except Exception:
-                pass
+                continue
         return originals
 
     def _get_untranslated_originals(self, tl_dir: Path) -> Set[str]:
@@ -1710,13 +2172,18 @@ class UnifiedExtractor:
         source_dir: Path,
         target_dir: Path,
         selected_originals: Set[str],
-        tl_name: str
+        tl_name: str,
+        game_dir: Optional[Path] = None,
     ):
         """将指定条目（新增/未翻译）提取到目标文件夹"""
         if not selected_originals:
             return
 
         extractor = RenpyTlItemExtractor()
+        menu_locations = (
+            rx.collect_static_menu_strings(game_dir) if game_dir is not None else {}
+        )
+        selected_menu_strings = selected_originals.intersection(menu_locations)
 
         for rpy_file in self._iter_rpy_files(source_dir):
             # AST 优先
@@ -1728,7 +2195,11 @@ class UnifiedExtractor:
                 if not items:
                     continue
 
-                selected_items = [item for item in items if item.get_src() in selected_originals]
+                selected_items = [
+                    item for item in items
+                    if item.get_src() in selected_originals
+                    and item.get_src() not in selected_menu_strings
+                ]
                 if not selected_items:
                     continue
 
@@ -1782,7 +2253,10 @@ class UnifiedExtractor:
                                 new_text = new_match.group("text")
 
                         # 只提取被选中的原文
-                        if old_text in selected_originals:
+                        if (
+                            old_text in selected_originals
+                            and old_text not in selected_menu_strings
+                        ):
                             new_entries.append((old_text, new_text))
 
                         i += 2
@@ -1814,6 +2288,108 @@ class UnifiedExtractor:
 
             except Exception as e:
                 self.logger.warning(f"处理文件失败 {rpy_file}: {e}")
+
+        if game_dir is not None:
+            for original in sorted(selected_menu_strings):
+                relative_path = menu_locations[original]
+                target_file = target_dir / relative_path
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                source_file = game_dir / "game" / relative_path
+                source_line = self._find_source_menu_line(source_file, original)
+                escaped = self._escape_rpy_string(original)
+                entry_lines = []
+                if source_line is not None:
+                    entry_lines.append(f"    # game/{relative_path}:{source_line}")
+                entry_lines.extend([f'    old "{escaped}"', f'    new "{escaped}"', ""])
+
+                if target_file.exists():
+                    lines = target_file.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                else:
+                    lines = [
+                        "# 增量抽取 - 新增/待翻译内容",
+                        f"# 来源: {Path(relative_path).name}",
+                        "",
+                    ]
+                header_re = re.compile(
+                    rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
+                )
+                if not any(header_re.match(line) for line in lines):
+                    if lines and lines[-1].strip():
+                        lines.append("")
+                    lines.extend([f"translate {tl_name} strings:", ""])
+                lines.extend(entry_lines)
+                target_file.write_text(
+                    "\n".join(lines).rstrip() + "\n", encoding="utf-8"
+                )
+
+            self._annotate_incremental_string_locations(game_dir, target_dir)
+
+    def _annotate_incremental_string_locations(
+        self, game_dir: Path, target_dir: Path
+    ) -> int:
+        """为增量 old/new 条目补充源文件和行号注释。"""
+        added = 0
+        for target_file in self._iter_rpy_files(target_dir):
+            try:
+                relative_path = target_file.relative_to(target_dir)
+                source_file = game_dir / "game" / relative_path
+                if not source_file.is_file():
+                    continue
+                lines = target_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except Exception:
+                continue
+            output: List[str] = []
+            changed = False
+            for line in lines:
+                old_match = self.OLD_LINE_RE.match(line)
+                if old_match:
+                    previous = next(
+                        (entry.strip() for entry in reversed(output) if entry.strip()), ""
+                    )
+                    if not previous.startswith("# game/"):
+                        original = self._decode_literal_value(
+                            old_match.group(1), old_match.group("text")
+                        )
+                        source_line = self._find_source_text_line(source_file, original)
+                        if source_line is not None:
+                            output.append(
+                                f"    # game/{relative_path.as_posix()}:{source_line}"
+                            )
+                            added += 1
+                            changed = True
+                output.append(line)
+            if changed:
+                target_file.write_text(
+                    "\n".join(output).rstrip() + "\n", encoding="utf-8"
+                )
+        return added
+
+    @staticmethod
+    def _find_source_menu_line(source_file: Path, original: str) -> Optional[int]:
+        menu_choice_re = re.compile(
+            r'^\s*"(?P<text>(?:\\.|[^"\\])*)"\s*(?:\([^)]*\))?\s*:\s*(?:#.*)?$'
+        )
+        try:
+            lines = source_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except Exception:
+            return None
+        for line_no, line in enumerate(lines, 1):
+            match = menu_choice_re.match(line)
+            if not match:
+                continue
+            try:
+                value = ast.literal_eval(f'"{match.group("text")}"')
+            except Exception:
+                value = match.group("text").replace('\\"', '"').replace("\\'", "'")
+            if value == original:
+                return line_no
+        return None
 
     def _merge_new_entries(
         self,
@@ -1991,7 +2567,12 @@ class UnifiedExtractor:
                     block = renpy.get("block")
                     if not isinstance(block, dict):
                         continue
-                    if str(block.get("kind")) == "LABEL":
+                    kind = block.get("kind")
+                    kind_value = getattr(kind, "value", kind)
+                    kind_text = str(kind_value)
+                    if kind_text.startswith("TlBlockKind."):
+                        kind_text = kind_text.split(".", 1)[1]
+                    if kind_text == "LABEL":
                         block_originals.add(item.get_src())
                 continue
             except Exception:
@@ -2032,62 +2613,10 @@ class UnifiedExtractor:
         return block_originals
 
     def _remove_string_duplicates_with_blocks(self, tl_dir: Path) -> int:
-        """
-        移除 translate strings 中与 translate 块原文重复的条目（优先保留块翻译）。
-        返回删除的条目数量。
-        """
-        block_originals = self._collect_block_originals(tl_dir)
-        if not block_originals:
-            return 0
-
-        removed = 0
-        for rpy_file in self._iter_rpy_files(tl_dir):
-            try:
-                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            except Exception:
-                continue
-
-            new_lines: List[str] = []
-            i = 0
-            changed = False
-
-            while i < len(lines):
-                line = lines[i]
-                match = self.OLD_LINE_RE.match(line)
-                if match:
-                    old_text = match.group("text").replace('\\"', '"').replace("\\'", "'")
-                    next_line = lines[i + 1] if i + 1 < len(lines) else ""
-                    new_match = self.NEW_LINE_RE.match(next_line)
-
-                    if old_text in block_originals:
-                        removed += 1
-                        changed = True
-                        # 跳过 old/new 行
-                        i += 2 if new_match else 1
-                        # 跳过紧随其后的空行，避免留下多余空白
-                        while i < len(lines) and not lines[i].strip():
-                            i += 1
-                        continue
-
-                new_lines.append(line)
-                i += 1
-
-            if changed:
-                final_lines: List[str] = []
-                prev_empty = False
-                for entry in new_lines:
-                    is_empty = not entry.strip()
-                    if is_empty and prev_empty:
-                        continue
-                    final_lines.append(entry)
-                    prev_empty = is_empty
-
-                try:
-                    rpy_file.write_text("\n".join(final_lines), encoding="utf-8")
-                except Exception:
-                    pass
-
-        return removed
+        """保留与对话块同文的 strings 条目，避免误删菜单等静态文本。"""
+        del tl_dir
+        # Ren'Py 允许对话块和 strings 同时存在，仅按 old 文本去重会误删菜单。
+        return 0
 
     def _backup_tl_dir(self, game_dir: Path, tl_name: str):
         """备份 tl 目录"""
@@ -2136,6 +2665,12 @@ class UnifiedExtractor:
         except Exception as exc:
             self.logger.warning(f"去重失败 {tl_dir}: {exc}")
 
+        removed_source = self._remove_source_registered_string_duplicates(
+            project_root, tl_dir, tl_name
+        )
+        if removed_source:
+            self.logger.info(f"已清理与游戏源码翻译重复的 strings 条目 {removed_source} 条")
+
         # 移除与 translate 块重复的 strings 条目（保留块翻译，删掉 old/new）
         if getattr(config, "renpy_remove_string_duplicates", False):
             removed = self._remove_string_duplicates_with_blocks(tl_dir)
@@ -2143,7 +2678,7 @@ class UnifiedExtractor:
                 self.logger.info(f"已移除 {removed} 条与翻译块重复的 strings 翻译")
             
         # 移除 Hook 及工具型文件
-        if config.extract_skip_hook_files:
+        if getattr(config, "extract_skip_hook_files", False):
             self._prune_hook_files(tl_dir)
 
         # 清理空 translate strings 块，避免后续官方抽取报错
@@ -2172,7 +2707,7 @@ class UnifiedExtractor:
                 pass
 
         # 终极结构导出
-        if config.extract_export_excel:
+        if getattr(config, "extract_export_excel", False):
             if existing_translations is None:
                 existing_translations = self._get_existing_translations(tl_dir)
             try:
