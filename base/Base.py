@@ -1,5 +1,5 @@
 from base.compat import StrEnum
-from typing import Callable
+from typing import Callable, ClassVar
 
 from base.EventManager import EventManager
 from base.LogManager import LogManager
@@ -54,9 +54,86 @@ class Base():
         UNTRANSLATED = "UNTRANSLATED"                                       # 待翻译
         TRANSLATING = "TRANSLATING"                                         # 翻译中
         TRANSLATED = "TRANSLATED"                                           # 已翻译
+        POLISHED = "POLISHED"                                               # 已润色
         TRANSLATED_IN_PAST = "TRANSLATED_IN_PAST"                           # 过去已翻译
         EXCLUDED = "EXCLUDED"                                               # 已排除
         DUPLICATED = "DUPLICATED"                                           # 重复条目
+
+    # Project and item statuses intentionally use separate domains. POLISHED is
+    # an item-only state; a quality task never changes the project completion state.
+    PROJECT_VALID_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.UNTRANSLATED,
+        TranslationStatus.TRANSLATING,
+        TranslationStatus.TRANSLATED,
+    })
+    PROJECT_RESUMABLE_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.TRANSLATING,
+    })
+    PROJECT_COMPLETED_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.TRANSLATED,
+    })
+    ITEM_VALID_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.UNTRANSLATED,
+        TranslationStatus.TRANSLATED,
+        TranslationStatus.POLISHED,
+        TranslationStatus.TRANSLATED_IN_PAST,
+        TranslationStatus.EXCLUDED,
+        TranslationStatus.DUPLICATED,
+    })
+    ITEM_COMPLETED_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.TRANSLATED,
+        TranslationStatus.POLISHED,
+        TranslationStatus.TRANSLATED_IN_PAST,
+    })
+    ITEM_POLISHABLE_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.TRANSLATED,
+    })
+    ITEM_PROOFREADABLE_STATUSES: ClassVar[frozenset[TranslationStatus]] = frozenset({
+        TranslationStatus.TRANSLATED,
+        TranslationStatus.POLISHED,
+    })
+
+    @classmethod
+    def normalize_translation_status(
+        cls,
+        status: TranslationStatus | str,
+    ) -> TranslationStatus:
+        return cls.TranslationStatus(status)
+
+    @classmethod
+    def is_project_status(cls, status: TranslationStatus | str) -> bool:
+        try:
+            return cls.normalize_translation_status(status) in cls.PROJECT_VALID_STATUSES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def is_item_status(cls, status: TranslationStatus | str) -> bool:
+        try:
+            return cls.normalize_translation_status(status) in cls.ITEM_VALID_STATUSES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def is_item_completed(cls, status: TranslationStatus | str) -> bool:
+        try:
+            return cls.normalize_translation_status(status) in cls.ITEM_COMPLETED_STATUSES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def is_item_polishable(cls, status: TranslationStatus | str) -> bool:
+        try:
+            return cls.normalize_translation_status(status) in cls.ITEM_POLISHABLE_STATUSES
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def is_item_proofreadable(cls, status: TranslationStatus | str) -> bool:
+        try:
+            return cls.normalize_translation_status(status) in cls.ITEM_PROOFREADABLE_STATUSES
+        except (TypeError, ValueError):
+            return False
 
     # PRINT
     def print(self, msg: str, e: Exception = None, file: bool = True, console: bool = True) -> None:

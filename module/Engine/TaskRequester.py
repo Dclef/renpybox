@@ -42,10 +42,35 @@ class TaskRequester(Base):
         "properties": {
             "translations": {
                 "type": "array",
-                "items": {"type": "string"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "request_index": {
+                            "type": "integer",
+                            "minimum": 0,
+                        },
+                        "text": {"type": "string"},
+                    },
+                    "required": ["request_index", "text"],
+                    "additionalProperties": False,
+                },
+            },
+            "new_glossary": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "src": {"type": "string"},
+                        "dst": {"type": "string"},
+                        "info": {"type": "string"},
+                    },
+                    "required": ["src", "dst"],
+                    "additionalProperties": False,
+                },
             },
         },
         "required": ["translations"],
+        "additionalProperties": False,
     }
 
     # 连接缓存（用于停止任务时快速中断网络请求）
@@ -101,7 +126,7 @@ class TaskRequester(Base):
 
     # 正则
     RE_LINE_BREAK: re.Pattern = re.compile(r"\n+")
-    RE_JSONLINE_FENCE: re.Pattern = re.compile(r"```jsonline\s*(.*?)\s*```", flags = re.IGNORECASE | re.DOTALL)
+    RE_JSONLINE_FENCE: re.Pattern = re.compile(r"```(?:json|jsonline)\s*(.*?)\s*```", flags = re.IGNORECASE | re.DOTALL)
     RE_INLINE_JSON_OBJECT: re.Pattern = re.compile(r"\{[^{}]+\}")
 
     # 类线程锁
@@ -991,6 +1016,21 @@ class TaskRequester(Base):
         if not isinstance(text, str) or text.strip() == "":
             return entries
 
+        def parse_record(data: object) -> tuple[int, str] | None:
+            if not isinstance(data, dict) or set(data) != {"request_index", "text"}:
+                return None
+            request_index = data.get("request_index")
+            value = data.get("text")
+            if type(request_index) is not int or request_index < 0 or not isinstance(value, str):
+                return None
+            return request_index, value
+
+        def align(values: list[tuple[int, str]]) -> list[tuple[int, str]]:
+            indices = [index for index, _ in values]
+            if len(indices) != len(set(indices)) or set(indices) != set(range(len(values))):
+                return []
+            return sorted(values, key = lambda item: item[0])
+
         for raw in text.splitlines():
             line = raw.strip()
             if line == "":
@@ -1001,18 +1041,18 @@ class TaskRequester(Base):
             except Exception:
                 continue
 
-            if not isinstance(data, dict) or len(data) != 1:
+            record = parse_record(data)
+            if record is not None:
+                entries.append(record)
                 continue
 
-            key, value = next(iter(data.items()))
-            if not str(key).isdigit() or not isinstance(value, str):
-                continue
-
-            entries.append((int(key), value))
+            if isinstance(data, dict) and len(data) == 1:
+                key, value = next(iter(data.items()))
+                if str(key).isdigit() and isinstance(value, str):
+                    entries.append((int(key), value))
 
         if entries != []:
-            entries.sort(key = lambda item: item[0])
-            return entries
+            return align(entries)
 
         try:
             data = json.loads(text)
@@ -1022,15 +1062,30 @@ class TaskRequester(Base):
         if not isinstance(data, dict):
             return []
 
+        inputs = data.get("inputs")
+        if isinstance(inputs, list):
+            structured_entries: list[tuple[int, str]] = []
+            for item in inputs:
+                record = parse_record(item)
+                if record is None:
+                    return []
+                structured_entries.append(record)
+            return align(structured_entries)
+
+        record = parse_record(data)
+        if record is not None:
+            return [record] if record[0] == 0 else []
+
         for key, value in data.items():
             if str(key).isdigit() and isinstance(value, str):
                 entries.append((int(key), value))
 
-        entries.sort(key = lambda item: item[0])
-        return entries
+        return align(entries)
 
     def _extract_translation_inputs(self, messages: list[dict[str, str]]) -> list[str]:
         for msg in messages:
+            if msg.get("role") != "user":
+                continue
             content = msg.get("content", "")
             if not isinstance(content, str) or content.strip() == "":
                 continue
@@ -1053,24 +1108,33 @@ class TaskRequester(Base):
                     continue
 
                 if not isinstance(data, dict) or len(data) != 1:
+                    if isinstance(data, dict) and set(data) == {"request_index", "text"}:
+                        request_index = data.get("request_index")
+                        value = data.get("text")
+                        if type(request_index) is int and request_index >= 0 and isinstance(value, str):
+                            inline_entries.append((request_index, value))
                     continue
 
                 key, value = next(iter(data.items()))
-                if not str(key).isdigit() or not isinstance(value, str):
-                    continue
-
-                inline_entries.append((int(key), value))
+                if str(key).isdigit() and isinstance(value, str):
+                    inline_entries.append((int(key), value))
 
             if inline_entries != []:
+                indices = [index for index, _ in inline_entries]
+                if len(indices) != len(set(indices)) or set(indices) != set(range(len(indices))):
+                    continue
                 inline_entries.sort(key = lambda item: item[0])
                 return [value for _, value in inline_entries]
 
         return []
 
     def _build_translation_jsonline_response(self, translations: list[str]) -> str:
-        return json.dumps(
-            {str(i): v for i, v in enumerate(translations)},
-            ensure_ascii = False,
+        return "\n".join(
+            json.dumps(
+                {"request_index": i, "text": value},
+                ensure_ascii = False,
+            )
+            for i, value in enumerate(translations)
         )
 
     def _get_deepl_language_codes(self) -> tuple[str, str]:

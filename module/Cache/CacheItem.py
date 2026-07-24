@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import re
 import threading
@@ -45,6 +46,11 @@ class CacheItem():
         RENPY = "RENPY"                            # RENPY 游戏文本
         RPGMAKER = "RPGMAKER"                      # RPGMAKER 游戏文本
 
+    class QualityOrigin(StrEnum):
+
+        POLISHER = "POLISHER"
+        PROOFREADER = "PROOFREADER"
+
     # 默认值
     src: str = ""                                                                               # 原文
     dst: str = ""                                                                               # 译文
@@ -58,6 +64,7 @@ class CacheItem():
     text_type: TextType = TextType.NONE                                                         # 文本的实际类型
     status: Base.TranslationStatus = Base.TranslationStatus.UNTRANSLATED                        # 翻译状态
     retry_count: int = 0                                                                        # 重试次数，当前只有单独重试的时候才增加此计数
+    metadata: dict[str, Any] = dataclasses.field(default_factory = dict)                         # 条目运行元数据
 
     # 线程锁
     lock: threading.Lock = dataclasses.field(init = False, repr = False, compare = False, default_factory = threading.Lock)
@@ -86,6 +93,9 @@ class CacheItem():
         re.compile(r"[/\\][a-z]{1,8}[<\[][a-z\d]{0,16}[>\]]", flags = re.IGNORECASE),            # /c[xy12] \bc[xy12] <\bc[xy12]>
     )
 
+    QUALITY_ORIGIN_KEY: ClassVar[str] = "quality_origin"
+    TRANSLATION_RETRY_KEY: ClassVar[str] = "translation_retry"
+
     @classmethod
     def from_dict(cls, data: dict) -> Self:
         class_fields = {f.name for f in dataclasses.fields(cls)}
@@ -93,6 +103,12 @@ class CacheItem():
         return cls(**filtered_data)
 
     def __post_init__(self) -> None:
+        status = Base.normalize_translation_status(self.status)
+        if not Base.is_item_status(status):
+            raise ValueError(f"Invalid cache item status: {status.value}")
+        self.status = status
+        self.metadata = copy.deepcopy(self.metadata) if isinstance(self.metadata, dict) else {}
+
         # 如果文件类型是 XLSX、TRANS、KVJSON、MESSAGEJSON，且没有文本类型，则判断实际的文本类型
         if (
             self.get_file_type() in (__class__.FileType.XLSX, __class__.FileType.KVJSON, __class__.FileType.MESSAGEJSON)
@@ -122,13 +138,13 @@ class CacheItem():
 
     # 设置译文
     def set_dst(self, dst: str) -> None:
+        value = dst if isinstance(dst, str) else str(dst)
         with self.lock:
             # 有时候模型的回复反序列化以后会是 int 等非字符类型，所以这里要强制转换成字符串
             # TODO:可能需要更好的处理方式
-            if isinstance(dst, str):
-                self.dst = dst
-            else:
-                self.dst = str(dst)
+            if value != self.dst:
+                self.metadata.pop(__class__.QUALITY_ORIGIN_KEY, None)
+            self.dst = value
 
     # 获取角色姓名原文
     def get_name_src(self) -> str | list[str]:
@@ -217,8 +233,12 @@ class CacheItem():
 
     # 设置翻译状态
     def set_status(self, status: Base.TranslationStatus) -> None:
+        normalized = Base.normalize_translation_status(status)
+        if not Base.is_item_status(normalized):
+            raise ValueError(f"Invalid cache item status: {normalized.value}")
+
         with self.lock:
-            self.status = status
+            self.status = normalized
 
     # 获取重试次数
     def get_retry_count(self) -> int:
@@ -230,10 +250,89 @@ class CacheItem():
         with self.lock:
             self.retry_count = retry_count
 
+    def get_metadata(self) -> dict[str, Any]:
+        with self.lock:
+            return copy.deepcopy(self.metadata)
+
+    def set_metadata(self, metadata: dict[str, Any]) -> None:
+        with self.lock:
+            self.metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+
+    def get_quality_origin(self) -> QualityOrigin | None:
+        with self.lock:
+            value = self.metadata.get(__class__.QUALITY_ORIGIN_KEY)
+
+        try:
+            return __class__.QualityOrigin(value)
+        except (TypeError, ValueError):
+            return None
+
+    def set_quality_origin(self, origin: QualityOrigin | str | None) -> None:
+        value = None if origin is None else __class__.QualityOrigin(origin).value
+        with self.lock:
+            if value is None:
+                self.metadata.pop(__class__.QUALITY_ORIGIN_KEY, None)
+            else:
+                self.metadata[__class__.QUALITY_ORIGIN_KEY] = value
+
+    def clear_quality_metadata(self) -> None:
+        self.set_quality_origin(None)
+
+    def set_quality_result(self, dst: str, origin: QualityOrigin | str) -> None:
+        value = __class__.QualityOrigin(origin).value
+        with self.lock:
+            self.dst = dst if isinstance(dst, str) else str(dst)
+            self.status = Base.TranslationStatus.POLISHED
+            self.metadata[__class__.QUALITY_ORIGIN_KEY] = value
+
+    def get_translation_state(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "dst": self.dst,
+                "name_dst": copy.deepcopy(self.name_dst),
+                "status": self.status,
+                "retry_count": self.retry_count,
+                "metadata": copy.deepcopy(self.metadata),
+            }
+
+    def commit_translation_from(
+        self,
+        source: Self,
+        expected_state: dict[str, Any],
+    ) -> bool:
+        if not isinstance(source, __class__) or not isinstance(expected_state, dict):
+            return False
+        incoming = source.get_translation_state()
+        with self.lock:
+            current = {
+                "dst": self.dst,
+                "name_dst": copy.deepcopy(self.name_dst),
+                "status": self.status,
+                "retry_count": self.retry_count,
+                "metadata": copy.deepcopy(self.metadata),
+            }
+            if current != expected_state:
+                return False
+            self.dst = incoming["dst"]
+            self.name_dst = copy.deepcopy(incoming["name_dst"])
+            self.status = Base.normalize_translation_status(incoming["status"])
+            self.retry_count = int(incoming["retry_count"])
+            self.metadata = copy.deepcopy(incoming["metadata"])
+            return True
+
+    def reset_translation(self, clear_dst: bool = True) -> None:
+        with self.lock:
+            if clear_dst:
+                self.dst = ""
+            self.status = Base.TranslationStatus.UNTRANSLATED
+            self.retry_count = 0
+            self.metadata.pop(__class__.QUALITY_ORIGIN_KEY, None)
+            self.metadata.pop(__class__.TRANSLATION_RETRY_KEY, None)
+
     def asdict(self) -> dict[str, Any]:
         with self.lock:
             return {
-                v.name: getattr(self, v.name)
+                v.name: copy.deepcopy(getattr(self, v.name))
                 for v in dataclasses.fields(self)
                 if v.init != False
             }

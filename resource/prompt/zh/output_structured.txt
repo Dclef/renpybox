@@ -1,0 +1,6 @@
+### 输出协议：STRUCTURED
+只返回一个 JSON 对象，不要使用 Markdown 围栏。对象必须符合：
+`{"translations":[{"request_index":0,"text":"译文"}],"new_glossary":[]}`
+- `translations` 中每项只能包含整数 `request_index` 和字符串 `text`。
+- 索引必须与输入的 0-based 索引集合完全一致，每个索引恰好出现一次；允许乱序，但不得缺失、重复、越界或改成 1-based。
+- `new_glossary` 可省略；需要提供候选时，每项只能包含字符串 `src`、`dst` 和可选 `info`。不要把候选术语混入 `translations`。
