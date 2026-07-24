@@ -3,10 +3,10 @@ import copy
 import json
 import os
 import re
-import shutil
 import threading
 import time
 import webbrowser
+from collections.abc import Mapping
 from itertools import zip_longest
 
 import httpx
@@ -19,6 +19,13 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskLimiter import TaskLimiter
 from module.Engine.TaskRequester import TaskRequester
+from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
+from module.Engine.Translator.TranslationTaskContext import (
+    ProjectAssets,
+    TermAsset,
+    TranslationTaskContext,
+    merge_provider_credentials,
+)
 from module.Engine.Translator.TranslatorTask import TranslatorTask
 from module.File.FileManager import FileManager
 from module.Filter.LanguageFilter import LanguageFilter
@@ -38,6 +45,7 @@ class Translator(Base):
         # 初始化
         self.cache_manager = CacheManager(service = True)
         self._last_runtime_output_folder: str = ""
+        self._active_cache_output_folder: str = ""
 
         # 线程锁
         self.data_lock = threading.Lock()
@@ -187,7 +195,7 @@ class Translator(Base):
                 cache_manager = CacheManager(service = False)
                 cache_manager.load_project_from_file(output_folder)
                 status = cache_manager.get_project().get_status()
-                extras = cache_manager.get_project().get_extras() or {}
+                extras = cache_manager.get_project().get_progress() or {}
 
             payload = {
                 "status" : status,
@@ -239,9 +247,251 @@ class Translator(Base):
             for candidate in (
                 os.path.join(cache_dir, "project.json"),
                 os.path.join(cache_dir, "items.json"),
+                os.path.join(cache_dir, CacheManager.RESET_JOURNAL_NAME),
                 os.path.join(cache_dir, CacheManager.CACHE_DB_NAME),
             )
         )
+
+    @staticmethod
+    def _get_active_platform(config: Config) -> dict:
+        platform = config.get_platform(config.activate_platform)
+        if not isinstance(platform, dict):
+            raise ValueError("未找到当前启用的翻译平台配置")
+        return copy.deepcopy(platform)
+
+    @classmethod
+    def _get_resume_runtime_provider(cls, snapshot: dict, config: Config) -> dict:
+        request_policy = snapshot.get("request_policy", {})
+        persisted = (
+            request_policy.get("provider", {})
+            if isinstance(request_policy, Mapping)
+            else {}
+        )
+        persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
+
+        current: dict = {}
+        persisted_id = persisted.get("id")
+        if isinstance(config.platforms, list):
+            for platform in config.platforms:
+                if isinstance(platform, dict) and platform.get("id") == persisted_id:
+                    current = platform
+                    break
+        if not current:
+            current = cls._get_active_platform(config)
+
+        if not persisted:
+            return copy.deepcopy(current)
+        return merge_provider_credentials(persisted, current)
+
+    @staticmethod
+    def _copy_entry_config(data: dict) -> Config:
+        supplied = data.get("config") if isinstance(data, dict) else None
+        config = copy.deepcopy(supplied) if isinstance(supplied, Config) else Config().load()
+
+        overrides = {
+            "input_folder": data.get("input_folder"),
+            "output_folder": data.get("output_folder"),
+            "source_language": data.get("source_language"),
+            "target_language": data.get("target_language"),
+        }
+        for key, value in overrides.items():
+            if value is not None and value != "":
+                setattr(config, key, str(value) if key.endswith("_folder") else value)
+        return config
+
+    @staticmethod
+    def _assets_have_project_state(assets: ProjectAssets) -> bool:
+        return bool(
+            assets.revision > 0
+            or assets.updated_at
+            or assets.worldbook_enabled
+            or assets.character_cards_enabled
+            or assets.glossary_enabled
+            or assets.do_not_translate_enabled
+            or len(assets.worldbook) > 0
+            or len(assets.character_cards) > 0
+            or len(assets.glossary) > 0
+            or len(assets.do_not_translate) > 0
+        )
+
+    def _load_project_assets(self, config: Config) -> ProjectAssets:
+        project = self.cache_manager.get_project()
+        assets = ProjectAssets.from_dict(project.get_project_assets())
+        if not self._assets_have_project_state(assets):
+            assets = ProjectAssets.from_config(config)
+            project.set_project_assets(assets)
+        return assets
+
+    def _build_task_context(
+        self,
+        config: Config,
+        assets: ProjectAssets,
+        platform: dict,
+        *,
+        legacy_bootstrap: bool = False,
+    ) -> TranslationTaskContext:
+        prompt = PromptBuilder(config).build_task_prompt_snapshot()
+        if platform.get("api_format") in (
+            Base.APIFormat.SAKURALLM,
+            Base.APIFormat.DEEPL,
+            Base.APIFormat.DEEPLX,
+        ):
+            prompt["protocol"] = Config.OUTPUT_PROTOCOL_JSONLINE
+
+        return TranslationTaskContext.from_config(
+            config,
+            assets,
+            prompt = prompt,
+            legacy_bootstrap = legacy_bootstrap,
+        )
+
+    def _run_asset_preflight(self, context: TranslationTaskContext, data: dict) -> None:
+        builder = PromptBuilder(context)
+        fixed_prompt = "\n\n".join(
+            section
+            for section in (
+                builder.build_main(),
+                builder.build_worldbook_context(),
+            )
+            if section.strip() != ""
+        )
+        result = TranslationPreflightService.check(
+            context.assets,
+            fixed_prompt = fixed_prompt,
+            provider = context.runtime_provider,
+            reserved_output_tokens = TaskRequester.DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        if not result.can_start:
+            raise ValueError(
+                "固定提示词与完整世界观超过模型上下文窗口："
+                + ", ".join(result.errors)
+            )
+        if result.has_effective_assets or bool(data.get("preflight_confirmed", False)):
+            return
+
+        message = getattr(
+            Localizer.get(),
+            "translation_preflight_missing_assets",
+            "当前项目没有可用的已确认资产；可先打开工作台或仍然继续翻译。",
+        )
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": Base.ToastType.WARNING,
+            "message": message,
+        })
+
+    def _initialize_translation_run(
+        self,
+        current_config: Config,
+        status: Base.TranslationStatus,
+        data: dict,
+    ) -> TranslationTaskContext:
+        output_folder = current_config.output_folder
+        self.cache_manager.cache_use_sqlite = bool(current_config.cache_use_sqlite)
+        current_platform = self._get_active_platform(current_config)
+        try:
+            normalized_status = Base.normalize_translation_status(status)
+        except (TypeError, ValueError):
+            normalized_status = Base.TranslationStatus.UNTRANSLATED
+
+        if normalized_status in Base.PROJECT_RESUMABLE_STATUSES:
+            self.cache_manager.load_from_file(output_folder, strict = True)
+            project = self.cache_manager.get_project()
+            snapshot = project.get_translation_snapshot()
+            if snapshot is None:
+                assets = self._load_project_assets(current_config)
+                context = self._build_task_context(
+                    current_config,
+                    assets,
+                    current_platform,
+                    legacy_bootstrap = True,
+                )
+                project.set_translation_snapshot(context)
+                self.cache_manager.save_to_file(
+                    project = project,
+                    items = self.cache_manager.get_items(),
+                    output_folder = output_folder,
+                )
+            else:
+                runtime_provider = self._get_resume_runtime_provider(snapshot, current_config)
+                context = TranslationTaskContext.from_snapshot(
+                    snapshot,
+                    runtime_provider = runtime_provider,
+                )
+
+            self._run_asset_preflight(context, data)
+            return context
+
+        fresh_project, items = FileManager(current_config).read_from_path()
+        if self._has_cache_snapshot(output_folder):
+            self.cache_manager.load_project_from_file(output_folder, strict = True)
+            if self.cache_manager.get_project().get_id() == "":
+                # 工作台可以在首次翻译前先创建只含长期资产的项目记录。
+                # 此时只补项目 ID，不能用 fresh_project 覆盖已有 assets/candidates。
+                self.cache_manager.get_project().set_id(fresh_project.get_id())
+        else:
+            self.cache_manager.set_project(fresh_project)
+
+        assets = self._load_project_assets(current_config)
+        context = self._build_task_context(current_config, assets, current_platform)
+        self._run_asset_preflight(context, data)
+        progress = self._new_progress_extras(
+            sum(
+                1
+                for item in items
+                if item.get_status() == Base.TranslationStatus.UNTRANSLATED
+            )
+        )
+        self.cache_manager.reset_translation_run(
+            items,
+            output_folder,
+            snapshot = context,
+            progress = progress,
+        )
+        return context
+
+    def _completed_item_count(self) -> int:
+        return sum(
+            1
+            for item in self.cache_manager.get_items()
+            if Base.is_item_completed(item.get_status())
+        )
+
+    def _merge_analysis_candidates(self, candidates: list[dict[str, str]]) -> None:
+        if not candidates:
+            return
+
+        with self.data_lock:
+            project = self.cache_manager.get_project()
+            payload = project.get_analysis_candidates()
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            items = [copy.deepcopy(item) for item in items if isinstance(item, dict)]
+            known_sources = {
+                str(item.get("source", item.get("src", ""))).strip().casefold()
+                for item in items
+            }
+
+            for candidate in candidates:
+                source = str(candidate.get("source", "") or "").strip()
+                target = str(candidate.get("target", "") or "").strip()
+                source_key = source.casefold()
+                if source == "" or target == "" or source_key in known_sources:
+                    continue
+                known_sources.add(source_key)
+                items.append({
+                    "record_id": TermAsset.build_record_id("ANALYSIS", source),
+                    "origin": "ANALYSIS",
+                    "source": source,
+                    "target": target,
+                    "enabled": True,
+                    "regex": False,
+                    "note": str(candidate.get("note", "") or "").strip(),
+                })
+
+            payload = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+            payload["schema_version"] = 1
+            payload["items"] = items
+            project.set_analysis_candidates(payload)
+            self.cache_manager.require_save_to_file(self.config.output_folder)
 
     def _new_progress_extras(self, total_line: int) -> dict:
         """创建新的翻译进度统计。"""
@@ -261,10 +511,10 @@ class Translator(Base):
 
     def _resume_progress_extras(self) -> dict:
         """从缓存恢复翻译进度，并按当前条目状态修正已完成行数。"""
-        extras = dict(self.cache_manager.get_project().get_extras() or {})
+        extras = dict(self.cache_manager.get_project().get_progress() or {})
         elapsed = extras.get("time", 0) or 0
         extras["start_time"] = time.time() - elapsed
-        extras["line"] = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.TRANSLATED)
+        extras["line"] = self._completed_item_count()
 
         for key in (
             "total_line",
@@ -307,9 +557,10 @@ class Translator(Base):
         except Exception:
             return False
 
-    def _validate_renpy_source_io_layout(self) -> tuple[bool, str]:
-        input_folder = str(getattr(self.config, "input_folder", "") or "").strip()
-        output_folder = str(getattr(self.config, "output_folder", "") or "").strip()
+    def _validate_renpy_source_io_layout(self, config: Config | None = None) -> tuple[bool, str]:
+        selected_config = config or self.config
+        input_folder = str(getattr(selected_config, "input_folder", "") or "").strip()
+        output_folder = str(getattr(selected_config, "output_folder", "") or "").strip()
 
         if input_folder == "" or output_folder == "":
             return False, "源码翻译缺少输入目录或输出目录。"
@@ -335,38 +586,28 @@ class Translator(Base):
     # 实际的翻译流程
     def translation_start_task(self, event: str, data: dict) -> None:
         try:
-            config: Base.TranslationStatus = data.get("config")
-            status: Base.TranslationStatus = data.get("status")
+            data = data if isinstance(data, dict) else {}
+            status = data.get("status", Base.TranslationStatus.UNTRANSLATED)
 
             # 更新运行状态
             Engine.get().set_status(Engine.Status.TRANSLATING)
 
-            # 初始化
-            self.config = config if isinstance(config, Config) else Config().load()
             # 预处理提示（解析/生成任务阶段）
             self.emit(Base.Event.TRANSLATION_UPDATE, {
                 "phase": "preparing",
                 "message": "预处理中…",
             })
-            override_input = data.get("input_folder")
-            override_output = data.get("output_folder")
-            override_source = data.get("source_language")
-            override_target = data.get("target_language")
-            if override_input:
-                self.config.input_folder = str(override_input)
-            if override_output:
-                self.config.output_folder = str(override_output)
-            if override_source:
-                self.config.source_language = override_source
-            if override_target:
-                self.config.target_language = override_target
-            self.platform = self.config.get_platform(self.config.activate_platform)
-            self._last_runtime_output_folder = self.config.output_folder
-            local_flag = self.initialize_local_flag()
-            max_workers, rpm_threshold = self.initialize_max_workers()
 
-            if getattr(self.config, "renpy_source_translate", False):
-                valid_layout, layout_message = self._validate_renpy_source_io_layout()
+            # 重置无状态组件，然后在唯一边界创建/恢复不可变任务上下文。
+            TextProcessor.reset()
+            TaskRequester.reset()
+            PromptBuilder.reset()
+            current_config = self._copy_entry_config(data)
+            self._last_runtime_output_folder = current_config.output_folder
+            self._active_cache_output_folder = ""
+
+            if getattr(current_config, "renpy_source_translate", False):
+                valid_layout, layout_message = self._validate_renpy_source_io_layout(current_config)
                 if not valid_layout:
                     self.warning(f"[INIT] 已阻止不安全的源码翻译路径: {layout_message}")
                     self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -376,29 +617,32 @@ class Translator(Base):
                     Engine.get().set_status(Engine.Status.IDLE)
                     self.emit(Base.Event.TRANSLATION_DONE, {})
                     return None
-            
+
+            try:
+                self.task_context = self._initialize_translation_run(
+                    current_config,
+                    status,
+                    data,
+                )
+                self._active_cache_output_folder = current_config.output_folder
+                self.config = self.task_context.to_runtime_config(current_config)
+                self.platform = self._get_active_platform(self.config)
+            except Exception as e:
+                self.error("[INIT] 翻译任务上下文初始化失败", e)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(e),
+                })
+                Engine.get().set_status(Engine.Status.IDLE)
+                self.emit(Base.Event.TRANSLATION_DONE, {})
+                return None
+
+            local_flag = self.initialize_local_flag()
+            max_workers, rpm_threshold = self.initialize_max_workers()
+
             # 添加初始化日志
             self.info(f"[INIT] 配置加载完成: platform={self.platform.get('name', 'unknown')}, model={self.platform.get('model', 'unknown')}")
             self.info(f"[INIT] 最大并发: {max_workers}, RPM限制: {rpm_threshold}")
-
-            # 重置
-            TextProcessor.reset()
-            TaskRequester.reset()
-            PromptBuilder.reset()
-
-            # 生成缓存列表
-            try:
-                # 根据 status 判断是否为继续翻译
-                if status == Base.TranslationStatus.TRANSLATING:
-                    self.cache_manager.load_from_file(self.config.output_folder)
-                else:
-                    shutil.rmtree(f"{self.config.output_folder}/cache", ignore_errors = True)
-                    project, items = FileManager(self.config).read_from_path()
-                    self.cache_manager.set_items(items)
-                    self.cache_manager.set_project(project)
-            except Exception as e:
-                self.error(f"{Localizer.get().log_read_file_fail}", e)
-                return None
 
             if self._should_stop_requested():
                 return None
@@ -413,19 +657,23 @@ class Translator(Base):
                 self.emit(Base.Event.TRANSLATION_STOP, {})
                 return None
 
-            # 从头翻译时加载默认数据
-            if status == Base.TranslationStatus.TRANSLATING:
+            try:
+                normalized_status = Base.normalize_translation_status(status)
+            except (TypeError, ValueError):
+                normalized_status = Base.TranslationStatus.UNTRANSLATED
+
+            # 续译恢复旧进度；新任务的初始进度已和 snapshot 一起持久化。
+            if normalized_status in Base.PROJECT_RESUMABLE_STATUSES:
                 self.extras = self._resume_progress_extras()
             else:
-                # 修复: 计算实际的总行数，而不是硬编码为0
-                total_untranslated = self.cache_manager.get_item_count_by_status(
-                    Base.TranslationStatus.UNTRANSLATED
-                )
+                total_untranslated = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
                 self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
-                self.extras = self._new_progress_extras(total_untranslated)
+                self.extras = self.cache_manager.get_project().get_progress()
+                if not self.extras:
+                    self.extras = self._new_progress_extras(total_untranslated)
 
             # 更新翻译进度
-            self.cache_manager.get_project().set_extras(self.extras)
+            self.cache_manager.get_project().set_progress(self.extras)
             self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATING)
             self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
 
@@ -447,8 +695,8 @@ class Translator(Base):
             if self._should_stop_requested():
                 return None
 
-            # 保存初始 token_threshold，避免多轮累积除法导致值趋近于 1
-            self._initial_token_threshold = self.config.token_threshold
+            # 自适应批大小是本次运行的局部状态，不写回任务快照或 Config。
+            initial_token_threshold = max(1, int(self.config.token_threshold))
 
             # 开始循环
             for current_round in range(self.config.max_round):
@@ -465,7 +713,7 @@ class Translator(Base):
                 # 第一轮且不是继续翻译时，记录任务的总行数
                 if current_round == 0:
                     remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
-                    if status == Base.TranslationStatus.UNTRANSLATED:
+                    if normalized_status == Base.TranslationStatus.UNTRANSLATED:
                         self.extras["total_line"] = remaining
                     else:
                         self.extras["total_line"] = self.extras.get("line", 0) + remaining
@@ -473,11 +721,13 @@ class Translator(Base):
                 # 第二轮开始切分（基于初始值计算，避免累积除法）
                 # 采用 2 倍率衰减而非 3 倍率，避免重试时批次过快坍缩到单行，
                 # 在保证最终能逐行隔离顽固错误的同时，显著减少串行化、提升吞吐。
-                if current_round > 0:
-                    self.config.token_threshold = max(1, int(self._initial_token_threshold / (2 ** current_round)))
+                round_token_threshold = max(
+                    1,
+                    int(initial_token_threshold / (2 ** current_round)),
+                )
 
                 # 生成缓存数据条目片段
-                chunk_line_threshold = self.config.token_threshold
+                chunk_line_threshold = round_token_threshold
                 if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
                     chunk_line_threshold = 1
                 chunks, precedings = self.cache_manager.generate_item_chunks(
@@ -496,7 +746,17 @@ class Translator(Base):
                     pid = progress.new()
                     for items, precedings in zip(chunks, precedings):
                         progress.update(pid, advance = 1, total = len(chunks))
-                        tasks.append(TranslatorTask(self.config, self.platform, local_flag, items, precedings))
+                        task_config = self.task_context.to_runtime_config(self.config)
+                        task_config.token_threshold = round_token_threshold
+                        tasks.append(TranslatorTask(
+                            self.task_context,
+                            self.platform,
+                            local_flag,
+                            items,
+                            precedings,
+                            runtime_config = task_config,
+                            candidate_sink = self._merge_analysis_candidates,
+                        ))
 
                 # 打印日志
                 self.info(Localizer.get().translator_task_generation_log.replace("{COUNT}", str(len(chunks))))
@@ -514,7 +774,7 @@ class Translator(Base):
                     self.info("[INIT] 单行翻译模式已启用：每次请求只处理一行文本")
                 self.print("")
                 if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
-                    self.info(PromptBuilder(self.config).build_main())
+                    self.info(PromptBuilder(self.task_context).build_main())
                     self.print("")
 
                 # 开始执行翻译任务
@@ -623,6 +883,15 @@ class Translator(Base):
 
             # 触发翻译停止完成的事件
             self.emit(Base.Event.TRANSLATION_DONE, {})
+        except Exception as e:
+            self.error("[TRANSLATION] 翻译主流程异常终止", e)
+            if Engine.get().get_status() != Engine.Status.STOPPING:
+                Engine.get().set_status(Engine.Status.IDLE)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(e),
+                })
+                self.emit(Base.Event.TRANSLATION_DONE, {})
         finally:
             self._translation_thread = None
 
@@ -784,16 +1053,6 @@ class Translator(Base):
 
     # 检查结果并写入文件
     def check_and_wirte_result(self, items: list[CacheItem]) -> None:
-        # 启用自动术语表的时，更新配置文件
-        if self.config.glossary_enable == True and self.config.auto_glossary_enable == True:
-            # 更新配置文件
-            config = Config().load()
-            config.glossary_data = self.config.glossary_data
-            config.save()
-
-            # 术语表刷新事件
-            self.emit(Base.Event.GLOSSARY_REFRESH, {})
-
         # 检查结果（异常不影响写文件）
         try:
             ResultChecker(self.config, items).check()
@@ -877,7 +1136,7 @@ class Translator(Base):
                 self.extras = self._merge_task_result_into_progress(result)
 
             # 更新翻译进度
-            self.cache_manager.get_project().set_extras(self.extras)
+            self.cache_manager.get_project().set_progress(self.extras)
 
             # 更新翻译状态
             self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATING)

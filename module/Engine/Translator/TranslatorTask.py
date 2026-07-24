@@ -1,10 +1,12 @@
 import dataclasses
+import copy
 import json
 import itertools
 import threading
 import time
 import traceback
 from functools import lru_cache
+from collections.abc import Callable
 
 import rich
 from rich import box
@@ -17,6 +19,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
+from module.Engine.Translator.TranslationTaskContext import TranslationTaskContext
 from module.Localizer.Localizer import Localizer
 from module.PromptBuilder import PromptBuilder
 from module.Response.ResponseChecker import ResponseChecker
@@ -66,12 +69,39 @@ class TranslatorTask(Base):
     GLOSSARY_SAVE_TIME: float = time.time()
     GLOSSARY_SAVE_INTERVAL: int = 15
 
-    def __init__(self, config: Config, platform: dict, local_flag: bool, items: list[CacheItem], precedings: list[CacheItem]) -> None:
+    RETRY_METADATA_KEY = CacheItem.TRANSLATION_RETRY_KEY
+    RETRY_METADATA_SCHEMA_VERSION = 1
+    RETRY_REASON_ORDER: tuple[str, ...] = (
+        "INDEX_ALIGNMENT",
+        "RESPONSE_FORMAT",
+        "PLACEHOLDER_MISMATCH",
+        "LINE_ERROR_EMPTY_LINE",
+        "LINE_ERROR_KANA",
+        "LINE_ERROR_HANGEUL",
+        "LINE_ERROR_MIXED_LANGUAGE",
+        "LINE_ERROR_SIMILARITY",
+        "LINE_ERROR_DEGRADATION",
+        "TRANSLATION_ERROR_MARKER",
+        "INVALID_RESPONSE",
+        "REQUEST_FAILURE",
+    )
+
+    def __init__(
+        self,
+        config: Config | TranslationTaskContext,
+        platform: dict,
+        local_flag: bool,
+        items: list[CacheItem],
+        precedings: list[CacheItem],
+        *,
+        runtime_config: Config | None = None,
+        candidate_sink: Callable[[list[dict[str, str]]], None] | None = None,
+    ) -> None:
         super().__init__()
 
         # 参数验证（防御性编程）
-        if not isinstance(config, Config):
-            raise TypeError(f"[INIT] Config 类型错误: {type(config)}")
+        if not isinstance(config, (Config, TranslationTaskContext)):
+            raise TypeError(f"[INIT] Config/TranslationTaskContext 类型错误: {type(config)}")
         if not isinstance(platform, dict):
             raise TypeError(f"[INIT] Platform 类型错误: {type(platform)}")
         
@@ -84,14 +114,24 @@ class TranslatorTask(Base):
         if not items or len(items) == 0:
             raise ValueError(f"[INIT] Items 列表不能为空")
 
+        # 每个任务都使用独立运行配置。旧 Config 调用会在边界生成临时上下文，
+        # 新管线则直接复用已经持久化的不可变上下文。
+        if isinstance(config, TranslationTaskContext):
+            self.task_context = config
+            task_config = config.to_runtime_config(runtime_config)
+        else:
+            task_config = copy.deepcopy(runtime_config or config)
+            self.task_context = TranslationTaskContext.from_config(task_config)
+
         # 初始化
         self.items = items
         self.precedings = precedings
-        self.processors = [TextProcessor(config, item) for item in items]
-        self.config = config
-        self.platform = platform
+        self.processors = [TextProcessor(task_config, item) for item in items]
+        self.config = task_config
+        self.platform = copy.deepcopy(platform)
         self.local_flag = local_flag
-        self.prompt_builder = PromptBuilder(self.config)
+        self.candidate_sink = candidate_sink
+        self.prompt_builder = PromptBuilder(self.task_context)
         self.response_checker = ResponseChecker(self.config, items)
 
     def should_use_single_line_translation(self) -> bool:
@@ -178,7 +218,12 @@ class TranslatorTask(Base):
             if all(v == ResponseChecker.Error.NONE for v in item_checks):
                 pending_updates.append((item, processor, item_dsts.copy()))
             else:
-                self.record_failed_item_retry(item, item_checks, item_dsts)
+                self.record_failed_item_retry(
+                    item,
+                    item_checks,
+                    item_dsts,
+                    srcs = item_srcs,
+                )
 
         log_srcs, log_dsts = self.build_log_lines(processors, all_srcs, all_dsts)
 
@@ -188,6 +233,7 @@ class TranslatorTask(Base):
             if name is not None:
                 item.set_first_name_dst(name)
             item.set_status(Base.TranslationStatus.TRANSLATED)
+            self.clear_retry_metadata(item)
             updated_count = updated_count + 1
 
         if updated_count > 0 and all_glossarys != []:
@@ -332,6 +378,7 @@ class TranslatorTask(Base):
             for item, processor in zip(items, processors):
                 item.set_dst(item.get_src())
                 item.set_status(Base.TranslationStatus.TRANSLATED)
+                self.clear_retry_metadata(item)
 
             return {
                 "row_count": len(items),
@@ -389,10 +436,19 @@ class TranslatorTask(Base):
         # 如果请求结果标记为 skip，即有错误发生，则跳过本次循环
         if skip == True:
             self.warning(f"[REQUEST] API请求被跳过（发生错误）")
+            self.record_failed_item_retries(
+                items,
+                processors,
+                [ResponseChecker.Error.UNKNOWN] * len(srcs),
+                [""] * len(srcs),
+                retry_reason_code = "REQUEST_FAILURE",
+            )
             return {
                 "row_count": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
+                "failed_line_count": len(srcs),
+                "requested_line_count": len(srcs),
             }
         
         self.debug(f"[REQUEST] API请求完成: input_tokens={input_tokens}, output_tokens={output_tokens}, "
@@ -413,6 +469,7 @@ class TranslatorTask(Base):
                     if item.get_status() == Base.TranslationStatus.UNTRANSLATED:
                         item.set_status(Base.TranslationStatus.EXCLUDED)
                         item.set_dst("")
+                    self.clear_retry_metadata(item)
                     src_preview = (item.get_src() or "").replace("\n", " ").strip()
                     if len(src_preview) > 120:
                         src_preview = src_preview[:120] + "…"
@@ -427,6 +484,10 @@ class TranslatorTask(Base):
                 total_row_count = 0
                 total_input_tokens = 0
                 total_output_tokens = 0
+                total_failed_line_count = 0
+                total_fallback_line_count = 0
+                total_line_count_mismatch_count = 0
+                total_requested_line_count = 0
                 for item in items:
                     if Engine.get().get_status() == Engine.Status.STOPPING:
                         break
@@ -434,21 +495,37 @@ class TranslatorTask(Base):
                     total_row_count += int(result.get("row_count", 0) or 0)
                     total_input_tokens += int(result.get("input_tokens", 0) or 0)
                     total_output_tokens += int(result.get("output_tokens", 0) or 0)
+                    total_failed_line_count += int(result.get("failed_line_count", 0) or 0)
+                    total_fallback_line_count += int(result.get("fallback_line_count", 0) or 0)
+                    total_line_count_mismatch_count += int(result.get("line_count_mismatch_count", 0) or 0)
+                    total_requested_line_count += int(result.get("requested_line_count", 0) or 0)
                 return {
                     "row_count": total_row_count,
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
+                    "failed_line_count": total_failed_line_count,
+                    "fallback_line_count": total_fallback_line_count,
+                    "line_count_mismatch_count": total_line_count_mismatch_count,
+                    "requested_line_count": total_requested_line_count,
                 }
 
-        # 提取回复内容
-        dsts, glossarys = ResponseDecoder().decode(
-            response_result, len(srcs),
-            structured = self.config.structured_output_enable,
+        # 解析并按 request_index 对齐。严格协议失败时返回空记录，整批进入重试。
+        structured_response = (
+            self.config.structured_output_enable
+            and self.platform.get("api_format")
+            not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
         )
+        decode_result = ResponseDecoder().decode_result(
+            response_result,
+            expected_count = len(srcs),
+            structured = structured_response,
+        )
+        dsts = decode_result.dsts
+        glossarys = decode_result.glossarys
 
         # Sakura JSONLINE 解析失败时尝试格式化重试（结构化模式下跳过）
         if (
-            not self.config.structured_output_enable
+            not structured_response
             and self.platform.get("api_format") == Base.APIFormat.SAKURALLM
             and self.config.sakura_jsonline_retry_enable == True
             and (len(dsts) == 0 or all(v == "" or v == None for v in dsts))
@@ -459,27 +536,43 @@ class TranslatorTask(Base):
                 console_log.extend(retry_log)
             retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(retry_messages)
             if retry_skip == False and isinstance(retry_result, str):
-                retry_dsts, retry_glossarys = ResponseDecoder().decode(retry_result, len(srcs))
-                if len(retry_dsts) > 0 and not all(v == "" or v == None for v in retry_dsts):
-                    dsts = retry_dsts
-                    glossarys = retry_glossarys
+                retry_decode_result = ResponseDecoder().decode_result(
+                    retry_result,
+                    expected_count = len(srcs),
+                )
+                if retry_decode_result.translations != ():
+                    decode_result = retry_decode_result
+                    dsts = retry_decode_result.dsts
+                    glossarys = retry_decode_result.glossarys
                     response_result = retry_result
                     if retry_think != "":
                         response_think = (response_think + "\n" + retry_think) if response_think != "" else retry_think
                     input_tokens = (input_tokens or 0) + (retry_input_tokens or 0)
                     output_tokens = (output_tokens or 0) + (retry_output_tokens or 0)
 
-        # 检查回复内容
-        # TODO - 当前逻辑下任务不会跨文件，所以一个任务的 TextType 都是一样的，有效，但是十分的 UGLY
-        checks = self.response_checker.check(
-            srcs,
-            dsts,
-            self.items[0].get_text_type(),
-            line_items = line_items,
-        )
+        # 严格协议解析失败时不能进入内容检查。解码器只会返回完整、已按
+        # request_index 对齐的结果，因此空 translations 表示整个批次协议失败。
+        decode_retry_reason: str | None = None
+        if decode_result.translations == ():
+            checks = [ResponseChecker.Error.FAIL_DATA] * len(srcs)
+            decode_retry_reason = "INDEX_ALIGNMENT"
+        else:
+            # TODO - 当前逻辑下任务不会跨文件，所以一个任务的 TextType 都是一样的，有效，但是十分的 UGLY
+            checks = self.response_checker.check(
+                srcs,
+                dsts,
+                self.items[0].get_text_type(),
+                line_items = line_items,
+            )
 
         # 记录失败条目的重试次数；明确的翻译失败标记达到阈值后排除，避免反复重试到最大轮次。
-        self.record_failed_item_retries(items, processors, checks, dsts)
+        self.record_failed_item_retries(
+            items,
+            processors,
+            checks,
+            dsts,
+            retry_reason_code = decode_retry_reason,
+        )
 
         # 模型回复日志
         # 在这里将日志分成打印在控制台和写入文件的两份，按不同逻辑处理
@@ -496,7 +589,11 @@ class TranslatorTask(Base):
 
         # 如果有任何正确的条目，则处理结果
         updated_count = 0
-        if any(v == ResponseChecker.Error.NONE for v in checks):
+        if (
+            len(dsts) == len(srcs)
+            and len(checks) == len(srcs)
+            and any(v == ResponseChecker.Error.NONE for v in checks)
+        ):
             # 更新术语表
             with __class__.GLOSSARY_SAVE_LOCK:
                 __class__.GLOSSARY_SAVE_TIME = self.merge_glossary(glossarys, __class__.GLOSSARY_SAVE_TIME)
@@ -504,10 +601,6 @@ class TranslatorTask(Base):
             # 更新缓存数据
             dsts_cp = dsts.copy()
             checks_cp = checks.copy()
-            if len(srcs) > len(dsts_cp):
-                dsts_cp.extend([""] * (len(srcs) - len(dsts_cp)))
-            if len(srcs) > len(checks_cp):
-                checks_cp.extend([ResponseChecker.Error.NONE] * (len(srcs) - len(checks_cp)))
             for item, processor in zip(items, processors):
                 length = len(processor.srcs)
                 dsts_ex = [dsts_cp.pop(0) for _ in range(length)]
@@ -518,6 +611,7 @@ class TranslatorTask(Base):
                     item.set_dst(dst)
                     item.set_first_name_dst(name) if name is not None else None
                     item.set_status(Base.TranslationStatus.TRANSLATED)
+                    self.clear_retry_metadata(item)
                     updated_count = updated_count + 1
 
         # 打印任务结果
@@ -558,34 +652,65 @@ class TranslatorTask(Base):
         processors: list[TextProcessor],
         checks: list[ResponseChecker.Error],
         dsts: list[str],
+        *,
+        retry_reason_code: str | None = None,
     ) -> None:
-        checks_cp = checks.copy()
-        dsts_cp = dsts.copy()
         total_length = sum(len(processor.srcs) for processor in processors)
-        if len(checks_cp) < total_length:
-            checks_cp.extend([ResponseChecker.Error.UNKNOWN] * (total_length - len(checks_cp)))
-        if len(dsts_cp) < total_length:
-            dsts_cp.extend([""] * (total_length - len(dsts_cp)))
 
+        # 不补齐模型结果。任何内部长度不一致都作为索引对齐失败记录，且
+        # 后续写回条件会拒绝这批数据。
+        if len(checks) != total_length or len(dsts) != total_length:
+            for item, processor in zip(items, processors):
+                length = len(processor.srcs)
+                if length == 0:
+                    continue
+                self.record_failed_item_retry(
+                    item,
+                    [ResponseChecker.Error.FAIL_LINE_COUNT] * length,
+                    [],
+                    srcs = list(processor.srcs),
+                    retry_reason_code = retry_reason_code or "INDEX_ALIGNMENT",
+                )
+            return
+
+        offset = 0
         for item, processor in zip(items, processors):
             length = len(processor.srcs)
             if length == 0:
                 continue
-            item_checks = [checks_cp.pop(0) for _ in range(length)]
-            item_dsts = [dsts_cp.pop(0) for _ in range(length)]
-            self.record_failed_item_retry(item, item_checks, item_dsts)
+            item_checks = checks[offset:offset + length]
+            item_dsts = dsts[offset:offset + length]
+            self.record_failed_item_retry(
+                item,
+                item_checks,
+                item_dsts,
+                srcs = list(processor.srcs),
+                retry_reason_code = retry_reason_code,
+            )
+            offset += length
 
     def record_failed_item_retry(
         self,
         item: CacheItem,
         checks: list[ResponseChecker.Error],
         dsts: list[str],
+        *,
+        srcs: list[str] | None = None,
+        retry_reason_code: str | None = None,
     ) -> None:
         if checks == [] or all(v == ResponseChecker.Error.NONE for v in checks):
             return
 
         retry_count = item.get_retry_count() + 1
         item.set_retry_count(retry_count)
+        self.set_retry_metadata(
+            item,
+            checks,
+            srcs or [],
+            dsts,
+            retry_count,
+            retry_reason_code = retry_reason_code,
+        )
 
         if self.should_exclude_terminal_translation_error(checks, dsts, retry_count):
             item.set_dst("")
@@ -594,6 +719,80 @@ class TranslatorTask(Base):
             if len(preview) > 120:
                 preview = preview[:120] + "…"
             self.warning(f"[REQUEST] 翻译失败标记已达到重试阈值，已排除: {preview}")
+
+    @classmethod
+    def clear_retry_metadata(cls, item: CacheItem) -> None:
+        metadata = item.get_metadata()
+        if cls.RETRY_METADATA_KEY not in metadata:
+            return
+        metadata.pop(cls.RETRY_METADATA_KEY, None)
+        item.set_metadata(metadata)
+
+    @classmethod
+    def set_retry_metadata(
+        cls,
+        item: CacheItem,
+        checks: list[ResponseChecker.Error],
+        srcs: list[str],
+        dsts: list[str],
+        retry_count: int,
+        *,
+        retry_reason_code: str | None = None,
+    ) -> None:
+        grouped: dict[str, list[int]] = {}
+        for line_index, check in enumerate(checks):
+            if check == ResponseChecker.Error.NONE:
+                continue
+            src = srcs[line_index] if line_index < len(srcs) else ""
+            dst = dsts[line_index] if line_index < len(dsts) else ""
+            code = retry_reason_code or cls.classify_retry_reason(check, src, dst)
+            grouped.setdefault(code, []).append(line_index)
+
+        if grouped == {}:
+            return
+
+        ordered_codes = [code for code in cls.RETRY_REASON_ORDER if code in grouped]
+        ordered_codes.extend(sorted(code for code in grouped if code not in cls.RETRY_REASON_ORDER))
+        reasons = [
+            {
+                "code": code,
+                "line_indices": sorted(set(grouped[code])),
+            }
+            for code in ordered_codes
+        ]
+
+        metadata = item.get_metadata()
+        metadata[cls.RETRY_METADATA_KEY] = {
+            "schema_version": cls.RETRY_METADATA_SCHEMA_VERSION,
+            "attempt": max(0, int(retry_count)),
+            "reasons": reasons,
+        }
+        item.set_metadata(metadata)
+
+    @classmethod
+    def classify_retry_reason(
+        cls,
+        check: ResponseChecker.Error,
+        src: str,
+        dst: str,
+    ) -> str:
+        if check == ResponseChecker.Error.FAIL_LINE_COUNT:
+            return "INDEX_ALIGNMENT"
+        if check == ResponseChecker.Error.FAIL_DATA:
+            if (src or "").strip() != "" and (dst or "").strip() == "":
+                return "LINE_ERROR_EMPTY_LINE"
+            return "RESPONSE_FORMAT"
+        if check == ResponseChecker.Error.UNKNOWN:
+            return "REQUEST_FAILURE"
+        if check == ResponseChecker.Error.LINE_ERROR_FAKE_REPLY:
+            if ResponseChecker.has_translation_error_marker(dst):
+                return "TRANSLATION_ERROR_MARKER"
+            src_tokens = sorted(ResponseChecker.RE_PRESERVE_TOKEN.findall(src or ""))
+            dst_tokens = sorted(ResponseChecker.RE_PRESERVE_TOKEN.findall(dst or ""))
+            if src_tokens != dst_tokens:
+                return "PLACEHOLDER_MISMATCH"
+            return "INVALID_RESPONSE"
+        return str(check)
 
     @classmethod
     def should_exclude_terminal_translation_error(
@@ -640,26 +839,21 @@ class TranslatorTask(Base):
 
     # 合并术语表
     def merge_glossary(self, glossary_list: list[dict[str, str]], last_save_time: float) -> float:
-        # 有效性检查
-        if self.config.glossary_enable == False:
+        # 运行时发现的术语只能进入项目候选区，不能修改当前任务快照或全局配置。
+        if getattr(self.config, "auto_glossary_enable", False) is not True:
             return last_save_time
-        if self.config.auto_glossary_enable == False:
+        if self.candidate_sink is None:
             return last_save_time
-
-        # 提取现有术语表的原文列表
-        data: list[dict] = self.config.glossary_data
-        keys = {item.get("src", "") for item in data}
 
         # 合并去重后的术语表
-        changed: bool = False
+        candidates: list[dict[str, str]] = []
+        keys: set[tuple[str, str]] = set()
         for item in glossary_list:
-            src = item.get("src", "").strip()
-            dst = item.get("dst", "").strip()
-            info = item.get("info", "").strip()
-
-            # 有效性校验
-            if not any(x in info.lower() for x in ("男", "女", "male", "female")):
+            if not isinstance(item, dict):
                 continue
+            src = str(item.get("source", item.get("src", "")) or "").strip()
+            dst = str(item.get("target", item.get("dst", "")) or "").strip()
+            info = str(item.get("note", item.get("info", "")) or "").strip()
 
             # 将原文和译文都按标点切分
             srcs: list[str] = TextHelper.split_by_punctuation(src, split_by_space = True)
@@ -673,27 +867,19 @@ class TranslatorTask(Base):
                 dst = dst.strip()
                 if src == dst or src == "" or dst == "":
                     continue
-                if not any(key == src for key in keys):
-                    changed = True
-                    keys.add(src)
-                    data.append({
-                        "src": src,
-                        "dst": dst,
-                        "info": info,
+                key = (src.casefold(), dst.casefold())
+                if key not in keys:
+                    keys.add(key)
+                    candidates.append({
+                        "source": src,
+                        "target": dst,
+                        "note": info,
                     })
 
-        if changed == True and time.time() - last_save_time > __class__.GLOSSARY_SAVE_INTERVAL:
-            # 更新配置文件
-            config = Config().load()
-            config.glossary_data = data
-            config.save()
-
-            # 术语表刷新事件
-            self.emit(Base.Event.GLOSSARY_REFRESH, {})
-
+        if candidates:
+            self.candidate_sink(candidates)
             return time.time()
 
-        # 返回原始值
         return last_save_time
 
     # 打印日志表格

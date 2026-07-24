@@ -43,6 +43,7 @@ class ProofreadingTableWidget(TableWidget):
 
     STATUS_ICONS = {
         Base.TranslationStatus.TRANSLATED: FluentIcon.COMPLETED,
+        Base.TranslationStatus.POLISHED: FluentIcon.BRUSH,
         Base.TranslationStatus.TRANSLATED_IN_PAST: FluentIcon.HISTORY,
     }
 
@@ -174,6 +175,7 @@ class ProofreadingTableWidget(TableWidget):
         status_texts = {
             Base.TranslationStatus.UNTRANSLATED: Localizer.get().proofreading_page_status_none,
             Base.TranslationStatus.TRANSLATED: Localizer.get().proofreading_page_status_processed,
+            Base.TranslationStatus.POLISHED: Localizer.get().proofreading_page_status_polished,
             Base.TranslationStatus.TRANSLATED_IN_PAST: Localizer.get().proofreading_page_status_processed_in_past,
         }
         return status_texts.get(status, str(status))

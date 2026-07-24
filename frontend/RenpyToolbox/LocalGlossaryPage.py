@@ -37,6 +37,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Extract.GlossaryCandidateService import extract_glossary_candidates
 from module.Text.SkipRules import should_skip_text
 from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
@@ -326,6 +327,7 @@ class LocalGlossaryPage(Base, QWidget):
         self._statistics_worker: QThread | None = None
         self._statistics_button: PushButton | None = None
         self._statistics_snapshot_keys: list[str] = []
+        self._loaded_candidate_record_ids: set[str] = set()
 
         self._init_ui()
         self._load_from_config()
@@ -343,7 +345,7 @@ class LocalGlossaryPage(Base, QWidget):
         layout.addWidget(title)
 
         desc = CaptionLabel(
-            "支持从 Excel 导入术语表，编辑后保存到配置文件，并可导出为 Excel 共享给团队。"
+            "支持从 Excel 导入术语表，确认后保存到当前项目资产，并可导出为 Excel 共享给团队。"
         )
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -368,11 +370,11 @@ class LocalGlossaryPage(Base, QWidget):
         export_btn.clicked.connect(self._on_export_excel)
         flow1.addWidget(export_btn)
 
-        save_btn = PrimaryPushButton("保存到配置", icon=FluentIcon.SAVE)
+        save_btn = PrimaryPushButton("保存到项目", icon=FluentIcon.SAVE)
         save_btn.clicked.connect(self._save_to_config)
         flow1.addWidget(save_btn)
 
-        load_btn = PushButton("从配置加载", icon=FluentIcon.HISTORY)
+        load_btn = PushButton("从项目加载", icon=FluentIcon.HISTORY)
         load_btn.clicked.connect(self._load_from_config)
         flow1.addWidget(load_btn)
 
@@ -395,12 +397,17 @@ class LocalGlossaryPage(Base, QWidget):
         add_btn.clicked.connect(self._add_row)
         flow2.addWidget(add_btn)
 
+        confirm_btn = PushButton("确认选中候选", icon=FluentIcon.ACCEPT)
+        confirm_btn.setToolTip("将选中的候选标记为已确认；保存时仅已确认且有译文的候选会转为正式术语")
+        confirm_btn.clicked.connect(self._confirm_selected_candidates)
+        flow2.addWidget(confirm_btn)
+
         delete_btn = PushButton("删除选中", icon=FluentIcon.DELETE)
         delete_btn.clicked.connect(self._remove_selected_rows)
         flow2.addWidget(delete_btn)
 
         clear_btn = PushButton("清空全部", icon=FluentIcon.CLOSE)
-        clear_btn.setToolTip("删除所有术语并写入配置")
+        clear_btn.setToolTip("删除当前项目中的所有正式术语和已载入候选")
         clear_btn.clicked.connect(self._clear_all)
         flow2.addWidget(clear_btn)
 
@@ -606,9 +613,10 @@ class LocalGlossaryPage(Base, QWidget):
     def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
         if item is None:
             return
-        if item.column() != 0:
-            return
-        self._invalidate_statistics()
+        if item.column() == 0:
+            self._invalidate_statistics()
+        if 0 <= item.column() <= 3:
+            self._set_candidate_confirmation(item.row(), True)
 
     # --- 数据操作 ---
     def _add_row(self):
@@ -630,6 +638,43 @@ class LocalGlossaryPage(Base, QWidget):
         self.table.removeRow(row)
         self._invalidate_statistics()
 
+    def _set_candidate_confirmation(self, row: int, confirmed: bool) -> bool:
+        src_item = self.table.item(row, 0)
+        if src_item is None:
+            return False
+        user_data = src_item.data(Qt.UserRole)
+        if not isinstance(user_data, dict) or bool(user_data.get("candidate", False)) is False:
+            return False
+        if bool(user_data.get("candidate_confirmed", False)) == bool(confirmed):
+            return False
+
+        updated = dict(user_data)
+        updated["candidate_confirmed"] = bool(confirmed)
+        signals_blocked = self.table.blockSignals(True)
+        try:
+            src_item.setData(Qt.UserRole, updated)
+        finally:
+            self.table.blockSignals(signals_blocked)
+        return True
+
+    def _confirm_selected_candidates(self) -> None:
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        if not rows:
+            InfoBar.warning("提示", "请选择需要确认的候选条目", parent=self)
+            return
+
+        confirmed = sum(
+            1 for row in rows if self._set_candidate_confirmation(row, True)
+        )
+        if confirmed == 0:
+            InfoBar.info("提示", "选中条目不是待确认候选，或已经确认", parent=self)
+            return
+        InfoBar.success(
+            "已确认",
+            f"已标记 {confirmed} 条候选；补全译文后点击“保存到项目”即可转为正式术语",
+            parent=self,
+        )
+
     def _deduplicate_rows(self):
         """按原文去重，尽量保留已有译文/类别/备注"""
         entries = self._collect_table_data()
@@ -644,12 +689,7 @@ class LocalGlossaryPage(Base, QWidget):
             if not key:
                 continue
             if key not in key_index:
-                deduped.append({
-                    "src": item.get("src", "").strip(),
-                    "dst": item.get("dst", "").strip(),
-                    "type": item.get("type", "").strip(),
-                    "comment": item.get("comment", "").strip(),
-                })
+                deduped.append(dict(item))
                 key_index[key] = len(deduped) - 1
                 continue
 
@@ -664,14 +704,21 @@ class LocalGlossaryPage(Base, QWidget):
             InfoBar.info("提示", "未发现重复条目", parent=self)
 
     def _clear_all(self):
-        """清空表格并写回配置"""
+        """清空表格并写回当前项目资产。"""
         self.table.setRowCount(0)
         self.config = Config().load()
-        self.config.glossary_data = []
-        self.config.glossary_enable = False
-        self.config.save()
+        state = ProjectAssetsRepository.from_config(self.config).replace_glossary(
+            [],
+            enabled = False,
+            consumed_candidate_ids = self._loaded_candidate_record_ids,
+        )
+        self._loaded_candidate_record_ids = {
+            str(item.get("record_id", ""))
+            for item in state.analysis_candidates.get("items", [])
+            if str(item.get("record_id", ""))
+        }
         self._invalidate_statistics()
-        InfoBar.success("已清空", "已删除所有术语并写入配置", parent=self)
+        InfoBar.success("已清空", "已删除当前项目中的正式术语和已载入候选", parent=self)
 
     @staticmethod
     def _map_language_to_fasttranslator_code(
@@ -861,7 +908,7 @@ class LocalGlossaryPage(Base, QWidget):
             applied += 1
 
         if applied:
-            InfoBar.success("翻译完成", f"已填充 {applied} 条译文（别忘了点击“保存到配置”）", parent=self)
+            InfoBar.success("翻译完成", f"已填充 {applied} 条译文（别忘了点击“确认并保存到项目”）", parent=self)
         else:
             InfoBar.info("翻译完成", "翻译已结束，但没有产生可用译文（可能接口返回原文）", parent=self)
 
@@ -1179,6 +1226,26 @@ class LocalGlossaryPage(Base, QWidget):
             return
 
         added_count, updated_count = self._merge_candidate_entries(entries)
+        try:
+            self.config = Config().load()
+            repository = ProjectAssetsRepository.from_config(self.config)
+            candidates = repository.merge_analysis_terms(entries)
+            scanned_sources = {
+                repository.normalize_source(item.get("source", item.get("src", "")))
+                for item in entries
+                if isinstance(item, dict)
+            }
+            self._loaded_candidate_record_ids.update(
+                str(item.get("record_id", ""))
+                for item in candidates.get("items", [])
+                if repository.normalize_source(item.get("source", "")) in scanned_sources
+                and str(item.get("record_id", ""))
+            )
+        except Exception as exc:
+            self.logger.error(f"术语候选写入项目缓存失败: {exc}")
+            self._update_candidate_progress("术语候选扫描完成，但保存项目候选失败", 100, running=False)
+            InfoBar.warning("保存失败", f"候选已显示但未能写入项目缓存：{exc}", parent=self)
+            return
         llm_chunks_total = int(payload.get("llm_chunks_total", 0) or 0)
         llm_chunks_success = int(payload.get("llm_chunks_success", 0) or 0)
         used_llm = bool(payload.get("used_llm", False)) and llm_chunks_success > 0
@@ -1208,11 +1275,16 @@ class LocalGlossaryPage(Base, QWidget):
 
         for item in current_entries:
             copied = {
+                "record_id": str(item.get("record_id", "") or ""),
                 "src": str(item.get("src", "") or "").strip(),
                 "dst": str(item.get("dst", "") or "").strip(),
                 "type": str(item.get("type", "") or "").strip(),
                 "comment": str(item.get("comment", "") or "").strip(),
                 "case_sensitive": bool(item.get("case_sensitive", False)),
+                "candidate": bool(item.get("candidate", False)),
+                "candidate_confirmed": bool(item.get("candidate_confirmed", False)),
+                "enabled": bool(item.get("enabled", True)),
+                "regex": bool(item.get("regex", False)),
             }
             key = self._normalize_src(copied.get("src", ""))
             if not key:
@@ -1233,11 +1305,20 @@ class LocalGlossaryPage(Base, QWidget):
 
         for entry in entries:
             prepared = {
-                "src": str(entry.get("src", "") or "").strip(),
-                "dst": "",
-                "type": str(entry.get("type", "") or "").strip(),
-                "comment": str(entry.get("comment", "") or entry.get("info", "") or "术语候选 (自动提取)").strip(),
-                "case_sensitive": False,
+                "record_id": str(entry.get("record_id", "") or ""),
+                "src": str(entry.get("source", entry.get("src", "")) or "").strip(),
+                "dst": str(entry.get("target", entry.get("dst", "")) or "").strip(),
+                "type": (
+                    f"候选 / {str(entry.get('type', '') or '').strip()}"
+                    if str(entry.get("type", "") or "").strip()
+                    else "候选"
+                ),
+                "comment": str(entry.get("note", entry.get("comment", "")) or entry.get("info", "") or "术语候选 (自动提取)").strip(),
+                "case_sensitive": bool(entry.get("case_sensitive", False)),
+                "candidate": True,
+                "candidate_confirmed": False,
+                "enabled": bool(entry.get("enabled", True)),
+                "regex": bool(entry.get("regex", False)),
             }
             key = self._normalize_src(prepared.get("src", ""))
             if not key:
@@ -1357,29 +1438,86 @@ class LocalGlossaryPage(Base, QWidget):
         )
 
     def _load_from_config(self):
-        data = getattr(self.config, "glossary_data", []) or []
-        converted = []
-        for item in data:
-            if isinstance(item, dict):
-                converted.append(
-                    {
-                        "src": item.get("src", ""),
-                        "dst": item.get("dst", ""),
-                        "type": item.get("type", item.get("category", "")),
-                        "comment": item.get("comment", item.get("info", "")),
-                        "case_sensitive": bool(item.get("case_sensitive", False)),
-                    }
-                )
+        self.config = Config().load()
+        state = ProjectAssetsRepository.from_config(self.config).load(self.config)
+        metadata = state.analysis_candidates.get("glossary_metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        converted: list[dict[str, Any]] = []
+        source_index: dict[str, int] = {}
+        for term in state.assets.glossary:
+            item_metadata = metadata.get(term.record_id, {})
+            if not isinstance(item_metadata, dict):
+                item_metadata = {}
+            converted.append({
+                "record_id": term.record_id,
+                "src": term.source,
+                "dst": term.target,
+                "type": str(item_metadata.get("type", "") or ""),
+                "comment": term.note,
+                "case_sensitive": bool(item_metadata.get("case_sensitive", False)),
+                "candidate": False,
+                "candidate_confirmed": False,
+            })
+            source_index[self._normalize_src(term.source)] = len(converted) - 1
+
+        self._loaded_candidate_record_ids = set()
+        for item in state.analysis_candidates.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            record_id = str(item.get("record_id", "") or "").strip()
+            source = str(item.get("source", item.get("src", "")) or "").strip()
+            if not source:
+                continue
+            key = self._normalize_src(source)
+            if key in source_index:
+                continue
+            if record_id:
+                self._loaded_candidate_record_ids.add(record_id)
+            item_metadata = metadata.get(record_id, {})
+            if not isinstance(item_metadata, dict):
+                item_metadata = {}
+            candidate_type = str(item_metadata.get("type", "") or "").strip()
+            converted.append({
+                "record_id": record_id,
+                "src": source,
+                "dst": str(item.get("target", item.get("dst", "")) or "").strip(),
+                "type": f"候选 / {candidate_type}" if candidate_type else "候选",
+                "comment": str(item.get("note", item.get("comment", "")) or "").strip(),
+                "case_sensitive": bool(item_metadata.get("case_sensitive", False)),
+                "candidate": True,
+                "candidate_confirmed": False,
+            })
+            source_index[key] = len(converted) - 1
         self._set_table_data(converted)
-        InfoBar.success("完成", f"已从配置加载 {len(converted)} 条术语", parent=self)
+        candidate_count = len(self._loaded_candidate_record_ids)
+        InfoBar.success(
+            "完成",
+            f"已从当前项目加载 {len(converted)} 条术语，其中 {candidate_count} 条待确认",
+            parent=self,
+        )
 
     def _save_to_config(self):
         entries = self._collect_table_data()
         self.config = Config().load()
-        self.config.glossary_data = entries
-        self.config.glossary_enable = True if entries else self.config.glossary_enable
-        self.config.save()
-        InfoBar.success("保存成功", f"已写入 {len(entries)} 条术语到配置", parent=self)
+        state = ProjectAssetsRepository.from_config(self.config).replace_glossary(
+            entries,
+            enabled = bool(entries),
+            consumed_candidate_ids = self._loaded_candidate_record_ids,
+        )
+        self._loaded_candidate_record_ids = {
+            str(item.get("record_id", ""))
+            for item in state.analysis_candidates.get("items", [])
+            if str(item.get("record_id", ""))
+        }
+        formal_count = len(state.assets.glossary)
+        candidate_count = len(state.analysis_candidates.get("items", []))
+        InfoBar.success(
+            "保存成功",
+            f"已确认 {formal_count} 条正式术语，保留 {candidate_count} 条待补全候选",
+            parent=self,
+        )
 
     def _on_import_excel(self):
         if load_workbook is None:
@@ -1412,6 +1550,10 @@ class LocalGlossaryPage(Base, QWidget):
                     continue
                 items.append({"src": src, "dst": dst, "type": type_, "comment": comment})
 
+            # Imported rows replace only the visible editor contents. Previously
+            # loaded candidates remain pending until the user explicitly loads
+            # and confirms or deletes them.
+            self._loaded_candidate_record_ids = set()
             self._set_table_data(items)
             InfoBar.success("导入成功", f"已导入 {len(items)} 条术语", parent=self)
         except Exception as e:
@@ -1465,7 +1607,12 @@ class LocalGlossaryPage(Base, QWidget):
                     0,
                     self._create_table_item(
                         item.get("src", ""),
-                        user_data={"case_sensitive": bool(item.get("case_sensitive", False))},
+                        user_data={
+                            "case_sensitive": bool(item.get("case_sensitive", False)),
+                            "record_id": str(item.get("record_id", "") or ""),
+                            "candidate": bool(item.get("candidate", False)),
+                            "candidate_confirmed": bool(item.get("candidate_confirmed", False)),
+                        },
                     ),
                 )
                 self.table.setItem(row, 1, self._create_table_item(item.get("dst", "")))
@@ -1489,20 +1636,29 @@ class LocalGlossaryPage(Base, QWidget):
             type_ = (type_item.text() if type_item else "").strip()
             comment = (comment_item.text() if comment_item else "").strip()
             case_sensitive = False
+            record_id = ""
+            candidate = False
+            candidate_confirmed = False
             if src_item is not None:
                 user_data = src_item.data(Qt.UserRole)
                 if isinstance(user_data, dict):
                     case_sensitive = bool(user_data.get("case_sensitive", False))
+                    record_id = str(user_data.get("record_id", "") or "")
+                    candidate = bool(user_data.get("candidate", False))
+                    candidate_confirmed = bool(user_data.get("candidate_confirmed", False))
             if not src:
                 continue
             results.append(
                 {
+                    "record_id": record_id,
                     "src": src,
                     "dst": dst,
                     "type": type_,
                     "comment": comment,
                     "info": comment,
                     "case_sensitive": case_sensitive,
+                    "candidate": candidate,
+                    "candidate_confirmed": candidate_confirmed,
                 }
             )
         return results
@@ -1521,19 +1677,34 @@ class LocalGlossaryPage(Base, QWidget):
             return value.strip() if isinstance(value, str) else ""
 
         merged = {
+            "record_id": str(base.get("record_id", "") or ""),
             "src": _clean(base.get("src")),
             "dst": _clean(base.get("dst")),
             "type": _clean(base.get("type")),
             "comment": _clean(base.get("comment")),
             "case_sensitive": bool(base.get("case_sensitive", False)),
+            "candidate": bool(base.get("candidate", False)),
+            "candidate_confirmed": bool(base.get("candidate_confirmed", False)),
+            "enabled": bool(base.get("enabled", True)),
+            "regex": bool(base.get("regex", False)),
         }
         incoming_cleaned = {
+            "record_id": str(incoming.get("record_id", "") or ""),
             "src": _clean(incoming.get("src")),
             "dst": _clean(incoming.get("dst")),
             "type": _clean(incoming.get("type")),
             "comment": _clean(incoming.get("comment")),
             "case_sensitive": bool(incoming.get("case_sensitive", False)),
+            "candidate": bool(incoming.get("candidate", False)),
+            "candidate_confirmed": bool(incoming.get("candidate_confirmed", False)),
+            "enabled": bool(incoming.get("enabled", True)),
+            "regex": bool(incoming.get("regex", False)),
         }
+
+        if not merged["record_id"] and incoming_cleaned["record_id"]:
+            merged["record_id"] = incoming_cleaned["record_id"]
+            merged["candidate"] = incoming_cleaned["candidate"]
+            merged["candidate_confirmed"] = incoming_cleaned["candidate_confirmed"]
 
         if incoming_cleaned["dst"]:
             if not merged["dst"] or (merged["src"] and merged["dst"].lower() == merged["src"].lower()):
@@ -1553,6 +1724,10 @@ class LocalGlossaryPage(Base, QWidget):
 
         if incoming_cleaned["case_sensitive"]:
             merged["case_sensitive"] = True
+        if incoming_cleaned["regex"]:
+            merged["regex"] = True
+        if incoming_cleaned["candidate_confirmed"]:
+            merged["candidate_confirmed"] = True
 
         return merged
 
@@ -1634,15 +1809,13 @@ class LocalGlossaryPage(Base, QWidget):
             InfoBar.info("提示", "未找到角色名，请确认游戏目录正确", parent=self)
             return
         
-        # 保留手动添加的条目，清除旧的自动提取数据
+        # 保留当前表格中的手工修改，清除旧的自动提取候选。
         manual_entries = []
-        if self.config.glossary_data:
-            for item in self.config.glossary_data:
-                if isinstance(item, dict):
-                    info = item.get("info", "") or item.get("comment", "")
-                    if "自动提取" in info and ("character" in info.lower() or "角色" in info):
-                        continue
-                    manual_entries.append(item)
+        for item in self._collect_table_data():
+            info = item.get("info", "") or item.get("comment", "")
+            if "自动提取" in info and ("character" in info.lower() or "角色" in info):
+                continue
+            manual_entries.append(item)
         
         # 添加新扫描到的
         existing_src = set(item.get("src", "") for item in manual_entries if isinstance(item, dict))
@@ -1658,19 +1831,40 @@ class LocalGlossaryPage(Base, QWidget):
                     "src": cleaned,
                     "dst": "",
                     "info": "角色名 (自动提取)",
-                    "type": type_guess
+                    "type": f"候选 / {type_guess}" if type_guess else "候选",
+                    "candidate": True,
                 })
 
-        # 保存到配置
-        self.config.glossary_data = manual_entries + new_entries
-        self.config.glossary_enable = True
+        # 扫描结果先进入项目候选区，用户点击“保存到项目”后才成为正式术语。
+        repository = ProjectAssetsRepository.from_config(self.config)
+        state = repository.load(self.config)
+        removed_candidate_ids = {
+            str(item.get("record_id", ""))
+            for item in state.analysis_candidates.get("items", [])
+            if (
+                "自动提取" in str(item.get("note", ""))
+                and (
+                    "character" in str(item.get("note", "")).lower()
+                    or "角色" in str(item.get("note", ""))
+                )
+            )
+            and str(item.get("record_id", ""))
+        }
+        candidates = repository.replace_analysis_terms(
+            new_entries,
+            removed_record_ids = removed_candidate_ids,
+        )
+        self._loaded_candidate_record_ids = {
+            str(item.get("record_id", ""))
+            for item in candidates.get("items", [])
+            if str(item.get("record_id", ""))
+        }
+
         auto_cache[cache_key] = time.time()
         self.config.glossary_auto_scan_cache = auto_cache
         self.config.save()
-        
-        # 刷新表格
-        self._load_from_config()
-        InfoBar.success("完成", f"已扫描到 {len(new_entries)} 个新角色名，已清除旧的自动提取数据", parent=self)
+        self._set_table_data(manual_entries + new_entries)
+        InfoBar.success("完成", f"已扫描到 {len(new_entries)} 个待确认角色名，已清除旧的自动提取候选", parent=self)
 
     def _is_probable_name(self, text: str) -> bool:
         """更严格的人名判定：短、无句号、少量单词、首字母大写或全大写、允许少量连接词"""

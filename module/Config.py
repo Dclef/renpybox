@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import json
 import os
@@ -15,9 +16,53 @@ from module.Localizer.Localizer import Localizer
 @dataclasses.dataclass
 class Config():
 
+    CURRENT_CONFIG_VERSION: ClassVar[int] = 1
+
+    PROMPT_MODE_COMMON: ClassVar[str] = "COMMON"
+    PROMPT_MODE_COT: ClassVar[str] = "COT"
+    PROMPT_MODE_THINK: ClassVar[str] = "THINK"
+    PROMPT_MODE_LOCAL: ClassVar[str] = "LOCAL"
+    PROMPT_MODE_CUSTOM: ClassVar[str] = "CUSTOM"
+
+    STYLE_NONE: ClassVar[str] = "NONE"
+    STYLE_LITERARY: ClassVar[str] = "LITERARY"
+    STYLE_CLASSICAL: ClassVar[str] = "CLASSICAL"
+    STYLE_R18: ClassVar[str] = "R18"
+    STYLE_CUSTOM: ClassVar[str] = "CUSTOM"
+
+    OUTPUT_PROTOCOL_STRUCTURED: ClassVar[str] = "STRUCTURED"
+    OUTPUT_PROTOCOL_JSONLINE: ClassVar[str] = "JSONLINE"
+    OUTPUT_PROTOCOL_SINGLE_TEXT: ClassVar[str] = "SINGLE_TEXT"
+
+    PROMPT_MODES: ClassVar[frozenset[str]] = frozenset({
+        PROMPT_MODE_COMMON,
+        PROMPT_MODE_COT,
+        PROMPT_MODE_THINK,
+        PROMPT_MODE_LOCAL,
+        PROMPT_MODE_CUSTOM,
+    })
+    STYLE_IDS: ClassVar[frozenset[str]] = frozenset({
+        STYLE_NONE,
+        STYLE_LITERARY,
+        STYLE_CLASSICAL,
+        STYLE_R18,
+        STYLE_CUSTOM,
+    })
+    OUTPUT_PROTOCOLS: ClassVar[frozenset[str]] = frozenset({
+        OUTPUT_PROTOCOL_STRUCTURED,
+        OUTPUT_PROTOCOL_JSONLINE,
+        OUTPUT_PROTOCOL_SINGLE_TEXT,
+    })
+
+    DEFAULT_ASSET_PROMPT_TOKEN_BUDGET: ClassVar[int] = 2048
+    DEFAULT_ASSET_PROMPT_MAX_ITEMS: ClassVar[int] = 64
+
     # 主题枚举
     THEME_DARK = "DARK"
     THEME_LIGHT = "LIGHT"
+
+    # Config schema
+    config_version: int = CURRENT_CONFIG_VERSION
 
     # Application
     theme: str = THEME_LIGHT
@@ -49,7 +94,6 @@ class Config():
     preceding_lines_threshold: int = 0
     enable_preceding_on_local: bool = False
     single_line_translation_enable: bool = False
-    structured_output_enable: bool = True
     clean_ruby: bool = True
     deduplication_in_trans: bool = True
     deduplication_in_bilingual: bool = True
@@ -104,13 +148,18 @@ class Config():
     mixed_language_replacements: dict[str, str] = dataclasses.field(default_factory = dict)
     mixed_language_sentence_overrides: dict[str, str] = dataclasses.field(default_factory = dict)
 
-    # CustomPromptZHPage
-    custom_prompt_zh_enable: bool = False
-    custom_prompt_zh_data: str = None
-
-    # CustomPromptENPage
-    custom_prompt_en_enable: bool = False
-    custom_prompt_en_data: str = None
+    # Translation pipeline
+    translation_prompt_mode: str = PROMPT_MODE_COMMON
+    translation_custom_prompts: dict[str, str] = dataclasses.field(default_factory = dict)
+    # None means the current CUSTOM mode applies to every prompt language. A list
+    # is only needed to preserve the independent legacy ZH/EN enable switches.
+    translation_custom_prompt_enabled_languages: Optional[list[str]] = None
+    translation_style_id: str = STYLE_NONE
+    translation_custom_style: str = ""
+    translation_output_protocol: str = OUTPUT_PROTOCOL_STRUCTURED
+    asset_regex_enable: bool = False
+    asset_prompt_token_budget: int = DEFAULT_ASSET_PROMPT_TOKEN_BUDGET
+    asset_prompt_max_items: int = DEFAULT_ASSET_PROMPT_MAX_ITEMS
 
     # LaboratoryPage
     auto_glossary_enable: bool = False
@@ -186,6 +235,238 @@ class Config():
     CONFIG_PATH: ClassVar[str] = "./config.json"
     CONFIG_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
+    @classmethod
+    def migrate_dict(cls, raw: dict[str, Any] | None) -> dict[str, Any]:
+        config = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+        version_value = config.get("config_version", 0)
+        version = (
+            version_value
+            if isinstance(version_value, int)
+            and not isinstance(version_value, bool)
+            and version_value >= 0
+            else 0
+        )
+
+        while version < cls.CURRENT_CONFIG_VERSION:
+            if version == 0:
+                cls._migrate_v0_to_v1(config)
+            else:
+                raise ValueError(f"Unsupported config migration version: {version}")
+
+            version += 1
+            config["config_version"] = version
+
+        cls._apply_current_defaults(config)
+        return config
+
+    @classmethod
+    def _migrate_v0_to_v1(cls, config: dict[str, Any]) -> None:
+        prompts_value = config.get("translation_custom_prompts")
+        prompts = dict(prompts_value) if isinstance(prompts_value, dict) else {}
+
+        legacy_prompts = (
+            (BaseLanguage.Enum.ZH.value, "custom_prompt_zh_data"),
+            (BaseLanguage.Enum.EN.value, "custom_prompt_en_data"),
+        )
+        for language, legacy_key in legacy_prompts:
+            legacy_value = config.get(legacy_key)
+            if language not in prompts and isinstance(legacy_value, str):
+                prompts[language] = legacy_value
+
+        config["translation_custom_prompts"] = prompts
+        enabled_languages = []
+        if config.get("custom_prompt_zh_enable") is True:
+            enabled_languages.append(BaseLanguage.Enum.ZH.value)
+        if config.get("custom_prompt_en_enable") is True:
+            enabled_languages.append(BaseLanguage.Enum.EN.value)
+        if enabled_languages:
+            config.setdefault(
+                "translation_custom_prompt_enabled_languages",
+                enabled_languages,
+            )
+        config.setdefault(
+            "translation_prompt_mode",
+            cls.PROMPT_MODE_CUSTOM
+            if enabled_languages
+            else cls.PROMPT_MODE_COMMON,
+        )
+        config.setdefault(
+            "translation_output_protocol",
+            cls.OUTPUT_PROTOCOL_STRUCTURED
+            if config.get("structured_output_enable", True) is True
+            else cls.OUTPUT_PROTOCOL_JSONLINE,
+        )
+
+    @classmethod
+    def _apply_current_defaults(cls, config: dict[str, Any]) -> None:
+        config.setdefault("config_version", cls.CURRENT_CONFIG_VERSION)
+        config.setdefault("translation_prompt_mode", cls.PROMPT_MODE_COMMON)
+        config.setdefault("translation_custom_prompts", {})
+        config.setdefault("translation_custom_prompt_enabled_languages", None)
+        config.setdefault("translation_style_id", cls.STYLE_NONE)
+        config.setdefault("translation_custom_style", "")
+        config.setdefault("translation_output_protocol", cls.OUTPUT_PROTOCOL_STRUCTURED)
+        config.setdefault("asset_regex_enable", False)
+
+        config["translation_prompt_mode"] = cls._normalize_choice(
+            config.get("translation_prompt_mode"),
+            cls.PROMPT_MODES,
+            cls.PROMPT_MODE_COMMON,
+        )
+        config["translation_style_id"] = cls._normalize_choice(
+            config.get("translation_style_id"),
+            cls.STYLE_IDS,
+            cls.STYLE_NONE,
+        )
+        config["translation_output_protocol"] = cls._normalize_choice(
+            config.get("translation_output_protocol"),
+            cls.OUTPUT_PROTOCOLS,
+            cls.OUTPUT_PROTOCOL_STRUCTURED,
+        )
+
+        prompts = config.get("translation_custom_prompts")
+        if not isinstance(prompts, dict):
+            config["translation_custom_prompts"] = {}
+
+        scope = config.get("translation_custom_prompt_enabled_languages")
+        if scope is not None:
+            if not isinstance(scope, (list, tuple, set, frozenset)):
+                scope = []
+            allowed_languages = (
+                BaseLanguage.Enum.ZH.value,
+                BaseLanguage.Enum.EN.value,
+            )
+            config["translation_custom_prompt_enabled_languages"] = [
+                language
+                for language in allowed_languages
+                if language in {
+                    str(value).strip().upper()
+                    for value in scope
+                }
+            ]
+
+        token_budget = config.get("asset_prompt_token_budget")
+        if (
+            not isinstance(token_budget, int)
+            or isinstance(token_budget, bool)
+            or token_budget <= 0
+        ):
+            config["asset_prompt_token_budget"] = cls.DEFAULT_ASSET_PROMPT_TOKEN_BUDGET
+
+        max_items = config.get("asset_prompt_max_items")
+        if not isinstance(max_items, int) or isinstance(max_items, bool) or max_items <= 0:
+            config["asset_prompt_max_items"] = cls.DEFAULT_ASSET_PROMPT_MAX_ITEMS
+
+    @staticmethod
+    def _normalize_choice(value: Any, allowed: frozenset[str], default: str) -> str:
+        normalized = str(value).strip().upper() if isinstance(value, str) else ""
+        return normalized if normalized in allowed else default
+
+    def is_custom_prompt_enabled_for(self, language: BaseLanguage.Enum | str) -> bool:
+        if self.translation_prompt_mode != self.PROMPT_MODE_CUSTOM:
+            return False
+        scope = self.translation_custom_prompt_enabled_languages
+        if scope is None:
+            return True
+        language_value = language.value if isinstance(language, BaseLanguage.Enum) else str(language)
+        return language_value.strip().upper() in {
+            str(value).strip().upper()
+            for value in scope
+        }
+
+    @property
+    def custom_prompt_zh_enable(self) -> bool:
+        return self.is_custom_prompt_enabled_for(BaseLanguage.Enum.ZH)
+
+    @custom_prompt_zh_enable.setter
+    def custom_prompt_zh_enable(self, value: bool) -> None:
+        self._set_legacy_custom_prompt_enabled(BaseLanguage.Enum.ZH, value)
+
+    @property
+    def custom_prompt_en_enable(self) -> bool:
+        return self.is_custom_prompt_enabled_for(BaseLanguage.Enum.EN)
+
+    @custom_prompt_en_enable.setter
+    def custom_prompt_en_enable(self, value: bool) -> None:
+        self._set_legacy_custom_prompt_enabled(BaseLanguage.Enum.EN, value)
+
+    def _set_legacy_custom_prompt_enabled(
+        self,
+        language: BaseLanguage.Enum,
+        value: bool,
+    ) -> None:
+        supported = {
+            BaseLanguage.Enum.ZH.value,
+            BaseLanguage.Enum.EN.value,
+        }
+        if self.translation_custom_prompt_enabled_languages is None:
+            enabled = supported if self.translation_prompt_mode == self.PROMPT_MODE_CUSTOM else set()
+        else:
+            enabled = {
+                str(item).strip().upper()
+                for item in self.translation_custom_prompt_enabled_languages
+                if str(item).strip().upper() in supported
+            }
+
+        if value:
+            enabled.add(language.value)
+        else:
+            enabled.discard(language.value)
+
+        self.translation_custom_prompt_enabled_languages = sorted(enabled)
+        self.translation_prompt_mode = (
+            self.PROMPT_MODE_CUSTOM if enabled else self.PROMPT_MODE_COMMON
+        )
+
+    def _get_legacy_custom_prompt(self, language: BaseLanguage.Enum) -> Optional[str]:
+        if not isinstance(self.translation_custom_prompts, dict):
+            return None
+        return self.translation_custom_prompts.get(language.value)
+
+    def _set_legacy_custom_prompt(
+        self,
+        language: BaseLanguage.Enum,
+        value: Optional[str],
+    ) -> None:
+        prompts = (
+            dict(self.translation_custom_prompts)
+            if isinstance(self.translation_custom_prompts, dict)
+            else {}
+        )
+        if value is None:
+            prompts.pop(language.value, None)
+        else:
+            prompts[language.value] = value
+        self.translation_custom_prompts = prompts
+
+    @property
+    def custom_prompt_zh_data(self) -> Optional[str]:
+        return self._get_legacy_custom_prompt(BaseLanguage.Enum.ZH)
+
+    @custom_prompt_zh_data.setter
+    def custom_prompt_zh_data(self, value: Optional[str]) -> None:
+        self._set_legacy_custom_prompt(BaseLanguage.Enum.ZH, value)
+
+    @property
+    def custom_prompt_en_data(self) -> Optional[str]:
+        return self._get_legacy_custom_prompt(BaseLanguage.Enum.EN)
+
+    @custom_prompt_en_data.setter
+    def custom_prompt_en_data(self, value: Optional[str]) -> None:
+        self._set_legacy_custom_prompt(BaseLanguage.Enum.EN, value)
+
+    @property
+    def structured_output_enable(self) -> bool:
+        return self.translation_output_protocol == self.OUTPUT_PROTOCOL_STRUCTURED
+
+    @structured_output_enable.setter
+    def structured_output_enable(self, value: bool) -> None:
+        self.translation_output_protocol = (
+            self.OUTPUT_PROTOCOL_STRUCTURED
+            if value
+            else self.OUTPUT_PROTOCOL_JSONLINE
+        )
+
     def load(self, path: str = None) -> Self:
         if path is None:
             user_path = __class__.CONFIG_PATH
@@ -195,9 +476,10 @@ class Config():
             try:
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
-                        config: dict = json.load(reader)
+                        config = __class__.migrate_dict(json.load(reader))
+                        field_names = {field.name for field in dataclasses.fields(self)}
                         for k, v in config.items():
-                            if hasattr(self, k):
+                            if k in field_names:
                                 setattr(self, k, v)
             except Exception as e:
                 LogManager.get().error(f"{Localizer.get().log_read_file_fail}", e)

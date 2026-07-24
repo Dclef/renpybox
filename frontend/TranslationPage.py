@@ -34,6 +34,8 @@ from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Cache.CacheManager import CacheManager
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
@@ -618,6 +620,73 @@ class TranslationPage(QWidget, Base):
         self.task.setFixedSize(204, 204)
         parent.addWidget(self.task)
 
+    def _request_translation_start(
+        self,
+        status: Base.TranslationStatus,
+        window: FluentWindow,
+    ) -> bool:
+        payload = {"status": status}
+        if status == Base.TranslationStatus.UNTRANSLATED:
+            config = Config().load()
+            try:
+                state = ProjectAssetsRepository.from_config(config).load(config)
+                preflight = TranslationPreflightService.check(state.assets)
+            except Exception as exc:
+                InfoBar.error(
+                    Localizer.get().alert,
+                    Localizer.get().translation_page_preflight_load_error.replace("{ERROR}", str(exc)),
+                    parent = window,
+                    duration = 5000,
+                )
+                return False
+
+            if preflight.should_prompt_for_missing_assets:
+                message_box = MessageBox(
+                    Localizer.get().translation_page_preflight_missing_assets_title,
+                    Localizer.get().translation_page_preflight_missing_assets_content,
+                    window,
+                )
+                message_box.yesButton.setText(
+                    Localizer.get().translation_page_preflight_open_workbench
+                )
+                message_box.cancelButton.setText(
+                    Localizer.get().translation_page_preflight_continue
+                )
+                continue_selected = {"value": False}
+                cancel_signal = getattr(message_box, "cancelSignal", None)
+                if cancel_signal is not None and hasattr(cancel_signal, "connect"):
+                    cancel_signal.connect(
+                        lambda: continue_selected.__setitem__("value", True)
+                    )
+                if message_box.exec():
+                    self._open_workbench(window)
+                    return False
+                if cancel_signal is not None and continue_selected["value"] is False:
+                    return False
+
+            # The UI has either found effective assets or received an explicit
+            # continue decision. Backends use this flag to avoid a second prompt.
+            payload["preflight_confirmed"] = True
+
+        self.emit(Base.Event.TRANSLATION_START, payload)
+        return True
+
+    def _open_workbench(self, window: FluentWindow) -> None:
+        page = getattr(window, "renpy_workbench_page", None)
+        if page is None and hasattr(window, "findChild"):
+            page = window.findChild(QWidget, "renpy_workbench_page")
+        if page is None:
+            InfoBar.warning(
+                Localizer.get().alert,
+                Localizer.get().translation_page_preflight_workbench_unavailable,
+                parent = window,
+            )
+            return
+        if hasattr(window, "navigate_to_page"):
+            window.navigate_to_page(page)
+        elif hasattr(window, "switchTo"):
+            window.switchTo(page)
+
     # 开始
     def add_command_bar_action_start(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
         def triggered() -> None:
@@ -630,9 +699,7 @@ class TranslationPage(QWidget, Base):
                 if not message_box.exec():
                     return
 
-            self.emit(Base.Event.TRANSLATION_START, {
-                "status": Base.TranslationStatus.UNTRANSLATED,
-            })
+            self._request_translation_start(Base.TranslationStatus.UNTRANSLATED, window)
 
         self.action_start = parent.add_action(
             Action(FluentIcon.PLAY, Localizer.get().start, parent, triggered = triggered)
@@ -659,9 +726,7 @@ class TranslationPage(QWidget, Base):
     def add_command_bar_action_continue(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
 
         def triggered() -> None:
-            self.emit(Base.Event.TRANSLATION_START, {
-                "status": Base.TranslationStatus.TRANSLATING,
-            })
+            self._request_translation_start(Base.TranslationStatus.TRANSLATING, window)
 
         self.action_continue = parent.add_action(
             Action(FluentIcon.ROTATE, Localizer.get().translation_page_continue, parent, triggered = triggered),
@@ -828,9 +893,7 @@ class TranslationPage(QWidget, Base):
                 delay_time = delay_time - interval
                 self.action_timer.setText(format_time(delay_time))
             else:
-                self.emit(Base.Event.TRANSLATION_START, {
-                    "status": Base.TranslationStatus.UNTRANSLATED,
-                })
+                self._request_translation_start(Base.TranslationStatus.UNTRANSLATED, window)
 
                 delay_time = None
                 self.action_timer.setText(Localizer.get().timer)
