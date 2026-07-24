@@ -1,0 +1,2 @@
+### Base Mode: LOCAL
+Translate each {source_language} game-text item into natural {target_language}. Do not omit, merge, or split content. Preserve tone and context, and return only the final result in the selected protocol.

@@ -1,0 +1,2 @@
+### Writing Style: CLASSICAL
+Without changing meaning, relationships, or plot information, use concise, elegant, readable classical expression appropriate to the target language. Avoid forced archaism and always obey the engineering and placeholder protocols.

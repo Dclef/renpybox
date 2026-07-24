@@ -1,0 +1,2 @@
+### Output Protocol: SINGLE_TEXT
+This is an explicit single-record task. Output only the final translated plain text. Do not output an index, JSON, quotes, explanation, Markdown fence, or an extra line break.

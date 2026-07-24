@@ -1,0 +1,5 @@
+### Output Protocol: JSONLINE
+Every non-empty output line must be exactly one JSON object: `{"request_index":0,"text":"translation"}`.
+- Each record may contain only an integer `request_index` and a string `text`.
+- Indices must exactly equal the input's 0-based index set, with each index appearing once. Order may differ, but indices must never be missing, duplicated, out of range, or converted to 1-based.
+- Do not output an array, wrapper object, glossary object, explanation, Markdown fence, or any other text.

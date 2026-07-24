@@ -10,6 +10,11 @@ from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheProject import CacheProject
 from module.Localizer.Localizer import Localizer
 
+
+class CacheLoadError(RuntimeError):
+    """Raised when an existing cache cannot be loaded without data loss."""
+
+
 class CacheManager(Base):
 
     # 缓存文件保存周期（秒）
@@ -17,6 +22,7 @@ class CacheManager(Base):
 
     # SQLite 缓存文件名
     CACHE_DB_NAME = "cache.db"
+    RESET_JOURNAL_NAME = "reset.journal.json"
 
     # 结尾标点符号
     END_LINE_PUNCTUATION = (
@@ -46,7 +52,7 @@ class CacheManager(Base):
     )
 
     # 类线程锁
-    LOCK = threading.Lock()
+    LOCK = threading.RLock()
 
     def __init__(self, service: bool) -> None:
         super().__init__()
@@ -77,27 +83,29 @@ class CacheManager(Base):
             # 休眠 1 秒
             time.sleep(1.00)
 
-            if (
-                time.time() - self.last_require_time >= __class__.SAVE_INTERVAL
-                and self.require_flag == True
-            ):
-                # 创建上级文件夹
-                folder_path = f"{self.require_path}/cache"
-                os.makedirs(folder_path, exist_ok = True)
-
-                # 保存缓存到文件
-                self.save_to_file(
-                    project = self.project,
-                    items = self.items,
-                    output_folder = self.require_path,
-                )
-
+            if self._run_pending_save():
                 # 触发事件
                 self.emit(Base.Event.CACHE_FILE_AUTO_SAVE, {})
 
-                # 重置标志
-                self.require_flag = False
-                self.last_require_time = time.time()
+    def _run_pending_save(self, *, now: float | None = None) -> bool:
+        current_time = time.time() if now is None else now
+        with __class__.LOCK:
+            if (
+                current_time - self.last_require_time < __class__.SAVE_INTERVAL
+                or self.require_flag is not True
+            ):
+                return False
+
+            output_folder = self.require_path
+            os.makedirs(f"{output_folder}/cache", exist_ok = True)
+            self.save_to_file(
+                project = self.project,
+                items = self.items,
+                output_folder = output_folder,
+            )
+            self.require_flag = False
+            self.last_require_time = current_time
+            return True
 
     def _get_db_path(self, output_folder: str) -> str:
         return f"{output_folder}/cache/{__class__.CACHE_DB_NAME}"
@@ -146,32 +154,11 @@ class CacheManager(Base):
                 except Exception as e:
                     self.debug(Localizer.get().log_write_cache_file_fail, e)
 
-        # 保存缓存到 JSON 文件（回退）
-        path = f"{output_folder}/cache/items.json"
+        # JSON 回退使用写前事务日志。若进程在两次文件替换之间退出，
+        # 下次内部读取会先恢复同一代 project/items。
         with __class__.LOCK:
             try:
-                with open(path, "w", encoding = "utf-8") as writer:
-                    # 逐条写入以避免一次性构建超大字符串导致 UI 卡顿（线程持有 GIL 时间过长）
-                    writer.write("[")
-                    for i, item in enumerate(items):
-                        if i > 0:
-                            writer.write(",")
-                        json.dump(item.asdict(), writer, ensure_ascii = False, separators = (",", ":"))
-
-                        # 适当让出执行权，提升停止/切换页面时的响应速度
-                        if i % 200 == 0:
-                            writer.flush()
-                            time.sleep(0)
-                    writer.write("]")
-            except Exception as e:
-                self.debug(Localizer.get().log_write_cache_file_fail, e)
-
-        # 保存项目数据到 JSON 文件（回退）
-        path = f"{output_folder}/cache/project.json"
-        with __class__.LOCK:
-            try:
-                with open(path, "w", encoding = "utf-8") as writer:
-                    writer.write(json.dumps(project.asdict(), indent = None, ensure_ascii = False))
+                self._save_translation_run_to_json(output_folder, project, items)
             except Exception as e:
                 self.debug(Localizer.get().log_write_cache_file_fail, e)
 
@@ -181,16 +168,78 @@ class CacheManager(Base):
 
     # 请求保存缓存到文件
     def require_save_to_file(self, output_path: str) -> None:
-        self.require_flag = True
-        self.require_path = output_path
+        with __class__.LOCK:
+            self.require_flag = True
+            self.require_path = output_path
 
     # 从文件读取数据
-    def load_from_file(self, output_path: str) -> None:
+    def load_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        if strict:
+            self._load_cache_pair_strict(output_path)
+            return
         self.load_items_from_file(output_path)
         self.load_project_from_file(output_path)
 
+    def _load_cache_pair_strict(self, output_path: str) -> None:
+        with __class__.LOCK:
+            try:
+                db_path = self._get_db_path(output_path)
+                if os.path.isfile(db_path):
+                    store = CacheDB(db_path)
+                    project = store.get_project()
+                    if project is None:
+                        raise CacheLoadError("SQLite cache has no project record")
+                    items = store.get_items()
+                else:
+                    self._recover_json_transaction(output_path)
+                    items_path = f"{output_path}/cache/items.json"
+                    project_path = f"{output_path}/cache/project.json"
+                    if not os.path.isfile(items_path) or not os.path.isfile(project_path):
+                        raise CacheLoadError("Translation cache is incomplete")
+                    with open(items_path, "r", encoding = "utf-8-sig") as reader:
+                        items_payload = json.load(reader)
+                    with open(project_path, "r", encoding = "utf-8-sig") as reader:
+                        project_payload = json.load(reader)
+                    if not isinstance(items_payload, list) or not isinstance(project_payload, dict):
+                        raise CacheLoadError("Translation cache has an invalid schema")
+                    items = [CacheItem.from_dict(item) for item in items_payload]
+                    project = CacheProject.from_dict(project_payload)
+            except CacheLoadError:
+                raise
+            except Exception as exc:
+                raise CacheLoadError(
+                    f"Failed to load translation cache from {output_path}"
+                ) from exc
+
+            self.items = items
+            self.project = project
+
     # 从文件读取项目数据
-    def load_items_from_file(self, output_path: str) -> None:
+    def load_items_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        if strict:
+            with __class__.LOCK:
+                try:
+                    db_path = self._get_db_path(output_path)
+                    if os.path.isfile(db_path):
+                        self.items = CacheDB(db_path).get_items()
+                        return
+                    self._recover_json_transaction(output_path)
+                    path = f"{output_path}/cache/items.json"
+                    if not os.path.isfile(path):
+                        raise CacheLoadError("Cache items do not exist")
+                    with open(path, "r", encoding = "utf-8-sig") as reader:
+                        payload = json.load(reader)
+                    if not isinstance(payload, list):
+                        raise CacheLoadError("Cache items must be an array")
+                    self.items = [CacheItem.from_dict(item) for item in payload]
+                    return
+                except CacheLoadError:
+                    raise
+                except Exception as exc:
+                    raise CacheLoadError(
+                        f"Failed to load cache items from {output_path}"
+                    ) from exc
+
         use_sqlite = self._should_use_sqlite(output_path)
         if use_sqlite:
             with __class__.LOCK:
@@ -205,6 +254,7 @@ class CacheManager(Base):
         path = f"{output_path}/cache/items.json"
         with __class__.LOCK:
             try:
+                self._recover_json_transaction(output_path)
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.items = [CacheItem.from_dict(item) for item in json.load(reader)]
@@ -214,7 +264,34 @@ class CacheManager(Base):
                 self.debug(Localizer.get().log_read_cache_file_fail, e)
 
     # 从文件读取项目数据
-    def load_project_from_file(self, output_path: str) -> None:
+    def load_project_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        if strict:
+            with __class__.LOCK:
+                try:
+                    db_path = self._get_db_path(output_path)
+                    if os.path.isfile(db_path):
+                        project = CacheDB(db_path).get_project()
+                        if project is None:
+                            raise CacheLoadError("SQLite cache has no project record")
+                        self.project = project
+                        return
+                    self._recover_json_transaction(output_path)
+                    path = f"{output_path}/cache/project.json"
+                    if not os.path.isfile(path):
+                        raise CacheLoadError("Cache project does not exist")
+                    with open(path, "r", encoding = "utf-8-sig") as reader:
+                        payload = json.load(reader)
+                    if not isinstance(payload, dict):
+                        raise CacheLoadError("Cache project must be an object")
+                    self.project = CacheProject.from_dict(payload)
+                    return
+                except CacheLoadError:
+                    raise
+                except Exception as exc:
+                    raise CacheLoadError(
+                        f"Failed to load cache project from {output_path}"
+                    ) from exc
+
         use_sqlite = self._should_use_sqlite(output_path)
         if use_sqlite:
             with __class__.LOCK:
@@ -229,6 +306,7 @@ class CacheManager(Base):
         path = f"{output_path}/cache/project.json"
         with __class__.LOCK:
             try:
+                self._recover_json_transaction(output_path)
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.project = CacheProject.from_dict(json.load(reader))
@@ -253,6 +331,134 @@ class CacheManager(Base):
     def get_project(self) -> CacheProject:
         return self.project
 
+    def reset_translation_run(
+        self,
+        items: list[CacheItem] | None = None,
+        output_path: str | None = None,
+        snapshot: object = None,
+        progress: dict | None = None,
+    ) -> CacheProject:
+        """
+        Replace data owned by one translation run while retaining project assets.
+
+        Callers that re-read source files should pass the replacement items. When
+        ``items`` is omitted, item content is left untouched and only run metadata
+        is reset. SQLite persists both records in one transaction. The JSON
+        fallback uses a write-ahead journal so interrupted cross-file replacement
+        is recovered before the next internal read.
+        """
+        with __class__.LOCK:
+            replacement_items = list(self.items if items is None else items)
+
+            if output_path:
+                if self._should_use_sqlite(output_path):
+                    store = CacheDB(self._get_db_path(output_path))
+                    reset_project = store.reset_translation_run(
+                        self.project,
+                        replacement_items,
+                        snapshot = snapshot,
+                        progress = progress,
+                    )
+                else:
+                    reset_project = CacheProject.from_dict(self.project.asdict())
+                    reset_project.reset_translation_run(
+                        snapshot = snapshot,
+                        progress = progress,
+                    )
+                    self._save_translation_run_to_json(
+                        output_path,
+                        reset_project,
+                        replacement_items,
+                    )
+            else:
+                reset_project = CacheProject.from_dict(self.project.asdict())
+                reset_project.reset_translation_run(
+                    snapshot = snapshot,
+                    progress = progress,
+                )
+
+            self.project = reset_project
+            self.items = replacement_items
+            self.require_flag = False
+            self.last_require_time = time.time()
+            return reset_project
+
+    def _save_translation_run_to_json(
+        self,
+        output_path: str,
+        project: CacheProject,
+        items: list[CacheItem],
+    ) -> None:
+        cache_path = os.path.join(output_path, "cache")
+        os.makedirs(cache_path, exist_ok = True)
+
+        items_path = os.path.join(cache_path, "items.json")
+        project_path = os.path.join(cache_path, "project.json")
+        items_temp = f"{items_path}.reset.tmp"
+        project_temp = f"{project_path}.reset.tmp"
+        journal_path = os.path.join(cache_path, __class__.RESET_JOURNAL_NAME)
+        journal_temp = f"{journal_path}.tmp"
+        payload = {
+            "project": project.asdict(),
+            "items": [item.asdict() for item in items],
+        }
+        try:
+            with open(journal_temp, "w", encoding = "utf-8") as writer:
+                json.dump(payload, writer, ensure_ascii = False, separators = (",", ":"))
+                writer.flush()
+                os.fsync(writer.fileno())
+            os.replace(journal_temp, journal_path)
+
+            with open(items_temp, "w", encoding = "utf-8") as writer:
+                json.dump(
+                    payload["items"],
+                    writer,
+                    ensure_ascii = False,
+                    separators = (",", ":"),
+                )
+            with open(project_temp, "w", encoding = "utf-8") as writer:
+                json.dump(payload["project"], writer, ensure_ascii = False, separators = (",", ":"))
+
+            os.replace(items_temp, items_path)
+            os.replace(project_temp, project_path)
+            os.remove(journal_path)
+        finally:
+            for temp_path in (items_temp, project_temp, journal_temp):
+                if os.path.isfile(temp_path):
+                    os.remove(temp_path)
+
+    def _recover_json_transaction(self, output_path: str) -> None:
+        cache_path = os.path.join(output_path, "cache")
+        journal_path = os.path.join(cache_path, __class__.RESET_JOURNAL_NAME)
+        if not os.path.isfile(journal_path):
+            return
+
+        with open(journal_path, "r", encoding = "utf-8-sig") as reader:
+            payload = json.load(reader)
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("project"), dict)
+            or not isinstance(payload.get("items"), list)
+        ):
+            raise ValueError("Invalid cache reset transaction journal")
+
+        items_path = os.path.join(cache_path, "items.json")
+        project_path = os.path.join(cache_path, "project.json")
+        items_temp = f"{items_path}.recover.tmp"
+        project_temp = f"{project_path}.recover.tmp"
+        try:
+            with open(items_temp, "w", encoding = "utf-8") as writer:
+                json.dump(payload["items"], writer, ensure_ascii = False, separators = (",", ":"))
+            with open(project_temp, "w", encoding = "utf-8") as writer:
+                json.dump(payload["project"], writer, ensure_ascii = False, separators = (",", ":"))
+            os.replace(items_temp, items_path)
+            os.replace(project_temp, project_path)
+            os.remove(journal_path)
+        finally:
+            for temp_path in (items_temp, project_temp):
+                if os.path.isfile(temp_path):
+                    os.remove(temp_path)
+
     # 获取缓存数据数量
     def get_item_count(self) -> int:
         return len(self.items)
@@ -273,13 +479,11 @@ class CacheManager(Base):
         """
         count = 0
         for item in self.items:
-            if item.get_status() == Base.TranslationStatus.TRANSLATED:
+            if Base.is_item_completed(item.get_status()):
                 src = (item.get_src() or "").strip()
                 dst = (item.get_dst() or "").strip()
                 if src and dst and src == dst:
-                    item.set_status(Base.TranslationStatus.UNTRANSLATED)
-                    item.set_dst("")
-                    item.set_retry_count(0)
+                    item.reset_translation()
                     count += 1
         return count
 

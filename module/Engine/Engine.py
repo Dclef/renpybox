@@ -70,10 +70,17 @@ class Engine():
                 if not platform:
                     return
 
-                result = TranslatorTask(config, platform, False, [item], []).start(0)
-                success = (
-                    item.get_status() == Base.TranslationStatus.TRANSLATED
+                expected_state = item.get_translation_state()
+                working_item = CacheItem.from_dict(item.asdict())
+                working_item.reset_translation(clear_dst = False)
+                result = TranslatorTask(config, platform, False, [working_item], []).start(0)
+                translated = (
+                    Base.is_item_completed(working_item.get_status())
                     and not bool(result.get("error", False))
+                )
+                success = translated and item.commit_translation_from(
+                    working_item,
+                    expected_state,
                 )
             except Exception as e:
                 LogManager.get().error("Single item translate failed", e)

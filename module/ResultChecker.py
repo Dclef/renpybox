@@ -47,7 +47,7 @@ class ResultChecker(Base):
         self.items_untranslated = [item for item in items if item.get_status() == Base.TranslationStatus.UNTRANSLATED]
         self.items_translated: list[CacheItem] = [
             item for item in items
-            if item.get_status() in (Base.TranslationStatus.TRANSLATED, Base.TranslationStatus.TRANSLATED_IN_PAST)
+            if Base.is_item_completed(item.get_status())
             and item.get_src().strip() != ""
         ]
 
@@ -271,7 +271,7 @@ class ResultChecker(Base):
     def check_single_item(self, item: CacheItem) -> list[WarningType]:
         warnings: list[WarningType] = []
 
-        if item.get_status() == Base.TranslationStatus.UNTRANSLATED:
+        if not Base.is_item_completed(item.get_status()):
             return warnings
 
         if not item.get_dst():

@@ -491,7 +491,7 @@ class ProofreadingPage(QWidget, Base):
 
         item.set_dst(new_dst)
 
-        if new_dst and item.get_status() not in (Base.TranslationStatus.TRANSLATED, Base.TranslationStatus.TRANSLATED_IN_PAST):
+        if new_dst and not Base.is_item_completed(item.get_status()):
             item.set_status(Base.TranslationStatus.TRANSLATED)
 
         self._recheck_item(item)
@@ -644,9 +644,7 @@ class ProofreadingPage(QWidget, Base):
             old_dst = item.get_dst()
             old_status = item.get_status()
 
-            item.set_dst("")
-            item.set_status(Base.TranslationStatus.UNTRANSLATED)
-            item.set_retry_count(0)
+            item.reset_translation()
 
             if old_dst != "" or old_status != Base.TranslationStatus.UNTRANSLATED:
                 changed_count += 1
@@ -692,9 +690,6 @@ class ProofreadingPage(QWidget, Base):
             if row >= 0:
                 self.table_widget.set_row_loading(row, True)
 
-            item.set_status(Base.TranslationStatus.UNTRANSLATED)
-            item.set_retry_count(0)
-
             Engine.get().translate_single_item(
                 item = item,
                 config = self.config,
@@ -719,9 +714,6 @@ class ProofreadingPage(QWidget, Base):
         row = self.table_widget.find_row_by_item(item)
         if row >= 0:
             self.table_widget.set_row_loading(row, True)
-
-        item.set_status(Base.TranslationStatus.UNTRANSLATED)
-        item.set_retry_count(0)
 
         Engine.get().translate_single_item(
             item = item,
@@ -749,7 +741,6 @@ class ProofreadingPage(QWidget, Base):
                     "message": Localizer.get().proofreading_page_retranslate_success,
                 })
         else:
-            item.set_status(Base.TranslationStatus.TRANSLATED)
             if is_batch_mode:
                 self._batch_retranslate_failed += 1
             else:

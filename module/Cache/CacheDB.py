@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import threading
+from typing import Any
 
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
@@ -17,7 +18,9 @@ class CacheDB(Base):
         self.lock = threading.Lock()
 
     def _open(self) -> sqlite3.Connection:
-        os.makedirs(os.path.dirname(self.db_path), exist_ok = True)
+        parent = os.path.dirname(self.db_path)
+        if parent:
+            os.makedirs(parent, exist_ok = True)
         conn = sqlite3.connect(self.db_path, check_same_thread = False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -95,3 +98,38 @@ class CacheDB(Base):
                 conn.commit()
             finally:
                 conn.close()
+
+    def reset_translation_run(
+        self,
+        project: CacheProject,
+        items: list[CacheItem],
+        snapshot: Any = None,
+        progress: dict[str, Any] | None = None,
+    ) -> CacheProject:
+        """Atomically replace run data without deleting project-level extras."""
+        reset_project = CacheProject.from_dict(project.asdict())
+        reset_project.reset_translation_run(snapshot = snapshot, progress = progress)
+        project_json = json.dumps(reset_project.asdict(), ensure_ascii = False)
+        item_rows = [
+            (json.dumps(item.asdict(), ensure_ascii = False, separators = (",", ":")),)
+            for item in items
+        ]
+
+        with self.lock:
+            conn = self._open()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM items")
+                conn.executemany("INSERT INTO items (data) VALUES (?)", item_rows)
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("project", project_json),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+        return reset_project

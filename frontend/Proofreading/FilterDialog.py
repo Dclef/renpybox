@@ -64,6 +64,7 @@ class FilterDialog(MessageBoxBase):
         status_types = [
             (Base.TranslationStatus.UNTRANSLATED, Localizer.get().proofreading_page_status_none),
             (Base.TranslationStatus.TRANSLATED, Localizer.get().proofreading_page_status_processed),
+            (Base.TranslationStatus.POLISHED, Localizer.get().proofreading_page_status_polished),
             (Base.TranslationStatus.TRANSLATED_IN_PAST, Localizer.get().proofreading_page_status_processed_in_past),
         ]
 

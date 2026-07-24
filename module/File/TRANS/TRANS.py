@@ -144,7 +144,7 @@ class TRANS(Base):
                     # 去重
                     if self.config.deduplication_in_trans == True:
                         translation: dict[str, str] = {}
-                        for item in [v for v in items if v.get_status() == Base.TranslationStatus.TRANSLATED]:
+                        for item in [v for v in items if Base.is_item_completed(v.get_status())]:
                             src = item.get_src()
                             dst = item.get_dst()
                             if src not in translation:

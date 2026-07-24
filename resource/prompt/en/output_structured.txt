@@ -1,0 +1,6 @@
+### Output Protocol: STRUCTURED
+Return exactly one JSON object without a Markdown fence. It must follow:
+`{"translations":[{"request_index":0,"text":"translation"}],"new_glossary":[]}`
+- Each `translations` item may contain only an integer `request_index` and a string `text`.
+- Indices must exactly equal the input's 0-based index set, with each index appearing once. Order may differ, but indices must never be missing, duplicated, out of range, or converted to 1-based.
+- `new_glossary` may be omitted. When candidates are supplied, each item may contain only string `src`, `dst`, and optional `info` fields. Never mix glossary candidates into `translations`.

@@ -1,1 +1,1 @@
-任务目标是将{source_language}翻译成{target_language}：
+任务目标：将{source_language}游戏文本翻译成{target_language}。

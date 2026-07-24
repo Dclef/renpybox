@@ -35,6 +35,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.PromptBuilder import PromptBuilder
 from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError, WorkbenchAnalysisService
 from module.Workbench.CharacterScanner import CharacterScanner
@@ -110,7 +111,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         header_layout.setContentsMargins(24, 24, 24, 12)
         header_layout.setSpacing(10)
         header_layout.addWidget(TitleLabel("角色 / 世界观工作台"))
-        sub = CaptionLabel("在这里统一维护世界观、人设和提示词上下文，并可手动触发 AI 生成草稿。")
+        sub = CaptionLabel("在这里维护当前输出项目的世界观、人设和提示词上下文，并可手动触发 AI 生成草稿。")
         sub.setWordWrap(True)
         header_layout.addWidget(sub)
         root.addWidget(header)
@@ -401,7 +402,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         roster_layout.addWidget(self.character_list, 1)
         splitter.addWidget(roster_card)
 
-        editor_card, editor_layout = self._create_card("正式角色卡", "手工修改后会立即写入配置。")
+        editor_card, editor_layout = self._create_card("正式角色卡", "手工修改后会立即写入当前项目资产。")
         editor_form = QFormLayout()
         editor_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         editor_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -532,16 +533,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         return changed
 
     def _load_config(self) -> Config:
-        """读取并规范化配置。"""
+        """读取全局设置，并叠加当前输出项目的资产视图。"""
         config = Config().load()
-        if self._normalize_workbench_config(config):
-            config.save()
+        ProjectAssetsRepository.from_config(config).load_into_config(config)
+        self._normalize_workbench_config(config)
         return config
 
     def _save_config(self, config: Config) -> None:
-        """统一保存配置。"""
+        """保存工作台拥有的正式资产和分析草稿。"""
         self._normalize_workbench_config(config)
-        config.save()
+        ProjectAssetsRepository.from_config(config).save_workbench_view(config)
 
     def refresh_from_config(self) -> None:
         """从配置刷新整个页面。"""
@@ -635,7 +636,10 @@ class RenpyWorkbenchPage(Base, QWidget):
         """刷新角色列表。"""
         self.character_list.clear()
         draft_ids = {draft.get("id") for draft in drafts}
-        for card in cards:
+        visible_cards = list(cards)
+        formal_ids = {card.get("id") for card in cards}
+        visible_cards.extend(draft for draft in drafts if draft.get("id") not in formal_ids)
+        for card in visible_cards:
             item = QListWidgetItem(card.get("name", "未命名角色"))
             item.setData(Qt.ItemDataRole.UserRole, card.get("id", ""))
             suffix = []
@@ -649,7 +653,11 @@ class RenpyWorkbenchPage(Base, QWidget):
                 item.setText(f"{card.get('name', '未命名角色')} [{' / '.join(suffix)}]")
             self.character_list.addItem(item)
 
-        self._selected_character_id = select_id if any(card.get("id") == select_id for card in cards) else ""
+        self._selected_character_id = (
+            select_id
+            if any(card.get("id") == select_id for card in visible_cards)
+            else ""
+        )
         if self.character_list.count() == 0:
             self._clear_character_editor()
             return
@@ -680,6 +688,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         current = next((card for card in cards if card.get("id") == self._selected_character_id), None)
         if current is None:
             self._clear_character_editor()
+            self._refresh_character_draft_view(config)
             return
 
         self._loading_ui = True
@@ -753,7 +762,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_sync_characters.setEnabled(not engine_busy and not self._analysis_running and not self._sync_running)
         self.btn_apply_all.setEnabled(not self._analysis_running and not self._sync_running and has_any_draft)
         self.btn_apply_worldbook.setEnabled(not self._analysis_running and has_worldbook_draft)
-        self.btn_character_apply.setEnabled(not self._analysis_running and has_character_draft)
+        self.btn_character_apply.setEnabled(
+            not self._analysis_running
+            and not self._sync_running
+            and has_character_draft
+        )
         self.btn_character_add.setEnabled(not self._analysis_running and not self._sync_running)
         self.btn_character_delete.setEnabled(not self._analysis_running and not self._sync_running and self._selected_character_id != "")
 
@@ -1032,8 +1045,10 @@ class RenpyWorkbenchPage(Base, QWidget):
         config: Config,
         candidate_cards: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], int]:
-        """将候选角色并入正式角色卡。"""
-        cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
+        """将扫描结果并入待确认的角色草稿。"""
+        cards = normalize_character_cards(
+            getattr(config, "renpy_workbench_generated_character_drafts", [])
+        )
         card_map = {card.get("id"): card for card in cards}
         added = 0
 
@@ -1079,7 +1094,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 merged_cards, added = self._merge_candidates_into_cards(config, candidate_cards)
                 self.signals.sync_success.emit(
                     {
-                        "cards": merged_cards,
+                        "drafts": merged_cards,
                         "added": added,
                         "source_summary": source_summary,
                     }
@@ -1093,14 +1108,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         """同步成功回调。"""
         self._sync_running = False
         config = self._load_config()
-        config.renpy_workbench_character_cards = payload["cards"]
+        merged_drafts, _ = self._merge_candidates_into_cards(
+            config,
+            payload["drafts"],
+        )
+        config.renpy_workbench_generated_character_drafts = merged_drafts
         self._save_config(config)
         self._analysis_source_summary = f"角色同步来源：{payload.get('source_summary', '')}"
-        if self._selected_character_id == "" and payload["cards"]:
-            self._selected_character_id = payload["cards"][0]["id"]
+        if self._selected_character_id == "" and payload["drafts"]:
+            self._selected_character_id = payload["drafts"][0]["id"]
         self.refresh_from_config()
-        self.overview_status_label.setText(f"角色同步完成，共新增 {payload.get('added', 0)} 张角色卡。")
-        InfoBar.success("完成", f"角色同步完成，新增 {payload.get('added', 0)} 张角色卡。", parent = self)
+        self.overview_status_label.setText(f"角色同步完成，共新增 {payload.get('added', 0)} 张待确认草稿。")
+        InfoBar.success("完成", f"角色同步完成，新增 {payload.get('added', 0)} 张待确认草稿。", parent = self)
 
     def _on_sync_failed(self, message: str) -> None:
         """同步失败回调。"""
@@ -1118,6 +1137,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             return
         config.renpy_workbench_worldbook_data = draft
         config.renpy_workbench_worldbook_enable = True
+        config.renpy_workbench_generated_worldbook_draft = {}
         self._save_config(config)
         self.refresh_from_config()
         InfoBar.success("完成", "世界观草稿已应用。", parent = self)
@@ -1147,6 +1167,11 @@ class RenpyWorkbenchPage(Base, QWidget):
             merged.append(normalize_character_card(draft))
         config.renpy_workbench_character_cards = merged
         config.renpy_workbench_character_cards_enable = True
+        config.renpy_workbench_generated_character_drafts = [
+            card
+            for card in drafts
+            if card.get("id") != self._selected_character_id
+        ]
         self._save_config(config)
         self.refresh_from_config()
         InfoBar.success("完成", "当前角色草稿已应用。", parent = self)
@@ -1174,6 +1199,8 @@ class RenpyWorkbenchPage(Base, QWidget):
                 card_map[draft_id] = normalize_character_card(draft)
         config.renpy_workbench_character_cards = list(card_map.values())
         config.renpy_workbench_character_cards_enable = True
+        config.renpy_workbench_generated_worldbook_draft = {}
+        config.renpy_workbench_generated_character_drafts = []
         self._save_config(config)
         self.refresh_from_config()
         InfoBar.success("完成", "全部草稿已应用。", parent = self)
