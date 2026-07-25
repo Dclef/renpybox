@@ -300,7 +300,12 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
 
     project = tmp_path / "project"
     delta = project / "game" / "tl" / "chinese_new"
-    config = types.SimpleNamespace(input_folder="old-input", output_folder="old-output")
+    config = types.SimpleNamespace(
+        input_folder="old-input",
+        output_folder="old-output",
+        renpy_source_translate=True,
+        renpy_hook_translate=True,
+    )
 
     apply_target, output = configure_incremental_translation_paths(
         config, project, "chinese", delta
@@ -308,6 +313,8 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
 
     assert Path(config.input_folder) == delta
     assert Path(config.output_folder) == project / "RenpyBox_Translation" / "chinese_new"
+    assert config.renpy_source_translate is False
+    assert config.renpy_hook_translate is False
     assert output == Path(config.output_folder)
     assert apply_target == project / "game" / "tl" / "chinese"
 
@@ -317,10 +324,14 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
     assert resolved_output == output
     assert resolved_target == apply_target
 
+    config.renpy_source_translate = True
+    config.renpy_hook_translate = True
     main_input, main_output = configure_main_translation_paths(config, project, "chinese")
     assert Path(config.input_folder) == main_input == apply_target
     assert Path(config.output_folder) == main_output
     assert main_output == project / "RenpyBox_Translation" / "chinese"
+    assert config.renpy_source_translate is False
+    assert config.renpy_hook_translate is False
 
 
 def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):

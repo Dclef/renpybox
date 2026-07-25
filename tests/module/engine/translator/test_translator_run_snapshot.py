@@ -6,6 +6,7 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
 from module.Engine.Translator.Translator import Translator
@@ -205,6 +206,31 @@ def test_translation_start_binds_runtime_output_before_run_initialization(
 
     assert translator._last_runtime_output_folder == str(tmp_path)
     assert translator._active_cache_output_folder == ""
+
+
+def test_no_items_finishes_without_emitting_stop(monkeypatch) -> None:
+    """空数据属于启动失败，不能显示成用户主动停止任务。"""
+    translator = _translator()
+    translator.cache_manager.get_project().set_progress({
+        "start_time": 100,
+        "time": 0,
+        "total_line": 0,
+        "line": 0,
+    })
+    events = []
+    monkeypatch.setattr(translator, "emit", lambda event, data: events.append((event, data)))
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    engine.set_status(engine.Status.TRANSLATING)
+    try:
+        translator._finish_no_items_run(None)
+    finally:
+        engine.set_status(previous_status)
+
+    assert all(event != Base.Event.TRANSLATION_STOP for event, _ in events)
+    assert events[-1][0] == Base.Event.TRANSLATION_DONE
+    assert events[-1][1]["error"] == "NO_ITEMS"
+    assert events[-1][1]["no_items"] is True
 
 
 def test_resume_provider_only_overlays_current_credentials() -> None:
