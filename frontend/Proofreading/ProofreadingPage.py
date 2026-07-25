@@ -132,6 +132,7 @@ class ProofreadingPage(QWidget, Base):
         self.table_widget = ProofreadingTableWidget()
         self.table_widget.cell_edited.connect(self._on_cell_edited)
         self.table_widget.retranslate_clicked.connect(self._on_retranslate_clicked)
+        self.table_widget.confirm_translations_clicked.connect(self._on_confirm_translations_clicked)
         self.table_widget.copy_src_clicked.connect(self._on_copy_src_clicked)
         self.table_widget.copy_dst_clicked.connect(self._on_copy_dst_clicked)
         self.table_widget.selected_items_changed.connect(self._on_selected_items_changed)
@@ -664,6 +665,36 @@ class ProofreadingPage(QWidget, Base):
         self.emit(Base.Event.APP_TOAST_SHOW, {
             "type": Base.ToastType.SUCCESS,
             "message": Localizer.get().proofreading_page_copy_src_done,
+        })
+
+    def _on_confirm_translations_clicked(self, items: list[CacheItem]) -> None:
+        if self.is_readonly:
+            return
+
+        confirmed_items = [
+            item
+            for item in items
+            if item.get_dst().strip()
+            and WarningType.RETRY_THRESHOLD in self.warning_map.get(id(item), [])
+        ]
+        if not confirmed_items:
+            return
+
+        for item in confirmed_items:
+            item.set_retry_count(0)
+            metadata = item.get_metadata()
+            metadata.pop(CacheItem.TRANSLATION_RETRY_KEY, None)
+            item.set_metadata(metadata)
+            self._recheck_item(item)
+
+        self._apply_filter()
+        self.table_widget.clearSelection()
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": Base.ToastType.SUCCESS,
+            "message": Localizer.get().proofreading_page_confirm_translation_done.replace(
+                "{COUNT}",
+                str(len(confirmed_items)),
+            ),
         })
 
     def _on_copy_dst_clicked(self, item: CacheItem) -> None:

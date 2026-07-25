@@ -8,6 +8,7 @@ from module.Engine.Quality.TranslationQualityReport import TranslationQualityRep
 from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslatorTask import TranslatorTask
 from module.PromptBuilder import PromptBuilder
+from module.ResultChecker import ResultChecker, WarningType
 from module.Response.ResponseChecker import ResponseChecker
 
 
@@ -155,6 +156,22 @@ def test_successful_write_clears_only_temporary_retry_metadata(monkeypatch) -> N
     assert item.get_dst() == "你好"
     assert item.get_status() == Base.TranslationStatus.TRANSLATED
     assert item.get_metadata() == {"trace_id": "kept"}
+
+
+def test_completed_item_retry_threshold_remains_visible_until_confirmed() -> None:
+    item = CacheItem(
+        src = "Hello",
+        dst = "你好",
+        status = Base.TranslationStatus.TRANSLATED,
+        retry_count = ResponseChecker.RETRY_COUNT_THRESHOLD,
+    )
+
+    warnings = ResultChecker(
+        Config(source_language = BaseLanguage.Enum.EN, target_language = BaseLanguage.Enum.ZH),
+        [item],
+    ).check_single_item(item)
+
+    assert warnings == [WarningType.RETRY_THRESHOLD]
 
 
 def test_quality_report_combines_item_reasons_with_progress_counts() -> None:
