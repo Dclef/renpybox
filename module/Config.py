@@ -17,6 +17,14 @@ from module.Localizer.Localizer import Localizer
 class Config():
 
     CURRENT_CONFIG_VERSION: ClassVar[int] = 1
+    PROJECT_SCOPED_WORKBENCH_DEFAULTS: ClassVar[dict[str, Any]] = {
+        "renpy_workbench_worldbook_enable": False,
+        "renpy_workbench_worldbook_data": {},
+        "renpy_workbench_character_cards_enable": False,
+        "renpy_workbench_character_cards": [],
+        "renpy_workbench_generated_worldbook_draft": {},
+        "renpy_workbench_generated_character_drafts": [],
+    }
 
     PROMPT_MODE_COMMON: ClassVar[str] = "COMMON"
     PROMPT_MODE_COT: ClassVar[str] = "COT"
@@ -496,8 +504,12 @@ class Config():
             try:
                 parent = os.path.dirname(os.path.abspath(path))
                 os.makedirs(parent, exist_ok = True)
+                payload = dataclasses.asdict(self)
+                # 工作台资产由项目缓存持久化，不能写回全局配置后污染下一个项目。
+                for key, value in __class__.PROJECT_SCOPED_WORKBENCH_DEFAULTS.items():
+                    payload[key] = copy.deepcopy(value)
                 with open(path, "w", encoding = "utf-8") as writer:
-                    json.dump(dataclasses.asdict(self), writer, indent = 4, ensure_ascii = False)
+                    json.dump(payload, writer, indent = 4, ensure_ascii = False)
             except Exception as e:
                 LogManager.get().error(f"{Localizer.get().log_write_file_fail}", e)
 

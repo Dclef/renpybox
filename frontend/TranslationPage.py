@@ -283,14 +283,18 @@ class TranslationPage(QWidget, Base):
 
     # 更新时间
     def update_time(self, data: dict) -> None:
-        if Engine.get().get_status() not in (
+        engine_status = Engine.get().get_status()
+        if engine_status not in (
             Engine.Status.IDLE,
             Engine.Status.STOPPING,
             Engine.Status.TRANSLATING,
         ):
             return None
 
-        if self.data.get("start_time", 0) == 0:
+        if engine_status == Engine.Status.IDLE:
+            # 任务结束后使用缓存中的耗时快照，不能继续用 start_time 累加。
+            total_time = int(self.data.get("time", 0) or 0)
+        elif self.data.get("start_time", 0) == 0:
             total_time = 0
         else:
             total_time = int(time.time() - self.data.get("start_time", 0))
@@ -988,7 +992,8 @@ class TranslationPage(QWidget, Base):
         ]
         if result.estimated_cost > 0:
             lines.append(f"预估费用: ${result.estimated_cost:.4f}")
-        message_box = MessageBox("Token 估算", "\n".join(lines), self.window)
+        # QWidget.window 是方法，不能作为 QDialog 的 parent 传入。
+        message_box = MessageBox("Token 估算", "\n".join(lines), self)
         message_box.yesButton.setText("确定")
         message_box.cancelButton.hide()
         message_box.exec()

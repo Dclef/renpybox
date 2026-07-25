@@ -915,6 +915,25 @@ class Translator(Base):
             "time": time.time() - start_time,
         }
 
+    def _finish_no_items_run(self, run_id: int | None) -> None:
+        """以明确的空数据结果结束任务，避免误走“用户停止”流程。"""
+        progress = dict(self.cache_manager.get_project().get_progress() or {})
+        progress["time"] = float(progress.get("time", 0) or 0)
+        self.cache_manager.get_project().set_progress(progress)
+        self.extras = progress
+
+        if (
+            self._is_translation_run_current(run_id)
+            and Engine.get().release_status(Engine.Status.TRANSLATING)
+        ):
+            self.emit(Base.Event.TRANSLATION_UPDATE, progress)
+            self.emit(Base.Event.TRANSLATION_DONE, {
+                "success": False,
+                "run_id": run_id,
+                "error": "NO_ITEMS",
+                "no_items": True,
+            })
+
     def _is_relative_to(self, path_a: str, path_b: str) -> bool:
         try:
             return os.path.commonpath([os.path.abspath(path_a), os.path.abspath(path_b)]) == os.path.abspath(path_b)
@@ -1060,13 +1079,11 @@ class Translator(Base):
                 return None
 
             if self.cache_manager.get_item_count() == 0:
-                # 通知
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.WARNING,
                     "message": Localizer.get().translator_no_items,
                 })
-
-                self.emit(Base.Event.TRANSLATION_STOP, {})
+                self._finish_no_items_run(run_id)
                 return None
 
             try:

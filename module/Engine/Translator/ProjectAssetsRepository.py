@@ -66,7 +66,7 @@ class ProjectAssetsRepository:
             if not self.has_storage:
                 # 空配置只能返回内存态，不能把项目资产误写到当前工作目录
                 # 下的 ``./cache``。
-                assets = ProjectAssets.from_config(legacy_config)
+                assets = self._legacy_assets_from_config(legacy_config)
                 candidates = self._migrate_legacy_candidates(
                     {
                         "schema_version": self.CANDIDATE_SCHEMA_VERSION,
@@ -89,7 +89,7 @@ class ProjectAssetsRepository:
             changed = False
 
             if self._has_project_state(assets) is False:
-                legacy_assets = ProjectAssets.from_config(legacy_config)
+                legacy_assets = self._legacy_assets_from_config(legacy_config)
                 assets = self._stamp_assets(legacy_assets, minimum_revision = 1)
                 project.set_project_assets(assets)
                 changed = True
@@ -554,6 +554,17 @@ class ProjectAssetsRepository:
 
         result["legacy_config_migrated"] = True
         return result
+
+    def _legacy_assets_from_config(self, config: Any) -> ProjectAssets:
+        """迁移旧资产；Ren'Py 工作台内容保留但需由用户重新启用。"""
+        assets = ProjectAssets.from_config(config)
+        if RenpyProjectPaths.from_config(config) is None:
+            return assets
+
+        data = assets.to_dict()
+        data["worldbook"]["enabled"] = False
+        data["character_cards"]["enabled"] = False
+        return ProjectAssets.from_dict(data)
 
     def _update_project(self, updater) -> CacheProject:
         with CacheManager.LOCK:
