@@ -345,6 +345,31 @@ class PromptBuilder(Base):
     def build_main(self) -> str:
         return self._build_main_for_protocol(self._normalize_output_protocol())
 
+    def build_static_prompt_sections(self) -> dict[str, str]:
+        """按当前配置返回可预览的静态提示词。"""
+        prompt_language, source_language, target_language = self.get_prompt_language_and_names()
+        with __class__.LOCK:
+            sections = {
+                "base": self.resolve_base_prompt(prompt_language),
+                "style": self.build_writing_style(prompt_language),
+                "fixed": __class__._join_sections(
+                    __class__.get_engineering(prompt_language),
+                    __class__.get_output_protocol(
+                        prompt_language,
+                        self._normalize_output_protocol(),
+                    ),
+                ),
+            }
+
+        return {
+            key: __class__._replace_language_placeholders(
+                value,
+                source_language,
+                target_language,
+            )
+            for key, value in sections.items()
+        }
+
     def build_task_prompt_snapshot(self) -> dict[str, object]:
         """Resolve prompt resources before persisting a task context."""
         prompt_language, source_language, target_language = self.get_prompt_language_and_names()
