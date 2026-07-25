@@ -4,6 +4,7 @@ from base.Base import Base
 from frontend.TranslationPage import TranslationPage
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.Quality.QualityTaskCoordinator import QualityTaskType
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
 
 
@@ -157,6 +158,99 @@ def test_quality_update_preserves_translation_dashboard_progress() -> None:
         Base.Event.TRANSLATION_UPDATE,
         page.data,
     )]
+
+
+def test_quality_status_uses_explicit_task_name(monkeypatch) -> None:
+    strings = SimpleNamespace(
+        translation_page_status_polishing = "AI 润色中",
+        translation_page_status_proofreading = "AI 校对中",
+        translation_page_status_stopping_polishing = "正在停止 AI 润色",
+        translation_page_status_stopping_proofreading = "正在停止 AI 校对",
+        translation_page_status_quality = "质量处理中",
+    )
+    monkeypatch.setattr("frontend.TranslationPage.Localizer.get", lambda: strings)
+
+    assert TranslationPage._quality_status_label({
+        "task_type": QualityTaskType.POLISHER.value,
+    }) == "AI 润色中"
+    assert TranslationPage._quality_status_label({
+        "task_type": QualityTaskType.PROOFREADER.value,
+    }) == "AI 校对中"
+    assert TranslationPage._quality_status_label({
+        "task_type": QualityTaskType.POLISHER.value,
+        "cancel_requested": True,
+    }) == "正在停止 AI 润色"
+
+
+def test_main_page_stop_cancels_quality_task_without_translation_event(monkeypatch) -> None:
+    class ActionStub:
+        def __init__(self) -> None:
+            self.enabled = True
+
+        def setEnabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    progress = SimpleNamespace(as_dict = lambda: {
+        "task_type": QualityTaskType.POLISHER.value,
+        "cancel_requested": True,
+    })
+    coordinator = SimpleNamespace(
+        cancel = lambda: True,
+        get_progress = lambda: progress,
+    )
+    strings = SimpleNamespace(
+        translation_page_status_stopping_polishing = "正在停止 AI 润色",
+    )
+    monkeypatch.setattr(Engine.get(), "get_status", lambda: Engine.Status.QUALITY)
+    monkeypatch.setattr("frontend.TranslationPage.Localizer.get", lambda: strings)
+    monkeypatch.setattr(
+        "frontend.TranslationPage.QualityTaskCoordinator.get",
+        lambda: coordinator,
+    )
+    page = SimpleNamespace(
+        data = {},
+        action_stop = ActionStub(),
+        events = [],
+        labels = [],
+        emit = lambda event, payload: page.events.append((event, payload)),
+        update_status = lambda data: None,
+        indeterminate_show = lambda label: page.labels.append(label),
+        _quality_status_label = TranslationPage._quality_status_label,
+    )
+
+    TranslationPage._on_stop_clicked(page, None)
+
+    assert page.action_stop.enabled is False
+    assert page.events == []
+    assert page.data["quality_task"]["cancel_requested"] is True
+    assert page.labels == ["正在停止 AI 润色"]
+
+
+def test_quality_status_enables_main_page_stop_button(monkeypatch) -> None:
+    class ActionStub:
+        def __init__(self) -> None:
+            self.enabled = None
+
+        def setEnabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    actions = [ActionStub() for _ in range(6)]
+    page = SimpleNamespace(
+        data = {"quality_task": {"cancel_requested": False}},
+        action_start = actions[0],
+        action_stop = actions[1],
+        action_export = actions[2],
+        action_reinject_cache = actions[3],
+        action_continue = actions[4],
+        action_retry_failed = actions[5],
+    )
+    monkeypatch.setattr(Engine.get(), "get_status", lambda: Engine.Status.QUALITY)
+
+    TranslationPage.update_button_status(page, Base.Event.TRANSLATION_UPDATE, {})
+
+    assert page.action_stop.enabled is True
+    assert page.action_start.enabled is False
+    assert page.action_export.enabled is False
 
 
 def test_idle_dashboard_uses_frozen_elapsed_time(monkeypatch) -> None:

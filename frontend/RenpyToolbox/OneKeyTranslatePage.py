@@ -892,7 +892,7 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度三：术语表 ====================
     def _create_step3_page(self):
         """进度三：项目资产与术语表。"""
-        page, layout = self._create_page_container("项目资产与术语表", 3)
+        page, layout = self._create_page_container("术语与翻译上下文", 3)
         
         layout.addWidget(SubtitleLabel("术语表与禁翻表"))
         layout.addWidget(BodyLabel("术语表可以帮助你统一专有名词的翻译，禁翻表可以防止翻译不需要翻译的内容。本地词库页还支持手动扫描术语候选。"))
@@ -945,7 +945,7 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度四：开始翻译 ====================
     def _create_step4_page(self):
         """进度四：开始翻译"""
-        page, layout = self._create_page_container("执行翻译", 4)
+        page, layout = self._create_page_container("执行 AI 翻译", 4)
         
         layout.addWidget(SubtitleLabel("准备翻译"))
         self.step4_status = BodyLabel(
@@ -1001,10 +1001,10 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度五：后续处理 ====================
     def _create_step5_page(self):
         """进度五：后续处理"""
-        page, layout = self._create_page_container("完成", 5)
+        page, layout = self._create_page_container("检查、导出与应用", 5)
         
-        layout.addWidget(SubtitleLabel("🎉 翻译流程结束"))
-        layout.addWidget(BodyLabel("你可以使用以下工具进行后续处理："))
+        layout.addWidget(SubtitleLabel("🎉 翻译已完成"))
+        layout.addWidget(BodyLabel("检查译文后导出，再应用到游戏。"))
         layout.addWidget(
             CaptionLabel("如果切换到中文后仍有漏翻文本，优先使用“补全漏翻”生成 replace_text_auto.rpy。")
         )
@@ -1028,8 +1028,9 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 工具卡片
         tools = [
-            ("补全漏翻", "扫描 tl 未覆盖的文本并生成 replace_text_auto.rpy", self._tool_hook_supplement),
+            ("检查、润色并导出", "查看质量报告，校对或润色选中译文，然后导出翻译文件", self._tool_open_proofreading),
             ("应用翻译到游戏", "将翻译结果复制到游戏 tl 目录", self._tool_apply_translation),
+            ("补全漏翻", "扫描 tl 未覆盖的文本并生成 replace_text_auto.rpy", self._tool_hook_supplement),
             ("检测/修复报错", "修复缩进和格式问题", self._tool_fix_errors),
             ("设置默认语言", "设置游戏启动时的默认语言", self._tool_set_default_lang),
             ("添加语言切换", "注入语言切换按钮", self._tool_add_lang_switch),
@@ -2348,6 +2349,22 @@ class YiJianFanyiPage(Base, QWidget):
     def _tool_open_game_dir(self, card):
         if self.game_dir:
             os.startfile(self.game_dir)
+
+    def _tool_open_proofreading(self, card):
+        """打开检查与润色页面。"""
+        del card
+        if self.window is None:
+            return
+        from frontend.Proofreading.ProofreadingPage import ProofreadingPage
+
+        page = getattr(self.window, "proofreading_page", None)
+        if page is None:
+            page = ProofreadingPage("proofreading_page", self.window)
+            self.window.proofreading_page = page
+        if hasattr(self.window, "navigate_to_page"):
+            self.window.navigate_to_page(page)
+        elif hasattr(self.window, "switchTo"):
+            self.window.switchTo(page)
             
     def _tool_export_patch(self, card):
         """生成当前项目的漏翻补丁。"""

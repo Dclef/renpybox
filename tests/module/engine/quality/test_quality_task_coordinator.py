@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 
 import pytest
@@ -18,6 +19,7 @@ from module.Engine.Quality.QualityTaskCoordinator import (
     QualityTaskState,
 )
 from module.Engine.Quality._common import QualityTaskResult
+from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TranslationTaskContext,
@@ -32,9 +34,11 @@ class RecordingTask:
         context: TranslationTaskContext,
         *,
         cancel: Callable[[], bool] | None = None,
+        cancel_on_call: int = 1,
     ) -> None:
         self.context = context
         self.cancel = cancel
+        self.cancel_on_call = cancel_on_call
         self.calls = 0
 
     def run(self, items: list[CacheItem], **kwargs) -> QualityTaskResult:
@@ -45,7 +49,7 @@ class RecordingTask:
                 f"润色：{item.get_dst()}",
                 CacheItem.QualityOrigin.POLISHER,
             )
-        if self.cancel is not None and self.calls == 1:
+        if self.cancel is not None and self.calls == self.cancel_on_call:
             self.cancel()
         return QualityTaskResult(
             total_count = len(items),
@@ -64,6 +68,30 @@ class MutatingFailureTask:
         del kwargs
         items[0].set_quality_result("不应保存", CacheItem.QualityOrigin.POLISHER)
         raise RuntimeError("模拟批次异常")
+
+
+class BlockingCancellableTask:
+    """模拟会等待请求级取消令牌的质量请求。"""
+
+    started = threading.Event()
+
+    def __init__(self, context: TranslationTaskContext) -> None:
+        del context
+
+    def run(self, items: list[CacheItem], **kwargs) -> QualityTaskResult:
+        del kwargs
+        self.started.set()
+        deadline = time.monotonic() + 3
+        while not TaskRequester.is_cancel_requested() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not TaskRequester.is_cancel_requested():
+            raise TimeoutError("没有收到质量任务取消令牌")
+        items[0].set_quality_result("不应保存", CacheItem.QualityOrigin.POLISHER)
+        return QualityTaskResult(
+            total_count = len(items),
+            eligible_count = len(items),
+            updated_count = 1,
+        )
 
 
 def _prepare_cache(tmp_path, item_count: int = 3) -> tuple[Config, list[CacheItem]]:
@@ -197,7 +225,11 @@ def test_cancel_only_stops_later_batches_and_keeps_saved_batch(tmp_path) -> None
     coordinator: QualityTaskCoordinator
 
     def factory(context: TranslationTaskContext) -> RecordingTask:
-        return RecordingTask(context, cancel = coordinator.cancel)
+        return RecordingTask(
+            context,
+            cancel = coordinator.cancel,
+            cancel_on_call = 2,
+        )
 
     coordinator = QualityTaskCoordinator(engine = engine, polisher_factory = factory)
     coordinator.emit = lambda *args, **kwargs: None
@@ -231,6 +263,66 @@ def test_cancel_only_stops_later_batches_and_keeps_saved_batch(tmp_path) -> None
     assert saved_progress["state"] == QualityTaskState.CANCELLED.value
     assert saved_progress["completed_count"] == 1
     assert reloaded.get_project().get_status() == Base.TranslationStatus.TRANSLATED
+
+
+def test_cancel_interrupts_current_quality_request_and_rolls_back_batch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config, items = _prepare_cache(tmp_path, item_count = 1)
+    original = items[0].asdict()
+    engine = Engine()
+    done = threading.Event()
+    final_results = []
+    close_calls = []
+    BlockingCancellableTask.started.clear()
+    monkeypatch.setattr(
+        TaskRequester,
+        "close_all_clients_async",
+        lambda **kwargs: close_calls.append(kwargs),
+    )
+    coordinator = QualityTaskCoordinator(
+        engine = engine,
+        polisher_factory = BlockingCancellableTask,
+    )
+    coordinator.emit = lambda *args, **kwargs: None
+
+    assert coordinator.start_polishing(
+        config,
+        items,
+        items,
+        on_done = lambda progress: (final_results.append(progress), done.set()),
+    )
+    assert BlockingCancellableTask.started.wait(2)
+    assert coordinator.cancel() is True
+    assert done.wait(2)
+
+    result = final_results[0]
+    assert result.state == QualityTaskState.CANCELLED
+    assert result.completed_count == 0
+    assert result.updated_count == 0
+    assert items[0].asdict() == original
+    assert close_calls == [{}]
+    assert engine.get_status() == Engine.Status.IDLE
+
+    # 工作线程退出时必须解除绑定，下一轮任务不能继承本轮取消状态。
+    observed_cancel_state = []
+
+    class NextTask(RecordingTask):
+        def run(self, next_items: list[CacheItem], **kwargs) -> QualityTaskResult:
+            observed_cancel_state.append(TaskRequester.is_cancel_requested())
+            return super().run(next_items, **kwargs)
+
+    coordinator.polisher_factory = NextTask
+    second_done = threading.Event()
+    assert coordinator.start_polishing(
+        config,
+        items,
+        items,
+        on_done = lambda progress: second_done.set(),
+    )
+    assert second_done.wait(2)
+    assert observed_cancel_state == [False]
 
 
 def test_coordinator_refuses_to_start_when_engine_is_owned(tmp_path) -> None:
