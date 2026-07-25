@@ -7,10 +7,11 @@
 - 如需生成 GUI Hook（旧逻辑），可在高级选项勾选
 - 如需直接替换所有字体引用（破坏性），可在高级选项执行
 """
+import threading
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 from qfluentwidgets import (
     CardWidget,
@@ -36,6 +37,8 @@ from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 class FontReplacePage(Base, QWidget):
     """字体注入页面 - 小白模式"""
 
+    font_replace_done = pyqtSignal(bool, str, object)
+
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
         QWidget.__init__(self, parent)
@@ -50,6 +53,7 @@ class FontReplacePage(Base, QWidget):
         self.detected_languages: List[str] = []
 
         self._init_ui()
+        self.font_replace_done.connect(self._on_font_replace_done)
 
     def _init_ui(self):
         """初始化界面"""
@@ -469,26 +473,55 @@ class FontReplacePage(Base, QWidget):
                 return
 
             create_backup = self.auto_backup_check.isChecked()
-            success, message, details = self.replacer.safe_replace_font(
-                game_dir=game_dir,
-                source_font_path=font_source_path,
-                original_fonts=original_fonts,
-                create_backup=create_backup,
-            )
-            if success:
-                backup_info = ""
-                if details.get("backup_name"):
-                    backup_info = f"\n已备份到: fonts_backup/{details['backup_name']}"
-                InfoBar.success(
-                    "完成",
-                    f"已修改 {details.get('replaced_files', 0)} 个文件，{message}{backup_info}",
-                    parent=self,
-                )
-            else:
-                InfoBar.error("错误", f"替换失败: {message}", parent=self)
+            self._set_replace_running(True)
+
+            def task() -> None:
+                try:
+                    result = self.replacer.safe_replace_font(
+                        game_dir=game_dir,
+                        source_font_path=font_source_path,
+                        original_fonts=original_fonts,
+                        create_backup=create_backup,
+                    )
+                except Exception as e:
+                    LogManager.get().error("替换所有字体失败", e)
+                    result = (False, str(e), {})
+                self.font_replace_done.emit(*result)
+
+            threading.Thread(target=task, daemon=True).start()
         except Exception as e:
+            self._set_replace_running(False)
             LogManager.get().error(f"替换所有字体失败: {e}")
             InfoBar.error("错误", f"替换失败: {e}", parent=self)
+
+    def _set_replace_running(self, running: bool) -> None:
+        """更新字体替换期间的页面状态。"""
+        self.replace_all_fonts_btn.setEnabled(not running)
+        self.rescan_btn.setEnabled(not running)
+        self.action_button.setEnabled(not running)
+        if running:
+            self.status_label.setText("正在替换字体，请稍候...")
+
+    def _on_font_replace_done(self, success: bool, message: str, details: dict) -> None:
+        """在 UI 线程显示字体替换结果。"""
+        self._set_replace_running(False)
+        if success:
+            replaced_files = details.get("replaced_files", 0)
+            replaced_count = details.get("replaced_count", 0)
+            self.status_label.setText(
+                f"字体替换完成：修改 {replaced_files} 个文件，共 {replaced_count} 处"
+            )
+            backup_info = ""
+            if details.get("backup_name"):
+                backup_info = f"\n已备份到: fonts_backup/{details['backup_name']}"
+            InfoBar.success(
+                "完成",
+                f"已修改 {replaced_files} 个文件，{message}{backup_info}",
+                parent=self,
+            )
+        else:
+            self.status_label.setText(f"字体替换失败：{message}")
+            InfoBar.error("错误", f"替换失败: {message}", parent=self)
 
     def _manual_rescan(self):
         """手动重新扫描游戏目录"""
