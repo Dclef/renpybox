@@ -121,7 +121,7 @@ class QualityPromptBuilderProtocol(Protocol):
 
 
 class QualityPromptBuilder:
-    """Build quality-task prompts from an immutable translation snapshot."""
+    """基于不可变的翻译快照构建质量任务提示词。"""
 
     MAX_PRECEDING_ITEMS = 3
 
@@ -268,7 +268,7 @@ class MatchedConstraints:
 
 
 class QualityValidator:
-    """Deterministically validate a quality-task candidate before writeback."""
+    """在回写前以确定性规则验证质量任务候选结果。"""
 
     def __init__(
         self,

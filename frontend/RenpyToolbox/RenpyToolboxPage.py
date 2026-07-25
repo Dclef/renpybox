@@ -14,6 +14,9 @@ from qfluentwidgets import (
 )
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Cache.CacheManager import CacheManager
+from module.Config import Config
+from module.Renpy.ProjectPaths import resolve_translation_output
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
@@ -162,12 +165,12 @@ class RenpyToolboxPage(Base, QWidget):
     def _check_pending_translation(self) -> bool:
         """检查是否有未完成的翻译任务"""
         try:
-            from module.Config import Config
             from pathlib import Path
             import os
             
             config = Config().load()
-            output_folder = config.output_folder
+            output_path = resolve_translation_output(config)
+            output_folder = str(output_path) if output_path is not None else ""
             
             if not output_folder or not os.path.isdir(output_folder):
                 return False
@@ -175,15 +178,33 @@ class RenpyToolboxPage(Base, QWidget):
             # 检查缓存目录是否存在
             cache_dir = Path(output_folder) / "cache"
             items_file = cache_dir / "items.json"
-            
+            sqlite_file = cache_dir / "cache.db"
+
             if items_file.exists():
                 import json
                 with open(items_file, "r", encoding="utf-8") as f:
                     items = json.load(f)
                     # 检查是否有未翻译的条目
-                    untranslated = sum(1 for item in items if item.get("status", 0) == 0)
+                    def is_untranslated(item) -> bool:
+                        if not isinstance(item, dict):
+                            return False
+                        status = item.get("status", 0)
+                        # 新缓存把状态序列化为字符串枚举；旧缓存仍可能
+                        # 使用 0，两个格式都要被识别。
+                        if status == 0 or str(status).upper() == "UNTRANSLATED":
+                            return True
+                        try:
+                            return Base.normalize_translation_status(status) == Base.TranslationStatus.UNTRANSLATED
+                        except (TypeError, ValueError):
+                            return False
+
+                    untranslated = sum(1 for item in items if is_untranslated(item))
                     if untranslated > 0:
                         return True
+            if sqlite_file.exists():
+                cache_manager = CacheManager(service = False)
+                cache_manager.load_items_from_file(output_folder)
+                return any(item.get_status() == Base.TranslationStatus.UNTRANSLATED for item in cache_manager.get_items())
             return False
         except Exception:
             return False

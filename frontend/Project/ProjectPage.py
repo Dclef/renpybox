@@ -14,6 +14,7 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
 from widget.ComboBoxCard import ComboBoxCard
 from widget.PushButtonCard import PushButtonCard
 from widget.SwitchButtonCard import SwitchButtonCard
@@ -51,6 +52,21 @@ class ProjectPage(QWidget, Base):
         # 填充
         self.vbox.addStretch(1)
 
+    def showEvent(self, event) -> None:
+        """页面重新显示时刷新路径，避免沿用旧页面创建时的配置快照。"""
+        super().showEvent(event)
+        config = self._auto_fill_by_renpy_config(Config().load())
+        input_card = getattr(self, "input_folder_card", None)
+        output_card = getattr(self, "output_folder_card", None)
+        if input_card is not None:
+            input_card.get_description_label().setText(
+                f"{Localizer.get().project_page_input_folder_content} {config.input_folder}"
+            )
+        if output_card is not None:
+            output_card.get_description_label().setText(
+                f"{Localizer.get().project_page_output_folder_content} {config.output_folder}"
+            )
+
     def _guess_lang_from_path(self, path: Path) -> BaseLanguage.Enum | None:
         lower = str(path).lower()
         if any(key in lower for key in ["chinese", "schinese", "tchinese", "zh"]):
@@ -64,82 +80,6 @@ class ProjectPage(QWidget, Base):
         if any(key in lower for key in ["russian", "ru"]):
             return BaseLanguage.Enum.RU
         return None
-
-    def _pick_tl_language_dir(self, tl_root: Path) -> Path | None:
-        """从 tl 根目录中选择一个语言目录。"""
-        if tl_root.exists() is False or tl_root.is_dir() is False:
-            return None
-
-        for preferred in ("chinese", "schinese", "tchinese", "english", "japanese", "korean"):
-            candidate = tl_root / preferred
-            if candidate.is_dir():
-                return candidate
-
-        children = sorted(
-            [child for child in tl_root.iterdir() if child.is_dir()],
-            key = lambda item: item.name.lower(),
-        )
-        return children[0] if children else None
-
-    def _infer_renpy_layout(self, raw_path: str) -> tuple[Path | None, Path | None, Path | None]:
-        """根据用户选择的目录推断项目根目录、game 目录与 tl 语言目录。"""
-        if not raw_path:
-            return None, None, None
-
-        try:
-            path = Path(raw_path).expanduser().resolve()
-        except Exception:
-            path = Path(raw_path)
-
-        if path.exists() is False:
-            return None, None, None
-
-        if path.is_file():
-            path = path.parent
-
-        project_root: Path | None = None
-        game_dir: Path | None = None
-        tl_dir: Path | None = None
-
-        # 直接选择的是 game/tl/<lang>
-        if path.parent.name.lower() == "tl" and path.is_dir():
-            tl_dir = path
-            if path.parent.parent.name.lower() == "game":
-                game_dir = path.parent.parent
-                project_root = game_dir.parent
-            else:
-                game_dir = path.parent.parent
-                project_root = game_dir
-            return project_root, game_dir, tl_dir
-
-        # 直接选择的是 game/tl
-        if path.name.lower() == "tl" and path.is_dir():
-            tl_dir = self._pick_tl_language_dir(path)
-            if path.parent.name.lower() == "game":
-                game_dir = path.parent
-                project_root = game_dir.parent
-            else:
-                game_dir = path.parent
-                project_root = game_dir
-            return project_root, game_dir, tl_dir
-
-        # 直接选择的是 game 目录
-        if path.name.lower() == "game" and path.is_dir():
-            game_dir = path
-            project_root = path.parent
-            tl_dir = self._pick_tl_language_dir(path / "tl")
-            return project_root, game_dir, tl_dir
-
-        # 选择的是项目根目录
-        game_child = path / "game"
-        if game_child.is_dir():
-            project_root = path
-            game_dir = game_child
-            tl_dir = self._pick_tl_language_dir(game_child / "tl")
-            return project_root, game_dir, tl_dir
-
-        # 兜底：允许把当前目录当作源码目录处理
-        return path, path, None
 
     def _looks_like_renpy_path(self, raw_path: str) -> bool:
         """判断路径是否明显包含 Ren'Py 项目结构。"""
@@ -165,20 +105,13 @@ class ProjectPage(QWidget, Base):
 
     def _sync_renpy_paths_from_selection(self, config: Config, raw_path: str) -> None:
         """把项目页选择的路径同步到 Ren'Py 专用配置，避免工具页继续读取旧项目。"""
-        project_root, game_dir, tl_dir = self._infer_renpy_layout(raw_path)
-        if project_root is None or game_dir is None:
+        paths = RenpyProjectPaths.from_path(raw_path)
+        if paths is None:
             return
-
-        config.renpy_project_path = str(project_root)
-        # 这里统一保存项目根目录，工具页内部会自动兼容 project_root / game 两种形式。
-        config.renpy_game_folder = str(project_root)
-
-        if tl_dir is not None and tl_dir.exists():
-            config.renpy_tl_folder = str(tl_dir)
-
-            guessed = self._guess_lang_from_path(tl_dir)
-            if guessed is not None:
-                config.target_language = guessed
+        apply_to_config(config, paths)
+        guessed = self._guess_lang_from_path(paths.tl_language_dir)
+        if guessed is not None:
+            config.target_language = guessed
 
     def _auto_fill_by_renpy_config(self, config: Config) -> Config:
         """
@@ -186,31 +119,50 @@ class ProjectPage(QWidget, Base):
         """
         changed = False
 
-        tl_folder = config.renpy_tl_folder.strip() if config.renpy_tl_folder else ""
-        if tl_folder:
-            tl_path = Path(tl_folder)
-            if tl_path.exists():
-                # 自动设置输入目录
-                if not config.input_folder or config.input_folder in ("./input", "input"):
-                    config.input_folder = str(tl_path)
-                    changed = True
+        paths = RenpyProjectPaths.from_config(config)
+        if paths is not None and paths.tl_language_dir.exists():
+            def keep_current_path(value: str) -> str | None:
+                """保留本项目内的显式运行目录（增量/Hook/自定义输出）。"""
+                text = str(value or "").strip()
+                if text == "":
+                    return None
+                try:
+                    candidate = Path(text).expanduser().resolve(strict = False)
+                    candidate.relative_to(paths.project_root)
+                except Exception:
+                    return None
+                if candidate == paths.project_root:
+                    return None
+                return str(candidate)
 
-                # 自动设置输出目录（与输入目录不同）
-                desired_out = tl_path.parent / "out"
-                if (
-                    not config.output_folder
-                    or config.output_folder in ("./output", "output")
-                    or Path(config.output_folder).resolve() == tl_path.resolve()
-                ):
-                    config.output_folder = str(desired_out)
-                    Path(config.output_folder).mkdir(parents=True, exist_ok=True)
-                    changed = True
-
-                # 推断目标语言
-                guessed = self._guess_lang_from_path(tl_path)
-                if guessed is not None and guessed != config.target_language:
-                    config.target_language = guessed
-                    changed = True
+            current_input = keep_current_path(getattr(config, "input_folder", ""))
+            current_output = keep_current_path(getattr(config, "output_folder", ""))
+            before = (
+                config.input_folder,
+                config.output_folder,
+                config.renpy_project_path,
+                config.renpy_game_folder,
+                config.renpy_tl_folder,
+            )
+            # 页面重新显示时不能把一键翻译的 <lang>_new 或 Hook 临时目录
+            # 改回规范主目录；项目专用字段仍统一到当前项目。
+            apply_to_config(
+                config,
+                paths,
+                input_folder = current_input or paths.tl_language_dir,
+                output_folder = current_output or paths.translation_output_dir,
+            )
+            guessed = self._guess_lang_from_path(paths.tl_language_dir)
+            if guessed is not None:
+                config.target_language = guessed
+            changed = before != (
+                config.input_folder,
+                config.output_folder,
+                config.renpy_project_path,
+                config.renpy_game_folder,
+                config.renpy_tl_folder,
+            )
+            Path(config.output_folder).mkdir(parents = True, exist_ok = True)
 
         if changed:
             config.save()
@@ -294,14 +246,14 @@ class ProjectPage(QWidget, Base):
             self._sync_renpy_paths_from_selection(config, path.strip())
             config.save()
 
-        parent.addWidget(
-            PushButtonCard(
+        card = PushButtonCard(
                 title = Localizer.get().project_page_input_folder_title,
                 description = "",
                 init = init,
                 clicked = clicked,
             )
-        )
+        self.input_folder_card = card
+        parent.addWidget(card)
 
     # 输出文件夹
     def add_widget_output_folder(self, parent: QLayout, config: Config, windows: FluentWindow) -> None:
@@ -335,14 +287,14 @@ class ProjectPage(QWidget, Base):
                 self._sync_renpy_paths_from_selection(config, path.strip())
             config.save()
 
-        parent.addWidget(
-            PushButtonCard(
+        card = PushButtonCard(
                 title = Localizer.get().project_page_output_folder_title,
                 description = "",
                 init = init,
                 clicked = clicked,
             )
-        )
+        self.output_folder_card = card
+        parent.addWidget(card)
 
     # 任务完成后自动打开输出文件夹
     def add_widget_output_folder_open_on_finish(self, parent: QLayout, config: Config, windows: FluentWindow) -> None:

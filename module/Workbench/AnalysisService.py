@@ -25,6 +25,7 @@ from module.Workbench.WorkbenchData import (
     normalize_text,
     normalize_worldbook,
 )
+from module.Renpy.ProjectPaths import RenpyProjectPaths, resolve_translation_output
 
 
 @dataclass
@@ -61,9 +62,16 @@ class WorkbenchAnalysisService(Base):
         super().__init__()
         self.scanner = CharacterScanner()
 
-    def ensure_analysis_ready(self, config: Config) -> dict[str, Any]:
+    def ensure_analysis_ready(
+        self,
+        config: Config,
+        *,
+        engine_reserved: bool = False,
+    ) -> dict[str, Any]:
         """校验分析前置条件。"""
-        if Engine.get().get_status() != Engine.Status.IDLE:
+        engine_status = Engine.get().get_status()
+        reserved_by_caller = engine_reserved and engine_status == Engine.Status.TESTING
+        if engine_status != Engine.Status.IDLE and not reserved_by_caller:
             raise AnalysisServiceError("翻译任务正在运行，暂时不能执行 AI 分析。")
 
         platform = config.get_platform(config.activate_platform)
@@ -79,10 +87,16 @@ class WorkbenchAnalysisService(Base):
             raise AnalysisServiceError("当前接口未配置模型名称。")
         return platform
 
-    def analyze_all(self, config: Config, scope: str) -> AnalysisResult:
+    def analyze_all(
+        self,
+        config: Config,
+        scope: str,
+        *,
+        engine_reserved: bool = False,
+    ) -> AnalysisResult:
         """生成世界观和角色卡草稿。"""
         scope = normalize_analysis_scope(scope)
-        platform = self.ensure_analysis_ready(config)
+        platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         worldbook_draft, worldbook_raw = self.generate_worldbook_draft(
@@ -108,10 +122,16 @@ class WorkbenchAnalysisService(Base):
             source_summary = source_summary,
         )
 
-    def generate_worldbook_only(self, config: Config, scope: str) -> AnalysisResult:
+    def generate_worldbook_only(
+        self,
+        config: Config,
+        scope: str,
+        *,
+        engine_reserved: bool = False,
+    ) -> AnalysisResult:
         """仅生成世界观草稿。"""
         scope = normalize_analysis_scope(scope)
-        platform = self.ensure_analysis_ready(config)
+        platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         worldbook_draft, worldbook_raw = self.generate_worldbook_draft(
@@ -135,10 +155,12 @@ class WorkbenchAnalysisService(Base):
         config: Config,
         scope: str,
         card_id: str | None = None,
+        *,
+        engine_reserved: bool = False,
     ) -> AnalysisResult:
         """生成角色卡草稿，可选单角色。"""
         scope = normalize_analysis_scope(scope)
-        platform = self.ensure_analysis_ready(config)
+        platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         if normalize_text(card_id) != "":
@@ -215,11 +237,11 @@ class WorkbenchAnalysisService(Base):
     def _collect_project_candidates(self, config: Config) -> list[Path]:
         """按优先级收集可能的项目根目录候选。"""
         raws = [
+            getattr(config, "renpy_project_path", ""),
+            getattr(config, "renpy_game_folder", ""),
+            getattr(config, "renpy_tl_folder", ""),
             getattr(config, "input_folder", ""),
             getattr(config, "output_folder", ""),
-            getattr(config, "renpy_tl_folder", ""),
-            getattr(config, "renpy_game_folder", ""),
-            getattr(config, "renpy_project_path", ""),
         ]
         candidates: list[Path] = []
         for raw in raws:
@@ -269,6 +291,9 @@ class WorkbenchAnalysisService(Base):
 
     def resolve_project_root(self, config: Config) -> Path | None:
         """解析项目根目录。"""
+        canonical = RenpyProjectPaths.from_config(config)
+        if canonical is not None and canonical.game_dir.is_dir():
+            return canonical.project_root
         candidates = self._collect_project_candidates(config)
         if candidates == []:
             return None
@@ -297,12 +322,12 @@ class WorkbenchAnalysisService(Base):
 
     def load_cache_items(self, config: Config) -> list[CacheItem]:
         """读取当前输出目录缓存。"""
-        output_folder = normalize_text(getattr(config, "output_folder", ""))
-        if output_folder == "":
+        output_path = resolve_translation_output(config)
+        if output_path is None:
             return []
 
         cache_manager = CacheManager(service = False)
-        cache_manager.load_items_from_file(output_folder)
+        cache_manager.load_items_from_file(str(output_path))
         return self.filter_analysis_items(cache_manager.get_items())
 
     def load_input_items(self, config: Config) -> list[CacheItem]:

@@ -31,3 +31,9 @@ def get_resource_path(*segments: str) -> str:
     # Fall back to the last candidate even if it does not exist yet.
     fallback_root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else _PROJECT_ROOT
     return os.path.join(fallback_root, *segments)
+
+
+def get_app_path(*segments: str) -> str:
+    """返回稳定的应用目录路径，不受当前工作目录变化影响。"""
+    root = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else _PROJECT_ROOT
+    return os.path.join(root, *segments)

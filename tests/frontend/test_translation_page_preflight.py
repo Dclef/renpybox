@@ -31,6 +31,14 @@ class _SignalStub:
             self.callback()
 
 
+class _RuntimeSignalStub:
+    def __init__(self) -> None:
+        self.events = []
+
+    def emit(self, event, data) -> None:
+        self.events.append((event, data))
+
+
 def _install_assets(monkeypatch, assets: ProjectAssets) -> None:
     config = SimpleNamespace(output_folder = "output", cache_use_sqlite = True)
     monkeypatch.setattr(Config, "load", lambda self: config)
@@ -120,3 +128,31 @@ def test_missing_assets_continue_emits_one_confirmed_start(monkeypatch) -> None:
     assert started is True
     assert len(page.events) == 1
     assert page.events[0][1]["preflight_confirmed"] is True
+
+
+def test_quality_update_preserves_translation_dashboard_progress() -> None:
+    page = SimpleNamespace(
+        data = {
+            "line": 12,
+            "total_line": 20,
+            "total_output_tokens": 88,
+        },
+        runtime_status_updated = _RuntimeSignalStub(),
+    )
+    payload = {
+        "quality_task": {
+            "completed_count": 2,
+            "total_count": 4,
+        },
+    }
+
+    TranslationPage.translation_update(page, Base.Event.TRANSLATION_UPDATE, payload)
+
+    assert page.data["line"] == 12
+    assert page.data["total_line"] == 20
+    assert page.data["total_output_tokens"] == 88
+    assert page.data["quality_task"] == payload["quality_task"]
+    assert page.runtime_status_updated.events == [(
+        Base.Event.TRANSLATION_UPDATE,
+        page.data,
+    )]

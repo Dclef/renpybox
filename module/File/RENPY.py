@@ -8,6 +8,7 @@ from typing import Dict, List
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
+from module.Engine.Engine import Engine
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
@@ -34,6 +35,10 @@ class RENPY(Base):
         items: List[CacheItem] = []
         extractor = RenpyTlItemExtractor()
         for abs_path in abs_paths:
+            # AST 解析可能面对大量脚本；停止时立即放弃后续文件。
+            if self._is_stop_requested():
+                break
+
             path = Path(abs_path)
             if not path.is_file():
                 continue
@@ -53,7 +58,23 @@ class RENPY(Base):
             doc = parse_tl_document(lines)
             items.extend(extractor.extract(doc, rel_path))
 
+            if self._is_stop_requested():
+                break
+
         return items
+
+    @staticmethod
+    def _is_stop_requested() -> bool:
+        """同时检查引擎状态和当前翻译线程的取消令牌。"""
+        try:
+            from module.Engine.TaskRequester import TaskRequester
+
+            return (
+                Engine.get().get_status() == Engine.Status.STOPPING
+                or TaskRequester.is_cancel_requested()
+            )
+        except Exception:
+            return False
 
     def write_to_path(self, items: List[CacheItem]) -> None:
         """Write translated items back to .rpy files using AST metadata."""

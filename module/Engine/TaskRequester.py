@@ -2,7 +2,7 @@ import json
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Iterable
 
 import anthropic
 import httpx
@@ -75,6 +75,23 @@ class TaskRequester(Base):
 
     # 连接缓存（用于停止任务时快速中断网络请求）
     CLIENT_REGISTRY: dict[tuple[str, str, Base.APIFormat, int], Any] = {}
+    CLIENT_GENERATIONS: dict[tuple[str, str, Base.APIFormat, int], int] = {}
+    CLIENT_GENERATION: int = 0
+    CLIENT_GENERATION_LOCK: threading.Lock = threading.Lock()
+
+    # 当前翻译运行的取消标记。停止任务时先设置标记，再异步关闭客户端，
+    # 这样重试等待和流式请求可以立即返回，不必等待网络超时。
+    CANCEL_EVENT: threading.Event = threading.Event()
+
+    # 取消标记按线程对象隔离。全局 CANCEL_EVENT 需要在新一轮任务开始时
+    # 清除；保留旧线程对象集合可以避免旧请求在新一轮开始后继续发起网络
+    # 请求或写回缓存，同时不会误伤新建的线程。
+    CANCELLED_THREADS: set[threading.Thread] = set()
+    CANCELLED_THREADS_LOCK: threading.Lock = threading.Lock()
+
+    # 每轮翻译都有独立取消事件。线程池工作线程通过线程局部上下文绑定
+    # 对应事件，避免新一轮 reset 清除全局事件后让旧请求重新继续。
+    RUN_CANCEL_CONTEXT = threading.local()
 
     # qwen3_instruct_8b_q6k（本地/Sakura 常见命名）
     RE_QWEN3: re.Pattern = re.compile(r"qwen3", flags = re.IGNORECASE)
@@ -129,8 +146,10 @@ class TaskRequester(Base):
     RE_JSONLINE_FENCE: re.Pattern = re.compile(r"```(?:json|jsonline)\s*(.*?)\s*```", flags = re.IGNORECASE | re.DOTALL)
     RE_INLINE_JSON_OBJECT: re.Pattern = re.compile(r"\{[^{}]+\}")
 
-    # 类线程锁
-    LOCK: threading.Lock = threading.Lock()
+    # 客户端注册表锁。请求入口历史上会在调用 get_client() 前先持锁，
+    # get_client() 自身也需要检查/更新注册表，因此必须使用可重入锁，
+    # 否则真实网络请求会在首次建连时自锁死。
+    LOCK: threading.RLock = threading.RLock()
 
     @classmethod
     def _is_client_closed(cls, client: Any) -> bool:
@@ -162,7 +181,14 @@ class TaskRequester(Base):
         cache_key = (url, key, format, timeout)
 
         with cls.LOCK:
-            cached = cls.CLIENT_REGISTRY.pop(cache_key, None)
+            cached = cls.CLIENT_REGISTRY.get(cache_key)
+            # 旧请求可能在新一轮已经注册同键客户端后才收到“连接已关闭”
+            # 异常。此时只能关闭旧请求实际使用的对象，不能摘掉新客户端。
+            if client is None or cached is client:
+                cached = cls.CLIENT_REGISTRY.pop(cache_key, None)
+                cls.CLIENT_GENERATIONS.pop(cache_key, None)
+            else:
+                cached = None
 
         target = client if client is not None else cached
         if target is None:
@@ -173,6 +199,76 @@ class TaskRequester(Base):
             if callable(close):
                 close()
         except Exception:
+            pass
+
+    @classmethod
+    def _take_all_clients(cls) -> list[Any]:
+        """在锁内摘除客户端；实际关闭必须在锁外执行。"""
+        with cls.LOCK:
+            clients: list[Any] = []
+            seen: set[int] = set()
+            for client in cls.CLIENT_REGISTRY.values():
+                identity = id(client)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                clients.append(client)
+            cls.CLIENT_REGISTRY.clear()
+            cls.CLIENT_GENERATIONS.clear()
+            return clients
+
+    @classmethod
+    def _advance_client_generation(cls) -> int:
+        """切换客户端代次，返回停止前的代次。"""
+        with cls.CLIENT_GENERATION_LOCK:
+            cutoff = cls.CLIENT_GENERATION
+            cls.CLIENT_GENERATION = cls.CLIENT_GENERATION + 1
+            return cutoff
+
+    @classmethod
+    def _current_client_generation(cls) -> int:
+        with cls.CLIENT_GENERATION_LOCK:
+            return cls.CLIENT_GENERATION
+
+    @classmethod
+    def _take_clients_before_generation(cls, cutoff: int) -> list[Any]:
+        """只摘取停止前的客户端，避免迟到清理关闭新一轮连接。"""
+        with cls.LOCK:
+            clients: list[Any] = []
+            seen: set[int] = set()
+            for cache_key, client in list(cls.CLIENT_REGISTRY.items()):
+                generation = cls.CLIENT_GENERATIONS.get(cache_key, 0)
+                if generation > cutoff:
+                    continue
+                identity = id(client)
+                if identity not in seen:
+                    seen.add(identity)
+                    clients.append(client)
+                cls.CLIENT_REGISTRY.pop(cache_key, None)
+                cls.CLIENT_GENERATIONS.pop(cache_key, None)
+            return clients
+
+    @classmethod
+    def _close_clients(cls, clients: list[Any]) -> None:
+        """关闭一组客户端；此方法不持有客户端注册表锁。"""
+        for client in clients:
+            try:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                # 关闭阶段的异常不能阻止其他连接继续释放。
+                pass
+
+    @classmethod
+    def _close_stream(cls, stream: Any) -> None:
+        """安全关闭流对象；不同 SDK 可能没有 close 方法。"""
+        try:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            # 取消阶段以尽快退出为先，流关闭异常不能掩盖取消结果。
             pass
 
     def __init__(self, config: Config, platform: dict[str, Any], current_round: int) -> None:
@@ -203,22 +299,132 @@ class TaskRequester(Base):
     # 重置
     @classmethod
     def reset(cls) -> None:
+        # 停止超时后迟到的旧翻译线程不能重置全局客户端；否则它可能在新轮
+        # 已开始后关闭新轮连接。该线程会在后续取消检查处自行退出。
+        if cls._is_current_thread_cancelled() or cls._is_bound_run_cancelled():
+            return
+        cls._advance_client_generation()
         cls.API_KEY_INDEX: int = 0
+        # 先取消旧请求，再同步释放旧连接；新一轮开始前清除标记。
+        cls.CANCEL_EVENT.set()
         cls.close_all_clients()
+        cls.CANCEL_EVENT.clear()
+        cls._prune_cancelled_threads()
+
+    @classmethod
+    def _prune_cancelled_threads(cls) -> None:
+        """清理已经退出的旧线程，避免取消集合无限增长。"""
+        with cls.CANCELLED_THREADS_LOCK:
+            cls.CANCELLED_THREADS = {
+                thread
+                for thread in cls.CANCELLED_THREADS
+                if thread.is_alive()
+            }
+
+    @classmethod
+    def _mark_cancelled_threads(
+        cls,
+        threads: Iterable[threading.Thread] | None = None,
+    ) -> None:
+        """登记本轮已有工作线程，使其与后续任务的取消状态隔离。"""
+        if threads is None:
+            threads = (
+                thread
+                for thread in threading.enumerate()
+                if thread.name.startswith(Engine.TASK_PREFIX)
+            )
+        with cls.CANCELLED_THREADS_LOCK:
+            cls.CANCELLED_THREADS.update(thread for thread in threads if thread is not None)
+
+    @classmethod
+    def _is_current_thread_cancelled(cls) -> bool:
+        current = threading.current_thread()
+        with cls.CANCELLED_THREADS_LOCK:
+            cancelled = current in cls.CANCELLED_THREADS
+            if not cancelled:
+                # 顺便回收已经结束的旧线程引用。
+                cls.CANCELLED_THREADS = {
+                    thread
+                    for thread in cls.CANCELLED_THREADS
+                    if thread.is_alive()
+                }
+            return cancelled
+
+    @classmethod
+    def bind_run_cancel_event(cls, event: threading.Event | None) -> None:
+        """把当前线程绑定到一次翻译运行的独立取消事件。"""
+        cls.RUN_CANCEL_CONTEXT.event = event
+
+    @classmethod
+    def unbind_run_cancel_event(cls) -> None:
+        """清理当前线程的运行取消上下文，供线程池复用该线程。"""
+        if hasattr(cls.RUN_CANCEL_CONTEXT, "event"):
+            del cls.RUN_CANCEL_CONTEXT.event
+
+    @classmethod
+    def _is_bound_run_cancelled(cls) -> bool:
+        event = getattr(cls.RUN_CANCEL_CONTEXT, "event", None)
+        return bool(event is not None and event.is_set())
+
+    @classmethod
+    def is_cancel_requested(cls) -> bool:
+        """判断当前请求是否已被用户取消。"""
+        if (
+            cls._is_bound_run_cancelled()
+            or cls._is_current_thread_cancelled()
+            or cls.CANCEL_EVENT.is_set()
+        ):
+            return True
+        try:
+            return Engine.get().get_status() == Engine.Status.STOPPING
+        except Exception:
+            return False
+
+    @classmethod
+    def cancel_all_clients(
+        cls,
+        *,
+        asynchronous: bool = True,
+        threads: Iterable[threading.Thread] | None = None,
+    ) -> threading.Thread | None:
+        """设置取消标记并释放连接；默认不阻塞调用方线程。"""
+        cutoff = cls._advance_client_generation()
+        cls._mark_cancelled_threads(threads)
+        cls.CANCEL_EVENT.set()
+        if asynchronous:
+            return cls.close_all_clients_async(cutoff = cutoff)
+        cls.close_all_clients()
+        return None
 
     # 关闭所有客户端连接（用于停止任务时快速中断网络请求）
     @classmethod
     def close_all_clients(cls) -> None:
-        with cls.LOCK:
-            for client in list(cls.CLIENT_REGISTRY.values()):
-                try:
-                    close = getattr(client, "close", None)
-                    if callable(close):
-                        close()
-                except Exception:
-                    pass
+        # 不能在 LOCK 内调用第三方 SDK 的 close()：请求线程的异常清理也
+        # 需要同一把锁，某些 SDK 会因此形成锁互等或长时间阻塞。
+        cls._close_clients(cls._take_all_clients())
 
-            cls.CLIENT_REGISTRY.clear()
+    @classmethod
+    def close_all_clients_async(cls, *, cutoff: int | None = None) -> threading.Thread | None:
+        """异步关闭所有客户端，供 UI 停止操作使用。"""
+        # 摘取注册表本身也需要等待 LOCK，必须和第三方 close 一起放到后台；
+        # 否则请求线程正创建客户端时，Qt 停止回调仍可能卡在锁等待上。
+        if cutoff is None:
+            # 为“直接调用异步清理”建立代次屏障。否则新客户端可能在
+            # 清理线程尚未取得 LOCK 时沿用同一代次，随后被误摘取关闭。
+            cutoff = cls._advance_client_generation()
+
+        def close_snapshot() -> None:
+            cls._close_clients(cls._take_clients_before_generation(cutoff))
+
+        thread = threading.Thread(
+            target = close_snapshot,
+            # 客户端释放线程不是翻译工作线程，不能被 Engine 的任务计数器
+            # 纳入停止等待条件，否则 SDK close() 阻塞时 watcher 会误判仍有任务。
+            name = "REN_TRANSLATION_CLIENT_CLOSE",
+            daemon = True,
+        )
+        thread.start()
+        return thread
 
     @classmethod
     def get_key(cls, keys: list[str]) -> str:
@@ -254,10 +460,14 @@ class TaskRequester(Base):
         #   解释: 如果你使用 httpx.Client 并且并发发起大量请求，可能会耗尽连接池中的连接。此参数定义了等待可用连接的最长时间。
         cache_key = (url, key, format, timeout)
 
-        cached = cls.CLIENT_REGISTRY.get(cache_key)
+        with cls.LOCK:
+            cached = cls.CLIENT_REGISTRY.get(cache_key)
         if cached is not None:
             if cls._is_client_closed(cached):
-                cls.CLIENT_REGISTRY.pop(cache_key, None)
+                with cls.LOCK:
+                    if cls.CLIENT_REGISTRY.get(cache_key) is cached:
+                        cls.CLIENT_REGISTRY.pop(cache_key, None)
+                        cls.CLIENT_GENERATIONS.pop(cache_key, None)
             else:
                 return cached
 
@@ -323,8 +533,25 @@ class TaskRequester(Base):
                 max_retries = 1,
             )
 
-        cls.CLIENT_REGISTRY[cache_key] = client
-        return client
+        duplicate: Any = None
+        with cls.LOCK:
+            existing = cls.CLIENT_REGISTRY.get(cache_key)
+            if existing is not None and not cls._is_client_closed(existing):
+                # 第三方 SDK 的 close 可能阻塞，不能在注册表锁内执行。
+                duplicate = client
+            else:
+                cls.CLIENT_REGISTRY[cache_key] = client
+                cls.CLIENT_GENERATIONS[cache_key] = cls._current_client_generation()
+                return client
+
+        if duplicate is not None:
+            try:
+                close = getattr(duplicate, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+        return existing
 
     # 发起请求
     def request(self, messages: list[dict]) -> tuple[bool, str, str, int, int]:
@@ -362,7 +589,7 @@ class TaskRequester(Base):
         last_result: tuple[bool, str, str, int, int] = (True, None, None, None, None)
         for attempt in range(1, __class__.MAX_REQUEST_RETRY + 1):
             # If user has requested a stop, abort new requests immediately
-            if Engine.get().get_status() == Engine.Status.STOPPING:
+            if __class__.is_cancel_requested():
                 self.debug(f"[API-REQUEST] 用户请求停止，中断请求")
                 return True, None, None, None, None
 
@@ -372,15 +599,31 @@ class TaskRequester(Base):
             if skip is False:
                 self.debug(f"[API-REQUEST] 请求成功")
                 return last_result
+
+            # 取消造成的连接关闭不应进入退避重试，也不应把用户主动停止
+            # 记录成普通请求失败。
+            if __class__.is_cancel_requested():
+                return True, None, None, None, None
+
             if attempt < __class__.MAX_REQUEST_RETRY:
                 delay = min(2 ** (attempt - 1), 5)
                 self.debug(f"[API-REQUEST] 请求失败，{delay}秒后重试")
-                time.sleep(delay)
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
+                    if __class__.is_cancel_requested():
+                        return True, None, None, None, None
+                    time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
         self.warning(f"[API-REQUEST] 请求失败，已达最大重试次数")
         return last_result
 
-    def _recover_closed_cached_client(self, exc: BaseException) -> bool:
+    def _recover_closed_cached_client(
+        self,
+        exc: BaseException,
+        *,
+        client: Any = None,
+        key: str | None = None,
+    ) -> bool:
         """命中“client 已关闭”类错误时，清理缓存并允许上层重试。"""
         message = str(exc or "")
         lowered = message.lower()
@@ -397,12 +640,21 @@ class TaskRequester(Base):
             format = self.platform.get('api_format')
             timeout = self.config.request_timeout
             self.warning("[API-REQUEST] 检测到已关闭的缓存客户端，正在丢弃并等待重试")
-            api_keys = self.platform.get('api_key') or []
-            if isinstance(api_keys, list) and api_keys:
-                for key in api_keys:
-                    __class__._discard_client(url, key, format, timeout)
+            if key is not None:
+                __class__._discard_client(
+                    url,
+                    key,
+                    format,
+                    timeout,
+                    client = client,
+                )
             else:
-                __class__._discard_client(url, "no_key_required", format, timeout)
+                api_keys = self.platform.get('api_key') or []
+                if isinstance(api_keys, list) and api_keys:
+                    for api_key in api_keys:
+                        __class__._discard_client(url, api_key, format, timeout)
+                else:
+                    __class__._discard_client(url, "no_key_required", format, timeout)
         except Exception:
             pass
         return True
@@ -428,12 +680,15 @@ class TaskRequester(Base):
 
     # 发起请求
     def request_sakura(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+        client = None
+        client_key = None
         try:
             # 获取客户端
             with __class__.LOCK:
+                client_key = __class__.get_key(self.platform.get('api_key'))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
-                    key = __class__.get_key(self.platform.get('api_key')),
+                    key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
                 )
@@ -454,7 +709,7 @@ class TaskRequester(Base):
 
             for chunk in stream:
                 # 用户中断检测
-                if Engine.get().get_status() == Engine.Status.STOPPING:
+                if __class__.is_cancel_requested():
                     stream.close()
                     return True, None, None, None, None
 
@@ -495,7 +750,7 @@ class TaskRequester(Base):
                 return False, "", response_result, 0, 0
 
         except Exception as e:
-            self._recover_closed_cached_client(e)
+            self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -573,12 +828,15 @@ class TaskRequester(Base):
 
     # 发起请求（流式 + 退化检测）
     def request_openai(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+        client = None
+        client_key = None
         try:
             # 获取客户端
             with __class__.LOCK:
+                client_key = __class__.get_key(self.platform.get('api_key'))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
-                    key = __class__.get_key(self.platform.get('api_key')),
+                    key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
                 )
@@ -599,7 +857,7 @@ class TaskRequester(Base):
 
             for chunk in stream:
                 # 用户中断检测
-                if Engine.get().get_status() == Engine.Status.STOPPING:
+                if __class__.is_cancel_requested():
                     stream.close()
                     return True, None, None, None, None
 
@@ -646,7 +904,7 @@ class TaskRequester(Base):
                 return False, response_think, response_result, 0, 0
 
         except Exception as e:
-            self._recover_closed_cached_client(e)
+            self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -789,12 +1047,15 @@ class TaskRequester(Base):
 
     # 发起请求（流式 + 退化检测）
     def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+        client = None
+        client_key = None
         try:
             # 获取客户端
             with __class__.LOCK:
+                client_key = __class__.get_key(self.platform.get('api_key'))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
-                    key = __class__.get_key(self.platform.get('api_key')),
+                    key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
                 )
@@ -815,7 +1076,8 @@ class TaskRequester(Base):
 
             for chunk in stream:
                 # 用户中断检测
-                if Engine.get().get_status() == Engine.Status.STOPPING:
+                if __class__.is_cancel_requested():
+                    __class__._close_stream(stream)
                     return True, None, None, None, None
 
                 # 记录安全过滤信息
@@ -885,7 +1147,7 @@ class TaskRequester(Base):
                     )
                     return True, None, None, None, None
         except Exception as e:
-            self._recover_closed_cached_client(e)
+            self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -942,12 +1204,15 @@ class TaskRequester(Base):
 
     # 发起请求（流式 + 退化检测）
     def request_anthropic(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+        client = None
+        client_key = None
         try:
             # 获取客户端
             with __class__.LOCK:
+                client_key = __class__.get_key(self.platform.get('api_key'))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
-                    key = __class__.get_key(self.platform.get('api_key')),
+                    key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
                 )
@@ -962,7 +1227,7 @@ class TaskRequester(Base):
             with client.messages.stream(**anthropic_args) as stream:
                 for text in stream.text_stream:
                     # 用户中断检测
-                    if Engine.get().get_status() == Engine.Status.STOPPING:
+                    if __class__.is_cancel_requested():
                         return True, None, None, None, None
 
                     if not isinstance(text, str) or not text:
@@ -1005,7 +1270,7 @@ class TaskRequester(Base):
                     output_tokens = getattr(usage, 'output_tokens', 0) or 0
 
         except Exception as e:
-            self._recover_closed_cached_client(e)
+            self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -1171,7 +1436,11 @@ class TaskRequester(Base):
         if srcs == []:
             self.warning("DeepL 请求失败：未从提示词中提取到待翻译文本")
             return True, None, None, None, None
+        if __class__.is_cancel_requested():
+            return True, None, None, None, None
 
+        client = None
+        key = None
         try:
             with __class__.LOCK:
                 key = __class__.get_key(self.platform.get('api_key'))
@@ -1209,7 +1478,7 @@ class TaskRequester(Base):
                 self.warning(f"DeepL 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
-            self._recover_closed_cached_client(e)
+            self._recover_closed_cached_client(e, client = client, key = key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
@@ -1222,7 +1491,11 @@ class TaskRequester(Base):
         if srcs == []:
             self.warning("DeepLX 请求失败：未从提示词中提取到待翻译文本")
             return True, None, None, None, None
+        if __class__.is_cancel_requested():
+            return True, None, None, None, None
 
+        client = None
+        key = None
         try:
             with __class__.LOCK:
                 key = __class__.get_key(self.platform.get('api_key'))
@@ -1242,6 +1515,8 @@ class TaskRequester(Base):
 
             dsts: list[str] = []
             for text in srcs:
+                if __class__.is_cancel_requested():
+                    return True, None, None, None, None
                 payload: dict[str, str] = {
                     "text": text,
                     "source_lang": source_lang if source_lang != "" else "AUTO",
@@ -1263,6 +1538,7 @@ class TaskRequester(Base):
                 self.warning(f"DeepLX 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
+            self._recover_closed_cached_client(e, client = client, key = key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 

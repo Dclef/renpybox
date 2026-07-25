@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import threading
 
 import pytest
@@ -189,6 +190,20 @@ def test_sqlite_run_reset_persists_new_snapshot_progress_and_items_together(tmp_
     assert [item.get_src() for item in db.get_items()] == ["new run"]
 
 
+def test_sqlite_full_cache_save_persists_project_and_items_together(tmp_path) -> None:
+    manager = CacheManager(service = False)
+    manager.cache_use_sqlite = True
+    project = _project_with_run_data()
+    items = [CacheItem(src = "atomic item")]
+
+    manager.save_to_file(project, items, str(tmp_path), strict = True)
+
+    db = CacheDB(str(tmp_path / "cache" / CacheManager.CACHE_DB_NAME))
+    assert db.get_project() is not None
+    assert db.get_project().get_id() == project.get_id()
+    assert [item.get_src() for item in db.get_items()] == ["atomic item"]
+
+
 def test_cache_manager_in_memory_reset_keeps_assets_and_replaces_items() -> None:
     manager = CacheManager(service = False)
     manager.set_project(_project_with_run_data())
@@ -310,6 +325,15 @@ def test_strict_cache_load_keeps_memory_state_when_existing_cache_is_corrupt(tmp
     assert (cache_path / "project.json").read_text(encoding = "utf-8") == "{broken"
 
 
+def test_empty_cache_path_is_rejected_in_strict_mode() -> None:
+    manager = CacheManager(service = False)
+
+    with pytest.raises(ValueError, match = "不能为空"):
+        manager.save_to_file(CacheProject(), [], "", strict = True)
+    with pytest.raises(CacheLoadError, match = "不能为空"):
+        manager.load_from_file("", strict = True)
+
+
 def test_pending_autosave_cannot_overwrite_a_completed_reset(tmp_path, monkeypatch) -> None:
     manager = CacheManager(service = False)
     manager.cache_use_sqlite = False
@@ -349,6 +373,117 @@ def test_pending_autosave_cannot_overwrite_a_completed_reset(tmp_path, monkeypat
     loaded.cache_use_sqlite = False
     loaded.load_from_file(str(tmp_path), strict = True)
     assert [item.get_src() for item in loaded.get_items()] == ["new"]
+
+
+def test_pending_autosave_keeps_retry_flag_when_save_fails(tmp_path, monkeypatch) -> None:
+    """自动保存失败不能清除 pending 标记或发出成功事件。"""
+    manager = CacheManager(service = False)
+    manager.require_save_to_file(str(tmp_path))
+    manager.last_require_time = 0
+
+    calls = {"count": 0}
+
+    def failed_save(*args, **kwargs):
+        calls["count"] += 1
+        return False
+
+    monkeypatch.setattr(manager, "save_to_file", failed_save)
+
+    assert manager._run_pending_save(now = 100) is False
+    assert calls["count"] == 1
+    assert manager.require_flag is True
+    # 失败后会延迟到下一保存周期，避免后台线程忙等重试。
+    assert manager._run_pending_save(now = 100 + manager.SAVE_INTERVAL - 0.01) is False
+    assert calls["count"] == 1
+    assert manager._run_pending_save(now = 100 + manager.SAVE_INTERVAL) is False
+    assert calls["count"] == 2
+    assert manager.require_flag is True
+
+
+def test_pending_autosave_keeps_retry_flag_when_save_raises(tmp_path, monkeypatch) -> None:
+    manager = CacheManager(service = False)
+    manager.require_save_to_file(str(tmp_path))
+    manager.last_require_time = 0
+
+    def failed_save(*args, **kwargs):
+        raise OSError("磁盘暂不可用")
+
+    monkeypatch.setattr(manager, "save_to_file", failed_save)
+
+    assert manager._run_pending_save(now = 100) is False
+    assert manager.require_flag is True
+
+
+def test_strict_single_cache_reads_fall_back_when_sqlite_is_corrupt(tmp_path) -> None:
+    manager = CacheManager(service = False)
+    manager.cache_use_sqlite = False
+    project = CacheProject(id = "json-fallback")
+    items = [CacheItem(src = "来自 JSON")]
+    manager.save_to_file(project, items, str(tmp_path), strict = True)
+
+    # 模拟 SQLite 写入中断：项目记录存在，但条目表包含无法解析的数据。
+    db_path = tmp_path / "cache" / CacheManager.CACHE_DB_NAME
+    store = CacheDB(str(db_path))
+    store.set_project(project)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("INSERT INTO items (data) VALUES (?)", ("not-json",))
+        connection.commit()
+
+    loaded = CacheManager(service = False)
+    loaded.load_items_from_file(str(tmp_path), strict = True)
+    assert [item.get_src() for item in loaded.get_items()] == ["来自 JSON"]
+
+    loaded.load_project_from_file(str(tmp_path), strict = True)
+    assert loaded.get_project().get_id() == "json-fallback"
+
+
+def test_strict_cache_fallback_keeps_later_saves_on_json(tmp_path) -> None:
+    manager = CacheManager(service = False)
+    manager.cache_use_sqlite = False
+    manager.save_to_file(
+        CacheProject(id = "before-fallback"),
+        [CacheItem(src = "旧条目")],
+        str(tmp_path),
+        strict = True,
+    )
+
+    db_path = tmp_path / "cache" / CacheManager.CACHE_DB_NAME
+    damaged_db = b"not-a-sqlite-database"
+    db_path.write_bytes(damaged_db)
+
+    loaded = CacheManager(service = False)
+    loaded.load_from_file(str(tmp_path), strict = True)
+    loaded.set_project(CacheProject(id = "after-fallback"))
+    loaded.set_items([CacheItem(src = "新条目")])
+    loaded.save_to_file(
+        loaded.get_project(),
+        loaded.get_items(),
+        str(tmp_path),
+        strict = True,
+    )
+
+    project_payload = json.loads(
+        (tmp_path / "cache" / "project.json").read_text(encoding = "utf-8")
+    )
+    items_payload = json.loads(
+        (tmp_path / "cache" / "items.json").read_text(encoding = "utf-8")
+    )
+    assert project_payload["id"] == "after-fallback"
+    assert items_payload[0]["src"] == "新条目"
+    assert db_path.read_bytes() == damaged_db
+
+
+def test_strict_json_save_validation_failure_keeps_pending_flag(tmp_path, monkeypatch) -> None:
+    manager = CacheManager(service = False)
+    manager.cache_use_sqlite = False
+    manager.require_flag = True
+
+    # 模拟写入函数异常地没有生成文件；strict 校验应阻止清除 pending。
+    monkeypatch.setattr(manager, "_save_translation_run_to_json", lambda *args: None)
+
+    with pytest.raises(RuntimeError, match = "未找到 JSON"):
+        manager.save_to_file(CacheProject(), [], str(tmp_path), strict = True)
+    assert manager.require_flag is True
 
 
 def test_cache_project_serialization_contains_only_versioned_extras() -> None:
