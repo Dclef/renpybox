@@ -194,30 +194,43 @@ class ProofreadingPage(QWidget, Base):
         )
         self.btn_batch_retranslate.setEnabled(False)
 
-        self.btn_ai_polish = self.command_bar_card.add_action(
-            Action(FluentIcon.BRUSH, Localizer.get().proofreading_page_ai_polish, triggered = self._on_ai_polish_clicked)
-        )
-        self.btn_ai_polish.setEnabled(False)
-
-        self.btn_ai_proofread = self.command_bar_card.add_action(
-            Action(FluentIcon.COMPLETED, Localizer.get().proofreading_page_ai_proofread, triggered = self._on_ai_proofread_clicked)
-        )
-        self.btn_ai_proofread.setEnabled(False)
-
-        self.btn_quality_report = self.command_bar_card.add_action(
-            Action(FluentIcon.DOCUMENT, Localizer.get().proofreading_page_quality_report, triggered = self._on_quality_report_clicked)
-        )
-        self.btn_quality_report.setEnabled(False)
-
-        self.btn_quality_cancel = self.command_bar_card.add_action(
-            Action(FluentIcon.CANCEL, Localizer.get().proofreading_page_quality_cancel, triggered = self._on_quality_cancel_clicked)
-        )
-        self.btn_quality_cancel.setEnabled(False)
-
         self.btn_batch_reset = self.command_bar_card.add_action(
             Action(FluentIcon.DELETE, Localizer.get().proofreading_page_batch_reset_translation, triggered = self._on_batch_reset_translation_clicked)
         )
         self.btn_batch_reset.setEnabled(False)
+
+        # 质量操作按推荐顺序排列：先看报告，再校对，最后按需润色。
+        self.command_bar_card.add_separator()
+
+        self.btn_quality_report = self.command_bar_card.add_action(
+            Action(FluentIcon.DOCUMENT, Localizer.get().proofreading_page_quality_report, triggered = self._on_quality_report_clicked)
+        )
+        self.btn_quality_report.installEventFilter(ToolTipFilter(self.btn_quality_report, 300, ToolTipPosition.TOP))
+        self.btn_quality_report.setToolTip(Localizer.get().proofreading_page_quality_report_tooltip)
+        self.btn_quality_report.setEnabled(False)
+
+        self.btn_ai_proofread = self.command_bar_card.add_action(
+            Action(FluentIcon.COMPLETED, Localizer.get().proofreading_page_ai_proofread, triggered = self._on_ai_proofread_clicked)
+        )
+        self.btn_ai_proofread.installEventFilter(ToolTipFilter(self.btn_ai_proofread, 300, ToolTipPosition.TOP))
+        self.btn_ai_proofread.setToolTip(Localizer.get().proofreading_page_ai_proofread_tooltip)
+        self.btn_ai_proofread.setEnabled(False)
+
+        self.btn_ai_polish = self.command_bar_card.add_action(
+            Action(FluentIcon.BRUSH, Localizer.get().proofreading_page_ai_polish, triggered = self._on_ai_polish_clicked)
+        )
+        self.btn_ai_polish.installEventFilter(ToolTipFilter(self.btn_ai_polish, 300, ToolTipPosition.TOP))
+        self.btn_ai_polish.setToolTip(Localizer.get().proofreading_page_ai_polish_tooltip)
+        self.btn_ai_polish.setEnabled(False)
+
+        self.command_bar_card.add_separator()
+
+        self.btn_quality_cancel = self.command_bar_card.add_action(
+            Action(FluentIcon.CANCEL, Localizer.get().proofreading_page_quality_cancel, triggered = self._on_quality_cancel_clicked)
+        )
+        self.btn_quality_cancel.installEventFilter(ToolTipFilter(self.btn_quality_cancel, 300, ToolTipPosition.TOP))
+        self.btn_quality_cancel.setToolTip(Localizer.get().proofreading_page_quality_cancel_tooltip)
+        self.btn_quality_cancel.setEnabled(False)
 
         self.command_bar_card.add_separator()
 

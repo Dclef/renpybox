@@ -362,7 +362,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.translation_page,
             FluentIcon.PLAY,
-            "开始翻译",
+            Localizer.get().app_translation_page,
             NavigationItemPosition.SCROLL
         )
 

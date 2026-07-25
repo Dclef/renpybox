@@ -36,6 +36,7 @@ from base.Base import Base
 from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator, QualityTaskType
 from module.Cache.CacheManager import CacheManager
 from module.File.FileManager import FileManager
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
@@ -251,7 +252,13 @@ class TranslationPage(QWidget, Base):
         elif Engine.get().get_status() == Engine.Status.QUALITY:
             # 润色/校对与初译共享同一引擎锁，期间禁止启动或导出初译任务。
             self.action_start.setEnabled(False)
-            self.action_stop.setEnabled(False)
+            quality = self.data.get("quality_task", {})
+            cancel_requested = (
+                bool(quality.get("cancel_requested", False))
+                if isinstance(quality, dict)
+                else False
+            )
+            self.action_stop.setEnabled(not cancel_requested)
             self.action_export.setEnabled(False)
             self.action_reinject_cache.setEnabled(False)
 
@@ -412,7 +419,7 @@ class TranslationPage(QWidget, Base):
             total = quality.get("total_count", 0) if isinstance(quality, dict) else 0
             percent = completed / max(1, total)
             self.ring.setValue(int(percent * 10000))
-            quality_label = getattr(Localizer.get(), "translation_page_status_quality", "质量处理中")
+            quality_label = self._quality_status_label(quality)
             self.ring.setFormat(f"{quality_label}\n{percent * 100:.2f}%")
         else:
             # 空闲状态：如果有缓存数据，显示缓存的进度
@@ -425,6 +432,35 @@ class TranslationPage(QWidget, Base):
             else:
                 self.ring.setValue(0)
                 self.ring.setFormat(Localizer.get().translation_page_status_idle)
+
+    @staticmethod
+    def _quality_status_label(quality: object) -> str:
+        """返回质量任务的明确类型和停止状态。"""
+        strings = Localizer.get()
+        quality_data = quality if isinstance(quality, dict) else {}
+        task_type = quality_data.get("task_type")
+        if isinstance(task_type, QualityTaskType):
+            task_type = task_type.value
+        cancelling = bool(quality_data.get("cancel_requested", False))
+
+        if task_type == QualityTaskType.POLISHER.value:
+            key = (
+                "translation_page_status_stopping_polishing"
+                if cancelling
+                else "translation_page_status_polishing"
+            )
+            fallback = "正在停止 AI 润色" if cancelling else "AI 润色中"
+        elif task_type == QualityTaskType.PROOFREADER.value:
+            key = (
+                "translation_page_status_stopping_proofreading"
+                if cancelling
+                else "translation_page_status_proofreading"
+            )
+            fallback = "正在停止 AI 校对" if cancelling else "AI 校对中"
+        else:
+            key = "translation_page_status_quality"
+            fallback = "质量处理中"
+        return getattr(strings, key, fallback)
 
     # 缓存文件自动保存事件
     def cache_file_auto_save(self, event: str, data: dict) -> None:
@@ -766,19 +802,45 @@ class TranslationPage(QWidget, Base):
     # 停止
     def add_command_bar_action_stop(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
         def triggered() -> None:
-            message_box = MessageBox(Localizer.get().alert, Localizer.get().translation_page_alert_pause, window)
-            message_box.yesButton.setText(Localizer.get().confirm)
-            message_box.cancelButton.setText(Localizer.get().cancel)
-
-            # 确认则触发停止翻译事件
-            if message_box.exec():
-                self.indeterminate_show(Localizer.get().translation_page_indeterminate_stoping)
-                self.emit(Base.Event.TRANSLATION_STOP, {})
+            self._on_stop_clicked(window)
 
         self.action_stop = parent.add_action(
             Action(FluentIcon.CANCEL_MEDIUM, Localizer.get().stop, parent,  triggered = triggered),
         )
         self.action_stop.setEnabled(False)
+
+    def _on_stop_clicked(self, window: FluentWindow) -> None:
+        """按当前引擎状态停止初译或质量任务。"""
+        engine_status = Engine.get().get_status()
+        if engine_status == Engine.Status.QUALITY:
+            coordinator = QualityTaskCoordinator.get()
+            if not coordinator.cancel():
+                return
+            progress = coordinator.get_progress()
+            if progress is not None:
+                self.data = {
+                    **self.data,
+                    "quality_task": progress.as_dict(),
+                }
+            self.action_stop.setEnabled(False)
+            self.update_status(self.data)
+            self.indeterminate_show(self._quality_status_label(self.data.get("quality_task", {})))
+            return
+
+        if engine_status != Engine.Status.TRANSLATING:
+            return
+
+        message_box = MessageBox(
+            Localizer.get().alert,
+            Localizer.get().translation_page_alert_pause,
+            window,
+        )
+        message_box.yesButton.setText(Localizer.get().confirm)
+        message_box.cancelButton.setText(Localizer.get().cancel)
+
+        if message_box.exec():
+            self.indeterminate_show(Localizer.get().translation_page_indeterminate_stoping)
+            self.emit(Base.Event.TRANSLATION_STOP, {})
 
     # 继续翻译
     def add_command_bar_action_continue(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
