@@ -90,6 +90,19 @@ class FontReplacer:
             normalized = normalized[1:-1].strip()
         return normalized
 
+    def _iter_game_files(self, base_path: Path, extensions: List[str]) -> List[Path]:
+        """枚举游戏文件，并排除字体备份目录。"""
+        files: List[Path] = []
+        for extension in extensions:
+            for file_path in base_path.rglob(f"*{extension}"):
+                try:
+                    if self.BACKUP_DIR_NAME in file_path.relative_to(base_path).parts:
+                        continue
+                except ValueError:
+                    continue
+                files.append(file_path)
+        return files
+
     def _extract_font_references(self, content: str) -> List[str]:
         """从 Ren'Py 脚本内容中提取字体引用。"""
         fonts: List[str] = []
@@ -142,9 +155,57 @@ class FontReplacer:
         new_text = self.INLINE_FONT_TAG_PATTERN.sub(replacer, text)
         return new_text, replacement_count
 
+    def _replace_font_references(
+        self,
+        content: str,
+        original_font: str,
+        target_font: str,
+    ) -> Tuple[str, int]:
+        """替换一段脚本文本中的单个字体引用。"""
+        patterns = [
+            (
+                r'(font\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
+                rf'\1"{target_font}"'
+            ),
+            (
+                r'(FontGroup\s*\(\s*)["\']' + re.escape(original_font) + r'["\']',
+                rf'\1"{target_font}"'
+            ),
+            (
+                r'(font_name\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
+                rf'\1"{target_font}"'
+            ),
+            (
+                r'(style\s+\w+\s+font\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
+                rf'\1"{target_font}"'
+            ),
+            (
+                r'(style\s+\w+\s+font_name\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
+                rf'\1"{target_font}"'
+            ),
+        ]
+
+        new_content = content
+        total_replacements = 0
+        for pattern, replacement in patterns:
+            new_content, count = re.subn(pattern, replacement, new_content)
+            total_replacements += count
+
+        new_content, count = self._replace_inline_font_tags(
+            new_content,
+            original_font,
+            target_font,
+        )
+        return new_content, total_replacements + count
+
     # ========== 备份与恢复功能 ==========
 
-    def create_backup(self, game_dir: str, source_font: str = None) -> Tuple[bool, str, str]:
+    def create_backup(
+        self,
+        game_dir: str,
+        source_font: str = None,
+        original_fonts: List[str] = None,
+    ) -> Tuple[bool, str, str]:
         """
         创建字体备份
         
@@ -164,15 +225,39 @@ class FontReplacer:
             # 创建备份目录
             backup_dir.mkdir(parents=True, exist_ok=True)
             
-            # 发现所有字体文件
-            font_files = self.discover_font_files(game_path)
-            if not font_files:
-                self.logger.warning("未发现字体文件，跳过备份")
-                return True, "未发现字体文件", ""
+            # 同时备份字体文件和即将修改的脚本，确保替换可恢复。
+            files_to_backup = self.discover_font_files(game_path)
+            original_keys = {
+                self._normalize_font_reference(font).replace("\\", "/").casefold()
+                for font in (original_fonts or [])
+                if self._normalize_font_reference(font)
+            }
+            if original_keys:
+                for script_path in self._iter_game_files(game_path, [".rpy", ".rpym"]):
+                    try:
+                        content = script_path.read_text(encoding="utf-8", errors="ignore")
+                        references = {
+                            self._normalize_font_reference(font).replace("\\", "/").casefold()
+                            for font in self._extract_font_references(content)
+                        }
+                        if references.isdisjoint(original_keys):
+                            continue
+                        rel_path = str(script_path.relative_to(game_path)).replace("\\", "/")
+                        files_to_backup.append((rel_path, str(script_path)))
+                    except Exception as e:
+                        self.logger.warning(f"检查待备份脚本失败 {script_path}: {e}")
+
+            deduplicated_files = {
+                rel_path: abs_path
+                for rel_path, abs_path in files_to_backup
+            }
+            if not deduplicated_files:
+                self.logger.warning("未发现需要备份的字体或脚本")
+                return True, "未发现需要备份的文件", ""
             
             # 备份字体文件
             backed_up_files = []
-            for rel_path, abs_path in font_files:
+            for rel_path, abs_path in deduplicated_files.items():
                 try:
                     dest = backup_dir / "original" / rel_path
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +285,7 @@ class FontReplacer:
             with open(manifest_path, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, ensure_ascii=False, indent=2)
             
-            self.logger.info(f"字体备份完成: {backup_dir} ({len(backed_up_files)} 个文件)")
+            self.logger.info(f"字体替换备份完成: {backup_dir} ({len(backed_up_files)} 个文件)")
             
             # 清理旧备份
             self._cleanup_old_backups(backup_root)
@@ -358,8 +443,28 @@ class FontReplacer:
         try:
             # 1. 创建备份（解析 game 目录）
             game_path = self._resolve_game_dir(game_dir)
+            raw_fonts = original_fonts or self.scan_fonts(str(game_path))
+            target_key = self._normalize_font_reference(
+                f"fonts/{Path(source_font_path).name}"
+            ).replace("\\", "/").casefold()
+            fonts_to_replace = []
+            seen_fonts = set()
+            for font in raw_fonts:
+                key = self._normalize_font_reference(font).replace("\\", "/").casefold()
+                if not key or key == target_key or key in seen_fonts:
+                    continue
+                seen_fonts.add(key)
+                fonts_to_replace.append(font)
+
+            if not fonts_to_replace:
+                return True, "没有需要替换的字体引用", details
+
             if create_backup:
-                success, msg, backup_name = self.create_backup(str(game_path), source_font_path)
+                success, msg, backup_name = self.create_backup(
+                    str(game_path),
+                    source_font_path,
+                    fonts_to_replace,
+                )
                 if not success:
                     return False, f"备份失败: {msg}", details
                 details["backup_name"] = backup_name
@@ -375,21 +480,13 @@ class FontReplacer:
             
             new_font_ref = f"fonts/{font_name}"
             
-            # 3. 替换字体引用
-            if original_fonts:
-                fonts_to_replace = original_fonts
-            else:
-                fonts_to_replace = self.scan_fonts(str(game_path))
-            
-            total_files = 0
-            total_replacements = 0
-            
-            for old_font in fonts_to_replace:
-                f_count, r_count = self.replace_in_folder(
-                    str(game_path), old_font, new_font_ref, encoding="utf-8"
-                )
-                total_files += f_count
-                total_replacements += r_count
+            # 3. 每个脚本只读取和写入一次，避免按字体数量重复扫描目录。
+            total_files, total_replacements = self.replace_fonts_in_folder(
+                str(game_path),
+                fonts_to_replace,
+                new_font_ref,
+                encoding="utf-8",
+            )
             
             details["replaced_files"] = total_files
             details["replaced_count"] = total_replacements
@@ -426,48 +523,34 @@ class FontReplacer:
         Returns:
             (是否成功, 替换次数)
         """
+        return self._replace_fonts_in_file(
+            file_path,
+            [original_font],
+            target_font,
+            encoding,
+        )
+
+    def _replace_fonts_in_file(
+        self,
+        file_path: str,
+        original_fonts: List[str],
+        target_font: str,
+        encoding: str = "utf-8",
+    ) -> Tuple[bool, int]:
+        """一次性替换单个脚本中的多个字体引用。"""
         try:
             with open(file_path, "r", encoding=encoding, errors="ignore") as f:
                 content = f.read()
 
-            # 替换字体引用
-            # 支持格式: font="xxx.ttf", FontGroup("xxx"), style font_name "xxx", {font=xxx}
-            patterns = [
-                (
-                    r'(font\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
-                    rf'\1"{target_font}"'
-                ),
-                (
-                    r'(FontGroup\s*\(\s*)["\']' + re.escape(original_font) + r'["\']',
-                    rf'\1"{target_font}"'
-                ),
-                (
-                    r'(font_name\s*=\s*)["\']' + re.escape(original_font) + r'["\']',
-                    rf'\1"{target_font}"'
-                ),
-                (
-                    r'(style\s+\w+\s+font\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
-                    rf'\1"{target_font}"'
-                ),
-                (
-                    r'(style\s+\w+\s+font_name\s*(?:=\s*)?)["\']' + re.escape(original_font) + r'["\']',
-                    rf'\1"{target_font}"'
-                ),
-            ]
-
             new_content = content
             total_replacements = 0
-
-            for pattern, replacement in patterns:
-                new_content, count = re.subn(pattern, replacement, new_content)
+            for original_font in original_fonts:
+                new_content, count = self._replace_font_references(
+                    new_content,
+                    original_font,
+                    target_font,
+                )
                 total_replacements += count
-
-            new_content, count = self._replace_inline_font_tags(
-                new_content,
-                original_font,
-                target_font,
-            )
-            total_replacements += count
 
             if total_replacements > 0:
                 with open(file_path, "w", encoding=encoding) as f:
@@ -509,7 +592,7 @@ class FontReplacer:
 
         base_dir = Path(self._resolve_game_dir(folder_path))
         for ext in file_extensions:
-            files = list(base_dir.rglob(f"*{ext}"))
+            files = self._iter_game_files(base_dir, [ext])
             self.logger.info(f"找到 {len(files)} 个 {ext} 文件")
 
             for file_path in files:
@@ -522,6 +605,38 @@ class FontReplacer:
                 if success and count > 0:
                     success_count += 1
                     total_replacements += count
+
+        self.logger.info(f"字体替换完成: {success_count} 个文件, {total_replacements} 处替换")
+        return success_count, total_replacements
+
+    def replace_fonts_in_folder(
+        self,
+        folder_path: str,
+        original_fonts: List[str],
+        target_font: str,
+        encoding: str = "utf-8",
+        file_extensions: List[str] = None,
+    ) -> Tuple[int, int]:
+        """遍历目录一次并替换所有指定字体。"""
+        if file_extensions is None:
+            file_extensions = [".rpy", ".rpym"]
+
+        success_count = 0
+        total_replacements = 0
+        base_dir = Path(self._resolve_game_dir(folder_path))
+        files = self._iter_game_files(base_dir, file_extensions)
+        self.logger.info(f"找到 {len(files)} 个脚本文件")
+
+        for file_path in files:
+            success, count = self._replace_fonts_in_file(
+                str(file_path),
+                original_fonts,
+                target_font,
+                encoding,
+            )
+            if success and count > 0:
+                success_count += 1
+                total_replacements += count
 
         self.logger.info(f"字体替换完成: {success_count} 个文件, {total_replacements} 处替换")
         return success_count, total_replacements
@@ -553,7 +668,7 @@ class FontReplacer:
         game_path = Path(self._resolve_game_dir(folder_path))
 
         # 源码脚本：使用精确的引用提取
-        source_files = list(game_path.rglob("*.rpy")) + list(game_path.rglob("*.rpym"))
+        source_files = self._iter_game_files(game_path, [".rpy", ".rpym"])
         for file_path in source_files:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -593,6 +708,8 @@ class FontReplacer:
                         if not file_path.is_file():
                             continue
                         rel_path = file_path.relative_to(base_path)
+                        if self.BACKUP_DIR_NAME in rel_path.parts:
+                            continue
                         rel_key = str(rel_path).replace("\\", "/")
                         if rel_key in seen:
                             continue

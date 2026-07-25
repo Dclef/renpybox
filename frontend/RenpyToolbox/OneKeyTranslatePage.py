@@ -900,7 +900,7 @@ class YiJianFanyiPage(Base, QWidget):
             if self._incremental_output_dir:
                 InfoBar.warning(
                     "请先完成翻译",
-                    "当前增量内容尚未应用，请完成翻译后点击“应用翻译到游戏”。",
+                    "当前增量内容尚未应用，请完成翻译后返回工具箱，点击“应用翻译到游戏”。",
                     parent=self,
                 )
                 return
@@ -1035,10 +1035,10 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度五：后续处理 ====================
     def _create_step5_page(self):
         """进度五：后续处理"""
-        page, layout = self._create_page_container("检查、导出与应用", 5)
+        page, layout = self._create_page_container("检查、导出与后处理", 5)
         
         layout.addWidget(SubtitleLabel("🎉 翻译已完成"))
-        layout.addWidget(BodyLabel("检查译文后导出，再应用到游戏。"))
+        layout.addWidget(BodyLabel("可继续检查、补全或导出翻译结果。"))
         layout.addWidget(
             CaptionLabel("如果切换到中文后仍有漏翻文本，优先使用“补全漏翻”生成 replace_text_auto.rpy。")
         )
@@ -1063,7 +1063,6 @@ class YiJianFanyiPage(Base, QWidget):
         # 工具卡片
         tools = [
             ("检查、润色并导出", "查看质量报告，校对或润色选中译文，然后导出翻译文件", self._tool_open_proofreading),
-            ("应用翻译到游戏", "将翻译结果复制到游戏 tl 目录", self._tool_apply_translation),
             ("补全漏翻", "扫描 tl 未覆盖的文本并生成 replace_text_auto.rpy", self._tool_hook_supplement),
             ("检测/修复报错", "修复缩进和格式问题", self._tool_fix_errors),
             ("设置默认语言", "设置游戏启动时的默认语言", self._tool_set_default_lang),
@@ -2100,13 +2099,14 @@ class YiJianFanyiPage(Base, QWidget):
         self.has_old_translation = False
         
     # 工具函数
-    def _tool_apply_translation(self, card):
+    def _tool_apply_translation(self, card, feedback_parent=None):
         """应用翻译：将输出目录的文件复制到 tl 目录"""
         from module.Config import Config
         import shutil
         from qfluentwidgets import MessageBox
         from pathlib import Path
         
+        ui_parent = feedback_parent or self
         config = Config().load()
 
         tl_name = self.tl_folder_edit.text().strip() or "chinese"
@@ -2136,17 +2136,17 @@ class YiJianFanyiPage(Base, QWidget):
             )
         
         if not output_dir.exists():
-            InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
+            InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=ui_parent)
             return
         
         if input_dir is None or not input_dir.exists():
-            InfoBar.error("错误", f"目标目录不存在：{input_dir}", parent=self)
+            InfoBar.error("错误", f"目标目录不存在：{input_dir}", parent=ui_parent)
             return
         
         # 统计文件
         output_files = list(output_dir.rglob("*.rpy"))
         if not output_files:
-            InfoBar.warning("提示", "输出目录中没有翻译文件（.rpy）", parent=self)
+            InfoBar.warning("提示", "输出目录中没有翻译文件（.rpy）", parent=ui_parent)
             return
         
         # 确认对话框 - 根据主题选择样式颜色
@@ -2161,7 +2161,7 @@ class YiJianFanyiPage(Base, QWidget):
             f"<b>文件数量：</b>{len(output_files)} 个<br><br>"
             f"<p style='color:{warn_color};'><i>⚠️ 这将覆盖目标目录中的同名文件！<br>"
             f"建议先备份原始文件。</i></p>",
-            self
+            ui_parent
         )
         msg_box.yesButton.setText("应用翻译")
         msg_box.cancelButton.setText("取消")
@@ -2180,7 +2180,7 @@ class YiJianFanyiPage(Base, QWidget):
                     clean_duplicates=True,
                 )
                 if not merge_result.success:
-                    InfoBar.warning("合并失败", merge_result.message, parent=self)
+                    InfoBar.warning("合并失败", merge_result.message, parent=ui_parent)
                     return
                 main_output = (
                     project_paths.translation_output_dir
@@ -2199,7 +2199,7 @@ class YiJianFanyiPage(Base, QWidget):
                     InfoBar.warning(
                         "缓存暂未合并",
                         f"翻译文件已应用，但缓存仍保留在：{output_dir / 'cache'}，请稍后重试应用。",
-                        parent=self,
+                        parent=ui_parent,
                     )
                     return
                 if output_dir.exists():
@@ -2220,7 +2220,7 @@ class YiJianFanyiPage(Base, QWidget):
                 self._incremental_dir = None
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
-                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=self)
+                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=ui_parent)
                 if self._onekey_translation_started and self._auto_hook_pending:
                     self._auto_hook_pending = False
                     QTimer.singleShot(0, self._start_auto_hook_supplement)
@@ -2229,7 +2229,7 @@ class YiJianFanyiPage(Base, QWidget):
                 return
             except Exception as e:
                 self.logger.error(f"应用增量翻译失败: {e}")
-                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=self)
+                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=ui_parent)
                 return
 
         # 全量翻译沿用整文件复制行为。
@@ -2259,14 +2259,14 @@ class YiJianFanyiPage(Base, QWidget):
                 msg += "\n".join([f"- {name}: {err}" for name, err in failed_files[:5]])
                 if len(failed_files) > 5:
                     msg += f"\n... 还有 {len(failed_files) - 5} 个"
-                InfoBar.warning("部分成功", msg, duration=5000, parent=self)
+                InfoBar.warning("部分成功", msg, duration=5000, parent=ui_parent)
             else:
                 InfoBar.success(
                     "应用成功",
                     f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
                     f"现在可以启动游戏查看翻译效果。",
                     duration=5000,
-                    parent=self
+                    parent=ui_parent
                 )
 
                 # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
@@ -2289,7 +2289,7 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            InfoBar.error("错误", f"应用翻译失败：{e}", parent=self)
+            InfoBar.error("错误", f"应用翻译失败：{e}", parent=ui_parent)
 
     def _tool_hook_supplement(self, card):
         """打开补全漏翻页面，并沿用当前项目上下文。"""

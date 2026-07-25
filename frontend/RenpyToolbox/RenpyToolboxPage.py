@@ -11,12 +11,17 @@ from qfluentwidgets import (
     FluentIcon,
     qconfig,
     TitleLabel,
+    StrongBodyLabel,
 )
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
-from module.Renpy.ProjectPaths import resolve_translation_output
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    read_run_manifest,
+    resolve_translation_output,
+)
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
@@ -74,7 +79,7 @@ class RenpyToolboxPage(Base, QWidget):
         self.main_layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题 - 使用 qfluentwidgets 组件以支持主题
-        self.title = TitleLabel("🎮 Ren'Py 工具箱")
+        self.title = TitleLabel("Ren'Py 工具箱")
         self.main_layout.addWidget(self.title)
 
         # 创建滚动区域
@@ -88,14 +93,10 @@ class RenpyToolboxPage(Base, QWidget):
         mark_toolbox_widget(scroll_widget, "toolboxScroll")
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(16)
 
-        # 流式布局容器
-        flow_container = QWidget()
-        mark_toolbox_widget(flow_container, "toolboxFlow")
-        self.flow_layout = FlowLayout(flow_container, needAni=False)
-        self.flow_layout.setSpacing(8)
-        self.flow_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.addWidget(flow_container)
+        self.beginner_flow_layout = self._create_flow_section(scroll_layout, "推荐流程")
+        self.tool_flow_layout = self._create_flow_section(scroll_layout, "进阶工具")
         scroll_layout.addStretch(1)
 
         scroll_area.setWidget(scroll_widget)
@@ -106,6 +107,18 @@ class RenpyToolboxPage(Base, QWidget):
         
         # 监听主题变化
         qconfig.themeChanged.connect(self._on_theme_changed)
+
+    def _create_flow_section(self, parent: QVBoxLayout, title: str) -> FlowLayout:
+        """创建带标题的工具分区。"""
+        parent.addWidget(StrongBodyLabel(title, self))
+
+        container = QWidget()
+        mark_toolbox_widget(container, "toolboxFlow")
+        layout = FlowLayout(container, needAni=False)
+        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        parent.addWidget(container)
+        return layout
     
     def _on_theme_changed(self):
         """主题切换时更新样式"""
@@ -119,48 +132,52 @@ class RenpyToolboxPage(Base, QWidget):
         mark_toolbox_widget(widget)
 
     def _create_tool_cards(self):
-        """创建工具卡片，避免重复条目"""
-        # 检查是否有未完成的翻译任务
+        """按推荐流程和进阶工具创建卡片。"""
         has_pending_translation = self._check_pending_translation()
-        
-        card_specs = []
-        
-        # 如果有未完成的翻译，优先显示"继续翻译"
+
+        beginner_specs = []
         if has_pending_translation:
-            card_specs.append(
-                ("🔄 继续翻译", "检测到上次未完成的翻译任务，点击继续", self._open_continue_translation)
+            beginner_specs.append(
+                ("继续翻译", "检测到上次未完成的翻译任务", self._open_continue_translation)
             )
-        
-        card_specs.extend([
-            ("⭐ 一键翻译", "小白推荐：选择游戏目录 → 自动抽取 → 开始翻译", self._open_one_key_translate),
-            ("📄 直接翻译RPY", "直接翻译 tl/*.rpy 文件（高级用户）", self._open_direct_rpy_translate),
-            ("HOOK翻译", "启动游戏 EXE 做运行时 hook 抽取，再直接翻译 tl/<lang>", self._open_hook_translate),
-            ("补全翻译", "扫描漏提文本并生成 replace_text_auto.rpy", self._open_hook_supplement),
-            ("源码翻译", "直接翻译 game/*.rpy 源码，无需 tl 目录", self._open_source_translate),
-            ("翻译抽取到TL", "高级：官方抽取、运行时抽取等", self._open_extract_to_tl),
+        beginner_specs.extend([
+            ("一键翻译", "选择游戏目录，自动完成抽取和翻译", self._open_one_key_translate),
             ("检查与润色", "查看质量报告、校对或润色译文并导出", self._open_proofreading_task),
-            ("📚 本地词库", "管理术语表，统一专有名词翻译", self._open_local_glossary),
-            ("🚫 禁翻表", "管理不需要翻译的文本（变量、代码等）", self._open_text_preserve),
-            ("称呼桥接", "称呼+变量智能桥接（Mr.[xx]→[xx]先生）", self._open_honorific_placeholder),
-            ("终极结构导出", "Excel & translate_names/others.rpy 输出", self._open_ma_suite),
-            ("错误修复", "扫描并修复常见的脚本错误", self._open_error_repair),
-            ("代码格式化", "格式化 .rpy 文件，保持代码整洁", self._open_formatter),
+            ("应用翻译到游戏", "将翻译结果写入游戏的 TL 目录", self._open_apply_translation),
             ("字体注入", "一键注入预置字体包（tl/<lang>/base_box + tl/<lang>/fonts）", self._open_font_replace),
-            ("解包/打包", "解包 RPA 文件或打包游戏资源", self._open_pack_unpack),
-            ("安卓打包", "安装 SDK / 生成签名 / 构建 APK", self._open_android_build),
             ("添加语言入口", "向游戏添加语言切换功能", self._open_add_language_entrance),
             ("设置默认语言", "设置游戏启动时的默认语言", self._open_set_default_language),
         ])
 
-        for title, description, handler in card_specs:
-            self.flow_layout.addWidget(
-                ItemCard(
-                    parent=self,
-                    title=title,
-                    description=description,
-                    clicked=handler,
+        tool_specs = [
+            ("解包/打包", "解包 RPA 文件或打包游戏资源", self._open_pack_unpack),
+            ("翻译抽取到 TL", "官方抽取、运行时抽取等高级抽取方式", self._open_extract_to_tl),
+            ("本地词库", "管理术语表，统一专有名词翻译", self._open_local_glossary),
+            ("禁翻表", "管理不需要翻译的变量和代码", self._open_text_preserve),
+            ("称呼桥接", "处理称呼和变量组合文本", self._open_honorific_placeholder),
+            ("直接翻译 RPY", "直接翻译 tl/*.rpy 文件", self._open_direct_rpy_translate),
+            ("HOOK 翻译", "运行游戏并抽取文本后直接翻译", self._open_hook_translate),
+            ("源码翻译", "直接翻译 game/*.rpy 源码", self._open_source_translate),
+            ("补全翻译", "扫描漏提文本并生成补全脚本", self._open_hook_supplement),
+            ("错误修复", "扫描并修复常见脚本错误", self._open_error_repair),
+            ("代码格式化", "格式化 .rpy 文件", self._open_formatter),
+            ("终极结构导出", "导出 Excel 和结构化翻译脚本", self._open_ma_suite),
+            ("安卓打包", "安装 SDK、生成签名并构建 APK", self._open_android_build),
+        ]
+
+        for layout, specs in (
+            (self.beginner_flow_layout, beginner_specs),
+            (self.tool_flow_layout, tool_specs),
+        ):
+            for title, description, handler in specs:
+                layout.addWidget(
+                    ItemCard(
+                        parent=self,
+                        title=title,
+                        description=description,
+                        clicked=handler,
+                    )
                 )
-            )
     
     def _check_pending_translation(self) -> bool:
         """检查是否有未完成的翻译任务"""
@@ -210,16 +227,43 @@ class RenpyToolboxPage(Base, QWidget):
             return False
 
     # ===== 卡片点击事件 =====
-    def _open_one_key_translate(self, card):
-        """打开一键翻译页面（简化版 V2）"""
+    def _get_one_key_translate_page(self):
+        """获取一键翻译页面实例。"""
         if not hasattr(self.window, 'one_key_translate_page'):
             self.window.one_key_translate_page = YiJianFanyiPage("yi-jian-fanyi", self.window)
             self._mark_toolbox_widget(self.window.one_key_translate_page)
-        
+
+        return self.window.one_key_translate_page
+
+    def _open_one_key_translate(self, card):
+        """打开一键翻译页面（简化版 V2）"""
+        page = self._get_one_key_translate_page()
+
         if hasattr(self.window, "navigate_to_page"):
-            self.window.navigate_to_page(self.window.one_key_translate_page)
+            self.window.navigate_to_page(page)
         else:
-            self._goto_widget("一键翻译", self.window.one_key_translate_page)
+            self._goto_widget("一键翻译", page)
+
+    def _open_apply_translation(self, card):
+        """从工具箱直接应用最近一次翻译结果。"""
+        page = self._get_one_key_translate_page()
+
+        if not page.game_dir:
+            config = Config().load()
+            paths = RenpyProjectPaths.from_config(config)
+            if paths is not None:
+                page.game_dir = str(paths.project_root)
+                page.tl_folder_edit.blockSignals(True)
+                page.tl_folder_edit.setText(paths.language)
+                page.tl_folder_edit.blockSignals(False)
+
+                manifest = read_run_manifest(paths)
+                if manifest and str(manifest.get("run_kind", "")).casefold() == "incremental":
+                    page._incremental_output_dir = manifest.get("output_folder") or None
+                    page._incremental_dir = manifest.get("input_folder") or None
+                    page._apply_target_dir = manifest.get("application_target_dir") or None
+
+        page._tool_apply_translation(card, feedback_parent=self)
     
     def _open_continue_translation(self, card):
         """继续上次未完成的翻译"""
