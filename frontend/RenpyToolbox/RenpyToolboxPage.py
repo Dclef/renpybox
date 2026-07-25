@@ -138,7 +138,7 @@ class RenpyToolboxPage(Base, QWidget):
             ("补全翻译", "扫描漏提文本并生成 replace_text_auto.rpy", self._open_hook_supplement),
             ("源码翻译", "直接翻译 game/*.rpy 源码，无需 tl 目录", self._open_source_translate),
             ("翻译抽取到TL", "高级：官方抽取、运行时抽取等", self._open_extract_to_tl),
-            ("错误校对", "基于缓存进行校对、筛选与重译", self._open_proofreading_task),
+            ("检查与润色", "查看质量报告、校对或润色译文并导出", self._open_proofreading_task),
             ("📚 本地词库", "管理术语表，统一专有名词翻译", self._open_local_glossary),
             ("🚫 禁翻表", "管理不需要翻译的文本（变量、代码等）", self._open_text_preserve),
             ("称呼桥接", "称呼+变量智能桥接（Mr.[xx]→[xx]先生）", self._open_honorific_placeholder),

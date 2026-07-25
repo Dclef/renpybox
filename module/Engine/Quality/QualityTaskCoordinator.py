@@ -17,6 +17,7 @@ from module.Cache.CacheManager import CacheLoadError, CacheManager
 from module.Cache.CacheProject import CacheProject
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslationTaskContext import (
     TranslationTaskContext,
     merge_provider_credentials,
@@ -129,8 +130,8 @@ class QualityTaskCoordinator(Base):
     协调独立润色/校对任务，并在每个已完成批次后保存缓存。
 
     ``on_progress`` 和 ``on_done`` 都在质量任务工作线程调用；Qt 调用方应通过
-    ``pyqtSignal`` 切回 UI 线程。取消只会阻止尚未开始的后续批次，当前批次会
-    正常完成、保存，然后进入 ``CANCELLED``。
+    ``pyqtSignal`` 切回 UI 线程。取消会关闭当前请求并回滚尚未完整保存的批次，
+    已经保存的批次保持不变。
     """
 
     PROGRESS_SCHEMA_VERSION = 1
@@ -209,7 +210,7 @@ class QualityTaskCoordinator(Base):
             return self._progress
 
     def cancel(self) -> bool:
-        """请求在当前批次保存后停止，不中断正在进行的网络请求。"""
+        """请求立即停止质量任务，并异步关闭当前网络连接。"""
         with self._lock:
             if not self._busy:
                 return False
@@ -220,7 +221,13 @@ class QualityTaskCoordinator(Base):
                     cancel_requested = True,
                     updated_at = self._now(),
                 )
-            return True
+
+        # 第三方客户端的 close() 可能等待网络锁，不能阻塞 Qt 点击回调。
+        try:
+            TaskRequester.close_all_clients_async()
+        except Exception as exc:
+            self.error(f"质量任务网络连接关闭失败: {type(exc).__name__}")
+        return True
 
     def start_polishing(
         self,
@@ -355,6 +362,7 @@ class QualityTaskCoordinator(Base):
         final_progress = progress
         cache_manager: CacheManager | None = None
         project: CacheProject | None = None
+        TaskRequester.bind_run_cancel_event(self._cancel_event)
         try:
             cache_manager = self.cache_manager_factory()
             cache_manager.cache_use_sqlite = bool(config.cache_use_sqlite)
@@ -403,7 +411,15 @@ class QualityTaskCoordinator(Base):
                     # 核心任务若在写入部分条目后抛出异常，恢复整个当前批次，
                     # 保证失败边界不会把半成品当作成功译文保存。
                     self._restore_batch_states(batch, batch_states)
+                    if self._cancel_event.is_set():
+                        break
                     raise
+
+                if self._cancel_event.is_set():
+                    # 停止可能发生在请求返回和批次保存之间。当前批次没有形成
+                    # 持久化边界，必须整体回滚，只保留此前已保存的批次。
+                    self._restore_batch_states(batch, batch_states)
+                    break
 
                 batch_failures = self._map_failures(
                     result.failures,
@@ -482,6 +498,7 @@ class QualityTaskCoordinator(Base):
                 except Exception as save_exc:
                     self.error(f"质量任务失败状态保存失败: {type(save_exc).__name__}")
         finally:
+            TaskRequester.unbind_run_cancel_event()
             self.engine.release_status(Engine.Status.QUALITY)
             self._finish(final_progress)
 
