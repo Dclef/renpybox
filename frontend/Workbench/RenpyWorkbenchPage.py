@@ -935,53 +935,93 @@ class RenpyWorkbenchPage(Base, QWidget):
         """启动 AI 分析线程。"""
         if self._analysis_running:
             return
+        if not Engine.get().try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
+            self._refresh_action_state()
+            return
         self._analysis_running = True
-        self._refresh_action_state()
+        try:
+            self._refresh_action_state()
+        except Exception:
+            self._analysis_running = False
+            Engine.get().release_status(Engine.Status.TESTING)
+            raise
         self.overview_status_label.setText("正在执行 AI 分析…")
         scope = normalize_analysis_scope(scope)
         current_id = self._selected_character_id
 
         def task() -> None:
+            success_payload: dict[str, Any] | None = None
+            failure_payload: dict[str, Any] | None = None
             try:
                 config = self._load_config()
                 if mode == "all":
-                    result = self.analysis_service.analyze_all(config, scope)
+                    result = self.analysis_service.analyze_all(
+                        config,
+                        scope,
+                        engine_reserved = True,
+                    )
                 elif mode == "worldbook":
-                    result = self.analysis_service.generate_worldbook_only(config, scope)
+                    result = self.analysis_service.generate_worldbook_only(
+                        config,
+                        scope,
+                        engine_reserved = True,
+                    )
                 elif mode == "characters":
-                    result = self.analysis_service.generate_character_only(config, scope)
+                    result = self.analysis_service.generate_character_only(
+                        config,
+                        scope,
+                        engine_reserved = True,
+                    )
                 elif mode == "character_single":
-                    result = self.analysis_service.generate_character_only(config, scope, current_id)
+                    result = self.analysis_service.generate_character_only(
+                        config,
+                        scope,
+                        current_id,
+                        engine_reserved = True,
+                    )
                 else:
                     raise AnalysisServiceError("未知的分析模式。")
-                self.signals.analysis_success.emit(
-                    {
-                        "mode": mode,
-                        "scope": scope,
-                        "result": result,
-                        "card_id": current_id,
-                    }
-                )
+                success_payload = {
+                    "mode": mode,
+                    "scope": scope,
+                    "result": result,
+                    "card_id": current_id,
+                }
             except AnalysisServiceError as exc:
-                self.signals.analysis_failed.emit(
-                    {
-                        "mode": mode,
-                        "scope": scope,
-                        "message": str(exc),
-                        "raw_response": exc.raw_response,
-                    }
-                )
+                failure_payload = {
+                    "mode": mode,
+                    "scope": scope,
+                    "message": str(exc),
+                    "raw_response": exc.raw_response,
+                }
             except Exception as exc:
-                self.signals.analysis_failed.emit(
-                    {
-                        "mode": mode,
-                        "scope": scope,
-                        "message": str(exc),
-                        "raw_response": "",
-                    }
-                )
+                failure_payload = {
+                    "mode": mode,
+                    "scope": scope,
+                    "message": str(exc),
+                    "raw_response": "",
+                }
+            finally:
+                Engine.get().release_status(Engine.Status.TESTING)
 
-        threading.Thread(target = task, daemon = True).start()
+            if success_payload is not None:
+                self.signals.analysis_success.emit(success_payload)
+            else:
+                self.signals.analysis_failed.emit(failure_payload or {
+                    "mode": mode,
+                    "scope": scope,
+                    "message": "AI 分析失败。",
+                    "raw_response": "",
+                })
+
+        thread = threading.Thread(target = task, daemon = True)
+        try:
+            thread.start()
+        except Exception:
+            self._analysis_running = False
+            Engine.get().release_status(Engine.Status.TESTING)
+            self._refresh_action_state()
+            raise
 
     def _on_analysis_success(self, payload: dict[str, Any]) -> None:
         """处理分析成功。"""

@@ -309,6 +309,39 @@ def test_dynamic_asset_item_and_token_budgets_are_stable():
     assert "Beta -> 贝塔" not in token_limited
 
 
+def test_dynamic_asset_budget_skips_oversized_entry_and_keeps_later_entries():
+    config = Config(
+        glossary_enable = True,
+        glossary_data = [
+            {
+                "src": "Alpha",
+                "dst": "阿尔法",
+                "info": "超长备注" * 200,
+                "origin": "LOCAL",
+                "record_id": "alpha",
+            },
+            {
+                "src": "Beta",
+                "dst": "贝塔",
+                "origin": "LOCAL",
+                "record_id": "beta",
+            },
+        ],
+    )
+    beta_cost = PromptBuilder(config)._asset_token_cost("Beta -> 贝塔")
+    config.asset_prompt_token_budget = beta_cost
+
+    combined = "\n".join(
+        PromptBuilder(config).build_dynamic_asset_contexts(
+            ["Alpha Beta"],
+            None,
+        )
+    )
+
+    assert "Alpha -> 阿尔法" not in combined
+    assert "Beta -> 贝塔" in combined
+
+
 def test_fixed_worldbook_and_style_are_not_truncated_by_dynamic_asset_budget():
     config = Config(
         translation_style_id = Config.STYLE_LITERARY,

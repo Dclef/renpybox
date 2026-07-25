@@ -343,6 +343,57 @@ def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
     assert target == current_target
 
 
+def test_onekey_character_scan_persists_project_candidates(tmp_path, monkeypatch):
+    from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
+    from module.Config import Config
+    from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+
+    project = tmp_path / "project"
+    game_dir = project / "game"
+    game_dir.mkdir(parents=True)
+    (game_dir / "script.rpy").write_text(
+        'define alice = Character("Alice")\n'
+        'alice "Hello there."\n',
+        encoding="utf-8",
+    )
+    output_dir = project / "RenpyBox_Translation" / "chinese"
+    config = types.SimpleNamespace(
+        input_folder = str(game_dir / "tl" / "chinese"),
+        output_folder = str(output_dir),
+        cache_use_sqlite = False,
+        renpy_project_path = str(project),
+        renpy_game_folder = str(game_dir),
+        renpy_tl_folder = str(game_dir / "tl" / "chinese"),
+        glossary_data = [],
+        glossary_enable = False,
+        text_preserve_data = [],
+        text_preserve_enable = False,
+        glossary_auto_scan_cache = {},
+    )
+    config.save = lambda: None
+    monkeypatch.setattr(Config, "load", lambda self: config)
+
+    page = YiJianFanyiPage.__new__(YiJianFanyiPage)
+    page.game_dir = str(project)
+    page.tl_folder_edit = types.SimpleNamespace(text = lambda: "chinese")
+
+    page._extract_character_names(force = True)
+
+    assert config.glossary_data == []
+    state = ProjectAssetsRepository(
+        str(output_dir),
+        cache_use_sqlite = False,
+    ).load(config)
+    assert any(
+        item.get("source") == "Alice"
+        for item in state.analysis_candidates.get("items", [])
+    )
+    assert any(
+        item.get("name") == "Alice"
+        for item in state.analysis_candidates.get("character_drafts", [])
+    )
+
+
 def test_onekey_defers_auto_hook_while_incremental_output_is_unmerged(
     tmp_path, monkeypatch
 ):
@@ -362,6 +413,30 @@ def test_onekey_defers_auto_hook_while_incremental_output_is_unmerged(
     page._start_auto_hook_supplement = lambda: None
 
     page._on_translation_done(None, None)
+
+    assert page._auto_hook_pending is True
+    assert scheduled == []
+
+
+def test_onekey_defers_auto_hook_until_full_output_is_applied(
+    tmp_path, monkeypatch
+):
+    from frontend.RenpyToolbox import OneKeyTranslatePage as page_module
+
+    scheduled = []
+    monkeypatch.setattr(
+        page_module.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
+    page._auto_hook_running = False
+    page._onekey_translation_started = True
+    page._auto_hook_pending = True
+    page._incremental_output_dir = None
+    page._start_auto_hook_supplement = lambda: None
+
+    page._on_translation_done(None, {"success": True})
 
     assert page._auto_hook_pending is True
     assert scheduled == []

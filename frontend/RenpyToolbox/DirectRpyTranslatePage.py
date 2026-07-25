@@ -25,6 +25,7 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -201,8 +202,15 @@ class DirectRpyTranslatePage(Base, QWidget):
                     raise RuntimeError(f"未找到 tl/{tl_name} 目录，请先执行抽取或指定 tl 目录")
 
             config = Config().load()
-            config.input_folder = str(input_tl_dir)
-            config.output_folder = str(input_tl_dir)
+            paths = RenpyProjectPaths.from_path(input_tl_dir, tl_name)
+            if paths is None:
+                raise RuntimeError("无法解析 Ren'Py 项目路径")
+            apply_to_config(
+                config,
+                paths,
+                input_folder = paths.tl_language_dir,
+                output_folder = paths.tl_language_dir,
+            )
             config.renpy_backup_original = self.backup_switch.isChecked()
             # 直接翻译 tl/.rpy，必须关闭源码翻译模式，否则 FileManager 会走 RENPYSOURCE 分支
             config.renpy_source_translate = False

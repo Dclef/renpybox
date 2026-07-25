@@ -35,6 +35,7 @@ from module.Renpy.renpy_tl_core import (
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 from module.Renpy.renpy_tl_core import TlStmtKind
 from module.Renpy import renpy_extract as rx
+from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Text.SkipRules import should_skip_text
 
 
@@ -1525,7 +1526,20 @@ class UnifiedExtractor:
         """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。"""
         result = ExtractionResult()
         game_dir = Path(game_dir)
-        tl_dir = game_dir / "game" / "tl" / tl_name
+        # 目标 TL 目录优先沿用当前项目配置中的显式路径（例如项目根/tl），
+        # 只有配置无法证明属于当前项目时才回退到标准 game/tl 布局。
+        tl_dir = None
+        try:
+            configured_paths = RenpyProjectPaths.from_config(Config().load(), tl_name)
+            if (
+                configured_paths is not None
+                and configured_paths.project_root == game_dir.resolve()
+            ):
+                tl_dir = configured_paths.tl_language_dir
+        except Exception:
+            tl_dir = None
+        if tl_dir is None:
+            tl_dir = game_dir / "game" / "tl" / tl_name
         result.tl_dir = tl_dir
 
         if incremental_dir is None:
@@ -1728,9 +1742,23 @@ class UnifiedExtractor:
                     )
 
         # 合并与去重成功后，增量目录不再是可加载的翻译来源，
-        # 避免遗留目录造成重复加载和困惑。
+        # 避免遗留目录造成重复加载和困惑。若目录中带有翻译缓存，
+        # 先保留 cache 子目录，交由一键流程把条目合并到主缓存；
+        # 不能为了清理 rpy 文件而把刚完成的翻译缓存一起删除。
+        cache_preserved = False
         try:
-            shutil.rmtree(str(incremental_dir))
+            cache_dir = incremental_dir / "cache"
+            if cache_dir.is_dir():
+                cache_preserved = True
+                for child in list(incremental_dir.iterdir()):
+                    if child == cache_dir:
+                        continue
+                    if child.is_dir():
+                        shutil.rmtree(str(child), ignore_errors=True)
+                    else:
+                        child.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(str(incremental_dir))
         except Exception as exc:
             self.logger.warning(f"合并完成但清理增量目录失败 {incremental_dir}: {exc}")
 
@@ -1738,7 +1766,9 @@ class UnifiedExtractor:
         result.total_files = len(list(self._iter_rpy_files(tl_dir)))
         result.message = (
             f"合并完成：更新占位 {updated_entries} 条，"
-            f"新增 {added_entries} 条，涉及 {merged_files} 个文件；已清理 {incremental_dir.name}"
+            f"新增 {added_entries} 条，涉及 {merged_files} 个文件；"
+            + (f"已保留 {incremental_dir.name}/cache 供缓存迁移" if cache_preserved
+               else f"已清理 {incremental_dir.name}")
         )
         return result
 

@@ -16,6 +16,7 @@ from module.Extract.ReplaceGenerator import (
     write_replace_script,
 )
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.Renpy.ProjectPaths import RenpyProjectPaths
 
 
 class RENPYHOOK(Base):
@@ -37,6 +38,21 @@ class RENPYHOOK(Base):
 
     def _resolve_tl_dir(self, target_path: Path) -> Path:
         configured_tl = str(getattr(self.config, "renpy_tl_folder", "") or "").strip()
+        configured_language = ""
+        if configured_tl != "":
+            candidate = Path(configured_tl)
+            if candidate.parent.name.casefold() == "tl":
+                configured_language = candidate.name
+                # 用户明确选择的语言目录优先于从项目根目录重新推导的
+                # canonical 路径；否则自定义 tl 目录会被静默改写。
+                return candidate
+
+        # 统一处理 game/tl、game/tl/<lang> 和项目根目录，避免旧配置把
+        # replace_text_auto.rpy 写到 tl 根目录而不是目标语言目录。
+        paths = RenpyProjectPaths.from_path(target_path, configured_language)
+        if paths is not None:
+            return paths.tl_language_dir
+
         if configured_tl != "":
             return Path(configured_tl)
 

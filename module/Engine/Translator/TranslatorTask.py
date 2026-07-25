@@ -141,6 +141,16 @@ class TranslatorTask(Base):
 
         return self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
 
+    @staticmethod
+    def _cancelled_result() -> dict[str, object]:
+        """返回统一的取消结果；取消不应被记录为普通请求失败。"""
+        return {
+            "row_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cancelled": True,
+        }
+
     def request_single_line(
         self,
         items: list[CacheItem],
@@ -151,6 +161,9 @@ class TranslatorTask(Base):
         start_time: float,
     ) -> dict[str, object]:
         """单行翻译模式：每次请求只处理一行原文。"""
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         requester = TaskRequester(self.config, self.platform, current_round)
         stats = TranslatorTaskResult()
         updated_count = 0
@@ -165,6 +178,9 @@ class TranslatorTask(Base):
 
         # 先逐条请求，再统一写回，避免中途更新导致日志和缓存状态不一致。
         for item, processor in zip(items, processors):
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             item_srcs = list(processor.srcs)
             item_dsts: list[str] = []
             item_checks: list[str] = []
@@ -174,6 +190,9 @@ class TranslatorTask(Base):
                 continue
 
             for line_index, src in enumerate(item_srcs):
+                if TaskRequester.is_cancel_requested():
+                    return self._cancelled_result()
+
                 outcome, extra_log = self.request_single_line_line(
                     requester = requester,
                     item = item,
@@ -182,6 +201,9 @@ class TranslatorTask(Base):
                     precedings = precedings,
                     local_flag = local_flag,
                 )
+
+                if TaskRequester.is_cancel_requested():
+                    return self._cancelled_result()
 
                 if line_index == 0:
                     file_log.extend(extra_log)
@@ -215,6 +237,9 @@ class TranslatorTask(Base):
                         if LogManager.get().is_expert_mode():
                             console_log.append(Localizer.get().translator_task_response_result + outcome.response_result)
 
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             if all(v == ResponseChecker.Error.NONE for v in item_checks):
                 pending_updates.append((item, processor, item_dsts.copy()))
             else:
@@ -225,9 +250,15 @@ class TranslatorTask(Base):
                     srcs = item_srcs,
                 )
 
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         log_srcs, log_dsts = self.build_log_lines(processors, all_srcs, all_dsts)
 
         for item, processor, item_dsts in pending_updates:
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             name, dst = processor.post_process(item_dsts.copy())
             item.set_dst(dst)
             if name is not None:
@@ -273,6 +304,13 @@ class TranslatorTask(Base):
         local_flag: bool,
     ) -> tuple[SingleLineTranslationOutcome, list[str]]:
         """执行单行请求、解析和校验。"""
+        if TaskRequester.is_cancel_requested():
+            return SingleLineTranslationOutcome(
+                check = ResponseChecker.Error.UNKNOWN,
+                failed = True,
+                mismatch = True,
+            ), []
+
         messages, extra_log = self.prompt_builder.generate_single_line_prompt(
             src = src,
             samples = samples,
@@ -286,6 +324,17 @@ class TranslatorTask(Base):
         response_result = response_result or ""
         input_tokens = int(input_tokens or 0)
         output_tokens = int(output_tokens or 0)
+
+        if TaskRequester.is_cancel_requested():
+            return SingleLineTranslationOutcome(
+                check = ResponseChecker.Error.UNKNOWN,
+                failed = True,
+                mismatch = True,
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                response_think = response_think,
+                response_result = response_result,
+            ), extra_log
 
         if skip == True or response_result.strip() == "":
             return SingleLineTranslationOutcome(
@@ -354,6 +403,9 @@ class TranslatorTask(Base):
 
     # 请求
     def request(self, items: list[CacheItem], processors: list[TextProcessor], precedings: list[CacheItem], local_flag: bool, current_round: int) -> dict[str, object]:
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         # 任务开始的时间
         start_time = time.time()
         
@@ -365,6 +417,9 @@ class TranslatorTask(Base):
         line_items: list[CacheItem] = []
         samples: list[str] = []
         for item, processor in zip(items, processors):
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             processor.pre_process()
 
             # 获取预处理后的数据
@@ -374,6 +429,9 @@ class TranslatorTask(Base):
 
         # 如果没有任何有效原文文本，则直接完成当前任务
         if len(srcs) == 0:
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             self.debug(f"[REQUEST] 无有效原文，直接标记完成")
             for item, processor in zip(items, processors):
                 item.set_dst(item.get_src())
@@ -388,6 +446,9 @@ class TranslatorTask(Base):
 
         # 单行模式直接转入逐行请求流程，避免批量 JSONLINE 格式对齐失败。
         if self.should_use_single_line_translation():
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
+
             self.debug(f"[REQUEST] 启用单行翻译模式")
             return self.request_single_line(
                 items,
@@ -399,6 +460,9 @@ class TranslatorTask(Base):
             )
 
         # 生成请求提示词
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         self.debug(f"[REQUEST] 生成提示词: srcs={len(srcs)}, api_format={self.platform.get('api_format')}")
         if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
             self.messages, console_log = self.prompt_builder.generate_prompt(
@@ -428,10 +492,16 @@ class TranslatorTask(Base):
         
         self.debug(f"[REQUEST] 提示词生成完成: messages={len(self.messages)}")
 
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         # 发起请求
         requester = TaskRequester(self.config, self.platform, current_round)
         self.debug(f"[REQUEST] 发起API请求...")
         skip, response_think, response_result, input_tokens, output_tokens = requester.request(self.messages)
+
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
 
         # 如果请求结果标记为 skip，即有错误发生，则跳过本次循环
         if skip == True:
@@ -464,6 +534,8 @@ class TranslatorTask(Base):
                 marker = None
 
             if isinstance(marker, dict) and marker.get("blocked") is True:
+                if TaskRequester.is_cancel_requested():
+                    return self._cancelled_result()
                 if len(items) == 1:
                     item = items[0]
                     if item.get_status() == Base.TranslationStatus.UNTRANSLATED:
@@ -489,7 +561,7 @@ class TranslatorTask(Base):
                 total_line_count_mismatch_count = 0
                 total_requested_line_count = 0
                 for item in items:
-                    if Engine.get().get_status() == Engine.Status.STOPPING:
+                    if TaskRequester.is_cancel_requested():
                         break
                     result = self.request([item], [TextProcessor(self.config, item)], precedings, local_flag, current_round)
                     total_row_count += int(result.get("row_count", 0) or 0)
@@ -508,6 +580,9 @@ class TranslatorTask(Base):
                     "line_count_mismatch_count": total_line_count_mismatch_count,
                     "requested_line_count": total_requested_line_count,
                 }
+
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
 
         # 解析并按 request_index 对齐。严格协议失败时返回空记录，整批进入重试。
         structured_response = (
@@ -534,7 +609,11 @@ class TranslatorTask(Base):
             retry_messages, retry_log = self.prompt_builder.generate_prompt_sakura_format_retry(srcs, response_result)
             if retry_log:
                 console_log.extend(retry_log)
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
             retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(retry_messages)
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
             if retry_skip == False and isinstance(retry_result, str):
                 retry_decode_result = ResponseDecoder().decode_result(
                     retry_result,
@@ -552,6 +631,9 @@ class TranslatorTask(Base):
 
         # 严格协议解析失败时不能进入内容检查。解码器只会返回完整、已按
         # request_index 对齐的结果，因此空 translations 表示整个批次协议失败。
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
+
         decode_retry_reason: str | None = None
         if decode_result.translations == ():
             checks = [ResponseChecker.Error.FAIL_DATA] * len(srcs)
@@ -566,6 +648,8 @@ class TranslatorTask(Base):
             )
 
         # 记录失败条目的重试次数；明确的翻译失败标记达到阈值后排除，避免反复重试到最大轮次。
+        if TaskRequester.is_cancel_requested():
+            return self._cancelled_result()
         self.record_failed_item_retries(
             items,
             processors,
@@ -594,6 +678,8 @@ class TranslatorTask(Base):
             and len(checks) == len(srcs)
             and any(v == ResponseChecker.Error.NONE for v in checks)
         ):
+            if TaskRequester.is_cancel_requested():
+                return self._cancelled_result()
             # 更新术语表
             with __class__.GLOSSARY_SAVE_LOCK:
                 __class__.GLOSSARY_SAVE_TIME = self.merge_glossary(glossarys, __class__.GLOSSARY_SAVE_TIME)
@@ -885,7 +971,7 @@ class TranslatorTask(Base):
     # 打印日志表格
     def print_log_table(self, checks: list[str], start: int, pt: int, ct: int, srcs: list[str], dsts: list[str], file_log: list[str], console_log: list[str]) -> None:
         # 停止任务时跳过复杂日志输出，避免停止后界面卡顿
-        if Engine.get().get_status() == Engine.Status.STOPPING:
+        if TaskRequester.is_cancel_requested():
             return
 
         # 拼接错误原因文本

@@ -10,7 +10,7 @@ from base.compat import Self
 
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
-from base.PathHelper import get_resource_path
+from base.PathHelper import get_app_path, get_resource_path
 from module.Localizer.Localizer import Localizer
 
 @dataclasses.dataclass
@@ -232,7 +232,9 @@ class Config():
 
     # 类属性
     # 用户配置（运行时生成，避免写回 resource 打包资源）
-    CONFIG_PATH: ClassVar[str] = "./config.json"
+    # 用户配置固定到应用目录，避免从快捷方式、终端或其他工作目录启动时
+    # 读写到不同的 ``./config.json``。
+    CONFIG_PATH: ClassVar[str] = get_app_path("config.json")
     CONFIG_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
@@ -492,7 +494,8 @@ class Config():
 
         with __class__.CONFIG_LOCK:
             try:
-                os.makedirs(os.path.dirname(path), exist_ok = True)
+                parent = os.path.dirname(os.path.abspath(path))
+                os.makedirs(parent, exist_ok = True)
                 with open(path, "w", encoding = "utf-8") as writer:
                     json.dump(dataclasses.asdict(self), writer, indent = 4, ensure_ascii = False)
             except Exception as e:
