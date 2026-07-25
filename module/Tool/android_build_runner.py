@@ -209,6 +209,15 @@ def _ensure_gradle_heap(sdk_root: str, iface) -> None:
         pass
 
 
+def _ensure_backup_resource(sdk_root: str) -> None:
+    project = os.path.join(sdk_root, "rapt", "project")
+    source = os.path.join(sdk_root, "rapt", "prototype", "app", "src", "main", "res", "xml", "backup.xml")
+    target = os.path.join(project, "app", "src", "main", "res", "xml", "backup.xml")
+    if os.path.isdir(project) and os.path.isfile(source) and not os.path.exists(target):
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def install_sdk(args: argparse.Namespace) -> int:
     _setup_rapt(args.sdk)
     _patch_long_path_zip()
@@ -244,6 +253,7 @@ def build_android(args: argparse.Namespace) -> int:
 
     iface = _make_interface()
     _ensure_gradle_heap(args.sdk, iface)
+    _ensure_backup_resource(args.sdk)
     build.build(
         iface,
         args.dist,
