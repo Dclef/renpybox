@@ -818,6 +818,14 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_retry_btn.clicked.connect(self._retry_extraction)
         self.step2_retry_btn.setVisible(False)
         btn_row.addWidget(self.step2_retry_btn)
+
+        self.step2_unpack_btn = PrimaryPushButton(
+            "前往 RPA 解包",
+            icon=FluentIcon.ZIP_FOLDER,
+        )
+        self.step2_unpack_btn.clicked.connect(self._open_rpa_unpack)
+        self.step2_unpack_btn.setVisible(False)
+        btn_row.addWidget(self.step2_unpack_btn)
         
         # 跳过按钮 (失败时可跳过)
         self.step2_skip_btn = PushButton("跳过此步骤")
@@ -846,7 +854,33 @@ class YiJianFanyiPage(Base, QWidget):
         """重试提取"""
         self.step2_retry_btn.setVisible(False)
         self.step2_skip_btn.setVisible(False)
+        self.step2_unpack_btn.setVisible(False)
         self._go_step2()
+
+    def _open_rpa_unpack(self) -> None:
+        """打开 RPA 解包页并带入当前项目的 game 目录。"""
+        if self.window is None or not self.game_dir:
+            InfoBar.warning("提示", "请先选择有效的游戏目录", parent=self)
+            return
+
+        from frontend.RenpyToolbox.PackUnpackPage import PackUnpackPage
+
+        page = getattr(self.window, "pack_unpack_page", None)
+        if page is None:
+            page = PackUnpackPage("pack-unpack", self.window)
+            self.window.pack_unpack_page = page
+
+        if not page.set_game_directory(self.game_dir):
+            InfoBar.warning("提示", "无法定位游戏的 game 目录", parent=self)
+            return
+
+        if hasattr(self.window, "navigate_to_page"):
+            self.window.navigate_to_page(page)
+        elif hasattr(self.window, "stackedWidget"):
+            stack = self.window.stackedWidget
+            if page not in [stack.widget(i) for i in range(stack.count())]:
+                stack.addWidget(page)
+            stack.setCurrentWidget(page)
 
     def _on_auto_merge_cleanup_changed(self, state: int):
         """同步自动合并开关到配置"""
@@ -1159,6 +1193,8 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_next_btn.setEnabled(False)
         self.step2_retry_btn.setVisible(False)
         self.step2_retry_btn.setEnabled(False)
+        self.step2_unpack_btn.setVisible(False)
+        self.step2_unpack_btn.setEnabled(False)
         self.step2_skip_btn.setVisible(False)
         self.step2_skip_btn.setEnabled(False)
         self.step2_merge_btn.setVisible(False)
@@ -1217,8 +1253,10 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_desc.setText(
                 f"{status_msg}\n\n"
                 "请先使用「RPA 解包」功能解包游戏资源，\n"
-                "或者使用 rpatool 等工具手动解包后再试。"
+                "解包完成后返回此页，点击「重新抽取」。"
             )
+            self.step2_unpack_btn.setVisible(True)
+            self.step2_unpack_btn.setEnabled(True)
             self.step2_retry_btn.setVisible(True)
             self.step2_skip_btn.setVisible(True)
             self.step2_retry_btn.setEnabled(True)

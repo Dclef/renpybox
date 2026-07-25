@@ -381,6 +381,16 @@ class PackUnpackPage(Base, QWidget):
         self.cleanup_worker = None
         self._init_ui()
 
+    def set_game_directory(self, path: str | Path) -> bool:
+        """填写解包使用的 game 目录，兼容传入项目根目录。"""
+        game_dir = Path(path)
+        if game_dir.name.casefold() != GAME_DIR_NAME and (game_dir / GAME_DIR_NAME).is_dir():
+            game_dir = game_dir / GAME_DIR_NAME
+        if not game_dir.is_dir():
+            return False
+        self.unpack_game_dir_edit.setText(str(game_dir))
+        return True
+
     def _init_ui(self):
         """初始化界面"""
         layout = QVBoxLayout(self)
