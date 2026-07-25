@@ -180,3 +180,22 @@ def test_save_writes_only_current_translation_schema(tmp_path):
     assert "translation_prompt_mode" in {
         field.name for field in dataclasses.fields(Config)
     }
+
+
+def test_save_does_not_persist_project_scoped_workbench_view(tmp_path):
+    """项目世界观、角色卡和草稿不能随普通设置保存到全局配置。"""
+    path = tmp_path / "config.json"
+    config = Config(
+        renpy_workbench_worldbook_enable=True,
+        renpy_workbench_worldbook_data={"genre": "旧项目"},
+        renpy_workbench_character_cards_enable=True,
+        renpy_workbench_character_cards=[{"name": "旧角色"}],
+        renpy_workbench_generated_worldbook_draft={"genre": "旧草稿"},
+        renpy_workbench_generated_character_drafts=[{"name": "旧角色草稿"}],
+    )
+
+    config.save(str(path))
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    for key, expected in Config.PROJECT_SCOPED_WORKBENCH_DEFAULTS.items():
+        assert saved[key] == expected

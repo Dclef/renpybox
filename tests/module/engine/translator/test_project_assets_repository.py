@@ -58,6 +58,67 @@ def test_legacy_config_is_bootstrapped_once_without_treating_text_preserve_as_dn
     assert persisted.get_project_assets()["revision"] == 1
 
 
+def test_new_renpy_project_preserves_legacy_workbench_assets_disabled(tmp_path) -> None:
+    """旧版工作台数据必须保留，但迁移后不能未经确认直接注入。"""
+    project = tmp_path / "renpy-project"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    config = _legacy_config(project / "RenpyBox_Translation" / "chinese")
+    config.renpy_project_path = str(project)
+    config.renpy_game_folder = str(project)
+    config.renpy_tl_folder = str(tl_dir)
+    config.input_folder = str(tl_dir)
+
+    state = ProjectAssetsRepository.from_config(config).load(config)
+
+    assert state.assets.worldbook_enabled is False
+    assert state.assets.worldbook["setting_summary"] == "A floating city"
+    assert state.assets.character_cards_enabled is False
+    assert state.assets.character_cards[0]["name"] == "Alice"
+    assert [item.source for item in state.assets.glossary] == ["Sky"]
+    assert state.analysis_candidates["worldbook_draft"] == {"genre": "Fantasy"}
+    assert state.analysis_candidates["character_drafts"][0]["name"] == "Bob"
+
+
+def test_existing_equal_formal_and_draft_worldbook_is_preserved(tmp_path) -> None:
+    """已有缓存不能因为正式世界观恰好等于草稿而被升级逻辑删除。"""
+    worldbook = {"genre": "已确认项目", "setting_summary": "应保留"}
+    project = CacheProject(id="project-1", status=Base.TranslationStatus.TRANSLATING)
+    project.set_project_assets({
+        "revision": 2,
+        "worldbook": {"enabled": True, "data": worldbook},
+    })
+    project.set_analysis_candidates({
+        "legacy_config_migrated": True,
+        "worldbook_draft": worldbook,
+    })
+    project.set_translation_snapshot({"legacy_bootstrap": True})
+    CacheDB(str(tmp_path / "cache" / "cache.db")).set_project(project)
+
+    state = ProjectAssetsRepository(str(tmp_path)).load()
+    saved = CacheDB(str(tmp_path / "cache" / "cache.db")).get_project()
+
+    assert state.assets.worldbook_enabled is True
+    assert state.assets.worldbook.to_dict() == worldbook
+    assert state.analysis_candidates["worldbook_draft"] == worldbook
+    assert saved is not None
+    assert saved.get_translation_snapshot() is not None
+
+
+def test_saved_workbench_worldbook_is_not_repaired(tmp_path) -> None:
+    worldbook = {"genre": "已确认项目"}
+    config = _legacy_config(tmp_path)
+    config.renpy_workbench_worldbook_data = worldbook
+    config.renpy_workbench_generated_worldbook_draft = worldbook
+    repository = ProjectAssetsRepository.from_config(config)
+
+    repository.save_workbench_view(config)
+    state = repository.load(config)
+
+    assert state.assets.worldbook_enabled is True
+    assert state.assets.worldbook.to_dict() == worldbook
+
+
 def test_replace_glossary_confirms_seen_candidate_and_keeps_unseen_candidate(tmp_path) -> None:
     config = _legacy_config(tmp_path)
     config.glossary_data = []

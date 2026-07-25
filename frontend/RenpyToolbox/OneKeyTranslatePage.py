@@ -61,12 +61,19 @@ from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScann
 from frontend.TranslationPage import TranslationPage
 
 
+def configure_tl_translation_mode(config):
+    """一键翻译固定读取 Ren'Py TL 文件，清除其它页面遗留的运行模式。"""
+    config.renpy_source_translate = False
+    config.renpy_hook_translate = False
+
+
 def configure_main_translation_paths(config, game_dir, tl_name, *, remember_run = True):
     """将翻译输入和输出恢复到主语言目录。"""
     paths = RenpyProjectPaths.from_path(game_dir, tl_name)
     if paths is None:
         raise ValueError("无法解析 Ren'Py 项目路径")
     apply_to_config(config, paths)
+    configure_tl_translation_mode(config)
     if remember_run:
         _remember_translation_run(
             paths,
@@ -85,6 +92,7 @@ def configure_incremental_translation_paths(config, game_dir, tl_name, increment
     delta_dir = Path(incremental_dir)
     output_dir = paths.translation_output_dir.parent / f"{paths.language}_new"
     apply_to_config(config, paths, input_folder = delta_dir, output_folder = output_dir)
+    configure_tl_translation_mode(config)
     _remember_translation_run(
         paths,
         output_folder = output_dir,
@@ -744,6 +752,7 @@ class YiJianFanyiPage(Base, QWidget):
         if paths is None:
             raise ValueError(f"无法解析项目目录：{game_dir}")
         apply_to_config(config, paths)
+        configure_tl_translation_mode(config)
 
         # 确保输出目录存在
         paths.translation_output_dir.mkdir(parents = True, exist_ok = True)
@@ -1735,6 +1744,9 @@ class YiJianFanyiPage(Base, QWidget):
         from qfluentwidgets import MessageBox
         
         config = Config().load()
+        # 一键翻译处理的是 game/tl/<语言>，不能沿用“源码翻译/补漏”页面的模式。
+        configure_tl_translation_mode(config)
+        config.save()
         
         # 根据主题选择样式颜色
         code_bg = "#2d2d2d" if isDarkTheme() else "#f5f5f5"
