@@ -40,7 +40,7 @@ def _normalize_line_indices(value: object) -> tuple[int, ...]:
 
 
 def read_translation_retry_reasons(item: CacheItem) -> tuple[dict[str, Any], ...]:
-    """Return normalized, JSON-safe retry reasons from one cache item."""
+    """从一个缓存条目中返回经过规范化且可安全序列化为 JSON 的重试原因。"""
     metadata = item.get_metadata()
     payload = metadata.get(TRANSLATION_RETRY_METADATA_KEY)
     if not isinstance(payload, Mapping):
@@ -101,7 +101,7 @@ class TranslationQualityItemReference:
 
 @dataclasses.dataclass(frozen = True)
 class TranslationQualityReport:
-    """Serializable translation quality summary built without mutating cache state."""
+    """可序列化的翻译质量摘要，构建过程不会修改缓存状态。"""
 
     failed_count: int
     fallback_count: int

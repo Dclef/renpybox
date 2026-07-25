@@ -14,6 +14,7 @@ from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheManager import CacheManager
 from module.Cache.CacheProject import CacheProject
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets, TermAsset
+from module.Renpy.ProjectPaths import RenpyProjectPaths
 
 
 @dataclass(frozen = True)
@@ -33,19 +34,50 @@ class ProjectAssetsRepository:
         *,
         cache_use_sqlite: bool = True,
     ) -> None:
-        self.output_folder = str(output_folder or "").strip() or "./output"
+        self.output_folder = str(output_folder or "").strip()
         self.cache_use_sqlite = bool(cache_use_sqlite)
+        # 当前仓库实例发现 SQLite 不可用后，后续读写统一回退 JSON，
+        # 避免反复访问损坏或不可写的数据库。
+        self._sqlite_unavailable = False
+
+    @property
+    def has_storage(self) -> bool:
+        """是否有可写的项目资产目录。"""
+        return self.output_folder != ""
 
     @classmethod
     def from_config(cls, config: Any) -> ProjectAssetsRepository:
+        # Ren'Py 的项目资产必须绑定主输出目录，而不是当前运行的
+        # ``<lang>_new`` 增量目录；否则应用翻译后工作台会看起来像丢失数据。
+        renpy_paths = RenpyProjectPaths.from_config(config)
+        output_folder = (
+            str(renpy_paths.translation_output_dir)
+            if renpy_paths is not None
+            else getattr(config, "output_folder", "")
+        )
         return cls(
-            getattr(config, "output_folder", "./output"),
+            output_folder,
             cache_use_sqlite = bool(getattr(config, "cache_use_sqlite", True)),
         )
 
     def load(self, legacy_config: Any = None) -> ProjectAssetsState:
         """Load current project data and perform the one-time legacy bootstrap."""
         with CacheManager.LOCK:
+            if not self.has_storage:
+                # 空配置只能返回内存态，不能把项目资产误写到当前工作目录
+                # 下的 ``./cache``。
+                assets = ProjectAssets.from_config(legacy_config)
+                candidates = self._migrate_legacy_candidates(
+                    {
+                        "schema_version": self.CANDIDATE_SCHEMA_VERSION,
+                        "items": [],
+                    },
+                    legacy_config,
+                )
+                return ProjectAssetsState(
+                    assets = self._stamp_assets(assets, minimum_revision = 1),
+                    analysis_candidates = self.normalize_analysis_candidates(candidates),
+                )
             recovered = self._recover_json_transaction_unlocked()
             active_project = self._resolve_active_project()
             project = (
@@ -525,6 +557,10 @@ class ProjectAssetsRepository:
 
     def _update_project(self, updater) -> CacheProject:
         with CacheManager.LOCK:
+            if not self.has_storage:
+                project = CacheProject()
+                updater(project)
+                return project
             recovered = self._recover_json_transaction_unlocked()
             active_project = self._resolve_active_project()
             project = (
@@ -536,28 +572,71 @@ class ProjectAssetsRepository:
             return project
 
     def _read_project_unlocked(self) -> CacheProject:
+        if not self.has_storage:
+            return CacheProject()
         db_path = self._db_path()
-        use_sqlite = os.path.isfile(db_path) or self.cache_use_sqlite
+        use_sqlite = (
+            self._sqlite_unavailable is False
+            and (os.path.isfile(db_path) or self.cache_use_sqlite)
+        )
+        sqlite_error: Exception | None = None
+        sqlite_missing_project = False
         if use_sqlite:
-            project = CacheDB(db_path).get_project()
-            if project is not None:
-                return project
+            try:
+                project = CacheDB(db_path).get_project()
+            except Exception as error:
+                self._sqlite_unavailable = True
+                sqlite_error = error
+            else:
+                if project is not None:
+                    return project
+                sqlite_missing_project = os.path.isfile(db_path)
 
         json_path = self._project_json_path()
         if os.path.isfile(json_path):
             with open(json_path, "r", encoding = "utf-8-sig") as reader:
                 project = CacheProject.from_dict(json.load(reader))
+            # 不能只把 project 记录迁移到 SQLite：翻译条目仍在
+            # items.json 时，CacheManager 会优先读到“只有项目、没有条目”
+            # 的半成品数据库，进而遮蔽完整 JSON。当前读取 JSON 后保持
+            # JSON 为本实例的权威后端，待完整翻译缓存另行建立 SQLite。
             if use_sqlite:
-                CacheDB(db_path).set_project(project)
+                self._sqlite_unavailable = True
             return project
+        if sqlite_error is not None:
+            # 没有 JSON 备份时保留原始数据库异常，避免返回空项目后覆盖数据。
+            raise sqlite_error
+        if sqlite_missing_project:
+            # 已存在的 SQLite 缺少 project 元数据，通常表示事务只写入了
+            # items 或数据库已损坏；不能把它当作全新目录写入空项目，
+            # 否则会静默遮蔽已有条目。
+            raise RuntimeError("SQLite cache has no project record")
         return CacheProject()
 
     def _write_project_unlocked(self, project: CacheProject) -> None:
-        db_path = self._db_path()
-        if os.path.isfile(db_path) or self.cache_use_sqlite:
-            CacheDB(db_path).set_project(project)
+        if not self.has_storage:
             return
+        db_path = self._db_path()
+        items_path = str(Path(self.output_folder) / "cache" / "items.json")
+        # 没有条目 JSON 时允许首次资产引导创建 SQLite（兼容旧缓存与
+        # 现有 SQLite 用户）；若同目录已有完整 JSON，则不能创建只有
+        # project 记录的数据库去遮蔽它，改用 JSON 保存资产。
+        if not os.path.isfile(db_path) and os.path.isfile(items_path):
+            self._sqlite_unavailable = True
+        if (
+            self._sqlite_unavailable is False
+            and (os.path.isfile(db_path) or self.cache_use_sqlite)
+        ):
+            try:
+                CacheDB(db_path).set_project(project)
+            except Exception:
+                self._sqlite_unavailable = True
+            else:
+                return
 
+        self._write_project_json_unlocked(project)
+
+    def _write_project_json_unlocked(self, project: CacheProject) -> None:
         path = self._project_json_path()
         os.makedirs(os.path.dirname(path), exist_ok = True)
         temp_path = f"{path}.assets.tmp"
@@ -572,11 +651,32 @@ class ProjectAssetsRepository:
                 os.remove(temp_path)
 
     def _recover_json_transaction_unlocked(self) -> bool:
-        if os.path.isfile(self._db_path()) or self.cache_use_sqlite:
+        if not self.has_storage:
             return False
         journal_path = Path(self.output_folder) / "cache" / CacheManager.RESET_JOURNAL_NAME
         if journal_path.is_file() is False:
             return False
+        db_path = Path(self._db_path())
+        if db_path.is_file():
+            # SQLite 可读且包含完整条目时，journal 可能只是旧 JSON 后端
+            # 留下的残片；此时以 SQLite 为准，避免被无关坏日志阻断工作台。
+            try:
+                store = CacheDB(str(db_path))
+                project = store.get_project()
+                items = store.get_items()
+                complete = project is not None
+                if complete and not items:
+                    items_path = Path(self.output_folder) / "cache" / "items.json"
+                    if items_path.is_file():
+                        payload = json.loads(items_path.read_text(encoding = "utf-8-sig"))
+                        complete = not (isinstance(payload, list) and len(payload) > 0)
+                if complete:
+                    return False
+            except Exception:
+                # 数据库损坏/半成品时必须继续走 JSON journal 恢复。
+                pass
+        # reset.journal.json 是跨文件替换的写前日志。SQLite 不完整时，
+        # 直接跳过会让工作台继续读取旧 project.json。
         manager = CacheManager(service = False)
         manager.cache_use_sqlite = False
         manager._recover_json_transaction(self.output_folder)

@@ -25,19 +25,44 @@ from frontend.Proofreading.BatchReplaceDialog import BatchReplaceDialog
 from frontend.Proofreading.FilterDialog import FilterDialog
 from frontend.Proofreading.PaginationBar import PaginationBar
 from frontend.Proofreading.ProofreadingTableWidget import ProofreadingTableWidget
+from frontend.Proofreading.QualityReportDialog import QualityReportDialog
 from module.Cache.CacheItem import CacheItem
-from module.Cache.CacheManager import CacheManager
+from module.Cache.CacheManager import CacheManager, CacheLoadError
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.Quality import QualityTaskCoordinator
+from module.Engine.Quality import QualityTaskProgress
+from module.Engine.Quality import QualityTaskState
+from module.Engine.Quality import QualityTaskType
+from module.Engine.Quality import TranslationQualityReport
+from module.Engine.Quality import build_translation_quality_report
 from module.File.FileManager import FileManager
 from module.Localizer.Localizer import Localizer
 from module.ResultChecker import ResultChecker
 from module.ResultChecker import WarningType
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    translation_output_candidates,
+)
 from widget.CommandBarCard import CommandBarCard
 from widget.SearchCard import SearchCard
 
 class ProofreadingPage(QWidget, Base):
     """校对任务主页面"""
+
+    @staticmethod
+    def _cache_load_error_message(error: BaseException) -> str:
+        """将缓存载入异常转换为不泄露路径/凭据的中文提示。"""
+        if isinstance(error, CacheLoadError):
+            text = str(error).casefold()
+            if "incomplete" in text or "不存在" in text or "no cache" in text:
+                return "未找到完整翻译缓存，请先完成一键翻译或检查输出目录"
+            if "invalid" in text or "corrupt" in text or "schema" in text:
+                return "翻译缓存格式损坏，请重新执行翻译后再进行校对"
+            return "无法载入翻译缓存，请确认项目路径和输出目录一致"
+        if isinstance(error, (FileNotFoundError, PermissionError, OSError)):
+            return "无法访问翻译缓存，请检查目录权限和磁盘空间"
+        return "校对缓存载入失败，请检查项目路径后重试"
 
     items_loaded = pyqtSignal(list)
     translate_done = pyqtSignal(object, bool)
@@ -45,6 +70,9 @@ class ProofreadingPage(QWidget, Base):
     export_done = pyqtSignal(bool, str)
     warnings_batch_updated = pyqtSignal(int, object)
     warnings_check_done = pyqtSignal(int)
+    quality_progress_updated = pyqtSignal(object)
+    quality_done = pyqtSignal(object)
+    engine_status_changed = pyqtSignal()
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
@@ -57,6 +85,9 @@ class ProofreadingPage(QWidget, Base):
         self.result_checker: ResultChecker | None = None
         self.is_readonly: bool = False
         self.config: Config | None = None
+        self._cache_output_folder: str = ""
+        self._cache_project_key: str = ""
+        self._load_in_progress: bool = False
         self.filter_options: dict = {}
         self.search_keyword: str = ""
         self.search_is_regex: bool = False
@@ -66,6 +97,9 @@ class ProofreadingPage(QWidget, Base):
         self._batch_retranslate_item_ids: set[int] = set()
         self._batch_retranslate_success: int = 0
         self._batch_retranslate_failed: int = 0
+        self._translation_progress: dict = {}
+        self.quality_report: TranslationQualityReport = build_translation_quality_report([])
+        self._quality_target_ids: set[int] = set()
 
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
@@ -78,6 +112,8 @@ class ProofreadingPage(QWidget, Base):
         self.subscribe(Base.Event.TRANSLATION_UPDATE, self._on_engine_status_changed)
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_engine_status_changed)
         self.subscribe(Base.Event.TRANSLATION_STOP, self._on_engine_status_changed)
+        self.subscribe(Base.Event.PLATFORM_TEST_START, self._on_engine_status_changed)
+        self.subscribe(Base.Event.PLATFORM_TEST_DONE, self._on_engine_status_changed)
 
         self.items_loaded.connect(self._on_items_loaded_ui)
         self.translate_done.connect(self._on_translate_done_ui)
@@ -85,6 +121,9 @@ class ProofreadingPage(QWidget, Base):
         self.export_done.connect(self._on_export_done_ui)
         self.warnings_batch_updated.connect(self._on_warnings_batch_updated_ui)
         self.warnings_check_done.connect(self._on_warnings_check_done_ui)
+        self.quality_progress_updated.connect(self._on_quality_progress_ui)
+        self.quality_done.connect(self._on_quality_done_ui)
+        self.engine_status_changed.connect(self._check_engine_status)
 
         self._indeterminate_start_time: float = 0.0
         self._indeterminate_hide_timer: QTimer | None = None
@@ -155,6 +194,26 @@ class ProofreadingPage(QWidget, Base):
         )
         self.btn_batch_retranslate.setEnabled(False)
 
+        self.btn_ai_polish = self.command_bar_card.add_action(
+            Action(FluentIcon.BRUSH, Localizer.get().proofreading_page_ai_polish, triggered = self._on_ai_polish_clicked)
+        )
+        self.btn_ai_polish.setEnabled(False)
+
+        self.btn_ai_proofread = self.command_bar_card.add_action(
+            Action(FluentIcon.COMPLETED, Localizer.get().proofreading_page_ai_proofread, triggered = self._on_ai_proofread_clicked)
+        )
+        self.btn_ai_proofread.setEnabled(False)
+
+        self.btn_quality_report = self.command_bar_card.add_action(
+            Action(FluentIcon.DOCUMENT, Localizer.get().proofreading_page_quality_report, triggered = self._on_quality_report_clicked)
+        )
+        self.btn_quality_report.setEnabled(False)
+
+        self.btn_quality_cancel = self.command_bar_card.add_action(
+            Action(FluentIcon.CANCEL, Localizer.get().proofreading_page_quality_cancel, triggered = self._on_quality_cancel_clicked)
+        )
+        self.btn_quality_cancel.setEnabled(False)
+
         self.btn_batch_reset = self.command_bar_card.add_action(
             Action(FluentIcon.DELETE, Localizer.get().proofreading_page_batch_reset_translation, triggered = self._on_batch_reset_translation_clicked)
         )
@@ -181,17 +240,74 @@ class ProofreadingPage(QWidget, Base):
         self.command_bar_card.add_widget(self.indeterminate)
 
     def _on_load_clicked(self) -> None:
+        if self._load_in_progress:
+            return
         self.indeterminate_show(Localizer.get().proofreading_page_indeterminate_loading)
         self.load_data()
 
     def load_data(self) -> None:
+        if self._load_in_progress:
+            return
+        self._load_in_progress = True
+
         def task() -> None:
             try:
                 self.config = Config().load()
-                cache_manager = CacheManager(service = False)
-                cache_manager.load_items_from_file(self.config.output_folder)
-                items = cache_manager.get_items()
-                items = [i for i in items if i.get_src().strip()]
+                paths = RenpyProjectPaths.from_config(self.config)
+                project_key = paths.project_key if paths is not None else ""
+                if project_key != self._cache_project_key:
+                    # 页面切换项目后不能继续把上一个项目的缓存目录作为
+                    # preferred；resolver 会重新按当前项目清单定位。
+                    self._cache_output_folder = ""
+                    self._cache_project_key = project_key
+                candidates = translation_output_candidates(
+                    self.config,
+                    self._cache_output_folder or None,
+                )
+                if not candidates:
+                    raise CacheLoadError("未配置翻译输出目录")
+
+                # 最近 hook/增量目录可能只留下空项目记录；逐个严格尝试，
+                # 选择第一个含有效原文的缓存，避免空缓存遮蔽主翻译结果。
+                cache_manager = None
+                output_path = None
+                loaded_items: list[CacheItem] = []
+                empty_cache: tuple[object, CacheManager] | None = None
+                last_error: Exception | None = None
+                for candidate in candidates:
+                    candidate_manager = CacheManager(service = False)
+                    try:
+                        candidate_manager.load_from_file(str(candidate), strict = True)
+                    except Exception as exc:
+                        last_error = exc
+                        continue
+                    candidate_items = [
+                        item
+                        for item in candidate_manager.get_items()
+                        if item.get_src().strip()
+                    ]
+                    if candidate_items:
+                        output_path = candidate
+                        cache_manager = candidate_manager
+                        loaded_items = candidate_items
+                        break
+                    if empty_cache is None:
+                        empty_cache = (candidate, candidate_manager)
+
+                if cache_manager is None:
+                    if empty_cache is not None:
+                        output_path, cache_manager = empty_cache
+                    elif last_error is not None:
+                        raise last_error
+                    else:
+                        raise CacheLoadError("未找到完整翻译缓存")
+
+                self._cache_output_folder = str(output_path)
+                # 后续质量任务、保存和导出都使用本次实际命中的缓存目录。
+                self.config.output_folder = self._cache_output_folder
+                items = loaded_items or [
+                    item for item in cache_manager.get_items() if item.get_src().strip()
+                ]
 
                 if not items:
                     self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -202,6 +318,11 @@ class ProofreadingPage(QWidget, Base):
                     return
 
                 self.items = items
+                self._translation_progress = cache_manager.get_project().get_progress()
+                self.quality_report = build_translation_quality_report(
+                    items,
+                    self._translation_progress,
+                )
                 self.warning_map = {}
                 self.result_checker = ResultChecker(self.config, items)
                 self.filter_options = {}
@@ -215,7 +336,7 @@ class ProofreadingPage(QWidget, Base):
                 self.error(f"{Localizer.get().proofreading_page_load_failed}", e)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
-                    "message": Localizer.get().proofreading_page_load_failed,
+                    "message": self._cache_load_error_message(e),
                 })
                 self.items_loaded.emit([])
 
@@ -267,6 +388,7 @@ class ProofreadingPage(QWidget, Base):
             self._apply_filter()
 
     def _on_items_loaded_ui(self, items: list[CacheItem]) -> None:
+        self._load_in_progress = False
         self.indeterminate_hide()
 
         if items:
@@ -286,11 +408,21 @@ class ProofreadingPage(QWidget, Base):
         has_items = bool(self.items)
         is_busy = self.is_readonly
         can_operate = (not is_busy) and has_items
-        selected_count = len(self.table_widget.get_selected_items()) if has_items else 0
+        selected_items = self.table_widget.get_selected_items() if has_items else []
+        selected_count = len(selected_items)
 
         self.btn_batch_replace.setEnabled(can_operate and len(self.filtered_items) > 0)
         self.btn_batch_retranslate.setEnabled(can_operate and selected_count > 0)
         self.btn_batch_reset.setEnabled(can_operate and selected_count > 0)
+        self.btn_ai_polish.setEnabled(
+            can_operate
+            and any(Base.is_item_polishable(item.get_status()) for item in selected_items)
+        )
+        self.btn_ai_proofread.setEnabled(
+            can_operate
+            and any(Base.is_item_proofreadable(item.get_status()) for item in selected_items)
+        )
+        self.btn_quality_report.setEnabled(can_operate)
 
     def _on_filter_clicked(self) -> None:
         if not self.items:
@@ -695,6 +827,210 @@ class ProofreadingPage(QWidget, Base):
                 config = self.config,
                 callback = lambda i, s: self.translate_done.emit(i, s)
             )
+        self._check_engine_status()
+
+    def _on_ai_polish_clicked(self) -> None:
+        selected_items = [
+            item
+            for item in self.table_widget.get_selected_items()
+            if Base.is_item_polishable(item.get_status())
+        ]
+        if not selected_items:
+            self._show_quality_warning(Localizer.get().proofreading_page_quality_no_polishable)
+            return
+        if not self._confirm_quality_task(
+            Localizer.get().proofreading_page_quality_confirm_polish,
+            len(selected_items),
+        ):
+            return
+        self._start_quality_task(QualityTaskType.POLISHER, selected_items)
+
+    def _on_ai_proofread_clicked(self) -> None:
+        selected_items = [
+            item
+            for item in self.table_widget.get_selected_items()
+            if Base.is_item_proofreadable(item.get_status())
+        ]
+        if not selected_items:
+            self._show_quality_warning(Localizer.get().proofreading_page_quality_no_proofreadable)
+            return
+        if not self._confirm_quality_task(
+            Localizer.get().proofreading_page_quality_confirm_proofread,
+            len(selected_items),
+        ):
+            return
+        self._start_quality_task(QualityTaskType.PROOFREADER, selected_items)
+
+    def _on_quality_report_clicked(self) -> None:
+        if self.is_readonly or not self.items:
+            return
+
+        self.quality_report = build_translation_quality_report(
+            self.items,
+            self._translation_progress,
+        )
+        dialog = QualityReportDialog(self.quality_report, self.window)
+        if not dialog.exec():
+            return
+
+        selected_items = [
+            self.items[index]
+            for index in dialog.get_selected_item_indices()
+            if 0 <= index < len(self.items)
+            and Base.is_item_proofreadable(self.items[index].get_status())
+        ]
+        if not selected_items:
+            self._show_quality_warning(Localizer.get().proofreading_page_quality_no_proofreadable)
+            return
+        self._start_quality_task(QualityTaskType.PROOFREADER, selected_items)
+
+    def _confirm_quality_task(self, template: str, count: int) -> bool:
+        message_box = MessageBox(
+            Localizer.get().confirm,
+            template.replace("{COUNT}", str(count)),
+            self.window,
+        )
+        message_box.yesButton.setText(Localizer.get().confirm)
+        message_box.cancelButton.setText(Localizer.get().cancel)
+        return bool(message_box.exec())
+
+    def _start_quality_task(
+        self,
+        task_type: QualityTaskType,
+        selected_items: list[CacheItem],
+    ) -> None:
+        if self.is_readonly or not self.config or not self.items:
+            return
+
+        coordinator = QualityTaskCoordinator.get()
+        self._quality_target_ids = {id(item) for item in selected_items}
+        on_progress = lambda progress: self.quality_progress_updated.emit(progress)
+        on_done = lambda progress: self.quality_done.emit(progress)
+
+        try:
+            if task_type == QualityTaskType.POLISHER:
+                started = coordinator.start_polishing(
+                    self.config,
+                    self.items,
+                    selected_items,
+                    on_progress = on_progress,
+                    on_done = on_done,
+                )
+            else:
+                started = coordinator.start_proofreading(
+                    self.config,
+                    self.items,
+                    selected_items,
+                    warning_map = self.warning_map,
+                    on_progress = on_progress,
+                    on_done = on_done,
+                )
+        except Exception as e:
+            self.error("质量任务启动失败", e)
+            started = False
+
+        if not started:
+            self._quality_target_ids.clear()
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.ERROR,
+                "message": Localizer.get().proofreading_page_quality_start_failed,
+            })
+            return
+
+        self.indeterminate_show(self._format_quality_progress(coordinator.get_progress()))
+        self._check_engine_status()
+
+    def _on_quality_cancel_clicked(self) -> None:
+        if QualityTaskCoordinator.get().cancel():
+            self.btn_quality_cancel.setEnabled(False)
+            self.indeterminate_show(Localizer.get().proofreading_page_quality_cancelling)
+
+    def _on_quality_progress_ui(self, progress: QualityTaskProgress) -> None:
+        if not isinstance(progress, QualityTaskProgress):
+            return
+        if progress.state == QualityTaskState.RUNNING:
+            self.indeterminate_show(self._format_quality_progress(progress))
+
+    def _on_quality_done_ui(self, progress: QualityTaskProgress) -> None:
+        if not isinstance(progress, QualityTaskProgress):
+            return
+
+        for item in self.items:
+            if id(item) in self._quality_target_ids:
+                self._recheck_item(item)
+                # 质量任务在后台直接更新 CacheItem.dst；仅重新检查警告不会
+                # 自动刷新 QTableWidget，必须同步当前可见行，避免页面继续
+                # 显示旧译文直到下次重新载入。
+                table = getattr(self, "table_widget", None)
+                get_dst = getattr(item, "get_dst", None)
+                if table is not None and callable(get_dst):
+                    try:
+                        row = table.find_row_by_item(item)
+                        if row >= 0:
+                            table.update_row_dst(row, get_dst())
+                    except Exception:
+                        # 表格可能在页面切换/销毁过程中，不能影响质量任务
+                        # 的收尾和缓存保存。
+                        pass
+        self._quality_target_ids.clear()
+        self.quality_report = build_translation_quality_report(
+            self.items,
+            self._translation_progress,
+        )
+        self._apply_filter()
+        self._check_engine_status()
+        self.indeterminate_hide()
+
+        if progress.state == QualityTaskState.FAILED:
+            toast_type = Base.ToastType.ERROR
+            message = progress.error_message or Localizer.get().proofreading_page_quality_start_failed
+        elif progress.state == QualityTaskState.CANCELLED:
+            toast_type = Base.ToastType.WARNING
+            message = Localizer.get().proofreading_page_quality_cancelled
+        else:
+            toast_type = (
+                Base.ToastType.SUCCESS
+                if progress.failed_count == 0
+                else Base.ToastType.WARNING
+            )
+            message = Localizer.get().proofreading_page_quality_done
+            message = message.replace("{TASK}", self._quality_task_label(progress.task_type))
+            message = message.replace("{UPDATED}", str(progress.updated_count))
+            message = message.replace("{FAILED}", str(progress.failed_count))
+            message = message.replace("{SKIPPED}", str(progress.skipped_count))
+
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": toast_type,
+            "message": message,
+        })
+
+    def _format_quality_progress(self, progress: QualityTaskProgress | None) -> str:
+        if not isinstance(progress, QualityTaskProgress):
+            return Localizer.get().proofreading_page_quality_start_failed
+        message = Localizer.get().proofreading_page_quality_progress
+        return message.replace(
+            "{TASK}", self._quality_task_label(progress.task_type)
+        ).replace(
+            "{PROCESSED}", str(progress.completed_count)
+        ).replace(
+            "{TOTAL}", str(progress.total_count)
+        ).replace(
+            "{UPDATED}", str(progress.updated_count)
+        ).replace(
+            "{FAILED}", str(progress.failed_count)
+        )
+
+    @staticmethod
+    def _quality_task_label(task_type: QualityTaskType) -> str:
+        if task_type == QualityTaskType.POLISHER:
+            return Localizer.get().proofreading_page_ai_polish
+        return Localizer.get().proofreading_page_ai_proofread
+
+    def _show_quality_warning(self, message: str) -> None:
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": Base.ToastType.WARNING,
+            "message": message,
+        })
 
     def _on_retranslate_clicked(self, item: CacheItem) -> None:
         if self.is_readonly or not self.config:
@@ -720,6 +1056,7 @@ class ProofreadingPage(QWidget, Base):
             config = self.config,
             callback = lambda i, s: self.translate_done.emit(i, s)
         )
+        self._check_engine_status()
 
     def _on_translate_done_ui(self, item: CacheItem, success: bool) -> None:
         row = self.table_widget.find_row_by_item(item)
@@ -763,6 +1100,8 @@ class ProofreadingPage(QWidget, Base):
                     ),
                 })
 
+        self._check_engine_status()
+
     def _on_save_clicked(self) -> None:
         self.indeterminate_show(Localizer.get().proofreading_page_indeterminate_saving)
         self.save_data()
@@ -779,11 +1118,12 @@ class ProofreadingPage(QWidget, Base):
             try:
                 cache_manager = CacheManager(service = False)
                 cache_manager.set_items(items)
-                cache_manager.load_project_from_file(config.output_folder)
+                output_folder = self._cache_output_folder or config.output_folder
+                cache_manager.load_project_from_file(output_folder, strict = True)
                 cache_manager.save_to_file(
                     project = cache_manager.get_project(),
                     items = items,
-                    output_folder = config.output_folder
+                    output_folder = output_folder
                 )
                 self.save_done.emit(True)
             except Exception as e:
@@ -867,17 +1207,27 @@ class ProofreadingPage(QWidget, Base):
             })
 
     def _on_engine_status_changed(self, event: Base.Event, data: dict) -> None:
-        self._check_engine_status()
+        del event, data
+        self.engine_status_changed.emit()
 
     def _check_engine_status(self) -> None:
         engine_status = Engine.get().get_status()
-        is_busy = engine_status in (Engine.Status.TRANSLATING, Engine.Status.STOPPING)
+        single_task_busy = Engine.get().has_single_tasks()
+        should_clear_items = engine_status in (
+            Engine.Status.TRANSLATING,
+            Engine.Status.STOPPING,
+        )
+        is_quality_busy = engine_status == Engine.Status.QUALITY
+        is_busy = engine_status != Engine.Status.IDLE or single_task_busy
 
-        if is_busy and self.items:
+        if should_clear_items and self.items:
             self.items = []
             self.filtered_items = []
             self.warning_map = {}
             self.result_checker = None
+            self._translation_progress = {}
+            self.quality_report = build_translation_quality_report([])
+            self._quality_target_ids.clear()
             self._batch_retranslate_item_ids.clear()
             self._batch_retranslate_success = 0
             self._batch_retranslate_failed = 0
@@ -894,15 +1244,25 @@ class ProofreadingPage(QWidget, Base):
         self.btn_export.setEnabled(can_operate)
         self.btn_search.setEnabled(can_operate)
         self.btn_filter.setEnabled(can_operate)
-        self._update_batch_action_state()
+        quality_progress = QualityTaskCoordinator.get().get_progress()
+        cancel_requested = (
+            quality_progress.cancel_requested
+            if quality_progress is not None
+            else False
+        )
+        self.btn_quality_cancel.setEnabled(is_quality_busy and not cancel_requested)
 
         if is_busy != self.is_readonly:
             self.is_readonly = is_busy
             self.table_widget.set_readonly(is_busy)
 
+        self._update_batch_action_state()
+
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._check_engine_status()
+        if Engine.get().get_status() == Engine.Status.IDLE and not self.items:
+            self.load_data()
 
     def indeterminate_show(self, msg: str) -> None:
         if self._indeterminate_hide_timer is not None:

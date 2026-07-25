@@ -23,7 +23,7 @@ from ._common import (
 
 
 class ProofreadTask(BaseQualityTask):
-    """Proofread readable items one at a time with at most two task attempts."""
+    """逐条校对可校对条目，每个任务最多尝试两次。"""
 
     MAX_ATTEMPTS = 2
 

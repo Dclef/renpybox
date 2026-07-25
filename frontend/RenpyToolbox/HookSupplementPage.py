@@ -27,6 +27,7 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 
 
@@ -202,6 +203,17 @@ class HookSupplementPage(Base, QWidget):
         if project_root is None:
             return None
         tl_name = self.tl_name_edit.text().strip() or "chinese"
+        # 保留项目设置中明确的自定义 tl 语言目录，避免补全流程把它
+        # 覆盖成固定的 game/tl/<lang>。
+        configured = RenpyProjectPaths.from_config(self.config, tl_name)
+        if configured is not None:
+            try:
+                # 路径解析只负责保持项目契约；目录是否具备可补全的 TL 文件
+                # 由启动前检查处理，不能在这里悄悄改回标准目录。
+                if configured.project_root == project_root.resolve():
+                    return configured.tl_language_dir
+            except Exception:
+                pass
         return project_root / "game" / "tl" / tl_name
 
     def _refresh_output_hint(self) -> None:
@@ -252,10 +264,19 @@ class HookSupplementPage(Base, QWidget):
             return
 
         config = Config().load()
-        config.input_folder = str(tl_dir)
-        config.output_folder = str(tl_dir)
-        config.renpy_game_folder = str(project_root)
-        config.renpy_tl_folder = str(tl_dir)
+        paths = RenpyProjectPaths.from_path(
+            tl_dir,
+            self.tl_name_edit.text().strip() or "chinese",
+        )
+        if paths is None:
+            InfoBar.error("错误", "无法解析项目路径", parent = self)
+            return
+        apply_to_config(
+            config,
+            paths,
+            input_folder = paths.tl_language_dir,
+            output_folder = paths.tl_language_dir,
+        )
         config.renpy_hook_translate = True
         config.renpy_source_translate = False
 

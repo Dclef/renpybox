@@ -1,8 +1,11 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from base.Base import Base
 from module.Cache.CacheDB import CacheDB
+from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
 from module.Cache.CacheProject import CacheProject
 from module.Engine.Engine import Engine
@@ -207,6 +210,58 @@ def test_existing_sqlite_remains_authoritative_when_setting_is_disabled(tmp_path
     assert json_path.read_text(encoding = "utf-8") == original_json
 
 
+def test_corrupted_sqlite_falls_back_to_json_without_retrying_sqlite_write(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_path = tmp_path / "cache"
+    cache_path.mkdir()
+    (cache_path / "cache.db").write_bytes(b"not-a-sqlite-database")
+    json_project = CacheProject(id = "json-project")
+    json_project.set_project_assets({
+        "revision": 2,
+        "worldbook": {"enabled": True, "data": {"genre": "Drama"}},
+    })
+    json_project.set_analysis_candidates({"legacy_config_migrated": True})
+    json_path = cache_path / "project.json"
+    json_path.write_text(
+        json.dumps(json_project.asdict(), ensure_ascii = False),
+        encoding = "utf-8",
+    )
+    repository = ProjectAssetsRepository(str(tmp_path))
+
+    state = repository.load()
+
+    def fail_if_sqlite_is_retried(*args, **kwargs) -> None:
+        raise AssertionError("读取回退后不应再次写入损坏的 SQLite")
+
+    monkeypatch.setattr(CacheDB, "set_project", fail_if_sqlite_is_retried)
+    assets = state.assets.to_dict()
+    assets["worldbook"]["data"]["genre"] = "Mystery"
+    repository.save_assets(assets)
+
+    saved = CacheProject.from_dict(json.loads(json_path.read_text(encoding = "utf-8")))
+    assert state.assets.worldbook["genre"] == "Drama"
+    assert saved.get_project_assets()["worldbook"]["data"]["genre"] == "Mystery"
+
+
+def test_sqlite_write_failure_falls_back_to_project_json(tmp_path, monkeypatch) -> None:
+    config = _legacy_config(tmp_path)
+
+    def fail_sqlite_write(*args, **kwargs) -> None:
+        raise OSError("SQLite is unavailable")
+
+    monkeypatch.setattr(CacheDB, "set_project", fail_sqlite_write)
+    repository = ProjectAssetsRepository.from_config(config)
+
+    state = repository.load(config)
+
+    json_path = tmp_path / "cache" / "project.json"
+    saved = CacheProject.from_dict(json.loads(json_path.read_text(encoding = "utf-8")))
+    assert state.assets.worldbook["setting_summary"] == "A floating city"
+    assert saved.get_project_assets()["worldbook"]["data"]["setting_summary"] == "A floating city"
+
+
 def test_analysis_terms_deduplicate_by_nfkc_casefolded_source(tmp_path) -> None:
     repository = ProjectAssetsRepository(str(tmp_path))
     repository.load()
@@ -329,3 +384,78 @@ def test_active_project_is_resolved_while_cache_lock_is_held(tmp_path, monkeypat
     repository.save_analysis_candidates({"legacy_config_migrated": True})
 
     assert lock_states == [True, True]
+
+
+def test_empty_output_folder_does_not_create_cache_in_working_directory(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _legacy_config(tmp_path / "unused")
+    config.output_folder = ""
+    config.renpy_project_path = ""
+    config.renpy_game_folder = ""
+    config.renpy_tl_folder = ""
+
+    repository = ProjectAssetsRepository.from_config(config)
+    state = repository.load(config)
+    repository.save_assets(state.assets)
+
+    assert repository.has_storage is False
+    assert (tmp_path / "cache").exists() is False
+
+
+def test_sqlite_without_project_record_is_not_overwritten(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "cache" / "cache.db"
+    original = CacheItem(src = "SQLite 中仍需保留的条目")
+    CacheDB(str(db_path)).set_items([original])
+    repository = ProjectAssetsRepository(str(tmp_path))
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: None)
+
+    with pytest.raises(RuntimeError, match = "no project record"):
+        repository.load()
+
+    store = CacheDB(str(db_path))
+    assert store.get_project() is None
+    assert [item.get_src() for item in store.get_items()] == [original.get_src()]
+
+
+def test_sqlite_without_project_record_falls_back_to_complete_json(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_dir = tmp_path / "cache"
+    db_path = cache_dir / "cache.db"
+    sqlite_item = CacheItem(src = "SQLite 条目")
+    CacheDB(str(db_path)).set_items([sqlite_item])
+
+    json_project = CacheProject(id = "json-project")
+    json_project.set_project_assets({
+        "revision": 3,
+        "worldbook": {
+            "enabled": True,
+            "data": {"setting_summary": "JSON 世界观"},
+        },
+    })
+    json_project.set_analysis_candidates({
+        "legacy_config_migrated": True,
+        "items": [],
+    })
+    json_item = CacheItem(src = "JSON 条目")
+    (cache_dir / "project.json").write_text(
+        json.dumps(json_project.asdict(), ensure_ascii = False),
+        encoding = "utf-8",
+    )
+    (cache_dir / "items.json").write_text(
+        json.dumps([json_item.asdict()], ensure_ascii = False),
+        encoding = "utf-8",
+    )
+
+    repository = ProjectAssetsRepository(str(tmp_path))
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: None)
+    state = repository.load()
+
+    assert state.assets.worldbook["setting_summary"] == "JSON 世界观"
+    store = CacheDB(str(db_path))
+    assert store.get_project() is None
+    assert [item.get_src() for item in store.get_items()] == [sqlite_item.get_src()]

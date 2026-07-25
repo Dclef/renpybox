@@ -663,7 +663,9 @@ class PromptBuilder(Base):
                 break
             cost = self._asset_token_cost(entry.content)
             if used_tokens + cost > token_budget:
-                break
+                # 单条资产过大时跳过它，继续尝试后续较小资产，避免一个超长备注
+                # 阻断同一批次中仍可安全注入的术语、禁翻项或角色卡。
+                continue
             selected.append(entry)
             used_tokens += cost
 

@@ -65,6 +65,9 @@ class CacheManager(Base):
             self.cache_use_sqlite = bool(Config().load().cache_use_sqlite)
         except Exception:
             self.cache_use_sqlite = True
+        # 某个缓存目录的 SQLite 读取失败且 JSON 回退成功后，当前实例后续
+        # 的保存与重置都继续使用 JSON，避免坏 cache.db 再次遮蔽有效缓存。
+        self._json_fallback_paths: set[str] = set()
 
         # 初始化
         self.require_flag: bool = False
@@ -75,6 +78,7 @@ class CacheManager(Base):
         if service == True:
             threading.Thread(
                 target = self.task,
+                daemon = True,
             ).start()
 
     # 保存缓存到文件的定时任务
@@ -97,12 +101,25 @@ class CacheManager(Base):
                 return False
 
             output_folder = self.require_path
-            os.makedirs(f"{output_folder}/cache", exist_ok = True)
-            self.save_to_file(
-                project = self.project,
-                items = self.items,
-                output_folder = output_folder,
-            )
+            try:
+                saved = self.save_to_file(
+                    project = self.project,
+                    items = self.items,
+                    output_folder = output_folder,
+                )
+            except Exception as exc:
+                # 自动保存不能让后台服务线程退出；保留 pending 标记，
+                # 下一轮继续重试，同时更新时间戳避免每秒重复打磁盘。
+                self.debug("自动保存缓存失败，将在下一周期重试", exc)
+                self.last_require_time = current_time
+                return False
+
+            if saved is not True:
+                # save_to_file 在非 strict 模式下会吞掉磁盘/数据库错误，
+                # 这里必须识别失败，否则会把“保存失败”误报为成功并清除重试标记。
+                self.last_require_time = current_time
+                return False
+
             self.require_flag = False
             self.last_require_time = current_time
             return True
@@ -110,7 +127,15 @@ class CacheManager(Base):
     def _get_db_path(self, output_folder: str) -> str:
         return f"{output_folder}/cache/{__class__.CACHE_DB_NAME}"
 
+    def _get_cache_path_key(self, output_folder: str) -> str:
+        return os.path.normcase(os.path.abspath(output_folder))
+
+    def _mark_json_fallback(self, output_folder: str) -> None:
+        self._json_fallback_paths.add(self._get_cache_path_key(output_folder))
+
     def _should_use_sqlite(self, output_folder: str) -> bool:
+        if self._get_cache_path_key(output_folder) in self._json_fallback_paths:
+            return False
         if os.path.isfile(self._get_db_path(output_folder)):
             return True
         return self.cache_use_sqlite
@@ -138,7 +163,21 @@ class CacheManager(Base):
         store.set_project(project)
 
     # 保存缓存到文件
-    def save_to_file(self, project: CacheProject, items: list[CacheItem], output_folder: str) -> None:
+    def save_to_file(
+        self,
+        project: CacheProject,
+        items: list[CacheItem],
+        output_folder: str,
+        *,
+        strict: bool = False,
+    ) -> bool:
+        output_folder = str(output_folder or "").strip()
+        if output_folder == "":
+            if strict:
+                raise ValueError("缓存输出目录不能为空")
+            self.debug("跳过缓存保存：输出目录为空")
+            return False
+
         # 创建上级文件夹
         os.makedirs(f"{output_folder}/cache", exist_ok = True)
 
@@ -146,64 +185,152 @@ class CacheManager(Base):
         if self._should_use_sqlite(output_folder):
             with __class__.LOCK:
                 try:
-                    self._save_items_to_sqlite(output_folder, items)
-                    self._save_project_to_sqlite(output_folder, project)
+                    CacheDB(self._get_db_path(output_folder)).set_translation_cache(
+                        project,
+                        items,
+                    )
+                    if strict:
+                        db_path = self._get_db_path(output_folder)
+                        saved_project = CacheDB(db_path).get_project()
+                        if not os.path.isfile(db_path) or saved_project is None:
+                            raise RuntimeError("缓存保存后未找到有效的 SQLite 项目记录")
                     self.require_flag = False
                     self.last_require_time = time.time()
-                    return
+                    return True
                 except Exception as e:
                     self.debug(Localizer.get().log_write_cache_file_fail, e)
+                    if strict:
+                        raise RuntimeError(f"SQLite 缓存保存失败：{e}") from e
+                    # 已选择 SQLite 时不能再写一份会被旧数据库遮蔽的 JSON；
+                    # 保留原缓存并等待下一次自动保存重试。
+                    return False
 
-        # JSON 回退使用写前事务日志。若进程在两次文件替换之间退出，
+        # JSON 模式使用写前事务日志。若进程在两次文件替换之间退出，
         # 下次内部读取会先恢复同一代 project/items。
         with __class__.LOCK:
             try:
                 self._save_translation_run_to_json(output_folder, project, items)
             except Exception as e:
                 self.debug(Localizer.get().log_write_cache_file_fail, e)
+                if strict:
+                    raise RuntimeError(f"缓存保存失败：{e}") from e
+                # 非 strict 保存失败时也要保留 pending 标记，供后台重试。
+                return False
 
-        # 重置标志
+        if strict:
+            cache_path = os.path.join(output_folder, "cache")
+            if not (
+                os.path.isfile(os.path.join(cache_path, "items.json"))
+                and os.path.isfile(os.path.join(cache_path, "project.json"))
+            ):
+                raise RuntimeError("缓存保存后未找到 JSON 文件")
+
+        # 只有完成写后校验才清除 pending 标记；校验失败时保留标记，
+        # 让后台自动保存仍可在下一周期重试。
         self.require_flag = False
         self.last_require_time = time.time()
+        return True
 
     # 请求保存缓存到文件
     def require_save_to_file(self, output_path: str) -> None:
+        output_path = str(output_path or "").strip()
+        if output_path == "":
+            raise ValueError("缓存输出目录不能为空")
         with __class__.LOCK:
             self.require_flag = True
             self.require_path = output_path
 
     # 从文件读取数据
     def load_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        output_path = str(output_path or "").strip()
+        if output_path == "":
+            if strict:
+                raise CacheLoadError("缓存输出目录不能为空")
+            return
         if strict:
             self._load_cache_pair_strict(output_path)
             return
         self.load_items_from_file(output_path)
         self.load_project_from_file(output_path)
 
+    def _load_json_cache_pair_strict(
+        self,
+        output_path: str,
+    ) -> tuple[CacheProject, list[CacheItem]]:
+        """严格读取 JSON 缓存对，供 SQLite 损坏时安全回退。"""
+        self._recover_json_transaction(output_path)
+        items_path = f"{output_path}/cache/items.json"
+        project_path = f"{output_path}/cache/project.json"
+        if not os.path.isfile(items_path) or not os.path.isfile(project_path):
+            raise CacheLoadError("Translation cache is incomplete")
+        with open(items_path, "r", encoding = "utf-8-sig") as reader:
+            items_payload = json.load(reader)
+        with open(project_path, "r", encoding = "utf-8-sig") as reader:
+            project_payload = json.load(reader)
+        if not isinstance(items_payload, list) or not isinstance(project_payload, dict):
+            raise CacheLoadError("Translation cache has an invalid schema")
+        items = [CacheItem.from_dict(item) for item in items_payload]
+        project = CacheProject.from_dict(project_payload)
+        return project, items
+
+    def _sqlite_items_conflict_with_json(
+        self,
+        output_path: str,
+        items: list[CacheItem],
+        *,
+        sqlite_digest: str | None = None,
+    ) -> bool:
+        """检测明显只有项目记录的半成品 SQLite。
+
+        SQLite 与 JSON 可能来自不同的翻译代次：用户重新抽取、增量合并
+        或切换存储后，两边条目数量暂时不同是正常现象，不能再用数量差异
+        作为回退条件。只有 SQLite 明确没有任何条目、而 JSON 有完整条目
+        时，才可判定为“项目记录已写入、条目尚未写入”的半成品。
+        """
+        path = f"{output_path}/cache/items.json"
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "r", encoding = "utf-8-sig") as reader:
+                payload = json.load(reader)
+            if not isinstance(payload, list):
+                return False
+            # 新版 SQLite 在同一事务写入摘要；摘要存在即代表条目集合
+            # 是一个完整代次，即使旧 JSON 数量不同也应以 SQLite 为准。
+            if sqlite_digest:
+                return False
+            return len(payload) > 0 and len(items) == 0
+        except Exception:
+            return False
+
     def _load_cache_pair_strict(self, output_path: str) -> None:
         with __class__.LOCK:
             try:
                 db_path = self._get_db_path(output_path)
-                if os.path.isfile(db_path):
-                    store = CacheDB(db_path)
-                    project = store.get_project()
-                    if project is None:
-                        raise CacheLoadError("SQLite cache has no project record")
-                    items = store.get_items()
+                if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
+                    try:
+                        store = CacheDB(db_path)
+                        project = store.get_project()
+                        if project is None:
+                            raise CacheLoadError("SQLite cache has no project record")
+                        items = store.get_items()
+                        if self._sqlite_items_conflict_with_json(
+                            output_path,
+                            items,
+                            sqlite_digest = store.get_items_digest(),
+                        ):
+                            raise CacheLoadError("SQLite cache items are incomplete")
+                    except Exception as sqlite_exc:
+                        # SQLite 写入可能在项目记录和条目表之间中断；若同目录
+                        # 仍有完整 JSON 事务，则回退到 JSON，避免校对页被残缺
+                        # 的 cache.db 永久遮蔽。
+                        try:
+                            project, items = self._load_json_cache_pair_strict(output_path)
+                        except Exception:
+                            raise sqlite_exc
+                        self._mark_json_fallback(output_path)
                 else:
-                    self._recover_json_transaction(output_path)
-                    items_path = f"{output_path}/cache/items.json"
-                    project_path = f"{output_path}/cache/project.json"
-                    if not os.path.isfile(items_path) or not os.path.isfile(project_path):
-                        raise CacheLoadError("Translation cache is incomplete")
-                    with open(items_path, "r", encoding = "utf-8-sig") as reader:
-                        items_payload = json.load(reader)
-                    with open(project_path, "r", encoding = "utf-8-sig") as reader:
-                        project_payload = json.load(reader)
-                    if not isinstance(items_payload, list) or not isinstance(project_payload, dict):
-                        raise CacheLoadError("Translation cache has an invalid schema")
-                    items = [CacheItem.from_dict(item) for item in items_payload]
-                    project = CacheProject.from_dict(project_payload)
+                    project, items = self._load_json_cache_pair_strict(output_path)
             except CacheLoadError:
                 raise
             except Exception as exc:
@@ -216,12 +343,35 @@ class CacheManager(Base):
 
     # 从文件读取项目数据
     def load_items_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        output_path = str(output_path or "").strip()
+        if output_path == "":
+            if strict:
+                raise CacheLoadError("缓存输出目录不能为空")
+            return
         if strict:
             with __class__.LOCK:
                 try:
                     db_path = self._get_db_path(output_path)
-                    if os.path.isfile(db_path):
-                        self.items = CacheDB(db_path).get_items()
+                    if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
+                        try:
+                            store = CacheDB(db_path)
+                            items = store.get_items()
+                            if self._sqlite_items_conflict_with_json(
+                                output_path,
+                                items,
+                                sqlite_digest = store.get_items_digest(),
+                            ):
+                                raise CacheLoadError("SQLite cache items are incomplete")
+                            self.items = items
+                        except Exception as sqlite_exc:
+                            # 质量任务可能只读取 items；坏 SQLite 不能遮蔽
+                            # 同目录仍完整的 JSON 事务缓存。
+                            try:
+                                _, items = self._load_json_cache_pair_strict(output_path)
+                                self.items = items
+                            except Exception:
+                                raise sqlite_exc
+                            self._mark_json_fallback(output_path)
                         return
                     self._recover_json_transaction(output_path)
                     path = f"{output_path}/cache/items.json"
@@ -241,6 +391,7 @@ class CacheManager(Base):
                     ) from exc
 
         use_sqlite = self._should_use_sqlite(output_path)
+        sqlite_read_failed = False
         if use_sqlite:
             with __class__.LOCK:
                 try:
@@ -249,6 +400,7 @@ class CacheManager(Base):
                         self.items = items
                         return
                 except Exception as e:
+                    sqlite_read_failed = True
                     self.debug(Localizer.get().log_read_cache_file_fail, e)
 
         path = f"{output_path}/cache/items.json"
@@ -258,22 +410,45 @@ class CacheManager(Base):
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.items = [CacheItem.from_dict(item) for item in json.load(reader)]
-                    if use_sqlite:
-                        self._save_items_to_sqlite(output_path, self.items)
+                    if sqlite_read_failed:
+                        self._mark_json_fallback(output_path)
+                    elif use_sqlite:
+                        try:
+                            self._save_items_to_sqlite(output_path, self.items)
+                        except Exception as e:
+                            # JSON 已成功载入时，迁移写入失败不应让后续保存
+                            # 继续撞向同一个不可用的 SQLite。
+                            self._mark_json_fallback(output_path)
+                            self.debug(Localizer.get().log_write_cache_file_fail, e)
             except Exception as e:
                 self.debug(Localizer.get().log_read_cache_file_fail, e)
 
     # 从文件读取项目数据
     def load_project_from_file(self, output_path: str, *, strict: bool = False) -> None:
+        output_path = str(output_path or "").strip()
+        if output_path == "":
+            if strict:
+                raise CacheLoadError("缓存输出目录不能为空")
+            return
         if strict:
             with __class__.LOCK:
                 try:
                     db_path = self._get_db_path(output_path)
-                    if os.path.isfile(db_path):
-                        project = CacheDB(db_path).get_project()
-                        if project is None:
-                            raise CacheLoadError("SQLite cache has no project record")
-                        self.project = project
+                    if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
+                        try:
+                            project = CacheDB(db_path).get_project()
+                            if project is None:
+                                raise CacheLoadError("SQLite cache has no project record")
+                            self.project = project
+                        except Exception as sqlite_exc:
+                            # 质量任务先读取项目快照；坏 SQLite 时回退到
+                            # 同目录 JSON，避免校对页无法恢复语义。
+                            try:
+                                project, _ = self._load_json_cache_pair_strict(output_path)
+                                self.project = project
+                            except Exception:
+                                raise sqlite_exc
+                            self._mark_json_fallback(output_path)
                         return
                     self._recover_json_transaction(output_path)
                     path = f"{output_path}/cache/project.json"
@@ -293,6 +468,7 @@ class CacheManager(Base):
                     ) from exc
 
         use_sqlite = self._should_use_sqlite(output_path)
+        sqlite_read_failed = False
         if use_sqlite:
             with __class__.LOCK:
                 try:
@@ -301,6 +477,7 @@ class CacheManager(Base):
                         self.project = project
                         return
                 except Exception as e:
+                    sqlite_read_failed = True
                     self.debug(Localizer.get().log_read_cache_file_fail, e)
 
         path = f"{output_path}/cache/project.json"
@@ -310,8 +487,14 @@ class CacheManager(Base):
                 if os.path.isfile(path):
                     with open(path, "r", encoding = "utf-8-sig") as reader:
                         self.project = CacheProject.from_dict(json.load(reader))
-                    if use_sqlite:
-                        self._save_project_to_sqlite(output_path, self.project)
+                    if sqlite_read_failed:
+                        self._mark_json_fallback(output_path)
+                    elif use_sqlite:
+                        try:
+                            self._save_project_to_sqlite(output_path, self.project)
+                        except Exception as e:
+                            self._mark_json_fallback(output_path)
+                            self.debug(Localizer.get().log_write_cache_file_fail, e)
             except Exception as e:
                 self.debug(Localizer.get().log_read_cache_file_fail, e)
 
@@ -352,13 +535,29 @@ class CacheManager(Base):
 
             if output_path:
                 if self._should_use_sqlite(output_path):
-                    store = CacheDB(self._get_db_path(output_path))
-                    reset_project = store.reset_translation_run(
-                        self.project,
-                        replacement_items,
-                        snapshot = snapshot,
-                        progress = progress,
-                    )
+                    try:
+                        store = CacheDB(self._get_db_path(output_path))
+                        reset_project = store.reset_translation_run(
+                            self.project,
+                            replacement_items,
+                            snapshot = snapshot,
+                            progress = progress,
+                        )
+                    except Exception as exc:
+                        # 坏 SQLite 与严格读取使用同一 JSON 回退策略，
+                        # 重新开始翻译时也不能让旧数据库遮蔽有效条目。
+                        self._mark_json_fallback(output_path)
+                        self.debug(Localizer.get().log_write_cache_file_fail, exc)
+                        reset_project = CacheProject.from_dict(self.project.asdict())
+                        reset_project.reset_translation_run(
+                            snapshot = snapshot,
+                            progress = progress,
+                        )
+                        self._save_translation_run_to_json(
+                            output_path,
+                            reset_project,
+                            replacement_items,
+                        )
                 else:
                     reset_project = CacheProject.from_dict(self.project.asdict())
                     reset_project.reset_translation_run(

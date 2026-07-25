@@ -16,16 +16,28 @@ class APITester(Base):
 
     # 接口测试开始事件
     def platform_test_start(self, event: str, data: dict) -> None:
-        if Engine.get().get_status() != Engine.Status.IDLE:
+        if not Engine.get().try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
                 "message": Localizer.get().platofrm_tester_running,
             })
         else:
-            threading.Thread(
-                target = self.platform_test_start_target,
+            thread = threading.Thread(
+                target = self._platform_test_start_guarded,
                 args = (event, data),
-            ).start()
+            )
+            try:
+                thread.start()
+            except Exception:
+                Engine.get().release_status(Engine.Status.TESTING)
+                raise
+
+    def _platform_test_start_guarded(self, event: str, data: dict) -> None:
+        """保证接口测试异常退出时也会释放全局 AI 任务状态。"""
+        try:
+            self.platform_test_start_target(event, data)
+        finally:
+            Engine.get().release_status(Engine.Status.TESTING)
 
     # 接口测试开始
     def platform_test_start_target(self, event: str, data: dict) -> None:

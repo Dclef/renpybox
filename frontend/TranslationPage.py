@@ -1,11 +1,14 @@
+import os
 import time
 import threading
+import copy
 from typing import Callable
 
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTime
 from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QHBoxLayout
@@ -34,11 +37,13 @@ from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Cache.CacheManager import CacheManager
+from module.File.FileManager import FileManager
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
+from module.Renpy.ProjectPaths import resolve_translation_output
 from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
@@ -133,6 +138,9 @@ class TimerMessageBox(MessageBoxBase):
 
 class TranslationPage(QWidget, Base):
 
+    runtime_status_updated = pyqtSignal(object, object)
+    token_estimate_done = pyqtSignal(object, object)
+
     class TokenDisplayMode(StrEnum):
         INPUT = "INPUT"
         OUTPUT = "OUTPUT"
@@ -147,6 +155,7 @@ class TranslationPage(QWidget, Base):
             Engine.Status.IDLE: Localizer.get().translation_page_status_idle,
             Engine.Status.TESTING: Localizer.get().translation_page_status_testing,
             Engine.Status.TRANSLATING: Localizer.get().translation_page_status_translating,
+            Engine.Status.QUALITY: getattr(Localizer.get(), "translation_page_status_quality", "质量处理中"),
             Engine.Status.STOPPING: Localizer.get().translation_page_status_stopping,
         }
 
@@ -172,6 +181,9 @@ class TranslationPage(QWidget, Base):
         self.subscribe(Base.Event.TRANSLATION_UPDATE, self.translation_update)
         self.subscribe(Base.Event.CACHE_FILE_AUTO_SAVE, self.cache_file_auto_save)
         self.subscribe(Base.Event.PROJECT_STATUS_CHECK_DONE, self.update_button_status)
+        self.runtime_status_updated.connect(self.update_button_status)
+        self.token_estimate_done.connect(self._on_token_estimate_done)
+        self._token_estimate_running = False
 
         # 定时器
         self.ui_update_timer = QTimer(self)
@@ -200,13 +212,18 @@ class TranslationPage(QWidget, Base):
     # 更新按钮状态事件
     def update_button_status(self, event: str, data: dict) -> None:
         # 检查是否有缓存数据（用于判断是否可以导出）
-        has_cache_data = data.get('status') == Base.TranslationStatus.TRANSLATING or data.get('line', 0) > 0
+        has_cache_data = bool(
+            data.get('status') in (Base.TranslationStatus.TRANSLATING, Base.TranslationStatus.TRANSLATED)
+            or data.get('line', 0) > 0
+            or data.get('total_line', 0) > 0
+        )
 
         # 如果是项目状态检查完成事件，更新缓存的进度数据
         if event == Base.Event.PROJECT_STATUS_CHECK_DONE:
-            if data.get('line', 0) > 0:
-                self.data['line'] = data.get('line', 0)
-                self.data['total_line'] = data.get('total_line', 0)
+            # 状态检查返回的是完整 progress，必须合并 Token 统计，
+            # 否则重新打开页面后 Token 会被清零。
+            if isinstance(data, dict):
+                self.data = {**self.data, **data}
             self.update_status(self.data)
 
         if Engine.get().get_status() == Engine.Status.IDLE:
@@ -231,6 +248,12 @@ class TranslationPage(QWidget, Base):
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
             self.action_reinject_cache.setEnabled(False)
+        elif Engine.get().get_status() == Engine.Status.QUALITY:
+            # 润色/校对与初译共享同一引擎锁，期间禁止启动或导出初译任务。
+            self.action_start.setEnabled(False)
+            self.action_stop.setEnabled(False)
+            self.action_export.setEnabled(False)
+            self.action_reinject_cache.setEnabled(False)
 
         if Engine.get().get_status() == Engine.Status.IDLE and data.get('status') == Base.TranslationStatus.TRANSLATING:
             self.action_continue.setEnabled(True)
@@ -241,7 +264,12 @@ class TranslationPage(QWidget, Base):
 
     # 翻译更新事件
     def translation_update(self, event: str, data: dict) -> None:
-        self.data = data
+        if isinstance(data, dict) and "quality_task" in data:
+            # 质量任务只更新自己的分区，不能覆盖初译的行数与 Token 统计。
+            self.data = {**self.data, **data}
+            self.runtime_status_updated.emit(event, self.data)
+        else:
+            self.data = data
 
     # 翻译停止完成事件
     def translation_stop_done(self, event: str, data: dict) -> None:
@@ -255,7 +283,11 @@ class TranslationPage(QWidget, Base):
 
     # 更新时间
     def update_time(self, data: dict) -> None:
-        if Engine.get().get_status() not in (Engine.Status.STOPPING, Engine.Status.TRANSLATING):
+        if Engine.get().get_status() not in (
+            Engine.Status.IDLE,
+            Engine.Status.STOPPING,
+            Engine.Status.TRANSLATING,
+        ):
             return None
 
         if self.data.get("start_time", 0) == 0:
@@ -286,7 +318,11 @@ class TranslationPage(QWidget, Base):
 
     # 更新行数
     def update_line(self, data: dict) -> None:
-        if Engine.get().get_status() not in (Engine.Status.STOPPING, Engine.Status.TRANSLATING):
+        if Engine.get().get_status() not in (
+            Engine.Status.IDLE,
+            Engine.Status.STOPPING,
+            Engine.Status.TRANSLATING,
+        ):
             return None
 
         line = self.data.get("line", 0)
@@ -323,7 +359,11 @@ class TranslationPage(QWidget, Base):
 
     # 更新 Token 数据
     def update_token(self, data: dict) -> None:
-        if Engine.get().get_status() not in (Engine.Status.STOPPING, Engine.Status.TRANSLATING):
+        if Engine.get().get_status() not in (
+            Engine.Status.IDLE,
+            Engine.Status.STOPPING,
+            Engine.Status.TRANSLATING,
+        ):
             return None
 
         display_mode = getattr(self, "token_display_mode", self.TokenDisplayMode.OUTPUT)
@@ -362,6 +402,14 @@ class TranslationPage(QWidget, Base):
             percent = self.data.get("line", 0) / max(1, self.data.get("total_line", 0))
             self.ring.setValue(int(percent * 10000))
             self.ring.setFormat(f"{Localizer.get().translation_page_status_translating}\n{percent * 100:.2f}%")
+        elif Engine.get().get_status() == Engine.Status.QUALITY:
+            quality = self.data.get("quality_task", {})
+            completed = quality.get("completed_count", 0) if isinstance(quality, dict) else 0
+            total = quality.get("total_count", 0) if isinstance(quality, dict) else 0
+            percent = completed / max(1, total)
+            self.ring.setValue(int(percent * 10000))
+            quality_label = getattr(Localizer.get(), "translation_page_status_quality", "质量处理中")
+            self.ring.setFormat(f"{quality_label}\n{percent * 100:.2f}%")
         else:
             # 空闲状态：如果有缓存数据，显示缓存的进度
             line = self.data.get("line", 0)
@@ -625,9 +673,15 @@ class TranslationPage(QWidget, Base):
         status: Base.TranslationStatus,
         window: FluentWindow,
     ) -> bool:
+        # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
+        # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
+        config = Config().load()
         payload = {"status": status}
+        # 旧的轻量事件调用方可能提供 SimpleNamespace 配置；真实页面
+        # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。
+        if isinstance(config, Config):
+            payload["config"] = copy.deepcopy(config)
         if status == Base.TranslationStatus.UNTRANSLATED:
-            config = Config().load()
             try:
                 state = ProjectAssetsRepository.from_config(config).load(config)
                 preflight = TranslationPreflightService.check(state.assets)
@@ -664,8 +718,8 @@ class TranslationPage(QWidget, Base):
                 if cancel_signal is not None and continue_selected["value"] is False:
                     return False
 
-            # The UI has either found effective assets or received an explicit
-            # continue decision. Backends use this flag to avoid a second prompt.
+            # UI 已找到有效资产或收到明确的继续决定。
+            # 后端使用该标记避免重复弹窗。
             payload["preflight_confirmed"] = True
 
         self.emit(Base.Event.TRANSLATION_START, payload)
@@ -737,11 +791,33 @@ class TranslationPage(QWidget, Base):
     def add_command_bar_action_retry_failed(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
 
         def triggered() -> None:
-            cache_manager = CacheManager(service=True)
+            current_config = Config().load()
+            output_path = resolve_translation_output(current_config)
+            if output_path is None:
+                InfoBar.warning("提示", "未找到当前项目缓存", parent = window)
+                return
+            cache_manager = CacheManager(service = False)
+            try:
+                cache_manager.load_from_file(str(output_path), strict = True)
+            except Exception as exc:
+                InfoBar.warning("提示", f"缓存载入失败：{exc}", parent = window)
+                return
             count = cache_manager.reset_same_translation_items()
             if count > 0:
                 # 保存缓存
-                cache_manager.require_save_to_file(config.output_folder)
+                saved = cache_manager.save_to_file(
+                    project = cache_manager.get_project(),
+                    items = cache_manager.get_items(),
+                    output_folder = str(output_path),
+                )
+                if saved is not True:
+                    InfoBar.error(
+                        title="保存失败",
+                        content="缓存写入失败，未确认重置结果，请检查输出目录权限后重试",
+                        parent=window,
+                        duration=5000,
+                    )
+                    return
                 InfoBar.success(
                     title="重置成功",
                     content=f"已将 {count} 条原译相同的条目重置为未翻译状态，可点击「继续任务」重新翻译",
@@ -808,6 +884,8 @@ class TranslationPage(QWidget, Base):
     def add_command_bar_action_estimate(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
 
         def triggered() -> None:
+            if self._token_estimate_running:
+                return
             current_config = Config().load()
             platform = current_config.get_platform(current_config.activate_platform)
             if platform is None:
@@ -819,55 +897,101 @@ class TranslationPage(QWidget, Base):
                 )
                 return
 
-            cache_manager = CacheManager(service=True)
-            items = cache_manager.get_items()
-            if not items:
-                InfoBar.info(
-                    title="无数据",
-                    content="当前没有加载翻译数据，请先开始翻译或载入项目",
-                    parent=window,
-                    duration=3000,
-                )
-                return
+            self._token_estimate_running = True
+            self.action_estimate.setEnabled(False)
+            InfoBar.info(
+                title="正在估算",
+                content="正在读取当前项目缓存或输入目录…",
+                parent=window,
+                duration=2000,
+            )
 
-            estimator = TokenEstimator(current_config, platform, items)
-            result = estimator.estimate()
+            def task() -> None:
+                try:
+                    items = self._load_items_for_token_estimate(current_config)
+                    if not items:
+                        raise ValueError("当前项目没有可估算的翻译条目")
+                    result = TokenEstimator(current_config, platform, items).estimate()
+                    self.token_estimate_done.emit(result, "")
+                except Exception as exc:
+                    self.token_estimate_done.emit(None, str(exc))
 
-            if result.untranslated_count == 0:
-                InfoBar.info(
-                    title="无需翻译",
-                    content="所有条目已翻译完成",
-                    parent=window,
-                    duration=3000,
-                )
-                return
-
-            def format_tokens(n: int) -> str:
-                if n < 1000:
-                    return f"{n}"
-                elif n < 1_000_000:
-                    return f"{n / 1000:.1f}K"
-                else:
-                    return f"{n / 1_000_000:.2f}M"
-
-            lines = [
-                f"待翻译条目: {result.untranslated_count}",
-                f"预估批次数: {result.batch_count}",
-                f"原文 Token: ~{format_tokens(result.total_source_tokens)}",
-                f"预估输入 Token: ~{format_tokens(result.estimated_input_tokens)}",
-                f"预估输出 Token: ~{format_tokens(result.estimated_output_tokens)}",
-            ]
-            if result.estimated_cost > 0:
-                lines.append(f"预估费用: ${result.estimated_cost:.4f}")
-
-            message_box = MessageBox("Token 估算", "\n".join(lines), window)
-            message_box.yesButton.setText("确定")
-            message_box.cancelButton.hide()
-            message_box.exec()
+            threading.Thread(target = task, daemon = True).start()
 
         self.action_estimate = parent.add_action(
             Action(FluentIcon.CALORIES, "Token 估算", parent, triggered=triggered),
         )
+
+    def _load_items_for_token_estimate(self, config: Config) -> list:
+        """按运行缓存、磁盘缓存、输入目录的顺序读取估算条目。"""
+        output_path = resolve_translation_output(config)
+        translator = getattr(Engine.get(), "translator", None)
+        runtime_manager = getattr(translator, "cache_manager", None)
+        if runtime_manager is not None:
+            runtime_items = runtime_manager.copy_items()
+            runtime_output = str(
+                getattr(translator, "_active_cache_output_folder", "")
+                or getattr(translator, "_last_runtime_output_folder", "")
+                or ""
+            ).strip()
+            same_project = bool(
+                runtime_output
+                and output_path is not None
+                and os.path.normcase(os.path.abspath(runtime_output))
+                == os.path.normcase(os.path.abspath(str(output_path)))
+            )
+            if runtime_items and same_project:
+                return runtime_items
+
+        if output_path is not None:
+            manager = CacheManager(service = False)
+            try:
+                manager.load_items_from_file(str(output_path), strict = True)
+                if manager.get_items():
+                    return manager.get_items()
+            except Exception:
+                pass
+
+        # 首次翻译尚未产生缓存时，直接按统一输入目录预读。
+        _, items = FileManager(config).read_from_path()
+        return items
+
+    def _on_token_estimate_done(self, result, error: str) -> None:
+        self._token_estimate_running = False
+        self.action_estimate.setEnabled(True)
+        if error:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": f"Token 估算失败：{error}",
+            })
+            return
+        if result is None or result.untranslated_count == 0:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.INFO,
+                "message": "所有条目已翻译完成，或当前没有待翻译内容。",
+            })
+            return
+
+        def format_tokens(n: int) -> str:
+            if n < 1000:
+                return f"{n}"
+            if n < 1_000_000:
+                return f"{n / 1000:.1f}K"
+            return f"{n / 1_000_000:.2f}M"
+
+        lines = [
+            f"待翻译条目: {result.untranslated_count}",
+            f"预估批次数: {result.batch_count}",
+            f"原文 Token: ~{format_tokens(result.total_source_tokens)}",
+            f"预估输入 Token: ~{format_tokens(result.estimated_input_tokens)}",
+            f"预估输出 Token: ~{format_tokens(result.estimated_output_tokens)}",
+        ]
+        if result.estimated_cost > 0:
+            lines.append(f"预估费用: ${result.estimated_cost:.4f}")
+        message_box = MessageBox("Token 估算", "\n".join(lines), self.window)
+        message_box.yesButton.setText("确定")
+        message_box.cancelButton.hide()
+        message_box.exec()
 
     # 定时器
     def add_command_bar_action_timer(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:

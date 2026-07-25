@@ -21,7 +21,7 @@ from ._common import (
 
 
 class PolisherTask(BaseQualityTask):
-    """Batch-polish TRANSLATED items through the strict indexed contract."""
+    """通过严格的索引协议批量润色 TRANSLATED 状态的条目。"""
 
     def __init__(
         self,

@@ -4,7 +4,7 @@
 >
 > 基线：RenpyBox v0.6.0 (`e75c2ce`)
 >
-> 编写日期：2026-07-24
+> 编写日期：2026-07-24；最后更新：2026-07-25
 >
 > 主要参考：AiNiee `afdda76ace1d5e2b2e0cd0240785f2436a82bf46`
 
@@ -424,7 +424,8 @@ ITEM_PROOFREADABLE_STATUSES = {TRANSLATED, POLISHED}
 3. 项目资产迁移、统一 preflight、批次命中与预算。
 4. `POLISHED` 贯通 Base、CacheItem、CacheManager、Engine、统计、所有 writer、Proofreading UI 与 Localizer。
 5. 新建 `module/Engine/Quality/PolisherTask.py` 和 `ProofreadTask.py`。
-6. 定向重试、质量报告与端到端回归。
+6. 接入 `QualityTaskCoordinator`、`Engine.Status.QUALITY`、质量进度分区与校对页命令。
+7. 定向重试、质量报告与端到端回归。
 
 ## 12. 验收测试
 
@@ -438,6 +439,9 @@ ITEM_PROOFREADABLE_STATUSES = {TRANSLATED, POLISHED}
 - 空资产不注入，禁用资产不注入；冲突、排序和预算结果可重复。
 - `POLISHED` 参与条目统计、续译、重置、筛选和全部文件写回，但不用于项目状态。
 - 润色/校对失败不修改原译文和原状态。
+- `QUALITY` 与初译、平台测试、工作台分析互斥；取消只停止后续批次，已完成批次可重载。
+- `polishing_progress`/`proofreading_progress` 按 schema 持久化，缺快照时安全失败且不泄露凭据。
+- 质量报告可稳定格式化错误统计，并按报告索引选择条目启动校对。
 - 暂停、关闭、重开后续译仍使用原快照。
 - 现有 Ren'Py、RPA、字体、hook、源码翻译和 Android 回归测试保持通过。
 
@@ -450,13 +454,118 @@ ITEM_PROOFREADABLE_STATUSES = {TRANSLATED, POLISHED}
 - 默认正则匹配。
 - 没有版本历史时的译文回滚。
 
-## 14. `future` 首次提交后的接线任务
+## 14. 质量任务 UI 与调度接线
 
-核心 `PolisherTask`、`ProofreadTask`、严格响应协议、质量校验和 `POLISHED` 状态已实现并有模块测试。本次首次提交不仓促加入尚未完整验证的质量任务 UI 调度层，后续继续完成：
+本节接线已在 `future` 分支继续完成：
 
-- 在校对页增加独立的“AI 润色”和“AI 校对”命令；前者只接收选中的 `TRANSLATED`，后者接收选中的 `TRANSLATED`/`POLISHED` 和当前错误类型。
-- 增加质量任务协调器，统一处理 busy、取消、分批进度、异常和缓存保存；运行时阻止初译、平台测试和工作台分析并发启动。
-- 从缓存中的 `translation_snapshot` 恢复质量任务语义，只合入当前 provider 凭据；不得与初译自动串联或修改项目级 `TRANSLATED` 状态。
-- 每个成功批次保存条目并更新 `polishing_progress` 或 `proofreading_progress`；取消只阻止后续批次。
-- 在校对页展示 `TranslationQualityReport` 的失败、fallback、索引错位和错误类型统计，并允许按报告选择条目启动校对。
-- UI 验收必须覆盖成功写 `POLISHED`、失败保持原 `dst/status/metadata`、取消后不丢已保存批次，以及缓存和日志不出现任何运行凭据。
+- 校对页提供独立的“AI 润色”“AI 校对”“质量报告”和“停止质量任务”命令。
+- “AI 润色”只接收选中的 `TRANSLATED`；“AI 校对”接收选中的 `TRANSLATED`/`POLISHED`，并把当前结果检查错误类型传入核心任务。
+- `QualityTaskCoordinator` 统一处理全局 busy、取消、分批进度、异常、回调与缓存保存。
+- 质量任务从缓存中的 `translation_snapshot` 恢复语义，只合入当前 provider 凭据；不与初译自动串联，也不修改项目级 `TRANSLATED` 状态。
+- 每个完成批次立即保存条目和对应进度分区；取消只阻止尚未开始的后续批次，当前批次正常完成并保存。
+- 校对页可展示 `TranslationQualityReport` 的失败、fallback、索引/行数错位和错误类型统计，并按报告条目直接启动 AI 校对。
+
+### 14.1 全局任务占用与取消
+
+`Engine.Status` 增加 `QUALITY`。初译、平台测试、工作台分析和质量任务都必须通过原子状态切换抢占引擎：
+
+```text
+IDLE -> TESTING
+IDLE -> TRANSLATING
+IDLE -> QUALITY
+```
+
+任务结束时只能释放自己持有的状态，不能无条件覆盖后来任务的状态。质量任务期间：
+
+- 初译、平台测试和工作台分析入口拒绝并发启动。
+- 校对页保留已加载条目，但进入只读状态。
+- 停止命令只设置取消标记，不强制中断当前网络请求。
+- 润色与校对默认每批 8 条；停止只阻止尚未开始的后续批次，当前批次完成并
+  保存后才结束，因此校对的最小取消粒度为当前批次（可通过 `batch_size=1`
+  将校对调整为逐条取消）。
+
+协调器公开接口：
+
+```text
+start_polishing(config, all_items, selected_items, ...)
+start_proofreading(config, all_items, selected_items, warning_map=..., ...)
+cancel()
+is_busy()
+get_progress()
+```
+
+`on_progress` 和 `on_done` 在 `ENGINE_QUALITY` 工作线程执行；Qt 页面必须通过 `pyqtSignal` 回到 UI 线程。
+
+### 14.2 质量进度缓存
+
+润色写入 `CacheProject.extras["polishing_progress"]`，校对写入 `CacheProject.extras["proofreading_progress"]`。两者使用同一 schema：
+
+```json
+{
+  "schema_version": 1,
+  "task_type": "POLISHER",
+  "state": "RUNNING",
+  "snapshot_id": "sha256:...",
+  "total_count": 16,
+  "completed_count": 8,
+  "updated_count": 7,
+  "failed_count": 1,
+  "skipped_count": 0,
+  "batch_count": 1,
+  "total_batch_count": 2,
+  "input_tokens": 1200,
+  "output_tokens": 500,
+  "failures": [
+    {"item_index": 5, "reason": "VALIDATION_FAILED", "attempts": 1}
+  ],
+  "error_type_counts": {"VALIDATION_FAILED": 1},
+  "cancel_requested": false,
+  "error_message": "",
+  "started_at": "2026-07-25T00:00:00+00:00",
+  "updated_at": "2026-07-25T00:00:05+00:00",
+  "completed_at": ""
+}
+```
+
+`state` 只允许 `RUNNING`、`COMPLETED`、`CANCELLED`、`FAILED`。缓存中不得写入 API key、token、password 或包含凭据的 provider 运行对象。
+
+### 14.3 失败边界
+
+- 缺少 `translation_snapshot`、快照版本不支持或当前没有可用 provider 时，质量任务写 `FAILED` 并向 UI 返回明确错误，不回退到当前可变配置重新构造语义。
+- 单条或单批失败时保留原 `dst/status/metadata`；只有通过确定性复验的结果才能写 `POLISHED`。
+- 核心任务在当前批次中途抛出异常时，协调器恢复该批次全部条目的 `dst/status/metadata`，再保存 `FAILED` 进度。
+- 项目状态始终保留 `TRANSLATED`。
+- UI 关闭、取消或任务异常后，已经完成并保存的批次不得丢失。
+
+## 15. 路径、项目资产与停止边界
+
+### 15.1 Ren'Py 路径契约
+
+所有页面通过 `module.Renpy.ProjectPaths.RenpyProjectPaths` 从“项目根目录 + 目标语言”派生路径，禁止各页面自行拼接旧路径：
+
+```text
+翻译输入：<项目>/game/tl/<lang>
+增量输入：<项目>/game/tl/<lang>_new
+翻译输出：<项目>/RenpyBox_Translation/<lang>
+增量输出：<项目>/RenpyBox_Translation/<lang>_new
+应用目标：<项目>/game/tl/<lang>
+```
+
+每次一键翻译、增量翻译和 hook 运行都会写入项目内的 `.renpybox_last_run_<lang>.json`。校对页和 Token 估算页先校验项目键、语言和输出目录，再恢复最近一次实际运行缓存；显式指定的自定义输出优先于旧清单。若 hook 在恢复主配置前异常退出，载入顺序固定为主缓存、增量缓存、hook 缓存，避免补漏子集遮蔽完整翻译。应用增量翻译时，除语义合并 RPY 文件外，还必须把增量缓存条目合并到主缓存，并在成功后把运行清单指回主输出；缓存迁移失败时保留 `<lang>_new/cache`，不得静默删除。`<lang>_new`、`None` 和跨语言目录只作为运行变体或非法输入处理，不会创建新的项目身份。
+
+### 15.2 角色工作台与轻量 RAG
+
+一键流程在翻译前复用 `CharacterScanner` 扫描角色名、说话样本、共现关系和变量引用：角色结果进入项目资产候选/角色草稿，变量进入禁翻表，不能绕过项目资产直接写入全局术语表。翻译开始时生成不可变资产快照；提示词按当前批次匹配世界观、角色卡、术语和禁翻项，并受 `asset_prompt_token_budget` 与条目数量限制。当前使用确定性的批次匹配，不引入向量数据库；只有在项目规模和召回质量证明必要时才评估向量 RAG。
+
+### 15.3 Token 估算
+
+Token 估算使用与实际翻译相同的输入目录、批次行数、文件边界、主提示词和项目资产上下文。优先使用 `o200k_base`/`cl100k_base`，编码器不可用时退回 UTF-8 字节近似；估算失败不能创建后台缓存服务线程，也不能把上一个项目的内存缓存用于当前项目。
+
+### 15.4 立即停止与旧线程隔离
+
+停止操作先设置取消标记、取消排队任务并在锁外释放 SDK 客户端；退避等待、文件扫描、AST 解析和流式响应都必须可响应取消。停止 watcher 只等待停止时已存在的工作线程，并设置有界清理期限。旧线程绑定线程级取消标记，清理期限后即使新任务开始，旧回调也不能继续请求或写入新任务缓存；停止屏障期间禁止新的翻译、质量任务和单条重译抢占引擎。
+
+## 16. 本轮验证状态
+
+- 已覆盖质量任务核心、协调器、快照语义恢复、当前凭据合入、分批保存、取消边界、全局 busy 拒绝和质量报告选择逻辑的自动化测试。
+- 仍需在带真实 Qt 窗口和真实 provider 的环境执行一次人工冒烟：命令栏布局、长文本显示、任务停止交互和实际 API 响应。该验证不要求构建安装包。

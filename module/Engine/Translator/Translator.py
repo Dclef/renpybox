@@ -13,6 +13,7 @@ import httpx
 from rich.progress import TaskID
 
 from base.Base import Base
+from base.LogManager import LogManager
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
@@ -20,6 +21,7 @@ from module.Engine.Engine import Engine
 from module.Engine.TaskLimiter import TaskLimiter
 from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TermAsset,
@@ -34,10 +36,26 @@ from module.Localizer.Localizer import Localizer
 from module.ProgressBar import ProgressBar
 from module.PromptBuilder import PromptBuilder
 from module.ResultChecker import ResultChecker
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    resolve_translation_output,
+    write_run_manifest,
+)
 from module.TextProcessor import TextProcessor
+
+
+class TranslationCancelled(RuntimeError):
+    """翻译在准备阶段被用户取消。"""
+
 
 # 翻译器
 class Translator(Base):
+
+    # 停止收尾最多等待已有任务多久，避免 SDK/网络异常导致 watcher 永不结束。
+    STOP_WAIT_TIMEOUT: float = 30.0
+    STOP_WAIT_POLL: float = 0.1
+    # watcher 超时后的残留线程清理也必须有上限，避免全局取消标记永久保留。
+    CANCEL_CLEANUP_TIMEOUT: float = 30.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,6 +71,13 @@ class Translator(Base):
         # 运行中的线程池（用于停止任务时快速取消）
         self._active_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._translation_thread: threading.Thread | None = None
+        self._stop_watcher: threading.Thread | None = None
+        self._stop_watcher_lock = threading.Lock()
+        self._cancel_cleanup_thread: threading.Thread | None = None
+        self._translation_run_initialized: bool = False
+        self._translation_run_id: int = 0
+        self._active_run_cancel_event: threading.Event | None = None
+        self._run_context = threading.local()
 
         # 注册事件
         self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
@@ -63,44 +88,181 @@ class Translator(Base):
 
     # 翻译停止事件
     def translation_stop(self, event: str, data: dict) -> None:
-        # 更新运行状态
-        Engine.get().set_status(Engine.Status.STOPPING)
+        current_status = Engine.get().get_status()
+        if current_status not in (
+            Engine.Status.TRANSLATING,
+            Engine.Status.STOPPING,
+        ):
+            return
 
-        # 立即中断网络连接并取消未执行的任务，避免停止后界面卡顿
-        TaskRequester.close_all_clients()
+        with self._stop_watcher_lock:
+            cleanup = getattr(self, "_cancel_cleanup_thread", None)
+            if cleanup is not None and cleanup.is_alive():
+                return
+
+        # 状态切换、取消事件登记和 MAIN 快照使用与启动相同的锁顺序
+        #（先 data_lock，再 Engine.lock），避免极早停止时出现锁反转。
+        with self.data_lock:
+            if Engine.get().get_status() not in (
+                Engine.Status.TRANSLATING,
+                Engine.Status.STOPPING,
+            ):
+                return
+            Engine.get().set_status(Engine.Status.STOPPING)
+            Engine.get().set_stop_barrier(True)
+
+            # 线程池可能在停止快照后才懒创建工作线程，新线程仍会绑定这个
+            # 已设置的事件，不会因下一轮清理全局事件而复活。
+            active_thread = getattr(self, "_translation_thread", None)
+            active_run_id = getattr(self, "_translation_run_id", None)
+            run_cancel_event = getattr(self, "_active_run_cancel_event", None)
+            if run_cancel_event is not None:
+                run_cancel_event.set()
+
+        # 在关闭客户端前固定旧轮线程集合，并把取消状态绑定到线程对象；
+        # 独立运行事件负责覆盖快照之后才创建的迟到线程。
+        stop_workers_list = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith(Engine.TASK_PREFIX)
+        ]
+        # 极早停止时，MAIN 线程可能尚未完成 enumerate 注册；显式加入
+        # 引用，确保它不会在 watcher 清除取消标记后继续初始化新任务。
+        if active_thread is not None and active_thread not in stop_workers_list:
+            stop_workers_list.append(active_thread)
+        stop_workers = tuple(stop_workers_list)
+
+        # 先取消排队任务，再异步释放网络客户端；关闭第三方 SDK 不能阻塞
+        # Qt 事件线程，否则点击停止后界面会长时间无响应。
         self._shutdown_active_executor()
+        TaskRequester.cancel_all_clients(
+            asynchronous = True,
+            threads = stop_workers,
+        )
+
+        # 只等待停止请求发出时已经存在的引擎线程。若使用全局线程计数，
+        # 超时后新启动的质量/单条任务也会被误算进旧任务清理范围。
 
         def task(event: str, data: dict) -> None:
-            while True:
-                time.sleep(0.5)
+            deadline = time.monotonic() + __class__.STOP_WAIT_TIMEOUT
+            timed_out = False
+            workers_finished = False
+            try:
+                while any(thread.is_alive() for thread in stop_workers):
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
+                    time.sleep(__class__.STOP_WAIT_POLL)
 
-                if Engine.get().get_running_task_count() == 0:
-                    # 等待回调执行完毕
-                    time.sleep(1.0)
+                workers_finished = not timed_out and not any(
+                    thread.is_alive() for thread in stop_workers
+                )
 
-                    # 写入缓存
-                    self.cache_manager.save_to_file(
-                        project = self.cache_manager.get_project(),
-                        items = self.cache_manager.get_items(),
-                        output_folder = self.config.output_folder,
+                if timed_out:
+                    self.warning(
+                        f"[STOP] 等待翻译线程超时（{__class__.STOP_WAIT_TIMEOUT:.1f}s），"
+                        "跳过本次缓存写入，保留现有缓存供下次恢复。"
                     )
+                elif (
+                    self._is_translation_run_current(active_run_id)
+                    and self._translation_run_initialized
+                ):
+                    # 只有本轮初始化完成且所有工作线程退出后才保存，避免
+                    # 早停时使用旧配置/旧项目覆盖其他路径的缓存。
+                    output_folder = str(self._active_cache_output_folder or "").strip()
+                    if output_folder:
+                        self.cache_manager.save_to_file(
+                            project = self.cache_manager.get_project(),
+                            items = self.cache_manager.get_items(),
+                            output_folder = output_folder,
+                            strict = True,
+                        )
 
-                    # 日志
-                    self.print("")
-                    self.info(Localizer.get().translator_stop)
-                    self.print("")
+                self.print("")
+                self.info(Localizer.get().translator_stop)
+                self.print("")
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.SUCCESS,
+                    "message": Localizer.get().translator_stop,
+                })
+            except Exception as exc:
+                # 停止收尾不能因为路径/磁盘异常而把引擎永久留在 STOPPING。
+                self.error("[STOP] 停止收尾失败，已跳过缓存写入", exc)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.WARNING,
+                    "message": f"停止完成，但缓存保存失败：{type(exc).__name__}",
+                })
+            finally:
+                # 只有确认所有旧线程退出后才清除全局标记；线程级标记仍会
+                # 保护迟到的旧回调，即使清理期限后新一轮已经开始。
+                if workers_finished:
+                    TaskRequester.CANCEL_EVENT.clear()
+                    Engine.get().set_stop_barrier(False)
+                elif timed_out:
+                    with self._stop_watcher_lock:
+                        cleanup = threading.Thread(
+                            target = self._clear_cancel_after_workers,
+                            args = (stop_workers,),
+                            name = "REN_TRANSLATION_CANCEL_CLEANUP",
+                            daemon = True,
+                        )
+                        self._cancel_cleanup_thread = cleanup
+                    cleanup.start()
+                else:
+                    # 异常路径也必须解除屏障，避免引擎永久无法接收新任务。
+                    TaskRequester.CANCEL_EVENT.clear()
+                    Engine.get().set_stop_barrier(False)
+                # 只释放自己持有的 STOPPING 状态，避免覆盖其他任务的状态。
+                Engine.get().release_status(Engine.Status.STOPPING)
+                self.emit(Base.Event.TRANSLATION_DONE, {
+                    "success": False,
+                    "stopped": True,
+                    "run_id": active_run_id,
+                })
+                with self._stop_watcher_lock:
+                    self._stop_watcher = None
 
-                    # 通知
-                    self.emit(Base.Event.APP_TOAST_SHOW, {
-                        "type": Base.ToastType.SUCCESS,
-                        "message": Localizer.get().translator_stop,
-                    })
+        with self._stop_watcher_lock:
+            if self._stop_watcher is not None and self._stop_watcher.is_alive():
+                return
+            watcher = threading.Thread(
+                target = task,
+                args = (event, data),
+                # watcher 使用独立前缀，避免被旧版线程统计逻辑误算为工作线程。
+                name = "REN_TRANSLATION_STOP_WATCHER",
+                daemon = True,
+            )
+            self._stop_watcher = watcher
+            watcher.start()
 
-                    # 更新运行状态
-                    Engine.get().set_status(Engine.Status.IDLE)
-                    self.emit(Base.Event.TRANSLATION_DONE, {})
-                    break
-        threading.Thread(target = task, args = (event, data)).start()
+    def _clear_cancel_after_workers(
+        self,
+        workers: tuple[threading.Thread, ...] = (),
+    ) -> None:
+        """停止超时后有界等待旧工作线程，再清除全局取消标记。"""
+        # 兼容旧测试/外部调用：未传线程列表时退回当前线程快照，仍受期限限制。
+        if not workers:
+            workers = tuple(
+                thread
+                for thread in threading.enumerate()
+                if thread.name.startswith(Engine.TASK_PREFIX)
+            )
+
+        deadline = time.monotonic() + __class__.CANCEL_CLEANUP_TIMEOUT
+        while any(thread.is_alive() for thread in workers):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(__class__.STOP_WAIT_POLL)
+
+        if any(thread.is_alive() for thread in workers):
+            self.warning(
+                "[STOP] 残留翻译线程超过清理期限，解除停止屏障并交由守护线程退出"
+            )
+        TaskRequester.CANCEL_EVENT.clear()
+        Engine.get().set_stop_barrier(False)
+        with self._stop_watcher_lock:
+            if self._cancel_cleanup_thread is threading.current_thread():
+                self._cancel_cleanup_thread = None
 
     def _shutdown_active_executor(self) -> None:
         with self.data_lock:
@@ -114,20 +276,107 @@ class Translator(Base):
         except Exception:
             pass
 
-    def _should_stop_requested(self) -> bool:
-        return Engine.get().get_status() == Engine.Status.STOPPING
+    def _is_translation_run_current(self, run_id: int | None) -> bool:
+        """判断回调/线程是否仍属于当前翻译代次。"""
+        if run_id is None:
+            # 兼容旧测试与外部直接调用 translation_start_task 的入口。
+            return True
+        with self.data_lock:
+            return getattr(self, "_translation_run_id", 0) == run_id
+
+    def _bind_run_context(
+        self,
+        run_id: int | None,
+        cancel_event: threading.Event | None,
+    ) -> None:
+        context = getattr(self, "_run_context", None)
+        if context is None:
+            context = threading.local()
+            self._run_context = context
+        context.run_id = run_id
+        context.cancel_event = cancel_event
+        TaskRequester.bind_run_cancel_event(cancel_event)
+
+    def _unbind_run_context(self) -> None:
+        TaskRequester.unbind_run_cancel_event()
+        context = getattr(self, "_run_context", None)
+        if context is None:
+            return
+        for name in ("run_id", "cancel_event"):
+            if hasattr(context, name):
+                delattr(context, name)
+
+    def _should_stop_requested(
+        self,
+        run_id: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        context = getattr(self, "_run_context", None)
+        if run_id is None:
+            run_id = getattr(context, "run_id", None)
+        if cancel_event is None:
+            cancel_event = getattr(context, "cancel_event", None)
+        return (
+            not self._is_translation_run_current(run_id)
+            or (cancel_event is not None and cancel_event.is_set())
+            or Engine.get().get_status() == Engine.Status.STOPPING
+            or TaskRequester.is_cancel_requested()
+        )
+
+    def _raise_if_stop_requested(self) -> None:
+        """在不可逆的准备步骤之间快速退出。"""
+        if self._should_stop_requested():
+            raise TranslationCancelled()
 
     # 翻译开始事件
     def translation_start(self, event: str, data: dict) -> None:
-        if Engine.get().get_status() == Engine.Status.IDLE:
-            thread = threading.Thread(
-                target = self.translation_start_task,
-                args = (event, data),
-                name = f"{Engine.TASK_PREFIX}MAIN",
-            )
-            self._translation_thread = thread
-            thread.start()
-        else:
+        with self._stop_watcher_lock:
+            stop_watcher = self._stop_watcher
+            cancel_cleanup = getattr(self, "_cancel_cleanup_thread", None)
+        if (
+            stop_watcher is not None and stop_watcher.is_alive()
+        ) or (
+            cancel_cleanup is not None and cancel_cleanup.is_alive()
+        ):
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": "上一次翻译仍在停止收尾，请稍候再开始。",
+            })
+            return
+
+        start_failed = False
+        with self.data_lock:
+            active_thread = self._translation_thread
+            if active_thread is not None and active_thread.is_alive():
+                start_failed = True
+            elif Engine.get().try_set_status(Engine.Status.IDLE, Engine.Status.TRANSLATING):
+                # 状态占用、运行登记和线程启动必须处于同一个临界区。停止事件
+                # 一旦看到 TRANSLATING，就一定能取得已登记且已启动的 MAIN。
+                self._translation_run_id = self._translation_run_id + 1
+                run_id = self._translation_run_id
+                run_cancel_event = threading.Event()
+                self._active_run_cancel_event = run_cancel_event
+                self._translation_run_initialized = False
+                self._active_cache_output_folder = ""
+                thread = threading.Thread(
+                    target = self.translation_start_task,
+                    args = (event, data, run_id, run_cancel_event),
+                    name = f"{Engine.TASK_PREFIX}MAIN",
+                )
+                self._translation_thread = thread
+                try:
+                    thread.start()
+                except Exception:
+                    run_cancel_event.set()
+                    if self._translation_thread is thread:
+                        self._translation_thread = None
+                    Engine.get().release_status(Engine.Status.TRANSLATING)
+                    raise
+                return
+            else:
+                start_failed = True
+
+        if start_failed:
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
                 "message": Localizer.get().translator_running,
@@ -206,7 +455,8 @@ class Translator(Base):
         threading.Thread(target = task, args = (event, data)).start()
 
     def _resolve_project_status_output_folder(self, data: dict) -> str:
-        current_output = Config().load().output_folder
+        current_config = Config().load()
+        current_output = current_config.output_folder
         runtime_output = getattr(self, "_last_runtime_output_folder", "")
         requested_output = ""
         prefer_runtime = False
@@ -223,6 +473,13 @@ class Translator(Base):
                 candidates.append(path)
 
         add_candidate(requested_output)
+        if not requested_output:
+            resolved = resolve_translation_output(
+                current_config,
+                runtime_output if prefer_runtime else None,
+            )
+            if resolved is not None:
+                add_candidate(str(resolved))
         if prefer_runtime:
             add_candidate(runtime_output)
             add_candidate(current_output)
@@ -276,6 +533,8 @@ class Translator(Base):
                 if isinstance(platform, dict) and platform.get("id") == persisted_id:
                     current = platform
                     break
+        if persisted and not current:
+            raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再继续翻译")
         if not current:
             current = cls._get_active_platform(config)
 
@@ -300,6 +559,41 @@ class Translator(Base):
         return config
 
     @staticmethod
+    def _remember_runtime_manifest(config: Config) -> None:
+        """记录本次 Ren'Py 运行目录，供页面重开后恢复实际缓存。"""
+        try:
+            paths = RenpyProjectPaths.from_config(config)
+            if paths is None:
+                return
+            if not paths.game_dir.is_dir():
+                # 专用字段残留但项目已不存在时，不要为普通文本任务写入
+                # 一个指向旧项目的清单。
+                return
+            if not any(
+                str(getattr(config, field, "") or "").strip()
+                for field in ("renpy_project_path", "renpy_game_folder", "renpy_tl_folder")
+            ):
+                return
+
+            if getattr(config, "renpy_hook_translate", False):
+                run_kind = "hook"
+            elif getattr(config, "renpy_source_translate", False):
+                run_kind = "source"
+            else:
+                run_kind = "translation"
+            write_run_manifest(
+                paths,
+                output_folder = getattr(config, "output_folder", ""),
+                input_folder = getattr(config, "input_folder", ""),
+                application_target_dir = paths.application_target_dir,
+                run_kind = run_kind,
+                status = "active",
+            )
+        except Exception as exc:
+            # 清单是恢复辅助信息，写入失败不能阻断翻译主流程。
+            LogManager.get().warning(f"写入 Ren'Py 运行清单失败：{exc}")
+
+    @staticmethod
     def _assets_have_project_state(assets: ProjectAssets) -> bool:
         return bool(
             assets.revision > 0
@@ -316,11 +610,33 @@ class Translator(Base):
 
     def _load_project_assets(self, config: Config) -> ProjectAssets:
         project = self.cache_manager.get_project()
-        assets = ProjectAssets.from_dict(project.get_project_assets())
-        if not self._assets_have_project_state(assets):
-            assets = ProjectAssets.from_config(config)
-            project.set_project_assets(assets)
-        return assets
+        runtime_assets = ProjectAssets.from_dict(project.get_project_assets())
+
+        # 工作台资产按项目主输出目录持久化；当前运行可能是
+        # ``<lang>_new`` 增量目录。即使运行缓存已有资产，也要比较 revision，
+        # 避免旧的增量快照覆盖主工作台后来更新的角色卡或世界观。
+        try:
+            stable_state = ProjectAssetsRepository.from_config(config).load(config)
+            stable_assets = ProjectAssets.from_dict(stable_state.assets)
+        except Exception as exc:
+            if self._assets_have_project_state(runtime_assets):
+                self.warning(f"[ASSET] 读取主项目资产失败，继续使用当前运行快照：{exc}")
+                return runtime_assets
+            self.warning(f"[ASSET] 读取项目资产失败，回退到全局配置：{exc}")
+            stable_assets = ProjectAssets.from_config(config)
+
+        runtime_has_state = self._assets_have_project_state(runtime_assets)
+        stable_has_state = self._assets_have_project_state(stable_assets)
+        if (
+            stable_has_state
+            and (
+                not runtime_has_state
+                or stable_assets.revision >= runtime_assets.revision
+            )
+        ) or not runtime_has_state:
+            project.set_project_assets(stable_assets)
+            return stable_assets
+        return runtime_assets
 
     def _build_task_context(
         self,
@@ -385,6 +701,7 @@ class Translator(Base):
         status: Base.TranslationStatus,
         data: dict,
     ) -> TranslationTaskContext:
+        self._raise_if_stop_requested()
         output_folder = current_config.output_folder
         self.cache_manager.cache_use_sqlite = bool(current_config.cache_use_sqlite)
         current_platform = self._get_active_platform(current_config)
@@ -394,10 +711,12 @@ class Translator(Base):
             normalized_status = Base.TranslationStatus.UNTRANSLATED
 
         if normalized_status in Base.PROJECT_RESUMABLE_STATUSES:
+            self._raise_if_stop_requested()
             self.cache_manager.load_from_file(output_folder, strict = True)
             project = self.cache_manager.get_project()
             snapshot = project.get_translation_snapshot()
             if snapshot is None:
+                self._raise_if_stop_requested()
                 assets = self._load_project_assets(current_config)
                 context = self._build_task_context(
                     current_config,
@@ -406,12 +725,15 @@ class Translator(Base):
                     legacy_bootstrap = True,
                 )
                 project.set_translation_snapshot(context)
+                self._raise_if_stop_requested()
                 self.cache_manager.save_to_file(
                     project = project,
                     items = self.cache_manager.get_items(),
                     output_folder = output_folder,
+                    strict = True,
                 )
             else:
+                self._raise_if_stop_requested()
                 runtime_provider = self._get_resume_runtime_provider(snapshot, current_config)
                 context = TranslationTaskContext.from_snapshot(
                     snapshot,
@@ -419,9 +741,11 @@ class Translator(Base):
                 )
 
             self._run_asset_preflight(context, data)
+            self._raise_if_stop_requested()
             return context
 
         fresh_project, items = FileManager(current_config).read_from_path()
+        self._raise_if_stop_requested()
         if self._has_cache_snapshot(output_folder):
             self.cache_manager.load_project_from_file(output_folder, strict = True)
             if self.cache_manager.get_project().get_id() == "":
@@ -434,6 +758,7 @@ class Translator(Base):
         assets = self._load_project_assets(current_config)
         context = self._build_task_context(current_config, assets, current_platform)
         self._run_asset_preflight(context, data)
+        self._raise_if_stop_requested()
         progress = self._new_progress_extras(
             sum(
                 1
@@ -441,6 +766,7 @@ class Translator(Base):
                 if item.get_status() == Base.TranslationStatus.UNTRANSLATED
             )
         )
+        self._raise_if_stop_requested()
         self.cache_manager.reset_translation_run(
             items,
             output_folder,
@@ -491,7 +817,45 @@ class Translator(Base):
             payload["schema_version"] = 1
             payload["items"] = items
             project.set_analysis_candidates(payload)
-            self.cache_manager.require_save_to_file(self.config.output_folder)
+            runtime_output = str(getattr(self.config, "output_folder", "") or "").strip()
+            if runtime_output:
+                self.cache_manager.require_save_to_file(runtime_output)
+
+            # 分析候选属于项目长期资产；增量运行写入 ``*_new`` 时也同步到
+            # 稳定主输出，应用翻译后工作台不会丢失本轮候选。
+            try:
+                stable_config = getattr(self, "config", None)
+                if stable_config is not None:
+                    ProjectAssetsRepository.from_config(stable_config).save_analysis_candidates(payload)
+            except Exception as exc:
+                self.warning(f"[ASSET] 保存分析候选到稳定项目失败：{exc}")
+
+    def _merge_analysis_candidates_for_run(
+        self,
+        run_id: int | None,
+        cancel_event: threading.Event | None,
+        candidates: list[dict[str, str]],
+    ) -> None:
+        """只接收当前运行产生的候选术语，丢弃停止后的迟到结果。"""
+        if self._should_stop_requested(run_id, cancel_event):
+            return
+        self._merge_analysis_candidates(candidates)
+
+    def _run_translation_task(
+        self,
+        task: TranslatorTask,
+        current_round: int,
+        run_id: int | None,
+        cancel_event: threading.Event | None,
+    ) -> dict[str, object]:
+        """在线程池工作线程中绑定本轮取消令牌并执行任务。"""
+        TaskRequester.bind_run_cancel_event(cancel_event)
+        try:
+            if self._should_stop_requested(run_id, cancel_event):
+                return {"cancelled": True}
+            return task.start(current_round)
+        finally:
+            TaskRequester.unbind_run_cancel_event()
 
     def _new_progress_extras(self, total_line: int) -> dict:
         """创建新的翻译进度统计。"""
@@ -584,13 +948,33 @@ class Translator(Base):
         return True, ""
 
     # 实际的翻译流程
-    def translation_start_task(self, event: str, data: dict) -> None:
+    def translation_start_task(
+        self,
+        event: str,
+        data: dict,
+        run_id: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        self._bind_run_context(run_id, cancel_event)
         try:
             data = data if isinstance(data, dict) else {}
             status = data.get("status", Base.TranslationStatus.UNTRANSLATED)
 
-            # 更新运行状态
-            Engine.get().set_status(Engine.Status.TRANSLATING)
+            if self._should_stop_requested(run_id, cancel_event):
+                return None
+
+            # 兼容直接调用入口；事件入口已经原子占用 TRANSLATING。
+            engine_status = Engine.get().get_status()
+            if run_id is not None:
+                # 事件入口登记的线程不能在极早停止后重新把 IDLE 占回去。
+                if engine_status != Engine.Status.TRANSLATING:
+                    return None
+            elif engine_status == Engine.Status.IDLE:
+                if Engine.get().has_single_tasks():
+                    return None
+                Engine.get().set_status(Engine.Status.TRANSLATING)
+            elif engine_status != Engine.Status.TRANSLATING:
+                return None
 
             # 预处理提示（解析/生成任务阶段）
             self.emit(Base.Event.TRANSLATION_UPDATE, {
@@ -601,10 +985,20 @@ class Translator(Base):
             # 重置无状态组件，然后在唯一边界创建/恢复不可变任务上下文。
             TextProcessor.reset()
             TaskRequester.reset()
+            # 丢弃上一轮停止后遗留的延迟保存目标，避免后台服务线程把
+            # 新一轮条目写回旧项目/旧语言目录。
+            with self.cache_manager.LOCK:
+                self.cache_manager.require_flag = False
+                self.cache_manager.require_path = ""
+            if self._should_stop_requested(run_id, cancel_event):
+                return None
             PromptBuilder.reset()
             current_config = self._copy_entry_config(data)
+            if self._should_stop_requested(run_id, cancel_event):
+                return None
             self._last_runtime_output_folder = current_config.output_folder
             self._active_cache_output_folder = ""
+            self._remember_runtime_manifest(current_config)
 
             if getattr(current_config, "renpy_source_translate", False):
                 valid_layout, layout_message = self._validate_renpy_source_io_layout(current_config)
@@ -614,27 +1008,45 @@ class Translator(Base):
                         "type": Base.ToastType.WARNING,
                         "message": layout_message,
                     })
-                    Engine.get().set_status(Engine.Status.IDLE)
-                    self.emit(Base.Event.TRANSLATION_DONE, {})
+                    if self._is_translation_run_current(run_id):
+                        Engine.get().release_status(Engine.Status.TRANSLATING)
+                        self.emit(Base.Event.TRANSLATION_DONE, {
+                            "success": False,
+                            "run_id": run_id,
+                            "error": "INVALID_SOURCE_LAYOUT",
+                        })
                     return None
 
             try:
-                self.task_context = self._initialize_translation_run(
+                task_context = self._initialize_translation_run(
                     current_config,
                     status,
                     data,
                 )
+                self._raise_if_stop_requested()
+                runtime_config = task_context.to_runtime_config(current_config)
+                runtime_platform = self._get_active_platform(runtime_config)
+                self.task_context = task_context
                 self._active_cache_output_folder = current_config.output_folder
-                self.config = self.task_context.to_runtime_config(current_config)
-                self.platform = self._get_active_platform(self.config)
+                self.config = runtime_config
+                self.platform = runtime_platform
+                self._translation_run_initialized = True
+            except TranslationCancelled:
+                # 用户主动取消准备阶段，不显示错误，也不写入未完成的缓存。
+                return None
             except Exception as e:
-                self.error("[INIT] 翻译任务上下文初始化失败", e)
-                self.emit(Base.Event.APP_TOAST_SHOW, {
-                    "type": Base.ToastType.ERROR,
-                    "message": str(e),
-                })
-                Engine.get().set_status(Engine.Status.IDLE)
-                self.emit(Base.Event.TRANSLATION_DONE, {})
+                if not self._should_stop_requested(run_id, cancel_event):
+                    self.error("[INIT] 翻译任务上下文初始化失败", e)
+                    self.emit(Base.Event.APP_TOAST_SHOW, {
+                        "type": Base.ToastType.ERROR,
+                        "message": str(e),
+                    })
+                    Engine.get().release_status(Engine.Status.TRANSLATING)
+                    self.emit(Base.Event.TRANSLATION_DONE, {
+                        "success": False,
+                        "run_id": run_id,
+                        "error": type(e).__name__,
+                    })
                 return None
 
             local_flag = self.initialize_local_flag()
@@ -755,7 +1167,11 @@ class Translator(Base):
                             items,
                             precedings,
                             runtime_config = task_config,
-                            candidate_sink = self._merge_analysis_candidates,
+                            candidate_sink = lambda candidates, current_run_id = run_id, current_cancel_event = cancel_event: self._merge_analysis_candidates_for_run(
+                                current_run_id,
+                                current_cancel_event,
+                                candidates,
+                            ),
                         ))
 
                 # 打印日志
@@ -797,37 +1213,62 @@ class Translator(Base):
                                 stopping = True
                                 break
 
-                            if not task_limiter.acquire(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                            if not task_limiter.acquire(
+                                lambda: self._should_stop_requested(run_id, cancel_event)
+                            ):
                                 stopping = True
                                 break
 
-                            if not task_limiter.wait(lambda: Engine.get().get_status() == Engine.Status.STOPPING):
+                            if not task_limiter.wait(
+                                lambda: self._should_stop_requested(run_id, cancel_event)
+                            ):
                                 task_limiter.release()
                                 stopping = True
                                 break
 
                             try:
-                                future = executor.submit(task.start, current_round)
+                                future = executor.submit(
+                                    self._run_translation_task,
+                                    task,
+                                    current_round,
+                                    run_id,
+                                    cancel_event,
+                                )
                             except RuntimeError:
                                 task_limiter.release()
                                 stopping = True
                                 break
                             future.add_done_callback(task_limiter.release)
-                            future.add_done_callback(lambda future: self.task_done_callback(future, pid, progress))
+                            future.add_done_callback(
+                                lambda future, current_run_id = run_id, current_cancel_event = cancel_event: self.task_done_callback(
+                                    future,
+                                    pid,
+                                    progress,
+                                    current_run_id,
+                                    current_cancel_event,
+                                )
+                            )
                     finally:
-                        with self.data_lock:
-                            if self._active_executor is executor:
-                                self._active_executor = None
+                        # 停止可能发生在最后一次 submit 之后，不能只依赖循环内
+                        # 的局部标志；否则会在 shutdown(wait=True) 中继续等待网络任务。
+                        stopping = stopping or self._should_stop_requested()
+                        try:
+                            executor.shutdown(
+                                wait = not stopping,
+                                cancel_futures = stopping,
+                            )
+                        except Exception:
+                            # 关闭线程池失败不应阻塞后续停止收尾；正在运行的任务
+                            # 仍会通过取消事件自行退出。
+                            pass
+                        finally:
+                            with self.data_lock:
+                                if self._active_executor is executor:
+                                    self._active_executor = None
 
-                        if stopping:
-                            try:
-                                executor.shutdown(wait = False, cancel_futures = True)
-                            except Exception:
-                                pass
-                        else:
-                            executor.shutdown(wait = True)
-
-                if stopping:
+                # 停止信号可能恰好在 shutdown 后到达，离开线程池后再检查一次，
+                # 避免继续进入结果判断、缓存写入等昂贵阶段。
+                if stopping or self._should_stop_requested():
                     return None
 
                 # 判断是否需要继续翻译
@@ -862,38 +1303,76 @@ class Translator(Base):
                     })
                     break
 
-            # 等待回调执行完毕
-            time.sleep(1.0)
+            # 等待回调执行完毕；拆成短片段，确保停止请求不会被固定睡眠拖住。
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if self._should_stop_requested():
+                    return None
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
+            if self._should_stop_requested():
+                return None
 
             # MTool 优化器后处理
             self.mtool_optimizer_postprocess(self.cache_manager.get_items())
+
+            if self._should_stop_requested():
+                return None
 
             # 写入缓存
             self.cache_manager.save_to_file(
                 project = self.cache_manager.get_project(),
                 items = self.cache_manager.get_items(),
                 output_folder = self.config.output_folder,
+                strict = True,
             )
+
+            if self._should_stop_requested():
+                return None
 
             # 检查结果并写入文件
             self.check_and_wirte_result(self.cache_manager.get_items())
 
-            # 重置内部状态（正常完成翻译）
-            Engine.get().set_status(Engine.Status.IDLE)
+            if self._should_stop_requested():
+                return None
 
-            # 触发翻译停止完成的事件
-            self.emit(Base.Event.TRANSLATION_DONE, {})
+            # 只有当前运行才能释放状态并通知完成，迟到旧线程不得影响新任务。
+            if self._is_translation_run_current(run_id):
+                Engine.get().release_status(Engine.Status.TRANSLATING)
+                self.emit(Base.Event.TRANSLATION_DONE, {
+                    "success": True,
+                    "run_id": run_id,
+                    "output_folder": self.config.output_folder,
+                })
         except Exception as e:
-            self.error("[TRANSLATION] 翻译主流程异常终止", e)
-            if Engine.get().get_status() != Engine.Status.STOPPING:
-                Engine.get().set_status(Engine.Status.IDLE)
+            if self._is_translation_run_current(run_id):
+                self.error("[TRANSLATION] 翻译主流程异常终止", e)
+            if (
+                self._is_translation_run_current(run_id)
+                and Engine.get().get_status() != Engine.Status.STOPPING
+            ):
+                Engine.get().release_status(Engine.Status.TRANSLATING)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
                     "message": str(e),
                 })
-                self.emit(Base.Event.TRANSLATION_DONE, {})
+                self.emit(Base.Event.TRANSLATION_DONE, {
+                    "success": False,
+                    "run_id": run_id,
+                    "error": type(e).__name__,
+                })
         finally:
-            self._translation_thread = None
+            self._unbind_run_context()
+            current_thread = threading.current_thread()
+            with self.data_lock:
+                if (
+                    getattr(self, "_translation_thread", None) is current_thread
+                    and (
+                        run_id is None
+                        or getattr(self, "_translation_run_id", 0) == run_id
+                    )
+                ):
+                    self._translation_thread = None
 
     # 初始化本地标识
     def initialize_local_flag(self) -> bool:
@@ -905,8 +1384,14 @@ class Translator(Base):
 
     # 初始化速度控制器
     def initialize_max_workers(self) -> tuple[int, int]:
-        max_workers: int = self.config.max_workers
-        rpm_threshold: int = self.config.rpm_threshold
+        try:
+            max_workers: int = max(0, int(self.config.max_workers))
+        except (TypeError, ValueError):
+            max_workers = 0
+        try:
+            rpm_threshold: int = max(0, int(self.config.rpm_threshold))
+        except (TypeError, ValueError):
+            rpm_threshold = 0
 
         # 当 max_workers = 0 时，尝试获取 llama.cpp 槽数
         if max_workers == 0:
@@ -927,8 +1412,12 @@ class Translator(Base):
         elif max_workers > 0 and rpm_threshold == 0:
             pass
         elif max_workers == 0 and rpm_threshold > 0:
-            max_workers = 8192
-            rpm_threshold = rpm_threshold
+            # RPM 不是并发数；没有本地槽位信息时使用小的安全默认值，
+            # 避免把线程池误建成 8192 个线程导致内存和停止操作卡顿。
+            max_workers = min(8, max(1, rpm_threshold))
+
+        # 配置文件可能来自旧版本或手工编辑，给线程池设置最终上限。
+        max_workers = min(max_workers, 64)
 
         return max_workers, rpm_threshold
 
@@ -1113,9 +1602,20 @@ class Translator(Base):
             self.warning(f"[REINJECT] 自动注入失败: {exc}")
 
     # 翻译任务完成时
-    def task_done_callback(self, future: concurrent.futures.Future, pid: TaskID, progress: ProgressBar) -> None:
+    def task_done_callback(
+        self,
+        future: concurrent.futures.Future,
+        pid: TaskID,
+        progress: ProgressBar,
+        run_id: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         # 停止任务时不再更新进度/写缓存，避免 UI 卡顿或进度对象已释放导致异常
-        if Engine.get().get_status() == Engine.Status.STOPPING:
+        # 线程级取消标记还会覆盖“停止超时后新轮已启动”的窗口，防止旧轮
+        # 的迟到回调写入新轮共享的缓存管理器。
+        if (
+            self._should_stop_requested(run_id, cancel_event)
+        ):
             return
 
         try:
@@ -1125,6 +1625,13 @@ class Translator(Base):
             # 结果为空则跳过后续的更新步骤
             if not isinstance(result, dict) or len(result) == 0:
                 return
+
+            if result.get("cancelled") is True:
+                return
+
+            # future 完成到回调执行之间也可能恰好发生停止/新一轮启动。
+            if self._should_stop_requested(run_id, cancel_event):
+                return
             
             # 检查是否为错误返回 (配合 TranslatorTask 的异常捕获)
             if result.get("error"):
@@ -1133,6 +1640,8 @@ class Translator(Base):
 
             # 记录数据
             with self.data_lock:
+                if run_id is not None and self._translation_run_id != run_id:
+                    return
                 self.extras = self._merge_task_result_into_progress(result)
 
             # 更新翻译进度

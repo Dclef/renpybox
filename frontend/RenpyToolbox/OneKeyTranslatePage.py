@@ -49,32 +49,228 @@ from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy import renpy_extract as rx
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    apply_to_config,
+    write_run_manifest,
+)
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+from module.Cache.CacheManager import CacheManager
+from module.Config import Config
+from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScanner
 from frontend.TranslationPage import TranslationPage
 
 
-def configure_main_translation_paths(config, game_dir, tl_name):
+def configure_main_translation_paths(config, game_dir, tl_name, *, remember_run = True):
     """将翻译输入和输出恢复到主语言目录。"""
-    project_root = Path(game_dir)
-    main_tl_dir = project_root / "game" / "tl" / tl_name
-    output_dir = project_root / "RenpyBox_Translation" / tl_name
-    config.input_folder = str(main_tl_dir)
-    config.output_folder = str(output_dir)
-    return main_tl_dir, output_dir
+    paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+    if paths is None:
+        raise ValueError("无法解析 Ren'Py 项目路径")
+    apply_to_config(config, paths)
+    if remember_run:
+        _remember_translation_run(
+            paths,
+            output_folder = paths.translation_output_dir,
+            input_folder = paths.tl_language_dir,
+            run_kind = "translation",
+        )
+    return paths.tl_language_dir, paths.translation_output_dir
 
 
 def configure_incremental_translation_paths(config, game_dir, tl_name, incremental_dir):
     """将翻译指向增量目录，同时保留主 TL 合并目标。"""
-    main_tl_dir, _ = configure_main_translation_paths(config, game_dir, tl_name)
+    paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+    if paths is None:
+        raise ValueError("无法解析 Ren'Py 项目路径")
     delta_dir = Path(incremental_dir)
-    output_dir = Path(game_dir) / "RenpyBox_Translation" / f"{tl_name}_new"
-    config.input_folder = str(delta_dir)
-    config.output_folder = str(output_dir)
-    return main_tl_dir, output_dir
+    output_dir = paths.translation_output_dir.parent / f"{paths.language}_new"
+    apply_to_config(config, paths, input_folder = delta_dir, output_folder = output_dir)
+    _remember_translation_run(
+        paths,
+        output_folder = output_dir,
+        input_folder = delta_dir,
+        application_target_dir = paths.application_target_dir,
+        run_kind = "incremental",
+    )
+    return paths.tl_language_dir, output_dir
+
+
+def preserve_incremental_translation_cache(
+    output_dir: Path,
+    *,
+    stamp: str | None = None,
+) -> Path | None:
+    """在重新抽取前保留已有增量缓存，返回可恢复的备份目录。
+
+    ``<lang>_new`` 是一键流程的固定运行目录。重新抽取必须从空目录开始，
+    但不能直接删除用户尚未应用的译文；将旧目录移动到同一父目录下的时间戳
+    备份，既保持路径统一，也让用户可以手动恢复或取回旧进度。
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.exists():
+        return None
+
+    # 只允许在原输出目录的父目录中创建备份，避免配置异常时移动到项目外。
+    parent = output_dir.parent.resolve()
+    resolved_output = output_dir.resolve()
+    if resolved_output.parent != parent:
+        raise ValueError("增量缓存备份路径不在原输出目录父级内")
+
+    if stamp is None:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = "".join(char for char in str(stamp) if char.isalnum() or char in "-_")
+    if not stamp:
+        stamp = "backup"
+
+    candidate = parent / f"{output_dir.name}.backup-{stamp}"
+    suffix = 1
+    while candidate.exists():
+        candidate = parent / f"{output_dir.name}.backup-{stamp}-{suffix}"
+        suffix += 1
+
+    # move 是可恢复操作；即使目录只有部分文件，也不能用 rmtree 静默丢弃。
+    shutil.move(str(output_dir), str(candidate))
+    return candidate
+
+
+def _remember_translation_run(
+    paths,
+    *,
+    output_folder,
+    input_folder = None,
+    application_target_dir = None,
+    run_kind = "translation",
+):
+    """写入最近运行清单；清单失败不应阻断翻译主流程。"""
+    try:
+        return write_run_manifest(
+            paths,
+            output_folder,
+            input_folder = input_folder,
+            application_target_dir = application_target_dir,
+            run_kind = run_kind,
+        )
+    except Exception:
+        return None
+
+
+def _cache_item_identity(item) -> tuple[str, int, str, str]:
+    """返回跨主/增量缓存合并使用的稳定条目标识。"""
+    return (
+        str(item.get_file_path() or ""),
+        int(item.get_row() or 0),
+        str(item.get_src() or ""),
+        str(item.get_tag() or ""),
+    )
+
+
+def _project_assets_have_state(payload) -> bool:
+    """判断缓存中的工作台资产是否包含可用数据。"""
+    if not isinstance(payload, dict):
+        return False
+    try:
+        revision = int(payload.get("revision", 0) or 0)
+    except (TypeError, ValueError):
+        revision = 0
+    if revision > 0 or str(payload.get("updated_at", "") or "").strip():
+        return True
+    for section_name, value_name in (
+        ("worldbook", "data"),
+        ("character_cards", "items"),
+        ("glossary", "items"),
+        ("do_not_translate", "items"),
+    ):
+        section = payload.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        if bool(section.get("enabled")) or section.get(value_name):
+            return True
+    return False
+
+
+def merge_incremental_translation_cache(
+    incremental_output: Path,
+    main_output: Path,
+) -> bool:
+    """把增量输出缓存合并进主缓存，避免应用翻译时丢失新条目。"""
+    incremental_manager = CacheManager(service = False)
+    try:
+        incremental_manager.load_from_file(str(incremental_output), strict = True)
+    except Exception:
+        # 增量目录可能只有 rpy 文件而没有缓存；这种情况不需要迁移。
+        return False
+
+    main_manager = CacheManager(service = False)
+    main_loaded = False
+    try:
+        main_manager.load_from_file(str(main_output), strict = True)
+        main_loaded = True
+    except Exception:
+        pass
+
+    merged: dict[tuple[str, int, str, str], object] = {}
+    order: list[tuple[str, int, str, str]] = []
+    if main_loaded:
+        for item in main_manager.get_items():
+            key = _cache_item_identity(item)
+            if key not in merged:
+                order.append(key)
+            merged[key] = item
+    for item in incremental_manager.get_items():
+        key = _cache_item_identity(item)
+        if key not in merged:
+            order.append(key)
+        # 增量任务的状态/译文是本轮刚生成的，覆盖同键旧占位条目。
+        merged[key] = item
+
+    items = list(merged[key] for key in order)
+    project = incremental_manager.get_project()
+    if main_loaded:
+        # 工作台资产属于项目级数据。增量运行可能在主工作台更新前启动，
+        # 因而不能只根据“是否存在”覆盖主缓存；始终按 revision 保留较新快照。
+        try:
+            incremental_assets = project.get_project_assets()
+            main_assets = main_manager.get_project().get_project_assets()
+            try:
+                incremental_revision = int(incremental_assets.get("revision", 0) or 0)
+            except (TypeError, ValueError):
+                incremental_revision = 0
+            try:
+                main_revision = int(main_assets.get("revision", 0) or 0)
+            except (TypeError, ValueError):
+                main_revision = 0
+            # 旧缓存可能没有 revision：只要主缓存有资产而增量没有，
+            # 或两者 revision 相同，就应优先保留稳定主工作台快照。
+            if _project_assets_have_state(main_assets) and (
+                not _project_assets_have_state(incremental_assets)
+                or main_revision >= incremental_revision
+            ):
+                project.set_project_assets(main_assets)
+
+            # 分析候选没有独立 revision，空快照时仍从主缓存补齐。
+            if not project.get_analysis_candidates().get("items"):
+                project.set_analysis_candidates(main_manager.get_project().get_analysis_candidates())
+        except Exception:
+            # 资产迁移是辅助步骤，异常不能阻断翻译缓存合并。
+            pass
+
+    saver = CacheManager(service = False)
+    if not saver.save_to_file(project, items, str(main_output), strict = False):
+        # 坏 SQLite 不应阻止把有效增量缓存落到 JSON；当前实例切换后端，
+        # 后续校对页会按同一目录继续读取 JSON 回退。
+        try:
+            saver._mark_json_fallback(str(main_output))
+            saver.save_to_file(project, items, str(main_output), strict = True)
+        except Exception:
+            return False
+    return True
 
 
 def resolve_translation_apply_paths(config, incremental_output=None, incremental_target=None):
     """仅在增量输出有效时使用增量目标，避免复用页面时串用旧目录。"""
     if incremental_output:
+        if not incremental_target:
+            return Path(incremental_output), None
         return Path(incremental_output), Path(incremental_target)
     return Path(config.output_folder), Path(config.input_folder)
 
@@ -153,6 +349,10 @@ class YiJianFanyiPage(Base, QWidget):
         self._incremental_dir = None
         self._incremental_output_dir = None
         self._apply_target_dir = None
+        self._last_onekey_output_dir = None
+        # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
+        # 最近运行清单指向 hook 缓存，供校对页继续载入。
+        self._hook_restore_paths = None
         
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
@@ -480,30 +680,34 @@ class YiJianFanyiPage(Base, QWidget):
             self.has_old_translation = False
             return
         
+        selected_paths = RenpyProjectPaths.from_path(
+            text,
+            self.tl_folder_edit.text().strip() if hasattr(self, "tl_folder_edit") else "chinese",
+        )
         if os.path.isdir(text):
             # 检查是否是有效的 Ren'Py 游戏目录
-            game_subdir = os.path.join(text, "game")
+            game_subdir = str(selected_paths.game_dir) if selected_paths else os.path.join(text, "game")
             if os.path.isdir(game_subdir):
-                self.game_dir = text
-                self.game_path = text
-                self._sync_game_dir_to_config(text)
+                self.game_dir = str(selected_paths.project_root if selected_paths else Path(text))
+                self.game_path = self.game_dir
+                self._sync_game_dir_to_config(self.game_dir)
                 self.path_status_label.setText("✓ 检测到有效的 Ren'Py 游戏目录")
                 self.path_status_label.setStyleSheet("color: #27ae60;")
                 self.step1_next_btn.setEnabled(True)
                 # 检测旧翻译
-                self._check_old_translation(text)
+                self._check_old_translation(self.game_dir)
             else:
                 self.path_status_label.setText("⚠ 目录中未找到 game 文件夹，可能不是 Ren'Py 游戏")
                 self.path_status_label.setStyleSheet("color: #e67e22;")
                 # 仍然允许继续
-                self.game_dir = text
-                self.game_path = text
-                self._sync_game_dir_to_config(text)
+                self.game_dir = str(selected_paths.project_root if selected_paths else Path(text))
+                self.game_path = self.game_dir
+                self._sync_game_dir_to_config(self.game_dir)
                 self.step1_next_btn.setEnabled(True)
                 self.old_translation_card.setVisible(False)
                 self.has_old_translation = False
         elif os.path.isfile(text):
-            self.game_dir = os.path.dirname(text)
+            self.game_dir = str(selected_paths.project_root if selected_paths else Path(text).parent)
             self.game_path = text
             self._sync_game_dir_to_config(self.game_dir)
             self.path_status_label.setText("✓ 已选择游戏文件")
@@ -528,41 +732,31 @@ class YiJianFanyiPage(Base, QWidget):
     def _sync_game_dir_to_config(self, game_dir):
         """同步游戏目录到配置文件，包括输入/输出目录"""
         from module.Config import Config
-        from pathlib import Path
-        
+
         config = Config().load()
-        config.renpy_game_folder = game_dir
-        config.renpy_project_path = game_dir
-        
         # 设置 tl 目录路径
         tl_name = getattr(self, 'tl_folder_edit', None)
         tl_name = tl_name.text().strip() if tl_name else "chinese"
         if not tl_name:
             tl_name = "chinese"
-        
-        tl_dir, output_dir = configure_main_translation_paths(config, game_dir, tl_name)
-        config.renpy_tl_folder = str(tl_dir)
-        
+
+        paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+        if paths is None:
+            raise ValueError(f"无法解析项目目录：{game_dir}")
+        apply_to_config(config, paths)
+
         # 确保输出目录存在
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 保存输出根目录，用于后续显示
-        if not hasattr(config, 'renpybox_output_root'):
-            # 动态添加属性（如果配置类不支持，可以忽略）
-            try:
-                config.renpybox_output_root = str(output_dir.parent)
-            except:
-                pass
-        
+        paths.translation_output_dir.mkdir(parents = True, exist_ok = True)
         config.save()
-        
+
         self.info(f"[配置] 输入目录: {config.input_folder}")
         self.info(f"[配置] 输出目录: {config.output_folder}")
     
     def _check_old_translation(self, game_dir):
         """检测是否有旧翻译"""
         tl_name = self.tl_folder_edit.text().strip() or "chinese"
-        tl_dir = Path(game_dir) / "game" / "tl" / tl_name
+        paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+        tl_dir = paths.tl_language_dir if paths is not None else Path(game_dir) / "game" / "tl" / tl_name
         
         if tl_dir.exists() and any(tl_dir.iterdir()):
             # 统计旧翻译文件数量
@@ -688,8 +882,8 @@ class YiJianFanyiPage(Base, QWidget):
     
     # ==================== 进度三：术语表 ====================
     def _create_step3_page(self):
-        """进度三：术语表"""
-        page, layout = self._create_page_container("术语表设置", 3)
+        """进度三：项目资产与术语表。"""
+        page, layout = self._create_page_container("项目资产与术语表", 3)
         
         layout.addWidget(SubtitleLabel("术语表与禁翻表"))
         layout.addWidget(BodyLabel("术语表可以帮助你统一专有名词的翻译，禁翻表可以防止翻译不需要翻译的内容。本地词库页还支持手动扫描术语候选。"))
@@ -714,9 +908,18 @@ class YiJianFanyiPage(Base, QWidget):
         self.scan_names_btn = PushButton("🔍 自动提取角色名")
         self.scan_names_btn.clicked.connect(self._scan_character_names)
         btn_row.addWidget(self.scan_names_btn)
+
+        self.open_workbench_btn = PushButton("🎭 打开角色/世界观工作台")
+        self.open_workbench_btn.setToolTip("维护世界观和角色卡；翻译开始时会生成不可变上下文快照")
+        self.open_workbench_btn.clicked.connect(self._open_workbench_from_onekey)
+        btn_row.addWidget(self.open_workbench_btn)
         
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        self.workbench_asset_status = BodyLabel("正在读取项目资产…")
+        self.workbench_asset_status.setWordWrap(True)
+        layout.addWidget(self.workbench_asset_status)
         
         layout.addStretch(1)
         
@@ -1046,6 +1249,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_page.progress_ring.setVisible(False)
         if success:
             self.step2_status.setText("✓ 提取完成")
+            tl_name = self.tl_folder_edit.text().strip() or "chinese"
             
             # 如果是增量抽取并且有单独的增量目录，显示更详细的信息
             if result and result.incremental_dir and result.incremental_dir.exists():
@@ -1058,25 +1262,34 @@ class YiJianFanyiPage(Base, QWidget):
                 # 暂存目录需要保留到翻译完成；提前合并会删除它，
                 # 导致翻译页面回退到完整的主语言目录。
                 from module.Config import Config
-                tl_name = self.tl_folder_edit.text().strip() or "chinese"
                 config = Config().load()
                 apply_target, delta_output = configure_incremental_translation_paths(
                     config, self.game_dir, tl_name, result.incremental_dir
                 )
-                shutil.rmtree(str(delta_output), ignore_errors=True)
+                preserved_output = preserve_incremental_translation_cache(delta_output)
                 delta_output.mkdir(parents=True, exist_ok=True)
                 config.save()
                 self._apply_target_dir = apply_target
                 self._incremental_output_dir = delta_output
+                self._last_onekey_output_dir = delta_output
                 detail_msg += (
                     f"\n增量翻译输入：{result.incremental_dir.name}/"
                     f"\n增量翻译输出：{delta_output.name}/"
                 )
+                if preserved_output is not None:
+                    detail_msg += (
+                        f"\n检测到上一轮增量缓存，已保存在：{preserved_output.name}/"
+                        "（未删除，可手动恢复）"
+                    )
             else:
                 detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
                 self._incremental_dir = None
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
+                paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
+                self._last_onekey_output_dir = (
+                    paths.translation_output_dir if paths is not None else None
+                )
             
             self.step2_desc.setText(detail_msg)
             self.step2_page.progress_bar.setValue(100)
@@ -1109,35 +1322,26 @@ class YiJianFanyiPage(Base, QWidget):
             InfoBar.warning("提示", "提取过程遇到问题，你可以重试或跳过", parent=self)
 
     def _scan_character_names(self):
-        """扫描游戏目录下的角色名并添加到术语表，变量引用添加到禁翻表"""
+        """扫描角色候选并写入工作台，变量引用继续写入禁翻表。"""
         self._extract_character_names(force=True)
-        InfoBar.success("成功", "已扫描角色名(→术语表)和变量引用(→禁翻表)", parent=self)
+        InfoBar.success("成功", "已扫描角色候选(→角色工作台)和变量引用(→禁翻表)", parent=self)
 
     def _extract_character_names(self, *, force: bool = False):
-        """自动扫描并填充术语表（角色名）和禁翻表（变量引用）"""
+        """自动扫描角色候选、角色草稿和变量引用。"""
         if not self.game_dir:
             return
             
-        game_path = Path(self.game_dir) / "game"
+        paths = RenpyProjectPaths.from_path(
+            self.game_dir,
+            self.tl_folder_edit.text().strip() or "chinese",
+        )
+        game_path = paths.game_dir if paths is not None else Path(self.game_dir) / "game"
         if not game_path.exists():
             return
             
-        import re
-        from module.Text.SkipRules import should_skip_text
-        from module.Config import Config
-        from module.Extract.ReplaceGenerator import extract_names_from_game
-        
-        # 匹配: Character("Name") 或 Character(_("Name"))
-        RE_CHARACTER_CALL = re.compile(
-            r'Character\s*\(\s*(?:_\(\s*)?(["\'])((?:\\\1|.)*?)\1',
-            re.MULTILINE
-        )
-        
-        # 匹配对话/文本中的变量引用: [variable_name]
-        RE_VARIABLE_IN_TEXT = re.compile(r'\[(\w+)\]')
-
         found_names = set()
         found_preserves = set()  # 用于存储变量引用
+        candidate_cards: list[dict] = []
         
         config = Config().load()
         cache_key = str(game_path.resolve())
@@ -1150,52 +1354,93 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         try:
-            # === 新增：从 textbutton/text 控件提取角色名 ===
-            try:
-                extra_names = extract_names_from_game(game_path)
-                for name in extra_names:
-                    if not should_skip_text(name):
-                        found_names.add(name)
-                LogManager.get().debug(f"从 UI 控件提取到 {len(extra_names)} 个角色名")
-            except Exception as e:
-                LogManager.get().warning(f"从 UI 控件提取角色名失败: {e}")
+            # 统一复用工作台扫描器，确保一键流程与角色工作台识别结果一致。
+            scanner = CharacterScanner()
+            scan_result = scanner.scan_project(game_path.parent)
+            found_names.update(scan_result.names)
+            found_preserves.update(scan_result.preserves)
+
+            # 将本地扫描结果先形成待确认角色草稿；AI 分析仍由工作台按需触发。
+            glossary_names = scanner.collect_glossary_character_names(config)
+            for name in sorted(scan_result.names, key = lambda value: value.casefold()):
+                samples = list(scan_result.speaker_samples.get(name, []))[:12]
+                candidate = CharacterCandidate(
+                    name = name,
+                    match_keywords = [name],
+                    sample_lines = samples,
+                    related_names = list(scan_result.co_occurrence.get(name, []))[:8],
+                    name_translation = glossary_names.get(name, ""),
+                    sample_count = len(samples),
+                    low_confidence = len(samples) < 3,
+                )
+                candidate_cards.append(candidate.as_card_seed())
+        except Exception as exc:
+            LogManager.get().warning(f"统一角色扫描失败：{exc}")
             
-            for rpy_file in game_path.rglob("*.rpy"):
-                try:
-                    content = rpy_file.read_text(encoding="utf-8", errors="ignore")
-                    
-                    # 1. 扫描 Character() 定义 → 术语表
-                    matches = RE_CHARACTER_CALL.findall(content)
-                    for quote, raw_name in matches:
-                        name_str = raw_name.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\").strip()
-                        if not name_str:
-                            continue
-                        
-                        # 跳过变量引用形式的角色名 (如 [player_name])
-                        if name_str.startswith('[') and name_str.endswith(']'):
-                            found_preserves.add(name_str)
-                            continue
-                            
-                        if not self._looks_like_character_name(name_str):
-                            continue
-                            
-                        # 正常角色名放入术语表
-                        if not should_skip_text(name_str):
-                            found_names.add(name_str)
-                    
-                    # 2. 扫描对话文本中的变量引用 [xxx] → 禁翻表
-                    # 这些变量引用会嵌入在对话中，需要保护
-                    var_matches = RE_VARIABLE_IN_TEXT.findall(content)
-                    for var_name in var_matches:
-                        # 保存带括号的形式
-                        found_preserves.add(f"[{var_name}]")
-                        
-                except Exception:
-                    pass
-        except Exception:
-            pass
-            
-        updated_entries = self._update_config(found_names, found_preserves, config)
+        # 角色名由项目资产仓库统一维护为待确认候选；这里只保留变量引用的
+        # legacy text_preserve 配置同步，避免角色术语绕过项目资产边界。
+        self._update_config(set(), found_preserves, config)
+
+        # 同步到稳定的项目资产仓库。空译名保留为候选，避免项目缓存已经
+        # 存在时仅修改全局 Config 却不进入实际翻译快照。
+        try:
+            repository = ProjectAssetsRepository.from_config(config)
+            state = repository.load(config)
+            term_entries = [
+                {
+                    "source": self._clean_text_for_type(name),
+                    "target": "",
+                    "note": "一键流程自动提取角色名",
+                    "type": "角色",
+                }
+                for name in sorted(found_names, key = lambda value: value.casefold())
+                if self._clean_text_for_type(name)
+            ]
+            analysis_candidates = (
+                repository.merge_analysis_terms(term_entries)
+                if term_entries
+                else state.analysis_candidates
+            )
+
+            # 将本地扫描出的角色放入工作台待确认草稿，避免一键流程只更新
+            # 全局术语表而遗漏角色样本和说话风格上下文。
+            if candidate_cards:
+                existing_drafts = analysis_candidates.get("character_drafts", [])
+                existing_drafts = [
+                    item for item in existing_drafts
+                    if isinstance(item, dict)
+                ] if isinstance(existing_drafts, list) else []
+                existing_ids = {
+                    str(item.get("id", "")).strip()
+                    for item in existing_drafts
+                    if str(item.get("id", "")).strip()
+                }
+                for card in candidate_cards:
+                    card_id = str(card.get("id", "")).strip()
+                    if card_id and card_id not in existing_ids:
+                        existing_drafts.append(card)
+                        existing_ids.add(card_id)
+                analysis_candidates["character_drafts"] = existing_drafts
+                repository.save_analysis_candidates(analysis_candidates)
+
+            current_preserves = [item.to_dict() for item in state.assets.do_not_translate]
+            current_sources = {
+                str(item.get("source", "")).strip()
+                for item in current_preserves
+                if isinstance(item, dict)
+            }
+            current_preserves.extend(
+                {"source": value, "target": "", "note": "一键流程自动提取变量"}
+                for value in sorted(found_preserves)
+                if value not in current_sources
+            )
+            if found_preserves:
+                repository.replace_do_not_translate(
+                    current_preserves,
+                    enabled = True,
+                )
+        except Exception as exc:
+            LogManager.get().warning(f"同步一键项目资产失败：{exc}")
 
         auto_cache[cache_key] = time.time()
         config.glossary_auto_scan_cache = auto_cache
@@ -1397,6 +1642,55 @@ class YiJianFanyiPage(Base, QWidget):
         self.current_step = 3
         self.stacked.setCurrentIndex(2)
         self._find_glossary_files()
+        self._refresh_workbench_asset_status()
+
+    def _refresh_workbench_asset_status(self) -> None:
+        """显示与当前一键翻译项目绑定的工作台资产数量。"""
+        label = getattr(self, "workbench_asset_status", None)
+        if label is None:
+            return
+        try:
+            config = Config().load()
+            state = ProjectAssetsRepository.from_config(config).load(config)
+            assets = state.assets
+            candidates = state.analysis_candidates.get("items", [])
+            character_drafts = state.analysis_candidates.get("character_drafts", [])
+            if not isinstance(candidates, list):
+                candidates = []
+            if not isinstance(character_drafts, list):
+                character_drafts = []
+            label.setText(
+                "当前项目资产："
+                f"世界观{'已启用' if assets.worldbook_enabled else '未启用'}，"
+                f"角色卡 {len(assets.character_cards)} 张，"
+                f"术语 {len(assets.glossary)} 项，"
+                f"禁翻 {len(assets.do_not_translate)} 项；"
+                f"待确认术语候选 {len(candidates)} 项，"
+                f"角色草稿 {len(character_drafts)} 张。"
+            )
+        except Exception as exc:
+            label.setText(f"项目资产暂不可用：{exc}")
+
+    def _open_workbench_from_onekey(self) -> None:
+        """从一键流程打开工作台，并先同步当前项目路径。"""
+        try:
+            if self.game_dir:
+                self._sync_game_dir_to_config(self.game_dir)
+            page = getattr(self.window, "renpy_workbench_page", None)
+            if page is None and hasattr(self.window, "findChild"):
+                page = self.window.findChild(QWidget, "renpy_workbench_page")
+            if page is None:
+                InfoBar.warning("提示", "未找到角色/世界观工作台页面", parent = self)
+                return
+            if hasattr(page, "refresh_from_config"):
+                page.refresh_from_config()
+            if hasattr(self.window, "navigate_to_page"):
+                self.window.navigate_to_page(page)
+            elif hasattr(self.window, "switchTo"):
+                self.window.switchTo(page)
+        except Exception as exc:
+            self.logger.error(f"打开工作台失败：{exc}")
+            InfoBar.error("错误", f"打开工作台失败：{exc}", parent = self)
         
     def _find_glossary_files(self):
         found_files = []
@@ -1425,11 +1719,6 @@ class YiJianFanyiPage(Base, QWidget):
             page = TextPreservePage("text-preserve", self.window)
             self.window.navigate_to_page(page)
 
-    def _scan_character_names(self):
-        """扫描游戏目录下的角色名并添加到术语表，变量引用添加到禁翻表"""
-        self._extract_character_names(force=True)
-        InfoBar.success("成功", "已扫描角色名(→术语表)和变量引用(→禁翻表)", parent=self)
-            
     def _go_step4(self):
         self.current_step = 4
         self.stacked.setCurrentIndex(3)
@@ -1526,21 +1815,40 @@ class YiJianFanyiPage(Base, QWidget):
                 self._reset_auto_hook_state()
                 return
 
-            project_root = Path(self.game_dir)
             tl_name = self.tl_folder_edit.text().strip() or "chinese"
-            tl_dir = project_root / "game" / "tl" / tl_name
+            paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
+            if paths is None:
+                raise RuntimeError("无法解析当前 Ren'Py 项目路径")
+            project_root = paths.project_root
+            tl_dir = paths.tl_language_dir
             if not tl_dir.exists():
                 InfoBar.warning("提示", f"未找到 tl 目录，已跳过自动补全：{tl_dir}", parent=self)
                 self._reset_auto_hook_state()
                 return
 
-            self._sync_game_dir_to_config(self.game_dir)
+            self._sync_game_dir_to_config(str(project_root))
 
             config = Config().load()
-            config.input_folder = str(tl_dir)
-            config.output_folder = str(tl_dir)
-            config.renpy_game_folder = str(project_root)
-            config.renpy_tl_folder = str(tl_dir)
+            apply_to_config(
+                config,
+                paths,
+                input_folder = tl_dir,
+                output_folder = tl_dir,
+            )
+            previous_output = self._last_onekey_output_dir or paths.translation_output_dir
+            previous_output = Path(previous_output)
+            self._hook_restore_paths = (
+                str(project_root),
+                tl_name,
+                str(previous_output),
+            )
+            _remember_translation_run(
+                paths,
+                output_folder = tl_dir,
+                input_folder = tl_dir,
+                application_target_dir = tl_dir,
+                run_kind = "hook",
+            )
             config.renpy_hook_translate = True
             config.renpy_source_translate = False
 
@@ -1561,6 +1869,7 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as e:
             self.logger.error(f"自动补全漏翻启动失败: {e}")
             InfoBar.error("错误", f"自动补全漏翻启动失败: {e}", parent=self)
+            self._restore_paths_after_auto_hook()
             self._reset_auto_hook_state()
 
     def _reset_auto_hook_state(self):
@@ -1568,21 +1877,84 @@ class YiJianFanyiPage(Base, QWidget):
         self._onekey_translation_started = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
+        self._hook_restore_paths = None
+        self._last_onekey_output_dir = None
+
+    def _restore_paths_after_auto_hook(self) -> None:
+        """恢复全局配置，并把最近运行清单指回 Hook 前的有效缓存。"""
+        restore = self._hook_restore_paths
+        self._hook_restore_paths = None
+        if not restore:
+            return
+        try:
+            from module.Config import Config
+
+            config = Config().load()
+            # 新版本保存 (项目根, 语言目录名, Hook 前输出目录)；兼容旧版
+            # 只有两个元素的状态，避免页面对象在热更新后恢复时崩溃。
+            project_root = restore[0]
+            tl_name = restore[1]
+            previous_output = (
+                Path(restore[2])
+                if len(restore) >= 3 and restore[2]
+                else None
+            )
+            paths = configure_main_translation_paths(
+                config,
+                project_root,
+                tl_name,
+                remember_run = False,
+            )
+            if previous_output is None:
+                previous_output = paths[1]
+            # hook 只是自动补漏的临时运行模式；收尾后必须恢复普通翻译
+            # 标志，避免下一次一键翻译继续沿用 hook/source 分支。
+            config.renpy_hook_translate = False
+            config.renpy_source_translate = False
+            config.save()
+
+            # Hook 会临时把清单写到 game/tl/<lang>。恢复时必须重新登记
+            # Hook 前的主/增量缓存，否则校对页会优先载入 Hook 的空项目。
+            output_name = previous_output.name.casefold()
+            incremental_name = f"{str(tl_name).strip().casefold()}_new"
+            run_kind = "incremental" if output_name == incremental_name else "translation"
+            input_folder = (
+                paths[0].parent / f"{str(tl_name).strip()}_new"
+                if run_kind == "incremental"
+                else paths[0]
+            )
+            restored_paths = RenpyProjectPaths.from_path(project_root, tl_name)
+            if restored_paths is not None:
+                _remember_translation_run(
+                    restored_paths,
+                    output_folder = previous_output,
+                    input_folder = input_folder,
+                    application_target_dir = restored_paths.application_target_dir,
+                    run_kind = run_kind,
+                )
+        except Exception as exc:
+            self.logger.warning(f"自动补全完成后恢复主路径失败: {exc}")
 
     def _on_translation_done(self, event, data):
         """监听翻译完成，按需接续 replace_text 补漏。"""
+        payload = data if isinstance(data, dict) else {}
+        failed = payload.get("success") is False or payload.get("stopped") is True
+
         if self._auto_hook_running:
+            self._restore_paths_after_auto_hook()
             self._reset_auto_hook_state()
-            InfoBar.success("完成", "自动补全漏翻完成", parent=self)
+            if failed:
+                InfoBar.warning("已停止", "自动补全漏翻未完成，已恢复主翻译路径。", parent=self)
+            else:
+                InfoBar.success("完成", "自动补全漏翻完成", parent=self)
             return
 
         if self._onekey_translation_started and self._auto_hook_pending:
-            # 增量输出尚未合并回主 TL 时不能补漏，否则扫描依据仍是旧翻译。
-            # 保留 pending，待“应用翻译到游戏”语义合并成功后再启动。
-            if self._incremental_output_dir:
+            # 主输出必须先由用户确认并应用到 game/tl，再扫描漏翻；否则全量
+            # 输出尚未落地、增量输出尚未合并，都会以旧 TL 作为扫描依据。
+            if failed:
+                self._reset_auto_hook_state()
                 return
-            self._auto_hook_pending = False
-            QTimer.singleShot(0, self._start_auto_hook_supplement)
             return
 
         if self._onekey_translation_started:
@@ -1591,6 +1963,8 @@ class YiJianFanyiPage(Base, QWidget):
     def _on_translation_stop(self, event, data):
         """翻译停止时清理一键翻译的自动补漏状态。"""
         if self._onekey_translation_started or self._auto_hook_pending or self._auto_hook_running:
+            if self._auto_hook_running:
+                self._restore_paths_after_auto_hook()
             self._reset_auto_hook_state()
     
     def _refresh_step4_ready(self) -> bool:
@@ -1683,18 +2057,38 @@ class YiJianFanyiPage(Base, QWidget):
         from pathlib import Path
         
         config = Config().load()
-        
-        # 验证路径
-        incremental_output = self._incremental_output_dir
-        output_dir, input_dir = resolve_translation_apply_paths(
-            config, incremental_output, self._apply_target_dir
+
+        tl_name = self.tl_folder_edit.text().strip() or "chinese"
+        project_paths = (
+            RenpyProjectPaths.from_path(self.game_dir, tl_name)
+            if self.game_dir
+            else RenpyProjectPaths.from_config(config, tl_name)
         )
+
+        # 一键向导的项目路径优先于可变全局配置，避免其他页面改写
+        # config.output_folder/input_folder 后把翻译应用到另一项目。
+        incremental_output = self._incremental_output_dir
+        if incremental_output:
+            output_dir = Path(incremental_output)
+            target_value = self._apply_target_dir or (
+                project_paths.application_target_dir
+                if project_paths is not None
+                else None
+            )
+            input_dir = Path(target_value) if target_value else None
+        elif project_paths is not None:
+            output_dir = project_paths.translation_output_dir
+            input_dir = project_paths.application_target_dir
+        else:
+            output_dir, input_dir = resolve_translation_apply_paths(
+                config, None, None
+            )
         
         if not output_dir.exists():
             InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=self)
             return
         
-        if not input_dir.exists():
+        if input_dir is None or not input_dir.exists():
             InfoBar.error("错误", f"目标目录不存在：{input_dir}", parent=self)
             return
         
@@ -1737,11 +2131,41 @@ class YiJianFanyiPage(Base, QWidget):
                 if not merge_result.success:
                     InfoBar.warning("合并失败", merge_result.message, parent=self)
                     return
+                main_output = (
+                    project_paths.translation_output_dir
+                    if project_paths is not None
+                    else output_dir.parent / tl_name
+                )
+                cache_dir = output_dir / "cache"
+                cache_was_present = cache_dir.is_dir()
+                cache_migrated = merge_incremental_translation_cache(
+                    output_dir,
+                    main_output,
+                ) if cache_was_present else True
+                if cache_was_present and not cache_migrated:
+                    # 合并函数已写回 TL，但缓存迁移失败时保留增量目录，
+                    # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
+                    InfoBar.warning(
+                        "缓存暂未合并",
+                        f"翻译文件已应用，但缓存仍保留在：{output_dir / 'cache'}，请稍后重试应用。",
+                        parent=self,
+                    )
+                    return
+                if output_dir.exists():
+                    shutil.rmtree(str(output_dir), ignore_errors=True)
                 staging_input = getattr(self, "_incremental_dir", None)
                 if staging_input and Path(staging_input).exists():
                     shutil.rmtree(str(staging_input), ignore_errors=True)
-                configure_main_translation_paths(config, self.game_dir, tl_name)
+                # 应用增量后恢复全局主路径，并把运行清单更新到已经
+                # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
+                configure_main_translation_paths(
+                    config,
+                    self.game_dir,
+                    tl_name,
+                    remember_run = True,
+                )
                 config.save()
+                self._last_onekey_output_dir = main_output
                 self._incremental_dir = None
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
@@ -1793,6 +2217,23 @@ class YiJianFanyiPage(Base, QWidget):
                     duration=5000,
                     parent=self
                 )
+
+                # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
+                # hook 接续；这样 hook 扫描到的是真实的最新 TL。
+                if project_paths is not None:
+                    configure_main_translation_paths(
+                        config,
+                        project_paths.project_root,
+                        project_paths.language,
+                        remember_run = False,
+                    )
+                    config.save()
+                    self._last_onekey_output_dir = project_paths.translation_output_dir
+                if self._onekey_translation_started and self._auto_hook_pending:
+                    self._auto_hook_pending = False
+                    QTimer.singleShot(0, self._start_auto_hook_supplement)
+                elif self._onekey_translation_started:
+                    self._reset_auto_hook_state()
                 
         except Exception as e:
             import traceback
@@ -1829,8 +2270,38 @@ class YiJianFanyiPage(Base, QWidget):
             InfoBar.error("错误", f"打开补全翻译页面失败: {e}", parent=self)
     
     def _tool_fix_errors(self, card):
-        # ... (Keep existing implementation or simplify)
-        InfoBar.info("提示", "功能调用", parent=self)
+        """打开错误修复页面，并预填当前项目的 game 目录。"""
+        try:
+            from frontend.RenpyToolbox.ErrorRepairPage import ErrorRepairPage
+
+            if not hasattr(self.window, "error_repair_page"):
+                self.window.error_repair_page = ErrorRepairPage(
+                    "error-repair",
+                    self.window,
+                )
+            page = self.window.error_repair_page
+            if self.game_dir and hasattr(page, "game_dir_edit"):
+                project_path = Path(self.game_dir)
+                game_path = (
+                    project_path
+                    if project_path.name.casefold() == "game"
+                    else project_path / "game"
+                )
+                page.game_dir_edit.setText(str(game_path))
+            if hasattr(self.window, "navigate_to_page"):
+                self.window.navigate_to_page(page)
+            elif hasattr(self.window, "stackedWidget"):
+                if page not in [
+                    self.window.stackedWidget.widget(i)
+                    for i in range(self.window.stackedWidget.count())
+                ]:
+                    self.window.stackedWidget.addWidget(page)
+                self.window.stackedWidget.setCurrentWidget(page)
+            else:
+                InfoBar.info("提示", "已打开错误修复页面", parent=self)
+        except Exception as exc:
+            self.logger.error(f"打开错误修复页面失败: {exc}")
+            InfoBar.error("错误", f"打开错误修复页面失败：{exc}", parent=self)
 
     def _tool_set_default_lang(self, card):
         if hasattr(self.window, "navigate_to_page"):
@@ -1844,7 +2315,15 @@ class YiJianFanyiPage(Base, QWidget):
         if hasattr(self.window, "navigate_to_page"):
             from frontend.RenpyToolbox.AddLanguageEntrancePage import AddLanguageEntrancePage
             # 传入 game 目录（不是 tl 目录）
-            game_dir = str(Path(self.game_dir) / "game") if self.game_dir else None
+            if self.game_dir:
+                project_path = Path(self.game_dir)
+                game_dir = str(
+                    project_path
+                    if project_path.name.casefold() == "game"
+                    else project_path / "game"
+                )
+            else:
+                game_dir = None
             page = AddLanguageEntrancePage("add-language-entrance", self.window, game_dir=game_dir)
             self.window.navigate_to_page(page)
 
@@ -1859,8 +2338,25 @@ class YiJianFanyiPage(Base, QWidget):
             os.startfile(self.game_dir)
             
     def _tool_export_patch(self, card):
-        # ...
-        pass
+        """生成当前项目的漏翻补丁。"""
+        try:
+            if not self.game_dir:
+                InfoBar.warning("提示", "请先选择游戏目录。", parent=self)
+                return
+            tl_name = self.tl_folder_edit.text().strip() or "chinese"
+            patch_path, missing_count = generate_patch(self.game_dir, tl_name)
+            if patch_path is None:
+                InfoBar.info("提示", "未发现缺失翻译，无需生成补丁。", parent=self)
+                return
+            InfoBar.success(
+                "导出完成",
+                f"已生成漏翻补丁：{patch_path}（{missing_count} 条）",
+                parent=self,
+                duration=5000,
+            )
+        except Exception as exc:
+            self.logger.error(f"导出语言补丁失败: {exc}")
+            InfoBar.error("错误", f"导出语言补丁失败：{exc}", parent=self)
     
     def _tool_view_glossary(self, card):
         self._open_local_glossary()

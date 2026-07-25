@@ -2,6 +2,7 @@ import copy
 import dataclasses
 import re
 import threading
+from functools import lru_cache
 from base.compat import StrEnum, Self
 from typing import Any
 from typing import ClassVar
@@ -337,9 +338,27 @@ class CacheItem():
                 if v.init != False
             }
 
+    @staticmethod
+    @lru_cache(maxsize = 2)
+    def _get_token_encoder():
+        """缓存编码器，并兼容旧版 tiktoken。"""
+        for name in ("o200k_base", "cl100k_base"):
+            try:
+                return tiktoken.get_encoding(name)
+            except Exception:
+                continue
+        return None
+
     # 获取 Token 数量
     def get_token_count(self) -> int:
-        return len(tiktoken.get_encoding("o200k_base").encode(self.get_src()))
+        text = self.get_src() or ""
+        encoder = self._get_token_encoder()
+        if encoder is not None:
+            try:
+                return len(encoder.encode(text))
+            except Exception:
+                pass
+        return max(0, (len(text.encode("utf-8")) + 3) // 4)
 
     # 获取第一个角色姓名原文
     def get_first_name_src(self) -> str:

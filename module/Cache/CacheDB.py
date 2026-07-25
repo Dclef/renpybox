@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import sqlite3
 import threading
@@ -43,6 +44,33 @@ class CacheDB(Base):
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_meta_key ON meta(key)")
         conn.commit()
+
+    @staticmethod
+    def items_digest(items: list[CacheItem]) -> str:
+        """计算条目集合摘要，用于区分不同翻译代次。"""
+        payload = [item.asdict() for item in items]
+        encoded = json.dumps(
+            payload,
+            ensure_ascii = False,
+            sort_keys = True,
+            separators = (",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def get_items_digest(self) -> str | None:
+        """读取 SQLite 最近一次条目事务摘要；旧库没有时返回 None。"""
+        if not os.path.isfile(self.db_path):
+            return None
+        with self.lock:
+            conn = self._open()
+            try:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = ?",
+                    ("items_digest",),
+                ).fetchone()
+                return str(row["value"]) if row is not None else None
+            finally:
+                conn.close()
 
     def get_project(self) -> CacheProject | None:
         if not os.path.isfile(self.db_path):
@@ -95,7 +123,44 @@ class CacheDB(Base):
                     conn.execute("INSERT INTO items (data) VALUES (?)", (data_json,))
                     if i % 200 == 0:
                         conn.commit()
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("items_digest", self.items_digest(items)),
+                )
                 conn.commit()
+            finally:
+                conn.close()
+
+    def set_translation_cache(
+        self,
+        project: CacheProject,
+        items: list[CacheItem],
+    ) -> None:
+        """在同一事务中保存项目记录和全部翻译条目。"""
+        project_json = json.dumps(project.asdict(), ensure_ascii = False)
+        item_rows = [
+            (json.dumps(item.asdict(), ensure_ascii = False, separators = (",", ":")),)
+            for item in items
+        ]
+
+        with self.lock:
+            conn = self._open()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM items")
+                conn.executemany("INSERT INTO items (data) VALUES (?)", item_rows)
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("project", project_json),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("items_digest", self.items_digest(items)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
 
@@ -124,6 +189,10 @@ class CacheDB(Base):
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                     ("project", project_json),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    ("items_digest", self.items_digest(items)),
                 )
                 conn.commit()
             except Exception:

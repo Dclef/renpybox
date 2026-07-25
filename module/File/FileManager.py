@@ -36,7 +36,14 @@ class FileManager(Base):
 
     def _is_stop_requested(self) -> bool:
         try:
-            return Engine.get().get_status() == Engine.Status.STOPPING
+            # 延迟导入避免 FileManager/Translator 循环依赖；线程局部取消
+            # 令牌可覆盖停止超时后 Engine 状态已恢复的窗口。
+            from module.Engine.TaskRequester import TaskRequester
+
+            return (
+                Engine.get().get_status() == Engine.Status.STOPPING
+                or TaskRequester.is_cancel_requested()
+            )
         except Exception:
             return False
 
@@ -134,20 +141,44 @@ class FileManager(Base):
                 paths = [input_folder]
             elif os.path.isdir(input_folder):
                 for root, _, files in os.walk(input_folder):
-                    paths.extend([f"{root}/{file}".replace("\\", "/") for file in files])
+                    if self._is_stop_requested():
+                        break
+                    for file in files:
+                        if self._is_stop_requested():
+                            break
+                        paths.append(f"{root}/{file}".replace("\\", "/"))
+
+            # 扫描阶段被取消时，不再把已经收集的文件交给后续解析器，
+            # 避免停止按钮之后仍长时间占用事件线程和磁盘。
+            if self._is_stop_requested():
+                return project, items
+
+            paths_by_extension: dict[str, list[str]] = {}
+            for path in paths:
+                if self._is_stop_requested():
+                    return project, items
+                extension = os.path.splitext(path)[1].lower()
+                paths_by_extension.setdefault(extension, []).append(path)
+
+            def read_if_active(parser, extension: str) -> None:
+                """仅在未收到停止请求时运行单个文件解析器。"""
+                if self._is_stop_requested():
+                    return
+                items.extend(parser.read_from_path(paths_by_extension.get(extension, [])))
+
             # 优先处理 translations JSON（避免被其他 json 解析器抢先处理）
-            items.extend(RENPYTRANSLATIONSJSON(self.config).read_from_path([path for path in paths if path.lower().endswith(".json")]))
-            items.extend(MD(self.config).read_from_path([path for path in paths if path.lower().endswith(".md")]))
-            items.extend(TXT(self.config).read_from_path([path for path in paths if path.lower().endswith(".txt")]))
-            items.extend(ASS(self.config).read_from_path([path for path in paths if path.lower().endswith(".ass")]))
-            items.extend(SRT(self.config).read_from_path([path for path in paths if path.lower().endswith(".srt")]))
-            items.extend(EPUB(self.config).read_from_path([path for path in paths if path.lower().endswith(".epub")]))
-            items.extend(XLSX(self.config).read_from_path([path for path in paths if path.lower().endswith(".xlsx")]))
-            items.extend(WOLFXLSX(self.config).read_from_path([path for path in paths if path.lower().endswith(".xlsx")]))
-            items.extend(RENPY(self.config).read_from_path([path for path in paths if path.lower().endswith(".rpy")]))
-            items.extend(TRANS(self.config).read_from_path([path for path in paths if path.lower().endswith(".trans")]))
-            items.extend(KVJSON(self.config).read_from_path([path for path in paths if path.lower().endswith(".json")]))
-            items.extend(MESSAGEJSON(self.config).read_from_path([path for path in paths if path.lower().endswith(".json")]))
+            read_if_active(RENPYTRANSLATIONSJSON(self.config), ".json")
+            read_if_active(MD(self.config), ".md")
+            read_if_active(TXT(self.config), ".txt")
+            read_if_active(ASS(self.config), ".ass")
+            read_if_active(SRT(self.config), ".srt")
+            read_if_active(EPUB(self.config), ".epub")
+            read_if_active(XLSX(self.config), ".xlsx")
+            read_if_active(WOLFXLSX(self.config), ".xlsx")
+            read_if_active(RENPY(self.config), ".rpy")
+            read_if_active(TRANS(self.config), ".trans")
+            read_if_active(KVJSON(self.config), ".json")
+            read_if_active(MESSAGEJSON(self.config), ".json")
         except Exception as e:
             self.error(f"{Localizer.get().log_read_file_fail}", e)
 

@@ -1,10 +1,13 @@
 import json
 import threading
+from types import SimpleNamespace
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+from module.Engine.Translator.TranslationTaskContext import ProjectAssets
 from module.Engine.Translator.Translator import Translator
 
 
@@ -129,6 +132,50 @@ def test_restart_replaces_run_data_but_preserves_project_assets_and_candidates(t
     assert [item.get_src() for item in restarted.cache_manager.get_items()] == ["Second"]
     assert second_context.snapshot_id != first_context.snapshot_id
     assert restarted_project.get_progress()["line"] == 0
+
+
+def test_load_project_assets_prefers_newer_stable_revision(tmp_path, monkeypatch) -> None:
+    """增量运行缓存较旧时，翻译上下文必须采用主工作台最新资产。"""
+    config = _config(tmp_path / "input", tmp_path / "output", model = "model", api_key = "key")
+    (tmp_path / "input").mkdir()
+
+    runtime_project = CacheManager(service = False).get_project()
+    runtime_project.set_project_assets({
+        "revision": 2,
+        "character_cards": {
+            "enabled": True,
+            "items": [{"name": "Alice", "name_translation": "旧爱丽丝"}],
+        },
+    })
+    translator = _translator()
+    translator.cache_manager.set_project(runtime_project)
+
+    stable_assets = ProjectAssets.from_dict({
+        "revision": 6,
+        "character_cards": {
+            "enabled": True,
+            "items": [{"name": "Alice", "name_translation": "新爱丽丝"}],
+        },
+        "worldbook": {
+            "enabled": True,
+            "data": {"setting": "新世界观"},
+        },
+    })
+    repository = SimpleNamespace(
+        load = lambda _legacy_config: SimpleNamespace(assets = stable_assets),
+    )
+    monkeypatch.setattr(
+        ProjectAssetsRepository,
+        "from_config",
+        staticmethod(lambda _config: repository),
+    )
+
+    loaded = translator._load_project_assets(config)
+
+    assert loaded.revision == 6
+    assert loaded.character_cards[0]["name_translation"] == "新爱丽丝"
+    assert loaded.worldbook["setting"] == "新世界观"
+    assert translator.cache_manager.get_project().get_project_assets()["revision"] == 6
 
 
 def test_translation_start_binds_runtime_output_before_run_initialization(
