@@ -4,11 +4,15 @@ import pytest
 
 from base.Base import Base
 from frontend.Proofreading.ProofreadingPage import ProofreadingPage
+from frontend.Proofreading.ProofreadingTableWidget import ProofreadingTableWidget
+from module.Cache.CacheItem import CacheItem
 from module.Engine.Quality import QualityTaskCoordinator
 from module.Engine.Quality import QualityTaskProgress
 from module.Engine.Quality import QualityTaskState
 from module.Engine.Quality import QualityTaskType
 from module.Localizer.Localizer import Localizer
+from module.ResultChecker import WarningType
+from module.Response.ResponseChecker import ResponseChecker
 
 
 class _ItemStub:
@@ -25,6 +29,40 @@ class _SignalStub:
 
     def emit(self, value: object) -> None:
         self.values.append(value)
+
+
+class _IndexStub:
+    def __init__(self, row: int) -> None:
+        self._row = row
+
+    def row(self) -> int:
+        return self._row
+
+
+class _SelectedItemsTableStub:
+    def __init__(self) -> None:
+        self.items = [object(), object(), object()]
+
+    def selectionModel(self):
+        return SimpleNamespace(
+            selectedIndexes = lambda: [
+                _IndexStub(0),
+                _IndexStub(0),
+                _IndexStub(1),
+                _IndexStub(2),
+            ],
+        )
+
+    def get_item_at_row(self, row: int):
+        return self.items[row]
+
+
+def test_selected_items_collects_unique_rows_from_selected_cells() -> None:
+    table = _SelectedItemsTableStub()
+
+    selected = ProofreadingTableWidget.get_selected_items(table)
+
+    assert selected == table.items
 
 
 class _ButtonStub:
@@ -52,6 +90,7 @@ def _install_localizer(monkeypatch) -> SimpleNamespace:
             "{TASK}进度 {PROCESSED}/{TOTAL}，更新 {UPDATED}，失败 {FAILED}"
         ),
         proofreading_page_quality_start_failed = "质量任务启动失败",
+        proofreading_page_confirm_translation_done = "已确认 {COUNT} 条译文无误，请点击保存",
     )
     monkeypatch.setattr(Localizer, "get", classmethod(lambda cls: strings))
     return strings
@@ -140,6 +179,73 @@ def test_quality_action_warns_without_eligible_selected_items(monkeypatch) -> No
     assert page.warnings == [strings.proofreading_page_quality_no_proofreadable]
     assert page.confirmations == []
     assert page.starts == []
+
+
+class _ConfirmPageStub:
+    def __init__(self, items: list[CacheItem]) -> None:
+        self.is_readonly = False
+        self.selection_clear_count = 0
+        self.table_widget = SimpleNamespace(
+            clearSelection = self._clear_selection,
+        )
+        self.warning_map = {
+            id(item): [WarningType.RETRY_THRESHOLD]
+            for item in items
+        }
+        self.rechecked_items: list[CacheItem] = []
+        self.filter_count = 0
+        self.events: list[tuple[object, dict]] = []
+
+    def _clear_selection(self) -> None:
+        self.selection_clear_count += 1
+
+    def _recheck_item(self, item: CacheItem) -> None:
+        self.rechecked_items.append(item)
+
+    def _apply_filter(self) -> None:
+        self.filter_count += 1
+
+    def emit(self, event, payload: dict) -> None:
+        self.events.append((event, payload))
+
+
+def test_confirm_translations_clears_selected_retry_warnings_without_changing_results(monkeypatch) -> None:
+    _install_localizer(monkeypatch)
+    item = CacheItem(
+        src = "Hello",
+        dst = "你好",
+        status = Base.TranslationStatus.POLISHED,
+        retry_count = ResponseChecker.RETRY_COUNT_THRESHOLD,
+        metadata = {
+            "trace_id": "kept",
+            CacheItem.TRANSLATION_RETRY_KEY: {"attempt": 2},
+        },
+    )
+    second = CacheItem(
+        src = "Bye",
+        dst = "再见",
+        status = Base.TranslationStatus.TRANSLATED,
+        retry_count = ResponseChecker.RETRY_COUNT_THRESHOLD,
+    )
+    page = _ConfirmPageStub([item, second])
+
+    ProofreadingPage._on_confirm_translations_clicked(page, [item, second])
+
+    assert item.get_dst() == "你好"
+    assert item.get_status() == Base.TranslationStatus.POLISHED
+    assert item.get_retry_count() == 0
+    assert item.get_metadata() == {"trace_id": "kept"}
+    assert second.get_retry_count() == 0
+    assert page.rechecked_items == [item, second]
+    assert page.filter_count == 1
+    assert page.selection_clear_count == 1
+    assert page.events == [(
+        Base.Event.APP_TOAST_SHOW,
+        {
+            "type": Base.ToastType.SUCCESS,
+            "message": "已确认 2 条译文无误，请点击保存",
+        },
+    )]
 
 
 class _CoordinatorStub:

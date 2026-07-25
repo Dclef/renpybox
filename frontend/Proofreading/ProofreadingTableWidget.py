@@ -26,6 +26,7 @@ class ProofreadingTableWidget(TableWidget):
 
     cell_edited = pyqtSignal(object, str)
     retranslate_clicked = pyqtSignal(object)
+    confirm_translations_clicked = pyqtSignal(object)
     copy_src_clicked = pyqtSignal(object)
     copy_dst_clicked = pyqtSignal(object)
     selected_items_changed = pyqtSignal(int)
@@ -134,7 +135,7 @@ class ProofreadingTableWidget(TableWidget):
         self.setItem(row, self.COL_DST, dst_item)
 
         self._create_status_widget(row, item, warnings)
-        self._create_action_widget(row, item)
+        self._create_action_widget(row, item, warnings)
 
     def _create_status_widget(self, row: int, item: CacheItem, warnings: list[WarningType]) -> None:
         widget = QWidget()
@@ -191,7 +192,7 @@ class ProofreadingTableWidget(TableWidget):
         }
         return warning_texts.get(error, str(error))
 
-    def _create_action_widget(self, row: int, item: CacheItem) -> None:
+    def _create_action_widget(self, row: int, item: CacheItem, warnings: list[WarningType]) -> None:
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(4, 4, 16, 4)
@@ -210,6 +211,20 @@ class ProofreadingTableWidget(TableWidget):
                 Localizer.get().proofreading_page_retranslate,
                 triggered = lambda checked: self.retranslate_clicked.emit(item)
             ))
+
+            if WarningType.RETRY_THRESHOLD in warnings and item.get_dst().strip():
+                selected_items = self.get_selected_items()
+                is_batch = len(selected_items) > 1 and any(selected is item for selected in selected_items)
+                targets = selected_items if is_batch else [item]
+                menu.addAction(Action(
+                    FluentIcon.ACCEPT,
+                    (
+                        Localizer.get().proofreading_page_confirm_selected_translations
+                        if is_batch
+                        else Localizer.get().proofreading_page_confirm_translation
+                    ),
+                    triggered = lambda checked: self.confirm_translations_clicked.emit(targets)
+                ))
 
             menu.addAction(Action(
                 FluentIcon.PASTE,
@@ -238,8 +253,9 @@ class ProofreadingTableWidget(TableWidget):
 
     def get_selected_items(self) -> list[CacheItem]:
         items: list[CacheItem] = []
-        for row in self.selectionModel().selectedRows():
-            item = self.get_item_at_row(row.row())
+        rows = sorted({index.row() for index in self.selectionModel().selectedIndexes()})
+        for row in rows:
+            item = self.get_item_at_row(row)
             if item is not None:
                 items.append(item)
         return items
@@ -248,6 +264,7 @@ class ProofreadingTableWidget(TableWidget):
         item = self.get_item_at_row(row)
         if item:
             self._create_status_widget(row, item, warnings)
+            self._create_action_widget(row, item, warnings)
 
     def set_row_loading(self, row: int, loading: bool) -> None:
         if loading:
