@@ -1,10 +1,17 @@
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QVBoxLayout
 from PyQt5.QtWidgets import QWidget
+from qfluentwidgets import CaptionLabel
+from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
+from qfluentwidgets import InfoBar
+from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import PlainTextEdit
+from qfluentwidgets import SegmentedWidget
 from qfluentwidgets import SingleDirectionScrollArea
+from qfluentwidgets import StrongBodyLabel
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -17,8 +24,60 @@ from frontend.Setting.TranslationSettingsBinding import set_prompt_mode
 from frontend.Setting.TranslationSettingsBinding import set_writing_style
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.PromptBuilder import PromptBuilder
 from widget.ComboBoxCard import ComboBoxCard
 from widget.GroupCard import GroupCard
+from widget.PushButtonCard import PushButtonCard
+
+
+class PromptPreviewDialog(MessageBoxBase):
+
+    def __init__(self, sections: dict[str, str], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.sections = sections
+        self.current_section = "base"
+        self._init_ui()
+
+    def _init_ui(self) -> None:
+        localizer = Localizer.get()
+        self.widget.setMinimumSize(760, 580)
+        self.viewLayout.setSpacing(12)
+
+        self.viewLayout.addWidget(
+            StrongBodyLabel(localizer.translation_prompt_preview_title, self.widget)
+        )
+
+        self.segmented = SegmentedWidget(self.widget)
+        for key, label in (
+            ("base", localizer.translation_prompt_preview_base),
+            ("style", localizer.translation_prompt_preview_style),
+            ("fixed", localizer.translation_prompt_preview_fixed),
+        ):
+            self.segmented.addItem(key, label)
+        self.segmented.currentItemChanged.connect(self._show_section)
+        self.viewLayout.addWidget(self.segmented)
+
+        self.preview_edit = PlainTextEdit(self.widget)
+        self.preview_edit.setReadOnly(True)
+        self.preview_edit.setMinimumHeight(360)
+        self.preview_edit.setPlaceholderText(localizer.translation_prompt_preview_empty)
+        self.viewLayout.addWidget(self.preview_edit, 1)
+
+        note = CaptionLabel(localizer.translation_prompt_preview_note, self.widget)
+        note.setWordWrap(True)
+        self.viewLayout.addWidget(note)
+
+        self.yesButton.setText(localizer.translation_prompt_preview_copy)
+        self.cancelButton.setText(localizer.close)
+        self.segmented.setCurrentItem(self.current_section)
+
+    def _show_section(self, key: str) -> None:
+        self.current_section = key
+        self.preview_edit.setPlainText(self.sections.get(key, ""))
+
+    def validate(self) -> bool:
+        QApplication.clipboard().setText(self.sections.get(self.current_section, ""))
+        return False
 
 
 class CustomPromptPage(QWidget, Base):
@@ -59,6 +118,7 @@ class CustomPromptPage(QWidget, Base):
         )
         self.add_widget_writing_style(scroll_area_vbox, config)
         self.add_widget_custom_style(scroll_area_vbox, config)
+        self.add_widget_prompt_preview(scroll_area_vbox)
         self.refresh_conditional_visibility(config)
 
         scroll_area_vbox.addStretch(1)
@@ -214,3 +274,33 @@ class CustomPromptPage(QWidget, Base):
             init = init,
         )
         parent.addWidget(self.custom_style_group)
+
+    def add_widget_prompt_preview(self, parent: QLayout) -> None:
+        localizer = Localizer.get()
+
+        def init(widget: PushButtonCard) -> None:
+            button = widget.get_push_button()
+            button.setIcon(FluentIcon.VIEW)
+            button.setText(localizer.translation_prompt_preview_action)
+            button.setToolTip(localizer.translation_prompt_preview_tooltip)
+
+        def clicked(_: PushButtonCard) -> None:
+            try:
+                sections = PromptBuilder(Config().load()).build_static_prompt_sections()
+            except Exception as exc:
+                InfoBar.error(
+                    localizer.translation_prompt_preview_load_failed,
+                    str(exc),
+                    parent = self,
+                    duration = 5000,
+                )
+                return
+
+            PromptPreviewDialog(sections, self).exec()
+
+        parent.addWidget(PushButtonCard(
+            title = localizer.translation_prompt_preview_title,
+            description = localizer.translation_prompt_preview_tooltip,
+            init = init,
+            clicked = clicked,
+        ))

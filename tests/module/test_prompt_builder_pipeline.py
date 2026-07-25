@@ -60,6 +60,40 @@ def test_custom_replaces_only_base_and_style_remains_independent():
     assert "CUSTOM STYLE line 1\nCUSTOM STYLE line 2" in prompt
 
 
+def test_static_prompt_preview_matches_current_configuration():
+    config = Config(
+        source_language = BaseLanguage.Enum.EN,
+        target_language = BaseLanguage.Enum.ZH,
+        translation_prompt_mode = Config.PROMPT_MODE_LOCAL,
+        translation_style_id = Config.STYLE_R18,
+        translation_output_protocol = Config.OUTPUT_PROTOCOL_JSONLINE,
+    )
+    builder = PromptBuilder(config)
+
+    sections = builder.build_static_prompt_sections()
+
+    assert set(sections) == {"base", "style", "fixed"}
+    assert "基础模式：LOCAL" in sections["base"]
+    assert all(
+        f"基础模式：{mode}" not in sections["base"]
+        for mode in ("COMMON", "COT", "THINK")
+    )
+    assert "写作风格：R18" in sections["style"]
+    assert "不可覆盖的工程协议" in sections["fixed"]
+    assert "输出协议：JSONLINE" in sections["fixed"]
+    assert "输出协议：STRUCTURED" not in sections["fixed"]
+    assert all(
+        placeholder not in text
+        for text in sections.values()
+        for placeholder in ("{source_language}", "{target_language}")
+    )
+    assert builder._join_sections(
+        sections["base"],
+        sections["fixed"],
+        sections["style"],
+    ) == builder.build_main()
+
+
 def test_migrated_custom_prompt_scope_falls_back_for_disabled_language():
     config = Config(
         source_language = BaseLanguage.Enum.EN,
