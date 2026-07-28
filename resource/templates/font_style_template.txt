@@ -7,7 +7,6 @@ init python early hide:
         old_load_face = renpy.text.font.load_face
 
         def my_load_face(fn, *args):
-            renpy.text.font.free_memory()
             for key, value in tl_font_dic.items():
                 if renpy.game.preferences.language == key:
                     fn = value[0]

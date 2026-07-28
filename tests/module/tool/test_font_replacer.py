@@ -1,6 +1,15 @@
 import json
+from pathlib import Path
 
 from module.Tool.FontReplacer import FontReplacer
+
+
+def test_gui_font_hook_does_not_clear_cache_while_loading_fonts() -> None:
+    template = Path(FontReplacer().template_path).read_text(encoding="utf-8")
+    load_hook = template.split("def my_load_face", 1)[1].split("renpy.text.font.load_face = my_load_face", 1)[0]
+
+    assert "free_memory()" not in load_hook
+    assert template.count("renpy.text.font.free_memory()") == 1
 
 
 def test_safe_replace_font_backs_up_scripts_and_skips_backup_directory(tmp_path) -> None:
