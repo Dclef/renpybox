@@ -857,30 +857,26 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_unpack_btn.setVisible(False)
         self._go_step2()
 
+    def _get_tool_page(self, key: str) -> QWidget:
+        """从工具箱的集中缓存获取工具页。"""
+        toolbox = getattr(self.window, "renpy_toolbox_page", None)
+        if toolbox is None:
+            raise RuntimeError("未找到 Ren'Py 工具箱页面")
+        return toolbox.get_tool_page(key)
+
     def _open_rpa_unpack(self) -> None:
         """打开 RPA 解包页并带入当前项目的 game 目录。"""
         if self.window is None or not self.game_dir:
             InfoBar.warning("提示", "请先选择有效的游戏目录", parent=self)
             return
 
-        from frontend.RenpyToolbox.PackUnpackPage import PackUnpackPage
-
-        page = getattr(self.window, "pack_unpack_page", None)
-        if page is None:
-            page = PackUnpackPage("pack-unpack", self.window)
-            self.window.pack_unpack_page = page
+        page = self._get_tool_page("pack_unpack")
 
         if not page.set_game_directory(self.game_dir):
             InfoBar.warning("提示", "无法定位游戏的 game 目录", parent=self)
             return
 
-        if hasattr(self.window, "navigate_to_page"):
-            self.window.navigate_to_page(page)
-        elif hasattr(self.window, "stackedWidget"):
-            stack = self.window.stackedWidget
-            if page not in [stack.widget(i) for i in range(stack.count())]:
-                stack.addWidget(page)
-            stack.setCurrentWidget(page)
+        self.window.navigate_to_page(page)
 
     def _on_auto_merge_cleanup_changed(self, state: int):
         """同步自动合并开关到配置"""
@@ -1057,7 +1053,8 @@ class YiJianFanyiPage(Base, QWidget):
         flow_container = QWidget()
         mark_toolbox_widget(flow_container, "toolboxFlow")
         flow_layout = FlowLayout(flow_container, needAni=False)
-        flow_layout.setSpacing(8)
+        flow_layout.setHorizontalSpacing(8)
+        flow_layout.setVerticalSpacing(8)
         flow_layout.setContentsMargins(0, 0, 0, 0)
         
         # 工具卡片
@@ -1731,10 +1728,7 @@ class YiJianFanyiPage(Base, QWidget):
                 return
             if hasattr(page, "refresh_from_config"):
                 page.refresh_from_config()
-            if hasattr(self.window, "navigate_to_page"):
-                self.window.navigate_to_page(page)
-            elif hasattr(self.window, "switchTo"):
-                self.window.switchTo(page)
+            self.window.navigate_to_page(page)
         except Exception as exc:
             self.logger.error(f"打开工作台失败：{exc}")
             InfoBar.error("错误", f"打开工作台失败：{exc}", parent = self)
@@ -1755,16 +1749,12 @@ class YiJianFanyiPage(Base, QWidget):
             self.glossary_info_label.setText("未找到术语表文件，将使用默认配置。")
 
     def _open_local_glossary(self):
-        if hasattr(self.window, "navigate_to_page"):
-            from frontend.RenpyToolbox.LocalGlossaryPage import LocalGlossaryPage
-            page = LocalGlossaryPage("local-glossary", self.window)
-            self.window.navigate_to_page(page)
+        page = self._get_tool_page("local_glossary")
+        self.window.navigate_to_page(page)
 
     def _open_text_preserve(self):
-        if hasattr(self.window, "navigate_to_page"):
-            from frontend.RenpyToolbox.TextPreservePage import TextPreservePage
-            page = TextPreservePage("text-preserve", self.window)
-            self.window.navigate_to_page(page)
+        page = self._get_tool_page("text_preserve")
+        self.window.navigate_to_page(page)
 
     def _go_step4(self):
         self.current_step = 4
@@ -1826,27 +1816,11 @@ class YiJianFanyiPage(Base, QWidget):
             if not self.window:
                 raise RuntimeError("未找到主窗口，无法打开翻译面板")
 
-            # 优先复用主窗口已有的 translation_page
-            if hasattr(self.window, "translation_page") and self.window.translation_page:
-                page = self.window.translation_page
-                # 使用 switchTo 方法切换，比 navigate_to_page 更快
-                if hasattr(self.window, "switchTo"):
-                    self.window.switchTo(page)
-                    return
-            else:
+            page = getattr(self.window, "translation_page", None)
+            if page is None:
                 page = TranslationPage("translation_page", self.window)
                 self.window.translation_page = page
-
-            if hasattr(self.window, "navigate_to_page"):
-                self.window.navigate_to_page(page)
-            elif hasattr(self.window, "stackedWidget"):
-                stack = self.window.stackedWidget
-                widgets = [stack.widget(i) for i in range(stack.count())]
-                if page not in widgets:
-                    stack.addWidget(page)
-                stack.setCurrentWidget(page)
-            else:
-                page.show()
+            self.window.navigate_to_page(page)
         except Exception as e:
             LogManager.get().error(f"打开传统翻译面板失败: {e}")
             InfoBar.error("错误", f"打开传统翻译面板失败: {e}", parent=self)
@@ -2074,17 +2048,8 @@ class YiJianFanyiPage(Base, QWidget):
         
     def _exit_wizard(self):
         """退出向导，返回工具箱页面"""
-        # 先返回工具箱页面
-        returned = False
-        if hasattr(self, 'window') and self.window:
-            if hasattr(self.window, 'stackedWidget'):
-                for i in range(self.window.stackedWidget.count()):
-                    widget = self.window.stackedWidget.widget(i)
-                    # 兼容旧版 RenpyToolkitPage 和新版 renpy_toolbox_page
-                    if widget.objectName() in ("RenpyToolkitPage", "renpy_toolbox_page"):
-                        self.window.stackedWidget.setCurrentWidget(widget)
-                        returned = True
-                        break
+        if self.window:
+            self.window.navigate_back_to_toolbox()
         
         # 重置状态（为下次使用做准备）
         self.current_step = 1
@@ -2294,28 +2259,9 @@ class YiJianFanyiPage(Base, QWidget):
     def _tool_hook_supplement(self, card):
         """打开补全漏翻页面，并沿用当前项目上下文。"""
         try:
-            from module.Config import Config
-            from frontend.RenpyToolbox.HookSupplementPage import HookSupplementPage
-
-            config = Config().load()
             if self.game_dir:
                 self._sync_game_dir_to_config(self.game_dir)
-                config = Config().load()
-
-            if not hasattr(self.window, "hook_supplement_page"):
-                self.window.hook_supplement_page = HookSupplementPage("hook-supplement", self.window)
-
-            if hasattr(self.window, "navigate_to_page"):
-                self.window.navigate_to_page(self.window.hook_supplement_page)
-            elif hasattr(self.window, "stackedWidget"):
-                if self.window.hook_supplement_page not in [
-                    self.window.stackedWidget.widget(i)
-                    for i in range(self.window.stackedWidget.count())
-                ]:
-                    self.window.stackedWidget.addWidget(self.window.hook_supplement_page)
-                self.window.stackedWidget.setCurrentWidget(self.window.hook_supplement_page)
-            else:
-                InfoBar.info("提示", "已准备好补全翻译参数，请从工具箱打开“补全翻译”", parent=self)
+            self.window.navigate_to_page(self._get_tool_page("hook_supplement"))
         except Exception as e:
             self.logger.error(f"打开补全翻译页面失败: {e}")
             InfoBar.error("错误", f"打开补全翻译页面失败: {e}", parent=self)
@@ -2323,14 +2269,7 @@ class YiJianFanyiPage(Base, QWidget):
     def _tool_fix_errors(self, card):
         """打开错误修复页面，并预填当前项目的 game 目录。"""
         try:
-            from frontend.RenpyToolbox.ErrorRepairPage import ErrorRepairPage
-
-            if not hasattr(self.window, "error_repair_page"):
-                self.window.error_repair_page = ErrorRepairPage(
-                    "error-repair",
-                    self.window,
-                )
-            page = self.window.error_repair_page
+            page = self._get_tool_page("error_repair")
             if self.game_dir and hasattr(page, "game_dir_edit"):
                 project_path = Path(self.game_dir)
                 game_path = (
@@ -2339,50 +2278,30 @@ class YiJianFanyiPage(Base, QWidget):
                     else project_path / "game"
                 )
                 page.game_dir_edit.setText(str(game_path))
-            if hasattr(self.window, "navigate_to_page"):
-                self.window.navigate_to_page(page)
-            elif hasattr(self.window, "stackedWidget"):
-                if page not in [
-                    self.window.stackedWidget.widget(i)
-                    for i in range(self.window.stackedWidget.count())
-                ]:
-                    self.window.stackedWidget.addWidget(page)
-                self.window.stackedWidget.setCurrentWidget(page)
-            else:
-                InfoBar.info("提示", "已打开错误修复页面", parent=self)
+            self.window.navigate_to_page(page)
         except Exception as exc:
             self.logger.error(f"打开错误修复页面失败: {exc}")
             InfoBar.error("错误", f"打开错误修复页面失败：{exc}", parent=self)
 
     def _tool_set_default_lang(self, card):
-        if hasattr(self.window, "navigate_to_page"):
-            from frontend.RenpyToolbox.SetDefaultLanguagePage import SetDefaultLanguagePage
-            # 传入项目目录（game 目录的上级）
-            project_dir = self.game_dir if self.game_dir else None
-            page = SetDefaultLanguagePage("set-default-language", self.window, project_dir=project_dir)
-            self.window.navigate_to_page(page)
+        page = self._get_tool_page("set_default_language")
+        if self.game_dir and hasattr(page, "project_dir_edit"):
+            page.project_dir_edit.setText(self.game_dir)
+        self.window.navigate_to_page(page)
 
     def _tool_add_lang_switch(self, card):
-        if hasattr(self.window, "navigate_to_page"):
-            from frontend.RenpyToolbox.AddLanguageEntrancePage import AddLanguageEntrancePage
-            # 传入 game 目录（不是 tl 目录）
-            if self.game_dir:
-                project_path = Path(self.game_dir)
-                game_dir = str(
-                    project_path
-                    if project_path.name.casefold() == "game"
-                    else project_path / "game"
-                )
-            else:
-                game_dir = None
-            page = AddLanguageEntrancePage("add-language-entrance", self.window, game_dir=game_dir)
-            self.window.navigate_to_page(page)
+        page = self._get_tool_page("add_language")
+        if self.game_dir and hasattr(page, "game_dir_edit"):
+            project_path = Path(self.game_dir)
+            game_dir = project_path if project_path.name.casefold() == "game" else project_path / "game"
+            page.game_dir_edit.setText(str(game_dir))
+        self.window.navigate_to_page(page)
 
     def _tool_replace_font(self, card):
-        if hasattr(self.window, "navigate_to_page"):
-            from frontend.RenpyToolbox.FontReplacePage import FontReplacePage
-            page = FontReplacePage("font-replace", self.window)
-            self.window.navigate_to_page(page)
+        page = self._get_tool_page("font_replace")
+        if self.game_dir and hasattr(page, "game_dir_edit"):
+            page.game_dir_edit.setText(self.game_dir)
+        self.window.navigate_to_page(page)
 
     def _tool_open_game_dir(self, card):
         if self.game_dir:
@@ -2393,16 +2312,8 @@ class YiJianFanyiPage(Base, QWidget):
         del card
         if self.window is None:
             return
-        from frontend.Proofreading.ProofreadingPage import ProofreadingPage
-
-        page = getattr(self.window, "proofreading_page", None)
-        if page is None:
-            page = ProofreadingPage("proofreading_page", self.window)
-            self.window.proofreading_page = page
-        if hasattr(self.window, "navigate_to_page"):
-            self.window.navigate_to_page(page)
-        elif hasattr(self.window, "switchTo"):
-            self.window.switchTo(page)
+        page = self._get_tool_page("proofreading")
+        self.window.navigate_to_page(page)
             
     def _tool_export_patch(self, card):
         """生成当前项目的漏翻补丁。"""
