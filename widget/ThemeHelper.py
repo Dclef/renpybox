@@ -48,6 +48,31 @@ DARK_STYLESHEET = """
         background-color: rgb(38, 38, 38);
     }
 
+    /* 工具箱入口卡片 */
+    ItemCard[toolCard="true"] {
+        background-color: rgb(32, 32, 32);
+        border: 1px solid rgb(55, 55, 55);
+        border-radius: 8px;
+    }
+    ItemCard[toolCard="true"]:hover {
+        background-color: rgb(38, 38, 38);
+        border-color: rgb(70, 70, 70);
+    }
+    ItemCard[toolCard="true"][projectReady="false"]:hover {
+        background-color: rgb(32, 32, 32);
+        border-color: rgb(55, 55, 55);
+    }
+    ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
+        color: rgb(160, 160, 160);
+        background: transparent;
+    }
+    ItemCard[toolCard="true"] QLabel[toolStep="true"] {
+        color: rgb(235, 225, 211);
+        background-color: rgb(74, 65, 53);
+        border: 1px solid rgb(103, 89, 70);
+        border-radius: 11px;
+    }
+
     /* 原生 QTableWidget 样式 */
     QTableWidget {
         background-color: rgb(39, 39, 39);
@@ -169,6 +194,31 @@ LIGHT_STYLESHEET = """
     }
     CardWidget:hover {
         background-color: rgb(248, 248, 248);
+    }
+
+    /* 工具箱入口卡片 */
+    ItemCard[toolCard="true"] {
+        background-color: rgb(255, 255, 255);
+        border: 1px solid rgb(230, 230, 230);
+        border-radius: 8px;
+    }
+    ItemCard[toolCard="true"]:hover {
+        background-color: rgb(248, 248, 248);
+        border-color: rgb(214, 214, 214);
+    }
+    ItemCard[toolCard="true"][projectReady="false"]:hover {
+        background-color: rgb(255, 255, 255);
+        border-color: rgb(230, 230, 230);
+    }
+    ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
+        color: rgb(96, 96, 96);
+        background: transparent;
+    }
+    ItemCard[toolCard="true"] QLabel[toolStep="true"] {
+        color: rgb(88, 70, 48);
+        background-color: rgb(239, 232, 221);
+        border: 1px solid rgb(216, 202, 183);
+        border-radius: 11px;
     }
 
     /* 原生 QTableWidget 样式 */

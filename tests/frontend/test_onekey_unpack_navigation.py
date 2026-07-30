@@ -29,17 +29,23 @@ def test_onekey_unpack_navigation_reuses_page_and_passes_project_path(
     unpack_page = SimpleNamespace(
         set_game_directory = lambda path: received_paths.append(path) or True,
     )
+    requested_keys = []
+    toolbox_page = SimpleNamespace(
+        get_tool_page = lambda key: requested_keys.append(key) or unpack_page,
+    )
     navigated_pages = []
     window = SimpleNamespace(
-        pack_unpack_page = unpack_page,
+        renpy_toolbox_page = toolbox_page,
         navigate_to_page = navigated_pages.append,
     )
     page = SimpleNamespace(
         window = window,
         game_dir = str(tmp_path),
     )
+    page._get_tool_page = lambda key: YiJianFanyiPage._get_tool_page(page, key)
 
     YiJianFanyiPage._open_rpa_unpack(page)
 
+    assert requested_keys == ["pack_unpack"]
     assert received_paths == [str(tmp_path)]
     assert navigated_pages == [unpack_page]
