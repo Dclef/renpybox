@@ -9,6 +9,7 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 from qfluentwidgets import (
+    BodyLabel,
     PushButton,
     PrimaryPushButton,
     LineEdit,
@@ -17,6 +18,8 @@ from qfluentwidgets import (
     FluentIcon,
     CardWidget,
     ComboBox,
+    StrongBodyLabel,
+    TitleLabel,
 )
 
 from base.Base import Base
@@ -30,20 +33,22 @@ from module.Extract.RenpyExtractor import RenpyExtractor
 class ExtractTab(Base, QWidget):
     """文本提取标签页（离线）"""
 
-    def __init__(self, parent=None):
+    def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
         QWidget.__init__(self, parent)
+        self.setObjectName(object_name)
         self._init_ui()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
-        title = QLabel("📝 文本提取 JSON")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = TitleLabel("文本提取 JSON", self)
         layout.addWidget(title)
 
-        description = QLabel("💡 完整的 JSON 翻译工作流：提取 → 导出 JSON → 人工翻译 → 导入 → 应用到 tl")
-        description.setStyleSheet("color: gray; font-size: 12px; margin-bottom: 10px;")
+        description = BodyLabel(
+            "完整的 JSON 翻译工作流：提取 → 导出 JSON → 人工翻译 → 导入 → 应用到 tl",
+            self,
+        )
         description.setWordWrap(True)
         layout.addWidget(description)
 
@@ -106,12 +111,11 @@ class ExtractTab(Base, QWidget):
         card = CardWidget(self)
         layout = QVBoxLayout(card)
 
-        title_label = QLabel("📤 JSON 导入/导出")
-        title_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title_label = StrongBodyLabel("JSON 导入/导出", self)
         layout.addWidget(title_label)
 
         row = QHBoxLayout()
-        btn_import = PushButton("📥 从 JSON 导入并应用到 tl", icon=FluentIcon.SAVE)
+        btn_import = PushButton("从 JSON 导入并应用到 tl", icon=FluentIcon.SAVE)
         btn_import.clicked.connect(self._import_from_json)
         row.addWidget(btn_import)
         row.addStretch()

@@ -339,8 +339,9 @@ class AppFluentWindow(FluentWindow, Base):
     # 添加 Ren'Py 页面
     def add_renpy_pages(self) -> None:
         # Ren'Py 百宝箱（统一的工具箱）
+        self.renpy_toolbox_page = RenpyToolboxPage("renpy_toolbox_page", self)
         self.addSubInterface(
-            RenpyToolboxPage("renpy_toolbox_page", self),
+            self.renpy_toolbox_page,
             FluentIcon.GAME,
             "Ren'Py 百宝箱",
             NavigationItemPosition.SCROLL
@@ -348,8 +349,9 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 添加角色 / 世界观工作台页面
     def add_workbench_pages(self) -> None:
+        self.renpy_workbench_page = RenpyWorkbenchPage("renpy_workbench_page", self)
         self.addSubInterface(
-            RenpyWorkbenchPage("renpy_workbench_page", self),
+            self.renpy_workbench_page,
             FluentIcon.PEOPLE,
             "角色/世界观工作台",
             NavigationItemPosition.SCROLL,
@@ -403,6 +405,11 @@ class AppFluentWindow(FluentWindow, Base):
             self.stackedWidget.addWidget(page)
         # 切换到该页面
         self.stackedWidget.setCurrentWidget(page)
+
+    def navigate_back_to_toolbox(self) -> None:
+        """返回 Ren'Py 工具箱入口页。"""
+        if getattr(self, "renpy_toolbox_page", None) is not None:
+            self.switchTo(self.renpy_toolbox_page)
 
     # 添加质量类页面
 
