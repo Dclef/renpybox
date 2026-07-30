@@ -1259,20 +1259,23 @@ class RenpyWorkbenchPage(Base, QWidget):
         if hasattr(self.window, attr_name) is False:
             setattr(self.window, attr_name, factory())
         page = getattr(self.window, attr_name)
-        if hasattr(self.window, "navigate_to_page"):
-            self.window.navigate_to_page(page)
-        elif hasattr(self.window, "switchTo"):
-            self.window.switchTo(page)
+        self.window.navigate_to_page(page)
+
+    def _navigate_toolbox_page(self, key: str) -> None:
+        """通过工具箱缓存打开共享工具页。"""
+        if not self.window:
+            return
+        toolbox = getattr(self.window, "renpy_toolbox_page", None)
+        if toolbox is None:
+            InfoBar.warning("提示", "未找到 Ren'Py 工具箱页面。", parent=self)
+            return
+        self.window.navigate_to_page(toolbox.get_tool_page(key))
 
     def _open_glossary_page(self) -> None:
-        from frontend.RenpyToolbox.LocalGlossaryPage import LocalGlossaryPage
-
-        self._navigate_page("local_glossary_page", lambda: LocalGlossaryPage("local-glossary", self.window))
+        self._navigate_toolbox_page("local_glossary")
 
     def _open_text_preserve_page(self) -> None:
-        from frontend.RenpyToolbox.TextPreservePage import TextPreservePage
-
-        self._navigate_page("text_preserve_page", lambda: TextPreservePage("text-preserve", self.window))
+        self._navigate_toolbox_page("text_preserve")
 
     def _open_custom_prompt_page(self) -> None:
         from frontend.Setting.CustomPromptPage import CustomPromptPage
