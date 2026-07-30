@@ -776,10 +776,7 @@ class TranslationPage(QWidget, Base):
                 parent = window,
             )
             return
-        if hasattr(window, "navigate_to_page"):
-            window.navigate_to_page(page)
-        elif hasattr(window, "switchTo"):
-            window.switchTo(page)
+        window.navigate_to_page(page)
 
     # 开始
     def add_command_bar_action_start(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:

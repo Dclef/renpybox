@@ -227,7 +227,7 @@ class Config():
     android_update_always: bool = True
     android_update_icons: bool = True
 
-    # RenpyToolkitPage
+    # RenpyToolboxPage
     renpy_font_replace_enable: bool = False
     renpy_font_original: str = ""
     renpy_font_target: str = ""
