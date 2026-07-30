@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
 )
 from qfluentwidgets import (
+    BodyLabel,
     CardWidget,
     PushButton,
     PrimaryPushButton,
@@ -23,6 +24,8 @@ from qfluentwidgets import (
     ComboBox,
     InfoBar,
     FluentIcon,
+    StrongBodyLabel,
+    TitleLabel,
 )
 
 from base.Base import Base
@@ -46,15 +49,14 @@ class HtmlImportPage(Base, QWidget):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        title = QLabel("🧾 HTML 导入 / 转换")
-        title.setStyleSheet("font-size: 22px; font-weight: bold;")
+        title = TitleLabel("HTML 导入 / 转换", self)
         layout.addWidget(title)
 
-        desc = QLabel(
-            "支持从 HTML 文件提取翻译文本，或将 TXT 转换为 HTML，方便在浏览器或翻译工具中审阅。"
+        desc = BodyLabel(
+            "支持从 HTML 文件提取翻译文本，或将 TXT 转换为 HTML，方便在浏览器或翻译工具中审阅。",
+            self,
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: gray;")
         layout.addWidget(desc)
 
         layout.addWidget(self._build_html_to_txt_card())
@@ -68,8 +70,7 @@ class HtmlImportPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 16)
         v_layout.setSpacing(10)
 
-        title = QLabel("HTML → TXT")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title = StrongBodyLabel("HTML → TXT", self)
         v_layout.addWidget(title)
 
         # 输入
@@ -107,8 +108,7 @@ class HtmlImportPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 16)
         v_layout.setSpacing(10)
 
-        title = QLabel("Excel → TXT")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title = StrongBodyLabel("Excel → TXT", self)
         v_layout.addWidget(title)
 
         # 选择 Excel
@@ -153,8 +153,7 @@ class HtmlImportPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 16)
         v_layout.setSpacing(10)
 
-        title = QLabel("TXT → HTML")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title = StrongBodyLabel("TXT → HTML", self)
         v_layout.addWidget(title)
 
         # 输入
