@@ -216,17 +216,25 @@ def extract_relaxed_english_line_literals(line_content: str, filter_length: int)
 
 
 class ExtractTlThread(threading.Thread):
-    def __init__(self, p, is_py2, is_remove_repeat_only = False):
+    def __init__(self, p, is_py2, is_remove_repeat_only=False, duplicate_action="comment"):
         threading.Thread.__init__(self)
         self.p = p
         self.is_py2 = is_py2
         self.is_remove_repeat_only = is_remove_repeat_only
+        self.duplicate_action = duplicate_action
 
     def run(self):
         if not self.is_remove_repeat_only:
-            extracted = ExtractFromFile(self.p, False, 9999, False, self.is_py2)
+            extracted = ExtractFromFile(
+                self.p,
+                False,
+                9999,
+                False,
+                self.is_py2,
+                duplicate_action=self.duplicate_action,
+            )
         else:
-            remove_repeat_for_file(self.p)
+            remove_repeat_for_file(self.p, duplicate_action=self.duplicate_action)
             f = io.open(self.p, 'r', encoding='utf-8')
             _lines = f.readlines()
             f.close()
@@ -240,7 +248,106 @@ class ExtractTlThread(threading.Thread):
         get_extracted_lock.release()
 
 
-def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
+DUPLICATE_ACTION_COMMENT = "comment"
+DUPLICATE_ACTION_DELETE = "delete"
+DUPLICATE_MARKER = "[renpybox] duplicate"
+
+
+def _normalize_duplicate_action(action):
+    normalized = str(action or DUPLICATE_ACTION_COMMENT).strip().lower()
+    if normalized not in (DUPLICATE_ACTION_COMMENT, DUPLICATE_ACTION_DELETE):
+        raise ValueError(f"unsupported duplicate action: {action}")
+    return normalized
+
+
+def _comment_rpy_line(line):
+    if not line or line.lstrip().startswith('#'):
+        return line
+    indent_len = len(line) - len(line.lstrip(' \t'))
+    return f"{line[:indent_len]}# {line[indent_len:]}"
+
+
+def _mark_duplicate_entry(lines, old_idx, new_idx, first_location, duplicate_action):
+    if duplicate_action == DUPLICATE_ACTION_DELETE:
+        lines[old_idx] = ''
+        if new_idx is not None:
+            for idx in range(old_idx + 1, new_idx + 1):
+                lines[idx] = ''
+        return
+
+    old_line = lines[old_idx]
+    indent_len = len(old_line) - len(old_line.lstrip(' \t'))
+    indent = old_line[:indent_len]
+    marker = f"{indent}# {DUPLICATE_MARKER}; first at {first_location}\n"
+    lines[old_idx] = marker + _comment_rpy_line(old_line)
+    if new_idx is not None:
+        lines[new_idx] = _comment_rpy_line(lines[new_idx])
+
+
+def _cleanup_empty_string_blocks(lines, preserve_duplicate_comments):
+    """Remove empty strings blocks, but keep duplicate records as inert comments."""
+    header_re = re.compile(r'^(?P<indent>\s*)translate\s+\S+\s+strings\s*:\s*$')
+    changed = False
+    index = 0
+
+    while index < len(lines):
+        content = lines[index].rstrip('\r\n')
+        match = header_re.match(content)
+        if match is None:
+            index += 1
+            continue
+
+        base_indent = len(match.group('indent'))
+        end = index + 1
+        while end < len(lines):
+            candidate = lines[end]
+            if not candidate.strip():
+                end += 1
+                continue
+
+            candidate_indent = len(candidate) - len(candidate.lstrip(' \t'))
+            if candidate_indent <= base_indent:
+                break
+            end += 1
+
+        block_lines = lines[index + 1:end]
+        has_active_content = any(
+            line.strip() and not line.lstrip().startswith('#')
+            for line in block_lines
+        )
+        has_duplicate_marker = any(DUPLICATE_MARKER in line for line in block_lines)
+
+        if not has_active_content:
+            if preserve_duplicate_comments and has_duplicate_marker:
+                lines[index] = _comment_rpy_line(lines[index])
+            else:
+                for remove_idx in range(index, end):
+                    lines[remove_idx] = ''
+            changed = True
+
+        index = end
+
+    return changed
+
+
+def _find_entry_new_line(lines, old_idx):
+    scan_idx = old_idx + 1
+    while scan_idx < len(lines):
+        stripped = lines[scan_idx].strip()
+        if stripped.startswith('new '):
+            return scan_idx
+        if stripped.startswith('old ') or stripped.startswith('translate '):
+            return None
+        scan_idx += 1
+    return None
+
+
+def remove_repeat_extracted_from_tl(
+    tl_dir,
+    is_py2,
+    cross_file_dedup=True,
+    duplicate_action=DUPLICATE_ACTION_COMMENT,
+):
     """
     去除 tl 目录中的重复翻译条目
     
@@ -248,7 +355,9 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
         tl_dir: 翻译目录路径
         is_py2: 是否为 Python 2 版本的游戏
         cross_file_dedup: 是否进行跨文件去重（默认开启）
+        duplicate_action: comment（默认，保留记录）或 delete（兼容旧行为）
     """
+    duplicate_action = _normalize_duplicate_action(duplicate_action)
     p = tl_dir
     if p[len(p) - 1] != '/' and p[len(p) - 1] != '\\':
         p = p + '/'
@@ -269,11 +378,12 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
             if is_builtin_ui_file(i, p):
                 continue
             rpy_files.append(i)
+    rpy_files.sort(key=lambda value: os.path.relpath(value, p).replace('\\', '/').casefold())
     
     # 第一步：对每个文件执行去重（单文件内去重）和提取
     # 注意：这一步会修改文件内容，必须先执行
     for file_path in rpy_files:
-        t = ExtractTlThread(file_path, is_py2)
+        t = ExtractTlThread(file_path, is_py2, duplicate_action=duplicate_action)
         get_extracted_threads.append(t)
         cnt = cnt + 1
         t.start()
@@ -347,53 +457,46 @@ def remove_repeat_extracted_from_tl(tl_dir, is_py2, cross_file_dedup=True):
     
     # 第三步：跨文件去重
     if cross_file_dedup:
-        duplicates_to_remove = {}  # {file_path: set(line_indices_to_remove)}
+        duplicates_to_process = {}  # {file_path: {line_index: (first_file, first_line)}}
         
         for old_text, occurrences in global_old_entries.items():
             # 情况1：如果该文本已经存在于 dialogue 翻译块中，删除 strings 中的所有条目
             # 情况2：strings 中出现多次，保留第一次
             if len(occurrences) > 1:
-                # 保留第一次出现，其余标记为待删除
+                first_occurrence = occurrences[0]
                 for file_path, line_idx in occurrences[1:]:
-                    if file_path not in duplicates_to_remove:
-                        duplicates_to_remove[file_path] = set()
-                    # 标记 old 行 (new 行将在删除阶段动态查找)
-                    duplicates_to_remove[file_path].add(line_idx)
+                    duplicates_to_process.setdefault(file_path, {})[line_idx] = first_occurrence
         
         # 执行跨文件去重删除
-        for file_path, lines_to_remove in duplicates_to_remove.items():
+        for file_path, duplicate_entries in duplicates_to_process.items():
             try:
                 with io.open(file_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                 
-                # 删除标记的行（置空）
                 modified = False
-                # 倒序处理，虽然对于置空操作不是严格必须的，但习惯上更好
-                sorted_indices = sorted(list(lines_to_remove), reverse=True)
+                sorted_indices = sorted(duplicate_entries, reverse=True)
                 
                 for idx in sorted_indices:
                     if 0 <= idx < len(lines):
-                        # 删除 old 行
-                        lines[idx] = ''
+                        first_file, first_idx = duplicate_entries[idx]
+                        first_location = (
+                            f"{os.path.relpath(first_file, p).replace(os.sep, '/')}:{first_idx + 1}"
+                        )
+                        new_idx = _find_entry_new_line(lines, idx)
+                        _mark_duplicate_entry(
+                            lines,
+                            idx,
+                            new_idx,
+                            first_location,
+                            duplicate_action,
+                        )
                         modified = True
-                        
-                        # 向后寻找并删除对应的 new 行 (包括中间的注释和空行)
-                        next_idx = idx + 1
-                        while next_idx < len(lines):
-                            next_line_stripped = lines[next_idx].strip()
-                            if next_line_stripped.startswith('new '):
-                                lines[next_idx] = ''
-                                break
-                            elif next_line_stripped.startswith('#') or next_line_stripped == '':
-                                # 如果是注释或空行，也一并删除
-                                lines[next_idx] = ''
-                                next_idx += 1
-                            else:
-                                # 遇到其他内容（如新的 block 或其他指令），停止
-                                break
                 
                 if modified:
-                    # 清理连续空行后写回
+                    _cleanup_empty_string_blocks(
+                        lines,
+                        preserve_duplicate_comments=(duplicate_action == DUPLICATE_ACTION_COMMENT),
+                    )
                     lines = get_remove_consecutive_empty_lines(lines)
                     with io.open(file_path, 'w', encoding='utf-8') as f:
                         f.writelines(lines)
@@ -417,7 +520,7 @@ def get_remove_consecutive_empty_lines(lines):
     return new_lines
 
 
-def remove_repeat_for_file(p):
+def remove_repeat_for_file(p, duplicate_action=DUPLICATE_ACTION_COMMENT):
     """
     移除单个文件内的重复翻译条目
     
@@ -426,6 +529,7 @@ def remove_repeat_for_file(p):
     2. 移除空的 translate 块
     3. 清理连续空行
     """
+    duplicate_action = _normalize_duplicate_action(duplicate_action)
     try:
         f = io.open(p, 'r', encoding='utf-8')
         lines = f.readlines()
@@ -434,89 +538,48 @@ def remove_repeat_for_file(p):
         log.error(f'读取文件失败 {p}: {e}')
         return
     
-    # 使用 (old_text, new_text) 元组作为唯一标识
-    exist_pairs = set()
-    is_removed = False
-    is_empty_translate = True
-    start_translate_block_line = -1
-    lines_to_remove = set()
+    first_occurrences = {}
+    modified = False
     
     i = 0
     while i < len(lines):
-        line = lines[i].rstrip('\n')
-        
-        # 检测 translate 块的开始/结束
-        if (line.startswith('translate ') and line.endswith('strings:')) or i == len(lines) - 1:
-            if start_translate_block_line != -1:
-                if is_empty_translate:
-                    # 移除空的 translate 块
-                    end_idx = i if i < len(lines) - 1 else i + 1
-                    for idx in range(start_translate_block_line, end_idx):
-                        lines_to_remove.add(idx)
-                    is_removed = True
-                is_empty_translate = True
-            start_translate_block_line = i
-            i += 1
-            continue
+        line = lines[i]
         
         # 检测 old/new 对
         if line.strip().startswith('old '):
             old_text = line.strip()
             
-            # 创建唯一标识 - 只使用 old_text，忽略 translation 以避免同一原文有多个不同翻译条目
-            # 优先保留文件前面的条目（通常是原有翻译），后面的（通常是新提取的）将被视为重复
             pair_key = old_text
-            
-            # 寻找对应的 new 行
-            new_line_idx = -1
-            scan_idx = i + 1
-            while scan_idx < len(lines):
-                scan_line = lines[scan_idx].strip()
-                if scan_line.startswith('new '):
-                    new_line_idx = scan_idx
-                    break
-                elif scan_line.startswith('old ') or scan_line.startswith('translate '):
-                    # 遇到下一个块的开始，说明当前块没有 new
-                    break
-                scan_idx += 1
+            new_line_idx = _find_entry_new_line(lines, i)
 
-            if pair_key in exist_pairs:
-                # 重复条目，标记删除
-                # 同时删除前面可能的注释行
-                if i > 0 and lines[i - 1].lstrip().startswith('#'):
-                    lines_to_remove.add(i - 1)
-                lines_to_remove.add(i)
-                
-                # 如果找到了对应的 new 行，删除它以及中间的杂项
-                if new_line_idx != -1:
-                    for k in range(i + 1, new_line_idx + 1):
-                        lines_to_remove.add(k)
-                
-                is_removed = True
+            if pair_key in first_occurrences:
+                first_idx = first_occurrences[pair_key]
+                _mark_duplicate_entry(
+                    lines,
+                    i,
+                    new_line_idx,
+                    f"{os.path.basename(p)}:{first_idx + 1}",
+                    duplicate_action,
+                )
+                modified = True
             else:
-                exist_pairs.add(pair_key)
-                is_empty_translate = False
+                first_occurrences[pair_key] = i
             
             # 移动到下一个 block
-            if new_line_idx != -1:
+            if new_line_idx is not None:
                 i = new_line_idx + 1
             else:
                 i += 1
             continue
-        
-        # 检测非空内容
-        if len(line) > 4 and not line.lstrip().startswith('#'):
-            if not line.startswith('    old "old:') and not line.startswith('    new "new:'):
-                is_empty_translate = False
-        
         i += 1
-    
-    # 执行删除
-    if is_removed and lines_to_remove:
-        for idx in sorted(lines_to_remove, reverse=True):
-            if 0 <= idx < len(lines):
-                lines[idx] = ''
-        
+
+    if _cleanup_empty_string_blocks(
+        lines,
+        preserve_duplicate_comments=(duplicate_action == DUPLICATE_ACTION_COMMENT),
+    ):
+        modified = True
+
+    if modified:
         lines = get_remove_consecutive_empty_lines(lines)
         try:
             f = io.open(p, 'w', encoding='utf-8')
@@ -596,9 +659,18 @@ def is_resource_filename(_string):
     return is_resource_name(_string)
 
 
-def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True):
+def ExtractFromFile(
+    p,
+    is_open_filter,
+    filter_length,
+    is_skip_underline,
+    is_py2,
+    skip_translate_block=False,
+    remove_duplicates=True,
+    duplicate_action=DUPLICATE_ACTION_COMMENT,
+):
     if remove_duplicates:
-        remove_repeat_for_file(p)
+        remove_repeat_for_file(p, duplicate_action=duplicate_action)
     e = set()
     # 仅去重路径需要写权限；静态补充抽取只读取游戏源码，必须兼容只读文件。
     open_mode = 'r+' if remove_duplicates else 'r'
