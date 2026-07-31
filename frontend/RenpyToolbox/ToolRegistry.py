@@ -30,6 +30,7 @@ class ToolSpec:
     object_name: str = ""
     icon: FluentIconBase | None = None
     requires_project: bool = False
+    keywords: tuple[str, ...] = ()
     handler: str = ""
     lazy_import: str = ""
 
@@ -41,6 +42,7 @@ TOOL_SPECS = (
         "检测到上次未完成的翻译任务",
         FLOW,
         icon=ToolIcon.CONTINUE,
+        keywords=("恢复", "未完成", "进度", "resume"),
         handler="_open_continue_translation",
     ),
     ToolSpec(
@@ -50,6 +52,7 @@ TOOL_SPECS = (
         FLOW,
         object_name="yi-jian-fanyi",
         icon=ToolIcon.ONE_KEY,
+        keywords=("自动", "全流程", "游戏目录", "workflow", "translate"),
         handler="_open_one_key_translate",
         lazy_import="frontend.RenpyToolbox.OneKeyTranslatePage:YiJianFanyiPage",
     ),
@@ -61,6 +64,7 @@ TOOL_SPECS = (
         object_name="proofreading_page",
         icon=ToolIcon.PROOFREAD,
         requires_project=True,
+        keywords=("校对", "润色", "质检", "质量报告", "proofread", "polish"),
         lazy_import="frontend.Proofreading.ProofreadingPage:ProofreadingPage",
     ),
     ToolSpec(
@@ -69,6 +73,8 @@ TOOL_SPECS = (
         "将翻译结果写入游戏的 TL 目录",
         FLOW,
         icon=ToolIcon.APPLY,
+        requires_project=True,
+        keywords=("写入", "导入", "应用译文", "tl", "install"),
         handler="_open_apply_translation",
     ),
     ToolSpec(
@@ -78,6 +84,8 @@ TOOL_SPECS = (
         FLOW,
         object_name="font-replace",
         icon=ToolIcon.FONT,
+        requires_project=True,
+        keywords=("ttf", "otf", "字库", "乱码", "font"),
         lazy_import="frontend.RenpyToolbox.FontReplacePage:FontReplacePage",
     ),
     ToolSpec(
@@ -87,6 +95,8 @@ TOOL_SPECS = (
         FLOW,
         object_name="add-language",
         icon=ToolIcon.ADD_LANGUAGE,
+        requires_project=True,
+        keywords=("语言切换", "语言菜单", "language", "hook"),
         lazy_import="frontend.RenpyToolbox.AddLanguageEntrancePage:AddLanguageEntrancePage",
     ),
     ToolSpec(
@@ -96,6 +106,8 @@ TOOL_SPECS = (
         FLOW,
         object_name="set-default-language",
         icon=ToolIcon.DEFAULT_LANGUAGE,
+        requires_project=True,
+        keywords=("启动语言", "默认语言", "language", "locale"),
         lazy_import="frontend.RenpyToolbox.SetDefaultLanguagePage:SetDefaultLanguagePage",
     ),
     ToolSpec(
@@ -104,6 +116,7 @@ TOOL_SPECS = (
         "使用官方抽取、运行时抽取等高级抽取方式",
         TRANSLATE,
         icon=ToolIcon.EXTRACT_TL,
+        keywords=("tl", "抽取", "extract", "官方抽取", "运行时抽取"),
         lazy_import="frontend.RenpyTranslationPage:RenpyTranslationPage",
     ),
     ToolSpec(
@@ -113,6 +126,7 @@ TOOL_SPECS = (
         TRANSLATE,
         object_name="direct-rpy-translate",
         icon=ToolIcon.DIRECT_RPY,
+        keywords=("rpy", "tl", "脚本", "translate"),
         lazy_import="frontend.RenpyToolbox.DirectRpyTranslatePage:DirectRpyTranslatePage",
     ),
     ToolSpec(
@@ -122,6 +136,8 @@ TOOL_SPECS = (
         TRANSLATE,
         object_name="hook-translate",
         icon=ToolIcon.HOOK,
+        requires_project=True,
+        keywords=("hook", "钩子", "运行时", "抽取"),
         lazy_import="frontend.RenpyToolbox.HookTranslatePage:HookTranslatePage",
     ),
     ToolSpec(
@@ -131,6 +147,8 @@ TOOL_SPECS = (
         TRANSLATE,
         object_name="source-translate",
         icon=ToolIcon.SOURCE,
+        requires_project=True,
+        keywords=("rpy", "源码", "game", "脚本", "source"),
         lazy_import="frontend.RenpyToolbox.SourceTranslatePage:SourceTranslatePage",
     ),
     ToolSpec(
@@ -140,6 +158,8 @@ TOOL_SPECS = (
         TRANSLATE,
         object_name="hook-supplement",
         icon=ToolIcon.SUPPLEMENT,
+        requires_project=True,
+        keywords=("hook", "补丁", "漏翻", "漏提", "supplement"),
         lazy_import="frontend.RenpyToolbox.HookSupplementPage:HookSupplementPage",
     ),
     ToolSpec(
@@ -149,6 +169,7 @@ TOOL_SPECS = (
         TRANSLATE,
         object_name="extract-json",
         icon=ToolIcon.JSON,
+        keywords=("json", "导出", "导入", "人工翻译", "excel"),
         lazy_import="frontend.RenpyToolbox.ExtractTab:ExtractTab",
     ),
     ToolSpec(
@@ -158,6 +179,7 @@ TOOL_SPECS = (
         ASSET,
         object_name="local-glossary",
         icon=ToolIcon.GLOSSARY,
+        keywords=("术语", "词表", "glossary", "csv", "excel"),
         lazy_import="frontend.RenpyToolbox.LocalGlossaryPage:LocalGlossaryPage",
     ),
     ToolSpec(
@@ -167,6 +189,7 @@ TOOL_SPECS = (
         ASSET,
         object_name="text-preserve",
         icon=ToolIcon.PRESERVE,
+        keywords=("禁翻", "保留", "变量", "正则", "placeholder"),
         lazy_import="frontend.RenpyToolbox.TextPreservePage:TextPreservePage",
     ),
     ToolSpec(
@@ -176,6 +199,7 @@ TOOL_SPECS = (
         ASSET,
         object_name="honorific-placeholder",
         icon=ToolIcon.HONORIFIC,
+        keywords=("称呼", "变量", "占位符", "placeholder"),
         lazy_import="frontend.RenpyToolbox.HonorificPlaceholderPage:HonorificPlaceholderPage",
     ),
     ToolSpec(
@@ -185,6 +209,7 @@ TOOL_SPECS = (
         ASSET,
         object_name="ma-suite",
         icon=ToolIcon.STRUCTURE,
+        keywords=("excel", "导出", "结构化", "ma", "脚本"),
         lazy_import="frontend.RenpyToolbox.MaSuitePage:MaSuitePage",
     ),
     ToolSpec(
@@ -194,6 +219,7 @@ TOOL_SPECS = (
         ASSET,
         object_name="batch-correction",
         icon=ToolIcon.BATCH,
+        keywords=("excel", "批量", "修正", "质检", "replace"),
         lazy_import="frontend.RenpyToolbox.BatchCorrectionPage:BatchCorrectionPage",
     ),
     ToolSpec(
@@ -203,6 +229,8 @@ TOOL_SPECS = (
         ASSET,
         object_name="name-extraction",
         icon=ToolIcon.NAME,
+        requires_project=True,
+        keywords=("姓名", "角色名", "人名", "json", "rpy", "name"),
         lazy_import="frontend.RenpyToolbox.NameExtractionPage:NameExtractionPage",
     ),
     ToolSpec(
@@ -212,6 +240,7 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="pack-unpack",
         icon=ToolIcon.PACK,
+        keywords=("rpa", "rpyc", "反编译", "解压", "unrpyc", "unren", "archive"),
         lazy_import="frontend.RenpyToolbox.PackUnpackPage:PackUnpackPage",
     ),
     ToolSpec(
@@ -221,6 +250,7 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="error-repair",
         icon=ToolIcon.REPAIR,
+        keywords=("修复", "报错", "rpy", "script", "repair"),
         lazy_import="frontend.RenpyToolbox.ErrorRepairPage:ErrorRepairPage",
     ),
     ToolSpec(
@@ -230,6 +260,7 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="formatter",
         icon=ToolIcon.FORMAT,
+        keywords=("格式化", "rpy", "代码", "format", "lint"),
         lazy_import="frontend.RenpyToolbox.FormatterPage:FormatterPage",
     ),
     ToolSpec(
@@ -239,6 +270,8 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="android-build",
         icon=ToolIcon.ANDROID,
+        requires_project=True,
+        keywords=("apk", "sdk", "签名", "rapt", "android", "gradle"),
         lazy_import="frontend.RenpyToolbox.AndroidBuildPage:AndroidBuildPage",
     ),
     ToolSpec(
@@ -248,6 +281,7 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="html-import",
         icon=ToolIcon.HTML,
+        keywords=("html", "txt", "excel", "导入", "导出", "convert"),
         lazy_import="frontend.RenpyToolbox.HtmlImportPage:HtmlImportPage",
     ),
 )
