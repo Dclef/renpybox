@@ -23,6 +23,7 @@ class Base():
         APP_UPDATE_CHECK_START = "APP_UPDATE_CHECK_START"                  # 更新 - 检查开始
         APP_UPDATE_CHECK_DONE = "APP_UPDATE_CHECK_DONE"                    # 更新 - 检查完成
         APP_UPDATE_DOWNLOAD_START = "APP_UPDATE_DOWNLOAD_START"            # 更新 - 下载开始
+        APP_UPDATE_DOWNLOAD_CANCEL = "APP_UPDATE_DOWNLOAD_CANCEL"          # 更新 - 取消下载
         APP_UPDATE_DOWNLOAD_DONE = "APP_UPDATE_DOWNLOAD_DONE"              # 更新 - 下载完成
         APP_UPDATE_DOWNLOAD_ERROR = "APP_UPDATE_DOWNLOAD_ERROR"            # 更新 - 下载报错
         APP_UPDATE_DOWNLOAD_UPDATE = "APP_UPDATE_DOWNLOAD_UPDATE"          # 更新 - 下载更新

@@ -7,7 +7,7 @@ qfluentwidgets 的控件会自动处理主题，不需要在此设置
 """
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QTableWidget, QLabel, QAbstractScrollArea
-from qfluentwidgets import isDarkTheme, qconfig
+from qfluentwidgets import isDarkTheme
 
 
 # 暗色主题的全局样式表 - 仅针对原生 Qt 控件
@@ -58,13 +58,30 @@ DARK_STYLESHEET = """
         background-color: rgb(38, 38, 38);
         border-color: rgb(70, 70, 70);
     }
-    ItemCard[toolCard="true"][projectReady="false"]:hover {
+    ItemCard[toolCard="true"]:pressed,
+    ItemCard[toolCard="true"][pressed="true"] {
+        background-color: rgb(45, 45, 45);
+    }
+    ItemCard[toolCard="true"][projectReady="false"]:hover,
+    ItemCard[toolCard="true"][projectReady="false"]:pressed,
+    ItemCard[toolCard="true"][projectReady="false"][pressed="true"] {
         background-color: rgb(32, 32, 32);
         border-color: rgb(55, 55, 55);
+    }
+    ItemCard[toolCard="true"]:focus {
+        border-color: #BCA483;
     }
     ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
         color: rgb(160, 160, 160);
         background: transparent;
+    }
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[toolCardTitle="true"],
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[projectRequirement="true"] {
+        color: rgb(160, 160, 160);
+        background: transparent;
+    }
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[toolCardDescription="true"] {
+        color: rgb(120, 120, 120);
     }
     ItemCard[toolCard="true"] QLabel[toolStep="true"] {
         color: rgb(235, 225, 211);
@@ -206,13 +223,30 @@ LIGHT_STYLESHEET = """
         background-color: rgb(248, 248, 248);
         border-color: rgb(214, 214, 214);
     }
-    ItemCard[toolCard="true"][projectReady="false"]:hover {
+    ItemCard[toolCard="true"]:pressed,
+    ItemCard[toolCard="true"][pressed="true"] {
+        background-color: rgb(240, 240, 240);
+    }
+    ItemCard[toolCard="true"][projectReady="false"]:hover,
+    ItemCard[toolCard="true"][projectReady="false"]:pressed,
+    ItemCard[toolCard="true"][projectReady="false"][pressed="true"] {
         background-color: rgb(255, 255, 255);
         border-color: rgb(230, 230, 230);
+    }
+    ItemCard[toolCard="true"]:focus {
+        border-color: #BCA483;
     }
     ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
         color: rgb(96, 96, 96);
         background: transparent;
+    }
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[toolCardTitle="true"],
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[projectRequirement="true"] {
+        color: rgb(96, 96, 96);
+        background: transparent;
+    }
+    ItemCard[toolCard="true"][projectReady="false"] QLabel[toolCardDescription="true"] {
+        color: rgb(150, 150, 150);
     }
     ItemCard[toolCard="true"] QLabel[toolStep="true"] {
         color: rgb(88, 70, 48);
@@ -310,61 +344,6 @@ LIGHT_STYLESHEET = """
 def get_current_stylesheet() -> str:
     """获取当前主题对应的样式表"""
     return DARK_STYLESHEET if isDarkTheme() else LIGHT_STYLESHEET
-
-
-def apply_theme_to_widget(widget: QWidget):
-    """
-    为指定控件应用当前主题样式
-    通常在控件初始化后调用
-    """
-    widget.setStyleSheet(get_current_stylesheet())
-
-
-class ThemeManager:
-    """主题管理器 - 单例模式"""
-    
-    _instance = None
-    _registered_widgets: list = []
-    
-    @classmethod
-    def get(cls) -> "ThemeManager":
-        if cls._instance is None:
-            cls._instance = ThemeManager()
-        return cls._instance
-    
-    def __init__(self):
-        if ThemeManager._instance is not None:
-            return
-        
-        self._registered_widgets = []
-        # 监听主题变化
-        qconfig.themeChanged.connect(self._on_theme_changed)
-    
-    def register(self, widget: QWidget):
-        """注册需要主题同步的控件"""
-        if widget not in self._registered_widgets:
-            self._registered_widgets.append(widget)
-            apply_theme_to_widget(widget)
-    
-    def unregister(self, widget: QWidget):
-        """取消注册"""
-        if widget in self._registered_widgets:
-            self._registered_widgets.remove(widget)
-    
-    def _on_theme_changed(self):
-        """主题切换时更新所有已注册控件"""
-        stylesheet = get_current_stylesheet()
-        # 清理已销毁的控件
-        alive_widgets = []
-        for w in self._registered_widgets:
-            try:
-                if w is not None and not w.isHidden():
-                    w.setStyleSheet(stylesheet)
-                    alive_widgets.append(w)
-            except RuntimeError:
-                # 控件已被销毁
-                pass
-        self._registered_widgets = alive_widgets
 
 
 def mark_toolbox_widget(widget: QWidget | None, prop: str = "toolboxPage") -> None:
