@@ -190,10 +190,8 @@ if __name__ == "__main__":
     app.setFont(font)
 
     # 应用全局主题样式（处理原生 Qt 控件）
-    from widget.ThemeHelper import get_current_stylesheet, ThemeManager
+    from widget.ThemeHelper import get_current_stylesheet
     app.setStyleSheet(get_current_stylesheet())
-    # 初始化主题管理器，监听主题切换
-    theme_manager = ThemeManager.get()
 
     # 启动任务引擎
     Engine.get().run()

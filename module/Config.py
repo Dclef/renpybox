@@ -79,6 +79,7 @@ class Config():
     startup_sound_path: str = "resource/Ciallo.mp3"
     startup_sound_volume: int = 80
     cache_use_sqlite: bool = True
+    last_seen_version: str = ""
 
     # PlatformPage
     activate_platform: int = 0
@@ -317,6 +318,10 @@ class Config():
         config.setdefault("translation_custom_style", "")
         config.setdefault("translation_output_protocol", cls.OUTPUT_PROTOCOL_STRUCTURED)
         config.setdefault("asset_regex_enable", False)
+        config.setdefault("last_seen_version", "")
+
+        if not isinstance(config.get("last_seen_version"), str):
+            config["last_seen_version"] = ""
 
         config["translation_prompt_mode"] = cls._normalize_choice(
             config.get("translation_prompt_mode"),

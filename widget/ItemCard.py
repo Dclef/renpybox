@@ -3,10 +3,9 @@
 from typing import Callable
 
 from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtGui import QTextLayout
+from PyQt5.QtGui import QKeyEvent, QMouseEvent, QTextLayout
 from PyQt5.QtWidgets import (
     QFrame,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -15,6 +14,7 @@ from PyQt5.QtWidgets import (
 )
 from qfluentwidgets import (
     CardWidget,
+    CaptionLabel,
     FluentIcon,
     FluentIconBase,
     IconWidget,
@@ -37,7 +37,7 @@ class TwoLineElideLabel(QLabel):
         self.setWordWrap(True)
         self.setToolTip(text)
         self.setProperty("toolCardDescription", True)
-        self.setMaximumHeight(self.fontMetrics().lineSpacing() * 2 + 4)
+        self.setFixedHeight(self.fontMetrics().lineSpacing() * 2 + 4)
 
     def _update_text(self) -> None:
         width = self.contentsRect().width()
@@ -81,25 +81,31 @@ class ItemCard(CardWidget):
         icon: FluentIconBase | None = None,
         step: int = 0,
         project_ready: bool = True,
+        reserve_step_space: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setProperty("toolCard", True)
-        self.setMinimumWidth(260)
+        self.setProperty("pressed", False)
+        self.setFixedWidth(260)
         self.setFixedHeight(132)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setBorderRadius(8)
+        # 圆角与交互状态由 ThemeHelper 中的 QSS 统一绘制。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._description = description
+        self._open_tooltip = f"打开{title}"
+        self._project_requirement = "需先选择游戏目录"
         self.setToolTip(description)
 
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(16, 14, 12, 14)
         self.root.setSpacing(8)
 
-        title_container = QWidget(self)
-        title_container.setToolTip(description)
-        title_layout = QHBoxLayout(title_container)
+        self.title_container = QWidget(self)
+        self.title_container.setToolTip(description)
+        title_layout = QHBoxLayout(self.title_container)
         title_layout.setSpacing(9)
         title_layout.setContentsMargins(0, 0, 0, 0)
-        self.root.addWidget(title_container)
+        self.root.addWidget(self.title_container)
 
         if step > 0:
             step_label = QLabel(str(step), self)
@@ -109,6 +115,8 @@ class ItemCard(CardWidget):
             step_label.setProperty("toolStep", True)
             step_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             title_layout.addWidget(step_label)
+        elif reserve_step_space:
+            title_layout.addSpacing(22 + 9)
 
         self.icon_widget = None
         if icon is not None:
@@ -118,22 +126,44 @@ class ItemCard(CardWidget):
             title_layout.addWidget(self.icon_widget)
 
         self.title_label = SubtitleLabel(title, self)
+        self.title_label.setProperty("toolCardTitle", True)
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_layout.addWidget(self.title_label)
         title_layout.addStretch(1)
 
         self.title_button = TransparentToolButton(FluentIcon.PAGE_RIGHT, self)
-        self.title_button.setToolTip(f"打开{title}")
+        self.title_button.setToolTip(self._open_tooltip)
+        self.title_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         title_layout.addWidget(self.title_button)
 
         self.root.addWidget(Separator(self))
 
         self.description_label = TwoLineElideLabel(description, self)
         self.description_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.root.addWidget(self.description_label, 1)
+        self.description_label.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred,
+        )
 
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self._opacity_effect)
+        self.project_requirement_label = CaptionLabel(self._project_requirement, self)
+        self.project_requirement_label.setProperty("projectRequirement", True)
+        self.project_requirement_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        description_layout = QHBoxLayout()
+        description_layout.setContentsMargins(0, 0, 0, 0)
+        description_layout.setSpacing(8)
+        description_layout.addWidget(
+            self.description_label,
+            1,
+            alignment=Qt.AlignmentFlag.AlignBottom,
+        )
+        description_layout.addWidget(
+            self.project_requirement_label,
+            alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+        )
+        self.root.addLayout(description_layout, 1)
+
         self.set_project_ready(project_ready)
         qconfig.themeChanged.connect(self._on_theme_changed)
 
@@ -145,24 +175,50 @@ class ItemCard(CardWidget):
 
     def set_project_ready(self, ready: bool) -> None:
         self.setProperty("projectReady", ready)
-        self._opacity_effect.setOpacity(1.0 if ready else 0.56)
+        self.project_requirement_label.setVisible(not ready)
+        tooltip = self._description if ready else self._project_requirement
+        self.setToolTip(tooltip)
+        self.title_container.setToolTip(tooltip)
+        self.description_label.setToolTip(tooltip)
+        self.title_button.setToolTip(self._open_tooltip if ready else tooltip)
         cursor = Qt.CursorShape.PointingHandCursor if ready else Qt.CursorShape.ArrowCursor
         self.setCursor(cursor)
         self.title_button.setCursor(cursor)
         self._repolish()
 
     def _repolish(self) -> None:
-        style = self.style()
-        style.unpolish(self)
-        style.polish(self)
+        for widget in (
+            self,
+            self.title_label,
+            self.description_label,
+            self.project_requirement_label,
+        ):
+            style = widget.style()
+            style.unpolish(widget)
+            style.polish(widget)
         self.update()
 
     def _on_theme_changed(self) -> None:
         self._repolish()
         if self.icon_widget is not None:
             self.icon_widget.update()
-        self.description_label.style().unpolish(self.description_label)
-        self.description_label.style().polish(self.description_label)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        self.setProperty("pressed", True)
+        self._repolish()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self.setProperty("pressed", False)
+        self._repolish()
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event: QEvent) -> None:
         # CardWidget 会自行绘制半透明背景，这里改由 QSS 完整接管。
