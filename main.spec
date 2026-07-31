@@ -16,7 +16,7 @@ print(f"Project Root: {project_root}")
 print(f"Resource Dir: {resource_dir}")
 
 # 收集 resource 目录（跳过 config.json）
-datas = []
+datas = [(str(project_root / "CHANGELOG.md"), "resource")]
 for file_path in resource_dir.rglob("*"):
     if file_path.is_file() and file_path.name != "config.json":
         target_dir = Path("resource") / file_path.relative_to(resource_dir).parent
