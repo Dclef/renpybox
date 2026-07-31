@@ -30,7 +30,7 @@ app_settings_module = importlib.import_module("frontend.AppSettingsPage")
 changelog_dialog_module = importlib.import_module("frontend.Setting.ChangelogDialog")
 
 
-def _set_state(manager, status, downloaded=0, total=0, version="v0.7.2"):
+def _set_state(manager, status, downloaded=0, total=0, version="v99.0.0"):
     with manager.lock:
         manager.status = status
         manager.latest = {
@@ -87,7 +87,7 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
 
         _set_state(manager, VersionManager.Status.NEW_VERSION)
         page.refresh_update_ui()
-        assert "v0.7.2" in page.update_status_label.text()
+        assert "v99.0.0" in page.update_status_label.text()
         assert page.update_action_button.text() == "查看详情"
         assert page.update_action_button.isVisible()
         _assert_status_icon(page, FluentIcon.UPDATE, "#BCA483")
@@ -117,7 +117,7 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
 
         _set_state(manager, VersionManager.Status.NONE)
         page.refresh_update_ui()
-        assert "v0.7.2" in page.update_status_label.text()
+        assert "v99.0.0" in page.update_status_label.text()
         assert page.update_action_button.text() == "查看详情"
         assert page.update_action_button.isVisible()
         assert page.update_progress_bar.value() == 0
