@@ -6,9 +6,19 @@ import os
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
     FlowLayout,
+    FluentIcon,
+    IconWidget,
     InfoBar,
     SearchLineEdit,
     SingleDirectionScrollArea,
@@ -51,6 +61,10 @@ class RenpyToolboxPage(Base, QWidget):
         self._section_titles: dict[str, StrongBodyLabel] = {}
         self._section_containers: dict[str, QWidget] = {}
         self._flow_layouts: dict[str, FlowLayout] = {}
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(100)
+        self._resize_timer.timeout.connect(self._update_card_widths)
 
         self._init_ui()
 
@@ -89,11 +103,39 @@ class RenpyToolboxPage(Base, QWidget):
 
         for group, title in GROUP_TITLES.items():
             self._create_flow_section(group, title)
-        self.scroll_layout.addStretch(1)
+        self._create_empty_state(scroll_widget)
+        self.scroll_layout.addStretch(0)
 
         self.scroll_area.setWidget(scroll_widget)
         self.main_layout.addWidget(self.scroll_area, 1)
         self._create_tool_cards()
+
+    def _create_empty_state(self, parent: QWidget) -> None:
+        self.empty_state = QWidget(parent)
+        self.empty_state.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout = QVBoxLayout(self.empty_state)
+        layout.setContentsMargins(0, 32, 0, 32)
+        layout.setSpacing(8)
+        layout.addStretch(1)
+
+        icon = IconWidget(FluentIcon.SEARCH_MIRROR, self.empty_state)
+        icon.setFixedSize(48, 48)
+        icon_effect = QGraphicsOpacityEffect(icon)
+        icon_effect.setOpacity(0.4)
+        icon.setGraphicsEffect(icon_effect)
+        layout.addWidget(icon, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(
+            BodyLabel("没有匹配的工具", self.empty_state),
+            alignment=Qt.AlignmentFlag.AlignHCenter,
+        )
+        layout.addWidget(
+            CaptionLabel("换个关键词试试，或清空搜索框", self.empty_state),
+            alignment=Qt.AlignmentFlag.AlignHCenter,
+        )
+        layout.addStretch(1)
+
+        self.empty_state.setVisible(False)
+        self.scroll_layout.addWidget(self.empty_state, 1)
 
     def _create_flow_section(self, group: str, title: str) -> None:
         title_label = StrongBodyLabel(title, self)
@@ -114,6 +156,10 @@ class RenpyToolboxPage(Base, QWidget):
     def _create_tool_cards(self) -> None:
         has_pending_translation = self._check_pending_translation()
         project_ready = self._has_project()
+        has_numbered_flow_cards = any(
+            spec.group == FLOW and spec.key != "continue_translation"
+            for spec in TOOL_SPECS
+        )
         workflow_step = 0
 
         for spec in TOOL_SPECS:
@@ -129,6 +175,11 @@ class RenpyToolboxPage(Base, QWidget):
                 icon=spec.icon,
                 step=workflow_step if spec.group == FLOW and spec.key != "continue_translation" else 0,
                 project_ready=project_ready or not spec.requires_project,
+                reserve_step_space=(
+                    spec.group == FLOW
+                    and spec.key == "continue_translation"
+                    and has_numbered_flow_cards
+                ),
                 clicked=lambda widget, current=spec: self._open_tool(current, widget),
             )
             self._flow_layouts[spec.group].addWidget(card)
@@ -137,16 +188,26 @@ class RenpyToolboxPage(Base, QWidget):
         self._filter_cards(self.search_edit.text())
 
     def _filter_cards(self, text: str) -> None:
-        """按标题和描述即时过滤卡片，并隐藏空分组。"""
+        """按工具信息即时过滤卡片，并隐藏空分组。"""
         query = text.strip().casefold()
         group_visible = {group: False for group in GROUP_TITLES}
         card_visible = {}
 
         for key, card in self._cards.items():
             spec = self._spec_by_key[key]
-            visible = not query or query in f"{spec.title} {spec.description}".casefold()
+            search_text = " ".join(
+                (
+                    spec.title,
+                    spec.description,
+                    GROUP_TITLES[spec.group],
+                    *spec.keywords,
+                )
+            ).casefold()
+            visible = not query or query in search_text
             card_visible[key] = visible
             group_visible[spec.group] = group_visible[spec.group] or visible
+
+        self.empty_state.setVisible(not any(card_visible.values()))
 
         for group, visible in group_visible.items():
             self._section_titles[group].setVisible(visible)
@@ -155,6 +216,7 @@ class RenpyToolboxPage(Base, QWidget):
         for key, visible in card_visible.items():
             self._cards[key].setVisible(visible)
 
+        self._sync_section_heights()
         for group, visible in group_visible.items():
             if not visible:
                 continue
@@ -165,6 +227,41 @@ class RenpyToolboxPage(Base, QWidget):
         for group, visible in group_visible.items():
             if visible:
                 self._flow_layouts[group].activate()
+        self._resize_timer.start()
+
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        self._resize_timer.start()
+
+    def _update_card_widths(self) -> None:
+        width = self.scroll_area.viewport().contentsRect().width()
+        if width <= 0:
+            return
+
+        columns = max(1, (width + 12) // 272)
+        # FlowLayout 用 QRect.right()（包含式坐标）判断换行，需预留 1px。
+        card_width = max(1, (width - 12 * (columns - 1) - 1) // columns)
+        for card in self._cards.values():
+            card.setFixedWidth(card_width)
+
+        self._sync_section_heights()
+        for group, container in self._section_containers.items():
+            self._flow_layouts[group].invalidate()
+            container.updateGeometry()
+            self._flow_layouts[group].activate()
+        self.scroll_layout.invalidate()
+        self.scroll_layout.activate()
+
+    def _sync_section_heights(self) -> None:
+        if not self.isVisible():
+            return
+
+        for group, container in self._section_containers.items():
+            if not container.isVisible():
+                continue
+            width = container.contentsRect().width()
+            if width > 0:
+                container.setFixedHeight(self._flow_layouts[group].heightForWidth(width))
 
     def _has_project(self) -> bool:
         try:
@@ -206,15 +303,15 @@ class RenpyToolboxPage(Base, QWidget):
 
     def _open_tool(self, spec: ToolSpec, card: ItemCard | None = None) -> None:
         try:
-            if spec.handler:
-                getattr(self, spec.handler)(card)
-                return
             if spec.requires_project and not self._has_project():
                 InfoBar.warning(
                     "未选择游戏目录",
                     "请先在「一键翻译」中选择游戏目录",
                     parent=self,
                 )
+                return
+            if spec.handler:
+                getattr(self, spec.handler)(card)
                 return
 
             page = self.get_tool_page(spec.key)
@@ -316,6 +413,7 @@ class RenpyToolboxPage(Base, QWidget):
         # 紧凑流式布局在父页隐藏时会暂时把全部子项视为不可见。
         # 等页面真正显示后再恢复过滤状态并重排，避免返回时卡片区塌陷。
         QTimer.singleShot(0, self._restore_card_layout)
+        QTimer.singleShot(0, self._update_card_widths)
 
     def _restore_card_layout(self) -> None:
         self._filter_cards(self.search_edit.text())
