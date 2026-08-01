@@ -1,8 +1,10 @@
 from pathlib import Path
+from enum import Enum
 
 import pytest
 
 from module.Extract.UnifiedExtractor import UnifiedExtractor
+from module.Renpy.renpy_tl_core import parse_tl_document
 
 
 def make_extractor() -> UnifiedExtractor:
@@ -59,6 +61,55 @@ translate chinese strings:
     assert extractor._collect_numbered_block_keys(extracted) == {
         ("plot/second.rpy", "second_scene_22222222")
     }
+
+
+def test_incremental_scanners_accept_legacy_str_enum_kinds(tmp_path, monkeypatch):
+    class LegacyKind(str, Enum):
+        LABEL = "LABEL"
+        STRINGS = "STRINGS"
+        PYTHON = "PYTHON"
+        OTHER = "OTHER"
+
+    tl_dir = tmp_path / "legacy_runtime"
+    write_tl(
+        tl_dir / "plot" / "beacon.rpy",
+        '''translate chinese fictional_beacon_12345678:
+
+    # guide "The fictional beacon glows."
+    guide "虚构信标正在发光。"
+
+translate chinese strings:
+
+    old "Fictional beacon"
+    new "虚构信标"
+''',
+    )
+
+    def parse_with_legacy_enum(lines):
+        doc = parse_tl_document(lines)
+        for block in doc.blocks:
+            block.kind = LegacyKind(block.kind.value)
+            for statement in block.statements:
+                statement.block_kind = block.kind
+        return doc
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.parse_tl_document",
+        parse_with_legacy_enum,
+    )
+    extractor = make_extractor()
+    block_originals = set()
+
+    assert extractor._get_string_originals(
+        tl_dir, block_originals=block_originals
+    ) == {"Fictional beacon"}
+    assert block_originals == {"The fictional beacon glows."}
+    assert extractor._collect_numbered_block_keys(tl_dir) == {
+        ("plot/beacon.rpy", "fictional_beacon_12345678")
+    }
+    translations = extractor._get_existing_translations(tl_dir)
+    assert translations.strings == {"Fictional beacon": "虚构信标"}
+    assert list(translations.blocks.values()) == ["虚构信标正在发光。"]
 
 
 def test_incremental_output_keeps_repeated_dialogue_in_new_numbered_block(tmp_path):

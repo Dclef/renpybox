@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
 from base.Base import Base
-from frontend.TranslationPage import TranslationPage
+from frontend.TranslationPage import TranslationPage, restore_resumable_translation_paths
+from module.Renpy.ProjectPaths import RenpyProjectPaths, write_run_manifest
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Quality.QualityTaskCoordinator import QualityTaskType
@@ -332,3 +333,36 @@ def test_token_estimate_dialog_uses_page_as_parent(monkeypatch) -> None:
     assert captured["parent"] is page
     assert captured["executed"] is True
     assert captured["enabled"] is True
+def test_resume_restores_incremental_input_and_output_from_manifest(tmp_path) -> None:
+    project = tmp_path / "fictional-game"
+    main_input = project / "game" / "tl" / "chinese"
+    delta_input = project / "game" / "tl" / "chinese_new"
+    delta_output = project / "RenpyBox_Translation" / "chinese_new"
+    main_input.mkdir(parents=True)
+    delta_input.mkdir(parents=True)
+    cache = delta_output / "cache"
+    cache.mkdir(parents=True)
+    (cache / "items.json").write_text("[]", encoding="utf-8")
+    (cache / "project.json").write_text("{}", encoding="utf-8")
+
+    paths = RenpyProjectPaths.from_path(project, "chinese")
+    assert paths is not None
+    write_run_manifest(
+        paths,
+        delta_output,
+        input_folder=delta_input,
+        application_target_dir=main_input,
+        run_kind="incremental",
+    )
+    config = Config(
+        renpy_project_path=str(project),
+        renpy_game_folder=str(project),
+        renpy_tl_folder=str(main_input),
+        input_folder=str(main_input),
+        output_folder=str(paths.translation_output_dir),
+    )
+
+    restored = restore_resumable_translation_paths(config)
+
+    assert restored.input_folder == str(delta_input.resolve())
+    assert restored.output_folder == str(delta_output.resolve())

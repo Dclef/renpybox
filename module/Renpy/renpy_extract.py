@@ -1035,6 +1035,63 @@ def collect_static_menu_strings(game_dir):
     return result
 
 
+def _collect_static_line_texts(line):
+    """Collect literals only from source constructs that can display text."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return set()
+
+    literals = []
+    index = 0
+    while index < len(line):
+        if line[index] not in {'"', "'"}:
+            index += 1
+            continue
+        quote = line[index]
+        start = index
+        index += 1
+        escaped = False
+        while index < len(line):
+            char = line[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                raw = line[start:index + 1]
+                try:
+                    literals.append(ast.literal_eval(raw))
+                except Exception:
+                    literals.append(raw[1:-1])
+                index += 1
+                break
+            index += 1
+    if not literals:
+        return set()
+
+    if (
+        re.search(r"(?<![\w.])_{1,2}\s*\(", line)
+        or RE_RENPY_NOTIFY.search(line)
+        or RE_DICT_STRING_FIELD.search(line)
+        or re.match(r"^\s*(?:show\s+)?(?:text|textbutton)\b", line)
+    ):
+        return set(literals)
+
+    # Menu choices and say statements are user-visible. Arbitrary literals,
+    # such as ATL `contains: 'image tag'`, are resource identifiers.
+    say_match = re.match(r"^\s*(?P<speaker>[A-Za-z_]\w*)\s+[\"']", line)
+    if say_match and say_match.group("speaker").lower() not in {
+        "image", "scene", "show", "hide", "play", "queue", "voice",
+        "call", "jump", "label", "define", "default", "transform",
+        "style", "screen", "contains", "add", "use",
+        "side", "fixed", "hbox", "vbox", "grid", "viewport", "window",
+        "button", "imagemap", "hotspot", "drag", "bar", "key", "timer",
+        "on", "mousearea", "input",
+    }:
+        return {literals[0]}
+    return set()
+
+
 def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False):
     """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
     from pathlib import Path
@@ -1057,12 +1114,23 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
             continue
         try:
             # 源码扫描不可调用带写入前处理的旧接口，避免修改游戏原文。
-            texts = ExtractFromFile(
+            extracted_texts = ExtractFromFile(
                 str(source_file), is_open_filter, filter_length, is_skip_underline,
                 is_py2, True, False,
             )
         except Exception:
             continue
+        texts = set()
+        try:
+            for line in source_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                texts.update(_collect_static_line_texts(line))
+        except Exception:
+            continue
+        extracted_texts = {
+            text.replace('\\"', '"').replace("\\'", "'")
+            for text in extracted_texts
+        }
+        texts.intersection_update(extracted_texts)
         # 菜单选项必须使用 strings 翻译；即使同文先作为对话出现，也应以
         # 真实菜单位置为准，并保留简短选项文本。
         for text in sorted(texts):
