@@ -11,6 +11,7 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
 from module.File.AtomicWrite import atomic_write_text
+from module.Renpy.renpy_tl_core import scan_quoted_literals
 
 
 class RENPYSOURCE(Base):
@@ -164,6 +165,7 @@ class RENPYSOURCE(Base):
 
             lines = text.split("\n")
             applied = 0
+            already_applied = 0
             skipped = 0
             translated_items = 0
 
@@ -192,6 +194,12 @@ class RENPYSOURCE(Base):
                     # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
                     new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
                 if new_line == original_line:
+                    if dst != src and any(
+                        literal.value == dst
+                        for literal in scan_quoted_literals(original_line)
+                    ):
+                        already_applied += 1
+                        continue
                     skipped += 1
                     continue
 
@@ -210,9 +218,10 @@ class RENPYSOURCE(Base):
                     except Exception:
                         pass
 
-            if translated_items > 0 and applied == 0:
+            if applied + already_applied < translated_items:
                 errors.append(
-                    f"译文未生效 {rel_path} (translated={translated_items}, skipped={skipped})"
+                    f"译文未生效 {rel_path} (translated={translated_items}, "
+                    f"applied={applied}, already_applied={already_applied}, skipped={skipped})"
                 )
             try:
                 atomic_write_text(target_path, "\n".join(lines))
@@ -229,6 +238,7 @@ class RENPYSOURCE(Base):
                     "items": len(group_items),
                     "translated_items": translated_items,
                     "applied": applied,
+                    "already_applied": already_applied,
                     "skipped": skipped,
                 }
             )

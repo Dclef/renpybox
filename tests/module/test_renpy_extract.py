@@ -616,7 +616,7 @@ def test_removes_strings_already_registered_by_game_source(tmp_path):
     assert 'old "Only in TL"' in content
 
 
-def test_incremental_merge_canonicalizes_double_escaped_quote_duplicates(tmp_path):
+def test_incremental_merge_keeps_literal_backslash_quote_distinct(tmp_path):
     game_dir = tmp_path / "project"
     tl_dir = game_dir / "game" / "tl" / "chinese"
     staging_dir = game_dir / "game" / "tl" / "chinese_new"
@@ -650,8 +650,8 @@ def test_incremental_merge_canonicalizes_double_escaped_quote_duplicates(tmp_pat
 
     assert result.success
     content = target.read_text(encoding="utf-8")
-    assert content.count('old "- Training Bot') == 1
-    assert '\\\\\\"Copper Finch' not in content
+    assert content.count('old "- Training Bot') == 2
+    assert '\\\\\\"Copper Finch' in content
 
 
 def test_incremental_static_supplement_reaches_corresponding_tl_file(tmp_path, monkeypatch):
