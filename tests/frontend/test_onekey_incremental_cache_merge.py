@@ -614,6 +614,69 @@ def test_transactional_apply_preserves_symlink_and_updates_referent(tmp_path):
     assert referent.read_text(encoding="utf-8") == "new fictional link translation\n"
 
 
+def test_transactional_apply_creates_dangling_symlink_referent(tmp_path):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    shared = tmp_path / "shared"
+    output.mkdir()
+    target.mkdir()
+    shared.mkdir()
+    source = output / "fictional_pending.rpy"
+    link = target / "fictional_pending.rpy"
+    referent = shared / "fictional_pending.rpy"
+    source.write_text("new fictional pending translation\n", encoding="utf-8")
+    _make_test_symlink(link, Path("..") / "shared" / referent.name)
+
+    assert link.is_symlink()
+    assert not referent.exists()
+    assert apply_translation_files_transactionally([source], output, target) == 1
+
+    assert link.is_symlink()
+    assert referent.read_text(encoding="utf-8") == (
+        "new fictional pending translation\n"
+    )
+
+
+def test_transactional_apply_rolls_back_created_symlink_referent(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    shared = tmp_path / "shared"
+    output.mkdir()
+    target.mkdir()
+    shared.mkdir()
+    first_source = output / "first_pending.rpy"
+    second_source = output / "second_regular.rpy"
+    link = target / "first_pending.rpy"
+    referent = shared / "first_pending.rpy"
+    first_source.write_text("new fictional pending value\n", encoding="utf-8")
+    second_source.write_text("new fictional regular value\n", encoding="utf-8")
+    _make_test_symlink(link, Path("..") / "shared" / referent.name)
+
+    import shutil as real_shutil
+
+    real_copy2 = real_shutil.copy2
+
+    def fail_second_source(src, dst, *args, **kwargs):
+        if Path(src).resolve() == second_source.resolve():
+            raise OSError("fictional dangling-link batch interruption")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        fail_second_source,
+    )
+
+    with pytest.raises(RuntimeError, match="已回滚"):
+        apply_translation_files_transactionally(
+            [first_source, second_source], output, target
+        )
+
+    assert link.is_symlink()
+    assert not referent.exists()
+
+
 def test_transactional_apply_rolls_back_symlink_referent(tmp_path, monkeypatch):
     output = tmp_path / "output"
     target = tmp_path / "target"
