@@ -50,6 +50,26 @@ def _translator() -> Translator:
     return translator
 
 
+def test_round_progress_keeps_prefiltered_rows_inside_total() -> None:
+    translator = _translator()
+    translator.extras = {"line": 0, "total_line": 12}
+
+    translator._reconcile_round_progress(remaining=8, fresh_run=True)
+
+    assert translator.extras["line"] == 4
+    assert translator.extras["total_line"] == 12
+
+
+def test_resumed_round_progress_uses_completed_plus_remaining() -> None:
+    translator = _translator()
+    translator.extras = {"line": 5, "total_line": 12}
+
+    translator._reconcile_round_progress(remaining=3, fresh_run=False)
+
+    assert translator.extras["line"] == 5
+    assert translator.extras["total_line"] == 8
+
+
 def test_runtime_manifest_preserves_incremental_scope_on_resume(tmp_path) -> None:
     project = tmp_path / "fictional-game"
     main_input = project / "game" / "tl" / "chinese"

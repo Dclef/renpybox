@@ -36,13 +36,14 @@ REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
 COMPILED_CACHE = "compiled_extracted.json"
 HOOK_MANIFEST = "hook_translate_manifest.json"
 REGEX_CACHE_VERSION = 2  # 宽松引号扫描规则已修正，必须作废旧候选缓存。
-COMPILED_CACHE_VERSION = 1
+COMPILED_CACHE_VERSION = 3
 
 # This helper is intentionally executed by the game's own Python runtime so its
 # marshal format always matches the game's .pyc files.  It only walks code
 # constants; code objects are never imported or executed.
 _COMPILED_STRING_HELPER = r'''
 import json
+import dis
 import marshal
 import os
 import sys
@@ -57,15 +58,60 @@ root = os.path.abspath(sys.argv[1])
 strings = set()
 failures = 0
 
-def walk(value):
+def add_constant(value):
     if isinstance(value, text_types):
         strings.add(value)
-    elif isinstance(value, types.CodeType):
-        for item in value.co_consts:
-            walk(item)
     elif isinstance(value, (tuple, frozenset)):
         for item in value:
-            walk(item)
+            add_constant(item)
+
+def walk_legacy(value):
+    if isinstance(value, types.CodeType):
+        for item in value.co_consts:
+            if isinstance(item, types.CodeType):
+                walk_legacy(item)
+            else:
+                add_constant(item)
+
+def walk_code(code):
+    get_instructions = getattr(dis, 'get_instructions', None)
+    if get_instructions is None:
+        walk_legacy(code)
+        return
+    instructions = list(get_instructions(code))
+    for index, instruction in enumerate(instructions):
+        if instruction.opname != 'LOAD_CONST':
+            continue
+        value = instruction.argval
+        if isinstance(value, types.CodeType):
+            walk_code(value)
+            continue
+        next_opname = instructions[index + 1].opname if index + 1 < len(instructions) else ''
+        next_argval = instructions[index + 1].argval if index + 1 < len(instructions) else None
+        previous_opname = instructions[index - 1].opname if index > 0 else ''
+        # ``from package import Name`` stores imported names in a tuple
+        # constant immediately before IMPORT_NAME.  They are identifiers, not
+        # player-visible text.  Other tuple constants can contain real menu/UI
+        # strings and must still be retained.
+        if isinstance(value, (tuple, frozenset)) and next_opname == 'IMPORT_NAME':
+            continue
+        # Function/class display names are compiler metadata placed directly
+        # before MAKE_FUNCTION, not player-visible constants.
+        if isinstance(value, text_types) and next_opname == 'MAKE_FUNCTION':
+            continue
+        if (
+            isinstance(value, text_types)
+            and previous_opname == 'MAKE_FUNCTION'
+            and next_opname in ('CALL', 'PRECALL')
+        ):
+            continue
+        if (
+            isinstance(value, text_types)
+            and next_opname in ('STORE_NAME', 'STORE_FAST')
+            and next_argval in ('__qualname__', '__doc__')
+        ):
+            continue
+        add_constant(value)
 
 for dirpath, dirnames, filenames in os.walk(root):
     dirnames[:] = [name for name in dirnames if name.lower() not in ('tl', 'cache')]
@@ -87,7 +133,7 @@ for dirpath, dirnames, filenames in os.walk(root):
             if code is None:
                 failures += 1
                 continue
-            walk(code)
+            walk_code(code)
         except Exception:
             failures += 1
 
@@ -871,22 +917,67 @@ def _get_regex_cache_path(game_dir: Path, tl_name: str = "chinese") -> Path:
     return game_dir / "tl" / normalized_tl_name / MISS_DIR / REGEX_CACHE
 
 
+RE_COMPILED_SHADER = re.compile(
+    r"(?:\b(?:uniform|attribute|varying|precision)\s+"
+    r"(?:lowp\s+|mediump\s+|highp\s+)?"
+    r"(?:float|int|bool|[bi]?vec[234]|mat[234]|sampler\w*)\b|"
+    r"\b(?:gl_FragColor|gl_Position|texture2D|textureCube|smoothstep)\b)",
+    re.IGNORECASE,
+)
+RE_COMPILED_MARKUP = re.compile(
+    r"(?:</?svg\b|</?(?:polygon|polyline|path)\b|\b(?:fill|stroke)\s*=)",
+    re.IGNORECASE,
+)
+
+
+def _is_compiled_technical_text(text: str) -> bool:
+    """Return whether a bytecode constant is clearly code/markup, not UI text."""
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if RE_COMPILED_SHADER.search(value) or RE_COMPILED_MARKUP.search(value):
+        return True
+    if re.search(
+        r"(?m)^\s*(?:const\s+)?(?:void|float|int|bool|vec[234]|mat[234])\s+"
+        r"[A-Za-z_]\w*\s*\([^)]*\)\s*\{",
+        value,
+    ):
+        return True
+    return False
+
+
+def _collect_glossary_candidate_sets(
+    target_path: str | Path,
+    *,
+    tl_name: str = "chinese",
+) -> tuple[Set[str], Set[str], int]:
+    """Collect source and bytecode candidates while retaining provenance."""
+    game_dir = _get_game_dir(target_path)
+    cache_path = _get_regex_cache_path(game_dir, tl_name)
+    regex_all = _extract_all_strings_regex(game_dir, cache_path=cache_path)
+    compiled_all = _extract_compiled_python_strings(
+        game_dir,
+        cache_path=cache_path.with_name(COMPILED_CACHE),
+    )
+    regex_filtered = _filter_valid_strings(regex_all)
+    compiled_prefiltered = _filter_valid_strings(compiled_all)
+    compiled_filtered = {
+        text for text in compiled_prefiltered if not _is_compiled_technical_text(text)
+    }
+    return regex_filtered, compiled_filtered, len(compiled_prefiltered - compiled_filtered)
+
+
 def collect_glossary_candidate_texts(
     target_path: str | Path,
     *,
     tl_name: str = "chinese",
 ) -> tuple[str, ...]:
     """收集术语候选扫描使用的源码文本。"""
-    game_dir = _get_game_dir(target_path)
-    cache_path = _get_regex_cache_path(game_dir, tl_name)
-    regex_all = _extract_all_strings_regex(game_dir, cache_path = cache_path)
-    compiled_cache = cache_path.with_name(COMPILED_CACHE)
-    compiled_all = _extract_compiled_python_strings(
-        game_dir,
-        cache_path=compiled_cache,
+    regex_filtered, compiled_filtered, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
     )
-    regex_filtered = _filter_valid_strings(regex_all | compiled_all)
-    return tuple(sorted(regex_filtered))
+    return tuple(sorted(regex_filtered | compiled_filtered))
 
 
 def _detect_missing_character_names(strings: Set[str]) -> Set[str]:
@@ -916,6 +1007,11 @@ def _write_hook_manifest(
         "target_path": str(target_path),
         "tl_name": tl_name,
         "regex_count": int(stats.get("regex_count", 0) or 0),
+        "rpy_candidate_count": int(stats.get("rpy_candidate_count", 0) or 0),
+        "compiled_candidate_count": int(stats.get("compiled_candidate_count", 0) or 0),
+        "missing_rpy_count": int(stats.get("missing_rpy_count", 0) or 0),
+        "missing_compiled_count": int(stats.get("missing_compiled_count", 0) or 0),
+        "filtered_technical_count": int(stats.get("filtered_technical_count", 0) or 0),
         "covered_count": int(stats.get("covered_count", 0) or 0),
         "missing_count": int(stats.get("missing_count", 0) or 0),
         "auto_filled_count": int(stats.get("auto_filled_count", 0) or 0),
@@ -957,14 +1053,21 @@ def collect_hook_translation_entries(
     miss_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("正在扫描 HOOK 缺失文本...")
-    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
+    rpy_candidates, compiled_candidates, filtered_technical_count = (
+        _collect_glossary_candidate_sets(target_path, tl_name=tl_name)
+    )
+    regex_filtered = rpy_candidates | compiled_candidates
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
     missing = regex_filtered - tl_covered
     glossary_map = _load_glossary_map()
 
-    detected_names = _detect_missing_character_names(missing)
+    missing_rpy = missing & rpy_candidates
+    missing_compiled = missing & compiled_candidates
+    # Bytecode contains class/import/internal identifiers.  Restrict automatic
+    # glossary discovery to candidates that were also found in source files.
+    detected_names = _detect_missing_character_names(missing_rpy)
     added_names = 0
     if auto_update_glossary and detected_names:
         added_names = add_names_to_glossary(detected_names)
@@ -991,6 +1094,11 @@ def collect_hook_translation_entries(
 
     stats: dict[str, Any] = {
         "regex_count": len(regex_filtered),
+        "rpy_candidate_count": len(rpy_candidates),
+        "compiled_candidate_count": len(compiled_candidates),
+        "missing_rpy_count": len(missing_rpy),
+        "missing_compiled_count": len(missing_compiled),
+        "filtered_technical_count": filtered_technical_count,
         "covered_count": len(tl_covered),
         "missing_count": len(missing),
         "auto_filled_count": auto_filled_count,
@@ -1037,7 +1145,11 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     
     # 1. 正则全量扫描
     logger.info("正在使用正则扫描源码...")
-    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
+    rpy_candidates, compiled_candidates, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
+    )
+    regex_filtered = rpy_candidates | compiled_candidates
     
     # 2. tl 覆盖（已抽取的文本）
     logger.info("正在读取 tl 已覆盖文本...")
@@ -1094,15 +1206,9 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     else:
         logger.info(f"✓ 已生成缺失补丁: {miss_path} ({len(missing)} 条)")
     
-    # 识别缺失文本中的角色名，并清理格式标签
-    detected_names = set()
-    for text in missing:
-        if _is_character_name(text):
-            # 清理格式标签，得到纯文本名字
-            clean_name = _strip_format_tags(text)
-            if clean_name and not should_skip_text(clean_name):
-                detected_names.add(clean_name)
-    
+    # 只从源码候选识别角色名，避免把字节码元数据写入术语表。
+    detected_names = _detect_missing_character_names(missing & rpy_candidates)
+
     return miss_path, len(missing), len(regex_filtered), len(tl_covered), detected_names
 
 
@@ -1521,6 +1627,12 @@ def _build_interpolated_replace_rule(original: str, translation: str) -> tuple[s
             pattern_parts.append(f"(?P={group_name})")
         cursor = match.end()
     pattern_parts.append(re.escape(original[cursor:]))
+    if matches[-1].end() == len(original):
+        # A lazy final capture otherwise succeeds with an empty value because
+        # there is no following literal to bound it.  Requiring the source
+        # pattern to reach the end makes that capture consume the rendered
+        # interpolation value.
+        pattern_parts.append(r"\Z")
 
     replacement_parts: list[str] = []
     cursor = 0

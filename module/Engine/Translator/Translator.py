@@ -946,6 +946,27 @@ class Translator(Base):
             "time": time.time() - start_time,
         }
 
+    def _reconcile_round_progress(self, remaining: int, *, fresh_run: bool) -> None:
+        """Keep run-local completed and total counts consistent after prefilters."""
+        remaining = max(0, int(remaining or 0))
+        try:
+            completed = max(0, int(self.extras.get("line", 0) or 0))
+        except (TypeError, ValueError):
+            completed = 0
+
+        if fresh_run:
+            try:
+                initial_total = max(0, int(self.extras.get("total_line", 0) or 0))
+            except (TypeError, ValueError):
+                initial_total = 0
+            # Rules may complete/exclude entries before the first task is built.
+            # Preserve those completed rows instead of replacing the run total
+            # with only the remaining rows.
+            completed = max(completed, initial_total - remaining)
+
+        self.extras["line"] = completed
+        self.extras["total_line"] = completed + remaining
+
     def _finish_no_items_run(self, run_id: int | None) -> None:
         """以明确的空数据结果结束任务，避免误走“用户停止”流程。"""
         progress = dict(self.cache_manager.get_project().get_progress() or {})
@@ -1195,10 +1216,10 @@ class Translator(Base):
                 # 第一轮且不是继续翻译时，记录任务的总行数
                 if current_round == 0:
                     remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
-                    if normalized_status == Base.TranslationStatus.UNTRANSLATED:
-                        self.extras["total_line"] = remaining
-                    else:
-                        self.extras["total_line"] = self.extras.get("line", 0) + remaining
+                    self._reconcile_round_progress(
+                        remaining,
+                        fresh_run=(normalized_status == Base.TranslationStatus.UNTRANSLATED),
+                    )
 
                 # 第二轮开始切分（基于初始值计算，避免累积除法）
                 # 采用 2 倍率衰减而非 3 倍率，避免重试时批次过快坍缩到单行，
