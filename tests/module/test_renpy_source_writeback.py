@@ -68,3 +68,40 @@ def test_source_writeback_still_rejects_missing_source_and_destination(tmp_path)
 
     with pytest.raises(RuntimeError, match="译文未生效"):
         RENPYSOURCE(config).write_to_path([item])
+
+
+def test_source_writeback_checks_destination_in_original_literal_slot(tmp_path):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    source = input_dir / "fictional_screen.rpy"
+    output = output_dir / "fictional_screen.rpy"
+    source.parent.mkdir(parents=True)
+    output.parent.mkdir(parents=True)
+    source_line = (
+        'textbutton "Launch the old fictional beacon" '
+        'action Function(record_signal, "已翻译的虚构信标")\n'
+    )
+    output_line = (
+        'textbutton "Launch fictional beacon" '
+        'action Function(record_signal, "已翻译的虚构信标")\n'
+    )
+    source.write_text(source_line, encoding="utf-8")
+    output.write_text(output_line, encoding="utf-8")
+
+    config = Config()
+    config.input_folder = str(input_dir)
+    config.output_folder = str(output_dir)
+    config.renpy_backup_original = False
+    item = CacheItem(
+        src="Launch the old fictional beacon",
+        dst="已翻译的虚构信标",
+        row=1,
+        file_path="fictional_screen.rpy",
+        file_type=CacheItem.FileType.RENPYSOURCE,
+        status=Base.TranslationStatus.TRANSLATED,
+    )
+
+    with pytest.raises(RuntimeError, match="译文未生效"):
+        RENPYSOURCE(config).write_to_path([item])
+
+    assert output.read_text(encoding="utf-8") == output_line

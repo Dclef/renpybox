@@ -147,6 +147,39 @@ translate chinese strings:
     assert 'old "New global string"' in output
 
 
+def test_direct_incremental_merge_filters_mixed_file_when_target_is_new(tmp_path):
+    target = tmp_path / "target"
+    source = tmp_path / "source"
+    extractor = make_extractor()
+    write_tl(
+        source / "plot" / "new_signal.rpy",
+        '''translate chinese new_signal_30303030:
+
+    # guide "A fictional copper signal appears."
+    guide "虚构的铜色信号出现了。"
+
+translate chinese strings:
+
+    old "Shared fictional switch"
+    new "已翻译的虚构开关"
+''',
+    )
+
+    extractor._merge_new_entries(
+        target,
+        source,
+        set(),
+        {},
+        selected_block_keys={("plot/new_signal.rpy", "new_signal_30303030")},
+    )
+
+    output = (target / "plot" / "new_signal.rpy").read_text(encoding="utf-8")
+    assert "translate chinese new_signal_30303030:" in output
+    assert "虚构的铜色信号出现了。" in output
+    assert "Shared fictional switch" not in output
+    assert "已翻译的虚构开关" not in output
+
+
 def test_numbered_block_translation_does_not_hide_global_string_placeholder(tmp_path):
     tl_dir = tmp_path / "translations"
     extractor = make_extractor()
