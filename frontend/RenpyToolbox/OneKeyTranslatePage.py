@@ -230,6 +230,23 @@ def _cache_item_source_location(item) -> tuple | None:
     )
 
 
+def _cache_item_label_block_identity(item) -> tuple | None:
+    """返回可由增量完整快照安全替换的编号翻译块身份。"""
+    block, _pair, _digest = _renpy_cache_metadata(item)
+    if str(block.get("kind")) != "LABEL":
+        return None
+    lang = block.get("lang")
+    label = block.get("label")
+    if not (
+        isinstance(lang, str)
+        and lang
+        and isinstance(label, str)
+        and label
+    ):
+        return None
+    return (str(item.get_file_path() or ""), lang, label)
+
+
 def _project_assets_have_state(payload) -> bool:
     """判断缓存中的工作台资产是否包含可用数据。"""
     if not isinstance(payload, dict):
@@ -277,8 +294,18 @@ def merge_incremental_translation_cache(
     merged: dict[tuple, object] = {}
     order: list[tuple] = []
     main_locations: dict[tuple, tuple] = {}
+    incremental_items = incremental_manager.get_items()
+    replaced_label_blocks = {
+        block_identity
+        for item in incremental_items
+        if (block_identity := _cache_item_label_block_identity(item)) is not None
+    }
     if main_loaded:
         for item in main_manager.get_items():
+            # 变更编号块的增量缓存是完整块快照。先清除该块的全部旧条目，
+            # 才能同步其中被删除的语句；全局 strings 不参与整块淘汰。
+            if _cache_item_label_block_identity(item) in replaced_label_blocks:
+                continue
             key = _cache_item_identity(item)
             if key not in merged:
                 order.append(key)
@@ -286,7 +313,7 @@ def merge_incremental_translation_cache(
             location = _cache_item_source_location(item)
             if location is not None:
                 main_locations[location] = key
-    for item in incremental_manager.get_items():
+    for item in incremental_items:
         key = _cache_item_identity(item)
         location = _cache_item_source_location(item)
         stale_key = main_locations.get(location) if location is not None else None

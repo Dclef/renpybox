@@ -36,17 +36,25 @@ def _item(*, row: int, src: str, dst: str, tag: str = "dialogue") -> CacheItem:
     )
 
 
-def _ast_item(*, row: int, src: str, dst: str, digest: str) -> CacheItem:
+def _ast_item(
+    *,
+    row: int,
+    src: str,
+    dst: str,
+    digest: str,
+    template_line: int = 43,
+    label: str = "fictional_scene_12345678",
+) -> CacheItem:
     item = _item(row=row, src=src, dst=dst)
     item.set_extra_field({
         "renpy": {
             "block": {
                 "lang": "chinese",
-                "label": "fictional_scene_12345678",
+                "label": label,
                 "kind": "LABEL",
                 "header_line": 40,
             },
-            "pair": {"template_line": 43, "target_line": 44},
+            "pair": {"template_line": template_line, "target_line": row},
             "digest": {"template_raw_sha1": digest},
         }
     })
@@ -281,6 +289,72 @@ def test_cache_merge_replaces_changed_source_at_same_ast_location(tmp_path):
     assert len(items) == 1
     assert items[0].get_src() == "The glass comet is brilliant."
     assert items[0].get_dst() == "玻璃彗星十分明亮。"
+
+
+def test_cache_merge_removes_vanished_items_from_changed_numbered_block(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    label = "fictional_relay_87654321"
+    main_items = [
+        _ast_item(
+            row=44,
+            src="The fictional relay opens.",
+            dst="虚构中继器打开了。",
+            digest="relay-open",
+            template_line=43,
+            label=label,
+        ),
+        _ast_item(
+            row=46,
+            src="The fictional relay hums.",
+            dst="虚构中继器发出嗡鸣。",
+            digest="relay-hum",
+            template_line=45,
+            label=label,
+        ),
+        _ast_item(
+            row=48,
+            src="The fictional relay closes.",
+            dst="虚构中继器关闭了。",
+            digest="relay-close",
+            template_line=47,
+            label=label,
+        ),
+    ]
+    incremental_items = [
+        _ast_item(
+            row=44,
+            src="The fictional relay opens.",
+            dst="新的虚构中继器打开译文。",
+            digest="relay-open",
+            template_line=43,
+            label=label,
+        ),
+        _ast_item(
+            row=46,
+            src="The fictional relay closes.",
+            dst="新的虚构中继器关闭译文。",
+            digest="relay-close",
+            template_line=45,
+            label=label,
+        ),
+    ]
+    _save_json_cache(main_output, CacheProject(id="main"), main_items)
+    _save_json_cache(incremental_output, CacheProject(id="delta"), incremental_items)
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items = loaded.get_items()
+
+    assert [item.get_src() for item in items] == [
+        "The fictional relay opens.",
+        "The fictional relay closes.",
+    ]
+    assert [item.get_dst() for item in items] == [
+        "新的虚构中继器打开译文。",
+        "新的虚构中继器关闭译文。",
+    ]
 
 
 def test_cache_merge_does_not_evict_another_strings_block_at_same_offset(tmp_path):

@@ -230,6 +230,71 @@ def test_incremental_repairs_official_comment_from_anchored_source_line(tmp_path
     assert '# narrator "( We finally crossed the portal with [story.partner]! )"' in repaired
 
 
+def test_incremental_retranslates_block_repaired_from_anchored_source(tmp_path, monkeypatch):
+    project = tmp_path / "fictional_project"
+    source = project / "game" / "src" / "plot" / "signal.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl = tl_dir / "src" / "plot" / "signal.rpy"
+    source.parent.mkdir(parents=True)
+    tl.parent.mkdir(parents=True)
+    source.write_text('guide "The fictional signal is bright."\n', encoding="utf-8")
+    tl.write_text(
+        '# game/src/plot/signal.rpy:1\n'
+        'translate chinese signal_report_12345678:\n\n'
+        '    # guide "The fictional signal is dim."\n'
+        '    guide "旧的虚构信号译文。"\n',
+        encoding="utf-8",
+    )
+
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=False,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "plot" / "signal.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            '# game/src/plot/signal.rpy:1\n'
+            'translate chinese signal_report_12345678:\n\n'
+            '    # guide "The fictional signal is bright."\n'
+            '    guide "The fictional signal is bright."\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_post_process",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=True,
+    )
+
+    assert result.success is True
+    assert result.new_strings == 1
+    incremental = project / "game" / "tl" / "chinese_new" / "src" / "plot" / "signal.rpy"
+    assert 'guide "The fictional signal is bright."' in incremental.read_text(
+        encoding="utf-8"
+    )
+
+
 def test_comment_repair_does_not_cross_from_strings_entry_into_dialogue(tmp_path):
     project = tmp_path / "project"
     source = project / "game" / "src" / "plot" / "chapter_beta.rpy"

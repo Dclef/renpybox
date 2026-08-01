@@ -1315,6 +1315,11 @@ class UnifiedExtractor:
 
             self._emit_progress("正在分析已有翻译...", 10)
 
+            # 修复锚定原文注释会改变编号块模板指纹。必须先冻结旧状态，
+            # 否则源码变化会被修复后的注释掩盖，导致该块跳过重新翻译。
+            existing_block_fingerprints = self._collect_numbered_block_fingerprints(tl_dir)
+            existing_block_keys = set(existing_block_fingerprints)
+
             repaired_comments = self._repair_block_comments_from_source(game_dir, tl_dir)
             if repaired_comments:
                 self.logger.info(f"已按游戏源码修正 {repaired_comments} 条翻译块原文注释")
@@ -1329,8 +1334,6 @@ class UnifiedExtractor:
             #    编号块中的相同原文属于不同语句，不能因为别处翻译过就跳过。
             all_current_string_originals = self._get_string_originals(tl_dir)
             translated_string_originals = self._get_translated_string_originals(tl_dir)
-            existing_block_fingerprints = self._collect_numbered_block_fingerprints(tl_dir)
-            existing_block_keys = set(existing_block_fingerprints)
             block_originals = self._collect_block_originals(tl_dir)
             self.logger.info(
                 f"当前共有 {len(all_current_string_originals)} 条 strings 原文，"
