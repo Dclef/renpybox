@@ -439,3 +439,69 @@ def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeyp
 
     assert first_target.read_text(encoding="utf-8") == "old nebula\n"
     assert second_target.read_text(encoding="utf-8") == "old aurora\n"
+
+
+def _make_test_symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+
+def test_transactional_apply_preserves_symlink_and_updates_referent(tmp_path):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    shared = tmp_path / "shared"
+    output.mkdir()
+    target.mkdir()
+    shared.mkdir()
+    source = output / "fictional_linked.rpy"
+    link = target / "fictional_linked.rpy"
+    referent = shared / "fictional_linked.rpy"
+    source.write_text("new fictional link translation\n", encoding="utf-8")
+    referent.write_text("old fictional link translation\n", encoding="utf-8")
+    _make_test_symlink(link, referent)
+
+    assert apply_translation_files_transactionally([source], output, target) == 1
+
+    assert link.is_symlink()
+    assert referent.read_text(encoding="utf-8") == "new fictional link translation\n"
+
+
+def test_transactional_apply_rolls_back_symlink_referent(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    shared = tmp_path / "shared"
+    output.mkdir()
+    target.mkdir()
+    shared.mkdir()
+    first_source = output / "first_linked.rpy"
+    second_source = output / "second_regular.rpy"
+    link = target / "first_linked.rpy"
+    referent = shared / "first_linked.rpy"
+    first_source.write_text("new fictional linked value\n", encoding="utf-8")
+    second_source.write_text("new fictional regular value\n", encoding="utf-8")
+    referent.write_text("old fictional linked value\n", encoding="utf-8")
+    _make_test_symlink(link, referent)
+
+    import shutil as real_shutil
+
+    real_copy2 = real_shutil.copy2
+
+    def fail_second_source(src, dst, *args, **kwargs):
+        if Path(src).resolve() == second_source.resolve():
+            raise OSError("fictional symlink batch interruption")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        fail_second_source,
+    )
+
+    with pytest.raises(RuntimeError, match="已回滚"):
+        apply_translation_files_transactionally(
+            [first_source, second_source], output, target
+        )
+
+    assert link.is_symlink()
+    assert referent.read_text(encoding="utf-8") == "old fictional linked value\n"

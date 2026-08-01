@@ -1676,6 +1676,28 @@ class UnifiedExtractor:
             {},
             selected_block_keys=incremental_blocks,
         )
+
+        # 原文模板相同不代表译文已经应用。官方模板可能在增量翻译完成后
+        # 被重新生成为空值/原文占位符；仅补全这些缺失槽位，保留已有有效人工译文。
+        incremental_translations = self._get_existing_translations(incremental_dir)
+        current_translations = self._get_existing_translations(tl_dir)
+        numbered_translation_updates = {
+            key: translated
+            for key, translated in incremental_translations.blocks.items()
+            if key not in current_translations.blocks
+        }
+        if numbered_translation_updates:
+            merge_errors.extend(
+                self._merge_translations(
+                    tl_dir,
+                    ExistingTranslations(
+                        strings={},
+                        blocks=numbered_translation_updates,
+                    ),
+                )
+            )
+            updated_entries += len(numbered_translation_updates)
+
         added_entries += len(incremental_strings - existing_strings_before)
         added_entries += len(incremental_blocks - existing_blocks_before)
         cross_file_placeholder_updates: Dict[str, str] = {}
@@ -1803,12 +1825,27 @@ class UnifiedExtractor:
             for key, fingerprint in incremental_block_fingerprints.items()
             if target_block_fingerprints.get(key) != fingerprint
         }
-        if missing_strings or missing_blocks or merge_errors:
+        applied_translations = self._get_existing_translations(tl_dir)
+        unapplied_numbered_translations = {
+            key
+            for key, expected in numbered_translation_updates.items()
+            if applied_translations.blocks.get(key) != expected
+        }
+        if (
+            missing_strings
+            or missing_blocks
+            or unapplied_numbered_translations
+            or merge_errors
+        ):
             details = list(merge_errors)
             if missing_strings:
                 details.append(f"缺少 {len(missing_strings)} 条 strings")
             if missing_blocks:
                 details.append(f"缺少 {len(missing_blocks)} 个编号块")
+            if unapplied_numbered_translations:
+                details.append(
+                    f"有 {len(unapplied_numbered_translations)} 条编号块译文未写入"
+                )
             result.success = False
             result.message = "增量合并未完成，已保留增量目录：" + "；".join(details)
             return result

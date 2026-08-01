@@ -402,6 +402,73 @@ def test_changed_source_in_same_numbered_label_is_replaced_after_retranslation(t
     assert "彗星十分耀眼。" in merged
 
 
+def test_equal_numbered_template_applies_missing_translation_only(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "relay.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "relay.rpy"
+    write_tl(
+        target,
+        'translate chinese relay_report_45454545:\n'
+        '    # guide "The fictional relay opens."\n'
+        '    guide "保留的人工中继器译文。"\n'
+        '    # guide "The fictional relay closes."\n'
+        '    guide "The fictional relay closes."\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese relay_report_45454545:\n'
+        '    # guide "The fictional relay opens."\n'
+        '    guide "增量中继器打开译文。"\n'
+        '    # guide "The fictional relay closes."\n'
+        '    guide "增量中继器关闭译文。"\n',
+    )
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is True
+    merged = target.read_text(encoding="utf-8")
+    assert "保留的人工中继器译文。" in merged
+    assert "增量中继器打开译文。" not in merged
+    assert "增量中继器关闭译文。" in merged
+    assert "The fictional relay closes." not in merged.splitlines()[-1]
+    assert not incremental.exists()
+
+
+def test_equal_numbered_template_preserves_staging_when_translation_is_not_applied(
+    tmp_path, monkeypatch
+):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "beacon.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "beacon.rpy"
+    write_tl(
+        target,
+        'translate chinese beacon_report_56565656:\n'
+        '    # guide "The fictional beacon glows."\n'
+        '    guide "The fictional beacon glows."\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese beacon_report_56565656:\n'
+        '    # guide "The fictional beacon glows."\n'
+        '    guide "虚构信标正在发光。"\n',
+    )
+    extractor = UnifiedExtractor()
+    monkeypatch.setattr(extractor, "_merge_translations", lambda *_args, **_kwargs: [])
+
+    result = extractor.merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is False
+    assert "编号块译文未写入" in result.message
+    assert incremental.exists()
+    assert 'guide "The fictional beacon glows."' in target.read_text(encoding="utf-8")
+
+
 def test_repeated_text_inside_one_numbered_block_keeps_each_translation(tmp_path):
     tl_dir = tmp_path / "tl" / "chinese"
     path = tl_dir / "plot" / "echo.rpy"
