@@ -192,8 +192,8 @@ class Config():
     renpy_hook_translate: bool = False  # replace_text 补全模式
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
-    # 删除与 translate 块重复的 strings 项，避免双份：保留块翻译，移除 old/new
-    renpy_remove_string_duplicates: bool = True
+    # 兼容旧配置；strings 与编号块作用域不同，不能按原文互相去重。
+    renpy_remove_string_duplicates: bool = False
     # 过滤疑似被误提取的布尔表达式（例如 "foo == True"、"bar = false"），并备份到 tl/<lang>/_filtered_suspicious
     renpy_filter_suspicious_bool_expr: bool = True
     # 增量抽取时，把 old/new 中未翻译（new==old 或 new==""）的条目也纳入“待翻译新增包”。

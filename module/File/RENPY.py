@@ -12,6 +12,7 @@ from module.Engine.Engine import Engine
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
+from module.File.AtomicWrite import atomic_write_text
 
 
 class RENPY(Base):
@@ -90,16 +91,19 @@ class RENPY(Base):
         extractor = RenpyTlItemExtractor()
 
         report: list[dict] = []
+        errors: list[str] = []
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 导出源文件不存在: {source_path}")
+                errors.append(f"源文件不存在: {source_path}")
                 continue
 
             try:
                 text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
                 self.error(f"Failed to read Ren'Py file {source_path}", exc)
+                errors.append(f"读取失败 {source_path}: {exc}")
                 continue
 
             lines = text.splitlines()
@@ -155,10 +159,22 @@ class RENPY(Base):
                     f"RENPY 写回疑似未生效: {rel_path} (translated={translated_items}, applied={applied}, skipped={skipped})",
                     console=False,
                 )
+                errors.append(
+                    f"译文未生效 {rel_path} (translated={translated_items}, skipped={skipped})"
+                )
 
             target_path = self.output_path / rel_path
             os.makedirs(target_path.parent, exist_ok=True)
-            target_path.write_text("\n".join(lines), encoding="utf-8")
+            try:
+                atomic_write_text(
+                    target_path,
+                    "\n".join(lines),
+                    validator=lambda value: parse_tl_document(value.splitlines()),
+                )
+            except Exception as exc:
+                self.error(f"Failed to write Ren'Py file {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
 
             report.append(
                 {
@@ -181,6 +197,8 @@ class RENPY(Base):
                 )
             except Exception:
                 pass
+        if errors:
+            raise RuntimeError("Ren'Py 写回未完整完成：" + "；".join(errors))
 
     def build_items_for_writeback(
         self,

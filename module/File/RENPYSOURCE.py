@@ -10,6 +10,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
+from module.File.AtomicWrite import atomic_write_text
 
 
 class RENPYSOURCE(Base):
@@ -135,11 +136,13 @@ class RENPYSOURCE(Base):
 
         translator = RenpySourceTranslator()
         report: list[dict] = []
+        errors: list[str] = []
 
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 源码不存在: {source_path}")
+                errors.append(f"源文件不存在: {source_path}")
                 continue
 
             reference_path = self._resolve_reference_path(rel_path)
@@ -148,6 +151,7 @@ class RENPYSOURCE(Base):
                 text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
                 self.error(f"读取 Ren'Py 源码失败: {source_path}", exc)
+                errors.append(f"读取失败 {source_path}: {exc}")
                 continue
 
             reference_lines: list[str] | None = None
@@ -206,7 +210,16 @@ class RENPYSOURCE(Base):
                     except Exception:
                         pass
 
-            target_path.write_text("\n".join(lines), encoding="utf-8")
+            if translated_items > 0 and applied == 0:
+                errors.append(
+                    f"译文未生效 {rel_path} (translated={translated_items}, skipped={skipped})"
+                )
+            try:
+                atomic_write_text(target_path, "\n".join(lines))
+            except Exception as exc:
+                self.error(f"写入 Ren'Py 源码失败: {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
 
             report.append(
                 {
@@ -229,3 +242,5 @@ class RENPYSOURCE(Base):
                 )
             except Exception:
                 pass
+        if errors:
+            raise RuntimeError("Ren'Py 源码写回未完整完成：" + "；".join(errors))
