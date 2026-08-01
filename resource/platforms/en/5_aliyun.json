@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 5,
     "name": "Aliyun",
     "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
