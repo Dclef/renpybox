@@ -295,6 +295,68 @@ def test_incremental_retranslates_block_repaired_from_anchored_source(tmp_path, 
     )
 
 
+def test_direct_incremental_does_not_restore_stale_translation_after_comment_repair(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "fictional_direct_project"
+    source = project / "game" / "src" / "plot" / "beacon.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl = tl_dir / "src" / "plot" / "beacon.rpy"
+    source.parent.mkdir(parents=True)
+    tl.parent.mkdir(parents=True)
+    source.write_text('pilot "The fictional beacon is blue."\n', encoding="utf-8")
+    tl.write_text(
+        '# game/src/plot/beacon.rpy:1\n'
+        'translate chinese beacon_report_12345678:\n\n'
+        '    # pilot "The fictional beacon is red."\n'
+        '    pilot "旧的虚构信标译文。"\n',
+        encoding="utf-8",
+    )
+
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=False,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "plot" / "beacon.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            '# game/src/plot/beacon.rpy:1\n'
+            'translate chinese beacon_report_12345678:\n\n'
+            '    # pilot "The fictional beacon is blue."\n'
+            '    pilot "The fictional beacon is blue."\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(UnifiedExtractor, "_post_process", lambda *_args, **_kwargs: None)
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=False,
+    )
+
+    content = tl.read_text(encoding="utf-8")
+    assert result.success is True
+    assert result.new_strings == 1
+    assert 'pilot "The fictional beacon is blue."' in content
+    assert "旧的虚构信标译文。" not in content
+
+
 def test_comment_repair_does_not_cross_from_strings_entry_into_dialogue(tmp_path):
     project = tmp_path / "project"
     source = project / "game" / "src" / "plot" / "chapter_beta.rpy"
