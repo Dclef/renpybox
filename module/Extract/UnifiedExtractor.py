@@ -2800,8 +2800,25 @@ class UnifiedExtractor:
                     continue
 
                 if not target_file.exists():
+                    selections = self._collect_selected_blocks_from_ast(
+                        doc, lines, selected_items
+                    )
+                    if not selections:
+                        continue
+
+                    output_lines: List[str] = []
+                    for selection in selections:
+                        if output_lines and output_lines[-1].strip() != "":
+                            output_lines.append("")
+                        output_lines.append(selection["header_line"])
+                        output_lines.extend(selection["lines"])
+
                     target_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(rpy_file), str(target_file))
+                    atomic_write_text(
+                        target_file,
+                        "\n".join(output_lines).rstrip() + "\n",
+                        validator=lambda value: parse_tl_document(value.splitlines()),
+                    )
                     continue
 
                 target_content = target_file.read_text(encoding="utf-8", errors="replace")

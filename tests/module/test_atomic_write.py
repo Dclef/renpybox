@@ -50,3 +50,15 @@ def test_atomic_write_preserves_posix_permissions(tmp_path):
     atomic_write_text(target, "new eclipse\n")
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+def test_atomic_write_new_file_honors_process_umask(tmp_path):
+    target = tmp_path / "new_fictional_orbit.rpy"
+    previous_umask = os.umask(0o027)
+    try:
+        atomic_write_text(target, "new fictional orbit\n")
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640

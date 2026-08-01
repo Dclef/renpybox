@@ -11,7 +11,6 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
 from module.File.AtomicWrite import atomic_write_text
-from module.Renpy.renpy_tl_core import scan_quoted_literals
 
 
 class RENPYSOURCE(Base):
@@ -63,6 +62,34 @@ class RENPYSOURCE(Base):
             return self.input_path
         return self.input_path / rel_path
 
+    @staticmethod
+    def _literal_slot(line: str, text: str, occurrence: int = 0) -> int | None:
+        """Return the quoted-literal slot containing a parser entry."""
+        matches = list(RenpySourceTranslator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        matching_slots = [
+            index for index, match in enumerate(matches) if match.group("text") == text
+        ]
+        if 0 <= occurrence < len(matching_slots):
+            return matching_slots[occurrence]
+        return None
+
+    @staticmethod
+    def _literal_slot_has_destination(
+        translator: RenpySourceTranslator,
+        line: str,
+        slot: int,
+        destination: str,
+    ) -> bool:
+        matches = list(translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        if slot < 0 or slot >= len(matches):
+            return False
+        literal = matches[slot]
+        current = literal.group(0)
+        expected = translator._replace_text_in_line(
+            current, literal.group("text"), destination
+        )
+        return current == expected
+
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """读取 .rpy 源码并生成 CacheItem"""
         items: List[CacheItem] = []
@@ -95,10 +122,17 @@ class RENPYSOURCE(Base):
             if not entries:
                 continue
 
+            entry_occurrences: dict[tuple[int, str], int] = {}
             for entry in entries:
                 text = (entry.text or "").strip()
                 if not entry.needs_translation or text == "":
                     continue
+                occurrence_key = (entry.line_number, entry.text)
+                occurrence = entry_occurrences.get(occurrence_key, 0)
+                literal_slot = self._literal_slot(
+                    entry.original_line, entry.text, occurrence
+                )
+                entry_occurrences[occurrence_key] = occurrence + 1
                 items.append(
                     CacheItem.from_dict(
                         {
@@ -113,6 +147,7 @@ class RENPYSOURCE(Base):
                                 "renpy_source": {
                                     "line": entry.line_number,
                                     "line_type": getattr(entry.line_type, "name", str(entry.line_type)),
+                                    "literal_slot": literal_slot,
                                 }
                             },
                         }
@@ -194,9 +229,33 @@ class RENPYSOURCE(Base):
                     # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
                     new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
                 if new_line == original_line:
-                    if dst != src and any(
-                        literal.value == dst
-                        for literal in scan_quoted_literals(original_line)
+                    literal_slot = None
+                    extra = item.get_extra_field()
+                    if isinstance(extra, dict):
+                        source_meta = extra.get("renpy_source")
+                        if isinstance(source_meta, dict):
+                            candidate = source_meta.get("literal_slot")
+                            if isinstance(candidate, int):
+                                literal_slot = candidate
+
+                    if literal_slot is None and reference_lines is not None and row <= len(reference_lines):
+                        reference_line = reference_lines[row - 1]
+                        matching_slots = [
+                            index
+                            for index, match in enumerate(
+                                translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(reference_line)
+                            )
+                            if match.group("text") == src
+                        ]
+                        if len(matching_slots) == 1:
+                            literal_slot = matching_slots[0]
+
+                    if (
+                        dst != src
+                        and literal_slot is not None
+                        and self._literal_slot_has_destination(
+                            translator, original_line, literal_slot, dst
+                        )
                     ):
                         already_applied += 1
                         continue
