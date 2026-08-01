@@ -491,6 +491,65 @@ def test_cache_merge_preserves_proofread_main_strings_translation(tmp_path):
     assert items[0].get_file_path() == "menus/moon_compass.rpy"
 
 
+def test_cache_merge_json_fallback_invalidates_stale_sqlite(tmp_path, monkeypatch):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    main_item = _item(
+        row=1,
+        src="Existing fictional sextant",
+        dst="已有虚构六分仪译文",
+    )
+    incremental_item = _item(
+        row=2,
+        src="New fictional sextant",
+        dst="新增虚构六分仪译文",
+    )
+
+    main_manager = CacheManager(service=False)
+    main_manager.cache_use_sqlite = True
+    assert main_manager.save_to_file(
+        CacheProject(id="main"), [main_item], str(main_output), strict=True
+    )
+    _save_json_cache(
+        incremental_output,
+        CacheProject(id="delta"),
+        [incremental_item],
+    )
+    stale_db = main_output / "cache" / CacheManager.CACHE_DB_NAME
+    assert stale_db.is_file()
+
+    real_save = CacheManager.save_to_file
+    failed_sqlite_once = False
+
+    def fail_first_main_sqlite_save(
+        manager, project, items, output_folder, *, strict=False
+    ):
+        nonlocal failed_sqlite_once
+        if (
+            Path(output_folder) == main_output
+            and manager._should_use_sqlite(output_folder)
+            and not failed_sqlite_once
+        ):
+            failed_sqlite_once = True
+            return False
+        return real_save(
+            manager, project, items, output_folder, strict=strict
+        )
+
+    monkeypatch.setattr(CacheManager, "save_to_file", fail_first_main_sqlite_save)
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    assert failed_sqlite_once is True
+    assert not stale_db.exists()
+
+    fresh_manager = CacheManager(service=False)
+    fresh_manager.load_from_file(str(main_output), strict=True)
+    assert {item.get_src() for item in fresh_manager.get_items()} == {
+        "Existing fictional sextant",
+        "New fictional sextant",
+    }
+
+
 def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeypatch):
     output = tmp_path / "output"
     target = tmp_path / "target"
