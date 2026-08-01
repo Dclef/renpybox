@@ -1,4 +1,5 @@
 {
+    "group": "custom",
     "id": 13,
     "name": "自定义 Google 接口",
     "api_url": "https://generativelanguage.googleapis.com",
