@@ -408,24 +408,38 @@ def apply_translation_files_transactionally(
             target = input_dir / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
 
+            # os.replace 会替换符号链接本身，而不是写入其指向文件。
+            # 对链接的真实目标执行整套事务，才能同时保留链接和回滚能力。
+            if target.is_symlink():
+                try:
+                    write_target = target.resolve(strict=True)
+                except (OSError, RuntimeError) as exc:
+                    raise RuntimeError(
+                        f"无法解析翻译目标符号链接: {target}: {exc}"
+                    ) from exc
+                if not write_target.is_file():
+                    raise RuntimeError(f"翻译目标符号链接未指向文件: {target}")
+            else:
+                write_target = target
+
             backup: Path | None = None
-            if target.exists():
+            if write_target.exists():
                 backup = backup_root / rel_path
                 backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, backup)
+                shutil.copy2(write_target, backup)
 
             temp_fd, temp_name = tempfile.mkstemp(
-                prefix=f".{target.name}.apply-{index}-",
+                prefix=f".{write_target.name}.apply-{index}-",
                 suffix=".tmp",
-                dir=str(target.parent),
+                dir=str(write_target.parent),
             )
             os.close(temp_fd)
             temp_target = Path(temp_name)
             temp_targets.append(temp_target)
             shutil.copy2(source, temp_target)
-            os.replace(str(temp_target), str(target))
+            os.replace(str(temp_target), str(write_target))
             temp_targets.remove(temp_target)
-            applied.append((target, backup))
+            applied.append((write_target, backup))
         return len(applied)
     except Exception as apply_exc:
         rollback_errors: list[str] = []
