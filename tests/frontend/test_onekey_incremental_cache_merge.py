@@ -53,6 +53,28 @@ def _ast_item(*, row: int, src: str, dst: str, digest: str) -> CacheItem:
     return item
 
 
+def _strings_ast_item(
+    *, row: int, header_line: int, src: str, dst: str, digest: str
+) -> CacheItem:
+    item = _item(row=row, src=src, dst=dst, tag="string")
+    item.set_extra_field({
+        "renpy": {
+            "block": {
+                "lang": "chinese",
+                "label": "strings",
+                "kind": "STRINGS",
+                "header_line": header_line,
+            },
+            "pair": {
+                "template_line": header_line + 2,
+                "target_line": header_line + 3,
+            },
+            "digest": {"template_raw_sha1": digest},
+        }
+    })
+    return item
+
+
 def test_merge_incremental_cache_overrides_duplicates_and_preserves_main_assets(tmp_path):
     main_output = tmp_path / "RenpyBox_Translation" / "chinese"
     incremental_output = tmp_path / "RenpyBox_Translation" / "chinese_new"
@@ -259,6 +281,53 @@ def test_cache_merge_replaces_changed_source_at_same_ast_location(tmp_path):
     assert len(items) == 1
     assert items[0].get_src() == "The glass comet is brilliant."
     assert items[0].get_dst() == "玻璃彗星十分明亮。"
+
+
+def test_cache_merge_does_not_evict_another_strings_block_at_same_offset(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    first_old = _strings_ast_item(
+        row=12,
+        header_line=10,
+        src="The fictional north lens is dim.",
+        dst="虚构的北侧镜片很暗。",
+        digest="north-old-template",
+    )
+    second_kept = _strings_ast_item(
+        row=22,
+        header_line=20,
+        src="The fictional south lens is clear.",
+        dst="虚构的南侧镜片很清晰。",
+        digest="south-template",
+    )
+    first_changed = _strings_ast_item(
+        row=12,
+        header_line=10,
+        src="The fictional north lens is bright.",
+        dst="虚构的北侧镜片很明亮。",
+        digest="north-new-template",
+    )
+    _save_json_cache(
+        main_output,
+        CacheProject(id="main"),
+        [first_old, second_kept],
+    )
+    _save_json_cache(
+        incremental_output,
+        CacheProject(id="delta"),
+        [first_changed],
+    )
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items_by_src = {item.get_src(): item for item in loaded.get_items()}
+
+    assert "The fictional north lens is dim." in items_by_src
+    assert "The fictional north lens is bright." in items_by_src
+    assert items_by_src["The fictional south lens is clear."].get_dst() == (
+        "虚构的南侧镜片很清晰。"
+    )
 
 
 def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeypatch):
