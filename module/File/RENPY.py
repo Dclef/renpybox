@@ -118,9 +118,10 @@ class RENPY(Base):
             translated_group_items = [
                 item
                 for item in group_items
-                if isinstance(item.get_dst(), str)
-                and item.get_dst() != ""
-                and item.get_dst() != item.get_src()
+                if self._has_translated_value(item.get_src(), item.get_dst())
+                or self._has_translated_value(
+                    item.get_name_src(), item.get_name_dst()
+                )
             ]
             translated_items = len(translated_group_items)
             applied, skipped = writer.apply_items_to_lines(lines, items_to_apply)
@@ -401,10 +402,28 @@ class RENPY(Base):
                     picked_index = index
                     break
             actual = remaining.pop(picked_index)
-            if actual.get_dst() != expected.get_dst():
+            dialogue_unapplied = (
+                self._has_translated_value(expected.get_src(), expected.get_dst())
+                and actual.get_dst() != expected.get_dst()
+            )
+            name_unapplied = (
+                self._has_translated_value(
+                    expected.get_name_src(), expected.get_name_dst()
+                )
+                and actual.get_name_dst() != expected.get_name_dst()
+            )
+            if dialogue_unapplied or name_unapplied:
                 unapplied.append(expected)
 
         return unapplied
+
+    @staticmethod
+    def _has_translated_value(source, target) -> bool:
+        if isinstance(target, str):
+            return target != "" and target != source
+        if isinstance(target, list):
+            return bool(target) and target != source
+        return False
 
     def _normalize_name_key(self, value: str | list[str] | None) -> str:
         if isinstance(value, list):

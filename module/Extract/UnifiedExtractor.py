@@ -16,7 +16,7 @@ import os
 import re
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional, Set, Callable, List, Tuple
 
@@ -58,9 +58,12 @@ class ExistingTranslations:
 
     strings: Dict[str, str]
     blocks: Dict[Tuple[str, str, str, str, int], str]
+    block_names: Dict[Tuple[str, str, str, str, int], str] = field(
+        default_factory=dict
+    )
 
     def __len__(self) -> int:
-        return len(self.strings) + len(self.blocks)
+        return len(self.strings) + len(set(self.blocks) | set(self.block_names))
 
 
 class UnifiedExtractor:
@@ -1686,17 +1689,25 @@ class UnifiedExtractor:
             for key, translated in incremental_translations.blocks.items()
             if key not in current_translations.blocks
         }
-        if numbered_translation_updates:
+        numbered_name_updates = {
+            key: translated
+            for key, translated in incremental_translations.block_names.items()
+            if key not in current_translations.block_names
+        }
+        if numbered_translation_updates or numbered_name_updates:
             merge_errors.extend(
                 self._merge_translations(
                     tl_dir,
                     ExistingTranslations(
                         strings={},
                         blocks=numbered_translation_updates,
+                        block_names=numbered_name_updates,
                     ),
                 )
             )
-            updated_entries += len(numbered_translation_updates)
+            updated_entries += len(
+                set(numbered_translation_updates) | set(numbered_name_updates)
+            )
 
         added_entries += len(incremental_strings - existing_strings_before)
         added_entries += len(incremental_blocks - existing_blocks_before)
@@ -1831,10 +1842,16 @@ class UnifiedExtractor:
             for key, expected in numbered_translation_updates.items()
             if applied_translations.blocks.get(key) != expected
         }
+        unapplied_numbered_names = {
+            key
+            for key, expected in numbered_name_updates.items()
+            if applied_translations.block_names.get(key) != expected
+        }
         if (
             missing_strings
             or missing_blocks
             or unapplied_numbered_translations
+            or unapplied_numbered_names
             or merge_errors
         ):
             details = list(merge_errors)
@@ -1845,6 +1862,10 @@ class UnifiedExtractor:
             if unapplied_numbered_translations:
                 details.append(
                     f"有 {len(unapplied_numbered_translations)} 条编号块译文未写入"
+                )
+            if unapplied_numbered_names:
+                details.append(
+                    f"有 {len(unapplied_numbered_names)} 条编号块角色名译文未写入"
                 )
             result.success = False
             result.message = "增量合并未完成，已保留增量目录：" + "；".join(details)
@@ -3267,16 +3288,23 @@ class UnifiedExtractor:
                 for item in items:
                     src = item.get_src()
                     dst = item.get_dst()
-                    if not dst or dst == src:
-                        continue
                     block_key = self._numbered_item_translation_key(rel_path, item)
                     if block_key is not None:
-                        translations.blocks[block_key] = dst
+                        if dst and dst != src:
+                            translations.blocks[block_key] = dst
+                        name_src = item.get_name_src()
+                        name_dst = item.get_name_dst()
+                        if (
+                            isinstance(name_dst, str)
+                            and name_dst
+                            and name_dst != name_src
+                        ):
+                            translations.block_names[block_key] = name_dst
                     else:
                         extra = item.get_extra_field()
                         renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                         block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
-                        if str(block.get("kind")) == "STRINGS":
+                        if dst and dst != src and str(block.get("kind")) == "STRINGS":
                             translations.strings[src] = dst
                 continue
             except Exception as exc:
@@ -3351,9 +3379,13 @@ class UnifiedExtractor:
                     for item in items:
                         src = item.get_src()
                         block_key = self._numbered_item_translation_key(rel_path, item)
-                        if block_key is not None and block_key in translations.blocks:
-                            item.set_dst(translations.blocks[block_key])
-                            updated = True
+                        if block_key is not None:
+                            if block_key in translations.blocks:
+                                item.set_dst(translations.blocks[block_key])
+                                updated = True
+                            if block_key in translations.block_names:
+                                item.set_name_dst(translations.block_names[block_key])
+                                updated = True
                             continue
 
                         extra = item.get_extra_field()

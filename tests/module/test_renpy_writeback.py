@@ -78,3 +78,38 @@ def test_renpy_writeback_rejects_batch_when_stale_item_is_missing(tmp_path):
         writer.write_to_path(items)
 
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_renpy_writeback_rejects_unapplied_name_only_translation(tmp_path):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    source = input_dir / "fictional_name_only.rpy"
+    input_dir.mkdir()
+    source.write_text(
+        'translate chinese beacon_name_33333333:\n'
+        '    # Character("Captain Lumen") "The fictional beacon is steady."\n'
+        '    Character("Captain Lumen") "The fictional beacon is steady."\n',
+        encoding="utf-8",
+    )
+
+    config = Config()
+    config.input_folder = str(input_dir)
+    config.output_folder = str(output_dir)
+    writer = RENPY(config)
+    items = writer.read_from_path([str(source)])
+    assert len(items) == 1
+    assert items[0].get_name_src() == "Captain Lumen"
+    items[0].set_name_dst("露明船长")
+
+    # 模拟缓存生成后原文件角色名发生变化，使缓存中的 AST 身份失效。
+    source.write_text(
+        'translate chinese beacon_name_33333333:\n'
+        '    # Character("Commander Vela") "The fictional beacon is steady."\n'
+        '    Character("Commander Vela") "The fictional beacon is steady."\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="译文未完整写入"):
+        writer.write_to_path(items)
+
+    assert not (output_dir / "fictional_name_only.rpy").exists()

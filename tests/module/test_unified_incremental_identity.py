@@ -437,6 +437,67 @@ def test_equal_numbered_template_applies_missing_translation_only(tmp_path):
     assert not incremental.exists()
 
 
+def test_equal_numbered_template_merges_name_and_dialogue_independently(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "lighthouse.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "lighthouse.rpy"
+    write_tl(
+        target,
+        'translate chinese lighthouse_report_46464646:\n'
+        '    # Character("Captain Lumen") "The fictional lighthouse is ready."\n'
+        '    Character("Captain Lumen") "保留的人工灯塔对白译文。"\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese lighthouse_report_46464646:\n'
+        '    # Character("Captain Lumen") "The fictional lighthouse is ready."\n'
+        '    Character("露明船长") "较早的增量灯塔对白译文。"\n',
+    )
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is True
+    merged = target.read_text(encoding="utf-8")
+    assert 'Character("露明船长") "保留的人工灯塔对白译文。"' in merged
+    assert "较早的增量灯塔对白译文。" not in merged
+    assert not incremental.exists()
+
+
+def test_unapplied_numbered_name_translation_preserves_staging(tmp_path, monkeypatch):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "harbor.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "harbor.rpy"
+    write_tl(
+        target,
+        'translate chinese harbor_report_47474747:\n'
+        '    # Character("Keeper Sol") "The fictional harbor is quiet."\n'
+        '    Character("Keeper Sol") "保留的人工港口对白译文。"\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese harbor_report_47474747:\n'
+        '    # Character("Keeper Sol") "The fictional harbor is quiet."\n'
+        '    Character("索尔守望者") "较早的增量港口对白译文。"\n',
+    )
+    extractor = UnifiedExtractor()
+    monkeypatch.setattr(extractor, "_merge_translations", lambda *_args, **_kwargs: [])
+
+    result = extractor.merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is False
+    assert "编号块角色名译文未写入" in result.message
+    assert incremental.exists()
+    assert 'Character("Keeper Sol") "保留的人工港口对白译文。"' in (
+        target.read_text(encoding="utf-8")
+    )
+
+
 def test_equal_numbered_template_preserves_staging_when_translation_is_not_applied(
     tmp_path, monkeypatch
 ):
