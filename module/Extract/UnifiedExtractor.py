@@ -1990,7 +1990,9 @@ class UnifiedExtractor:
         if not candidates:
             return 0
 
-        existing = self._get_all_originals(tl_dir)
+        # 只有全局 old/new 才能覆盖另一个全局字符串。编号翻译块即使原文
+        # 相同，也不能阻止菜单或其他静态文本生成 strings 条目。
+        existing = self._get_string_originals(tl_dir)
         added = 0
         for original, relative_path in candidates.items():
             if original in existing:
@@ -2088,9 +2090,13 @@ class UnifiedExtractor:
 
     def _get_translated_string_originals(self, tl_dir: Path) -> Set[str]:
         """收集已有有效译文的全局 strings 原文，不包含编号翻译块。"""
-        originals: Set[str] = set()
+        return set(self._get_existing_string_translations(tl_dir))
+
+    def _get_existing_string_translations(self, tl_dir: Path) -> Dict[str, str]:
+        """获取有效的全局 old/new 译文，不包含编号翻译块。"""
+        translations: Dict[str, str] = {}
         if not tl_dir.exists():
-            return originals
+            return translations
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
@@ -2107,7 +2113,7 @@ class UnifiedExtractor:
                         and item.get_dst()
                         and item.get_dst() != item.get_src()
                     ):
-                        originals.add(item.get_src())
+                        translations[item.get_src()] = item.get_dst()
                 continue
             except Exception:
                 pass
@@ -2135,11 +2141,11 @@ class UnifiedExtractor:
                         new_match.group(1), new_match.group("text")
                     )
                     if new_text and new_text != old_text:
-                        originals.add(old_text)
+                        translations[old_text] = new_text
                     i = j + 1
                     continue
                 i += 1
-        return originals
+        return translations
 
     def _collect_numbered_block_keys(self, tl_dir: Path) -> Set[Tuple[str, str]]:
         """收集编号翻译块身份：``(相对文件路径, translate 标签)``。"""
@@ -2893,8 +2899,9 @@ class UnifiedExtractor:
 
         # 终极结构导出
         if getattr(config, "extract_export_excel", False):
-            if existing_translations is None:
-                existing_translations = self._get_existing_translations(tl_dir)
+            # MaExtractor 生成的是全局 old/new/replace 结构，只能用 strings
+            # 译文排除重复；编号块译文属于独立语句，不能参与全局过滤。
+            existing_translations = self._get_existing_string_translations(tl_dir)
             try:
                 exporter = MaExtractor(self.logger)
                 exporter.run(project_root, tl_name, preserve_set, existing_translations, config)
