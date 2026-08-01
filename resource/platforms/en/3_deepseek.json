@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 3,
     "name": "DeepSeek",
     "api_url": "https://api.deepseek.com",

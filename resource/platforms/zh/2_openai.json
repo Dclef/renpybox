@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 2,
     "name": "OpenAI",
     "api_url": "https://api.openai.com/v1",
