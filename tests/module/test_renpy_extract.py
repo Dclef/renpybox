@@ -1209,8 +1209,8 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
     game.mkdir()
     monkeypatch.setattr(
         generator,
-        "collect_glossary_candidate_texts",
-        lambda *args, **kwargs: {text},
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: ({text}, set(), 0),
     )
     monkeypatch.setattr(
         generator.rx,
@@ -1230,6 +1230,47 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
 
     assert [entry["src"] for entry in entries] == [text]
     assert stats["missing_count"] == 1
+
+
+def test_hook_name_discovery_ignores_compiled_only_identifiers(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    seen = []
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: (
+            {"Captain Rowan"},
+            {"WidgetEngine", "Crew Roster"},
+            3,
+        ),
+    )
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(
+        generator,
+        "_detect_missing_character_names",
+        lambda items: seen.append(set(items)) or set(),
+    )
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+    )
+
+    assert {entry["src"] for entry in entries} == {
+        "Captain Rowan",
+        "WidgetEngine",
+        "Crew Roster",
+    }
+    assert seen == [{"Captain Rowan"}]
+    assert stats["rpy_candidate_count"] == 1
+    assert stats["compiled_candidate_count"] == 2
+    assert stats["filtered_technical_count"] == 3
 
 
 def test_hook_filter_keeps_readable_text_with_dynamic_placeholders():
@@ -1312,6 +1353,76 @@ def test_compiled_string_scan_cache_invalidates_when_bytecode_changes(tmp_path):
     assert "Navigation Gallery" in second
 
 
+def test_compiled_scan_skips_import_names_but_keeps_data_tuples(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "schedule.py"
+    source.write_text(
+        "from imaginary_widgets import Widget, Renderable\n"
+        "TIMES = ('Morning Watch', 'Evening Watch')\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "schedule.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert {"Morning Watch", "Evening Watch"} <= strings
+    assert "Widget" not in strings
+    assert "Renderable" not in strings
+
+
+def test_compiled_scan_skips_class_metadata_but_keeps_class_ui_text(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "panel.py"
+    source.write_text(
+        "class TelescopePanel:\n"
+        "    HEADING = 'Observation Schedule'\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "panel.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert "TelescopePanel" not in strings
+    assert "Observation Schedule" in strings
+
+
+def test_compiled_technical_filter_rejects_code_but_keeps_ui_text():
+    from module.Extract import ReplaceGenerator as generator
+
+    candidates = {
+        "uniform sampler2D starlight;",
+        "void paint(vec2 uv) {\n    gl_FragColor = texture2D(starlight, uv);\n}",
+        '<polygon fill="#fff" /></svg>',
+        "The observatory story will return in a future release.",
+        "Crew Roster",
+    }
+
+    assert {
+        text for text in candidates if not generator._is_compiled_technical_text(text)
+    } == {
+        "The observatory story will return in a future release.",
+        "Crew Roster",
+    }
+
+
 def test_replace_rule_preserves_interpolated_values():
     from module.Extract import ReplaceGenerator as generator
 
@@ -1323,6 +1434,19 @@ def test_replace_rule_preserves_interpolated_values():
     assert rule is not None
     pattern, replacement = rule
     assert re.sub(pattern, replacement, "Nova reached Rank 7.") == "Nova已达到7级。"
+
+
+def test_replace_rule_consumes_interpolation_at_end_of_source():
+    from module.Extract import ReplaceGenerator as generator
+
+    rule = generator._build_interpolated_replace_rule(
+        "Level: [level]",
+        "[level] ranks",
+    )
+
+    assert rule is not None
+    pattern, replacement = rule
+    assert re.sub(pattern, replacement, "Level: 27") == "27 ranks"
 
 
 def test_replace_scan_collects_dynamic_label_text(tmp_path):
