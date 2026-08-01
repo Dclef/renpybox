@@ -58,6 +58,8 @@ from module.Renpy.ProjectPaths import (
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScanner
 from frontend.TranslationPage import TranslationPage
 
@@ -255,6 +257,35 @@ def _cache_item_label_block_identity(item) -> tuple | None:
     return (str(item.get_file_path() or ""), lang, label)
 
 
+def _numbered_disk_identity(item) -> tuple | None:
+    """匹配缓存与磁盘中的同一编号语句，不依赖运行期 tag。"""
+    block, pair, digest = _renpy_cache_metadata(item)
+    if str(block.get("kind")) != "LABEL":
+        return None
+    header_line = block.get("header_line")
+    template_line = pair.get("template_line")
+    template_digest = digest.get("template_raw_sha1")
+    lang = block.get("lang")
+    label = block.get("label")
+    if not (
+        isinstance(header_line, int)
+        and isinstance(template_line, int)
+        and isinstance(template_digest, str)
+        and template_digest
+        and isinstance(lang, str)
+        and isinstance(label, str)
+    ):
+        return None
+    return (
+        str(item.get_file_path() or ""),
+        lang,
+        label,
+        template_digest,
+        template_line - header_line,
+        str(item.get_src() or ""),
+    )
+
+
 def _is_strings_cache_item(item) -> bool:
     block, _pair, _digest = _renpy_cache_metadata(item)
     return str(block.get("kind")) == "STRINGS"
@@ -272,6 +303,44 @@ def _merge_strings_cache_translation(existing, incoming):
     for field in ("dst", "name_dst", "status", "retry_count", "metadata"):
         data[field] = incoming_data[field]
     return type(existing).from_dict(data)
+
+
+def _merge_numbered_cache_translation(existing, incoming):
+    """把磁盘最终结果中的有效编号译文迁入增量缓存条目。"""
+    data = incoming.asdict()
+    existing_dst = existing.get_dst()
+    if isinstance(existing_dst, str) and existing_dst and existing_dst != existing.get_src():
+        existing_data = existing.asdict()
+        for field in ("dst", "status", "retry_count", "metadata"):
+            data[field] = existing_data[field]
+
+    existing_name_dst = existing.get_name_dst()
+    if existing_name_dst and existing_name_dst != existing.get_name_src():
+        data["name_dst"] = existing_name_dst
+    return type(incoming).from_dict(data)
+
+
+def _load_numbered_disk_translations(output_dir: Path) -> dict[tuple, object]:
+    """读取磁盘合并后的编号块；其内容是本轮应用结果的最终依据。"""
+    translations: dict[tuple, object] = {}
+    extractor = RenpyTlItemExtractor()
+    for rpy_file in Path(output_dir).rglob("*.rpy"):
+        try:
+            rel_path = rpy_file.relative_to(output_dir).as_posix()
+            doc = parse_tl_document(
+                rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            for item in extractor.extract(doc, rel_path):
+                if _cache_item_label_block_identity(item) is None:
+                    continue
+                dst = item.get_dst()
+                if isinstance(dst, str) and dst and dst != item.get_src():
+                    identity = _numbered_disk_identity(item)
+                    if identity is not None:
+                        translations[identity] = item
+        except Exception:
+            continue
+    return translations
 
 
 def _project_assets_have_state(payload) -> bool:
@@ -321,6 +390,7 @@ def merge_incremental_translation_cache(
     merged: dict[tuple, object] = {}
     order: list[tuple] = []
     main_locations: dict[tuple, tuple] = {}
+    disk_numbered_items = _load_numbered_disk_translations(main_output)
     incremental_items = incremental_manager.get_items()
     replaced_label_blocks = {
         block_identity
@@ -329,11 +399,11 @@ def merge_incremental_translation_cache(
     }
     if main_loaded:
         for item in main_manager.get_items():
+            key = _cache_item_identity(item)
             # 变更编号块的增量缓存是完整块快照。先清除该块的全部旧条目，
             # 才能同步其中被删除的语句；全局 strings 不参与整块淘汰。
             if _cache_item_label_block_identity(item) in replaced_label_blocks:
                 continue
-            key = _cache_item_identity(item)
             if key not in merged:
                 order.append(key)
                 merged[key] = item
@@ -346,6 +416,10 @@ def merge_incremental_translation_cache(
                 main_locations[location] = key
     for item in incremental_items:
         key = _cache_item_identity(item)
+        if _cache_item_label_block_identity(item) is not None:
+            disk_item = disk_numbered_items.get(_numbered_disk_identity(item))
+            if disk_item is not None:
+                item = _merge_numbered_cache_translation(disk_item, item)
         if key in merged and _is_strings_cache_item(item):
             # 跨文件 old/new 共用全局身份，但主缓存条目的路径对应磁盘合并后的
             # 实际目标；只迁移译文状态，不能保留即将删除的 staging 路径。

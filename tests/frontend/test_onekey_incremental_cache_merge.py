@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -362,6 +363,59 @@ def test_cache_merge_removes_vanished_items_from_changed_numbered_block(tmp_path
         "新的虚构中继器打开译文。",
         "新的虚构中继器关闭译文。",
     ]
+
+
+def test_cache_merge_preserves_newer_main_translation_in_numbered_block(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    label = "fictional_lantern_24681357"
+    template_line = '    # pilot "The fictional lantern glows."'
+    digest = hashlib.sha1(template_line.encode("utf-8")).hexdigest()
+    proofread = _ast_item(
+        row=44,
+        src="The fictional lantern glows.",
+        dst="人工校对后的虚构灯笼译文。",
+        digest=digest,
+        template_line=43,
+        label=label,
+    )
+    vanished = _ast_item(
+        row=46,
+        src="The fictional lantern flickers.",
+        dst="即将被删除的虚构译文。",
+        digest="lantern-flickers",
+        template_line=45,
+        label=label,
+    )
+    stale_incremental = _ast_item(
+        row=144,
+        src="The fictional lantern glows.",
+        dst="较早增量任务中的虚构灯笼译文。",
+        digest=digest,
+        template_line=43,
+        label=label,
+    )
+    _save_json_cache(main_output, CacheProject(id="main"), [proofread, vanished])
+    _save_json_cache(
+        incremental_output,
+        CacheProject(id="delta"),
+        [stale_incremental],
+    )
+    (main_output / "script.rpy").write_text(
+        'translate chinese fictional_lantern_24681357:\n\n\n'
+        f'{template_line}\n'
+        '    pilot "人工校对后的虚构灯笼译文。"\n',
+        encoding="utf-8",
+    )
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items = loaded.get_items()
+
+    assert len(items) == 1
+    assert items[0].get_src() == "The fictional lantern glows."
+    assert items[0].get_dst() == "人工校对后的虚构灯笼译文。"
 
 
 def test_cache_merge_does_not_evict_another_strings_block_at_same_offset(tmp_path):
