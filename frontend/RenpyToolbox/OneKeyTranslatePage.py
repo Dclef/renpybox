@@ -58,7 +58,7 @@ from module.Renpy.ProjectPaths import (
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
-from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScanner
 from frontend.TranslationPage import TranslationPage
@@ -183,7 +183,7 @@ def _cache_item_identity(item) -> tuple:
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
     if (
-        str(block.get("kind")) == "STRINGS"
+        tl_block_kind_name(block.get("kind")) == "STRINGS"
         and isinstance(lang, str)
         and lang
         and str(item.get_src() or "")
@@ -218,7 +218,7 @@ def _cache_item_source_location(item) -> tuple | None:
     block, pair, _digest = _renpy_cache_metadata(item)
     # 同一文件可包含多个 label 都为 ``strings`` 的块，且它们的块内偏移
     # 可能完全相同。没有稳定的块实例身份时按位置淘汰会误删另一个块。
-    if str(block.get("kind")) != "LABEL":
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
         return None
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
@@ -243,7 +243,7 @@ def _cache_item_source_location(item) -> tuple | None:
 def _cache_item_label_block_identity(item) -> tuple | None:
     """返回可由增量完整快照安全替换的编号翻译块身份。"""
     block, _pair, _digest = _renpy_cache_metadata(item)
-    if str(block.get("kind")) != "LABEL":
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
         return None
     lang = block.get("lang")
     label = block.get("label")
@@ -260,7 +260,7 @@ def _cache_item_label_block_identity(item) -> tuple | None:
 def _numbered_disk_identity(item) -> tuple | None:
     """匹配缓存与磁盘中的同一编号语句，不依赖运行期 tag。"""
     block, pair, digest = _renpy_cache_metadata(item)
-    if str(block.get("kind")) != "LABEL":
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
         return None
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
@@ -288,7 +288,7 @@ def _numbered_disk_identity(item) -> tuple | None:
 
 def _is_strings_cache_item(item) -> bool:
     block, _pair, _digest = _renpy_cache_metadata(item)
-    return str(block.get("kind")) == "STRINGS"
+    return tl_block_kind_name(block.get("kind")) == "STRINGS"
 
 
 def _merge_strings_cache_translation(existing, incoming):

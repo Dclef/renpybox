@@ -34,6 +34,13 @@ class TlBlockKind(StrEnum):
     OTHER = "OTHER"
 
 
+def tl_block_kind_name(value) -> str:
+    """返回跨 Python 版本稳定的翻译块类型名称。"""
+    raw = getattr(value, "value", value)
+    text = str(raw or "")
+    return text.rsplit(".", 1)[-1]
+
+
 class TlStmtKind(StrEnum):
     """语句类型"""
     TEMPLATE = "TEMPLATE"  # 模板行（注释模板或 old 行）

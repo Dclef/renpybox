@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
+from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
 from module.Engine.Translator.Translator import Translator
+from module.Renpy.ProjectPaths import RenpyProjectPaths, read_run_manifest, write_run_manifest
 
 
 def _platform(*, model: str, api_key: str, api_url: str = "https://old.invalid/v1") -> dict:
@@ -46,6 +48,56 @@ def _translator() -> Translator:
     translator.cache_manager = CacheManager(service = False)
     translator.data_lock = threading.Lock()
     return translator
+
+
+def test_runtime_manifest_preserves_incremental_scope_on_resume(tmp_path) -> None:
+    project = tmp_path / "fictional-game"
+    main_input = project / "game" / "tl" / "chinese"
+    delta_input = project / "game" / "tl" / "chinese_new"
+    delta_output = project / "RenpyBox_Translation" / "chinese_new"
+    main_input.mkdir(parents=True)
+    delta_input.mkdir(parents=True)
+    delta_output.mkdir(parents=True)
+    paths = RenpyProjectPaths.from_path(project, "chinese")
+    assert paths is not None
+    write_run_manifest(
+        paths,
+        delta_output,
+        input_folder=delta_input,
+        application_target_dir=main_input,
+        run_kind="incremental",
+    )
+    config = Config(
+        renpy_project_path=str(project),
+        renpy_game_folder=str(project),
+        renpy_tl_folder=str(main_input),
+        input_folder=str(delta_input),
+        output_folder=str(delta_output),
+        renpy_source_translate=False,
+        renpy_hook_translate=False,
+    )
+
+    Translator._remember_runtime_manifest(config)
+
+    manifest = read_run_manifest(paths)
+    assert manifest is not None
+    assert manifest["run_kind"] == "incremental"
+    assert manifest["input_folder"] == str(delta_input.resolve())
+    assert manifest["output_folder"] == str(delta_output.resolve())
+    assert manifest["application_target_dir"] == str(main_input.resolve())
+
+
+def test_resume_completes_allowed_acronym_but_not_translatable_ui_word() -> None:
+    translator = _translator()
+    translator.config = Config(glossary_data=[])
+    usb = CacheItem(src="USB", dst="USB", status=Base.TranslationStatus.UNTRANSLATED)
+    start = CacheItem(src="START", dst="START", status=Base.TranslationStatus.UNTRANSLATED)
+
+    accepted = translator.accept_preserved_untranslated_items([usb, start])
+
+    assert accepted == 1
+    assert usb.get_status() == Base.TranslationStatus.TRANSLATED
+    assert start.get_status() == Base.TranslationStatus.UNTRANSLATED
 
 
 def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_path) -> None:
