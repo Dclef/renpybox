@@ -328,11 +328,11 @@ class TranslationPage(QWidget, Base):
 
         if engine_status == Engine.Status.IDLE:
             # 任务结束后使用缓存中的耗时快照，不能继续用 start_time 累加。
-            total_time = int(self.data.get("time", 0) or 0)
+            total_time = max(0, int(self.data.get("time", 0) or 0))
         elif self.data.get("start_time", 0) == 0:
             total_time = 0
         else:
-            total_time = int(time.time() - self.data.get("start_time", 0))
+            total_time = max(0, int(time.time() - self.data.get("start_time", 0)))
 
         if total_time < 60:
             self.time.set_unit("S")
@@ -344,7 +344,10 @@ class TranslationPage(QWidget, Base):
             self.time.set_unit("H")
             self.time.set_value(f"{(total_time / 60 / 60):.2f}")
 
-        remaining_time = int(total_time / max(1, self.data.get("line", 0)) * (self.data.get("total_line", 0) - self.data.get("line", 0)))
+        line = max(0, int(self.data.get("line", 0) or 0))
+        total_line = max(0, int(self.data.get("total_line", 0) or 0))
+        remaining = max(0, total_line - line)
+        remaining_time = max(0, int(total_time / max(1, line) * remaining))
         if remaining_time < 60:
             self.remaining_time.set_unit("S")
             self.remaining_time.set_value(f"{remaining_time}")
@@ -364,7 +367,7 @@ class TranslationPage(QWidget, Base):
         ):
             return None
 
-        line = self.data.get("line", 0)
+        line = max(0, int(self.data.get("line", 0) or 0))
         if line < 1000:
             self.line_card.set_unit("Line")
             self.line_card.set_value(f"{line}")
@@ -375,7 +378,8 @@ class TranslationPage(QWidget, Base):
             self.line_card.set_unit("MLine")
             self.line_card.set_value(f"{(line / 1000 / 1000):.2f}")
 
-        remaining_line = self.data.get("total_line", 0) - self.data.get("line", 0)
+        total_line = max(0, int(self.data.get("total_line", 0) or 0))
+        remaining_line = max(0, total_line - line)
         if remaining_line < 1000:
             self.remaining_line.set_unit("Line")
             self.remaining_line.set_value(f"{remaining_line}")
@@ -434,11 +438,11 @@ class TranslationPage(QWidget, Base):
     # 更新进度环
     def update_status(self, data: dict) -> None:
         if Engine.get().get_status() == Engine.Status.STOPPING:
-            percent = self.data.get("line", 0) / max(1, self.data.get("total_line", 0))
+            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
             self.ring.setValue(int(percent * 10000))
             self.ring.setFormat(f"{Localizer.get().translation_page_status_stopping}\n{percent * 100:.2f}%")
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
-            percent = self.data.get("line", 0) / max(1, self.data.get("total_line", 0))
+            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
             self.ring.setValue(int(percent * 10000))
             self.ring.setFormat(f"{Localizer.get().translation_page_status_translating}\n{percent * 100:.2f}%")
         elif Engine.get().get_status() == Engine.Status.QUALITY:
@@ -454,7 +458,7 @@ class TranslationPage(QWidget, Base):
             line = self.data.get("line", 0)
             total_line = self.data.get("total_line", 0)
             if line > 0 and total_line > 0:
-                percent = line / total_line
+                percent = min(1.0, max(0.0, line / total_line))
                 self.ring.setValue(int(percent * 10000))
                 self.ring.setFormat(f"{Localizer.get().translation_page_status_idle}\n{line}/{total_line}")
             else:

@@ -42,6 +42,36 @@ class _RuntimeSignalStub:
         self.events.append((event, data))
 
 
+class _MetricCardStub:
+    def __init__(self) -> None:
+        self.unit = None
+        self.value = None
+
+    def set_unit(self, unit) -> None:
+        self.unit = unit
+
+    def set_value(self, value) -> None:
+        self.value = value
+
+
+def test_dashboard_never_displays_negative_remaining_values(monkeypatch) -> None:
+    monkeypatch.setattr(Engine.get(), "get_status", lambda: Engine.Status.TRANSLATING)
+    page = SimpleNamespace(
+        data={"line": 14, "total_line": 9, "start_time": 100},
+        time=_MetricCardStub(),
+        remaining_time=_MetricCardStub(),
+        line_card=_MetricCardStub(),
+        remaining_line=_MetricCardStub(),
+    )
+    monkeypatch.setattr("frontend.TranslationPage.time.time", lambda: 160)
+
+    TranslationPage.update_time(page, page.data)
+    TranslationPage.update_line(page, page.data)
+
+    assert page.remaining_time.value == "0"
+    assert page.remaining_line.value == "0"
+
+
 def _install_assets(monkeypatch, assets: ProjectAssets) -> None:
     config = SimpleNamespace(output_folder = "output", cache_use_sqlite = True)
     monkeypatch.setattr(Config, "load", lambda self: config)
