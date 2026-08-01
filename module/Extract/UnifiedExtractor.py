@@ -760,24 +760,6 @@ class UnifiedExtractor:
         except Exception:
             return value.replace('\\"', '"').replace("\\'", "'")
 
-    @classmethod
-    def _canonical_rpy_string(cls, quote: str, value: str) -> str:
-        """解码 TL 字面量，并折叠旧增量输出中的双重转义引号。"""
-        decoded = cls._decode_rpy_string(quote, value)
-        return cls._canonical_decoded_string(decoded)
-
-    @staticmethod
-    def _canonical_decoded_string(decoded: str) -> str:
-        """折叠已经由 AST 解码但仍残留的旧版双重转义引号。"""
-        # 旧版增量输出会再次转义已经转义过的原始字面量，导致 Ren'Py 将
-        # ``\\\"`` 视为反斜杠加引号，而源码值只有引号。比较或重新输出前
-        # 先规范化，确保两种写法只保留一个全局条目。
-        previous = None
-        while decoded != previous:
-            previous = decoded
-            decoded = decoded.replace('\\"', '"').replace("\\'", "'")
-        return decoded
-
     def get_last_suspicious_manifest(self) -> Optional[Path]:
         return self._last_suspicious_manifest
 
@@ -1595,7 +1577,7 @@ class UnifiedExtractor:
             return result
 
         def decode_literal(quote: str, text: str) -> str:
-            return self._canonical_rpy_string(quote, text)
+            return self._decode_rpy_string(quote, text)
 
         def collect_pairs(lines: List[str]) -> List[Tuple[str, str, List[str]]]:
             pairs: List[Tuple[str, str, List[str]]] = []
@@ -2068,7 +2050,7 @@ class UnifiedExtractor:
                 if not old_match:
                     i += 1
                     continue
-                old_text = self._canonical_rpy_string(
+                old_text = self._decode_rpy_string(
                     old_match.group(1), old_match.group("text")
                 )
                 # 完全相同的文本可能是真实菜单项；只有去掉官方块注释末尾的
@@ -2164,7 +2146,7 @@ class UnifiedExtractor:
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 for match in self.OLD_LINE_RE.finditer(content):
-                    old_text = self._canonical_rpy_string(match.group(1), match.group("text"))
+                    old_text = self._decode_rpy_string(match.group(1), match.group("text"))
                     originals.add(old_text)
             except Exception:
                 continue
@@ -2187,7 +2169,7 @@ class UnifiedExtractor:
                     renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                     block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
                     if str(block.get("kind")) == "STRINGS":
-                        originals.add(self._canonical_decoded_string(item.get_src()))
+                        originals.add(item.get_src())
                 continue
             except Exception as exc:
                 self.logger.warning(
@@ -2199,7 +2181,7 @@ class UnifiedExtractor:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 for match in self.OLD_LINE_RE.finditer(content):
                     originals.add(
-                        self._canonical_rpy_string(match.group(1), match.group("text"))
+                        self._decode_rpy_string(match.group(1), match.group("text"))
                     )
             except Exception as exc:
                 self.logger.warning(f"strings 原文回退扫描失败 {rpy_file}: {exc}")
@@ -2230,9 +2212,7 @@ class UnifiedExtractor:
                         and item.get_dst()
                         and item.get_dst() != item.get_src()
                     ):
-                        translations[
-                            self._canonical_decoded_string(item.get_src())
-                        ] = item.get_dst()
+                        translations[item.get_src()] = item.get_dst()
                 continue
             except Exception as exc:
                 self.logger.warning(f"AST strings 译文扫描失败，回退 old/new 扫描 {rpy_file}: {exc}")
@@ -2578,8 +2558,7 @@ class UnifiedExtractor:
                     kind = str(block.get("kind"))
                     if (
                         kind == "STRINGS"
-                        and self._canonical_decoded_string(item.get_src())
-                        in selected_originals
+                        and item.get_src() in selected_originals
                         and item.get_src() not in selected_menu_strings
                     ):
                         selected_items.append(item)
@@ -2812,8 +2791,7 @@ class UnifiedExtractor:
                     kind = str(block.get("kind"))
                     if (
                         kind == "STRINGS"
-                        and self._canonical_decoded_string(item.get_src())
-                        in new_originals
+                        and item.get_src() in new_originals
                     ):
                         selected_items.append(item)
                     elif kind == "LABEL" and (rel_key, str(block.get("label", ""))) in selected_block_keys:
@@ -2836,9 +2814,7 @@ class UnifiedExtractor:
                     renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                     block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
                     if str(block.get("kind")) == "STRINGS":
-                        target_string_originals.add(
-                            self._canonical_decoded_string(item.get_src())
-                        )
+                        target_string_originals.add(item.get_src())
                 target_block_labels = {
                     block.label for block in target_doc.blocks if str(block.kind) == "LABEL"
                 }
@@ -2851,8 +2827,7 @@ class UnifiedExtractor:
                     kind = str(block.get("kind"))
                     if (
                         kind == "STRINGS"
-                        and self._canonical_decoded_string(item.get_src())
-                        not in target_string_originals
+                        and item.get_src() not in target_string_originals
                     ):
                         filtered_items.append(item)
                     elif kind == "LABEL" and str(block.get("label", "")) not in target_block_labels:
@@ -3245,9 +3220,7 @@ class UnifiedExtractor:
                         renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                         block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
                         if str(block.get("kind")) == "STRINGS":
-                            translations.strings[
-                                self._canonical_decoded_string(src)
-                            ] = dst
+                            translations.strings[src] = dst
                 continue
             except Exception as exc:
                 self.logger.warning(f"AST 读取已有翻译失败，回退 old/new 扫描 {rpy_file}: {exc}")
@@ -3280,11 +3253,13 @@ class UnifiedExtractor:
                                 # 只有当 new_text 有内容且不等于 old_text 时才保存
                                 if new_text and new_text != old_text:
                                     # 处理转义字符
-                                    old_text_u = old_text.replace('\\"', '"').replace("\\'", "'")
-                                    new_text_u = new_text.replace('\\"', '"').replace("\\'", "'")
-                                    translations.strings[
-                                        self._canonical_decoded_string(old_text_u)
-                                    ] = new_text_u
+                                    old_text_u = self._decode_rpy_string(
+                                        old_match.group(1), old_text
+                                    )
+                                    new_text_u = self._decode_rpy_string(
+                                        new_match.group(1), new_text
+                                    )
+                                    translations.strings[old_text_u] = new_text_u
                                 i = j
                     i += 1
             except Exception as exc:
@@ -3327,12 +3302,11 @@ class UnifiedExtractor:
                         extra = item.get_extra_field()
                         renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                         block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
-                        canonical_src = self._canonical_decoded_string(src)
                         if (
                             str(block.get("kind")) == "STRINGS"
-                            and canonical_src in translations.strings
+                            and src in translations.strings
                         ):
-                            item.set_dst(translations.strings[canonical_src])
+                            item.set_dst(translations.strings[src])
                             updated = True
 
                     if updated:
@@ -3374,7 +3348,9 @@ class UnifiedExtractor:
                     if match and i + 1 < len(lines):
                         indent = match.group(1)
                         old_text = match.group(3)
-                        old_text_unescaped = old_text.replace('\\"', '"').replace("\\'", "'")
+                        old_text_unescaped = self._decode_rpy_string(
+                            match.group(2), old_text
+                        )
 
                         # 检查是否有翻译
                         if old_text_unescaped in translations.strings:
