@@ -453,6 +453,44 @@ def test_cache_merge_uses_global_strings_identity_and_keeps_main_location(tmp_pa
     assert items[0].get_file_path() == "menus/telescope.rpy"
 
 
+def test_cache_merge_preserves_proofread_main_strings_translation(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    original = "Polish the fictional moon compass"
+    proofread_main = _strings_ast_item(
+        row=18,
+        header_line=16,
+        src=original,
+        dst="润色后的虚构月光罗盘译文",
+        digest="proofread-main-template",
+        file_path="menus/moon_compass.rpy",
+    )
+    stale_incremental = _strings_ast_item(
+        row=48,
+        header_line=46,
+        src=original,
+        dst="较早的虚构月光罗盘译文",
+        digest="stale-incremental-template",
+        file_path="updates/moon_compass.rpy",
+    )
+    _save_json_cache(main_output, CacheProject(id="main"), [proofread_main])
+    _save_json_cache(
+        incremental_output,
+        CacheProject(id="delta"),
+        [stale_incremental],
+    )
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items = loaded.get_items()
+
+    assert len(items) == 1
+    assert items[0].get_src() == original
+    assert items[0].get_dst() == "润色后的虚构月光罗盘译文"
+    assert items[0].get_file_path() == "menus/moon_compass.rpy"
+
+
 def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeypatch):
     output = tmp_path / "output"
     target = tmp_path / "target"
