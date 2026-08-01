@@ -1251,8 +1251,18 @@ class UnifiedExtractor:
             # 4. 静态补充抽取：把官方/自定义流程仍可能漏掉的源码文本写入标准 TL。
             self._append_static_supplement_entries(game_dir, tl_dir, tl_name)
 
+            # 4b. 编译补充抽取：随包 .pyc 中玩家可见的常量同样写入标准
+            #     translate strings old/new，而不是留给 replace_text 补全。
+            compiled_added = 0
+            if getattr(config, "extract_use_compiled", True):
+                compiled_added = self._append_compiled_supplement_entries(
+                    game_dir, tl_dir, tl_name
+                )
+
             # 5. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
+            # 5b. 写入后校验 old 唯一性，避免 Ren'Py 启动报重复翻译错误。
+            self._dedupe_string_translations(tl_dir, tl_name)
             # 6. 注入内置 UI 包（common_box/screens_box）
             injected_ui = 0
             if getattr(config, "onekey_inject_base_box", False):
@@ -1273,6 +1283,8 @@ class UnifiedExtractor:
                     "（可在 _filtered_suspicious 勾选恢复）"
                 )
             result.message = f"常规抽取完成，共 {result.total_files} 个文件{ui_note}{suspicious_note}"
+            if compiled_added:
+                result.message += f"（编译字符串 {compiled_added} 条）"
             self._emit_progress("抽取完成", 100)
             
         except Exception as e:
@@ -1448,6 +1460,34 @@ class UnifiedExtractor:
                     candidates=static_candidates,
                     menu_candidates=menu_candidates,
                 )
+                compiled_candidates: Set[str] = set()
+                compiled_added = 0
+                if getattr(config, "extract_use_compiled", True):
+                    try:
+                        from module.Extract.ReplaceGenerator import (
+                            collect_compiled_candidate_texts,
+                        )
+
+                        compiled_candidates = set(
+                            collect_compiled_candidate_texts(
+                                game_dir,
+                                tl_name=tl_name,
+                            )
+                        )
+                    except Exception as exc:
+                        self.logger.warning(f"编译字符串收集失败: {exc}")
+                        compiled_candidates = set()
+                    compiled_added = self._append_compiled_supplement_entries(
+                        game_dir,
+                        temp_tl_dir,
+                        tl_name,
+                        candidates=compiled_candidates,
+                    )
+                    if compiled_added:
+                        self.logger.info(
+                            f"增量抽取：编译字符串 {compiled_added} 条将作为"
+                            "标准 old/new 写入增量目录"
+                        )
                 # 6. strings 与编号翻译块分别计算增量。
                 extracted_block_originals: Set[str] = set()
                 new_extracted_string_originals = self._get_string_originals(
@@ -1461,6 +1501,7 @@ class UnifiedExtractor:
                     tl_dir=temp_tl_dir,
                     menu_candidates=menu_candidates,
                     trusted_originals=official_string_originals,
+                    compiled_candidates=compiled_candidates,
                 )
                 extracted_block_fingerprints = self._collect_numbered_block_fingerprints(
                     temp_tl_dir
@@ -1551,6 +1592,8 @@ class UnifiedExtractor:
                     ]
                     if pending_originals:
                         msg_lines.append(f"• 未翻译待补全: {len(pending_originals)} 条")
+                    if compiled_added:
+                        msg_lines.append(f"• 编译字符串(标准 old/new): {compiled_added} 条")
                     if self._last_suspicious_removed_count:
                         msg_lines.append(
                             "• 已过滤疑似误提取: "
@@ -1987,6 +2030,9 @@ class UnifiedExtractor:
                         f"截断重复清理后又移除 {removed_blocks} 个空的 translate strings 块"
                     )
 
+        # 合并完成后再次做跨文件 old 唯一性校验，杜绝 Ren'Py 重复翻译报错。
+        self._dedupe_string_translations(tl_dir, tl_name)
+
         # 合并与去重成功后，增量目录不再是可加载的翻译来源，
         # 避免遗留目录造成重复加载和困惑。若目录中带有翻译缓存，
         # 先保留 cache 子目录，交由一键流程把条目合并到主缓存；
@@ -2163,6 +2209,7 @@ class UnifiedExtractor:
         tl_dir: Path,
         menu_candidates: Optional[Set[str]] = None,
         trusted_originals: Optional[Set[str]] = None,
+        compiled_candidates: Optional[Set[str]] = None,
     ) -> Set[str]:
         """选择真实增量任务，同时保留与对话同文的菜单 strings。"""
         if trusted_originals is None:
@@ -2171,6 +2218,10 @@ class UnifiedExtractor:
             selected = (
                 extracted_originals & trusted_originals
             ) - existing_string_originals - block_originals
+        # 随包 .pyc 常量不在官方抽取的 trusted 集合里，但可以用原生
+        # translate strings old/new 表达，必须显式纳入增量任务。
+        if compiled_candidates:
+            selected |= compiled_candidates - existing_string_originals
         if menu_candidates is None:
             menu_candidates = set(rx.collect_static_menu_strings(tl_dir.parents[2]))
         file_block_cache: Dict[Path, Set[str]] = {}
@@ -2307,6 +2358,109 @@ class UnifiedExtractor:
         if added:
             self.logger.info(f"标准补充抽取：已添加 {added} 条静态翻译条目")
         return added
+
+    def _append_compiled_supplement_entries(
+        self,
+        game_dir: Path,
+        tl_dir: Path,
+        tl_name: str,
+        *,
+        candidates: Optional[Set[str]] = None,
+    ) -> int:
+        """把随包 .pyc 中玩家可见的常量写成标准 translate strings old/new。
+
+        这些字符串可以用原生 old/new 表达，应该在一键翻译时写入标准 TL，
+        而不是留给 replace_text 补全钩子。写入前会按 old 值去重，避免与
+        现有翻译条目冲突。
+        """
+        if candidates is None:
+            try:
+                from module.Extract.ReplaceGenerator import (
+                    collect_compiled_candidate_texts,
+                )
+
+                candidates = set(
+                    collect_compiled_candidate_texts(
+                        game_dir,
+                        tl_name=tl_name,
+                    )
+                )
+            except Exception as exc:
+                self.logger.warning(f"编译字符串收集失败: {exc}")
+                return 0
+        if not candidates:
+            return 0
+
+        existing = self._get_string_originals(tl_dir)
+        target_file = tl_dir / "zz_renpybox_compiled_strings.rpy"
+        header_re = re.compile(
+            rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
+        )
+
+        if target_file.exists():
+            lines = target_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        else:
+            lines = [
+                "# 一键翻译 - 编译字符串（源自随包 .pyc 常量，标准 translate strings）",
+                f"# 语言: {tl_name}",
+                "",
+            ]
+
+        new_entries: List[str] = []
+        added = 0
+        for original in sorted(candidates, key=lambda value: (-len(value), value)):
+            if original in existing:
+                continue
+            escaped = self._escape_rpy_string(original)
+            new_entries.extend([f'    old "{escaped}"', f'    new "{escaped}"', ""])
+            existing.add(original)
+            added += 1
+
+        if not added:
+            return 0
+
+        header_indexes = [
+            index for index, line in enumerate(lines) if header_re.match(line)
+        ]
+        if header_indexes:
+            header_index = header_indexes[-1]
+            insert_at = len(lines)
+            for index in range(header_index + 1, len(lines)):
+                if re.match(r"^\s*translate\s+", lines[index]):
+                    insert_at = index
+                    break
+            while insert_at > header_index + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines[insert_at:insert_at] = [""] + new_entries
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend([f"translate {tl_name} strings:", ""])
+            lines.extend(new_entries)
+
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        self.logger.info(f"编译补充抽取：已添加 {added} 条标准 old/new 翻译条目")
+        return added
+
+    def _dedupe_string_translations(self, tl_dir: Path, tl_name: str) -> int:
+        """跨文件校验 translate strings 的 old 唯一性，移除重复条目。
+
+        Ren'Py 按语言把字符串翻译注册到同一个字典，任何重复 old（包括
+        miss/ 工作文件）都会在游戏启动时报错，因此写入/合并后必须校验。
+        """
+        try:
+            from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+            removed = dedupe_string_translations(tl_dir, tl_name)
+            if removed:
+                self.logger.info(f"字符串唯一性校验：已移除 {removed} 条重复 old")
+            return removed
+        except Exception as exc:
+            self.logger.warning(f"字符串唯一性校验失败: {exc}")
+            return 0
 
     @staticmethod
     def _find_source_text_line(source_file: Path, original: str) -> Optional[int]:

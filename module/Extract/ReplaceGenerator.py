@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -102,7 +103,7 @@ def walk_code(code):
         if (
             isinstance(value, text_types)
             and previous_opname == 'MAKE_FUNCTION'
-            and next_opname in ('CALL', 'PRECALL')
+            and next_opname in ('CALL', 'PRECALL', 'CALL_FUNCTION')
         ):
             continue
         if (
@@ -1026,6 +1027,157 @@ def collect_glossary_candidate_texts(
         tl_name=tl_name,
     )
     return tuple(sorted(regex_filtered | compiled_filtered))
+
+
+def collect_compiled_candidate_texts(
+    target_path: str | Path,
+    *,
+    tl_name: str = "chinese",
+) -> tuple[str, ...]:
+    """Collect player-visible strings found in game-owned .pyc bytecode.
+
+    These constants are usable with Ren'Py's native ``translate <lang>
+    strings:`` old/new format, so the one-key flow writes them into the
+    standard TL instead of leaving them to the replace_text hook.
+    """
+    _, compiled_filtered, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
+    )
+    return tuple(sorted(compiled_filtered))
+
+
+_DUPLICATE_OLD_RE = re.compile(
+    r'^\s*old\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$'
+)
+_DUPLICATE_NEW_RE = re.compile(
+    r'^\s*new\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$'
+)
+_DUPLICATE_SKIP_NAMES = {
+    "replace_text_auto.rpy",
+    "set_default_language_at_startup.rpy",
+}
+
+
+def _decode_duplicate_literal(quote: str, value: str) -> str:
+    """Decode an rpy quoted literal using Python escape rules."""
+    literal = f"{quote}{value}{quote}"
+    try:
+        decoded = ast.literal_eval(literal)
+        return decoded if isinstance(decoded, str) else str(decoded)
+    except Exception:
+        return value.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
+
+
+def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
+    """Ensure ``old`` is unique across every ``translate <lang> strings:`` block.
+
+    Ren'Py registers string translations into one per-language dictionary, so a
+    duplicate ``old`` anywhere under ``tl/<lang>/`` (including miss/ work files)
+    makes the game fail at startup with a duplicate translation error. This
+    helper keeps the best entry per ``old`` (real TL files before miss/ work
+    files, translated before placeholder) and removes the rest.
+
+    Returns the number of duplicate entries removed.
+    """
+    if not tl_dir.is_dir():
+        return 0
+
+    records: dict[str, list[tuple[Path, int, int, bool]]] = {}
+    ordered: list[tuple[Path, int, int, str]] = []
+    for rpy_file in sorted(tl_dir.rglob("*.rpy")):
+        if rpy_file.name in _DUPLICATE_SKIP_NAMES:
+            continue
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+
+        rel_posix = rpy_file.relative_to(tl_dir).as_posix()
+        under_miss = "/miss/" in f"/{rel_posix}"
+
+        i = 0
+        while i < len(lines):
+            old_match = _DUPLICATE_OLD_RE.match(lines[i])
+            if not old_match:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(lines) and (
+                not lines[j].strip() or lines[j].lstrip().startswith("#")
+            ):
+                j += 1
+            if j >= len(lines):
+                i += 1
+                continue
+            new_match = _DUPLICATE_NEW_RE.match(lines[j])
+            if not new_match:
+                i += 1
+                continue
+
+            old_value = _decode_duplicate_literal(
+                old_match.group(1), old_match.group("text")
+            )
+            new_value = _decode_duplicate_literal(
+                new_match.group(1), new_match.group("text")
+            )
+            translated = bool(new_value and new_value != old_value)
+            records.setdefault(old_value, []).append(
+                (rpy_file, i, j, translated)
+            )
+            ordered.append((rpy_file, i, j, old_value))
+            i = j + 1
+
+    if not records:
+        return 0
+
+    keep_lines: set[tuple[Path, int]] = set()
+    duplicated_olds: set[str] = set()
+    removed = 0
+    for old_value, candidates in records.items():
+        if len(candidates) < 2:
+            continue
+        duplicated_olds.add(old_value)
+        # Prefer real TL files over miss/ work files, translated over
+        # placeholders, then the first occurrence in file order.
+        keeper = min(
+            candidates,
+            key=lambda entry: (
+                not entry[3],
+                "/miss/" in f"/{entry[0].relative_to(tl_dir).as_posix()}",
+                entry[0],
+                entry[1],
+            ),
+        )
+        keep_lines.add((keeper[0], keeper[1]))
+        removed += len(candidates) - 1
+
+    if not removed:
+        return 0
+
+    remove_lines: dict[Path, set[int]] = {}
+    for rpy_file, old_index, new_index, old_value in ordered:
+        if old_value not in duplicated_olds:
+            continue
+        if (rpy_file, old_index) in keep_lines:
+            continue
+        remove_lines.setdefault(rpy_file, set()).update((old_index, new_index))
+
+    for rpy_file, indexes in remove_lines.items():
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        kept = [
+            line
+            for index, line in enumerate(lines)
+            if index not in indexes
+        ]
+        if len(kept) == len(lines):
+            continue
+        rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+
+    return removed
 
 
 def _detect_missing_character_names(strings: Set[str]) -> Set[str]:
