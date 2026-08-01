@@ -66,6 +66,10 @@ class ExistingTranslations:
         return len(self.strings) + len(set(self.blocks) | set(self.block_names))
 
 
+class _FilteredMergeWriteError(RuntimeError):
+    """筛选后的新增翻译无法安全写入。"""
+
+
 class UnifiedExtractor:
     """
     统一翻译提取器
@@ -1672,13 +1676,16 @@ class UnifiedExtractor:
             incremental_dir,
             changed_existing_blocks,
         )
-        self._merge_new_entries(
-            tl_dir,
-            incremental_dir,
-            incremental_strings - existing_strings_before,
-            {},
-            selected_block_keys=incremental_blocks,
-        )
+        try:
+            self._merge_new_entries(
+                tl_dir,
+                incremental_dir,
+                incremental_strings - existing_strings_before,
+                {},
+                selected_block_keys=incremental_blocks,
+            )
+        except _FilteredMergeWriteError as exc:
+            merge_errors.append(str(exc))
 
         # 原文模板相同不代表译文已经应用。官方模板可能在增量翻译完成后
         # 被重新生成为空值/原文占位符；仅补全这些缺失槽位，保留已有有效人工译文。
@@ -2875,11 +2882,16 @@ class UnifiedExtractor:
                         output_lines.extend(selection["lines"])
 
                     target_file.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_text(
-                        target_file,
-                        "\n".join(output_lines).rstrip() + "\n",
-                        validator=lambda value: parse_tl_document(value.splitlines()),
-                    )
+                    try:
+                        atomic_write_text(
+                            target_file,
+                            "\n".join(output_lines).rstrip() + "\n",
+                            validator=lambda value: parse_tl_document(value.splitlines()),
+                        )
+                    except Exception as exc:
+                        raise _FilteredMergeWriteError(
+                            f"写入筛选后的新增翻译失败 {target_file}: {exc}"
+                        ) from exc
                     continue
 
                 target_content = target_file.read_text(encoding="utf-8", errors="replace")
@@ -2968,6 +2980,10 @@ class UnifiedExtractor:
                         validator=lambda value: parse_tl_document(value.splitlines()),
                     )
                 continue
+            except _FilteredMergeWriteError:
+                # 目标文件不存在时，旧回退会复制整个混合源文件并重新引入
+                # 已筛除条目。把失败交给上层处理，绝不执行整文件复制。
+                raise
             except Exception as e:
                 self.logger.warning(f"AST 合并新增失败 {rpy_file}: {e}")
 
