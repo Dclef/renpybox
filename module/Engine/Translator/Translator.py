@@ -36,8 +36,10 @@ from module.Localizer.Localizer import Localizer
 from module.ProgressBar import ProgressBar
 from module.PromptBuilder import PromptBuilder
 from module.ResultChecker import ResultChecker
+from module.Response.ResponseChecker import ResponseChecker
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
+    read_run_manifest,
     resolve_translation_output,
     write_run_manifest,
 )
@@ -575,17 +577,46 @@ class Translator(Base):
             ):
                 return
 
+            output_folder = getattr(config, "output_folder", "")
+            input_folder = getattr(config, "input_folder", "")
+            application_target_dir = paths.application_target_dir
+            existing = read_run_manifest(paths)
+
+            def same_path(left, right) -> bool:
+                if not left or not right:
+                    return False
+                return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+                    os.path.abspath(str(right))
+                )
+
             if getattr(config, "renpy_hook_translate", False):
                 run_kind = "hook"
             elif getattr(config, "renpy_source_translate", False):
                 run_kind = "source"
+            elif existing is not None and same_path(
+                output_folder,
+                existing.get("output_folder"),
+            ):
+                # A resumed incremental run may be launched after the global config
+                # has been restored to the stable main paths.  Keep the manifest's
+                # scope when the selected cache still matches it.
+                run_kind = str(existing.get("run_kind", "translation") or "translation")
+                input_folder = existing.get("input_folder") or input_folder
+                application_target_dir = (
+                    existing.get("application_target_dir") or application_target_dir
+                )
+            elif same_path(
+                output_folder,
+                paths.translation_output_dir.parent / f"{paths.language}_new",
+            ):
+                run_kind = "incremental"
             else:
                 run_kind = "translation"
             write_run_manifest(
                 paths,
-                output_folder = getattr(config, "output_folder", ""),
-                input_folder = getattr(config, "input_folder", ""),
-                application_target_dir = paths.application_target_dir,
+                output_folder = output_folder,
+                input_folder = input_folder,
+                application_target_dir = application_target_dir,
                 run_kind = run_kind,
                 status = "active",
             )
@@ -1119,6 +1150,28 @@ class Translator(Base):
             if self._should_stop_requested():
                 return None
 
+            # Older validators may have left unchanged technical tokens (for
+            # example ``USB``) in a failed state.  Reconcile cached results with
+            # the current preservation rules before creating remote requests.
+            accepted_preserved = self.accept_preserved_untranslated_items(
+                self.cache_manager.get_items()
+            )
+            if accepted_preserved:
+                remaining = self.cache_manager.get_item_count_by_status(
+                    Base.TranslationStatus.UNTRANSLATED
+                )
+                try:
+                    total_line = max(0, int(self.extras.get("total_line", 0)))
+                except (TypeError, ValueError):
+                    total_line = 0
+                if total_line:
+                    self.extras["line"] = max(
+                        int(self.extras.get("line", 0) or 0),
+                        total_line - remaining,
+                    )
+                self.cache_manager.get_project().set_progress(self.extras)
+                self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
+
             # MTool 优化器预处理
             self.mtool_optimizer_preprocess(self.cache_manager.get_items())
             if self._should_stop_requested():
@@ -1439,6 +1492,22 @@ class Translator(Base):
         return max_workers, rpm_threshold
 
     # 规则过滤
+    def accept_preserved_untranslated_items(self, items: list[CacheItem]) -> int:
+        """Complete unchanged cached items explicitly allowed by validation."""
+        checker = ResponseChecker(self.config, items)
+        accepted = 0
+        for item in items:
+            if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
+                continue
+            src = str(item.get_src() or "")
+            dst = str(item.get_dst() or "")
+            if src == "" or src != dst:
+                continue
+            if checker.is_preserve_allowed(src, dst, item):
+                item.set_status(Base.TranslationStatus.TRANSLATED)
+                accepted += 1
+        return accepted
+
     def rule_filter(self, items: list[CacheItem]) -> None:
         if len(items) == 0:
             return None

@@ -57,6 +57,12 @@ class ResponseChecker(Base):
         r"^(Ctrl|Alt|Shift|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2})$",
         flags = re.IGNORECASE,
     )
+    RE_UPPERCASE_ACRONYM = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
+    TRANSLATABLE_UPPERCASE_UI_WORDS = {
+        "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
+        "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
+        "OFF", "NEW", "AUTO",
+    }
     # 模型按提示词输出的翻译失败标记。这不是“相似度高”，应优先归类为异常回复。
     RE_TRANSLATION_ERROR_MARKER = re.compile(
         r"\[!!!\s*TRANSLATION ERROR\b.*?!!!\]",
@@ -458,6 +464,12 @@ class ResponseChecker(Base):
 
         # 常见按键名
         if cls.RE_KEY_NAME.fullmatch(s) is not None:
+            return True
+
+        if (
+            cls.RE_UPPERCASE_ACRONYM.fullmatch(s) is not None
+            and s not in cls.TRANSLATABLE_UPPERCASE_UI_WORDS
+        ):
             return True
 
         # 邮箱/句柄类文本（如 Karl Casey @ White Bat Audio）

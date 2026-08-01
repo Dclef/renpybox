@@ -261,7 +261,10 @@ def test_incremental_retranslates_block_repaired_from_anchored_source(tmp_path, 
             '# game/src/plot/signal.rpy:1\n'
             'translate chinese signal_report_12345678:\n\n'
             '    # guide "The fictional signal is bright."\n'
-            '    guide "The fictional signal is bright."\n',
+            '    guide "The fictional signal is bright."\n\n'
+            'translate chinese strings:\n\n'
+            '    old "The fictional signal is bright."\n'
+            '    new "The fictional signal is bright."\n',
             encoding="utf-8",
         )
 
@@ -293,6 +296,76 @@ def test_incremental_retranslates_block_repaired_from_anchored_source(tmp_path, 
     assert 'guide "The fictional signal is bright."' in incremental.read_text(
         encoding="utf-8"
     )
+    assert "translate chinese strings:" not in incremental.read_text(encoding="utf-8")
+
+
+def test_incremental_does_not_reextract_base_box_or_structural_placeholder(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "fictional_ui_project"
+    source = project / "game" / "src" / "menu.rpy"
+    source_registered = project / "game" / "source_registered.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    base = tl_dir / "base_box" / "screens_box.rpy"
+    prop = tl_dir / "res" / "meta" / "prop.rpy"
+    source.parent.mkdir(parents=True)
+    base.parent.mkdir(parents=True)
+    prop.parent.mkdir(parents=True)
+    source.write_text('_(("Window"))\n_(("USB"))\n', encoding="utf-8")
+    source_registered.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Source UI"\n    new "源码界面"\n',
+        encoding="utf-8",
+    )
+    base.write_text(
+        'translate chinese strings:\n\n    old "Window"\n    new "窗口"\n',
+        encoding="utf-8",
+    )
+    prop.write_text(
+        'translate chinese strings:\n\n    old "USB"\n    new "USB"\n',
+        encoding="utf-8",
+    )
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=True,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "menu.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            'translate chinese strings:\n\n'
+            '    old "Window"\n    new "Window"\n\n'
+            '    old "USB"\n    new "USB"\n\n'
+            '    old "Source UI"\n    new "Source UI"\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(UnifiedExtractor, "_post_process", lambda *_args, **_kwargs: None)
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=True,
+    )
+
+    assert result.success is True
+    assert result.new_strings == 0
+    incremental = project / "game" / "tl" / "chinese_new"
+    assert not list(incremental.rglob("*.rpy"))
 
 
 def test_direct_incremental_does_not_restore_stale_translation_after_comment_repair(
@@ -628,6 +701,27 @@ def test_incremental_merge_cleans_staging_folder_and_base_box_placeholders(tmp_p
     assert 'old "Back"' not in hud.read_text(encoding="utf-8")
     assert 'new "回来"' in (base_box / "screens_box.rpy").read_text(encoding="utf-8")
     assert 'old "New menu text"' in (tl_dir / "src" / "plot" / "new_text.rpy").read_text(encoding="utf-8")
+
+
+def test_incremental_cleanup_removes_comment_only_artifacts(tmp_path):
+    incremental = tmp_path / "chinese_new"
+    empty = incremental / "src" / "plot" / "empty.rpy"
+    valid = incremental / "src" / "plot" / "valid.rpy"
+    empty.parent.mkdir(parents=True)
+    empty.write_text("# 增量抽取 - 虚拟内容\n# 来源: empty.rpy\n", encoding="utf-8")
+    valid.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Fictional option"\n    new "虚拟选项"\n',
+        encoding="utf-8",
+    )
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(warning=lambda *args, **kwargs: None)
+
+    removed = extractor._remove_empty_incremental_artifacts(incremental)
+
+    assert removed == 1
+    assert not empty.exists()
+    assert valid.exists()
 
 
 def test_incremental_merge_removes_empty_block_after_truncated_duplicate(tmp_path):
@@ -993,6 +1087,26 @@ def test_static_menu_candidates_accept_single_quoted_choices(tmp_path):
 
     assert candidates["Proceed."] == "src/plot/chapter_gamma.rpy"
     assert candidates["Pilot's route."] == "src/plot/chapter_gamma.rpy"
+
+
+def test_static_candidates_reject_atl_image_tags(tmp_path):
+    project = tmp_path / "project"
+    source = project / "game" / "res" / "art" / "mono.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "image mono sample:\n"
+        "    contains:\n"
+        "        'character pose frame'\n"
+        "    side 'tl t l c':\n"
+        "    show text 'Visible overlay text'\n",
+        encoding="utf-8",
+    )
+
+    candidates = rx.collect_static_source_strings(project)
+
+    assert "character pose frame" not in candidates
+    assert "tl t l c" not in candidates
+    assert candidates["Visible overlay text"] == "res/art/mono.rpy"
 
 
 def test_static_source_scan_opens_original_file_read_only(monkeypatch):

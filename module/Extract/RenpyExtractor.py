@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
-from module.Renpy.renpy_tl_core import TlStmtKind, escape_tl_string
+from module.Renpy.renpy_tl_core import TlStmtKind, escape_tl_string, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.json_handler import JsonExporter
@@ -718,7 +718,7 @@ class RenpyExtractor:
                 lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
                 if tl_name and lang and lang != tl_name:
                     continue
-                kind = str(block.get("kind") or "")
+                kind = tl_block_kind_name(block.get("kind"))
                 entry_type = "strings" if kind == "STRINGS" else "dialogue"
 
                 template_line = item.get_row()

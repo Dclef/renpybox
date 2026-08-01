@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from base.LogManager import LogManager
-from module.Renpy.renpy_tl_core import TlStmtKind
+from module.Renpy.renpy_tl_core import TlStmtKind, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Text.SkipRules import should_skip_text
@@ -222,7 +222,7 @@ class SimpleRpyExtractor:
                 lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
                 if tl_name and lang and lang != tl_name:
                     continue
-                kind = str(block.get("kind") or "")
+                kind = tl_block_kind_name(block.get("kind"))
                 entry_type = "strings" if kind == "STRINGS" else "dialogue"
 
                 template_line = item.get_row()

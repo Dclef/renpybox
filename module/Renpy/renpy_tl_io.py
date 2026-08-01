@@ -22,6 +22,7 @@ from module.Renpy.renpy_tl_core import (
     scan_quoted_literals,
     sha1_hex,
     build_line_skeleton,
+    tl_block_kind_name,
     split_indent,
     strip_comment_prefix,
 )
@@ -138,7 +139,7 @@ class RenpyTlItemExtractor(Base):
                 "block": {
                     "lang": block.lang,
                     "label": block.label,
-                    "kind": block.kind,
+                    "kind": tl_block_kind_name(block.kind),
                     "header_line": block.header_line_no,
                 },
                 "pair": {

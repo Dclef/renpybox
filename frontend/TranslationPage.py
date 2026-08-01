@@ -44,10 +44,38 @@ from module.Engine.Translator.TranslationPreflightService import TranslationPref
 from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
-from module.Renpy.ProjectPaths import resolve_translation_output
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    read_run_manifest,
+    resolve_translation_output,
+)
 from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
+
+
+def restore_resumable_translation_paths(config: Config) -> Config:
+    """Bind a resume request to the cache selected by the last-run manifest."""
+    output_path = resolve_translation_output(config)
+    if output_path is None:
+        return config
+
+    config.output_folder = str(output_path)
+    paths = RenpyProjectPaths.from_config(config)
+    manifest = read_run_manifest(paths) if paths is not None else None
+    if manifest is None:
+        return config
+
+    manifest_output = os.path.normcase(os.path.abspath(manifest["output_folder"]))
+    selected_output = os.path.normcase(os.path.abspath(str(output_path)))
+    if manifest_output != selected_output:
+        return config
+
+    input_folder = str(manifest.get("input_folder", "") or "").strip()
+    if input_folder:
+        config.input_folder = input_folder
+    return config
+
 
 class DashboardCard(CardWidget):
 
@@ -716,6 +744,8 @@ class TranslationPage(QWidget, Base):
         # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
         # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
         config = Config().load()
+        if status in Base.PROJECT_RESUMABLE_STATUSES:
+            config = restore_resumable_translation_paths(config)
         payload = {"status": status}
         # 旧的轻量事件调用方可能提供 SimpleNamespace 配置；真实页面
         # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。
