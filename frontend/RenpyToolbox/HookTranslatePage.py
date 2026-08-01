@@ -158,6 +158,15 @@ class HookTranslatePage(Base, QWidget):
         self.backup_switch = SwitchButton("写回前自动备份 .bak")
         self.backup_switch.setChecked(False)
         row_options.addWidget(self.backup_switch)
+        self.incremental_switch = SwitchButton("增量补全（仅追加缺失项）")
+        self.incremental_switch.setChecked(
+            getattr(self.config, "renpy_hook_incremental", True)
+        )
+        self.incremental_switch.setToolTip(
+            "增量补全：只把本次运行时抽取到的缺失对话/字符串追加到 tl，保留已有翻译。\n"
+            "关闭后仍不会覆盖已有译文，只是把本次会话收集到的全部条目都列出。"
+        )
+        row_options.addWidget(self.incremental_switch)
         self.generate_empty_switch = SwitchButton("抽取时生成空白译文")
         self.generate_empty_switch.setChecked(False)
         row_options.addWidget(self.generate_empty_switch)
@@ -357,6 +366,8 @@ class HookTranslatePage(Base, QWidget):
         config.renpy_backup_original = self.backup_switch.isChecked()
         config.renpy_source_translate = False
         config.renpy_hook_translate = False
+        config.renpy_hook_incremental = self.incremental_switch.isChecked()
+        config.save()
 
         lang_map = {
             "简体中文": BaseLanguage.Enum.ZH,
@@ -381,7 +392,13 @@ class HookTranslatePage(Base, QWidget):
 
         self._runtime_thread = threading.Thread(
             target = self._runtime_extract_and_translate,
-            args = (exe_path, tl_name, config, self.generate_empty_switch.isChecked()),
+            args = (
+                exe_path,
+                tl_name,
+                config,
+                self.generate_empty_switch.isChecked(),
+                self.incremental_switch.isChecked(),
+            ),
             daemon = True,
         )
         self._runtime_thread.start()
@@ -392,12 +409,14 @@ class HookTranslatePage(Base, QWidget):
         tl_name: str,
         config: Config,
         generate_empty: bool,
+        incremental: bool,
     ) -> None:
         try:
             tl_dir = self.extractor.runtime_extract(
                 exe_path,
                 tl_name,
                 generate_empty = generate_empty,
+                incremental = incremental,
                 timeout = 300,
                 progress_callback = self._queue_runtime_status,
                 should_stop = self._stop_requested.is_set,

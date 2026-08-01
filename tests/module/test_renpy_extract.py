@@ -1651,3 +1651,265 @@ def test_incremental_menu_string_uses_real_menu_file_and_line(tmp_path):
     content = (target / "src" / "plot" / "chapter_beta.rpy").read_text(encoding="utf-8")
     assert content.count('old "Proceed."') == 1
     assert "# game/src/plot/chapter_beta.rpy:3" in content
+
+
+def test_compiled_supplement_entries_written_natively_unique(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+
+    candidates = {
+        "Virtual (first-time).",
+        "Another virtual notice.",
+        "Dummy label.",
+    }
+    added = extractor._append_compiled_supplement_entries(
+        game, tl_dir, "chinese", candidates=candidates
+    )
+
+    assert added == 3
+    output = tl_dir / "zz_renpybox_compiled_strings.rpy"
+    content = output.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' in content
+    assert content.count('old "Virtual (first-time)."') == 1
+
+    # 再次运行只补新增，绝不重复写入已有 old。
+    added2 = extractor._append_compiled_supplement_entries(
+        game,
+        tl_dir,
+        "chinese",
+        candidates=candidates | {"Second run only."},
+    )
+    assert added2 == 1
+    content2 = output.read_text(encoding="utf-8")
+    assert content2.count('old "Virtual (first-time)."') == 1
+    assert 'old "Second run only."' in content2
+
+
+def test_compiled_supplement_flows_into_incremental_folder(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "_temp" / "game" / "tl" / "chinese"
+
+    candidates = {"Virtual (first-time)."}
+    extractor._append_compiled_supplement_entries(
+        game, tl_dir, "chinese", candidates=candidates
+    )
+    incremental_dir = tmp_path / "game" / "tl" / "chinese_new"
+    extractor._extract_new_entries_to_folder(
+        tl_dir, incremental_dir, candidates, "chinese"
+    )
+
+    output = incremental_dir / "zz_renpybox_compiled_strings.rpy"
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    assert 'translate chinese strings:' in content
+    assert 'old "Virtual (first-time)."' in content
+    assert 'new "Virtual (first-time)."' in content
+
+
+def test_incremental_selection_keeps_compiled_candidates(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    selected = extractor._select_incremental_originals(
+        extracted_originals=set(),
+        existing_string_originals={"Old covered entry."},
+        block_originals=set(),
+        static_candidates={},
+        tl_dir=tmp_path,
+        trusted_originals=set(),
+        compiled_candidates={"Virtual (first-time).", "Old covered entry."},
+    )
+
+    assert selected == {"Virtual (first-time)."}
+
+
+def test_dedupe_string_translations_removes_cross_file_duplicate_old(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    first = tl / "a.rpy"
+    second = tl / "b.rpy"
+    work = tl / "miss" / "miss_ready_replace.rpy"
+    first.parent.mkdir(parents=True)
+    work.parent.mkdir(parents=True)
+    first.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文A。"\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文B。"\n',
+        encoding="utf-8",
+    )
+    work.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文C。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 2
+    assert 'old "Virtual (first-time)."' in first.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' not in second.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' not in work.read_text(encoding="utf-8")
+
+
+def test_dedupe_keeps_translated_entry_over_placeholder(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    placeholder_file = tl / "a_placeholder.rpy"
+    translated_file = tl / "b_translated.rpy"
+    placeholder_file.parent.mkdir(parents=True)
+    placeholder_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual dynamic message."\n'
+        '    new "Virtual dynamic message."\n',
+        encoding="utf-8",
+    )
+    translated_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual dynamic message."\n'
+        '    new "虚拟动态消息。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 1
+    assert 'old "Virtual dynamic message."' not in placeholder_file.read_text(encoding="utf-8")
+    assert 'old "Virtual dynamic message."' in translated_file.read_text(encoding="utf-8")
+
+
+def test_dedupe_preserves_unique_entries(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    first = tl / "a.rpy"
+    second = tl / "b.rpy"
+    first.parent.mkdir(parents=True)
+    first.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual unique A."\n'
+        '    new "虚拟唯一A。"\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual unique B."\n'
+        '    new "虚拟唯一B。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    assert 'old "Virtual unique A."' in first.read_text(encoding="utf-8")
+    assert 'old "Virtual unique B."' in second.read_text(encoding="utf-8")
+
+
+def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    tl_file = (
+        game
+        / "tl"
+        / "chinese"
+        / "zz_renpybox_compiled_strings.rpy"
+    )
+    tl_file.parent.mkdir(parents=True)
+    tl_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟首次。"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: (set(), {"Virtual (first-time)."}, 0),
+    )
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+    )
+
+    assert entries == []
+    assert stats["missing_count"] == 0
+
+
+def test_runtime_write_incremental_only_appends_missing(tmp_path):
+    from module.Extract.RenpyExtractor import RenpyExtractor
+
+    extractor = RenpyExtractor.__new__(RenpyExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+    project = tmp_path / "project"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    (tl_dir / "existing.rpy").write_text(
+        "translate chinese strings:\n\n"
+        '    old "Already covered string."\n'
+        '    new "已覆盖字符串。"\n',
+        encoding="utf-8",
+    )
+    runtime_data = {
+        "dialogues": {
+            "game/script.rpy": [
+                ["virtual_start", "", "Virtual dialogue line.", 1],
+            ]
+        },
+        "strings": {
+            "game/script.rpy": [
+                ["Already covered string.", "已覆盖字符串。"],
+                ["Virtual runtime string.", "虚拟运行时字符串。"],
+            ]
+        },
+    }
+
+    extractor._write_runtime_tl(
+        project, "chinese", runtime_data, generate_empty=False, incremental=True
+    )
+
+    script = (tl_dir / "script.rpy").read_text(encoding="utf-8")
+    assert 'translate chinese virtual_start:' in script
+    assert 'old "Virtual runtime string."' in script
+    assert 'old "Already covered string."' not in script
+    assert (
+        (tl_dir / "existing.rpy").read_text(encoding="utf-8").count(
+            'old "Already covered string."'
+        )
+        == 1
+    )

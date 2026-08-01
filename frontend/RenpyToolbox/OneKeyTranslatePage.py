@@ -915,6 +915,15 @@ class YiJianFanyiPage(Base, QWidget):
         self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
         options_layout.addWidget(self.inject_base_box_chk)
 
+        self.extract_compiled_chk = CheckBox("提取 .pyc 编译字符串到标准翻译（translate strings）")
+        self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
+        self.extract_compiled_chk.setToolTip(
+            "把随包 .pyc 中玩家可见的常量（如 WIP 提示、短信、任务文本）写成标准\n"
+            "old/new 翻译块，而不是留给 replace_text 补全钩子。"
+        )
+        self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
+        options_layout.addWidget(self.extract_compiled_chk)
+
         layout.addWidget(options_card)
 
         layout.addSpacing(20)        # 语言设置（简化）
@@ -1200,6 +1209,16 @@ class YiJianFanyiPage(Base, QWidget):
             config.save()
         except Exception as exc:
             self.logger.warning(f"保存自动合并配置失败: {exc}")
+
+    def _on_extract_compiled_changed(self, state: int):
+        """同步编译字符串提取开关到配置"""
+        try:
+            from module.Config import Config
+            config = Config().load()
+            config.extract_use_compiled = bool(state)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"保存编译字符串提取配置失败: {exc}")
 
     def _merge_incremental_dir(self):
         """合并增量目录并清理重复"""
