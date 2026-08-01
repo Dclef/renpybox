@@ -35,7 +35,7 @@ MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
 COMPILED_CACHE = "compiled_extracted.json"
 HOOK_MANIFEST = "hook_translate_manifest.json"
-REGEX_CACHE_VERSION = 2  # 宽松引号扫描规则已修正，必须作废旧候选缓存。
+REGEX_CACHE_VERSION = 3  # 过滤规则新增存档页标记等，必须作废旧候选缓存。
 COMPILED_CACHE_VERSION = 3
 
 # This helper is intentionally executed by the game's own Python runtime so its
@@ -755,7 +755,12 @@ def _get_tl_covered_strings(target_path: str | Path, tl_name: str) -> Set[str]:
 
     try:
         extractor = SimpleRpyExtractor()
-        entries = extractor.extract_from_directory(tl_dir, tl_name, filter_garbage=False)
+        entries = extractor.extract_from_directory(
+            tl_dir,
+            tl_name,
+            filter_garbage=False,
+            include_builtin_ui=True,
+        )
         originals = {e.get("original", "") for e in entries if e.get("original")}
         logger.debug(f"tl 覆盖：已读取 {len(originals)} 条原文")
         return originals
@@ -805,6 +810,7 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         r'^text_size|^text_outlines|^text_text_align|^text_line_spacing',  # 样式代码
         r'^absolute\(|^Transform\(|^Dissolve\(',  # 函数
         r'^\(\s*\d',  # 以 ( 数字开头的元组
+        r'^[A-Za-z]\{#\w+\}$',  # Ren'Py 存档页标记（A{#auto_page} 等）
     ]
     
     compiled_patterns = [re.compile(p, re.IGNORECASE) for p in code_patterns]
@@ -925,9 +931,34 @@ RE_COMPILED_SHADER = re.compile(
     re.IGNORECASE,
 )
 RE_COMPILED_MARKUP = re.compile(
-    r"(?:</?svg\b|</?(?:polygon|polyline|path)\b|\b(?:fill|stroke)\s*=)",
+    r"(?:</?svg\b|</?(?:polygon|polyline|path)\b|\b(?:fill|stroke|viewBox)\s*=)",
     re.IGNORECASE,
 )
+RE_COMPILED_SHADER_STATEMENT = re.compile(
+    r"\b(?:v_tex_coord|a_tex_coord|gl_FragColor|gl_Position)\s*=",
+    re.IGNORECASE,
+)
+RE_COMPILED_CONST_DECLARATION = re.compile(
+    r"(?m)^\s*const\s+(?:float|int|bool|vec[234]|mat[234]|sampler\w*)\s+\w+\s*=",
+    re.IGNORECASE,
+)
+RE_COMPILED_NUMERIC_RANGE = re.compile(r"^\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?$")
+RE_COMPILED_GRADE = re.compile(r"^[A-Za-z][+-]$")
+RE_COMPILED_REGEX_LIKE = re.compile(r"\\(?:d|w|s|n|t|b|\.|\\)|\(\?P<")
+RE_COMPILED_CODE_ARGUMENT = re.compile(r"^\s*[,\(]\s*\w+\s*=")
+RE_COMPILED_EMAIL_SENDER = re.compile(r"<\S+@\S+>")
+RE_COMPILED_ERROR_FRAGMENT = re.compile(
+    r"^(?:"
+    r"Attribute conflict for|Invalid listener|Invalid signature redefiniton|"
+    r"Partial listener conflict:|Signature mismatch|Migrated persistent from|"
+    r"Unable to find active signal for|Unknown attributes for|"
+    r"Unrecognised phase of the moon|Quest step cannot have both a fence and rails\.|"
+    r"Message DarkCookie if you have received this error\.|already exists|"
+    r"conflicts with plan for|is not a container|is not usable|"
+    r"zip\(\) argument \d is shorter than argument \d|<PPV:|"
+    r"xoffset yoffset rotate xzoom zoom)"
+)
+RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _is_compiled_technical_text(text: str) -> bool:
@@ -936,6 +967,17 @@ def _is_compiled_technical_text(text: str) -> bool:
     if not value:
         return True
     if RE_COMPILED_SHADER.search(value) or RE_COMPILED_MARKUP.search(value):
+        return True
+    if (
+        RE_COMPILED_SHADER_STATEMENT.search(value)
+        or RE_COMPILED_CONST_DECLARATION.search(value)
+        or RE_COMPILED_NUMERIC_RANGE.fullmatch(value)
+        or RE_COMPILED_GRADE.fullmatch(value)
+        or RE_COMPILED_REGEX_LIKE.search(value)
+        or RE_COMPILED_CODE_ARGUMENT.match(value)
+        or RE_COMPILED_EMAIL_SENDER.search(value)
+        or RE_COMPILED_ERROR_FRAGMENT.match(value)
+    ):
         return True
     if re.search(
         r"(?m)^\s*(?:const\s+)?(?:void|float|int|bool|vec[234]|mat[234])\s+"
@@ -962,7 +1004,13 @@ def _collect_glossary_candidate_sets(
     regex_filtered = _filter_valid_strings(regex_all)
     compiled_prefiltered = _filter_valid_strings(compiled_all)
     compiled_filtered = {
-        text for text in compiled_prefiltered if not _is_compiled_technical_text(text)
+        text
+        for text in compiled_prefiltered
+        if not _is_compiled_technical_text(text)
+        and not (
+            RE_SINGLE_TOKEN_IDENTIFIER.fullmatch(text.strip())
+            and text not in regex_filtered
+        )
     }
     return regex_filtered, compiled_filtered, len(compiled_prefiltered - compiled_filtered)
 
@@ -1036,6 +1084,40 @@ def _write_hook_manifest(
     return manifest_path
 
 
+def _build_coverage_index(covered: Set[str]) -> tuple[Set[str], str]:
+    """Normalize covered originals for whitespace-tolerant matching.
+
+    Ren'Py TL entries frequently retain a trailing space or ``\\n`` (for example
+    ``"Go away... "`` or ``"your bank!\\n\\n"``), while the relaxed source scan
+    produces the trimmed text.  Long multi-line strings are also scanned as
+    individual quoted chunks, so a chunk of an already-translated long string
+    must be treated as covered too.
+    """
+    stripped = {text.strip() for text in covered if text.strip()}
+    long_covered = {text for text in stripped if len(text) >= 40}
+    return stripped, "\u0000".join(sorted(long_covered))
+
+
+def _filter_uncovered_candidates(
+    candidates: Set[str],
+    covered: Set[str],
+) -> Set[str]:
+    """Return candidates that have no matching translation block in TL."""
+    stripped_covered, long_corpus = _build_coverage_index(covered)
+    uncovered: Set[str] = set()
+    for candidate in candidates:
+        text = candidate.strip()
+        if text in stripped_covered:
+            continue
+        # A short identifier can be a prefix of a longer covered string
+        # (e.g. "Audio" vs "Audio Filename:"), so only treat chunk fragments
+        # of long multi-line strings as covered.
+        if len(text) >= 4 and text in long_corpus:
+            continue
+        uncovered.add(candidate)
+    return uncovered
+
+
 def collect_hook_translation_entries(
     target_path: str | Path,
     tl_name: str,
@@ -1060,7 +1142,7 @@ def collect_hook_translation_entries(
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
-    missing = regex_filtered - tl_covered
+    missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
     glossary_map = _load_glossary_map()
 
     missing_rpy = missing & rpy_candidates
@@ -1156,7 +1238,7 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
     
     # 3. 计算差集
-    missing = regex_filtered - tl_covered
+    missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
     
     logger.info(f"扫描统计: 正则={len(regex_filtered)}, tl覆盖={len(tl_covered)}, 缺失={len(missing)}")
     
