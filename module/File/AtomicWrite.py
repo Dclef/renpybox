@@ -22,12 +22,15 @@ def atomic_write_text(
 
     if requested_target.is_symlink():
         try:
-            target = requested_target.resolve(strict=True)
+            unresolved_target = requested_target.resolve(strict=False)
+            target = (
+                unresolved_target.parent.resolve(strict=True) / unresolved_target.name
+            )
         except (OSError, RuntimeError) as exc:
             raise RuntimeError(
                 f"Unable to resolve symbolic-link write target {requested_target}: {exc}"
             ) from exc
-        if not target.is_file():
+        if target.exists() and not target.is_file():
             raise RuntimeError(
                 f"Symbolic-link write target is not a file: {requested_target}"
             )
