@@ -4,7 +4,9 @@ from module.Extract.UnifiedExtractor import UnifiedExtractor
 
 
 def make_extractor() -> UnifiedExtractor:
-    return UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = type("TestLogger", (), {"info": lambda self, message: None})()
+    return extractor
 
 
 def write_tl(path: Path, text: str) -> None:
@@ -173,3 +175,55 @@ translate chinese strings:
     assert all_strings == {"Shared signal", "Calibrated beacon"}
     assert translated_strings == {"Calibrated beacon"}
     assert pending == {"Shared signal"}
+
+
+def test_static_menu_supplement_is_not_hidden_by_block_in_another_file(tmp_path):
+    project = tmp_path / "project"
+    game_dir = project / "game"
+    tl_dir = game_dir / "tl" / "chinese"
+    extractor = make_extractor()
+    write_tl(
+        game_dir / "chapter" / "control_room.rpy",
+        '''label control_room:
+    menu:
+        "Launch probe":
+            pass
+''',
+    )
+    write_tl(
+        tl_dir / "chapter" / "briefing.rpy",
+        '''translate chinese briefing_probe_24681357:
+
+    # scientist "Launch probe"
+    scientist "发射探测器的场景译文"
+''',
+    )
+
+    added = extractor._append_static_supplement_entries(project, tl_dir, "chinese")
+
+    output = (tl_dir / "chapter" / "control_room.rpy").read_text(encoding="utf-8")
+    assert added == 1
+    assert 'old "Launch probe"' in output
+
+
+def test_existing_string_translation_map_excludes_numbered_blocks(tmp_path):
+    tl_dir = tmp_path / "translations"
+    extractor = make_extractor()
+    write_tl(
+        tl_dir / "chapter" / "planetarium.rpy",
+        '''translate chinese planetarium_intro_11223344:
+
+    # curator "Open the dome"
+    curator "打开穹顶的场景译文"
+
+translate chinese strings:
+
+    old "Activate star map"
+    new "启动星图"
+''',
+    )
+
+    translations = extractor._get_existing_string_translations(tl_dir)
+
+    assert translations == {"Activate star map": "启动星图"}
+    assert "Open the dome" not in translations
