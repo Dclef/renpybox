@@ -263,10 +263,8 @@ def _is_strings_cache_item(item) -> bool:
 def _merge_strings_cache_translation(existing, incoming):
     """把全局 strings 译文迁入主条目的真实文件位置。"""
     existing_dst = str(existing.get_dst() or "")
-    incoming_dst = str(incoming.get_dst() or "")
     existing_translated = bool(existing_dst and existing_dst != existing.get_src())
-    incoming_translated = bool(incoming_dst and incoming_dst != incoming.get_src())
-    if existing_translated and not incoming_translated:
+    if existing_translated:
         return existing
 
     data = existing.asdict()
