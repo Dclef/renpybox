@@ -1324,14 +1324,14 @@ class UnifiedExtractor:
             result.preserved_count = translated_count
             self.logger.info(f"发现 {translated_count} 条有效翻译")
             
-            # 2. 获取当前所有原文（用于后续对比新增）
-            existing_originals = set(existing_translations.keys())
-            existing_string_originals = self._get_all_originals(tl_dir)
+            # 2. strings 按原文全局去重；带编号的翻译块按文件与块标签判断。
+            #    编号块中的相同原文属于不同语句，不能因为别处翻译过就跳过。
+            all_current_string_originals = self._get_string_originals(tl_dir)
+            existing_block_keys = self._collect_numbered_block_keys(tl_dir)
             block_originals = self._collect_block_originals(tl_dir)
-            all_current_originals = existing_string_originals | block_originals
             self.logger.info(
-                f"当前覆盖 {len(all_current_originals)} 条原文 "
-                f"(strings={len(existing_string_originals)}, blocks={len(block_originals)})"
+                f"当前共有 {len(all_current_string_originals)} 条 strings 原文，"
+                f"{len(existing_block_keys)} 个编号翻译块"
             )
 
             # 3. 创建临时目录进行抽取
@@ -1400,23 +1400,18 @@ class UnifiedExtractor:
                         shutil.rmtree(str(tl_dir), ignore_errors=True)
                     _relocate_dir(temp_backup_dir, tl_dir, remove_src=True)
                 
-                # 6. 获取新抽取的所有原文
                 # 静态源码文本必须写入标准 TL，不交给 replace_text。
-                static_candidates = rx.collect_static_source_strings(game_dir)
                 self._append_static_supplement_entries(game_dir, temp_tl_dir, tl_name)
-                new_extracted_originals = self._get_all_originals(temp_tl_dir)
-                self.logger.info(f"新抽取共 {len(new_extracted_originals)} 条原文")
-                
-                # 7. 计算新增原文
-                new_originals = self._select_incremental_originals(
-                    new_extracted_originals,
-                    existing_string_originals,
-                    block_originals,
-                    static_candidates,
-                    tl_dir,
+                # 6. strings 与编号翻译块分别计算增量。
+                new_extracted_string_originals = self._get_string_originals(temp_tl_dir)
+                new_originals = new_extracted_string_originals - all_current_string_originals
+                extracted_block_keys = self._collect_numbered_block_keys(temp_tl_dir)
+                new_block_keys = extracted_block_keys - existing_block_keys
+                self.logger.info(
+                    f"检测到 {len(new_originals)} 条新增 strings，"
+                    f"{len(new_block_keys)} 个新增编号翻译块"
                 )
-                self.logger.info(f"检测到 {len(new_originals)} 条新增原文")
-                result.new_strings = len(new_originals)
+                result.new_strings = len(new_originals) + len(new_block_keys)
 
                 pending_originals: Set[str] = set()
                 if output_to_separate_folder and getattr(config, "renpy_incremental_include_untranslated", False):
@@ -1424,11 +1419,11 @@ class UnifiedExtractor:
                     pending_originals = self._get_untranslated_originals(tl_dir)
                     # 对话块覆盖可以排除合成的对话占位，但显式 strings 占位
                     # （例如菜单选项）即使与其他对话同文，也仍需翻译。
-                    pending_originals -= block_originals - existing_string_originals
+                    pending_originals -= block_originals - all_current_string_originals
                     pending_originals -= set(existing_translations.keys())
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
 
-                selected_originals = set(new_originals) | set(pending_originals)
+                selected_string_originals = set(new_originals) | set(pending_originals)
                 
                 if output_to_separate_folder:
                     # 8a. 将新增内容输出到单独文件夹
@@ -1438,7 +1433,12 @@ class UnifiedExtractor:
                     incremental_dir.mkdir(parents=True, exist_ok=True)
                     
                     self._extract_new_entries_to_folder(
-                        temp_tl_dir, incremental_dir, selected_originals, tl_name, game_dir
+                        temp_tl_dir,
+                        incremental_dir,
+                        selected_string_originals,
+                        tl_name,
+                        game_dir=game_dir,
+                        selected_block_keys=new_block_keys,
                     )
                     
                     # 统计输出文件
@@ -1451,7 +1451,8 @@ class UnifiedExtractor:
                     msg_lines = [
                         "增量抽取完成",
                         f"• 保留已有翻译: {translated_count} 条",
-                        f"• 新增待翻译: {len(new_originals)} 条",
+                        f"• 新增 strings: {len(new_originals)} 条",
+                        f"• 新增编号翻译块: {len(new_block_keys)} 个",
                     ]
                     if pending_originals:
                         msg_lines.append(f"• 未翻译待补全: {len(pending_originals)} 条")
@@ -1465,7 +1466,13 @@ class UnifiedExtractor:
                 else:
                     # 8b. 合并到原 tl 目录（旧行为）
                     self._emit_progress("正在合并新增内容...", 70)
-                    self._merge_new_entries(tl_dir, temp_tl_dir, new_originals, existing_translations)
+                    self._merge_new_entries(
+                        tl_dir,
+                        temp_tl_dir,
+                        new_originals,
+                        existing_translations,
+                        selected_block_keys=new_block_keys,
+                    )
                     
                     # 9. 回填翻译
                     self._emit_progress("正在回填已有翻译...", 80)
@@ -2045,6 +2052,55 @@ class UnifiedExtractor:
                 continue
         return originals
 
+    def _get_string_originals(self, tl_dir: Path) -> Set[str]:
+        """只收集 ``translate <lang> strings`` 中的原文。"""
+        originals: Set[str] = set()
+        if not tl_dir.exists():
+            return originals
+
+        extractor = RenpyTlItemExtractor()
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_tl_document(content.splitlines())
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    if str(block.get("kind")) == "STRINGS":
+                        originals.add(item.get_src())
+                continue
+            except Exception:
+                pass
+
+            # AST 失败时 old/new 是唯一可以安全识别为全局 strings 的形式。
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                for match in self.OLD_LINE_RE.finditer(content):
+                    originals.add(self._decode_rpy_string(match.group(1), match.group("text")))
+            except Exception:
+                pass
+        return originals
+
+    def _collect_numbered_block_keys(self, tl_dir: Path) -> Set[Tuple[str, str]]:
+        """收集编号翻译块身份：``(相对文件路径, translate 标签)``。"""
+        keys: Set[Tuple[str, str]] = set()
+        if not tl_dir.exists():
+            return keys
+
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                rel_path = rpy_file.relative_to(tl_dir).as_posix()
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_tl_document(content.splitlines())
+                for block in doc.blocks:
+                    if str(block.kind) == "LABEL":
+                        keys.add((rel_path, block.label))
+            except Exception:
+                continue
+        return keys
+
     def _get_untranslated_originals(self, tl_dir: Path) -> Set[str]:
         """
         获取 tl 目录中未翻译（new==old 或 new==""）的原文集合。
@@ -2204,9 +2260,11 @@ class UnifiedExtractor:
         selected_originals: Set[str],
         tl_name: str,
         game_dir: Optional[Path] = None,
+        selected_block_keys: Optional[Set[Tuple[str, str]]] = None,
     ):
         """将指定条目（新增/未翻译）提取到目标文件夹"""
-        if not selected_originals:
+        selected_block_keys = selected_block_keys or set()
+        if not selected_originals and not selected_block_keys:
             return
 
         extractor = RenpyTlItemExtractor()
@@ -2225,11 +2283,21 @@ class UnifiedExtractor:
                 if not items:
                     continue
 
-                selected_items = [
-                    item for item in items
-                    if item.get_src() in selected_originals
-                    and item.get_src() not in selected_menu_strings
-                ]
+                rel_path = rpy_file.relative_to(source_dir).as_posix()
+                selected_items = []
+                for item in items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    kind = str(block.get("kind"))
+                    if (
+                        kind == "STRINGS"
+                        and item.get_src() in selected_originals
+                        and item.get_src() not in selected_menu_strings
+                    ):
+                        selected_items.append(item)
+                    elif kind == "LABEL" and (rel_path, str(block.get("label", ""))) in selected_block_keys:
+                        selected_items.append(item)
                 if not selected_items:
                     continue
 
@@ -2239,8 +2307,7 @@ class UnifiedExtractor:
                 if not selections:
                     continue
 
-                rel_path = rpy_file.relative_to(source_dir)
-                target_file = target_dir / rel_path
+                target_file = target_dir / Path(rel_path)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
 
                 output_lines = [
@@ -2426,16 +2493,19 @@ class UnifiedExtractor:
         tl_dir: Path,
         source_dir: Path,
         new_originals: Set[str],
-        existing_translations: Dict[str, str]
+        existing_translations: Dict[str, str],
+        selected_block_keys: Optional[Set[Tuple[str, str]]] = None,
     ):
         """将新增条目合并到原 tl 目录（旧行为）"""
-        if not new_originals:
+        selected_block_keys = selected_block_keys or set()
+        if not new_originals and not selected_block_keys:
             return
 
         extractor = RenpyTlItemExtractor()
 
         for rpy_file in self._iter_rpy_files(source_dir):
             rel_path = rpy_file.relative_to(source_dir)
+            rel_key = rel_path.as_posix()
             target_file = tl_dir / rel_path
 
             # AST 优先
@@ -2447,7 +2517,16 @@ class UnifiedExtractor:
                 if not items:
                     continue
 
-                selected_items = [item for item in items if item.get_src() in new_originals]
+                selected_items = []
+                for item in items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    kind = str(block.get("kind"))
+                    if kind == "STRINGS" and item.get_src() in new_originals:
+                        selected_items.append(item)
+                    elif kind == "LABEL" and (rel_key, str(block.get("label", ""))) in selected_block_keys:
+                        selected_items.append(item)
                 if not selected_items:
                     continue
 
@@ -2460,9 +2539,27 @@ class UnifiedExtractor:
                 target_lines = target_content.splitlines()
                 target_doc = parse_tl_document(target_lines)
                 target_items = extractor.extract(target_doc, str(target_file))
-                target_originals = {item.get_src() for item in target_items}
+                target_string_originals: Set[str] = set()
+                for item in target_items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    if str(block.get("kind")) == "STRINGS":
+                        target_string_originals.add(item.get_src())
+                target_block_labels = {
+                    block.label for block in target_doc.blocks if str(block.kind) == "LABEL"
+                }
 
-                filtered_items = [item for item in selected_items if item.get_src() not in target_originals]
+                filtered_items = []
+                for item in selected_items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    kind = str(block.get("kind"))
+                    if kind == "STRINGS" and item.get_src() not in target_string_originals:
+                        filtered_items.append(item)
+                    elif kind == "LABEL" and str(block.get("label", "")) not in target_block_labels:
+                        filtered_items.append(item)
                 if not filtered_items:
                     continue
 
