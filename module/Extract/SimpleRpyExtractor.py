@@ -69,6 +69,7 @@ class SimpleRpyExtractor:
         tl_name: str,
         *,
         skip_system_files: bool = True,
+        include_builtin_ui: bool = False,
         filter_garbage: bool = True,
     ) -> List[Dict]:
         """
@@ -78,6 +79,7 @@ class SimpleRpyExtractor:
             tl_dir: tl 语言目录路径 (如 game/tl/chinese)
             tl_name: 语言名称 (如 chinese)
             skip_system_files: 是否跳过系统文件 (common.rpy等)
+            include_builtin_ui: 是否读取内置 UI 模板目录 (base_box)，用于统计已覆盖原文
             filter_garbage: 是否过滤垃圾数据
 
         Returns:
@@ -109,7 +111,7 @@ class SimpleRpyExtractor:
                 continue
 
             # 跳过内置 UI / 字体模板文件
-            if self._is_builtin_ui_file(rpy_file):
+            if not include_builtin_ui and self._is_builtin_ui_file(rpy_file):
                 self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
                 continue
 

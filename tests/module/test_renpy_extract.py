@@ -1411,6 +1411,18 @@ def test_compiled_technical_filter_rejects_code_but_keeps_ui_text():
         "uniform sampler2D starlight;",
         "void paint(vec2 uv) {\n    gl_FragColor = texture2D(starlight, uv);\n}",
         '<polygon fill="#fff" /></svg>',
+        "v_tex_coord = a_tex_coord;",
+        "const float samples = 10.;",
+        "107 to 215",
+        '".*", line \\d+',
+        ", subpixel=True)",
+        "C+",
+        'viewBox="0 0 32 32"',
+        "CAMslut <stats@camslut.dc>",
+        "Invalid listener",
+        "zip() argument 2 is shorter than argument 1",
+        "xoffset yoffset rotate xzoom zoom",
+        "<PPV:",
         "The observatory story will return in a future release.",
         "Crew Roster",
     }
@@ -1421,6 +1433,97 @@ def test_compiled_technical_filter_rejects_code_but_keeps_ui_text():
         "The observatory story will return in a future release.",
         "Crew Roster",
     }
+
+
+def test_valid_string_filter_skips_save_page_markers():
+    from module.Extract.ReplaceGenerator import _filter_valid_strings
+
+    assert _filter_valid_strings({"A{#auto_page}", "Q{#quick_page}", "Save"}) == {
+        "Save"
+    }
+
+
+def test_candidate_sets_drop_compiled_only_identifiers_but_keep_source_ui(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_extract_all_strings_regex",
+        lambda *args, **kwargs: {"Back", "Audio", "Age: [who.age]"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_extract_compiled_python_strings",
+        lambda *args, **kwargs: {
+            "Back",
+            "Audio",
+            "Age: [who.age]",
+            "Angelica",
+            "Arousable",
+            "const float samples = 10.;",
+            "C+",
+        },
+    )
+
+    rpy_candidates, compiled_candidates, technical = (
+        generator._collect_glossary_candidate_sets(game, tl_name="chinese")
+    )
+
+    assert rpy_candidates == {"Back", "Audio", "Age: [who.age]"}
+    # Source-present UI and dynamic labels stay; bytecode-only identifiers,
+    # shader constants and grade marks are dropped.
+    assert compiled_candidates == {"Back", "Audio", "Age: [who.age]"}
+    assert technical == 4
+
+
+def test_tl_coverage_includes_builtin_ui_pack(tmp_path):
+    from module.Extract.ReplaceGenerator import _get_tl_covered_strings
+
+    game = tmp_path / "game"
+    base_box = game / "tl" / "chinese" / "base_box"
+    base_box.mkdir(parents=True)
+    (base_box / "common_box.rpy").write_text(
+        "translate chinese strings:\n"
+        '    old "font size"\n'
+        '    new "字体大小"\n'
+        "\n"
+        '    old "Audio"\n'
+        '    new "音频"\n',
+        encoding="utf-8",
+    )
+
+    covered = _get_tl_covered_strings(game, "chinese")
+
+    assert "font size" in covered
+    assert "Audio" in covered
+
+
+def test_uncovered_filter_treats_trimmed_and_fragment_chunks_as_covered():
+    from module.Extract.ReplaceGenerator import _filter_uncovered_candidates
+
+    covered = {
+        "Go away... ",
+        "your bank!\n\n",
+        (
+            "Adds outlines around buttons making them easier to spot at the "
+            "expense of visuals.\n\nTurn this off to have a more pleasant viewing"
+        ),
+        "Audio Filename:",
+    }
+    candidates = {
+        "Go away...",
+        "your bank!",
+        "Turn this off to have a more pleasant viewing",
+        "Audio",
+        "Dance.",
+        "Age: [who.age]",
+    }
+
+    uncovered = _filter_uncovered_candidates(candidates, covered)
+
+    assert uncovered == {"Audio", "Dance.", "Age: [who.age]"}
 
 
 def test_replace_rule_preserves_interpolated_values():
