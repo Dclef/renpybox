@@ -163,17 +163,12 @@ if __name__ == "__main__":
         os.environ["http_proxy"] = config.proxy_url
         os.environ["https_proxy"] = config.proxy_url
 
-    # 设置全局缩放比例
-    if config.scale_factor == "50%":
-        os.environ["QT_SCALE_FACTOR"] = "0.50"
-    elif config.scale_factor == "75%":
-        os.environ["QT_SCALE_FACTOR"] = "0.75"
-    elif config.scale_factor == "150%":
-        os.environ["QT_SCALE_FACTOR"] = "1.50"
-    elif config.scale_factor == "200%":
-        os.environ["QT_SCALE_FACTOR"] = "2.00"
-    else:
+    # 小于 1 的设备像素比会导致 Qt5 控件错位，旧配置统一回退到系统缩放。
+    scale_factor = Config.UI_SCALE_FACTORS.get(config.scale_factor)
+    if scale_factor is None:
         os.environ.pop("QT_SCALE_FACTOR", None)
+    else:
+        os.environ["QT_SCALE_FACTOR"] = scale_factor
 
     # 创建全局应用对象
     app = QApplication(sys.argv)
