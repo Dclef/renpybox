@@ -1,4 +1,5 @@
 {
+    "group": "custom",
     "id": 15,
     "name": "自定义 Anthropic 接口",
     "api_url": "https://api.anthropic.com",
