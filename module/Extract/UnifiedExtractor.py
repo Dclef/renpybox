@@ -1327,14 +1327,15 @@ class UnifiedExtractor:
             existing_block_fingerprints = self._collect_numbered_block_fingerprints(tl_dir)
             existing_block_keys = set(existing_block_fingerprints)
 
-            repaired_comments = self._repair_block_comments_from_source(game_dir, tl_dir)
-            if repaired_comments:
-                self.logger.info(f"已按游戏源码修正 {repaired_comments} 条翻译块原文注释")
-            
-            # 1. 获取已翻译内容 {original: translated}
+            # 旧译文也必须基于修复前的模板身份收集。若先修复注释，源码已变化的
+            # 旧译文会被错误地登记到新模板摘要下，并在直接合并时回填到新原文。
             existing_translations = self._get_existing_translations(tl_dir)
             translated_count = len(existing_translations)
             result.preserved_count = translated_count
+
+            repaired_comments = self._repair_block_comments_from_source(game_dir, tl_dir)
+            if repaired_comments:
+                self.logger.info(f"已按游戏源码修正 {repaired_comments} 条翻译块原文注释")
             self.logger.info(f"发现 {translated_count} 条有效翻译")
             
             # 2. strings 按原文全局去重；带编号的翻译块按文件与块标签判断。
@@ -1404,9 +1405,15 @@ class UnifiedExtractor:
                     else:
                         self.logger.info("增量抽取：根据配置跳过补充抽取阶段")
 
-                    # 7. 捕获本次抽取结果到临时目录，用于对比新增
-                    _relocate_dir(tl_dir, temp_tl_dir, remove_src=True)
-                    temp_tl_dir.mkdir(parents=True, exist_ok=True)
+                    # 7. 捕获本次抽取结果到临时目录，用于对比新增。保留真实目录
+                    # 直到 finally 开始恢复，避免移动/跨卷降级期间把已生成结果
+                    # 静默变成空快照。
+                    if temp_tl_dir.exists():
+                        shutil.rmtree(str(temp_tl_dir), ignore_errors=True)
+                    if tl_dir.exists():
+                        shutil.copytree(str(tl_dir), str(temp_tl_dir))
+                    else:
+                        temp_tl_dir.mkdir(parents=True, exist_ok=True)
                 finally:
                     # 恢复原 tl 目录
                     if tl_dir.exists():
@@ -1414,7 +1421,9 @@ class UnifiedExtractor:
                     _relocate_dir(temp_backup_dir, tl_dir, remove_src=True)
                 
                 # 静态源码文本必须写入标准 TL，不交给 replace_text。
-                self._append_static_supplement_entries(game_dir, temp_tl_dir, tl_name)
+                static_added = self._append_static_supplement_entries(
+                    game_dir, temp_tl_dir, tl_name
+                )
                 # 6. strings 与编号翻译块分别计算增量。
                 new_extracted_string_originals = self._get_string_originals(temp_tl_dir)
                 new_originals = new_extracted_string_originals - all_current_string_originals
@@ -1422,6 +1431,10 @@ class UnifiedExtractor:
                     temp_tl_dir
                 )
                 extracted_block_keys = set(extracted_block_fingerprints)
+                if static_added > 0 and not new_extracted_string_originals:
+                    raise RuntimeError(
+                        "增量抽取产物校验失败：静态条目已写入，但捕获快照中无法读取任何 strings"
+                    )
                 new_block_keys = {
                     key
                     for key, fingerprint in extracted_block_fingerprints.items()
