@@ -460,12 +460,16 @@ def apply_translation_files_transactionally(
             # 对链接的真实目标执行整套事务，才能同时保留链接和回滚能力。
             if target.is_symlink():
                 try:
-                    write_target = target.resolve(strict=True)
+                    unresolved_target = target.resolve(strict=False)
+                    write_target = (
+                        unresolved_target.parent.resolve(strict=True)
+                        / unresolved_target.name
+                    )
                 except (OSError, RuntimeError) as exc:
                     raise RuntimeError(
                         f"无法解析翻译目标符号链接: {target}: {exc}"
                     ) from exc
-                if not write_target.is_file():
+                if write_target.exists() and not write_target.is_file():
                     raise RuntimeError(f"翻译目标符号链接未指向文件: {target}")
             else:
                 write_target = target
