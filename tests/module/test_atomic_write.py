@@ -1,6 +1,7 @@
 import importlib
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -81,3 +82,24 @@ def test_atomic_write_preserves_symlink_and_updates_referent(tmp_path):
 
     assert link.is_symlink()
     assert referent.read_text(encoding="utf-8") == "new fictional linked text\n"
+
+
+def test_atomic_write_preserves_dangling_symlink_and_creates_referent(tmp_path):
+    shared = tmp_path / "shared"
+    output = tmp_path / "output"
+    shared.mkdir()
+    output.mkdir()
+    referent = shared / "fictional_pending.rpy"
+    link = output / "fictional_pending.rpy"
+    try:
+        link.symlink_to(Path("..") / "shared" / referent.name)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    assert link.is_symlink()
+    assert not referent.exists()
+
+    atomic_write_text(link, "created fictional linked text\n")
+
+    assert link.is_symlink()
+    assert referent.read_text(encoding="utf-8") == "created fictional linked text\n"
