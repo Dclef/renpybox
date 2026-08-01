@@ -115,13 +115,14 @@ class RENPY(Base):
             )
             items_to_apply.sort(key=self.get_item_target_line)
 
-            translated_items = sum(
-                1
+            translated_group_items = [
+                item
                 for item in group_items
                 if isinstance(item.get_dst(), str)
                 and item.get_dst() != ""
                 and item.get_dst() != item.get_src()
-            )
+            ]
+            translated_items = len(translated_group_items)
             applied, skipped = writer.apply_items_to_lines(lines, items_to_apply)
             fallback_items: list[CacheItem] | None = None
             if skipped > 0:
@@ -159,9 +160,20 @@ class RENPY(Base):
                     f"RENPY 写回疑似未生效: {rel_path} (translated={translated_items}, applied={applied}, skipped={skipped})",
                     console=False,
                 )
+
+            result_doc = parse_tl_document(lines)
+            result_items = extractor.extract(result_doc, rel_path)
+            unapplied_items = self.find_unapplied_translations(
+                translated_group_items,
+                result_items,
+            )
+            if unapplied_items:
                 errors.append(
-                    f"译文未生效 {rel_path} (translated={translated_items}, skipped={skipped})"
+                    f"译文未完整写入 {rel_path} "
+                    f"(translated={translated_items}, unapplied={len(unapplied_items)}, "
+                    f"applied={applied}, skipped={skipped})"
                 )
+                continue
 
             target_path = self.output_path / rel_path
             os.makedirs(target_path.parent, exist_ok=True)
@@ -350,6 +362,49 @@ class RENPY(Base):
                 return candidates.pop(i)
 
         return candidates.pop(0)
+
+    def find_unapplied_translations(
+        self,
+        expected_items: list[CacheItem],
+        result_items: list[CacheItem],
+    ) -> list[CacheItem]:
+        """返回未能在最终 AST 中找到对应译文的缓存条目。"""
+        remaining = list(result_items)
+        unapplied: list[CacheItem] = []
+
+        for expected in expected_items:
+            expected_keys = set(self.build_ast_keys(expected))
+            candidate_indexes = [
+                index
+                for index, actual in enumerate(remaining)
+                if expected_keys.intersection(self.build_ast_keys(actual))
+            ]
+            if not candidate_indexes:
+                expected_name = self._normalize_name_key(expected.get_name_src())
+                candidate_indexes = [
+                    index
+                    for index, actual in enumerate(remaining)
+                    if actual.get_src() == expected.get_src()
+                    and self._normalize_name_key(actual.get_name_src()) == expected_name
+                ]
+            if not candidate_indexes:
+                unapplied.append(expected)
+                continue
+
+            picked_index = candidate_indexes[0]
+            for index in candidate_indexes:
+                actual = remaining[index]
+                if (
+                    actual.get_src() == expected.get_src()
+                    and actual.get_name_src() == expected.get_name_src()
+                ):
+                    picked_index = index
+                    break
+            actual = remaining.pop(picked_index)
+            if actual.get_dst() != expected.get_dst():
+                unapplied.append(expected)
+
+        return unapplied
 
     def _normalize_name_key(self, value: str | list[str] | None) -> str:
         if isinstance(value, list):
