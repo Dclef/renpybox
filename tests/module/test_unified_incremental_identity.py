@@ -318,6 +318,57 @@ def test_merge_incremental_folder_preserves_staging_when_verification_fails(
     assert delta.exists()
 
 
+def test_filtered_new_target_write_failure_does_not_copy_mixed_source(
+    tmp_path, monkeypatch
+):
+    game_dir = tmp_path / "fictional_game"
+    target_dir = game_dir / "game" / "tl" / "chinese"
+    existing = target_dir / "menus" / "dial.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    mixed_delta = incremental / "updates" / "mixed_dials.rpy"
+    mixed_target = target_dir / "updates" / "mixed_dials.rpy"
+    write_tl(
+        existing,
+        'translate chinese strings:\n\n'
+        '    old "Existing fictional dial"\n'
+        '    new "Existing fictional dial"\n',
+    )
+    write_tl(
+        mixed_delta,
+        'translate chinese strings:\n\n'
+        '    old "Existing fictional dial"\n'
+        '    new "已有虚构刻度盘的增量译文"\n\n'
+        '    old "New fictional dial"\n'
+        '    new "新增虚构刻度盘译文"\n',
+    )
+
+    unified_module = __import__(
+        "module.Extract.UnifiedExtractor", fromlist=["atomic_write_text"]
+    )
+    real_atomic_write = unified_module.atomic_write_text
+    failed_once = False
+
+    def fail_filtered_target_once(path, text, **kwargs):
+        nonlocal failed_once
+        if Path(path) == mixed_target and not failed_once:
+            failed_once = True
+            raise OSError("fictional filtered write interruption")
+        return real_atomic_write(path, text, **kwargs)
+
+    monkeypatch.setattr(unified_module, "atomic_write_text", fail_filtered_target_once)
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert failed_once is True
+    assert result.success is False
+    assert "写入筛选后的新增翻译失败" in result.message
+    assert incremental.exists()
+    assert not mixed_target.exists()
+    assert "Existing fictional dial" in existing.read_text(encoding="utf-8")
+
+
 def test_legacy_translation_restore_keeps_same_text_numbered_blocks_independent(tmp_path):
     tl_dir = tmp_path / "tl" / "chinese"
     path = tl_dir / "plot" / "observatory.rpy"
