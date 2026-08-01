@@ -180,6 +180,9 @@ class Config():
     renpy_tl_folder: str = ""
     extract_use_official: bool = True
     extract_use_custom: bool = True
+    # 一键翻译时，把随包 .pyc 中玩家可见的字符串写成标准 translate strings
+    # old/new，而不是留给 replace_text 补全钩子
+    extract_use_compiled: bool = True
     extract_skip_hook_files: bool = True
     extract_export_excel: bool = False
     extract_split_names: bool = True
@@ -190,6 +193,8 @@ class Config():
     # 源码翻译：引擎读取 .rpy 源码
     renpy_source_translate: bool = False
     renpy_hook_translate: bool = False  # replace_text 补全模式
+    # 运行 EXE 的运行时 HOOK 提取：默认增量补全（仅追加缺失项，保留已有翻译）
+    renpy_hook_incremental: bool = True
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
     # 兼容旧配置；strings 与编号块作用域不同，不能按原文互相去重。
