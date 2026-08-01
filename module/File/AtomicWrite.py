@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -34,6 +35,10 @@ def atomic_write_text(
             writer.flush()
             os.fsync(writer.fileno())
             temp_path = Path(writer.name)
+        if target.exists():
+            # NamedTemporaryFile defaults to 0600 on POSIX. Preserve the target's
+            # permission bits without copying its stale timestamps.
+            shutil.copymode(target, temp_path)
         os.replace(str(temp_path), str(target))
         temp_path = None
     finally:

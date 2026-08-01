@@ -396,3 +396,53 @@ def test_repeated_text_inside_one_numbered_block_keeps_each_translation(tmp_path
     restored = path.read_text(encoding="utf-8")
     assert restored.count("第一次回声已确认。") == 1
     assert restored.count("第二次回声已确认。") == 1
+
+
+def test_cross_file_write_failure_preserves_incremental_translation(tmp_path, monkeypatch):
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    staging = game_dir / "game" / "tl" / "chinese_new"
+    placeholder = tl_dir / "menus" / "telescope.rpy"
+    same_relative_target = tl_dir / "updates" / "night.rpy"
+    delta = staging / "updates" / "night.rpy"
+    write_tl(
+        placeholder,
+        'translate chinese strings:\n\n'
+        '    old "Align the fictional telescope"\n'
+        '    new "Align the fictional telescope"\n',
+    )
+    write_tl(
+        same_relative_target,
+        'translate chinese strings:\n\n'
+        '    old "Keep the observatory quiet"\n'
+        '    new "保持天文台安静"\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese strings:\n\n'
+        '    old "Align the fictional telescope"\n'
+        '    new "校准虚构望远镜"\n',
+    )
+
+    unified_module = __import__(
+        "module.Extract.UnifiedExtractor", fromlist=["atomic_write_text"]
+    )
+    real_atomic_write = unified_module.atomic_write_text
+
+    def fail_placeholder_write(path, text, **kwargs):
+        if Path(path) == placeholder:
+            raise OSError("fictional write interruption")
+        return real_atomic_write(path, text, **kwargs)
+
+    monkeypatch.setattr(unified_module, "atomic_write_text", fail_placeholder_write)
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", staging, clean_duplicates=False
+    )
+
+    assert result.success is False
+    assert "跨文件占位译文未写入" in result.message
+    assert delta.exists()
+    assert 'new "Align the fictional telescope"' in placeholder.read_text(
+        encoding="utf-8"
+    )

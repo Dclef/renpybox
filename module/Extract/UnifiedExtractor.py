@@ -1712,14 +1712,17 @@ class UnifiedExtractor:
             target_file = tl_dir / rel_path
 
             if not target_file.exists():
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copy2(str(rpy_file), str(target_file))
-                    merged_files += 1
-                    added_entries += len(inc_pairs)
-                except Exception as exc:
-                    self.logger.warning(f"合并文件失败 {rpy_file}: {exc}")
-                    merge_errors.append(f"合并文件失败: {rpy_file}")
+                # 新 strings/编号块已由前面的 AST 路径创建。目标仍不存在时，
+                # 本文件只包含已在其他文件注册的全局 strings，不能整文件复制
+                # 造成重复；只收集其中可用于补全全局占位的有效译文。
+                for old_text, new_text, _comments in inc_pairs:
+                    if (
+                        old_text in existing_strings_before
+                        and old_text not in translated_strings_before
+                        and new_text
+                        and new_text != old_text
+                    ):
+                        cross_file_placeholder_updates[old_text] = new_text
                 continue
 
             try:
@@ -1799,7 +1802,13 @@ class UnifiedExtractor:
                     merge_errors.append(f"写入合并文件失败: {target_file}")
 
         if cross_file_placeholder_updates:
-            self._merge_translations(tl_dir, cross_file_placeholder_updates)
+            merge_errors.extend(
+                self._merge_translations(tl_dir, cross_file_placeholder_updates)
+            )
+            translated_strings_after = self._get_existing_string_translations(tl_dir)
+            for original, expected in cross_file_placeholder_updates.items():
+                if translated_strings_after.get(original) != expected:
+                    merge_errors.append(f"跨文件占位译文未写入: {original!r}")
 
         # 删除增量目录前验证所有作用域身份均已出现在目标目录。
         missing_strings = incremental_strings - self._get_string_originals(tl_dir)
@@ -3286,15 +3295,16 @@ class UnifiedExtractor:
         self,
         tl_dir: Path,
         translations: ExistingTranslations | Dict[str, str],
-    ):
+    ) -> List[str]:
         """按作用域回填译文；旧 dict 输入仅作为 strings 翻译兼容。"""
         if isinstance(translations, dict):
             translations = ExistingTranslations(strings=translations, blocks={})
         if len(translations) == 0:
-            return
+            return []
 
         extractor = RenpyTlItemExtractor()
         writer = RenpyTlLineUpdater()
+        failures: List[str] = []
 
         for rpy_file in self._iter_rpy_files(tl_dir):
             # 优先使用 AST 回填，失败再走旧正则逻辑
@@ -3345,6 +3355,9 @@ class UnifiedExtractor:
                     continue
             except Exception as e:
                 self.logger.warning(f"AST 回填翻译失败 {rpy_file}: {e}")
+                ast_error = e
+            else:
+                ast_error = None
 
             # 回退旧正则逻辑
             try:
@@ -3386,6 +3399,10 @@ class UnifiedExtractor:
                     )
             except Exception as e:
                 self.logger.warning(f"回填翻译失败 {rpy_file}: {e}")
+                detail = f"AST: {ast_error}; fallback: {e}" if ast_error else str(e)
+                failures.append(f"回填翻译失败 {rpy_file}: {detail}")
+
+        return failures
 
     def _filter_tl_files(self, tl_dir: Path, preserve_set: Set[str]):
         """过滤 tl 文件：移除在 preserve_set 中的条目 或 should_skip_text 的条目"""
