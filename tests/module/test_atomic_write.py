@@ -62,3 +62,22 @@ def test_atomic_write_new_file_honors_process_umask(tmp_path):
         os.umask(previous_umask)
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_atomic_write_preserves_symlink_and_updates_referent(tmp_path):
+    shared = tmp_path / "shared"
+    output = tmp_path / "output"
+    shared.mkdir()
+    output.mkdir()
+    referent = shared / "fictional_linked.rpy"
+    link = output / "fictional_linked.rpy"
+    referent.write_text("old fictional linked text\n", encoding="utf-8")
+    try:
+        link.symlink_to(referent)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    atomic_write_text(link, "new fictional linked text\n")
+
+    assert link.is_symlink()
+    assert referent.read_text(encoding="utf-8") == "new fictional linked text\n"

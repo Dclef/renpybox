@@ -181,6 +181,14 @@ def _cache_item_identity(item) -> tuple:
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
     if (
+        str(block.get("kind")) == "STRINGS"
+        and isinstance(lang, str)
+        and lang
+        and str(item.get_src() or "")
+    ):
+        # Ren'Py old/new 以原文全局注册，文件路径和块内偏移不是身份的一部分。
+        return ("renpy-strings", lang, str(item.get_src()))
+    if (
         all(isinstance(value, str) and value for value in (lang, label, template_digest))
         and isinstance(header_line, int)
         and isinstance(template_line, int)
@@ -247,6 +255,27 @@ def _cache_item_label_block_identity(item) -> tuple | None:
     return (str(item.get_file_path() or ""), lang, label)
 
 
+def _is_strings_cache_item(item) -> bool:
+    block, _pair, _digest = _renpy_cache_metadata(item)
+    return str(block.get("kind")) == "STRINGS"
+
+
+def _merge_strings_cache_translation(existing, incoming):
+    """把全局 strings 译文迁入主条目的真实文件位置。"""
+    existing_dst = str(existing.get_dst() or "")
+    incoming_dst = str(incoming.get_dst() or "")
+    existing_translated = bool(existing_dst and existing_dst != existing.get_src())
+    incoming_translated = bool(incoming_dst and incoming_dst != incoming.get_src())
+    if existing_translated and not incoming_translated:
+        return existing
+
+    data = existing.asdict()
+    incoming_data = incoming.asdict()
+    for field in ("dst", "name_dst", "status", "retry_count", "metadata"):
+        data[field] = incoming_data[field]
+    return type(existing).from_dict(data)
+
+
 def _project_assets_have_state(payload) -> bool:
     """判断缓存中的工作台资产是否包含可用数据。"""
     if not isinstance(payload, dict):
@@ -309,12 +338,21 @@ def merge_incremental_translation_cache(
             key = _cache_item_identity(item)
             if key not in merged:
                 order.append(key)
-            merged[key] = item
+                merged[key] = item
+            elif _is_strings_cache_item(item):
+                merged[key] = _merge_strings_cache_translation(merged[key], item)
+            else:
+                merged[key] = item
             location = _cache_item_source_location(item)
             if location is not None:
                 main_locations[location] = key
     for item in incremental_items:
         key = _cache_item_identity(item)
+        if key in merged and _is_strings_cache_item(item):
+            # 跨文件 old/new 共用全局身份，但主缓存条目的路径对应磁盘合并后的
+            # 实际目标；只迁移译文状态，不能保留即将删除的 staging 路径。
+            merged[key] = _merge_strings_cache_translation(merged[key], item)
+            continue
         location = _cache_item_source_location(item)
         stale_key = main_locations.get(location) if location is not None else None
         if stale_key is not None and stale_key != key and stale_key in merged:

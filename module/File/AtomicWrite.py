@@ -15,10 +15,24 @@ def atomic_write_text(
     validator: Callable[[str], object] | None = None,
 ) -> None:
     """Validate and atomically replace a text file in its destination directory."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    requested_target = Path(path)
+    requested_target.parent.mkdir(parents=True, exist_ok=True)
     if validator is not None:
         validator(text)
+
+    if requested_target.is_symlink():
+        try:
+            target = requested_target.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Unable to resolve symbolic-link write target {requested_target}: {exc}"
+            ) from exc
+        if not target.is_file():
+            raise RuntimeError(
+                f"Symbolic-link write target is not a file: {requested_target}"
+            )
+    else:
+        target = requested_target
 
     temp_path: Path | None = None
     try:

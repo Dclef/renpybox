@@ -62,9 +62,16 @@ def _ast_item(
 
 
 def _strings_ast_item(
-    *, row: int, header_line: int, src: str, dst: str, digest: str
+    *,
+    row: int,
+    header_line: int,
+    src: str,
+    dst: str,
+    digest: str,
+    file_path: str = "script.rpy",
 ) -> CacheItem:
     item = _item(row=row, src=src, dst=dst, tag="string")
+    item.set_file_path(file_path)
     item.set_extra_field({
         "renpy": {
             "block": {
@@ -402,6 +409,48 @@ def test_cache_merge_does_not_evict_another_strings_block_at_same_offset(tmp_pat
     assert items_by_src["The fictional south lens is clear."].get_dst() == (
         "虚构的南侧镜片很清晰。"
     )
+
+
+def test_cache_merge_uses_global_strings_identity_and_keeps_main_location(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    original = "Align the fictional telescope"
+    main_placeholder = _strings_ast_item(
+        row=12,
+        header_line=10,
+        src=original,
+        dst=original,
+        digest="main-placeholder-template",
+        file_path="menus/telescope.rpy",
+    )
+    incremental_translation = _strings_ast_item(
+        row=32,
+        header_line=30,
+        src=original,
+        dst="校准虚构望远镜",
+        digest="incremental-translated-template",
+        file_path="updates/night.rpy",
+    )
+    _save_json_cache(
+        main_output,
+        CacheProject(id="main"),
+        [main_placeholder],
+    )
+    _save_json_cache(
+        incremental_output,
+        CacheProject(id="delta"),
+        [incremental_translation],
+    )
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items = loaded.get_items()
+
+    assert len(items) == 1
+    assert items[0].get_src() == original
+    assert items[0].get_dst() == "校准虚构望远镜"
+    assert items[0].get_file_path() == "menus/telescope.rpy"
 
 
 def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeypatch):
