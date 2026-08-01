@@ -346,11 +346,10 @@ def should_skip_text(text: str | None, extra_checks: Iterable = ()) -> bool:
     if ' ' not in candidate and not _contains_cjk(candidate):
         if '_' in candidate:
             return True
-        # 形如 xxx.yyy（无空格）也视为代码/函数名
-        if candidate.count('.') >= 1:
-            parts = [p for p in candidate.split('.') if p]
-            if parts and all(p.isalnum() for p in parts):
-                return True
+        # 形如 xxx.yyy（无空格）也视为代码/函数名；句末句点不是
+        # 属性访问，例如 "Narrative." 仍是需要翻译的 UI 文本。
+        if re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', candidate):
+            return True
     
     # 2. 占位符和标签检测
     if is_placeholder_or_tag(candidate):

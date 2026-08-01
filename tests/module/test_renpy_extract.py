@@ -8,6 +8,9 @@ from module.Extract.ReplaceGenerator import (
 )
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 import types
+import py_compile
+import re
+import sys
 from enum import Enum
 from pathlib import Path
 
@@ -1227,6 +1230,141 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
 
     assert [entry["src"] for entry in entries] == [text]
     assert stats["missing_count"] == 1
+
+
+def test_hook_filter_keeps_readable_text_with_dynamic_placeholders():
+    from module.Extract import ReplaceGenerator as generator
+
+    candidates = {
+        "Rank: [pilot.rank]",
+        "[crew.navigator]'s route continues in the next chapter.",
+        "The expedition will return in a future release.",
+        "Narrative.",
+        "Midday (debut).",
+        "[crew.navigator]",
+    }
+
+    assert generator._filter_valid_strings(candidates) == {
+        "Rank: [pilot.rank]",
+        "[crew.navigator]'s route continues in the next chapter.",
+        "The expedition will return in a future release.",
+        "Narrative.",
+        "Midday (debut).",
+    }
+
+
+def test_compiled_string_scan_uses_constants_without_executing_module(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    marker = tmp_path / "module-was-executed.txt"
+    source = saga / "chapter.py"
+    source.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('unexpected')\n"
+        "HEADING = 'Crew Roster'\n"
+        "NOTICE = \"[crew.scout]'s expedition continues in a future release.\"\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "chapter.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert "Crew Roster" in strings
+    assert "[crew.scout]'s expedition continues in a future release." in strings
+    assert not marker.exists()
+
+
+def test_compiled_string_scan_cache_invalidates_when_bytecode_changes(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "notice.py"
+    compiled = saga / "notice.pyc"
+    cache = tmp_path / "compiled-cache.json"
+
+    source.write_text("LABEL = 'Observatory Deck'\n", encoding="utf-8")
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    first = generator._extract_compiled_python_strings(
+        game,
+        cache_path=cache,
+        python_executable=sys.executable,
+    )
+
+    source.write_text("LABEL = 'Navigation Gallery'\n", encoding="utf-8")
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    second = generator._extract_compiled_python_strings(
+        game,
+        cache_path=cache,
+        python_executable=sys.executable,
+    )
+
+    assert "Observatory Deck" in first
+    assert "Navigation Gallery" in second
+
+
+def test_replace_rule_preserves_interpolated_values():
+    from module.Extract import ReplaceGenerator as generator
+
+    rule = generator._build_interpolated_replace_rule(
+        "[crew.scout] reached Rank [profile.rank].",
+        "[crew.scout]已达到[profile.rank]级。",
+    )
+
+    assert rule is not None
+    pattern, replacement = rule
+    assert re.sub(pattern, replacement, "Nova reached Rank 7.") == "Nova已达到7级。"
+
+
+def test_replace_scan_collects_dynamic_label_text(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    source = game / "src" / "gui" / "profile.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text("screen profile(who):\n    label 'Rank: [who.rank]'\n", encoding="utf-8")
+
+    strings = generator._extract_all_strings_regex(game)
+
+    assert "Rank: [who.rank]" in strings
+
+
+def test_static_scan_routes_screen_label_literal_to_standard_tl(tmp_path):
+    game = tmp_path / "game"
+    source = game / "src" / "gui" / "profile.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "screen profile(who):\n"
+        "    label 'Rank: [who.rank]'\n"
+        "\n"
+        "label internal_route(default_name='debug_value'):\n"
+        "    return\n",
+        encoding="utf-8",
+    )
+
+    strings = rx.collect_static_source_strings(tmp_path)
+
+    assert strings["Rank: [who.rank]"] == "src/gui/profile.rpy"
+    assert "debug_value" not in strings
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(info=lambda *args, **kwargs: None)
+    tl_dir = tmp_path / "generated" / "game" / "tl" / "chinese"
+    assert extractor._append_static_supplement_entries(
+        tmp_path, tl_dir, "chinese", candidates=strings
+    ) == 1
+    output = (tl_dir / "src" / "gui" / "profile.rpy").read_text(encoding="utf-8")
+    assert 'old "Rank: [who.rank]"' in output
+    assert 'new "Rank: [who.rank]"' in output
 
 
 def test_menu_string_is_incremental_even_when_dialogue_block_exists(tmp_path):

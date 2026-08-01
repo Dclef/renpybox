@@ -15,6 +15,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
@@ -31,8 +33,66 @@ MISS_RPY = "miss_ready_replace.rpy"
 LEGACY_MISS_TXT = "miss_ready_replace.txt"
 MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
+COMPILED_CACHE = "compiled_extracted.json"
 HOOK_MANIFEST = "hook_translate_manifest.json"
 REGEX_CACHE_VERSION = 2  # 宽松引号扫描规则已修正，必须作废旧候选缓存。
+COMPILED_CACHE_VERSION = 1
+
+# This helper is intentionally executed by the game's own Python runtime so its
+# marshal format always matches the game's .pyc files.  It only walks code
+# constants; code objects are never imported or executed.
+_COMPILED_STRING_HELPER = r'''
+import json
+import marshal
+import os
+import sys
+import types
+
+try:
+    text_types = (basestring,)
+except NameError:
+    text_types = (str,)
+
+root = os.path.abspath(sys.argv[1])
+strings = set()
+failures = 0
+
+def walk(value):
+    if isinstance(value, text_types):
+        strings.add(value)
+    elif isinstance(value, types.CodeType):
+        for item in value.co_consts:
+            walk(item)
+    elif isinstance(value, (tuple, frozenset)):
+        for item in value:
+            walk(item)
+
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [name for name in dirnames if name.lower() not in ('tl', 'cache')]
+    for filename in filenames:
+        if not filename.lower().endswith('.pyc'):
+            continue
+        path = os.path.join(dirpath, filename)
+        try:
+            data = open(path, 'rb').read()
+            code = None
+            for offset in (16, 12, 8):
+                try:
+                    candidate = marshal.loads(data[offset:])
+                except Exception:
+                    continue
+                if isinstance(candidate, types.CodeType):
+                    code = candidate
+                    break
+            if code is None:
+                failures += 1
+                continue
+            walk(code)
+        except Exception:
+            failures += 1
+
+sys.stdout.write(json.dumps({'strings': sorted(strings), 'failures': failures}))
+'''
 RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
     r'^(?!.*#)(?!\s*translate\s+\w+\b)(?=.*\b[A-Za-z]{3,}\b).*$',
     re.IGNORECASE,
@@ -41,6 +101,7 @@ RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
 RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
+RE_RENPY_INTERPOLATION = re.compile(r'(?<!\[)\[([^\[\]]+)\]')
 COMMON_NON_NAME_WORDS = {
     "about",
     "access",
@@ -211,6 +272,142 @@ def _collect_source_rpy_files(game_dir: Path) -> Tuple[List[Path], int, int]:
                 pass
 
     return rpy_files, file_count, max_mtime_ns
+
+
+def _collect_source_pyc_signature(game_dir: Path) -> Tuple[int, int, bytes | None]:
+    """Return a cheap cache signature for game-owned Python bytecode."""
+    file_count = 0
+    max_mtime_ns = 0
+    magic: bytes | None = None
+    for dirpath, dirnames, filenames in os.walk(game_dir):
+        dirnames[:] = [
+            name for name in dirnames if name.casefold() not in {"tl", "cache"}
+        ]
+        for filename in filenames:
+            if not filename.casefold().endswith(".pyc"):
+                continue
+            path = Path(dirpath) / filename
+            file_count += 1
+            try:
+                stat = path.stat()
+                max_mtime_ns = max(max_mtime_ns, stat.st_mtime_ns)
+                if magic is None:
+                    with path.open("rb") as stream:
+                        magic = stream.read(4)
+            except Exception:
+                continue
+    return file_count, max_mtime_ns, magic
+
+
+def _find_compatible_game_python(game_dir: Path, pyc_magic: bytes | None) -> Path | None:
+    """Locate a Python executable compatible with the project's .pyc files."""
+    try:
+        from utils.call_game_python import get_python_path_from_game_dir
+
+        project_root = game_dir.parent
+        found = get_python_path_from_game_dir(str(project_root) + os.sep)
+        if found and Path(found).is_file():
+            return Path(found)
+    except Exception:
+        pass
+
+    # Source projects used during development may not ship an embedded runtime.
+    # The running interpreter is safe only when its bytecode magic matches.
+    try:
+        import importlib.util
+
+        if pyc_magic and pyc_magic == importlib.util.MAGIC_NUMBER:
+            current = Path(sys.executable)
+            if current.is_file():
+                return current
+    except Exception:
+        pass
+    return None
+
+
+def _extract_compiled_python_strings(
+    game_dir: Path,
+    *,
+    cache_path: Path | None = None,
+    python_executable: str | Path | None = None,
+) -> Set[str]:
+    """Read string constants from game-owned .pyc files without executing them."""
+    logger = LogManager.get()
+    file_count, max_mtime_ns, pyc_magic = _collect_source_pyc_signature(game_dir)
+    if file_count == 0:
+        return set()
+
+    if cache_path is not None:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(cached, dict)
+                and cached.get("version") == COMPILED_CACHE_VERSION
+                and cached.get("file_count") == file_count
+                and cached.get("max_mtime_ns") == max_mtime_ns
+                and isinstance(cached.get("strings"), list)
+            ):
+                return {str(value) for value in cached["strings"] if value}
+        except Exception:
+            pass
+
+    executable = (
+        Path(python_executable)
+        if python_executable is not None
+        else _find_compatible_game_python(game_dir, pyc_magic)
+    )
+    if executable is None or not executable.is_file():
+        logger.warning(
+            f"检测到 {file_count} 个游戏 .pyc，但未找到兼容的 Python，已跳过编译文本扫描"
+        )
+        return set()
+
+    try:
+        result = subprocess.run(
+            [str(executable), "-c", _COMPILED_STRING_HELPER, str(game_dir)],
+            cwd=str(game_dir.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            logger.warning(f"编译文本扫描失败（退出码 {result.returncode}）{suffix}")
+            return set()
+        payload = json.loads(result.stdout)
+        raw_strings = payload.get("strings", []) if isinstance(payload, dict) else []
+        strings = {str(value) for value in raw_strings if isinstance(value, str) and value}
+        failures = int(payload.get("failures", 0) or 0) if isinstance(payload, dict) else 0
+        if failures:
+            logger.warning(f"编译文本扫描有 {failures} 个 .pyc 无法读取")
+        logger.info(f"编译文本扫描：{file_count} 个 .pyc，提取 {len(strings)} 条常量")
+    except Exception as exc:
+        logger.warning(f"编译文本扫描失败: {exc}")
+        return set()
+
+    if cache_path is not None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "version": COMPILED_CACHE_VERSION,
+                        "file_count": file_count,
+                        "max_mtime_ns": max_mtime_ns,
+                        "strings": sorted(strings),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return strings
 
 
 def _try_load_regex_cache(cache_path: Path, *, file_count: int, max_mtime_ns: int) -> Optional[Set[str]]:
@@ -447,7 +644,7 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
         # 2. 文本控件
         for pattern in [
             r'\btext\s+(["\'])((?:\\\1|.)*?)\1\s*:',
-            r'\b(?:text|textbutton|show\s+text)\s+(["\'])((?:\\\1|.)*?)\1',
+            r'\b(?:text|textbutton|label|show\s+text)\s+(["\'])((?:\\\1|.)*?)\1',
             r'renpy\.input\s*\(\s*(["\'])((?:\\\1|.)*?)\1',
             r'renpy\.notify\s*\(\s*(["\'])((?:\\\1|.)*?)\1',
             r'_\(\s*(["\'])((?:\\\1|.)*?)\1\s*\)',  # gettext 风格 _(...)
@@ -551,7 +748,7 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         r'^(scene|event|label|screen|init|python|define|default)_\w+$',  # 内部标识符
         r'^[a-z][a-z0-9]*_[a-z0-9_]+$',  # snake_case 变量名（如 bath_room）
         r'^\w+\s*\([^)]*\)\s*$',  # 函数调用
-        r'SetVariable|SetField|Function|Return|Jump|Show|Hide|Play|Stop',  # Ren'Py 函数
+        r'^(?:SetVariable|SetField|Function|Return|Jump|Show|Hide|Play|Stop)\s*\(',  # Ren'Py 函数调用
         r'^\.mp4$|^\.txt$|^\.rpy$|^\.png$|^\.jpg$',  # 文件扩展名
         r'\.txt$|\.rpy$',  # 以扩展名结尾
         r'^movies?/',  # 路径
@@ -616,16 +813,15 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         if re.match(r'^\[[a-z_][a-z0-9_\.]*\]$', s, re.IGNORECASE):
             continue
 
-        # 跳过包含变量占位或 URL 的
-        if re.search(r'\[[^\]]+\]', s):
-            continue
+        # 纯变量占位已在上方过滤；带有可读正文的动态文本必须保留，
+        # 例如 "Age: [profile.age]" 或 "[person]'s chapter continues soon."。
         if "http://" in s.lower() or "https://" in s.lower():
             continue
 
         # 跳过明显的代码片段/占位符
         if '+' in s and '_' in s:
             continue
-        if re.search(r'\w+\s*\([^)]*\)', s):  # 函数调用样式
+        if re.fullmatch(r'[A-Za-z_]\w*\([^)]*\)', s):  # 紧凑函数调用样式
             continue
         if s.strip().startswith('(') and s.strip().endswith(')') and len(s.strip()) <= 20:
             continue
@@ -684,7 +880,12 @@ def collect_glossary_candidate_texts(
     game_dir = _get_game_dir(target_path)
     cache_path = _get_regex_cache_path(game_dir, tl_name)
     regex_all = _extract_all_strings_regex(game_dir, cache_path = cache_path)
-    regex_filtered = _filter_valid_strings(regex_all)
+    compiled_cache = cache_path.with_name(COMPILED_CACHE)
+    compiled_all = _extract_compiled_python_strings(
+        game_dir,
+        cache_path=compiled_cache,
+    )
+    regex_filtered = _filter_valid_strings(regex_all | compiled_all)
     return tuple(sorted(regex_filtered))
 
 
@@ -1299,6 +1500,43 @@ def filter_replace_pairs_covered_by_tl(
     ]
 
 
+def _build_interpolated_replace_rule(original: str, translation: str) -> tuple[str, str] | None:
+    """Build a regex rule that preserves values substituted into Ren'Py ``[...]`` fields."""
+    matches = list(RE_RENPY_INTERPOLATION.finditer(original))
+    if not matches:
+        return None
+
+    expression_groups: dict[str, str] = {}
+    pattern_parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        pattern_parts.append(re.escape(original[cursor:match.start()]))
+        expression = match.group(1)
+        group_name = expression_groups.get(expression)
+        if group_name is None:
+            group_name = f"rbx_{index}"
+            expression_groups[expression] = group_name
+            pattern_parts.append(f"(?P<{group_name}>.*?)")
+        else:
+            pattern_parts.append(f"(?P={group_name})")
+        cursor = match.end()
+    pattern_parts.append(re.escape(original[cursor:]))
+
+    replacement_parts: list[str] = []
+    cursor = 0
+    for match in RE_RENPY_INTERPOLATION.finditer(translation):
+        # Backslashes in literal replacement text must be escaped for re.sub.
+        replacement_parts.append(translation[cursor:match.start()].replace("\\", "\\\\"))
+        group_name = expression_groups.get(match.group(1))
+        if group_name is None:
+            replacement_parts.append(match.group(0).replace("\\", "\\\\"))
+        else:
+            replacement_parts.append(f"\\g<{group_name}>")
+        cursor = match.end()
+    replacement_parts.append(translation[cursor:].replace("\\", "\\\\"))
+    return "".join(pattern_parts), "".join(replacement_parts)
+
+
 def render_replace_script(
     pairs: Sequence[Pair],
     *,
@@ -1325,6 +1563,9 @@ def render_replace_script(
         block_header,
         "",
     ]
+
+    if any(RE_RENPY_INTERPOLATION.search(original) for original, _ in normalized_pairs):
+        lines.extend(["    import re", ""])
 
     if wrap_existing:
         lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
@@ -1367,9 +1608,17 @@ def render_replace_script(
 
     if normalized_pairs:
         for original, translation in normalized_pairs:
-            escaped_old = _escape_string(original)
-            escaped_new = _escape_string(translation)
-            lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
+            rule = _build_interpolated_replace_rule(original, translation)
+            if rule is None:
+                escaped_old = _escape_string(original)
+                escaped_new = _escape_string(translation)
+                lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
+            else:
+                pattern, replacement = rule
+                lines.append(
+                    f'        {target_name} = re.sub("{_escape_string(pattern)}", '
+                    f'"{_escape_string(replacement)}", {target_name})'
+                )
     else:
         lines.append("        pass")
     lines.append("")

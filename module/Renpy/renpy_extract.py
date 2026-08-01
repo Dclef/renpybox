@@ -1074,6 +1074,7 @@ def _collect_static_line_texts(line):
         or RE_RENPY_NOTIFY.search(line)
         or RE_DICT_STRING_FIELD.search(line)
         or re.match(r"^\s*(?:show\s+)?(?:text|textbutton)\b", line)
+        or re.match(r"^\s*label\s+[\"']", line)
     ):
         return set(literals)
 
@@ -1121,16 +1122,23 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
         except Exception:
             continue
         texts = set()
+        screen_label_texts = set()
         try:
             for line in source_file.read_text(encoding="utf-8", errors="replace").splitlines():
-                texts.update(_collect_static_line_texts(line))
+                line_texts = _collect_static_line_texts(line)
+                texts.update(line_texts)
+                if re.match(r"^\s*label\s+[\"']", line):
+                    screen_label_texts.update(line_texts)
         except Exception:
             continue
         extracted_texts = {
             text.replace('\\"', '"').replace("\\'", "'")
             for text in extracted_texts
         }
-        texts.intersection_update(extracted_texts)
+        # The legacy extractor does not recognize screen-language ``label``
+        # displayables. They are nevertheless normal Ren'Py string literals and
+        # belong in standard old/new TL blocks.
+        texts.intersection_update(extracted_texts | screen_label_texts)
         # 菜单选项必须使用 strings 翻译；即使同文先作为对话出现，也应以
         # 真实菜单位置为准，并保留简短选项文本。
         for text in sorted(texts):
