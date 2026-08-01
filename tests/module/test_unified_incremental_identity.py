@@ -141,3 +141,35 @@ translate chinese strings:
     assert "translate chinese new_scene_22222222:" in output
     assert output.count('old "Existing global string"') == 1
     assert 'old "New global string"' in output
+
+
+def test_numbered_block_translation_does_not_hide_global_string_placeholder(tmp_path):
+    tl_dir = tmp_path / "translations"
+    extractor = make_extractor()
+    write_tl(
+        tl_dir / "chapter" / "observatory.rpy",
+        '''translate chinese observatory_signal_13572468:
+
+    # guide "Shared signal"
+    guide "共享信号的场景译文"
+
+translate chinese strings:
+
+    old "Shared signal"
+    new "Shared signal"
+
+    old "Calibrated beacon"
+    new "已校准信标"
+''',
+    )
+
+    all_strings = extractor._get_string_originals(tl_dir)
+    translated_strings = extractor._get_translated_string_originals(tl_dir)
+    block_originals = extractor._collect_block_originals(tl_dir)
+    pending = extractor._get_untranslated_originals(tl_dir)
+    pending -= block_originals - all_strings
+    pending -= translated_strings
+
+    assert all_strings == {"Shared signal", "Calibrated beacon"}
+    assert translated_strings == {"Calibrated beacon"}
+    assert pending == {"Shared signal"}
