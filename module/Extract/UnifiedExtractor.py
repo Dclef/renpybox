@@ -1327,6 +1327,7 @@ class UnifiedExtractor:
             # 2. strings 按原文全局去重；带编号的翻译块按文件与块标签判断。
             #    编号块中的相同原文属于不同语句，不能因为别处翻译过就跳过。
             all_current_string_originals = self._get_string_originals(tl_dir)
+            translated_string_originals = self._get_translated_string_originals(tl_dir)
             existing_block_keys = self._collect_numbered_block_keys(tl_dir)
             block_originals = self._collect_block_originals(tl_dir)
             self.logger.info(
@@ -1420,7 +1421,9 @@ class UnifiedExtractor:
                     # 对话块覆盖可以排除合成的对话占位，但显式 strings 占位
                     # （例如菜单选项）即使与其他对话同文，也仍需翻译。
                     pending_originals -= block_originals - all_current_string_originals
-                    pending_originals -= set(existing_translations.keys())
+                    # 编号块译文不能覆盖全局 strings 占位；这里只排除已经有
+                    # 有效 old/new 译文的字符串。
+                    pending_originals -= translated_string_originals
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
 
                 selected_string_originals = set(new_originals) | set(pending_originals)
@@ -2081,6 +2084,61 @@ class UnifiedExtractor:
                     originals.add(self._decode_rpy_string(match.group(1), match.group("text")))
             except Exception:
                 pass
+        return originals
+
+    def _get_translated_string_originals(self, tl_dir: Path) -> Set[str]:
+        """收集已有有效译文的全局 strings 原文，不包含编号翻译块。"""
+        originals: Set[str] = set()
+        if not tl_dir.exists():
+            return originals
+
+        extractor = RenpyTlItemExtractor()
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                doc = parse_tl_document(content.splitlines())
+                items = extractor.extract(doc, str(rpy_file))
+                for item in items:
+                    extra = item.get_extra_field()
+                    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+                    block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
+                    if (
+                        str(block.get("kind")) == "STRINGS"
+                        and item.get_dst()
+                        and item.get_dst() != item.get_src()
+                    ):
+                        originals.add(item.get_src())
+                continue
+            except Exception:
+                pass
+
+            try:
+                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            i = 0
+            while i < len(lines):
+                old_match = self.OLD_LINE_RE.match(lines[i])
+                if not old_match:
+                    i += 1
+                    continue
+                old_text = self._decode_rpy_string(old_match.group(1), old_match.group("text"))
+                j = i + 1
+                while j < len(lines) and (
+                    not lines[j].strip() or lines[j].lstrip().startswith("#")
+                ):
+                    j += 1
+                new_match = self.NEW_LINE_RE.match(lines[j]) if j < len(lines) else None
+                if new_match:
+                    new_text = self._decode_rpy_string(
+                        new_match.group(1), new_match.group("text")
+                    )
+                    if new_text and new_text != old_text:
+                        originals.add(old_text)
+                    i = j + 1
+                    continue
+                i += 1
         return originals
 
     def _collect_numbered_block_keys(self, tl_dir: Path) -> Set[Tuple[str, str]]:
