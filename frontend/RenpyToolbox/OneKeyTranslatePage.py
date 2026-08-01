@@ -403,10 +403,18 @@ def merge_incremental_translation_cache(
     saver = CacheManager(service = False)
     if not saver.save_to_file(project, items, str(main_output), strict = False):
         # 坏 SQLite 不应阻止把有效增量缓存落到 JSON；当前实例切换后端，
-        # 后续校对页会按同一目录继续读取 JSON 回退。
+        # JSON 成功写入后必须移除旧数据库，否则后续新实例仍会优先读取
+        # 可读但未合并的 SQLite，并在增量目录删除后丢失本轮条目。
         try:
             saver._mark_json_fallback(str(main_output))
-            saver.save_to_file(project, items, str(main_output), strict = True)
+            if not saver.save_to_file(
+                project, items, str(main_output), strict = True
+            ):
+                return False
+            stale_db = Path(saver._get_db_path(str(main_output)))
+            stale_db.unlink(missing_ok = True)
+            if stale_db.exists():
+                return False
         except Exception:
             return False
     return True

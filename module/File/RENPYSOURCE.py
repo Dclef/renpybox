@@ -90,6 +90,39 @@ class RENPYSOURCE(Base):
         )
         return current == expected
 
+    @staticmethod
+    def _recorded_literal_slot(item: CacheItem) -> int | None:
+        extra = item.get_extra_field()
+        if not isinstance(extra, dict):
+            return None
+        source_meta = extra.get("renpy_source")
+        if not isinstance(source_meta, dict):
+            return None
+        candidate = source_meta.get("literal_slot")
+        return candidate if isinstance(candidate, int) else None
+
+    @staticmethod
+    def _replace_literal_at_slot(
+        translator: RenpySourceTranslator,
+        line: str,
+        slot: int,
+        source: str,
+        destination: str,
+    ) -> str:
+        matches = list(translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        if slot < 0 or slot >= len(matches):
+            return line
+        literal = matches[slot]
+        if literal.group("text") != source:
+            return line
+        current = literal.group(0)
+        replacement = translator._replace_text_in_line(
+            current, source, destination
+        )
+        if replacement == current:
+            return line
+        return line[:literal.start()] + replacement + line[literal.end():]
+
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """读取 .rpy 源码并生成 CacheItem"""
         items: List[CacheItem] = []
@@ -224,32 +257,41 @@ class RENPYSOURCE(Base):
                     continue
 
                 original_line = lines[row - 1]
-                new_line = translator._replace_text_in_line(original_line, src, dst)
+                literal_slot = self._recorded_literal_slot(item)
+                if (
+                    literal_slot is None
+                    and reference_lines is not None
+                    and row <= len(reference_lines)
+                ):
+                    reference_line = reference_lines[row - 1]
+                    matching_slots = [
+                        index
+                        for index, match in enumerate(
+                            translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(
+                                reference_line
+                            )
+                        )
+                        if match.group("text") == src
+                    ]
+                    if len(matching_slots) == 1:
+                        literal_slot = matching_slots[0]
+
+                if literal_slot is None:
+                    new_line = translator._replace_text_in_line(
+                        original_line, src, dst
+                    )
+                else:
+                    new_line = self._replace_literal_at_slot(
+                        translator,
+                        original_line,
+                        literal_slot,
+                        src,
+                        dst,
+                    )
                 if reference_lines is not None and row <= len(reference_lines):
                     # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
                     new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
                 if new_line == original_line:
-                    literal_slot = None
-                    extra = item.get_extra_field()
-                    if isinstance(extra, dict):
-                        source_meta = extra.get("renpy_source")
-                        if isinstance(source_meta, dict):
-                            candidate = source_meta.get("literal_slot")
-                            if isinstance(candidate, int):
-                                literal_slot = candidate
-
-                    if literal_slot is None and reference_lines is not None and row <= len(reference_lines):
-                        reference_line = reference_lines[row - 1]
-                        matching_slots = [
-                            index
-                            for index, match in enumerate(
-                                translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(reference_line)
-                            )
-                            if match.group("text") == src
-                        ]
-                        if len(matching_slots) == 1:
-                            literal_slot = matching_slots[0]
-
                     if (
                         dst != src
                         and literal_slot is not None
