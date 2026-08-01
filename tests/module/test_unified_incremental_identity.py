@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 
 
@@ -227,3 +229,170 @@ translate chinese strings:
 
     assert translations == {"Activate star map": "启动星图"}
     assert "Open the dome" not in translations
+
+
+def test_merge_incremental_folder_keeps_numbered_only_blocks(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "signals.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "signals.rpy"
+    write_tl(
+        target,
+        'translate chinese signal_alpha_11111111:\n'
+        '    # guide "The amber relay is quiet."\n'
+        '    guide "琥珀中继器很安静。"\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese signal_beta_22222222:\n'
+        '    # pilot "The silver relay is awake."\n'
+        '    pilot "银色中继器已苏醒。"\n',
+    )
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is True
+    merged = target.read_text(encoding="utf-8")
+    assert "signal_alpha_11111111" in merged
+    assert "signal_beta_22222222" in merged
+    assert "银色中继器已苏醒。" in merged
+    assert not incremental.exists()
+
+
+def test_merge_incremental_folder_preserves_staging_when_verification_fails(
+    tmp_path, monkeypatch
+):
+    game_dir = tmp_path / "fictional_game"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "beacon.rpy"
+    write_tl(
+        delta,
+        'translate chinese beacon_gamma_33333333:\n'
+        '    # navigator "A violet beacon is missing."\n'
+        '    navigator "紫色信标不见了。"\n',
+    )
+    extractor = UnifiedExtractor()
+    monkeypatch.setattr(extractor, "_merge_new_entries", lambda *args, **kwargs: None)
+
+    result = extractor.merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is False
+    assert "已保留增量目录" in result.message
+    assert delta.exists()
+
+
+def test_legacy_translation_restore_keeps_same_text_numbered_blocks_independent(tmp_path):
+    tl_dir = tmp_path / "tl" / "chinese"
+    path = tl_dir / "plot" / "observatory.rpy"
+    extractor = UnifiedExtractor()
+    write_tl(
+        path,
+        'translate chinese guide_view_11111111:\n'
+        '    # guide "The same star is visible."\n'
+        '    guide "向导看到的那颗星。"\n\n'
+        'translate chinese pilot_view_22222222:\n'
+        '    # pilot "The same star is visible."\n'
+        '    pilot "领航员看到的那颗星。"\n',
+    )
+    translations = extractor._get_existing_translations(tl_dir)
+    write_tl(
+        path,
+        'translate chinese guide_view_11111111:\n'
+        '    # guide "The same star is visible."\n'
+        '    guide ""\n\n'
+        'translate chinese pilot_view_22222222:\n'
+        '    # pilot "The same star is visible."\n'
+        '    pilot ""\n',
+    )
+
+    extractor._merge_translations(tl_dir, translations)
+
+    restored = path.read_text(encoding="utf-8")
+    assert restored.count("向导看到的那颗星。") == 1
+    assert restored.count("领航员看到的那颗星。") == 1
+
+
+def test_regular_backup_failure_stops_before_overwrite(tmp_path, monkeypatch):
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    write_tl(tl_dir / "plot" / "archive.rpy", "stable archive\n")
+    extractor = UnifiedExtractor()
+
+    def fail_move(_source, _target):
+        raise OSError("fictional backup failure")
+
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.shutil.move", fail_move)
+
+    with pytest.raises(RuntimeError, match="已停止抽取"):
+        extractor._backup_tl_dir(game_dir, "chinese")
+
+    assert (tl_dir / "plot" / "archive.rpy").read_text(encoding="utf-8") == "stable archive\n"
+
+
+def test_changed_source_in_same_numbered_label_is_replaced_after_retranslation(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "comet.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "comet.rpy"
+    write_tl(
+        target,
+        'translate chinese comet_report_44444444:\n'
+        '    # astronomer "The comet is dim."\n'
+        '    astronomer "彗星很暗。"\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese comet_report_44444444:\n'
+        '    # astronomer "The comet is dazzling."\n'
+        '    astronomer "彗星十分耀眼。"\n',
+    )
+    extractor = UnifiedExtractor()
+    before = extractor._collect_numbered_block_fingerprints(target.parents[1])
+    changed = extractor._collect_numbered_block_fingerprints(incremental)
+    assert before[("plot/comet.rpy", "comet_report_44444444")] != changed[
+        ("plot/comet.rpy", "comet_report_44444444")
+    ]
+
+    result = extractor.merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is True
+    merged = target.read_text(encoding="utf-8")
+    assert "The comet is dim." not in merged
+    assert "彗星很暗。" not in merged
+    assert "The comet is dazzling." in merged
+    assert "彗星十分耀眼。" in merged
+
+
+def test_repeated_text_inside_one_numbered_block_keeps_each_translation(tmp_path):
+    tl_dir = tmp_path / "tl" / "chinese"
+    path = tl_dir / "plot" / "echo.rpy"
+    extractor = UnifiedExtractor()
+    write_tl(
+        path,
+        'translate chinese echo_test_55555555:\n'
+        '    # guide "Echo confirmed."\n'
+        '    guide "第一次回声已确认。"\n'
+        '    # guide "Echo confirmed."\n'
+        '    guide "第二次回声已确认。"\n',
+    )
+    translations = extractor._get_existing_translations(tl_dir)
+    write_tl(
+        path,
+        'translate chinese echo_test_55555555:\n'
+        '    # guide "Echo confirmed."\n'
+        '    guide ""\n'
+        '    # guide "Echo confirmed."\n'
+        '    guide ""\n',
+    )
+
+    extractor._merge_translations(tl_dir, translations)
+
+    restored = path.read_text(encoding="utf-8")
+    assert restored.count("第一次回声已确认。") == 1
+    assert restored.count("第二次回声已确认。") == 1

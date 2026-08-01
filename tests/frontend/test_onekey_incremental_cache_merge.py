@@ -1,5 +1,10 @@
+from pathlib import Path
+
+import pytest
+
 from base.Base import Base
 from frontend.RenpyToolbox.OneKeyTranslatePage import (
+    apply_translation_files_transactionally,
     merge_incremental_translation_cache,
     preserve_incremental_translation_cache,
 )
@@ -29,6 +34,23 @@ def _item(*, row: int, src: str, dst: str, tag: str = "dialogue") -> CacheItem:
         tag = tag,
         status = Base.TranslationStatus.TRANSLATED,
     )
+
+
+def _ast_item(*, row: int, src: str, dst: str, digest: str) -> CacheItem:
+    item = _item(row=row, src=src, dst=dst)
+    item.set_extra_field({
+        "renpy": {
+            "block": {
+                "lang": "chinese",
+                "label": "fictional_scene_12345678",
+                "kind": "LABEL",
+                "header_line": 40,
+            },
+            "pair": {"template_line": 43, "target_line": 44},
+            "digest": {"template_raw_sha1": digest},
+        }
+    })
+    return item
 
 
 def test_merge_incremental_cache_overrides_duplicates_and_preserves_main_assets(tmp_path):
@@ -185,3 +207,92 @@ def test_reextract_backup_name_does_not_overwrite_previous_backup(tmp_path):
 
     assert backup == parent / "chinese_new.backup-fixed-1"
     assert (old_backup / "keep.txt").read_text(encoding = "utf-8") == "old"
+
+
+def test_cache_merge_uses_ast_identity_across_file_line_shifts(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    main_item = _ast_item(
+        row=44,
+        src="The copper moon is rising.",
+        dst="旧译文",
+        digest="stable-template",
+    )
+    shifted_item = _ast_item(
+        row=144,
+        src="The copper moon is rising.",
+        dst="铜色月亮正在升起。",
+        digest="stable-template",
+    )
+    _save_json_cache(main_output, CacheProject(id="main"), [main_item])
+    _save_json_cache(incremental_output, CacheProject(id="delta"), [shifted_item])
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    assert len(loaded.get_items()) == 1
+    assert loaded.get_items()[0].get_dst() == "铜色月亮正在升起。"
+
+
+def test_cache_merge_replaces_changed_source_at_same_ast_location(tmp_path):
+    main_output = tmp_path / "cache" / "main"
+    incremental_output = tmp_path / "cache" / "delta"
+    old_item = _ast_item(
+        row=44,
+        src="The glass comet is dim.",
+        dst="玻璃彗星很暗。",
+        digest="old-template",
+    )
+    changed_item = _ast_item(
+        row=44,
+        src="The glass comet is brilliant.",
+        dst="玻璃彗星十分明亮。",
+        digest="new-template",
+    )
+    _save_json_cache(main_output, CacheProject(id="main"), [old_item])
+    _save_json_cache(incremental_output, CacheProject(id="delta"), [changed_item])
+
+    assert merge_incremental_translation_cache(incremental_output, main_output) is True
+    loaded = CacheManager(service=False)
+    loaded.load_from_file(str(main_output), strict=True)
+    items = loaded.get_items()
+    assert len(items) == 1
+    assert items[0].get_src() == "The glass comet is brilliant."
+    assert items[0].get_dst() == "玻璃彗星十分明亮。"
+
+
+def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    output.mkdir()
+    target.mkdir()
+    first_source = output / "first.rpy"
+    second_source = output / "second.rpy"
+    first_target = target / "first.rpy"
+    second_target = target / "second.rpy"
+    first_source.write_text("new nebula\n", encoding="utf-8")
+    second_source.write_text("new aurora\n", encoding="utf-8")
+    first_target.write_text("old nebula\n", encoding="utf-8")
+    second_target.write_text("old aurora\n", encoding="utf-8")
+
+    import shutil as real_shutil
+
+    real_copy2 = real_shutil.copy2
+
+    def fail_second_source(src, dst, *args, **kwargs):
+        if Path(src).resolve() == second_source.resolve():
+            raise OSError("fictional disk interruption")
+        return real_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        fail_second_source,
+    )
+
+    with pytest.raises(RuntimeError, match="已回滚"):
+        apply_translation_files_transactionally(
+            [first_source, second_source], output, target
+        )
+
+    assert first_target.read_text(encoding="utf-8") == "old nebula\n"
+    assert second_target.read_text(encoding="utf-8") == "old aurora\n"
