@@ -204,8 +204,12 @@ def _cache_item_identity(item) -> tuple:
 
 
 def _cache_item_source_location(item) -> tuple | None:
-    """返回同一翻译槽的位置，用于用更新后的原文替换过期缓存。"""
+    """返回编号翻译块中的稳定槽位；全局 strings 不做位置淘汰。"""
     block, pair, _digest = _renpy_cache_metadata(item)
+    # 同一文件可包含多个 label 都为 ``strings`` 的块，且它们的块内偏移
+    # 可能完全相同。没有稳定的块实例身份时按位置淘汰会误删另一个块。
+    if str(block.get("kind")) != "LABEL":
+        return None
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
     lang = block.get("lang")
