@@ -105,3 +105,33 @@ def test_source_writeback_checks_destination_in_original_literal_slot(tmp_path):
         RENPYSOURCE(config).write_to_path([item])
 
     assert output.read_text(encoding="utf-8") == output_line
+
+
+def test_source_writeback_replaces_recorded_repeated_literal_slot(tmp_path):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    source = input_dir / "fictional_repeated_notice.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '$ renpy.notify("Fictional echo"); renpy.notify("Fictional echo")\n',
+        encoding="utf-8",
+    )
+
+    config = Config()
+    config.input_folder = str(input_dir)
+    config.output_folder = str(output_dir)
+    config.renpy_backup_original = False
+    writer = RENPYSOURCE(config)
+    items = writer.read_from_path([str(source)])
+    repeated = [item for item in items if item.get_src() == "Fictional echo"]
+    assert len(repeated) == 2
+    second = repeated[1]
+    assert second.get_extra_field()["renpy_source"]["literal_slot"] == 1
+    second.set_dst("第二个虚构回声")
+    second.set_status(Base.TranslationStatus.TRANSLATED)
+
+    writer.write_to_path([second])
+
+    assert (output_dir / source.name).read_text(encoding="utf-8") == (
+        '$ renpy.notify("Fictional echo"); renpy.notify("第二个虚构回声")\n'
+    )
