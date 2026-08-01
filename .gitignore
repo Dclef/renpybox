@@ -27,3 +27,9 @@ config.json
 coverage.xml
 htmlcov/
 /test
+
+/docs/internal/
+/.claude/
+/.codex/
+AGENTS.md
+CLAUDE.md

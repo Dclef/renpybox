@@ -6,8 +6,9 @@ ThemeHelper - 主题样式辅助工具
 qfluentwidgets 的控件会自动处理主题，不需要在此设置
 """
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QWidget, QTableWidget, QLabel, QAbstractScrollArea
-from qfluentwidgets import isDarkTheme
+from qfluentwidgets import ThemeColor, isDarkTheme
 
 
 # 暗色主题的全局样式表 - 仅针对原生 Qt 控件
@@ -344,6 +345,31 @@ LIGHT_STYLESHEET = """
 def get_current_stylesheet() -> str:
     """获取当前主题对应的样式表"""
     return DARK_STYLESHEET if isDarkTheme() else LIGHT_STYLESHEET
+
+
+def get_theme_accent_color() -> QColor:
+    """获取随明暗主题变化的应用主色。"""
+    return ThemeColor.PRIMARY.color()
+
+
+def get_theme_active_card_background_color() -> QColor:
+    """获取与主按钮一致的激活卡片背景色。"""
+    return get_theme_accent_color()
+
+
+def get_theme_active_card_border_color() -> QColor:
+    """获取与主按钮一致的激活卡片边框色。"""
+    return ThemeColor.LIGHT_1.color()
+
+
+def get_theme_active_card_indicator_color() -> QColor:
+    """获取激活卡片左侧强调线颜色。"""
+    return ThemeColor.DARK_1.color()
+
+
+def get_theme_active_card_foreground_color() -> QColor:
+    """获取与主按钮一致的激活卡片前景色。"""
+    return QColor(0, 0, 0) if isDarkTheme() else QColor(255, 255, 255)
 
 
 def mark_toolbox_widget(widget: QWidget | None, prop: str = "toolboxPage") -> None:
