@@ -429,7 +429,8 @@ def apply_translation_files_transactionally(
     input_dir: Path,
 ) -> int:
     """应用整批翻译文件；任一文件失败时恢复此前所有目标。"""
-    output_dir = Path(output_dir).resolve()
+    # 相对目标必须按输出目录中的词法路径计算，不能先解引用源符号链接。
+    output_dir = Path(os.path.abspath(os.fspath(output_dir)))
     input_dir = Path(input_dir).resolve()
     input_dir.parent.mkdir(parents=True, exist_ok=True)
     backup_root = Path(
@@ -439,10 +440,13 @@ def apply_translation_files_transactionally(
     temp_targets: list[Path] = []
     try:
         for index, source in enumerate(output_files):
-            source = Path(source).resolve()
-            rel_path = source.relative_to(output_dir)
+            lexical_source = Path(os.path.abspath(os.fspath(source)))
+            rel_path = lexical_source.relative_to(output_dir)
             if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise ValueError(f"输出文件越过翻译目录: {source}")
+                raise ValueError(f"输出文件越过翻译目录: {lexical_source}")
+            source = lexical_source.resolve(strict=True)
+            if not source.is_file():
+                raise ValueError(f"输出翻译源不是文件: {lexical_source}")
             target = input_dir / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
 

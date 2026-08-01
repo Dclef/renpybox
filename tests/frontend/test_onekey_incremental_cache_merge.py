@@ -554,3 +554,24 @@ def test_transactional_apply_rolls_back_symlink_referent(tmp_path, monkeypatch):
 
     assert link.is_symlink()
     assert referent.read_text(encoding="utf-8") == "old fictional linked value\n"
+
+
+def test_transactional_apply_uses_lexical_path_for_symlinked_source(tmp_path):
+    output = tmp_path / "output"
+    target = tmp_path / "target"
+    shared = tmp_path / "shared"
+    output.mkdir()
+    target.mkdir()
+    shared.mkdir()
+    referent = shared / "fictional_external.rpy"
+    source_link = output / "fictional_alias.rpy"
+    referent.write_text("fictional external translation\n", encoding="utf-8")
+    _make_test_symlink(source_link, referent)
+
+    assert apply_translation_files_transactionally(
+        [source_link], output, target
+    ) == 1
+
+    applied = target / "fictional_alias.rpy"
+    assert applied.read_text(encoding="utf-8") == "fictional external translation\n"
+    assert not (target / "fictional_external.rpy").exists()
