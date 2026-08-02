@@ -6,6 +6,7 @@ import pytest
 from base.Base import Base
 from frontend.Project.PlatformPage import (
     PLATFORM_GROUPS,
+    PlatformPage,
     deduplicate_platform_name,
     infer_group,
     resolve_group,
@@ -106,8 +107,63 @@ def test_all_bilingual_platform_presets_have_matching_valid_groups() -> None:
             assert group in PLATFORM_GROUPS
             assert group == expected_group
 
+        assert presets_by_language[language]["3_deepseek.json"]["model"] == "deepseek-v4-flash"
+
     for filename in EXPECTED_GROUPS:
         assert (
             presets_by_language["zh"][filename]["group"]
             == presets_by_language["en"][filename]["group"]
         )
+
+
+def test_deepseek_legacy_model_migrates_only_on_official_endpoint() -> None:
+    class MigrationPage:
+        @staticmethod
+        def load_default_platforms() -> list[dict]:
+            return []
+
+    platforms = [
+        {
+            "id": 0,
+            "name": "DeepSeek",
+            "api_format": Base.APIFormat.OPENAI,
+            "api_url": "https://api.deepseek.com/v1/",
+            "model": "deepseek-chat",
+            "thinking": {"level": "OFF"},
+        },
+        {
+            "id": 1,
+            "name": "自定义中转",
+            "api_format": Base.APIFormat.OPENAI,
+            "api_url": "https://relay.example.com/v1",
+            "model": "deepseek-chat",
+            "thinking": {"level": "OFF"},
+        },
+        {
+            "id": 2,
+            "name": "DeepSeek Pro",
+            "api_format": Base.APIFormat.OPENAI,
+            "api_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-pro",
+            "thinking": {"level": "OFF"},
+        },
+        {
+            "id": 3,
+            "name": "伪装域名",
+            "api_format": Base.APIFormat.OPENAI,
+            "api_url": "https://api.deepseek.com.proxy.example/v1",
+            "model": "deepseek-chat",
+            "thinking": {"level": "OFF"},
+        },
+    ]
+
+    assert PlatformPage.ensure_default_platforms(MigrationPage(), platforms) is True
+
+    models = {item["name"]: item["model"] for item in platforms}
+    assert models == {
+        "DeepSeek": "deepseek-v4-flash",
+        "自定义中转": "deepseek-chat",
+        "DeepSeek Pro": "deepseek-v4-pro",
+        "伪装域名": "deepseek-chat",
+    }
+    assert PlatformPage.ensure_default_platforms(MigrationPage(), platforms) is False

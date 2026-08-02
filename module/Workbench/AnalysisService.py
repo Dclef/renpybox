@@ -414,7 +414,8 @@ class WorkbenchAnalysisService(Base):
                     "role": "user",
                     "content": prompt,
                 }
-            ]
+            ],
+            response_shape = "none",
         )
         if skip or not isinstance(response_text, str) or response_text.strip() == "":
             raise AnalysisServiceError("AI 分析接口返回为空，请稍后重试。")
@@ -436,7 +437,7 @@ class WorkbenchAnalysisService(Base):
         prompt = "\n".join(
             [
                 "你是视觉小说本地化策划助手，需要根据项目样本生成“翻译工作台”用的世界观草稿。",
-                "请严格只输出 JSON 对象，不要输出 Markdown、解释、前后缀、代码块。",
+                "请严格只输出 JSON 对象，不要输出 Markdown、解释、前后缀、代码块。返回内容必须是可直接解析的 json。",
                 "字段必须且只能包含：project_name, genre, setting_summary, era_background, tone_style, narrative_rules, format_rules, spoiler_notes。",
                 "约束：",
                 "1. 轻剧透：允许总结背景、关系、说话风格、公开设定。",
@@ -449,7 +450,7 @@ class WorkbenchAnalysisService(Base):
                 "\n".join(f"- {name}" for name in top_characters) if top_characters else "- 暂无",
                 "项目样本文本：",
                 "\n".join(f"{idx + 1}. {text}" for idx, text in enumerate(excerpts)) if excerpts else "暂无样本",
-                "请输出 JSON：",
+                "请按以下 json 对象示例输出：",
                 """{
   "project_name": "",
   "genre": "",
@@ -534,7 +535,7 @@ class WorkbenchAnalysisService(Base):
         return "\n".join(
             [
                 "你是视觉小说本地化策划助手，需要根据角色样本生成“翻译工作台”用的人设草稿。",
-                "请严格只输出 JSON 数组，不要输出 Markdown、解释、代码块。",
+                "请严格只输出 JSON 数组，不要输出 Markdown、解释、代码块。返回内容必须是可直接解析的 json。",
                 "数组元素必须且只能包含以下键：name, aliases, match_keywords, identity, personality, speech_style, relationship_notes, prompt_notes, sample_lines。",
                 "约束：",
                 "1. 轻剧透：可总结公开身份、关系、语气、口癖，但避免直接揭露关键反转。",
@@ -551,7 +552,7 @@ class WorkbenchAnalysisService(Base):
                 f"- 语气风格：{world_text.get('tone_style', '') or '未确定'}",
                 "角色候选：",
                 "\n\n".join(candidate_blocks),
-                "请输出 JSON 数组，例如：",
+                "请按以下 json 数组示例输出：",
                 """[
   {
     "name": "",
