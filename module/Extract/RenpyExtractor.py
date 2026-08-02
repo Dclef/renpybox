@@ -1017,6 +1017,18 @@ class RenpyExtractor:
         except Exception as exc:
             self.logger.warning(f"运行时抽取后唯一性校验失败: {exc}")
 
+        # 追加写回可能打乱编号块顺序，统一按源行号整理，strings 块保持最后。
+        try:
+            from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+            organized = UnifiedExtractor()._sort_numbered_blocks_by_source_line(
+                project / "game", tl_dir
+            )
+            if organized:
+                self.logger.info(f"已按源行号整理 {organized} 个文件的编号块顺序")
+        except Exception as exc:
+            self.logger.warning(f"运行时抽取后整理编号块顺序失败: {exc}")
+
         return tl_dir
 
     def _collect_existing_dialogue_ids(self, lines: List[str], tl_name: str) -> set[str]:
