@@ -957,11 +957,11 @@ class YiJianFanyiPage(Base, QWidget):
         options_layout.addWidget(self.inject_base_box_chk)
 
         self.extract_compiled_chk = CheckBox(
-            "提取游戏内置隐藏文本并翻译（短信/提示/任务等，生成 zz_renpybox_bytecode_strings.rpy）"
+            "提取游戏内置隐藏文本并翻译（生成 zz_renpybox_bytecode_strings.rpy）"
         )
         self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
         self.extract_compiled_chk.setToolTip(
-            "游戏中部分玩家可见文本（如短信、WIP 提示、任务说明）写死在程序文件里，"
+            "游戏中部分玩家可见文本写死在程序文件里，"
             "Ren'Py 官方抽取识别不到。\n"
             "勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译"
             "（写入 tl/<语言>/zz_renpybox_bytecode_strings.rpy）。\n"
