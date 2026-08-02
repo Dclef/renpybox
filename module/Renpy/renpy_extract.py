@@ -599,6 +599,22 @@ def is_resource_filename(_string):
     return is_resource_name(_string)
 
 
+def _escape_rpy_string_for_write(value: str) -> str:
+    """转义写入 rpy 字符串字面量。
+
+    提取器返回的是解码后的文本（真实换行/引号），若不转义直接写入，
+    会生成未闭合引号的非法 rpy，Ren'Py 加载时直接报
+    ``Could not parse string`` 并停在错误界面。
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\n")
+        .replace('"', '\\"')
+    )
+
+
 def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True):
     if remove_duplicates:
         remove_repeat_for_file(p)
@@ -933,7 +949,7 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
                 f.write('\ntranslate ' + tl + ' strings:\n\n')
                 for j in eDiff:
                     if not j.startswith('_p("""') and not j.endswith('""")'):
-                        j = '"' + j + '"'
+                        j = '"' + _escape_rpy_string_for_write(j) + '"'
                     if not is_gen_empty:
                         writeData = '    old ' + j + '\n    new ' + j + '\n'
                     else:
@@ -997,7 +1013,7 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
             if j in global_e:
                 continue
             if not j.startswith('_p("""') and not j.endswith('""")'):
-                j = '"' + j + '"'
+                j = '"' + _escape_rpy_string_for_write(j) + '"'
             if not is_gen_empty:
                 writeData = '    old ' + j + '\n    new ' + j + '\n'
             else:

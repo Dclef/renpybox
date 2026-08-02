@@ -43,6 +43,11 @@ from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Text.SkipRules import should_skip_text
 from module.File.AtomicWrite import atomic_write_text
 from module.Response.ResponseChecker import ResponseChecker
+from module.Extract.ReplaceGenerator import (
+    declined_candidates_path,
+    load_declined_candidates,
+    record_declined_candidates,
+)
 
 
 # 结果缓存：键为 (tl 目录解析路径, 文件签名)，文件任何变化都会使签名失效，
@@ -52,65 +57,6 @@ _NUMBERED_FINGERPRINTS_CACHE: Dict[tuple, dict] = {}
 _EXISTING_TRANSLATIONS_CACHE: Dict[tuple, tuple] = {}
 
 _BLOCK_LOCATION_RE = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
-
-DECLINED_CANDIDATES_SCHEMA_VERSION = 1
-
-
-def declined_candidates_path(game_dir, tl_name) -> Path:
-    """返回项目级“判定不译候选”清单路径（位于 RenpyBox_Translation 下）。"""
-    return (
-        Path(game_dir)
-        / "RenpyBox_Translation"
-        / f".renpybox_declined_{tl_name}.json"
-    )
-
-
-def load_declined_candidates(game_dir, tl_name) -> Set[str]:
-    """读取历史上被判定不译的候选原文集合。"""
-    path = declined_candidates_path(game_dir, tl_name)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return set()
-    if not isinstance(payload, dict):
-        return set()
-    values = payload.get("declined")
-    if not isinstance(values, list):
-        return set()
-    return {str(value) for value in values if isinstance(value, str) and value}
-
-
-def record_declined_candidates(game_dir, tl_name, originals) -> int:
-    """把判定不译的候选追加到项目清单，返回新增条数。"""
-    originals = {
-        str(value) for value in originals if isinstance(value, str) and value
-    }
-    if not originals:
-        return 0
-    existing = load_declined_candidates(game_dir, tl_name)
-    merged = existing | originals
-    if merged == existing:
-        return 0
-    path = declined_candidates_path(game_dir, tl_name)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": DECLINED_CANDIDATES_SCHEMA_VERSION,
-            "language": tl_name,
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "declined": sorted(merged),
-        }
-        temp_path = path.with_suffix(".json.tmp")
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(str(temp_path), str(path))
-    except Exception as exc:
-        LogManager.get().warning(f"记录判定不译候选失败: {exc}")
-        return 0
-    return len(merged) - len(existing)
-
 
 @dataclass
 class ExtractionResult:
@@ -2211,7 +2157,9 @@ class UnifiedExtractor:
             declined = self._collect_declined_candidates_from_cycle(
                 game_dir, tl_name, incremental_dir
             )
-            if declined:
+            # 仅在合并完整成功时记录“判定不译”：合并出错/中断时的缺失条目
+            # 可能只是没来得及写入，不能永久记成判定不译。
+            if declined and not merge_errors:
                 recorded = record_declined_candidates(game_dir, tl_name, declined)
                 if recorded:
                     self.logger.info(
@@ -2775,12 +2723,15 @@ class UnifiedExtractor:
         try:
             from module.Extract.ReplaceGenerator import (
                 _separate_acronym_candidates,
-                add_acronyms_to_glossary,
+                record_declined_candidates,
             )
 
             preserved_acronyms = _separate_acronym_candidates(candidates)
             if preserved_acronyms:
-                add_acronyms_to_glossary(preserved_acronyms)
+                try:
+                    record_declined_candidates(game_dir, tl_name, preserved_acronyms)
+                except Exception:
+                    pass
                 candidates = candidates - preserved_acronyms
         except Exception as exc:
             self.logger.warning(f"编译字符串缩写分离失败: {exc}")
