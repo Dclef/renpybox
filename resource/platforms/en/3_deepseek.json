@@ -7,7 +7,7 @@
         "no_key_required"
     ],
     "api_format": "OpenAI",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "thinking": false,
     "top_p": 0.95,
     "temperature": 0.95,
