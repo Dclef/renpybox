@@ -22,6 +22,8 @@ config.json
 
 # Local test sandbox
 /.test
+/docs/internal
+/.claude
 .pytest_cache/
 .coverage
 coverage.xml
