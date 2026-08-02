@@ -1703,7 +1703,7 @@ def test_compiled_supplement_entries_written_natively_unique(tmp_path):
     )
 
     assert added == 3
-    output = tl_dir / "zz_renpybox_compiled_strings.rpy"
+    output = tl_dir / "zz_renpybox_bytecode_strings.rpy"
     content = output.read_text(encoding="utf-8")
     assert 'old "Virtual (first-time)."' in content
     assert content.count('old "Virtual (first-time)."') == 1
@@ -1743,7 +1743,7 @@ def test_compiled_supplement_flows_into_incremental_folder(tmp_path):
         tl_dir, incremental_dir, candidates, "chinese"
     )
 
-    output = incremental_dir / "zz_renpybox_compiled_strings.rpy"
+    output = incremental_dir / "zz_renpybox_bytecode_strings.rpy"
     assert output.exists()
     content = output.read_text(encoding="utf-8")
     assert 'translate chinese strings:' in content
@@ -1866,7 +1866,7 @@ def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
         game
         / "tl"
         / "chinese"
-        / "zz_renpybox_compiled_strings.rpy"
+        / "zz_renpybox_bytecode_strings.rpy"
     )
     tl_file.parent.mkdir(parents=True)
     tl_file.write_text(
@@ -2050,7 +2050,7 @@ def test_compiled_supplement_excludes_acronyms_and_registers_glossary(
 
     assert added == 1
     assert registered == [{"USB"}]
-    content = (tl_dir / "zz_renpybox_compiled_strings.rpy").read_text(encoding="utf-8")
+    content = (tl_dir / "zz_renpybox_bytecode_strings.rpy").read_text(encoding="utf-8")
     assert 'old "Noon (first-time)."' in content
     assert 'old "USB"' not in content
 
