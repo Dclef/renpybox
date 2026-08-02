@@ -1995,6 +1995,22 @@ def test_collect_static_source_strings_merges_adjacent_literals(tmp_path):
     assert "future releases." not in candidates
 
 
+def test_extract_from_file_skips_show_lang_attribute(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "inv.rpy"
+    source.write_text(
+        '    anon "( \\"I slip slowly under the satin sheets.\\" )" '
+        '(show_lang="( {i}\\"Je me glisse lentement sous les draps de satin.\\"{/i} )")\n',
+        encoding="utf-8",
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert any("I slip slowly under the satin sheets" in text for text in extracted)
+    assert not any("Je me glisse" in text for text in extracted)
+
+
 def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
     from module.Extract import ReplaceGenerator as generator
 
