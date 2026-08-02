@@ -51,6 +51,8 @@ _STRING_ORIGINALS_CACHE: Dict[tuple, frozenset] = {}
 _NUMBERED_FINGERPRINTS_CACHE: Dict[tuple, dict] = {}
 _EXISTING_TRANSLATIONS_CACHE: Dict[tuple, tuple] = {}
 
+_BLOCK_LOCATION_RE = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
+
 DECLINED_CANDIDATES_SCHEMA_VERSION = 1
 
 
@@ -2225,49 +2227,21 @@ class UnifiedExtractor:
 
     def _numbered_block_source_line(
         self,
-        game_dir: Path,
-        tl_file_rel: str,
         block,
         lines: List[str],
     ) -> Optional[int]:
-        """返回编号块对应的源文件行号（位置注释优先，其次源码定位）。"""
-        location_re = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
+        """读取块头之上 ``# game/<path>:<line>`` 注释中的源行号。
+
+        仅信任翻译文件里已写好的行号注释，不做源码溯源；没有注释时返回
+        None，由调用方按“无行号”处理。
+        """
         for probe in range(block.header_line_no - 2, -1, -1):
             if not lines[probe].strip():
                 continue
-            match = location_re.match(lines[probe])
+            match = _BLOCK_LOCATION_RE.match(lines[probe])
             if not match:
                 break
-            path_text = match.group(1)
-            if path_text.startswith("game/"):
-                path_text = path_text[len("game/") :]
-            if (game_dir / "game" / path_text).is_file() or (
-                game_dir / path_text
-            ).is_file():
-                return int(match.group(2))
-        try:
-            source_file = game_dir / "game" / tl_file_rel
-            if source_file.is_file():
-                doc = parse_tl_document(lines)
-                items = RenpyTlItemExtractor().extract(doc, tl_file_rel)
-                for item in items:
-                    extra_raw = item.get_extra_field()
-                    extra = extra_raw if isinstance(extra_raw, dict) else {}
-                    renpy = (
-                        extra.get("renpy", {})
-                        if isinstance(extra.get("renpy"), dict)
-                        else {}
-                    )
-                    block_data = (
-                        renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
-                    )
-                    if block_data.get("header_line") != block.header_line_no:
-                        continue
-                    original = item.get_src()
-                    if isinstance(original, str) and original.strip():
-                        return self._find_source_text_line(source_file, original)
-        except Exception:
-            pass
+            return int(match.group(2))
         return None
 
     def _sort_numbered_blocks_by_source_line(
@@ -2278,11 +2252,10 @@ class UnifiedExtractor:
     ) -> int:
         """按编号块对应源行号升序整理 TL 文件，strings 块保持在文件最后。
 
-        缺少 ``# game/<path>:<line>`` 位置注释的块会尝试从源码定位行号并补上
-        注释；仍无法定位的块保持原相对顺序排到可排序块之后。返回被重排的
-        文件数。
+        只信任翻译文件里已有的 ``# game/<path>:<line>`` 位置注释，不做源码
+        溯源；没有行号注释的块保持原相对顺序排到可排序块之后。返回被重排
+        的文件数。
         """
-        location_re = re.compile(r"^\s*#\s+(game/.+?):\d+\s*$")
         reordered = 0
         for tl_file in self._iter_rpy_files(tl_dir):
             rel = tl_file.relative_to(tl_dir).as_posix()
@@ -2316,7 +2289,7 @@ class UnifiedExtractor:
                         if not stripped:
                             probe -= 1
                             continue
-                        if not location_re.match(lines[probe]):
+                        if not _BLOCK_LOCATION_RE.match(lines[probe]):
                             break
                         meta_start = probe
                         probe -= 1
@@ -2328,9 +2301,7 @@ class UnifiedExtractor:
                         "meta_start": meta_start,
                         "end_idx": end_idx,
                         "source_line": (
-                            self._numbered_block_source_line(
-                                game_dir, rel, block, lines
-                            )
+                            self._numbered_block_source_line(block, lines)
                             if kind == "LABEL"
                             else None
                         ),
@@ -2365,13 +2336,10 @@ class UnifiedExtractor:
                 if output and output[-1].strip() != "":
                     output.append("")
                 has_meta = int(seg["meta_start"]) < int(seg["header_idx"])
-                if seg["kind"] == "LABEL":
-                    if not has_meta and seg["source_line"] is not None:
-                        output.append(f"# game/{rel}:{seg['source_line']}")
-                    elif has_meta:
-                        output.extend(
-                            lines[int(seg["meta_start"]) : int(seg["header_idx"])]
-                        )
+                if seg["kind"] == "LABEL" and has_meta:
+                    output.extend(
+                        lines[int(seg["meta_start"]) : int(seg["header_idx"])]
+                    )
                 output.append(lines[int(seg["header_idx"])])
                 output.append("")
                 output.extend(lines[int(seg["header_idx"]) + 1 : int(seg["end_idx"])])
@@ -3310,6 +3278,20 @@ class UnifiedExtractor:
                 if 1 <= header_line <= len(lines)
                 else f"translate {block.lang} {block.label}:"
             )
+            # 块头之上的 # game/<path>:<line> 位置注释随块一起输出
+            # （容忍注释与块头之间的空行）。
+            location_lines: List[str] = []
+            probe = header_line - 2
+            while probe >= 0:
+                stripped = lines[probe].strip()
+                if not stripped:
+                    probe -= 1
+                    continue
+                if _BLOCK_LOCATION_RE.match(lines[probe]):
+                    location_lines.insert(0, lines[probe])
+                    probe -= 1
+                    continue
+                break
             selections.append(
                 {
                     "header_line_no": header_line,
@@ -3318,6 +3300,7 @@ class UnifiedExtractor:
                     "label": block.label,
                     "kind": tl_block_kind_name(block.kind),
                     "lines": selected_lines,
+                    "location": location_lines,
                 }
             )
 
@@ -3392,6 +3375,7 @@ class UnifiedExtractor:
                     selections,
                     key=lambda sel: 0 if sel["kind"] == "LABEL" else 1,
                 ):
+                    output_lines.extend(sel.get("location") or [])
                     output_lines.append(sel["header_line"])
                     if output_lines and output_lines[-1].strip() != "":
                         output_lines.append("")
@@ -3632,6 +3616,7 @@ class UnifiedExtractor:
                     for selection in selections_sorted:
                         if output_lines and output_lines[-1].strip() != "":
                             output_lines.append("")
+                        output_lines.extend(selection.get("location") or [])
                         output_lines.append(selection["header_line"])
                         if output_lines and output_lines[-1].strip() != "":
                             output_lines.append("")
@@ -3698,9 +3683,14 @@ class UnifiedExtractor:
                     key = (sel["lang"], sel["label"], sel["kind"])
                     entry = combined.get(key)
                     if entry is None:
-                        entry = {"header": sel["header_line"], "lines": []}
+                        entry = {
+                            "header": sel["header_line"],
+                            "lines": [],
+                            "location": [],
+                        }
                         combined[key] = entry
                     entry["lines"].extend(sel["lines"])
+                    entry["location"].extend(sel.get("location") or [])
 
                 insert_ops: List[Tuple[int, List[str]]] = []
                 append_lines: List[str] = []
@@ -3717,6 +3707,7 @@ class UnifiedExtractor:
                         header = entry["header"]
                         if append_lines and append_lines[-1].strip() != "":
                             append_lines.append("")
+                        append_lines.extend(entry.get("location") or [])
                         append_lines.append(header)
                         append_lines.extend(lines_to_insert)
 
