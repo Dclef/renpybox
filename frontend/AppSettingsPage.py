@@ -502,7 +502,7 @@ class AppSettingsPage(QWidget, Base):
             ComboBoxCard(
                 title = Localizer.get().app_settings_page_scale_factor_title,
                 description = Localizer.get().app_settings_page_scale_factor_content,
-                items = (Localizer.get().auto, "50%", "75%", "150%", "200%"),
+                items = (Localizer.get().auto, *Config.UI_SCALE_FACTORS),
                 init = init,
                 current_changed = current_changed,
             )

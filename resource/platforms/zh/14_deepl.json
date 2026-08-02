@@ -1,4 +1,5 @@
 {
+    "group": "machine",
     "id": 11,
     "name": "DeepL",
     "api_url": "https://api-free.deepl.com",

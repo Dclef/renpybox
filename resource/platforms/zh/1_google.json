@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 1,
     "name": "Google",
     "api_url": "https://generativelanguage.googleapis.com",

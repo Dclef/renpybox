@@ -363,7 +363,15 @@ class BaseQualityTask:
         try:
             requester = self._get_requester()
             method = getattr(requester, "request", None)
-            raw = method(messages) if callable(method) else requester(messages)
+            if isinstance(requester, TaskRequester) and callable(method):
+                response_shape = (
+                    "json_object"
+                    if self.runtime_config.structured_output_enable
+                    else "none"
+                )
+                raw = method(messages, response_shape = response_shape)
+            else:
+                raw = method(messages) if callable(method) else requester(messages)
         except Exception as exc:
             return RequestOutcome(False, error = f"REQUEST_EXCEPTION:{type(exc).__name__}")
 

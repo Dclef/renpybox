@@ -211,7 +211,17 @@ class GlossaryLLMTranslateWorker(QThread):
                 )
 
                 requester = TaskRequester(config_for_prompt, self.platform, batch_index)
-                skip, _, response_text, _, _ = requester.request(messages)
+                response_shape = (
+                    "json_object"
+                    if config_for_prompt.structured_output_enable
+                    and self.platform.get("api_format")
+                    not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+                    else "none"
+                )
+                skip, _, response_text, _, _ = requester.request(
+                    messages,
+                    response_shape = response_shape,
+                )
 
                 if skip or not response_text:
                     translated = srcs
