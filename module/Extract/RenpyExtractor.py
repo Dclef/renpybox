@@ -964,7 +964,11 @@ class RenpyExtractor:
 
                 who_prefix = f"{who} " if who else ""
                 encoded = encode_say_string(str(what)) if what is not None else ""
-                append_lines.append(f"# game/{filename}:{linenumber}")
+                # filename 来自运行时 payload，已带 ``game/`` 前缀；注释统一
+                # 使用相对 game 目录的 ``# game/<path>:<line>`` 形式，避免
+                # 生成 ``# game/game/...`` 双前缀。
+                comment_rel = rel.as_posix()
+                append_lines.append(f"# game/{comment_rel}:{linenumber}")
                 append_lines.append(f"translate {tl_name} {identifier}:")
                 append_lines.append("")
                 append_lines.append(f"    # {who_prefix}\"{encoded}\"")

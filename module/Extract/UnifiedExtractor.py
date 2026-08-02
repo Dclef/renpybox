@@ -33,6 +33,7 @@ from module.Renpy.renpy_tl_core import (
     scan_quoted_literals,
     escape_tl_string,
     tl_block_kind_name,
+    tl_statement_ordinal,
     tl_dir_signature,
 )
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
@@ -49,6 +50,64 @@ from module.Response.ResponseChecker import ResponseChecker
 _STRING_ORIGINALS_CACHE: Dict[tuple, frozenset] = {}
 _NUMBERED_FINGERPRINTS_CACHE: Dict[tuple, dict] = {}
 _EXISTING_TRANSLATIONS_CACHE: Dict[tuple, tuple] = {}
+
+DECLINED_CANDIDATES_SCHEMA_VERSION = 1
+
+
+def declined_candidates_path(game_dir, tl_name) -> Path:
+    """返回项目级“判定不译候选”清单路径（位于 RenpyBox_Translation 下）。"""
+    return (
+        Path(game_dir)
+        / "RenpyBox_Translation"
+        / f".renpybox_declined_{tl_name}.json"
+    )
+
+
+def load_declined_candidates(game_dir, tl_name) -> Set[str]:
+    """读取历史上被判定不译的候选原文集合。"""
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    values = payload.get("declined")
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if isinstance(value, str) and value}
+
+
+def record_declined_candidates(game_dir, tl_name, originals) -> int:
+    """把判定不译的候选追加到项目清单，返回新增条数。"""
+    originals = {
+        str(value) for value in originals if isinstance(value, str) and value
+    }
+    if not originals:
+        return 0
+    existing = load_declined_candidates(game_dir, tl_name)
+    merged = existing | originals
+    if merged == existing:
+        return 0
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": DECLINED_CANDIDATES_SCHEMA_VERSION,
+            "language": tl_name,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "declined": sorted(merged),
+        }
+        temp_path = path.with_suffix(".json.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(str(temp_path), str(path))
+    except Exception as exc:
+        LogManager.get().warning(f"记录判定不译候选失败: {exc}")
+        return 0
+    return len(merged) - len(existing)
 
 
 @dataclass
@@ -1536,6 +1595,10 @@ class UnifiedExtractor:
                     trusted_originals=official_string_originals,
                     compiled_candidates=compiled_candidates,
                 )
+                # 历史判定不译的候选不再重复提出。
+                declined_candidates = load_declined_candidates(game_dir, tl_name)
+                if declined_candidates:
+                    new_originals -= declined_candidates
                 extracted_block_fingerprints = self._collect_numbered_block_fingerprints(
                     temp_tl_dir
                 )
@@ -1575,6 +1638,7 @@ class UnifiedExtractor:
                     # 编号块译文不能覆盖全局 strings 占位；这里只排除已经有
                     # 有效 old/new 译文的字符串。
                     pending_originals -= translated_string_originals
+                    pending_originals -= declined_candidates
                     self.logger.info(f"检测到 {len(pending_originals)} 条未翻译占位原文")
 
                 selected_string_originals = set(new_originals) | set(pending_originals)
@@ -2076,6 +2140,20 @@ class UnifiedExtractor:
         # 合并完成后再次做跨文件 old 唯一性校验，杜绝 Ren'Py 重复翻译报错。
         self._dedupe_string_translations(tl_dir, tl_name)
 
+        # 记录本周期提出但未进入翻译输出的候选，后续增量不再重复提出。
+        try:
+            declined = self._collect_declined_candidates_from_cycle(
+                game_dir, tl_name, incremental_dir
+            )
+            if declined:
+                recorded = record_declined_candidates(game_dir, tl_name, declined)
+                if recorded:
+                    self.logger.info(
+                        f"已记录 {recorded} 条判定不译的候选，后续增量不再重复提出"
+                    )
+        except Exception as exc:
+            self.logger.warning(f"记录判定不译候选失败: {exc}")
+
         # 合并与去重成功后，增量目录不再是可加载的翻译来源，
         # 避免遗留目录造成重复加载和困惑。若目录中带有翻译缓存，
         # 先保留 cache 子目录，交由一键流程把条目合并到主缓存；
@@ -2106,6 +2184,23 @@ class UnifiedExtractor:
                else f"已清理 {incremental_dir.name}")
         )
         return result
+
+    def _collect_declined_candidates_from_cycle(
+        self,
+        game_dir: Path,
+        tl_name: str,
+        incremental_dir: Path,
+    ) -> Set[str]:
+        """收集本周期提出但未进入翻译输出的 strings 候选。"""
+        staging = game_dir / "game" / "tl" / f"{tl_name}_new"
+        if staging.exists():
+            proposed = set(self._get_string_originals(staging))
+        else:
+            proposed = set(self._get_string_originals(incremental_dir))
+        if not proposed:
+            return set()
+        applied = set(self._get_string_originals(incremental_dir))
+        return proposed - applied
 
     def _remove_empty_incremental_artifacts(self, incremental_dir: Path) -> int:
         """Remove generated RPY files that contain no extractable TL items."""
@@ -2365,9 +2460,10 @@ class UnifiedExtractor:
         # 只有全局 old/new 才能覆盖另一个全局字符串。编号翻译块即使原文
         # 相同，也不能阻止菜单或其他静态文本生成 strings 条目。
         existing = self._get_string_originals(tl_dir)
+        declined = load_declined_candidates(game_dir, tl_name)
         added = 0
         for original, relative_path in candidates.items():
-            if original in existing:
+            if original in existing or original in declined:
                 continue
 
             target_file = tl_dir / relative_path
@@ -2447,6 +2543,10 @@ class UnifiedExtractor:
             self.logger.warning(f"编译字符串缩写分离失败: {exc}")
         if not candidates:
             return 0
+
+        declined = load_declined_candidates(game_dir, tl_name)
+        if declined:
+            candidates = candidates - declined
 
         existing = self._get_string_originals(tl_dir)
         target_file = tl_dir / "zz_renpybox_compiled_strings.rpy"
@@ -3086,8 +3186,15 @@ class UnifiedExtractor:
                     "",
                 ]
 
-                for sel in selections:
+                # 编号翻译块始终排在 old/new strings 块之前；
+                # ``translate <lang> strings:`` 保持在文件最后。
+                for sel in sorted(
+                    selections,
+                    key=lambda sel: 0 if sel["kind"] == "LABEL" else 1,
+                ):
                     output_lines.append(sel["header_line"])
+                    if output_lines and output_lines[-1].strip() != "":
+                        output_lines.append("")
                     output_lines.extend(sel["lines"])
                     if output_lines and output_lines[-1].strip() != "":
                         output_lines.append("")
@@ -3316,10 +3423,18 @@ class UnifiedExtractor:
                         continue
 
                     output_lines: List[str] = []
-                    for selection in selections:
+                    # 编号翻译块始终排在 old/new strings 块之前；
+                    # ``translate <lang> strings:`` 保持在文件最后。
+                    selections_sorted = sorted(
+                        selections,
+                        key=lambda sel: 0 if sel["kind"] == "LABEL" else 1,
+                    )
+                    for selection in selections_sorted:
                         if output_lines and output_lines[-1].strip() != "":
                             output_lines.append("")
                         output_lines.append(selection["header_line"])
+                        if output_lines and output_lines[-1].strip() != "":
+                            output_lines.append("")
                         output_lines.extend(selection["lines"])
 
                     target_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3413,9 +3528,26 @@ class UnifiedExtractor:
                     target_lines[index:index] = insert_lines
 
                 if append_lines:
-                    if target_lines and target_lines[-1].strip() != "":
-                        target_lines.append("")
-                    target_lines.extend(append_lines)
+                    # 新编号块插到 strings 块之前，strings 块始终位于文件末尾。
+                    strings_header = next(
+                        (
+                            block.header_line_no
+                            for block in target_doc.blocks
+                            if tl_block_kind_name(block.kind) == "STRINGS"
+                        ),
+                        None,
+                    )
+                    if strings_header is not None:
+                        index = max(0, strings_header - 1)
+                        if index > len(target_lines):
+                            index = len(target_lines)
+                        if index > 0 and target_lines[index - 1].strip() != "":
+                            append_lines.insert(0, "")
+                        target_lines[index:index] = append_lines
+                    else:
+                        if target_lines and target_lines[-1].strip() != "":
+                            target_lines.append("")
+                        target_lines.extend(append_lines)
 
                 if insert_ops or append_lines:
                     atomic_write_text(
@@ -3798,11 +3930,15 @@ class UnifiedExtractor:
         template_digest = digest.get("template_raw_sha1")
         header_line = block.get("header_line")
         template_line = pair.get("template_line")
+        ordinal = pair.get("statement_ordinal")
         if not all(isinstance(value, str) and value for value in (lang, label, template_digest)):
             return None
         if not isinstance(header_line, int) or not isinstance(template_line, int):
             return None
-        return (rel_path, lang, label, template_digest, template_line - header_line)
+        # 新元数据携带布局无关的语句序号；旧缓存回退到原始行偏移。
+        if not isinstance(ordinal, int):
+            ordinal = template_line - header_line
+        return (rel_path, lang, label, template_digest, ordinal)
 
     def _get_existing_translations(self, tl_dir: Path) -> ExistingTranslations:
         """按 strings 与编号块的真实作用域分别收集有效译文。"""
