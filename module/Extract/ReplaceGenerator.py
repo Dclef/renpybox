@@ -18,6 +18,7 @@ import shutil
 import ast
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
@@ -42,6 +43,64 @@ COMPILED_CACHE_VERSION = 3
 
 # tl 覆盖结果缓存：键为 (tl 目录解析路径, 文件签名)，文件变化即失效。
 _TL_COVERED_CACHE: dict = {}
+
+DECLINED_CANDIDATES_SCHEMA_VERSION = 1
+
+
+def declined_candidates_path(game_dir, tl_name) -> Path:
+    """返回项目级“判定不译候选”清单路径（位于 RenpyBox_Translation 下）。"""
+    return (
+        Path(game_dir)
+        / "RenpyBox_Translation"
+        / f".renpybox_declined_{tl_name}.json"
+    )
+
+
+def load_declined_candidates(game_dir, tl_name) -> Set[str]:
+    """读取历史上被判定不译的候选原文集合。"""
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    values = payload.get("declined")
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if isinstance(value, str) and value}
+
+
+def record_declined_candidates(game_dir, tl_name, originals) -> int:
+    """把判定不译的候选追加到项目清单，返回新增条数。"""
+    originals = {
+        str(value) for value in originals if isinstance(value, str) and value
+    }
+    if not originals:
+        return 0
+    existing = load_declined_candidates(game_dir, tl_name)
+    merged = existing | originals
+    if merged == existing:
+        return 0
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": DECLINED_CANDIDATES_SCHEMA_VERSION,
+            "language": tl_name,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "declined": sorted(merged),
+        }
+        temp_path = path.with_suffix(".json.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(str(temp_path), str(path))
+    except Exception as exc:
+        LogManager.get().warning(f"记录判定不译候选失败: {exc}")
+        return 0
+    return len(merged) - len(existing)
 
 # This helper is intentionally executed by the game's own Python runtime so its
 # marshal format always matches the game's .pyc files.  It only walks code
@@ -994,52 +1053,6 @@ def _separate_acronym_candidates(candidates: Set[str]) -> Set[str]:
     }
 
 
-def add_acronyms_to_glossary(acronyms: Set[str]) -> int:
-    """把大写缩写以 src==dst 写入术语库，避免被误译或漏译。"""
-    if not acronyms:
-        return 0
-    try:
-        from module.Config import Config
-
-        config = Config().load()
-        glossary_data = getattr(config, "glossary_data", None) or []
-        manual_entries = []
-        existing_src: Set[str] = set()
-        for item in glossary_data:
-            if isinstance(item, dict):
-                src = str(item.get("src", "") or "")
-                info = str(item.get("comment", "") or "").lower()
-                existing_src.add(src)
-                if "自动采集缩写" in info:
-                    continue
-            manual_entries.append(item)
-
-        added = 0
-        for acronym in sorted(acronyms):
-            clean = acronym.strip()
-            if not clean or clean in existing_src:
-                continue
-            manual_entries.append(
-                {
-                    "src": clean,
-                    "dst": clean,
-                    "comment": "(自动采集缩写)",
-                    "type": "缩写",
-                }
-            )
-            existing_src.add(clean)
-            added += 1
-
-        if added:
-            config.glossary_data = manual_entries
-            config.save()
-        return added
-    except Exception as exc:
-        logger = LogManager.get()
-        logger.warning(f"添加缩写到术语库失败: {exc}")
-        return 0
-
-
 def _is_compiled_technical_text(text: str) -> bool:
     """Return whether a bytecode constant is clearly code/markup, not UI text."""
     value = str(text or "").strip()
@@ -1455,10 +1468,13 @@ def collect_hook_translation_entries(
     glossary_map = _load_glossary_map()
 
     # 大写缩写（USB 等）在采集时分离：以 src==dst 写入术语库，既不进
-    # 补全列表也不会被误译。
+    # 补全列表也不会被误译；记入项目级“判定不译”清单，避免改用户全局术语库。
     preserved_acronyms = _separate_acronym_candidates(missing)
     if preserved_acronyms and auto_update_glossary:
-        add_acronyms_to_glossary(preserved_acronyms)
+        try:
+            record_declined_candidates(target_path, tl_name, preserved_acronyms)
+        except Exception:
+            pass
     missing -= preserved_acronyms
 
     missing_rpy = missing & rpy_candidates
@@ -1556,10 +1572,13 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     
     # 3. 计算差集
     missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
-    # 大写缩写（USB 等）在采集时分离：以 src==dst 写入术语库。
+    # 大写缩写（USB 等）在采集时分离：记入项目级“判定不译”清单。
     preserved_acronyms = _separate_acronym_candidates(missing)
     if preserved_acronyms:
-        add_acronyms_to_glossary(preserved_acronyms)
+        try:
+            record_declined_candidates(target_path, tl_name, preserved_acronyms)
+        except Exception:
+            pass
     missing -= preserved_acronyms
     
     logger.info(f"扫描统计: 正则={len(regex_filtered)}, tl覆盖={len(tl_covered)}, 缺失={len(missing)}")

@@ -2003,6 +2003,34 @@ def test_extract_from_file_merges_adjacent_string_literals(tmp_path):
     assert "future releases." not in extracted
 
 
+def test_write_extracted_escapes_newlines_in_strings(tmp_path):
+    """补充抽取写出的 old/new 必须转义换行，否则 Ren'Py 报解析错误。"""
+    from module.Renpy.renpy_extract import ExtractAllFilesInDir
+    from module.Renpy.renpy_tl_core import parse_tl_document
+
+    project = tmp_path / "gameproj"
+    src = project / "game" / "src" / "menu"
+    src.mkdir(parents=True)
+    (src / "pref.rpy").write_text(
+        'tooltip _("Enables the wheel of conception, allowing the "\n'
+        '         "player to see the result of pregnancy attempts immediately.\\n\\n'
+        'Turn this off to learn about pregnancies.")\n',
+        encoding="utf-8",
+    )
+    tl = project / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+
+    ExtractAllFilesInDir(str(tl), True, 4, False, True)
+
+    written = tl / "src" / "menu" / "pref.rpy"
+    text = written.read_text(encoding="utf-8")
+    # 可被 Ren'Py 语法解析（换行已转义，不产生未闭合引号）
+    doc = parse_tl_document(text.splitlines())
+    assert doc is not None
+    assert "\\n\\n" in text
+    assert "immediately.\n\nTurn" not in text
+
+
 def test_collect_static_source_strings_merges_adjacent_literals(tmp_path):
     from module.Renpy.renpy_extract import collect_static_source_strings
 
@@ -2240,35 +2268,13 @@ def test_substring_constants_are_kept_not_dropped():
     assert "First time with [saga.cast.tony]'s blessing." in kept
 
 
-def test_acronym_separation_and_glossary_registration(tmp_path, monkeypatch):
+def test_acronym_separation_keeps_ui_words():
     from module.Extract import ReplaceGenerator as generator
-    import module.Config as config_module
-
-    saved = {}
-
-    class FakeConfig:
-        glossary_data = []
-
-        def save(self):
-            saved["data"] = list(self.glossary_data)
-
-        def load(self):
-            return self
-
-    monkeypatch.setattr(config_module, "Config", FakeConfig)
 
     acronyms = generator._separate_acronym_candidates(
         {"USB", "DLC", "START", "Noon (first-time)."}
     )
     assert acronyms == {"USB", "DLC"}
-
-    added = generator.add_acronyms_to_glossary(acronyms)
-    assert added == 2
-    assert saved["data"]
-    entries = {item["src"]: item for item in saved["data"]}
-    assert entries["USB"]["dst"] == "USB"
-    assert entries["DLC"]["dst"] == "DLC"
-    assert "自动采集缩写" in entries["USB"]["comment"]
 
 
 def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
@@ -2284,7 +2290,7 @@ def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
     monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
     monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
-    monkeypatch.setattr(generator, "add_acronyms_to_glossary", lambda items: len(items))
+    monkeypatch.setattr(generator, "record_declined_candidates", lambda *a, **k: len(a[2]))
 
     entries, stats = generator.collect_hook_translation_entries(
         game,
@@ -2297,7 +2303,7 @@ def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
     assert stats["preserved_acronym_count"] == 1
 
 
-def test_compiled_supplement_excludes_acronyms_and_registers_glossary(
+def test_compiled_supplement_excludes_acronyms_and_records_declined(
     tmp_path, monkeypatch
 ):
     from module.Extract.UnifiedExtractor import UnifiedExtractor
@@ -2314,8 +2320,8 @@ def test_compiled_supplement_excludes_acronyms_and_registers_glossary(
     tl_dir.mkdir(parents=True)
     registered = []
     monkeypatch.setattr(
-        "module.Extract.ReplaceGenerator.add_acronyms_to_glossary",
-        lambda items: registered.append(set(items)) or len(items),
+        "module.Extract.ReplaceGenerator.record_declined_candidates",
+        lambda *args: registered.append(set(args[2])) or len(args[2]),
     )
 
     added = extractor._append_compiled_supplement_entries(
