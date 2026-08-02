@@ -4,7 +4,7 @@ import os
 import secrets
 import shutil
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 
 def atomic_write_text(
@@ -13,6 +13,7 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     validator: Callable[[str], object] | None = None,
+    allowed_roots: Iterable[Path] | None = None,
 ) -> None:
     """Validate and atomically replace a text file in its destination directory."""
     requested_target = Path(path)
@@ -34,6 +35,17 @@ def atomic_write_text(
             raise RuntimeError(
                 f"Symbolic-link write target is not a file: {requested_target}"
             )
+        if allowed_roots:
+            resolved_target = target.resolve(strict=False)
+            resolved_roots = [root.resolve(strict=False) for root in allowed_roots]
+            if not any(
+                resolved_target == root or root in resolved_target.parents
+                for root in resolved_roots
+            ):
+                raise RuntimeError(
+                    f"Symbolic-link write target escapes allowed roots: "
+                    f"{requested_target} -> {resolved_target}"
+                )
     else:
         target = requested_target
 

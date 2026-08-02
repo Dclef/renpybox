@@ -113,3 +113,33 @@ def test_renpy_writeback_rejects_unapplied_name_only_translation(tmp_path):
         writer.write_to_path(items)
 
     assert not (output_dir / "fictional_name_only.rpy").exists()
+
+def test_renpy_writeback_normalizes_values_before_unapplied_check(tmp_path):
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    source = input_dir / "fictional_ranger.rpy"
+    input_dir.mkdir()
+    source.write_text(
+        'translate chinese ranger_demo_33333333:\n'
+        '    # guide "The fictional ranger appears."\n'
+        '    guide "The fictional ranger appears."\n',
+        encoding="utf-8",
+    )
+    config = Config()
+    config.input_folder = str(input_dir)
+    config.output_folder = str(output_dir)
+    writer = RENPY(config)
+
+    expected = writer.read_from_path([str(source)])
+    assert len(expected) == 1
+    expected[0].set_dst("虚构的护林员出现了。")
+    expected[0].set_name_dst(["虚构的护林员"])
+    expected[0].set_status(Base.TranslationStatus.TRANSLATED)
+
+    # 磁盘重解析结果：dst 带尾随空白、name_dst 为字符串而非列表。
+    actual = writer.read_from_path([str(source)])
+    actual[0].set_dst("虚构的护林员出现了。 ")
+    actual[0].set_name_dst("虚构的护林员")
+
+    unapplied = writer.find_unapplied_translations(expected, actual)
+    assert unapplied == []
