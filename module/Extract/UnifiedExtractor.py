@@ -2275,10 +2275,22 @@ class UnifiedExtractor:
                 if kind not in ("LABEL", "STRINGS"):
                     continue
                 header_idx = block.header_line_no - 1
+                # 块结束位置只取实际翻译内容（TEMPLATE/TARGET）的最后一行。
+                # 解析器会把下一块的位置注释/空行挂到当前块尾部，若整段复制
+                # 会导致相邻块段重叠，重建时内容成倍膨胀。
+                content_lines = [
+                    stmt.line_no
+                    for stmt in block.statements
+                    if stmt.stmt_kind in (TlStmtKind.TEMPLATE, TlStmtKind.TARGET)
+                ]
                 end_idx = (
-                    block.statements[-1].line_no
-                    if block.statements
-                    else block.header_line_no
+                    content_lines[-1]
+                    if content_lines
+                    else (
+                        block.statements[-1].line_no
+                        if block.statements
+                        else block.header_line_no
+                    )
                 )
                 end_idx = min(end_idx, len(lines))
                 meta_start = header_idx
@@ -2311,7 +2323,17 @@ class UnifiedExtractor:
                 continue
             segments.sort(key=lambda seg: int(seg["header_idx"]))
             label_segments = [seg for seg in segments if seg["kind"] == "LABEL"]
-            if len(label_segments) <= 1:
+            string_segments = [seg for seg in segments if seg["kind"] == "STRINGS"]
+            non_string_segments = [
+                seg for seg in segments if seg["kind"] != "STRINGS"
+            ]
+            needs_strings_move = (
+                bool(string_segments)
+                and bool(non_string_segments)
+                and min(int(seg["header_idx"]) for seg in string_segments)
+                < max(int(seg["header_idx"]) for seg in non_string_segments)
+            )
+            if len(label_segments) <= 1 and not needs_strings_move:
                 continue
 
             def sort_key(seg):
@@ -2323,7 +2345,7 @@ class UnifiedExtractor:
                 ordered[index]["header_idx"] == label_segments[index]["header_idx"]
                 for index in range(len(ordered))
             )
-            if already_ordered:
+            if already_ordered and not needs_strings_move:
                 continue
 
             output: List[str] = []

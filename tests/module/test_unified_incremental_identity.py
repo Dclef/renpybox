@@ -465,6 +465,96 @@ def test_extract_new_entries_keeps_block_location_comments(tmp_path):
     )
 
 
+def test_sort_numbered_blocks_does_not_duplicate_content(tmp_path):
+    """块尾挂靠的下一块注释/空行不能被复制，整理必须幂等且不膨胀文件。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_file = tl_dir / "scene.rpy"
+    tl_file.write_text(
+        "# game/src/plot/scene.rpy:2\n"
+        "\n"
+        "translate chinese second_22222222:\n"
+        '    # guide "Second."\n'
+        '    guide "第二。"\n'
+        "\n"
+        "\n"
+        "# game/src/plot/scene.rpy:1\n"
+        "\n"
+        "translate chinese first_11111111:\n"
+        '    # guide "First."\n'
+        '    guide "第一。"\n',
+        encoding="utf-8",
+    )
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text1 = tl_file.read_text(encoding="utf-8")
+    assert text1.count("translate chinese") == 2
+    assert text1.index("first_11111111") < text1.index("second_22222222")
+    # 再次整理必须幂等：不重写、不膨胀。
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 0
+    text2 = tl_file.read_text(encoding="utf-8")
+    assert text1 == text2
+    assert text2.count("translate chinese") == 2
+
+
+def test_sort_numbered_blocks_moves_strings_last_even_with_single_label(tmp_path):
+    """只有一个编号块且 strings 块夹在中间时，strings 也要移到文件最后。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_file = tl_dir / "scene.rpy"
+    tl_file.write_text(
+        "translate chinese strings:\n"
+        '    old "S"\n'
+        '    new "字符串"\n'
+        "\n"
+        "# game/src/plot/scene.rpy:5\n"
+        "translate chinese only_55555555:\n"
+        '    # guide "Only."\n'
+        '    guide "唯一。"\n',
+        encoding="utf-8",
+    )
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text = tl_file.read_text(encoding="utf-8")
+    assert text.index("translate chinese only_55555555:") < text.index(
+        "translate chinese strings:"
+    )
+
+
+def test_sort_numbered_blocks_consolidates_multiple_strings_blocks_last(tmp_path):
+    """同一文件多个 strings 块都要归到末尾，且保持原有相对顺序。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_file = tl_dir / "scene.rpy"
+    tl_file.write_text(
+        "translate chinese strings:\n"
+        '    old "First"\n'
+        '    new "第一"\n'
+        "\n"
+        "# game/src/plot/scene.rpy:5\n"
+        "translate chinese only_55555555:\n"
+        '    # guide "Only."\n'
+        '    guide "唯一。"\n'
+        "\n"
+        "translate chinese strings:\n"
+        '    old "Second"\n'
+        '    new "第二"\n',
+        encoding="utf-8",
+    )
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text = tl_file.read_text(encoding="utf-8")
+    assert text.index("translate chinese only_55555555:") < text.index(
+        'old "First"'
+    )
+    assert text.index('old "First"') < text.index('old "Second"')
+    # 幂等
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 0
+
+
 def test_direct_incremental_merge_keeps_new_numbered_block_with_repeated_text(tmp_path):
     target = tmp_path / "target"
     source = tmp_path / "source"
