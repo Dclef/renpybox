@@ -705,6 +705,7 @@ class YiJianFanyiPage(Base, QWidget):
         self._ner_model_loaded = False
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
+        self._onekey_translation_completed = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
         self._incremental_dir = None
@@ -2136,7 +2137,13 @@ class YiJianFanyiPage(Base, QWidget):
     def _go_step4(self):
         self.current_step = 4
         self.stacked.setCurrentIndex(3)
-        self._refresh_step4_ready()
+        self._refresh_step4_state()
+
+    def showEvent(self, event):
+        """从翻译面板返回本页时刷新第 4 步状态，避免显示“未翻译”的假象。"""
+        super().showEvent(event)
+        if self.current_step == 4:
+            self._refresh_step4_state()
     
     def _on_start_translate_clicked(self):
         """检查配置后再进入翻译面板"""
@@ -2172,6 +2179,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         if msg_box.exec():
             self._onekey_translation_started = True
+            self._onekey_translation_completed = False
             self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
             self._auto_hook_running = False
             self._open_legacy_translation_page()
@@ -2359,15 +2367,53 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         if self._onekey_translation_started:
+            self._onekey_translation_completed = not failed
             self._reset_auto_hook_state()
+            self._refresh_step4_state()
 
     def _on_translation_stop(self, event, data):
         """翻译停止时清理一键翻译的自动补漏状态。"""
         if self._onekey_translation_started or self._auto_hook_pending or self._auto_hook_running:
             if self._auto_hook_running:
                 self._restore_paths_after_auto_hook()
+            self._onekey_translation_completed = False
             self._reset_auto_hook_state()
-    
+            self._refresh_step4_state()
+
+    def _translation_output_completed(self) -> bool:
+        """翻译输出目录缓存已完成时为 True（用于向导重建后的兜底判断）。"""
+        try:
+            from module.Cache.CacheManager import CacheManager
+
+            cfg = Config().load()
+            output = str(getattr(cfg, "output_folder", "") or "")
+            if not output:
+                return False
+            manager = CacheManager(service=False)
+            manager.load_project_from_file(output)
+            return (
+                manager.get_project().get_status()
+                == Base.TranslationStatus.TRANSLATED
+            )
+        except Exception:
+            return False
+
+    def _refresh_step4_state(self) -> None:
+        """刷新第 4 步界面：翻译已完成时给出明确指引，否则走配置检查。"""
+        if self._onekey_translation_completed or self._translation_output_completed():
+            self._onekey_translation_completed = True
+            self.step4_status.setText(
+                "✔ 翻译已完成，可直接进入「后续处理」应用翻译到游戏。"
+            )
+            self.step4_status.setStyleSheet("color: #27ae60;")
+            self.start_trans_btn.setText("重新翻译")
+            self.start_trans_btn.setEnabled(True)
+            self.skip_trans_btn.setText("进入后续处理 →")
+            return
+        self.start_trans_btn.setText("🚀 开始翻译")
+        self.skip_trans_btn.setText("跳过翻译 →")
+        self._refresh_step4_ready()
+
     def _refresh_step4_ready(self) -> bool:
         """检查翻译前的必备配置"""
         from module.Config import Config
@@ -2431,6 +2477,7 @@ class YiJianFanyiPage(Base, QWidget):
         # 重置状态（为下次使用做准备）
         self.current_step = 1
         self.stacked.setCurrentIndex(0)
+        self._onekey_translation_completed = False
         self.step1_next_btn.setEnabled(False)
         self.skip_extract_btn.setVisible(False)
         self.game_path = ""
