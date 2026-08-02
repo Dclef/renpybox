@@ -955,11 +955,16 @@ class YiJianFanyiPage(Base, QWidget):
         self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
         options_layout.addWidget(self.inject_base_box_chk)
 
-        self.extract_compiled_chk = CheckBox("提取 .pyc 编译字符串到标准翻译（translate strings）")
+        self.extract_compiled_chk = CheckBox(
+            "提取游戏内置隐藏文本并翻译（短信/提示/任务等，生成 zz_renpybox_bytecode_strings.rpy）"
+        )
         self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
         self.extract_compiled_chk.setToolTip(
-            "把随包 .pyc 中玩家可见的常量（如 WIP 提示、短信、任务文本）写成标准\n"
-            "old/new 翻译块，而不是留给 replace_text 补全钩子。"
+            "游戏中部分玩家可见文本（如短信、WIP 提示、任务说明）写死在程序文件里，"
+            "Ren'Py 官方抽取识别不到。\n"
+            "勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译"
+            "（写入 tl/<语言>/zz_renpybox_bytecode_strings.rpy）。\n"
+            "不勾选则这些文本不纳入标准翻译，翻译时容易漏掉，需要之后靠补全功能兜底。"
         )
         self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
         options_layout.addWidget(self.extract_compiled_chk)
