@@ -535,7 +535,7 @@ class GlossaryCandidateService(Base):
             "2. 不要输出普通词、完整句子、界面常用词、变量、占位符、路径、代码、函数名、文件名。\n"
             "3. 术语边界要尽量干净，不要包含 Mr.、Dr.、Sir、Lady、the 等常见称呼或冠词，除非它们是专名不可分割的一部分。\n"
             "4. dst 一律输出空字符串。\n"
-            "5. 只输出 JSONLINE，不要解释，不要代码块。\n"
+            "5. 只输出 JSONLINE（json lines），不要解释，不要代码块。\n"
             "输出格式：\n"
             "{\"src\":\"<术语原文>\",\"dst\":\"\",\"type\":\"<类别>\"}\n"
             "输入：\n"
@@ -554,7 +554,10 @@ class GlossaryCandidateService(Base):
 
         requester = TaskRequester(self.config, self.platform, index)
         messages = self._build_candidate_prompt(chunk)
-        skip, _, response_text, _, _ = requester.request(messages)
+        skip, _, response_text, _, _ = requester.request(
+            messages,
+            response_shape = "none",
+        )
         if skip or not isinstance(response_text, str) or response_text.strip() == "":
             return False, f"第 {index + 1} 个分块未返回可解析结果"
 
