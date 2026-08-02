@@ -1264,6 +1264,53 @@ class UnifiedExtractor:
 
         return removed_blocks
 
+    def _delete_empty_translation_files(self, tl_dir: Path, tl_name: str) -> int:
+        """删除翻译完成后仍为空的 .rpy 文件。
+
+        空文件对 Ren'Py 无意义；若删除条目后文件只剩 ``translate <lang>
+        strings:`` 头而没有条目，Ren'Py 启动会报错，因此整个文件删除。
+        同名 .rpyc 一并删除，避免 Ren'Py 读到过期的编译缓存。
+        """
+        header_re = re.compile(
+            r"^\s*translate\s+" + re.escape(tl_name) + r"\s+strings\s*:\s*$"
+        )
+        entry_re = re.compile(r"^\s*(?:old|new)\s+")
+        removed = 0
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            try:
+                lines = rpy_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except Exception:
+                continue
+            has_content = False
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if header_re.match(line):
+                    continue
+                if entry_re.match(line):
+                    has_content = True
+                    break
+                # 其它任意语句（say、python、style 等）都视为有效内容。
+                has_content = True
+                break
+            if has_content:
+                continue
+            try:
+                rpyc_file = rpy_file.with_suffix(".rpyc")
+                rpy_file.unlink()
+                if rpyc_file.exists():
+                    rpyc_file.unlink()
+                removed += 1
+                self.logger.info(
+                    f"已删除空翻译文件: {rpy_file.relative_to(tl_dir)}"
+                )
+            except Exception as exc:
+                self.logger.warning(f"删除空翻译文件失败 {rpy_file}: {exc}")
+        return removed
+
     def extract_regular(
         self,
         game_dir: str | Path,
@@ -2136,6 +2183,12 @@ class UnifiedExtractor:
                 removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
                 if removed_blocks:
                     self.logger.info(f"已移除 {removed_blocks} 个空的 translate strings 块")
+            except Exception:
+                pass
+            try:
+                removed_empty = self._delete_empty_translation_files(tl_dir, tl_name)
+                if removed_empty:
+                    self.logger.info(f"已删除 {removed_empty} 个空翻译文件")
             except Exception:
                 pass
             removed_truncated = self._remove_strings_covered_by_truncated_block_comment(tl_dir)
@@ -4071,14 +4124,11 @@ class UnifiedExtractor:
         # 清理旧版本遗留的 auto_screens_default.rpy（历史遗留，避免混入翻译目录）
         self._cleanup_legacy_auto_screens_translation(tl_dir)
 
-        # 清理空文件
+        # 删除空文件（含只剩 translate 头的文件），并清理过期 .rpyc
         self._emit_progress("正在清理空文件...", 90)
-        for rpy_file in self._iter_rpy_files(tl_dir):
-            try:
-                if rpy_file.stat().st_size == 0:
-                    rpy_file.unlink()
-            except:
-                pass
+        removed_empty = self._delete_empty_translation_files(tl_dir, tl_name)
+        if removed_empty:
+            self.logger.info(f"已删除 {removed_empty} 个空翻译文件")
 
         # 终极结构导出
         if getattr(config, "extract_export_excel", False):

@@ -701,7 +701,9 @@ def test_incremental_merge_cleans_staging_folder_and_base_box_placeholders(tmp_p
 
     assert result.success
     assert not staging_dir.exists()
-    assert 'old "Back"' not in hud.read_text(encoding="utf-8")
+    # hud.rpy 的 "Back" 与 base_box 重复被移除后只剩 translate 头，
+    # 按规则整个文件删除，避免 Ren'Py 空块报错。
+    assert not hud.exists()
     assert 'new "回来"' in (base_box / "screens_box.rpy").read_text(encoding="utf-8")
     assert 'old "New menu text"' in (tl_dir / "src" / "plot" / "new_text.rpy").read_text(encoding="utf-8")
 
@@ -2060,6 +2062,44 @@ def test_dedupe_removes_comment_above_strings_header(tmp_path):
     assert "# game/src/menu/lewd.rpy:66" not in text
     assert 'old "Got it!"' in text
     assert 'old "Welcome to the cookie jar!"' in text
+
+
+def test_delete_empty_translation_files(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    tl = tmp_path / "tl" / "chinese"
+    (tl / "src").mkdir(parents=True)
+    empty = tl / "src" / "empty.rpy"
+    empty.write_text("", encoding="utf-8")
+    header_only = tl / "src" / "header_only.rpy"
+    header_only.write_text("translate chinese strings:\n", encoding="utf-8")
+    stale_rpyc = header_only.with_suffix(".rpyc")
+    stale_rpyc.write_text("stale", encoding="utf-8")
+    comment_only = tl / "src" / "comment.rpy"
+    comment_only.write_text("# TODO: Translation updated\n", encoding="utf-8")
+    normal = tl / "src" / "normal.rpy"
+    normal.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Hello"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+    python_file = tl / "src" / "python.rpy"
+    python_file.write_text(
+        "translate chinese python:\n    renpy.store.x = 1\n",
+        encoding="utf-8",
+    )
+
+    extractor = UnifiedExtractor()
+    removed = extractor._delete_empty_translation_files(tl, "chinese")
+
+    assert removed == 3
+    assert not empty.exists()
+    assert not header_only.exists()
+    assert not stale_rpyc.exists()
+    assert not comment_only.exists()
+    assert normal.exists()
+    assert python_file.exists()
 
 
 def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
