@@ -155,10 +155,10 @@ def iter_relaxed_single_quoted_literals(line_content: str):
             quote_start = index
             continue
 
-        if not prev_char or prev_char.isspace() or prev_char in "([{,:":
-            continue
-        if next_char.isalnum() or next_char == '_':
-            continue
+        # 已进入单引号字符串后，下一个引号就是闭合符（撇号已在开头按
+        # “两侧都是字母”排除）。不能复用开启引号的启发式，否则像
+        # __('Replay ') 这样以空格结尾的字符串，其闭合引号会被误判为
+        # 开启引号，把整行代码吞成一条文本（如 'Replay ') + s.image.replace('_）。
         yield scan_line[quote_start + 1:index]
         quote_start = None
 
