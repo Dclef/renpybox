@@ -358,6 +358,40 @@ def test_sort_numbered_blocks_by_source_line(tmp_path):
     assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 0
 
 
+def test_sort_numbered_blocks_preserves_translate_python_blocks(tmp_path):
+    """排序触发重排时不能丢掉 translate python 块等内容。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_file = tl_dir / "src" / "plot" / "scene.rpy"
+    tl_file.parent.mkdir(parents=True)
+    # 顺序故意打乱（第二行在前、第一行在后），中间夹 translate python 块。
+    tl_file.write_text(
+        "# game/src/plot/scene.rpy:2\n"
+        "translate chinese second_22222222:\n"
+        '    # guide "Second line."\n'
+        '    guide "第二行。"\n'
+        "\n"
+        "translate chinese python:\n"
+        "    renpy.store.test_flag = True\n"
+        "\n"
+        "# game/src/plot/scene.rpy:1\n"
+        "translate chinese first_11111111:\n"
+        '    # guide "First line."\n'
+        '    guide "第一行。"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text = tl_file.read_text(encoding="utf-8")
+    assert text.index("first_11111111") < text.index("second_22222222")
+    assert "translate chinese python:" in text
+    assert "renpy.store.test_flag = True" in text
+    assert 'guide "第一行。"' in text
+    assert 'guide "第二行。"' in text
+
+
 def test_sort_numbered_blocks_keeps_anchorless_blocks_last(tmp_path):
     """没有行号注释的编号块保持原相对顺序，排在有行号块之后。"""
     game_dir = tmp_path / "gameproj"

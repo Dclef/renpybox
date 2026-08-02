@@ -2325,8 +2325,6 @@ class UnifiedExtractor:
             segments: List[Dict[str, object]] = []
             for block in doc.blocks:
                 kind = tl_block_kind_name(block.kind)
-                if kind not in ("LABEL", "STRINGS"):
-                    continue
                 header_idx = block.header_line_no - 1
                 # 块结束位置只取实际翻译内容（TEMPLATE/TARGET）的最后一行。
                 # 解析器会把下一块的位置注释/空行挂到当前块尾部，若整段复制
@@ -2434,6 +2432,8 @@ class UnifiedExtractor:
             if output and output[-1].strip() != "":
                 output.append("")
             try:
+                # 重建时必须保留非 LABEL/STRINGS 块（例如 translate python），
+                # 否则排序会静默丢掉这些内容。
                 atomic_write_text(
                     tl_file,
                     "\n".join(output).rstrip() + "\n",

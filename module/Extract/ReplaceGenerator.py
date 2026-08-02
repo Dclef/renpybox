@@ -976,21 +976,6 @@ RE_COMPILED_ERROR_FRAGMENT = re.compile(
 RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _drop_fragment_constants(strings: Set[str]) -> Set[str]:
-    """去掉可证明的拼接片段：是另一条编译常量的连续子串。
-
-    Ren'Py 的字符串翻译按“完整显示串”匹配（翻译发生在插值之前），因此
-    运行时由多个常量拼接而成的片段 old 永远不会被命中。这里只丢弃可静态
-    证明的片段（长度>=4 且是另一条候选常量的子串），完整显示串不受影响。
-    """
-    kept: List[str] = []
-    for text in sorted(strings, key=lambda value: (-len(value), value)):
-        if len(text) >= 4 and any(text in longer for longer in kept):
-            continue
-        kept.append(text)
-    return set(kept)
-
-
 RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
 TRANSLATABLE_UI_WORDS = {
     "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
@@ -1106,9 +1091,6 @@ def _collect_glossary_candidate_sets(
             and text not in regex_filtered
         )
     }
-    # 拼接片段（另一条编译常量的子串）在运行时永远无法整串命中，不进入
-    # 标准 old/new 或 replace 兜底；完整显示串由运行时采集路径处理。
-    compiled_filtered = _drop_fragment_constants(compiled_filtered)
     return regex_filtered, compiled_filtered, len(compiled_prefiltered - compiled_filtered)
 
 
