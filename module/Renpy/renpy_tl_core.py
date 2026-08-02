@@ -41,6 +41,25 @@ def tl_block_kind_name(value) -> str:
     return text.rsplit(".", 1)[-1]
 
 
+def tl_statement_ordinal(block, line_no):
+    """返回块中某个语句的布局无关序号。
+
+    增量临时文件与合并后的主 TL 可能存在空行/注释布局差异（先后空行、
+    META 位置注释等），因此身份不能依赖 ``line_no - header_line_no`` 这类
+    原始行偏移。这里按 TEMPLATE/TARGET 语句的相对顺序计数，所有格式下
+    都能得到相同结果。
+    """
+    if not isinstance(block, TlBlock) or not isinstance(line_no, int):
+        return None
+    ordinal = 0
+    for stmt in block.statements:
+        if stmt.line_no >= line_no:
+            break
+        if stmt.stmt_kind in (TlStmtKind.TEMPLATE, TlStmtKind.TARGET):
+            ordinal += 1
+    return ordinal
+
+
 def tl_dir_signature(tl_dir) -> tuple:
     """返回 tl 目录下全部 .rpy 文件的变更签名。
 

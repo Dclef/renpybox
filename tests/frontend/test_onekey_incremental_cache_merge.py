@@ -45,8 +45,12 @@ def _ast_item(
     digest: str,
     template_line: int = 43,
     label: str = "fictional_scene_12345678",
+    statement_ordinal: int | None = None,
 ) -> CacheItem:
     item = _item(row=row, src=src, dst=dst)
+    pair = {"template_line": template_line, "target_line": row}
+    if statement_ordinal is not None:
+        pair["statement_ordinal"] = statement_ordinal
     item.set_extra_field({
         "renpy": {
             "block": {
@@ -55,7 +59,7 @@ def _ast_item(
                 "kind": "LABEL",
                 "header_line": 40,
             },
-            "pair": {"template_line": template_line, "target_line": row},
+            "pair": pair,
             "digest": {"template_raw_sha1": digest},
         }
     })
@@ -89,6 +93,47 @@ def _strings_ast_item(
         }
     })
     return item
+
+
+def test_cache_ast_identity_is_layout_independent(tmp_path):
+    """编号缓存身份不受头部后空行布局影响（增量格式 vs 官方格式）。"""
+    from module.Renpy.renpy_tl_core import parse_tl_document
+    from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+
+    from frontend.RenpyToolbox.OneKeyTranslatePage import (
+        _cache_item_identity,
+        _numbered_disk_identity,
+    )
+
+    item_extractor = RenpyTlItemExtractor()
+
+    def items(text):
+        doc = parse_tl_document(text.splitlines())
+        return item_extractor.extract(doc, "scene.rpy")
+
+    official = items(
+        "translate chinese new_scene_33333333:\n"
+        "\n"
+        '    # guide "Hello."\n'
+        '    guide "你好。"\n'
+        "\n"
+        '    # guide "Again."\n'
+        '    guide "再次。"\n'
+    )
+    delta = items(
+        "translate chinese new_scene_33333333:\n"
+        '    # guide "Hello."\n'
+        '    guide "你好。"\n'
+        '    # guide "Again."\n'
+        '    guide "再次。"\n'
+    )
+    assert len(official) == 2 and len(delta) == 2
+    assert [_cache_item_identity(item) for item in official] == [
+        _cache_item_identity(item) for item in delta
+    ]
+    assert [_numbered_disk_identity(item) for item in official] == [
+        _numbered_disk_identity(item) for item in delta
+    ]
 
 
 def test_merge_incremental_cache_overrides_duplicates_and_preserves_main_assets(tmp_path):
@@ -378,6 +423,7 @@ def test_cache_merge_preserves_newer_main_translation_in_numbered_block(tmp_path
         digest=digest,
         template_line=43,
         label=label,
+        statement_ordinal=0,
     )
     vanished = _ast_item(
         row=46,
@@ -394,6 +440,7 @@ def test_cache_merge_preserves_newer_main_translation_in_numbered_block(tmp_path
         digest=digest,
         template_line=43,
         label=label,
+        statement_ordinal=0,
     )
     _save_json_cache(main_output, CacheProject(id="main"), [proofread, vanished])
     _save_json_cache(

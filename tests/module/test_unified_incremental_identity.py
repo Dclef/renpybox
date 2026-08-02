@@ -149,6 +149,167 @@ translate chinese strings:
     assert 'old "Existing global string"' not in output
 
 
+def test_numbered_identity_is_layout_independent_across_formats(tmp_path):
+    """增量格式（头部后无空行）与官方/合并格式（头部后有空行）身份一致。"""
+    from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
+
+    official = tmp_path / "official.rpy"
+    official.write_text(
+        "translate chinese kitchen_scene_244739f4:\n"
+        "\n"
+        '    # mono "Yes, ma\'am."\n'
+        '    mono ""\n'
+        "\n"
+        '    # mono "Again?"\n'
+        '    mono "Again?"\n',
+        encoding="utf-8",
+    )
+    delta = tmp_path / "delta.rpy"
+    delta.write_text(
+        "translate chinese kitchen_scene_244739f4:\n"
+        '    # mono "Yes, ma\'am."\n'
+        '    mono ""\n'
+        '    # mono "Again?"\n'
+        '    mono "Again?"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    item_extractor = RenpyTlItemExtractor()
+
+    def keys(path):
+        doc = parse_tl_document(path.read_text(encoding="utf-8").splitlines())
+        items = item_extractor.extract(doc, "kitchen.rpy")
+        return [
+            extractor._numbered_item_translation_key("kitchen.rpy", item)
+            for item in items
+        ]
+
+    official_keys = keys(official)
+    delta_keys = keys(delta)
+    assert len(official_keys) == 2
+    assert official_keys == delta_keys
+    # 相同模板文本的相邻语句仍可通过序号区分。
+    assert len({key[4] for key in delta_keys}) == 2
+
+
+def test_declined_candidates_recorded_and_skipped(tmp_path, monkeypatch):
+    """判定不译的候选写入项目清单，后续补充抽取不再重复提出。"""
+    from module.Extract.UnifiedExtractor import (
+        load_declined_candidates,
+        record_declined_candidates,
+    )
+
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+
+    assert record_declined_candidates(game_dir, "chinese", {"CineSaga", "Screen 1"}) == 2
+    assert load_declined_candidates(game_dir, "chinese") == {"CineSaga", "Screen 1"}
+    # 重复记录幂等。
+    assert record_declined_candidates(game_dir, "chinese", {"CineSaga"}) == 0
+
+    extractor = make_extractor()
+    candidates = {
+        "CineSaga": "res/meta/sets.rpy",
+        "Screen 1": "res/meta/sets.rpy",
+        "Fresh candidate": "res/meta/other.rpy",
+    }
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.collect_static_source_strings",
+        lambda game_dir: candidates,
+    )
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.collect_static_menu_strings",
+        lambda game_dir: {},
+    )
+    added = extractor._append_static_supplement_entries(
+        game_dir,
+        tl_dir,
+        "chinese",
+        candidates=candidates,
+        menu_candidates=set(),
+    )
+    assert added == 1
+    assert not (tl_dir / "res" / "meta" / "sets.rpy").exists()
+    text = (tl_dir / "res" / "meta" / "other.rpy").read_text(encoding="utf-8")
+    assert 'old "Fresh candidate"' in text
+
+
+def test_merge_new_entries_places_label_blocks_before_strings_block(tmp_path):
+    """合并后编号翻译块位于 old/new strings 块之前，strings 保持文件最后。"""
+    tl_dir = tmp_path / "tl"
+    tl_dir.mkdir()
+    target = tl_dir / "scene.rpy"
+    target.write_text(
+        "translate chinese strings:\n"
+        '    old "Old string"\n'
+        '    new "旧字符串"\n',
+        encoding="utf-8",
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    delta = source / "scene.rpy"
+    delta.write_text(
+        "translate chinese new_scene_33333333:\n"
+        '    # guide "Brand new line."\n'
+        '    guide "全新台词。"\n'
+        "translate chinese strings:\n"
+        '    old "New string"\n'
+        '    new "新字符串"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    extractor._merge_new_entries(
+        tl_dir,
+        source,
+        {"New string"},
+        {},
+        selected_block_keys={("scene.rpy", "new_scene_33333333")},
+    )
+
+    text = target.read_text(encoding="utf-8")
+    assert (
+        text.index("translate chinese new_scene_33333333:")
+        < text.index("translate chinese strings:")
+    )
+    assert 'old "New string"' in text
+    assert 'old "Old string"' in text
+
+
+def test_collect_declined_candidates_from_cycle(tmp_path):
+    """合并周期结束后，提出但未进入翻译输出的候选被收集。"""
+    game_dir = tmp_path / "gameproj"
+    staging = game_dir / "game" / "tl" / "chinese_new"
+    output = tmp_path / "output"
+    staging.mkdir(parents=True)
+    output.mkdir()
+    (staging / "proposed.rpy").write_text(
+        "translate chinese strings:\n"
+        '    old "Proposed but dropped"\n'
+        '    new "Proposed but dropped"\n'
+        '    old "Translated fine"\n'
+        '    new "译文"\n',
+        encoding="utf-8",
+    )
+    (output / "applied.rpy").write_text(
+        "translate chinese strings:\n"
+        '    old "Translated fine"\n'
+        '    new "译文"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    declined = extractor._collect_declined_candidates_from_cycle(
+        game_dir,
+        "chinese",
+        output,
+    )
+    assert declined == {"Proposed but dropped"}
+
+
 def test_direct_incremental_merge_keeps_new_numbered_block_with_repeated_text(tmp_path):
     target = tmp_path / "target"
     source = tmp_path / "source"

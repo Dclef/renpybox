@@ -182,6 +182,7 @@ def _cache_item_identity(item) -> tuple:
     label = block.get("label")
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
+    statement_ordinal = pair.get("statement_ordinal")
     if (
         tl_block_kind_name(block.get("kind")) == "STRINGS"
         and isinstance(lang, str)
@@ -195,13 +196,15 @@ def _cache_item_identity(item) -> tuple:
         and isinstance(header_line, int)
         and isinstance(template_line, int)
     ):
+        if not isinstance(statement_ordinal, int):
+            statement_ordinal = template_line - header_line
         return (
             "renpy-ast",
             str(item.get_file_path() or ""),
             lang,
             label,
             template_digest,
-            template_line - header_line,
+            statement_ordinal,
             str(item.get_tag() or ""),
         )
     return (
@@ -264,6 +267,7 @@ def _numbered_disk_identity(item) -> tuple | None:
         return None
     header_line = block.get("header_line")
     template_line = pair.get("template_line")
+    statement_ordinal = pair.get("statement_ordinal")
     template_digest = digest.get("template_raw_sha1")
     lang = block.get("lang")
     label = block.get("label")
@@ -276,12 +280,14 @@ def _numbered_disk_identity(item) -> tuple | None:
         and isinstance(label, str)
     ):
         return None
+    if not isinstance(statement_ordinal, int):
+        statement_ordinal = template_line - header_line
     return (
         str(item.get_file_path() or ""),
         lang,
         label,
         template_digest,
-        template_line - header_line,
+        statement_ordinal,
         str(item.get_src() or ""),
     )
 
