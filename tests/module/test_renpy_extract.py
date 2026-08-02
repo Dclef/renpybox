@@ -2011,6 +2011,57 @@ def test_extract_from_file_skips_show_lang_attribute(tmp_path):
     assert not any("Je me glisse" in text for text in extracted)
 
 
+def test_relaxed_single_quotes_do_not_swallow_code_fragment():
+    from module.Renpy.renpy_extract import iter_relaxed_single_quoted_literals
+
+    line = "alt __('Replay ') + s.image.replace('_', ' ')"
+    literals = list(iter_relaxed_single_quoted_literals(line))
+
+    assert "Replay " in literals
+    assert all("image.replace" not in value for value in literals)
+
+
+def test_extract_from_file_does_not_emit_code_fragment(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "lewd.rpy"
+    source.write_text(
+        "        alt __('Replay ') + s.image.replace('_', ' ')\n",
+        encoding="utf-8",
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert any("Replay" in text for text in extracted)
+    assert not any("image.replace" in text for text in extracted)
+
+
+def test_dedupe_removes_comment_above_strings_header(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    rpy = tl / "lewd.rpy"
+    rpy.parent.mkdir(parents=True)
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Got it!"\n'
+        '    new "知道了！"\n\n'
+        "    # game/src/menu/lewd.rpy:66\n"
+        "translate chinese strings:\n\n"
+        '    old "Welcome to the cookie jar!"\n'
+        '    new "欢迎来到角色图鉴！"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    text = rpy.read_text(encoding="utf-8")
+    assert "# game/src/menu/lewd.rpy:66" not in text
+    assert 'old "Got it!"' in text
+    assert 'old "Welcome to the cookie jar!"' in text
+
+
 def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
     from module.Extract import ReplaceGenerator as generator
 

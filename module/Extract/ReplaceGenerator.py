@@ -1299,13 +1299,17 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
 
     # 清理孤儿位置注释：条目已被删除后残留的 ``# game/<path>:<line>``。
     # 判定：注释之后（跳过空行和其它注释）既不是 old/new 行、也不是
-    # translate 块头（strings 条目或编号对话块），说明它不再属于任何
-    # 条目；同一文件里只保留第一行作为位置标记，其余删除。
+    # translate 编号对话块头，说明它不再属于任何条目；同一文件里只保留
+    # 第一行作为位置标记，其余删除。直接顶在 translate ... strings: 头
+    # 之上的位置注释不属于任何条目（位置注释只应位于 old/new 之前），
+    # 无条件删除。
+    strings_header_re = re.compile(r"^\s*translate\s+\S+\s+strings\s*:\s*$")
     for rpy_file in scanned_files:
         try:
             lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
+        remove_indexes: set[int] = set()
         orphan_indexes: list[int] = []
         for index, line in enumerate(lines):
             if not line.lstrip().startswith("# game/"):
@@ -1315,6 +1319,9 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
                 not lines[nxt].strip() or lines[nxt].lstrip().startswith("#")
             ):
                 nxt += 1
+            if nxt < len(lines) and strings_header_re.match(lines[nxt]):
+                remove_indexes.add(index)
+                continue
             if nxt >= len(lines):
                 orphan_indexes.append(index)
                 continue
@@ -1325,9 +1332,10 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             ):
                 continue
             orphan_indexes.append(index)
-        if len(orphan_indexes) <= 1:
+        if len(orphan_indexes) > 1:
+            remove_indexes.update(orphan_indexes[1:])
+        if not remove_indexes:
             continue
-        remove_indexes = set(orphan_indexes[1:])
         kept = [
             line
             for index, line in enumerate(lines)
