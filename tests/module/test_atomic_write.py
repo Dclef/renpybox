@@ -103,3 +103,21 @@ def test_atomic_write_preserves_dangling_symlink_and_creates_referent(tmp_path):
 
     assert link.is_symlink()
     assert referent.read_text(encoding="utf-8") == "created fictional linked text\n"
+
+
+def test_atomic_write_rejects_symlink_escaping_allowed_roots(tmp_path):
+    outside = tmp_path / "outside.rpy"
+    outside.write_text("secret", encoding="utf-8")
+    target_dir = tmp_path / "tl" / "chinese"
+    target_dir.mkdir(parents=True)
+    link = target_dir / "escape.rpy"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    with pytest.raises(RuntimeError, match="escapes allowed roots"):
+        atomic_write_text(link, "new content", allowed_roots=[target_dir])
+
+    # 受限根目录之外的文件不得被写入。
+    assert outside.read_text(encoding="utf-8") == "secret"

@@ -516,8 +516,16 @@ def apply_translation_files_transactionally(
     backup_root = Path(
         tempfile.mkdtemp(prefix=".renpybox-apply-", dir=str(input_dir.parent))
     )
+    input_dir_resolved = input_dir.resolve()
+    # 允许 tl 目录内部及游戏目录内的符号链接目标，但禁止写回项目之外。
+    allowed_roots = (
+        input_dir_resolved,
+        input_dir_resolved.parent,
+        input_dir_resolved.parent.parent,
+    )
     applied: list[tuple[Path, Path | None]] = []
     temp_targets: list[Path] = []
+    rollback_failed = False
     try:
         for index, source in enumerate(output_files):
             lexical_source = Path(os.path.abspath(os.fspath(source)))
@@ -547,6 +555,17 @@ def apply_translation_files_transactionally(
                     raise RuntimeError(f"翻译目标符号链接未指向文件: {target}")
             else:
                 write_target = target
+
+            # 防止翻译目录内被植入指向项目外的符号链接，导致写回覆盖外部文件。
+            resolved_write_target = write_target.resolve(strict=False)
+            if not any(
+                resolved_write_target == root
+                or root in resolved_write_target.parents
+                for root in allowed_roots
+            ):
+                raise RuntimeError(
+                    f"翻译目标符号链接指向翻译目录之外: {target} -> {write_target}"
+                )
 
             backup: Path | None = None
             if write_target.exists():
@@ -588,12 +607,27 @@ def apply_translation_files_transactionally(
                         restore_temp.unlink(missing_ok=True)
             except Exception as rollback_exc:
                 rollback_errors.append(f"{target}: {rollback_exc}")
+        rollback_failed = bool(rollback_errors)
+        preserved_hint = ""
+        if rollback_errors:
+            # 回滚失败时原文件唯一副本仍在 backup_root，必须保留而不是删除。
+            preserved = backup_root.with_name(
+                f"{backup_root.name}-rollback-{int(time.time())}"
+            )
+            try:
+                backup_root.replace(preserved)
+                preserved_hint = f"；原始文件备份保留在: {preserved}"
+            except Exception:
+                preserved_hint = f"；原始文件备份目录: {backup_root}（未能重命名）"
         detail = f"；回滚失败：{'；'.join(rollback_errors)}" if rollback_errors else ""
-        raise RuntimeError(f"应用翻译失败，已回滚本批次：{apply_exc}{detail}") from apply_exc
+        raise RuntimeError(
+            f"应用翻译失败，已回滚本批次：{apply_exc}{detail}{preserved_hint}"
+        ) from apply_exc
     finally:
         for temp_target in temp_targets:
             temp_target.unlink(missing_ok=True)
-        shutil.rmtree(backup_root, ignore_errors=True)
+        if not rollback_failed:
+            shutil.rmtree(backup_root, ignore_errors=True)
 
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):

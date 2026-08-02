@@ -183,6 +183,7 @@ class RENPY(Base):
                     target_path,
                     "\n".join(lines),
                     validator=lambda value: parse_tl_document(value.splitlines()),
+                    allowed_roots=[self.output_path],
                 )
             except Exception as exc:
                 self.error(f"Failed to write Ren'Py file {target_path}", exc)
@@ -404,13 +405,15 @@ class RENPY(Base):
             actual = remaining.pop(picked_index)
             dialogue_unapplied = (
                 self._has_translated_value(expected.get_src(), expected.get_dst())
-                and actual.get_dst() != expected.get_dst()
+                and self._normalize_compare_value(actual.get_dst())
+                != self._normalize_compare_value(expected.get_dst())
             )
             name_unapplied = (
                 self._has_translated_value(
                     expected.get_name_src(), expected.get_name_dst()
                 )
-                and actual.get_name_dst() != expected.get_name_dst()
+                and self._normalize_compare_value(actual.get_name_dst())
+                != self._normalize_compare_value(expected.get_name_dst())
             )
             if dialogue_unapplied or name_unapplied:
                 unapplied.append(expected)
@@ -424,6 +427,13 @@ class RENPY(Base):
         if isinstance(target, list):
             return bool(target) and target != source
         return False
+
+    @staticmethod
+    def _normalize_compare_value(value) -> str:
+        """归一化后比较写回结果，避免列表/空白差异造成误报。"""
+        if isinstance(value, list):
+            return "|".join(str(v) for v in value if v is not None)
+        return str(value or "").strip()
 
     def _normalize_name_key(self, value: str | list[str] | None) -> str:
         if isinstance(value, list):

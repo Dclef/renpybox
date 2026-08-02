@@ -709,3 +709,127 @@ def test_cross_file_write_failure_preserves_incremental_translation(tmp_path, mo
     assert 'new "Align the fictional telescope"' in placeholder.read_text(
         encoding="utf-8"
     )
+
+def test_changed_numbered_block_keeps_unchanged_line_translation(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    target = game_dir / "game" / "tl" / "chinese" / "plot" / "observatory.rpy"
+    incremental = game_dir / "game" / "tl" / "chinese_new"
+    delta = incremental / "plot" / "observatory.rpy"
+    write_tl(
+        target,
+        'translate chinese observatory_report_12345678:\n'
+        '    # guide "The observatory opens."\n'
+        '    guide "天文台已开放。"\n'
+        '    # guide "The observatory closes."\n'
+        '    guide "The observatory closes."\n',
+    )
+    write_tl(
+        delta,
+        'translate chinese observatory_report_12345678:\n'
+        '    # guide "The observatory opens."\n'
+        '    guide "The observatory opens."\n'
+        '    # guide "The observatory is closed today."\n'
+        '    guide "The observatory is closed today."\n',
+    )
+
+    result = UnifiedExtractor().merge_incremental_folder(
+        game_dir, "chinese", incremental, clean_duplicates=False
+    )
+
+    assert result.success is True
+    merged = target.read_text(encoding="utf-8")
+    # 未变语句保留旧译文。
+    assert "天文台已开放。" in merged
+    assert 'guide "The observatory opens."' not in merged.splitlines()[-1]
+    # 变化语句保持占位待译。
+    assert "The observatory is closed today." in merged
+    assert "天文台今日关闭。" not in merged
+
+
+def test_stale_incremental_state_is_recovered(tmp_path):
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    (tl_dir / "kept.rpy").write_text("kept translation", encoding="utf-8")
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = type(
+        "TestLogger",
+        (),
+        {
+            "info": lambda self, message: None,
+            "warning": lambda self, message: None,
+            "error": lambda self, message: None,
+        },
+    )()
+
+    # 模拟崩溃现场：tl 被移走、只剩 journal + 临时备份。
+    temp_dir = game_dir / "_temp_extract_chinese_123"
+    backup = temp_dir / "_tl_backup"
+    backup.mkdir(parents=True, exist_ok=True)
+    (backup / "kept.rpy").write_text("kept translation", encoding="utf-8")
+    import shutil
+    shutil.rmtree(str(tl_dir))
+    extractor._write_incremental_journal(game_dir, "chinese", temp_dir, tl_dir)
+
+    recovered = extractor._recover_stale_incremental_state(game_dir, "chinese")
+
+    assert recovered == tl_dir
+    assert tl_dir.is_dir()
+    assert (tl_dir / "kept.rpy").read_text(encoding="utf-8") == "kept translation"
+    assert not extractor._incremental_journal_path(game_dir, "chinese").exists()
+    assert not temp_dir.exists()
+
+
+def test_regular_extract_restores_tl_on_failure(tmp_path, monkeypatch):
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    (tl_dir / "old.rpy").write_text(
+        "translate chinese strings:\n\n"
+        '    old "Old entry."\n'
+        '    new "旧条目。"\n',
+        encoding="utf-8",
+    )
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = type(
+        "TestLogger",
+        (),
+        {
+            "info": lambda self, message: None,
+            "warning": lambda self, message: None,
+            "error": lambda self, message: None,
+        },
+    )()
+    extractor.renpy_extractor = type("E", (), {})()
+    extractor._emit_progress = lambda message, percent: None
+
+    # 官方/自定义抽取之后，后处理强制失败。
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated post-process failure")
+
+    monkeypatch.setattr(extractor, "_post_process", fail)
+
+    class FakeConfig:
+        def __init__(self):
+            self.extract_use_official = True
+            self.extract_use_custom = True
+            self.onekey_inject_base_box = False
+
+        def load(self):
+            return self
+
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config", FakeConfig)
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        lambda *args, **kwargs: None,
+    )
+    extractor._append_static_supplement_entries = lambda *args, **kwargs: 0
+    extractor._append_compiled_supplement_entries = lambda *args, **kwargs: 0
+
+    result = extractor.extract_regular(game_dir, "chinese", exe_path=None, use_official=False)
+
+    assert result.success is False
+    assert "已自动恢复原翻译目录" in result.message
+    assert (tl_dir / "old.rpy").read_text(encoding="utf-8").startswith(
+        "translate chinese strings:"
+    )

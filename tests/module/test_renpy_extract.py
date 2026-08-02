@@ -1526,6 +1526,32 @@ def test_uncovered_filter_treats_trimmed_and_fragment_chunks_as_covered():
     assert uncovered == {"Audio", "Dance.", "Age: [who.age]"}
 
 
+def test_uncovered_filter_keeps_short_ui_labels_that_are_long_string_substrings():
+    from module.Extract.ReplaceGenerator import _filter_uncovered_candidates
+
+    candidates = {
+        "Save",
+        "Start",
+        "Next",
+        "A long chunk of a covered multi-line string.",
+    }
+    covered = {
+        "Save me from these harpies, champ... I beg ya!",
+        "Start savin' up and buy something more appropriate, capisce?",
+        "Next time you need more than wife to protect you.",
+        "A long chunk of a covered multi-line string.",
+    }
+
+    uncovered = _filter_uncovered_candidates(candidates, covered)
+
+    # 短 UI 标签绝不能因为“是长对话的子串”而被判为已覆盖。
+    assert "Save" in uncovered
+    assert "Start" in uncovered
+    assert "Next" in uncovered
+    # 真正的整句块仍然视为已覆盖。
+    assert "A long chunk of a covered multi-line string." not in uncovered
+
+
 def test_replace_rule_preserves_interpolated_values():
     from module.Extract import ReplaceGenerator as generator
 
@@ -1913,3 +1939,192 @@ def test_runtime_write_incremental_only_appends_missing(tmp_path):
         )
         == 1
     )
+
+
+def test_fragment_constants_are_dropped_but_full_strings_kept():
+    from module.Extract.ReplaceGenerator import _drop_fragment_constants
+
+    candidates = {
+        "Fool around with a fictional character in the garden.",
+        "Let's fool around together later.",
+        "fool around",
+        "do it",
+        "Please do it again tomorrow.",
+        "Noon (first-time).",
+        "First time with [saga.cast.tony]'s blessing.",
+    }
+
+    kept = _drop_fragment_constants(candidates)
+
+    assert "fool around" not in kept
+    assert "do it" not in kept
+    assert "Fool around with a fictional character in the garden." in kept
+    assert "Noon (first-time)." in kept
+    assert "First time with [saga.cast.tony]'s blessing." in kept
+
+
+def test_acronym_separation_and_glossary_registration(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+    import module.Config as config_module
+
+    saved = {}
+
+    class FakeConfig:
+        glossary_data = []
+
+        def save(self):
+            saved["data"] = list(self.glossary_data)
+
+        def load(self):
+            return self
+
+    monkeypatch.setattr(config_module, "Config", FakeConfig)
+
+    acronyms = generator._separate_acronym_candidates(
+        {"USB", "DLC", "START", "Noon (first-time)."}
+    )
+    assert acronyms == {"USB", "DLC"}
+
+    added = generator.add_acronyms_to_glossary(acronyms)
+    assert added == 2
+    assert saved["data"]
+    entries = {item["src"]: item for item in saved["data"]}
+    assert entries["USB"]["dst"] == "USB"
+    assert entries["DLC"]["dst"] == "DLC"
+    assert "自动采集缩写" in entries["USB"]["comment"]
+
+
+def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: ({"START"}, {"USB"}, 0),
+    )
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+    monkeypatch.setattr(generator, "add_acronyms_to_glossary", lambda items: len(items))
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=True,
+    )
+
+    assert {entry["src"] for entry in entries} == {"START"}
+    assert stats["preserved_acronym_count"] == 1
+
+
+def test_compiled_supplement_excludes_acronyms_and_registers_glossary(
+    tmp_path, monkeypatch
+):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    registered = []
+    monkeypatch.setattr(
+        "module.Extract.ReplaceGenerator.add_acronyms_to_glossary",
+        lambda items: registered.append(set(items)) or len(items),
+    )
+
+    added = extractor._append_compiled_supplement_entries(
+        game,
+        tl_dir,
+        "chinese",
+        candidates={"USB", "Noon (first-time)."},
+    )
+
+    assert added == 1
+    assert registered == [{"USB"}]
+    content = (tl_dir / "zz_renpybox_compiled_strings.rpy").read_text(encoding="utf-8")
+    assert 'old "Noon (first-time)."' in content
+    assert 'old "USB"' not in content
+
+
+def test_string_originals_cache_invalidates_on_file_change(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    tl_dir = tmp_path / "tl" / "chinese"
+    rpy = tl_dir / "a.rpy"
+    rpy.parent.mkdir(parents=True)
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "First entry."\n'
+        '    new "First entry."\n',
+        encoding="utf-8",
+    )
+
+    first = extractor._get_string_originals(tl_dir)
+    assert first == {"First entry."}
+    # 同一内容重复读取命中缓存，结果一致。
+    assert extractor._get_string_originals(tl_dir) == first
+
+    # 文件变化后必须重新计算，不能返回旧缓存。
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Second entry."\n'
+        '    new "Second entry."\n',
+        encoding="utf-8",
+    )
+    assert extractor._get_string_originals(tl_dir) == {"Second entry."}
+
+
+def test_extract_new_entries_legacy_fallback_skips_blank_between_old_and_new(
+    tmp_path, monkeypatch
+):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    source_dir = tmp_path / "source"
+    target_dir = tmp_path / "target"
+    source_file = source_dir / "script.rpy"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual legacy entry."\n'
+        "\n"
+        '    new "虚拟旧回退条目。"\n',
+        encoding="utf-8",
+    )
+
+    # 强制走旧正则回退路径（AST 抛错）。
+    def boom(*args, **kwargs):
+        raise RuntimeError("forced AST failure")
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.parse_tl_document", boom
+    )
+
+    extractor._extract_new_entries_to_folder(
+        source_dir, target_dir, {"Virtual legacy entry."}, "chinese"
+    )
+
+    output = target_dir / "script.rpy"
+    content = output.read_text(encoding="utf-8")
+    assert 'old "Virtual legacy entry."' in content
+    assert 'new "虚拟旧回退条目。"' in content

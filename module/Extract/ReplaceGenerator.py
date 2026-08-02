@@ -24,6 +24,7 @@ from typing import Any, List, Optional, Sequence, Set, Tuple
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.Renpy.renpy_tl_core import tl_dir_signature
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import should_skip_text
 
@@ -38,6 +39,9 @@ COMPILED_CACHE = "compiled_extracted.json"
 HOOK_MANIFEST = "hook_translate_manifest.json"
 REGEX_CACHE_VERSION = 3  # 过滤规则新增存档页标记等，必须作废旧候选缓存。
 COMPILED_CACHE_VERSION = 3
+
+# tl 覆盖结果缓存：键为 (tl 目录解析路径, 文件签名)，文件变化即失效。
+_TL_COVERED_CACHE: dict = {}
 
 # This helper is intentionally executed by the game's own Python runtime so its
 # marshal format always matches the game's .pyc files.  It only walks code
@@ -755,6 +759,14 @@ def _get_tl_covered_strings(target_path: str | Path, tl_name: str) -> Set[str]:
         return set()
 
     try:
+        cache_key = (str(tl_dir.resolve()), tl_dir_signature(tl_dir))
+        cached = _TL_COVERED_CACHE.get(cache_key)
+        if cached is not None:
+            return set(cached)
+    except Exception:
+        cache_key = None
+
+    try:
         extractor = SimpleRpyExtractor()
         entries = extractor.extract_from_directory(
             tl_dir,
@@ -764,6 +776,8 @@ def _get_tl_covered_strings(target_path: str | Path, tl_name: str) -> Set[str]:
         )
         originals = {e.get("original", "") for e in entries if e.get("original")}
         logger.debug(f"tl 覆盖：已读取 {len(originals)} 条原文")
+        if cache_key is not None:
+            _TL_COVERED_CACHE[cache_key] = frozenset(originals)
         return originals
     except Exception as e:
         logger.warning(f"读取 tl 覆盖失败: {e}")
@@ -962,6 +976,85 @@ RE_COMPILED_ERROR_FRAGMENT = re.compile(
 RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _drop_fragment_constants(strings: Set[str]) -> Set[str]:
+    """去掉可证明的拼接片段：是另一条编译常量的连续子串。
+
+    Ren'Py 的字符串翻译按“完整显示串”匹配（翻译发生在插值之前），因此
+    运行时由多个常量拼接而成的片段 old 永远不会被命中。这里只丢弃可静态
+    证明的片段（长度>=4 且是另一条候选常量的子串），完整显示串不受影响。
+    """
+    kept: List[str] = []
+    for text in sorted(strings, key=lambda value: (-len(value), value)):
+        if len(text) >= 4 and any(text in longer for longer in kept):
+            continue
+        kept.append(text)
+    return set(kept)
+
+
+RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
+TRANSLATABLE_UI_WORDS = {
+    "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
+    "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
+    "OFF", "NEW", "AUTO",
+}
+
+
+def _separate_acronym_candidates(candidates: Set[str]) -> Set[str]:
+    """返回其中的大写缩写候选（可翻译 UI 词除外）。"""
+    return {
+        text
+        for text in candidates
+        if RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(text.strip())
+        and text.strip() not in TRANSLATABLE_UI_WORDS
+    }
+
+
+def add_acronyms_to_glossary(acronyms: Set[str]) -> int:
+    """把大写缩写以 src==dst 写入术语库，避免被误译或漏译。"""
+    if not acronyms:
+        return 0
+    try:
+        from module.Config import Config
+
+        config = Config().load()
+        glossary_data = getattr(config, "glossary_data", None) or []
+        manual_entries = []
+        existing_src: Set[str] = set()
+        for item in glossary_data:
+            if isinstance(item, dict):
+                src = str(item.get("src", "") or "")
+                info = str(item.get("comment", "") or "").lower()
+                existing_src.add(src)
+                if "自动采集缩写" in info:
+                    continue
+            manual_entries.append(item)
+
+        added = 0
+        for acronym in sorted(acronyms):
+            clean = acronym.strip()
+            if not clean or clean in existing_src:
+                continue
+            manual_entries.append(
+                {
+                    "src": clean,
+                    "dst": clean,
+                    "comment": "(自动采集缩写)",
+                    "type": "缩写",
+                }
+            )
+            existing_src.add(clean)
+            added += 1
+
+        if added:
+            config.glossary_data = manual_entries
+            config.save()
+        return added
+    except Exception as exc:
+        logger = LogManager.get()
+        logger.warning(f"添加缩写到术语库失败: {exc}")
+        return 0
+
+
 def _is_compiled_technical_text(text: str) -> bool:
     """Return whether a bytecode constant is clearly code/markup, not UI text."""
     value = str(text or "").strip()
@@ -1013,6 +1106,9 @@ def _collect_glossary_candidate_sets(
             and text not in regex_filtered
         )
     }
+    # 拼接片段（另一条编译常量的子串）在运行时永远无法整串命中，不进入
+    # 标准 old/new 或 replace 兜底；完整显示串由运行时采集路径处理。
+    compiled_filtered = _drop_fragment_constants(compiled_filtered)
     return regex_filtered, compiled_filtered, len(compiled_prefiltered - compiled_filtered)
 
 
@@ -1261,10 +1357,13 @@ def _filter_uncovered_candidates(
         text = candidate.strip()
         if text in stripped_covered:
             continue
-        # A short identifier can be a prefix of a longer covered string
-        # (e.g. "Audio" vs "Audio Filename:"), so only treat chunk fragments
-        # of long multi-line strings as covered.
-        if len(text) >= 4 and text in long_corpus:
+        # 长字符串按引号切块扫描时，整句块（通常较长）可以视为已覆盖；但
+        # 短标签（Save/Start/Next 等独立 UI 文本）绝不能因为“是某条长对话
+        # 的子串”就被判为已覆盖，否则会被静默漏掉。
+        if (
+            len(text) >= 15
+            and re.search(rf"(?<!\w){re.escape(text)}(?!\w)", long_corpus) is not None
+        ):
             continue
         uncovered.add(candidate)
     return uncovered
@@ -1296,6 +1395,13 @@ def collect_hook_translation_entries(
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
     missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
     glossary_map = _load_glossary_map()
+
+    # 大写缩写（USB 等）在采集时分离：以 src==dst 写入术语库，既不进
+    # 补全列表也不会被误译。
+    preserved_acronyms = _separate_acronym_candidates(missing)
+    if preserved_acronyms and auto_update_glossary:
+        add_acronyms_to_glossary(preserved_acronyms)
+    missing -= preserved_acronyms
 
     missing_rpy = missing & rpy_candidates
     missing_compiled = missing & compiled_candidates
@@ -1335,6 +1441,7 @@ def collect_hook_translation_entries(
         "filtered_technical_count": filtered_technical_count,
         "covered_count": len(tl_covered),
         "missing_count": len(missing),
+        "preserved_acronym_count": len(preserved_acronyms),
         "auto_filled_count": auto_filled_count,
         "detected_names_count": len(detected_names),
         "added_names_count": added_names,
@@ -1391,6 +1498,11 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     
     # 3. 计算差集
     missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
+    # 大写缩写（USB 等）在采集时分离：以 src==dst 写入术语库。
+    preserved_acronyms = _separate_acronym_candidates(missing)
+    if preserved_acronyms:
+        add_acronyms_to_glossary(preserved_acronyms)
+    missing -= preserved_acronyms
     
     logger.info(f"扫描统计: 正则={len(regex_filtered)}, tl覆盖={len(tl_covered)}, 缺失={len(missing)}")
     

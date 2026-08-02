@@ -325,7 +325,11 @@ class RENPYSOURCE(Base):
                     f"applied={applied}, already_applied={already_applied}, skipped={skipped})"
                 )
             try:
-                atomic_write_text(target_path, "\n".join(lines))
+                atomic_write_text(
+                    target_path,
+                    "\n".join(lines),
+                    allowed_roots=[self.output_path],
+                )
             except Exception as exc:
                 self.error(f"写入 Ren'Py 源码失败: {target_path}", exc)
                 errors.append(f"写入失败 {target_path}: {exc}")
