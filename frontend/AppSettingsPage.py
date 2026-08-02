@@ -16,7 +16,6 @@ from qfluentwidgets import IconWidget
 from qfluentwidgets import MessageBox
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import PrimaryPushButton
-from qfluentwidgets import ProgressBar
 from qfluentwidgets import PushButton
 from qfluentwidgets import StrongBodyLabel
 from qfluentwidgets import SwitchButton
@@ -31,10 +30,12 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 from widget.ComboBoxCard import ComboBoxCard
+from widget.DownloadProgressBar import DownloadProgressBar
 from widget.GroupCard import GroupCard
 from widget.LineEditCard import LineEditCard
 from widget.Separator import Separator
 from widget.SwitchButtonCard import SwitchButtonCard
+from widget.ThemeHelper import get_theme_accent_color
 
 
 class AppSettingsPage(QWidget, Base):
@@ -121,7 +122,7 @@ class AppSettingsPage(QWidget, Base):
         status_layout.setContentsMargins(0, 12, 0, 12)
         status_layout.setSpacing(16)
         self.update_status_icon = IconWidget(
-            FluentIcon.ACCEPT.icon(color=QColor("#BCA483")),
+            FluentIcon.ACCEPT.icon(color=get_theme_accent_color()),
             status_row,
         )
         self.update_status_icon.setFixedSize(16, 16)
@@ -129,12 +130,24 @@ class AppSettingsPage(QWidget, Base):
         status_text = QVBoxLayout()
         status_text.setContentsMargins(0, 0, 0, 0)
         status_text.setSpacing(8)
+        # 状态文案与百分比同行：文案左对齐、百分比右对齐贴着进度条右端。
+        status_head = QHBoxLayout()
+        status_head.setContentsMargins(0, 0, 0, 0)
+        status_head.setSpacing(8)
         self.update_status_label = BodyLabel(strings.app_update_status_latest, status_row)
-        status_text.addWidget(self.update_status_label)
-        self.update_progress_bar = ProgressBar(status_row)
+        status_head.addWidget(self.update_status_label)
+        status_head.addStretch(1)
+        self.update_progress_label = CaptionLabel("", status_row)
+        self.update_progress_label.setAlignment(
+            Qt.AlignRight | Qt.AlignVCenter
+        )
+        self.update_progress_label.hide()
+        status_head.addWidget(self.update_progress_label)
+        status_text.addLayout(status_head)
+
+        self.update_progress_bar = DownloadProgressBar(status_row)
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(0)
-        self.update_progress_bar.setFixedHeight(4)
         self.update_progress_bar.setMinimumWidth(0)
         self.update_progress_bar.hide()
         status_text.addWidget(self.update_progress_bar)
@@ -149,15 +162,6 @@ class AppSettingsPage(QWidget, Base):
         self.update_install_button = PrimaryPushButton(strings.app_update_install, status_row)
         self.update_install_button.setMinimumWidth(168)
         self.update_install_button.clicked.connect(self._handle_install_update)
-        # 主题色上白字对比度不足，实心主按钮会被误读为禁用，单独压深底色。
-        self.update_install_button.setStyleSheet(
-            "PrimaryPushButton {"
-            "    background-color: #8A7355;"
-            "    border: 1px solid #7A6549;"
-            "}"
-            "PrimaryPushButton:hover { background-color: #977F5F; }"
-            "PrimaryPushButton:pressed { background-color: #7A6549; }"
-        )
         self.update_install_button.hide()
         status_layout.addWidget(self.update_install_button)
         group.add_widget(status_row)
@@ -270,7 +274,10 @@ class AppSettingsPage(QWidget, Base):
             not self._checking_update and status != VersionManager.Status.UPDATING
         )
         self.update_progress_bar.hide()
+        self.update_progress_label.hide()
         if status != VersionManager.Status.UPDATING:
+            self.update_progress_bar.stopShimmer()
+            self.update_progress_bar.setError(False)
             self.update_progress_bar.setValue(0)
         self.update_action_button.hide()
         self.update_action_button.setEnabled(True)
@@ -278,12 +285,12 @@ class AppSettingsPage(QWidget, Base):
 
         if self._checking_update:
             self.update_status_icon.setIcon(
-                FluentIcon.UPDATE.icon(color=QColor("#BCA483"))
+                FluentIcon.UPDATE.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(strings.app_update_checking)
         elif status == VersionManager.Status.NEW_VERSION:
             self.update_status_icon.setIcon(
-                FluentIcon.UPDATE.icon(color=QColor("#BCA483"))
+                FluentIcon.UPDATE.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(
                 strings.app_update_status_new.replace("{VERSION}", version)
@@ -292,7 +299,7 @@ class AppSettingsPage(QWidget, Base):
             self.update_action_button.show()
         elif status == VersionManager.Status.UPDATING:
             self.update_status_icon.setIcon(
-                FluentIcon.CLOUD_DOWNLOAD.icon(color=QColor("#BCA483"))
+                FluentIcon.CLOUD_DOWNLOAD.icon(color=get_theme_accent_color())
             )
             downloaded = state.get("downloaded_size", 0)
             total = state.get("total_size", 0)
@@ -306,8 +313,16 @@ class AppSettingsPage(QWidget, Base):
                 progress = int(int(downloaded) / max(1, int(total)) * 100)
             except (TypeError, ValueError):
                 progress = 0
-            self.update_progress_bar.setValue(max(0, min(100, progress)))
+            progress = max(0, min(100, progress))
+            self.update_progress_bar.setValue(progress)
             self.update_progress_bar.show()
+            self.update_progress_label.setText(f"{progress}%")
+            self.update_progress_label.show()
+            # 取消中就停掉流光，避免界面还在“正在传输”地跑。
+            if self._cancelling_update:
+                self.update_progress_bar.stopShimmer()
+            else:
+                self.update_progress_bar.startShimmer()
             self.update_action_button.setText(
                 strings.app_update_cancelling
                 if self._cancelling_update
@@ -317,13 +332,13 @@ class AppSettingsPage(QWidget, Base):
             self.update_action_button.show()
         elif status == VersionManager.Status.DOWNLOADED:
             self.update_status_icon.setIcon(
-                FluentIcon.ACCEPT.icon(color=QColor("#BCA483"))
+                FluentIcon.ACCEPT.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(strings.app_update_status_downloaded)
             self.update_install_button.show()
         elif self._known_update_available(latest):
             self.update_status_icon.setIcon(
-                FluentIcon.UPDATE.icon(color=QColor("#BCA483"))
+                FluentIcon.UPDATE.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(
                 strings.app_update_status_new.replace("{VERSION}", version)
@@ -342,7 +357,7 @@ class AppSettingsPage(QWidget, Base):
             self.update_status_label.setText(strings.app_update_status_not_checked)
         else:
             self.update_status_icon.setIcon(
-                FluentIcon.ACCEPT.icon(color=QColor("#BCA483"))
+                FluentIcon.ACCEPT.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(strings.app_update_status_latest)
 
