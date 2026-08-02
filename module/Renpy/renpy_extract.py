@@ -39,6 +39,9 @@ RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
 RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
+# say 语句的 show_lang 属性（原语言教学辅助文本）。该 Ren'Py 构建并不显示它，
+# 其引号内容不应作为翻译候选。
+RE_SHOW_LANG_ATTR = re.compile(r'show_lang\s*=\s*(["\'])(?:\\.|(?!\1).)*\1')
 # ============================================
 
 # 检测字符串是否包含中文字符（或其他CJK字符）
@@ -618,6 +621,12 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     p_content = ''
     for index, line_content in enumerate(_read_line):
         indent_level = len(line_content) - len(line_content.lstrip(' '))
+        # show_lang 属性是原语言教学辅助文本（本构建不显示），剔除其引号
+        # 内容，避免把法语等原文拆成多余翻译候选。
+        if 'show_lang=' in line_content:
+            line_content = RE_SHOW_LANG_ATTR.sub('', line_content)
+            if not line_content.strip():
+                continue
         stripped_line = line_content.strip()
 
         if skip_translate_block:
