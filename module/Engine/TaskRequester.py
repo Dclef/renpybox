@@ -2,7 +2,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import anthropic
 import httpx
@@ -28,6 +28,9 @@ class ThinkingLevel(StrEnum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     MAX = "MAX"
+
+
+ResponseShape = Literal["none", "json_object"]
 
 
 class TaskRequester(Base):
@@ -279,6 +282,7 @@ class TaskRequester(Base):
         self.platform = platform
         self.current_round = current_round
         self.thinking_level = self.resolve_thinking_level(self.platform.get("thinking"))
+        self.last_error_message = ""
 
     @classmethod
     def resolve_thinking_level(cls, thinking: Any) -> ThinkingLevel:
@@ -554,7 +558,14 @@ class TaskRequester(Base):
         return existing
 
     # 发起请求
-    def request(self, messages: list[dict]) -> tuple[bool, str, str, int, int]:
+    def request(
+        self,
+        messages: list[dict],
+        *,
+        response_shape: ResponseShape = "none",
+    ) -> tuple[bool, str, str, int, int]:
+        self.last_error_message = ""
+
         # 添加请求入口日志
         self.debug(f"[API-REQUEST] 准备请求: model={self.platform.get('model')}, "
                    f"api_format={self.platform.get('api_format')}, "
@@ -576,7 +587,12 @@ class TaskRequester(Base):
             if self.platform.get('api_format') == Base.APIFormat.SAKURALLM:
                 return self.request_sakura(messages, thinking_level, args)
             elif self.platform.get('api_format') == Base.APIFormat.GOOGLE:
-                return self.request_google(messages, thinking_level, args)
+                return self.request_google(
+                    messages,
+                    thinking_level,
+                    args,
+                    response_shape = response_shape,
+                )
             elif self.platform.get('api_format') == Base.APIFormat.ANTHROPIC:
                 return self.request_anthropic(messages, thinking_level, args)
             elif self.platform.get('api_format') == Base.APIFormat.DEEPL:
@@ -584,7 +600,12 @@ class TaskRequester(Base):
             elif self.platform.get('api_format') == Base.APIFormat.DEEPLX:
                 return self.request_deeplx(messages)
             else:
-                return self.request_openai(messages, thinking_level, args)
+                return self.request_openai(
+                    messages,
+                    thinking_level,
+                    args,
+                    response_shape = response_shape,
+                )
 
         last_result: tuple[bool, str, str, int, int] = (True, None, None, None, None)
         for attempt in range(1, __class__.MAX_REQUEST_RETRY + 1):
@@ -594,9 +615,16 @@ class TaskRequester(Base):
                 return True, None, None, None, None
 
             self.debug(f"[API-REQUEST] 尝试 {attempt}/{__class__.MAX_REQUEST_RETRY}")
-            last_result = dispatch()
+            try:
+                last_result = dispatch()
+            except openai.BadRequestError as e:
+                self.last_error_message = str(e)
+                self.error(f"{Localizer.get().log_task_fail}", e)
+                self.warning("[API-REQUEST] 请求参数错误，不再重试")
+                return True, None, None, None, None
             skip = last_result[0]
             if skip is False:
+                self.last_error_message = ""
                 self.debug(f"[API-REQUEST] 请求成功")
                 return last_result
 
@@ -749,7 +777,10 @@ class TaskRequester(Base):
             if degraded:
                 return False, "", response_result, 0, 0
 
+        except openai.BadRequestError:
+            raise
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
@@ -757,7 +788,14 @@ class TaskRequester(Base):
         return False, "", response_result, input_tokens, output_tokens
 
     # 生成请求参数
-    def generate_openai_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict:
+    def generate_openai_args(
+        self,
+        messages: list[dict[str, str]],
+        thinking_level: ThinkingLevel,
+        args: dict[str, float],
+        *,
+        response_shape: ResponseShape = "none",
+    ) -> dict:
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
@@ -803,10 +841,12 @@ class TaskRequester(Base):
                 extra_body["thinking"] = {"type": "disabled"}
             else:
                 extra_body["thinking"] = {"type": "enabled"}
-                # DeepSeek V4 已支持 reasoning_effort=high/max。
+                # DeepSeek V4 支持 reasoning_effort=low/high/max。
                 # 这里仅对 DeepSeek 追加该参数，避免把未验证字段传给 GLM / Kimi。
                 if "deepseek" in model.lower():
-                    if thinking_level == ThinkingLevel.MAX:
+                    if thinking_level == ThinkingLevel.LOW:
+                        extra_body["reasoning_effort"] = "low"
+                    elif thinking_level == ThinkingLevel.MAX:
                         extra_body["reasoning_effort"] = "max"
                     else:
                         extra_body["reasoning_effort"] = "high"
@@ -820,14 +860,24 @@ class TaskRequester(Base):
         if extra_body != {}:
             args["extra_body"] = extra_body
 
-        # 结构化输出：让 API 保证返回合法 JSON
-        if self.config.structured_output_enable:
-            args["response_format"] = {"type": "json_object"}
+        # 结构化输出由本次请求声明，不能复用全局翻译协议。
+        if response_shape == "json_object":
+            if any("json" in str(message.get("content", "")) for message in messages):
+                args["response_format"] = {"type": "json_object"}
+            else:
+                self.warning("[API-REQUEST] 提示词未包含小写 json，已跳过 json_object 输出约束")
 
         return args
 
     # 发起请求（流式 + 退化检测）
-    def request_openai(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+    def request_openai(
+        self,
+        messages: list[dict[str, str]],
+        thinking_level: ThinkingLevel,
+        args: dict[str, float],
+        *,
+        response_shape: ResponseShape = "none",
+    ) -> tuple[bool, str, str, int, int]:
         client = None
         client_key = None
         try:
@@ -841,7 +891,12 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            openai_args = self.generate_openai_args(messages, thinking_level, args)
+            openai_args = self.generate_openai_args(
+                messages,
+                thinking_level,
+                args,
+                response_shape = response_shape,
+            )
             openai_args["stream"] = True
             openai_args["stream_options"] = {"include_usage": True}
 
@@ -903,7 +958,10 @@ class TaskRequester(Base):
             if degraded:
                 return False, response_think, response_result, 0, 0
 
+        except openai.BadRequestError:
+            raise
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
@@ -911,7 +969,14 @@ class TaskRequester(Base):
         return False, response_think, response_result, input_tokens, output_tokens
 
     # 生成请求参数
-    def generate_google_args(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> dict[str, str | int | float]:
+    def generate_google_args(
+        self,
+        messages: list[dict[str, str]],
+        thinking_level: ThinkingLevel,
+        args: dict[str, float],
+        *,
+        response_shape: ResponseShape = "none",
+    ) -> dict[str, str | int | float]:
         # Gemini 2.5 Flash 在长文本批次下容易命中 4096 输出上限导致截断。
         # 这里提高默认上限，降低 JSONLINE 行数不匹配（如 2/9）的重试概率。
         model = str(self.platform.get("model") or "")
@@ -1034,8 +1099,8 @@ class TaskRequester(Base):
         if system_parts:
             args["system_instruction"] = "\n".join(system_parts)
 
-        # 结构化输出：让 Gemini 保证返回合法 JSON
-        if self.config.structured_output_enable:
+        # 结构化输出由本次请求声明，避免给 JSONLINE 或纯文本套翻译 schema。
+        if response_shape == "json_object":
             args["response_mime_type"] = "application/json"
             args["response_schema"] = __class__.TRANSLATION_RESULT_SCHEMA
 
@@ -1046,7 +1111,14 @@ class TaskRequester(Base):
         }
 
     # 发起请求（流式 + 退化检测）
-    def request_google(self, messages: list[dict[str, str]], thinking_level: ThinkingLevel, args: dict[str, float]) -> tuple[bool, str, str, int, int]:
+    def request_google(
+        self,
+        messages: list[dict[str, str]],
+        thinking_level: ThinkingLevel,
+        args: dict[str, float],
+        *,
+        response_shape: ResponseShape = "none",
+    ) -> tuple[bool, str, str, int, int]:
         client = None
         client_key = None
         try:
@@ -1060,7 +1132,12 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            google_args = self.generate_google_args(messages, thinking_level, args)
+            google_args = self.generate_google_args(
+                messages,
+                thinking_level,
+                args,
+                response_shape = response_shape,
+            )
 
             # 流式请求
             stream = client.models.generate_content_stream(**google_args)
@@ -1147,6 +1224,7 @@ class TaskRequester(Base):
                     )
                     return True, None, None, None, None
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
@@ -1270,6 +1348,7 @@ class TaskRequester(Base):
                     output_tokens = getattr(usage, 'output_tokens', 0) or 0
 
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = client_key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
@@ -1478,6 +1557,7 @@ class TaskRequester(Base):
                 self.warning(f"DeepL 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
@@ -1538,6 +1618,7 @@ class TaskRequester(Base):
                 self.warning(f"DeepLX 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
+            self.last_error_message = str(e)
             self._recover_closed_cached_client(e, client = client, key = key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None

@@ -164,6 +164,17 @@ class PlatformPage(QWidget, Base):
                 item["name"] = "DeepL"
                 changed = True
 
+        # DeepSeek 官方接口已停用旧模型别名；自定义中转保持用户原值。
+        for item in platforms:
+            api_url = str(item.get("api_url", "")).strip().lower().rstrip("/")
+            if (
+                str(item.get("api_format", "")) == str(Base.APIFormat.OPENAI)
+                and api_url in ("https://api.deepseek.com", "https://api.deepseek.com/v1")
+                and str(item.get("model", "")).strip().lower() == "deepseek-chat"
+            ):
+                item["model"] = "deepseek-v4-flash"
+                changed = True
+
         # 统一思考字段：旧版 bool -> 新版 {"level": "..."}，并修正非法值。
         for item in platforms:
             raw_thinking = item.get("thinking")
