@@ -1174,6 +1174,15 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
     helper keeps the best entry per ``old`` (real TL files before miss/ work
     files, translated before placeholder) and removes the rest.
 
+    Position comments are kept consistent with the entries:
+
+    - Comments attached to a removed duplicate entry (directly above its
+      ``old``, or between ``old`` and ``new``) are removed together with it.
+    - ``# game/<path>:<line>`` comments that no longer precede any ``old``
+      (their entries were already removed by an earlier run) are orphaned;
+      only the first orphaned comment in a file is kept as the position
+      marker, the rest are removed.
+
     Returns the number of duplicate entries removed.
     """
     if not tl_dir.is_dir():
@@ -1181,6 +1190,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
 
     records: dict[str, list[tuple[Path, int, int, bool]]] = {}
     ordered: list[tuple[Path, int, int, str]] = []
+    scanned_files: list[Path] = []
     for rpy_file in sorted(tl_dir.rglob("*.rpy")):
         if rpy_file.name in _DUPLICATE_SKIP_NAMES:
             continue
@@ -1188,6 +1198,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
+        scanned_files.append(rpy_file)
 
         rel_posix = rpy_file.relative_to(tl_dir).as_posix()
         under_miss = "/miss/" in f"/{rel_posix}"
@@ -1224,9 +1235,6 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             ordered.append((rpy_file, i, j, old_value))
             i = j + 1
 
-    if not records:
-        return 0
-
     keep_lines: set[tuple[Path, int]] = set()
     duplicated_olds: set[str] = set()
     removed = 0
@@ -1249,29 +1257,89 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
         removed += len(candidates) - 1
 
     if not removed:
-        return 0
+        changed = False
+    else:
+        changed = True
 
-    remove_lines: dict[Path, set[int]] = {}
+    remove_pairs: dict[Path, list[tuple[int, int]]] = {}
     for rpy_file, old_index, new_index, old_value in ordered:
         if old_value not in duplicated_olds:
             continue
         if (rpy_file, old_index) in keep_lines:
             continue
-        remove_lines.setdefault(rpy_file, set()).update((old_index, new_index))
+        remove_pairs.setdefault(rpy_file, []).append((old_index, new_index))
 
-    for rpy_file, indexes in remove_lines.items():
+    for rpy_file, pairs in remove_pairs.items():
         try:
             lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
             continue
+        remove_indexes: set[int] = set()
+        for old_index, new_index in pairs:
+            remove_indexes.update((old_index, new_index))
+            # 紧贴在 old 上方的连续注释行是这条目的位置注释
+            # （# game/<path>:<line>），必须随条目一起删除。
+            cursor = old_index - 1
+            while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+                remove_indexes.add(cursor)
+                cursor -= 1
+            # old 与 new 之间夹着的注释行同样属于该条目。
+            for cursor in range(old_index + 1, new_index):
+                if lines[cursor].lstrip().startswith("#"):
+                    remove_indexes.add(cursor)
         kept = [
             line
             for index, line in enumerate(lines)
-            if index not in indexes
+            if index not in remove_indexes
         ]
         if len(kept) == len(lines):
             continue
         rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        changed = True
+
+    # 清理孤儿位置注释：条目已被删除后残留的 ``# game/<path>:<line>``。
+    # 判定：注释之后（跳过空行和其它注释）既不是 old/new 行、也不是
+    # translate 块头（strings 条目或编号对话块），说明它不再属于任何
+    # 条目；同一文件里只保留第一行作为位置标记，其余删除。
+    for rpy_file in scanned_files:
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        orphan_indexes: list[int] = []
+        for index, line in enumerate(lines):
+            if not line.lstrip().startswith("# game/"):
+                continue
+            nxt = index + 1
+            while nxt < len(lines) and (
+                not lines[nxt].strip() or lines[nxt].lstrip().startswith("#")
+            ):
+                nxt += 1
+            if nxt >= len(lines):
+                orphan_indexes.append(index)
+                continue
+            if (
+                _DUPLICATE_OLD_RE.match(lines[nxt])
+                or _DUPLICATE_NEW_RE.match(lines[nxt])
+                or re.match(r"^\s*translate\s+", lines[nxt])
+            ):
+                continue
+            orphan_indexes.append(index)
+        if len(orphan_indexes) <= 1:
+            continue
+        remove_indexes = set(orphan_indexes[1:])
+        kept = [
+            line
+            for index, line in enumerate(lines)
+            if index not in remove_indexes
+        ]
+        if len(kept) == len(lines):
+            continue
+        rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        changed = True
+
+    if not changed:
+        return 0
 
     return removed
 
