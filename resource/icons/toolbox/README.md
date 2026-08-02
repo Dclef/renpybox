@@ -6,3 +6,4 @@
 - 下载日期：2026-07-31
 - 许可证：ISC，见 `LICENSE.lucide`
 - 处理方式：保留原始 SVG 路径，运行时按应用深浅主题替换 `currentColor`
+- `puzzle.svg`：https://github.com/lucide-icons/lucide/blob/main/icons/puzzle.svg

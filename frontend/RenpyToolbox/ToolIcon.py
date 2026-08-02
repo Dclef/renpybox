@@ -44,6 +44,7 @@ class ToolIcon(FluentIconBase, Enum):
     FORMAT = "text-align-start"
     ANDROID = "smartphone"
     HTML = "file-input"
+    MOD = "puzzle"
 
     def path(self, theme: Theme = Theme.AUTO) -> str:
         del theme
