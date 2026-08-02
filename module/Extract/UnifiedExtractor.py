@@ -2818,6 +2818,20 @@ class UnifiedExtractor:
         for line_no, line in enumerate(lines, 1):
             if any(literal.value == original for literal in scan_quoted_literals(line)):
                 return line_no
+        # 跨行相邻字符串字面量（Python 隐式拼接）书写的长文本，单行匹配不到；
+        # 用合并后的逻辑行定位其起始行。
+        try:
+            from module.Renpy.renpy_extract import merge_string_literal_continuations
+
+            merged = merge_string_literal_continuations(lines)
+        except Exception:
+            merged = []
+        for merged_line, start_index in merged:
+            if any(
+                literal.value == original
+                for literal in scan_quoted_literals(merged_line)
+            ):
+                return start_index + 1
         return None
 
     def _get_all_originals(self, tl_dir: Path) -> Set[str]:

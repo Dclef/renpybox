@@ -607,6 +607,10 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     f.close()
     # print(_read)
     _read_line = _read.split('\n')
+    # 合并 Python 相邻字符串字面量，避免把跨行书写的一句长文本拆成多段。
+    _read_line = [
+        merged_line for merged_line, _start in merge_string_literal_continuations(_read_line)
+    ]
     is_in_condition_switch = False
     is_in__p = False
     is_in_translate_block = False
@@ -1093,6 +1097,121 @@ def _collect_static_line_texts(line):
     return set()
 
 
+def merge_string_literal_continuations(lines):
+    """合并 Python 相邻字符串字面量，避免把一句长文本拆成多个片段。
+
+    Ren'Py 源码常用跨行隐式拼接书写长文本：:
+
+        text _('Start with money and stats as there is no '
+               'way to earn them yet. ...'
+               'future releases.'):
+
+    Python 会把相邻（仅以空白分隔）的字符串字面量拼接成一句。逐行扫描的
+    提取器若不处理这一点，就会把完整句子拆成多条独立候选写入 tl，造成
+    「整句可显示、拆块是多余操作」的问题。
+
+    本函数分两步：
+    1. 跨行续接：本行以引号结尾且下一行以引号开头时，合并为同一逻辑行；
+    2. 行内拼接：同一逻辑行内仅以空白分隔的相邻字面量，合并为一个
+       双引号字面量。
+
+    返回 ``(merged_line, start_line_index)`` 列表，第二个元素是合并后
+    逻辑行对应的原始起始行号（从 0 开始），便于定位位置注释。
+    """
+    logical: list[tuple[str, int]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        start_index = index
+        while (
+            line.rstrip().endswith(("'", '"'))
+            and index + 1 < len(lines)
+            and lines[index + 1].lstrip().startswith(("'", '"'))
+        ):
+            index += 1
+            line = line.rstrip() + " " + lines[index].lstrip()
+        logical.append((line, start_index))
+        index += 1
+
+    return [
+        (_merge_adjacent_literals_in_line(line), start_index)
+        for line, start_index in logical
+    ]
+
+
+def _merge_adjacent_literals_in_line(line):
+    """把一行内仅以空白分隔的相邻字符串字面量拼成一个双引号字面量。"""
+    spans: list[tuple[int, int]] = []
+    values: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch not in ("'", '"'):
+            i += 1
+            continue
+        if i + 2 < n and line[i + 1] == ch and line[i + 2] == ch:
+            # 三引号字符串不参与相邻拼接（_p("""...""") 等由专用路径处理）。
+            end = line.find(ch * 3, i + 3)
+            i = n if end == -1 else end + 3
+            continue
+        start = i
+        i += 1
+        buf: list[str] = []
+        closed = False
+        while i < n:
+            c = line[i]
+            if c == "\\":
+                buf.append(line[i:i + 2])
+                i += 2
+                continue
+            if c == ch:
+                closed = True
+                i += 1
+                break
+            buf.append(c)
+            i += 1
+        if not closed:
+            # 未闭合引号（跨行三引号等）：保持原样，不参与合并。
+            return line
+        try:
+            value = ast.literal_eval(line[start:i])
+        except Exception:
+            value = line[start + 1:i - 1]
+        spans.append((start, i))
+        values.append(value)
+
+    if len(spans) <= 1:
+        return line
+
+    # 仅空白分隔的相邻字面量构成一组（Python 隐式拼接）。
+    groups: list[list[int]] = []
+    current = [0]
+    for idx in range(1, len(spans)):
+        gap = line[spans[idx - 1][1]:spans[idx][0]]
+        if gap.strip() == "":
+            current.append(idx)
+        else:
+            groups.append(current)
+            current = [idx]
+    groups.append(current)
+
+    if all(len(group) == 1 for group in groups):
+        return line
+
+    # 从右往左重写，保证左侧偏移不受前面替换影响。
+    result = line
+    for group in reversed(groups):
+        if len(group) <= 1:
+            continue
+        first_start = spans[group[0]][0]
+        last_end = spans[group[-1]][1]
+        joined = "".join(values[idx] for idx in group)
+        new_literal = '"' + joined.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        result = result[:first_start] + new_literal + result[last_end:]
+    return result
+
+
 def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False):
     """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
     from pathlib import Path
@@ -1124,7 +1243,10 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
         texts = set()
         screen_label_texts = set()
         try:
-            for line in source_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            merged_lines = merge_string_literal_continuations(
+                source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            for line, _start_index in merged_lines:
                 line_texts = _collect_static_line_texts(line)
                 texts.update(line_texts)
                 if re.match(r"^\s*label\s+[\"']", line):
