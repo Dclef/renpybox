@@ -1922,6 +1922,79 @@ def test_dedupe_keeps_only_first_orphaned_position_comment(tmp_path):
     assert 'old "I am 18 years of age or older."' not in text
 
 
+def test_merge_string_literal_continuations_joins_adjacent_literals():
+    from module.Renpy.renpy_extract import merge_string_literal_continuations
+
+    lines = [
+        "text _('Start with money and stats as there is no '",
+        "       'way to earn them yet. Extra money can be found in the '",
+        "       'ATM in the bank. More content will be restored in '",
+        "       'future releases.'):",
+    ]
+    merged = merge_string_literal_continuations(lines)
+
+    assert len(merged) == 1
+    merged_line, start_index = merged[0]
+    assert start_index == 0
+    assert (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    ) in merged_line
+    # 合并后的行内只剩一个双引号字面量（完整句子），而不是四个独立片段。
+    assert merged_line.count('"') == 2
+
+
+def test_extract_from_file_merges_adjacent_string_literals(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "mode.rpy"
+    source.write_text(
+        "text _('Start with money and stats as there is no '\n"
+        "       'way to earn them yet. Extra money can be found in the '\n"
+        "       'ATM in the bank. More content will be restored in '\n"
+        "       'future releases.'):\n",
+        encoding="utf-8",
+    )
+    full = (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert full in extracted
+    assert "Start with money and stats as there is no " not in extracted
+    assert "future releases." not in extracted
+
+
+def test_collect_static_source_strings_merges_adjacent_literals(tmp_path):
+    from module.Renpy.renpy_extract import collect_static_source_strings
+
+    project = tmp_path / "gameproj"
+    src = project / "game" / "src" / "menu"
+    src.mkdir(parents=True)
+    (src / "mode.rpy").write_text(
+        "text _('Start with money and stats as there is no '\n"
+        "       'way to earn them yet. Extra money can be found in the '\n"
+        "       'ATM in the bank. More content will be restored in '\n"
+        "       'future releases.'):\n",
+        encoding="utf-8",
+    )
+    full = (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    )
+
+    candidates = collect_static_source_strings(project)
+
+    assert candidates.get(full) == "src/menu/mode.rpy"
+    assert "Start with money and stats as there is no " not in candidates
+    assert "future releases." not in candidates
+
+
 def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
     from module.Extract import ReplaceGenerator as generator
 
