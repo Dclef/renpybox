@@ -1858,6 +1858,70 @@ def test_dedupe_preserves_unique_entries(tmp_path):
     assert 'old "Virtual unique B."' in second.read_text(encoding="utf-8")
 
 
+def test_dedupe_removes_comments_with_removed_duplicate_entries(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    keeper = tl / "a.rpy"
+    duplicate = tl / "b.rpy"
+    keeper.parent.mkdir(parents=True)
+    keeper.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        '    old "Virtual duplicate."\n'
+        '    new "虚拟译文。"\n',
+        encoding="utf-8",
+    )
+    duplicate.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        '    old "Virtual duplicate."\n'
+        '    new "虚拟译文。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 1
+    duplicate_text = duplicate.read_text(encoding="utf-8")
+    assert "# game/src/menu/gate.rpy:20" not in duplicate_text
+    assert 'old "Virtual duplicate."' not in duplicate_text
+    keeper_text = keeper.read_text(encoding="utf-8")
+    assert "# game/src/menu/gate.rpy:21" in keeper_text
+    assert 'old "Virtual duplicate."' in keeper_text
+
+
+def test_dedupe_keeps_only_first_orphaned_position_comment(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    gate = tl / "src" / "menu" / "gate.rpy"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:14\n"
+        '    old "MATURE CONTENT"\n'
+        '    new "成人内容"\n\n'
+        "    # game/src/menu/gate.rpy:20\n"
+        "\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        "    # game/src/menu/gate.rpy:21\n",
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    text = gate.read_text(encoding="utf-8")
+    assert text.count("# game/src/menu/gate.rpy:20") == 1
+    assert "# game/src/menu/gate.rpy:21" not in text
+    assert 'old "MATURE CONTENT"' in text
+    assert 'old "I am 18 years of age or older."' not in text
+
+
 def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
     from module.Extract import ReplaceGenerator as generator
 
