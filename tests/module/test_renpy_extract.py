@@ -1480,6 +1480,38 @@ def test_candidate_sets_drop_compiled_only_identifiers_but_keep_source_ui(tmp_pa
     assert technical == 4
 
 
+def test_candidate_sets_keep_substring_constants(tmp_path, monkeypatch):
+    """独立 UI 常量即使恰是更长常量的子串，也不能被当作片段丢弃。"""
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_extract_all_strings_regex",
+        lambda *args, **kwargs: {"Save"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_extract_compiled_python_strings",
+        lambda *args, **kwargs: {
+            "Save",
+            "Save your progress before continuing?",
+            "fool around",
+            "Fool around with the task list for a while.",
+        },
+    )
+
+    _rpy, compiled, _technical = generator._collect_glossary_candidate_sets(
+        game, tl_name="chinese"
+    )
+
+    assert "Save" in compiled
+    assert "Save your progress before continuing?" in compiled
+    assert "fool around" in compiled
+    assert "Fool around with the task list for a while." in compiled
+
+
 def test_tl_coverage_includes_builtin_ui_pack(tmp_path):
     from module.Extract.ReplaceGenerator import _get_tl_covered_strings
 
@@ -2185,8 +2217,9 @@ def test_runtime_write_incremental_only_appends_missing(tmp_path):
     )
 
 
-def test_fragment_constants_are_dropped_but_full_strings_kept():
-    from module.Extract.ReplaceGenerator import _drop_fragment_constants
+def test_substring_constants_are_kept_not_dropped():
+    """独立常量即使恰是更长常量的子串，也必须保留（不得当作片段丢弃）。"""
+    from module.Extract.ReplaceGenerator import _filter_valid_strings
 
     candidates = {
         "Fool around with a fictional character in the garden.",
@@ -2198,10 +2231,10 @@ def test_fragment_constants_are_dropped_but_full_strings_kept():
         "First time with [saga.cast.tony]'s blessing.",
     }
 
-    kept = _drop_fragment_constants(candidates)
+    kept = _filter_valid_strings(candidates)
 
-    assert "fool around" not in kept
-    assert "do it" not in kept
+    assert "fool around" in kept
+    assert "do it" in kept
     assert "Fool around with a fictional character in the garden." in kept
     assert "Noon (first-time)." in kept
     assert "First time with [saga.cast.tony]'s blessing." in kept
