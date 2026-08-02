@@ -310,6 +310,116 @@ def test_collect_declined_candidates_from_cycle(tmp_path):
     assert declined == {"Proposed but dropped"}
 
 
+def test_sort_numbered_blocks_by_source_line(tmp_path):
+    """编号块按源行号升序整理，缺失位置注释的块补注释，strings 保持最后。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    source = game_dir / "game" / "src" / "plot" / "scene.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'guide "First line."\n'
+        'guide "Second line."\n'
+        'guide "Third line."\n',
+        encoding="utf-8",
+    )
+    tl_file = tl_dir / "src" / "plot" / "scene.rpy"
+    tl_file.parent.mkdir(parents=True)
+    # 顺序故意打乱：第三行在前、第一行中间、第二行最后，strings 块夹在中间。
+    tl_file.write_text(
+        "translate chinese third_33333333:\n"
+        '    # guide "Third line."\n'
+        '    guide "第三行。"\n'
+        "\n"
+        "translate chinese first_11111111:\n"
+        '    # guide "First line."\n'
+        '    guide "第一行。"\n'
+        "\n"
+        "translate chinese strings:\n"
+        '    old "S"\n'
+        '    new "字符串"\n'
+        "\n"
+        "translate chinese second_22222222:\n"
+        '    # guide "Second line."\n'
+        '    guide "第二行。"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text = tl_file.read_text(encoding="utf-8")
+    assert (
+        text.index("first_11111111")
+        < text.index("second_22222222")
+        < text.index("third_33333333")
+    )
+    # strings 块移动到文件最后。
+    assert text.index("translate chinese strings:") > text.index("third_33333333")
+    # 缺失的位置注释被补齐。
+    assert "# game/src/plot/scene.rpy:1" in text
+    assert "# game/src/plot/scene.rpy:2" in text
+    assert "# game/src/plot/scene.rpy:3" in text
+    # 幂等：再次整理不重写。
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 0
+
+
+def test_sort_numbered_blocks_skips_ordered_files(tmp_path):
+    """已按源行号排序的文件不应被重写。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_file = tl_dir / "scene.rpy"
+    tl_file.write_text(
+        "translate chinese first_11111111:\n"
+        '    # guide "First."\n'
+        '    guide "第一。"\n'
+        "\n"
+        "translate chinese second_22222222:\n"
+        '    # guide "Second."\n'
+        '    guide "第二。"\n',
+        encoding="utf-8",
+    )
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 0
+    assert "first_11111111" in tl_file.read_text(encoding="utf-8")
+
+
+def test_sort_numbered_blocks_handles_blank_between_location_and_header(tmp_path):
+    """位置注释与块头之间存在空白行时仍能识别并按行号排序。"""
+    game_dir = tmp_path / "gameproj"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    source = game_dir / "game" / "src" / "plot" / "scene.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'guide "Early line."\n'
+        'guide "Late line."\n',
+        encoding="utf-8",
+    )
+    tl_file = tl_dir / "src" / "plot" / "scene.rpy"
+    tl_file.parent.mkdir(parents=True)
+    # 顺序颠倒，且注释与块头之间有空行。
+    tl_file.write_text(
+        "# game/src/plot/scene.rpy:2\n"
+        "\n"
+        "translate chinese late_22222222:\n"
+        '    # guide "Late line."\n'
+        '    guide "第二行。"\n'
+        "\n"
+        "# game/src/plot/scene.rpy:1\n"
+        "\n"
+        "translate chinese early_11111111:\n"
+        '    # guide "Early line."\n'
+        '    guide "第一行。"\n',
+        encoding="utf-8",
+    )
+
+    extractor = make_extractor()
+    assert extractor._sort_numbered_blocks_by_source_line(game_dir, tl_dir) == 1
+    text = tl_file.read_text(encoding="utf-8")
+    assert text.index("early_11111111") < text.index("late_22222222")
+
+
 def test_direct_incremental_merge_keeps_new_numbered_block_with_repeated_text(tmp_path):
     target = tmp_path / "target"
     source = tmp_path / "source"

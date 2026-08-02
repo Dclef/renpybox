@@ -1724,6 +1724,17 @@ class UnifiedExtractor:
                     
                     # 10. 后处理
                     self._post_process(game_dir, tl_name, tl_dir, config, existing_translations)
+                    # 按源行号整理编号块，strings 块保持文件最后。
+                    try:
+                        organized = self._sort_numbered_blocks_by_source_line(
+                            game_dir, tl_dir
+                        )
+                        if organized:
+                            self.logger.info(
+                                f"已按源行号整理 {organized} 个文件的编号块顺序"
+                            )
+                    except Exception as exc:
+                        self.logger.warning(f"整理编号块顺序失败: {exc}")
                     
                     result.total_files = len(list(self._iter_rpy_files(tl_dir)))
                     result.success = True
@@ -2154,6 +2165,16 @@ class UnifiedExtractor:
         except Exception as exc:
             self.logger.warning(f"记录判定不译候选失败: {exc}")
 
+        # 合并完成后按源行号整理编号块，strings 块保持文件最后。
+        try:
+            organized = self._sort_numbered_blocks_by_source_line(game_dir, tl_dir)
+            if organized:
+                self.logger.info(
+                    f"已按源行号整理 {organized} 个文件的编号块顺序"
+                )
+        except Exception as exc:
+            self.logger.warning(f"整理编号块顺序失败: {exc}")
+
         # 合并与去重成功后，增量目录不再是可加载的翻译来源，
         # 避免遗留目录造成重复加载和困惑。若目录中带有翻译缓存，
         # 先保留 cache 子目录，交由一键流程把条目合并到主缓存；
@@ -2201,6 +2222,185 @@ class UnifiedExtractor:
             return set()
         applied = set(self._get_string_originals(incremental_dir))
         return proposed - applied
+
+    def _numbered_block_source_line(
+        self,
+        game_dir: Path,
+        tl_file_rel: str,
+        block,
+        lines: List[str],
+    ) -> Optional[int]:
+        """返回编号块对应的源文件行号（位置注释优先，其次源码定位）。"""
+        location_re = re.compile(r"^\s*#\s+(game/.+?):(\d+)\s*$")
+        for probe in range(block.header_line_no - 2, -1, -1):
+            if not lines[probe].strip():
+                continue
+            match = location_re.match(lines[probe])
+            if not match:
+                break
+            path_text = match.group(1)
+            if path_text.startswith("game/"):
+                path_text = path_text[len("game/") :]
+            if (game_dir / "game" / path_text).is_file() or (
+                game_dir / path_text
+            ).is_file():
+                return int(match.group(2))
+        try:
+            source_file = game_dir / "game" / tl_file_rel
+            if source_file.is_file():
+                doc = parse_tl_document(lines)
+                items = RenpyTlItemExtractor().extract(doc, tl_file_rel)
+                for item in items:
+                    extra_raw = item.get_extra_field()
+                    extra = extra_raw if isinstance(extra_raw, dict) else {}
+                    renpy = (
+                        extra.get("renpy", {})
+                        if isinstance(extra.get("renpy"), dict)
+                        else {}
+                    )
+                    block_data = (
+                        renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
+                    )
+                    if block_data.get("header_line") != block.header_line_no:
+                        continue
+                    original = item.get_src()
+                    if isinstance(original, str) and original.strip():
+                        return self._find_source_text_line(source_file, original)
+        except Exception:
+            pass
+        return None
+
+    def _sort_numbered_blocks_by_source_line(
+        self,
+        game_dir: Path,
+        tl_dir: Path,
+        rel_paths: Optional[Set[str]] = None,
+    ) -> int:
+        """按编号块对应源行号升序整理 TL 文件，strings 块保持在文件最后。
+
+        缺少 ``# game/<path>:<line>`` 位置注释的块会尝试从源码定位行号并补上
+        注释；仍无法定位的块保持原相对顺序排到可排序块之后。返回被重排的
+        文件数。
+        """
+        location_re = re.compile(r"^\s*#\s+(game/.+?):\d+\s*$")
+        reordered = 0
+        for tl_file in self._iter_rpy_files(tl_dir):
+            rel = tl_file.relative_to(tl_dir).as_posix()
+            if rel_paths is not None and rel not in rel_paths:
+                continue
+            try:
+                lines = tl_file.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+                doc = parse_tl_document(lines)
+            except Exception:
+                continue
+
+            segments: List[Dict[str, object]] = []
+            for block in doc.blocks:
+                kind = tl_block_kind_name(block.kind)
+                if kind not in ("LABEL", "STRINGS"):
+                    continue
+                header_idx = block.header_line_no - 1
+                end_idx = (
+                    block.statements[-1].line_no
+                    if block.statements
+                    else block.header_line_no
+                )
+                end_idx = min(end_idx, len(lines))
+                meta_start = header_idx
+                if kind == "LABEL":
+                    probe = header_idx - 1
+                    while probe >= 0:
+                        stripped = lines[probe].strip()
+                        if not stripped:
+                            probe -= 1
+                            continue
+                        if not location_re.match(lines[probe]):
+                            break
+                        meta_start = probe
+                        probe -= 1
+                segments.append(
+                    {
+                        "kind": kind,
+                        "label": block.label,
+                        "header_idx": header_idx,
+                        "meta_start": meta_start,
+                        "end_idx": end_idx,
+                        "source_line": (
+                            self._numbered_block_source_line(
+                                game_dir, rel, block, lines
+                            )
+                            if kind == "LABEL"
+                            else None
+                        ),
+                    }
+                )
+            if not segments:
+                continue
+            segments.sort(key=lambda seg: int(seg["header_idx"]))
+            label_segments = [seg for seg in segments if seg["kind"] == "LABEL"]
+            if len(label_segments) <= 1:
+                continue
+
+            def sort_key(seg):
+                line = seg["source_line"]
+                return (line if line is not None else float("inf"), int(seg["header_idx"]))
+
+            ordered = sorted(label_segments, key=sort_key)
+            already_ordered = all(
+                ordered[index]["header_idx"] == label_segments[index]["header_idx"]
+                for index in range(len(ordered))
+            )
+            if already_ordered:
+                continue
+
+            output: List[str] = []
+            prelude = lines[: segments[0]["meta_start"]]
+            while prelude and not prelude[-1].strip():
+                prelude.pop()
+            output.extend(prelude)
+
+            def append_segment(seg) -> None:
+                if output and output[-1].strip() != "":
+                    output.append("")
+                has_meta = int(seg["meta_start"]) < int(seg["header_idx"])
+                if seg["kind"] == "LABEL":
+                    if not has_meta and seg["source_line"] is not None:
+                        output.append(f"# game/{rel}:{seg['source_line']}")
+                    elif has_meta:
+                        output.extend(
+                            lines[int(seg["meta_start"]) : int(seg["header_idx"])]
+                        )
+                output.append(lines[int(seg["header_idx"])])
+                output.append("")
+                output.extend(lines[int(seg["header_idx"]) + 1 : int(seg["end_idx"])])
+
+            others = [seg for seg in segments if seg["kind"] != "LABEL"]
+            strings = [seg for seg in others if seg["kind"] == "STRINGS"]
+            other_non_strings = [seg for seg in others if seg["kind"] != "STRINGS"]
+            for seg in other_non_strings:
+                append_segment(seg)
+            for seg in ordered:
+                append_segment(seg)
+            for seg in strings:
+                append_segment(seg)
+
+            postlude = lines[int(segments[-1]["end_idx"]) :]
+            output.extend(postlude)
+            if output and output[-1].strip() != "":
+                output.append("")
+            try:
+                atomic_write_text(
+                    tl_file,
+                    "\n".join(output).rstrip() + "\n",
+                    validator=lambda value: parse_tl_document(value.splitlines()),
+                    allowed_roots=[tl_dir],
+                )
+                reordered += 1
+            except Exception as exc:
+                self.logger.warning(f"整理编号块顺序失败 {tl_file}: {exc}")
+        return reordered
 
     def _remove_empty_incremental_artifacts(self, incremental_dir: Path) -> int:
         """Remove generated RPY files that contain no extractable TL items."""
