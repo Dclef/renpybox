@@ -41,6 +41,31 @@ def tl_block_kind_name(value) -> str:
     return text.rsplit(".", 1)[-1]
 
 
+def tl_dir_signature(tl_dir) -> tuple:
+    """返回 tl 目录下全部 .rpy 文件的变更签名。
+
+    签名包含每个文件的相对路径、mtime(ns) 与大小，任何文件变化都会改变
+    签名，因此可以安全用于结果缓存（不会产生遗漏）。
+    """
+    from pathlib import Path
+
+    entries = []
+    if tl_dir is not None and Path(tl_dir).is_dir():
+        for path in sorted(Path(tl_dir).rglob("*.rpy")):
+            try:
+                stat = path.stat()
+                entries.append(
+                    (
+                        path.relative_to(tl_dir).as_posix(),
+                        stat.st_mtime_ns,
+                        stat.st_size,
+                    )
+                )
+            except OSError:
+                entries.append((path.relative_to(tl_dir).as_posix(), 0, 0))
+    return tuple(entries)
+
+
 class TlStmtKind(StrEnum):
     """语句类型"""
     TEMPLATE = "TEMPLATE"  # 模板行（注释模板或 old 行）

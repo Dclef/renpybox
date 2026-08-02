@@ -789,3 +789,64 @@ def test_transactional_apply_uses_lexical_path_for_symlinked_source(tmp_path):
     applied = target / "fictional_alias.rpy"
     assert applied.read_text(encoding="utf-8") == "fictional external translation\n"
     assert not (target / "fictional_external.rpy").exists()
+
+
+def test_transactional_apply_rejects_symlink_escaping_target(tmp_path):
+    output = tmp_path / "output"
+    target = tmp_path / "game" / "tl" / "chinese"
+    outside = tmp_path / "outside"
+    output.mkdir()
+    target.mkdir(parents=True)
+    outside.mkdir()
+    source = output / "fictional_escape.rpy"
+    link = target / "fictional_escape.rpy"
+    referent = outside / "fictional_escape.rpy"
+    source.write_text("new fictional translation\n", encoding="utf-8")
+    referent.write_text("old secret content\n", encoding="utf-8")
+    _make_test_symlink(link, referent)
+
+    with pytest.raises(RuntimeError, match="翻译目录之外"):
+        apply_translation_files_transactionally([source], output, target)
+
+    # 项目外的文件不得被覆盖。
+    assert referent.read_text(encoding="utf-8") == "old secret content\n"
+
+
+def test_transactional_apply_preserves_backups_when_rollback_fails(
+    tmp_path, monkeypatch
+):
+    import os
+
+    output = tmp_path / "output"
+    target = tmp_path / "game" / "tl" / "chinese"
+    output.mkdir()
+    target.mkdir(parents=True)
+    first = output / "first.rpy"
+    second = output / "second.rpy"
+    first.write_text("A", encoding="utf-8")
+    second.write_text("B", encoding="utf-8")
+    (target / "first.rpy").write_text("A-old", encoding="utf-8")
+
+    real_replace = os.replace
+
+    def failing_replace(src, dst):
+        dst_text = str(dst)
+        src_text = str(src)
+        if dst_text.endswith("second.rpy"):
+            raise PermissionError("simulated apply failure")
+        if dst_text.endswith("first.rpy") and "rollback" in src_text:
+            raise PermissionError("simulated rollback failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        apply_translation_files_transactionally(
+            [first, second], output, target
+        )
+
+    message = str(exc_info.value)
+    assert "备份" in message
+    # 回滚失败时备份目录必须保留（带 rollback- 后缀），而不是被删除。
+    leftovers = list(Path(tmp_path / "game" / "tl").glob(".renpybox-apply-*"))
+    assert leftovers, "backup root must be preserved when rollback fails"
