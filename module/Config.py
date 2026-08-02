@@ -64,6 +64,13 @@ class Config():
 
     DEFAULT_ASSET_PROMPT_TOKEN_BUDGET: ClassVar[int] = 2048
     DEFAULT_ASSET_PROMPT_MAX_ITEMS: ClassVar[int] = 64
+    # Qt5 在设备像素比小于 1 时会错误绘制 QWidget 后备缓冲，因此只提供放大比例。
+    UI_SCALE_FACTORS: ClassVar[dict[str, str]] = {
+        "125%": "1.25",
+        "150%": "1.50",
+        "175%": "1.75",
+        "200%": "2.00",
+    }
 
     # 主题枚举
     THEME_DARK = "DARK"
@@ -322,6 +329,10 @@ class Config():
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""
+
+        # 已移除的缩放档位（如 50% / 75%）刷成自动，避免配置里留下无效值。
+        if config.get("scale_factor") not in cls.UI_SCALE_FACTORS:
+            config["scale_factor"] = ""
 
         config["translation_prompt_mode"] = cls._normalize_choice(
             config.get("translation_prompt_mode"),

@@ -234,6 +234,18 @@ class LocalizerZH():
     platform_page_api_delete: str = "删除接口"
     platform_page_widget_add_title: str = "接口列表"
     platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic、DeepL、DeepLX 的翻译接口"
+    platform_page_active_hint: str = "当前激活接口：{NAME}"
+    platform_page_active_none: str = "尚未设置激活接口"
+    platform_page_empty_title: str = "暂无接口"
+    platform_page_empty_content: str = "点击右上角「添加」按钮创建第一个接口"
+    platform_page_group_local_title: str = "本地模型"
+    platform_page_group_local_content: str = "本地部署或运行在局域网中的模型接口"
+    platform_page_group_machine_title: str = "传统机翻"
+    platform_page_group_machine_content: str = "DeepL 与 DeepLX 等非 LLM 翻译接口"
+    platform_page_group_online_title: str = "在线大模型"
+    platform_page_group_online_content: str = "各平台提供的在线大模型接口"
+    platform_page_group_custom_title: str = "自定义接口"
+    platform_page_group_custom_content: str = "第三方或自行配置的接口"
 
     # 接口编辑
     platform_edit_page_name: str = "请输入接口名称 …"
