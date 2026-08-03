@@ -5,6 +5,10 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Text.TextBase import TextBase
+from module.Text.SkipRules import (
+    RE_UPPERCASE_ACRONYM_CANDIDATE,
+    TRANSLATABLE_UPPERCASE_WORDS,
+)
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Filter.RuleFilter import RuleFilter
@@ -60,12 +64,6 @@ class ResponseChecker(Base):
         r"^(Ctrl|Alt|Shift|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2})$",
         flags = re.IGNORECASE,
     )
-    RE_UPPERCASE_ACRONYM = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
-    TRANSLATABLE_UPPERCASE_UI_WORDS = {
-        "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
-        "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
-        "OFF", "NEW", "AUTO", "OK",
-    }
     # 模型按提示词输出的翻译失败标记。这不是“相似度高”，应优先归类为异常回复。
     RE_TRANSLATION_ERROR_MARKER = re.compile(
         r"\[!!!\s*TRANSLATION ERROR\b.*?!!!\]",
@@ -470,8 +468,8 @@ class ResponseChecker(Base):
             return True
 
         if (
-            cls.RE_UPPERCASE_ACRONYM.fullmatch(s) is not None
-            and s not in cls.TRANSLATABLE_UPPERCASE_UI_WORDS
+            RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(s) is not None
+            and s not in TRANSLATABLE_UPPERCASE_WORDS
         ):
             return True
 
