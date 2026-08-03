@@ -38,6 +38,8 @@ class RenpyExtractor:
 
     def __init__(self) -> None:
         self.logger = LogManager.get()
+        # 内置 UI 文件跳过日志每个文件仅记录一次，避免全目录扫描时刷屏
+        self._logged_ui_skips: set = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -678,7 +680,12 @@ class RenpyExtractor:
             except Exception:
                 pass
             if self._is_builtin_ui_file(tl_file):
-                self.logger.debug(f"跳过内置 UI 文件: {tl_file}")
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(tl_file) not in logged_ui_skips:
+                    logged_ui_skips.add(str(tl_file))
+                    self.logger.debug(f"跳过内置 UI 文件: {tl_file}")
                 continue
             # 跳过工具生成的钩子文件
             if tl_file.name in self.HOOK_FILES:

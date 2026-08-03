@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QStackedWidget,
     QSizePolicy,
+    QProgressDialog,
 )
 from qfluentwidgets import (
     FlowLayout,
@@ -683,6 +684,140 @@ class ExtractionWorker(QThread):
         finally:
             self.unified_extractor.set_progress_callback(None)
 
+
+class ApplyTranslationWorker(QThread):
+    """后台执行“应用翻译到游戏”，避免大批量文件操作阻塞 UI。
+
+    - incremental 模式：语义合并增量目录 -> 迁移缓存 -> 清理增量目录 -> 恢复主路径；
+    - 全量模式：事务性覆盖目标 TL 文件。
+    进度通过 progress 信号上报，结果通过 finished 信号回传 UI 线程。
+    """
+
+    progress = pyqtSignal(str, int)  # message, percent
+    finished = pyqtSignal(bool, str, object)  # success, message, payload
+
+    def __init__(
+        self,
+        unified_extractor,
+        *,
+        incremental_mode: bool,
+        game_dir=None,
+        tl_name: str = "chinese",
+        output_dir=None,
+        input_dir=None,
+        output_files=None,
+        main_output=None,
+        incremental_dir=None,
+        config=None,
+        project_root=None,
+        project_language=None,
+    ):
+        super().__init__()
+        self.unified_extractor = unified_extractor
+        self.incremental_mode = incremental_mode
+        self.game_dir = game_dir
+        self.tl_name = tl_name
+        self.output_dir = Path(output_dir) if output_dir else None
+        self.input_dir = Path(input_dir) if input_dir else None
+        self.output_files = list(output_files) if output_files else []
+        self.main_output = Path(main_output) if main_output else None
+        self.incremental_dir = Path(incremental_dir) if incremental_dir else None
+        self.config = config
+        self.project_root = project_root
+        self.project_language = project_language
+
+    def run(self):
+        try:
+            self.unified_extractor.set_progress_callback(
+                lambda msg, pct: self.progress.emit(msg, pct)
+            )
+            if self.incremental_mode:
+                self._run_incremental()
+            else:
+                self._run_full()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self.finished.emit(False, f"应用翻译失败：{exc}", None)
+        finally:
+            self.unified_extractor.set_progress_callback(None)
+
+    def _run_incremental(self):
+        merge_result = self.unified_extractor.merge_incremental_folder(
+            self.game_dir,
+            self.tl_name,
+            self.output_dir,
+            clean_duplicates=True,
+        )
+        if not merge_result.success:
+            self.finished.emit(
+                False,
+                merge_result.message,
+                {"warning": True},
+            )
+            return
+        cache_dir = self.output_dir / "cache"
+        cache_was_present = cache_dir.is_dir()
+        cache_migrated = (
+            merge_incremental_translation_cache(self.output_dir, self.main_output)
+            if cache_was_present
+            else True
+        )
+        if cache_was_present and not cache_migrated:
+            # 合并函数已写回 TL，但缓存迁移失败时保留增量目录，
+            # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
+            self.finished.emit(
+                False,
+                f"翻译文件已应用，但缓存仍保留在：{self.output_dir / 'cache'}，请稍后重试应用。",
+                {"warning": True},
+            )
+            return
+        self.progress.emit("正在清理增量目录...", 92)
+        if self.output_dir.exists():
+            shutil.rmtree(str(self.output_dir), ignore_errors=True)
+        if self.incremental_dir and self.incremental_dir.exists():
+            shutil.rmtree(str(self.incremental_dir), ignore_errors=True)
+        # 应用增量后恢复全局主路径，并把运行清单更新到已经
+        # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
+        self.progress.emit("正在恢复翻译路径配置...", 96)
+        configure_main_translation_paths(
+            self.config,
+            self.game_dir,
+            self.tl_name,
+            remember_run=True,
+        )
+        self.config.save()
+        self.finished.emit(
+            True,
+            merge_result.message,
+            {"main_output": str(self.main_output)},
+        )
+
+    def _run_full(self):
+        success_count = apply_translation_files_transactionally(
+            self.output_files,
+            self.output_dir,
+            self.input_dir,
+        )
+        # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
+        # hook 接续；这样 hook 扫描到的是真实的最新 TL。
+        self.progress.emit("正在恢复翻译路径配置...", 96)
+        if self.project_root and self.project_language:
+            configure_main_translation_paths(
+                self.config,
+                self.project_root,
+                self.project_language,
+                remember_run=False,
+            )
+            self.config.save()
+        self.finished.emit(
+            True,
+            f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
+            f"现在可以启动游戏查看翻译效果。",
+            {"count": success_count},
+        )
+
+
 class YiJianFanyiPage(Base, QWidget):
     """一键翻译页面 - 向导式分步骤流程"""
     
@@ -712,6 +847,12 @@ class YiJianFanyiPage(Base, QWidget):
         self._incremental_output_dir = None
         self._apply_target_dir = None
         self._last_onekey_output_dir = None
+        self._apply_running = False  # 防止“应用翻译到游戏”重入
+        self._apply_worker = None
+        self._apply_card = None
+        self._apply_parent = None
+        self._apply_project_paths = None
+        self._apply_progress_dialog = None
         # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
         # 最近运行清单指向 hook 缓存，供校对页继续载入。
         self._hook_restore_paths = None
@@ -2558,105 +2699,122 @@ class YiJianFanyiPage(Base, QWidget):
         if not msg_box.exec():
             return
         
-        # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
+        # 防重入：应用进行中不允许再次触发（乱点会导致重复合并/卡死）。
+        if getattr(self, "_apply_running", False):
+            InfoBar.warning(
+                "正在应用",
+                "翻译应用正在进行中，请稍候…",
+                parent=ui_parent,
+            )
+            return
+        self._apply_running = True
+        if card is not None and hasattr(card, "setEnabled"):
+            card.setEnabled(False)
+
         if incremental_output:
-            try:
-                tl_name = self.tl_folder_edit.text().strip() or "chinese"
-                merge_result = self.unified_extractor.merge_incremental_folder(
-                    self.game_dir,
-                    tl_name,
-                    output_dir,
-                    clean_duplicates=True,
-                )
-                if not merge_result.success:
-                    InfoBar.warning("合并失败", merge_result.message, parent=ui_parent)
-                    return
-                main_output = (
-                    project_paths.translation_output_dir
-                    if project_paths is not None
-                    else output_dir.parent / tl_name
-                )
-                cache_dir = output_dir / "cache"
-                cache_was_present = cache_dir.is_dir()
-                cache_migrated = merge_incremental_translation_cache(
-                    output_dir,
-                    main_output,
-                ) if cache_was_present else True
-                if cache_was_present and not cache_migrated:
-                    # 合并函数已写回 TL，但缓存迁移失败时保留增量目录，
-                    # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
-                    InfoBar.warning(
-                        "缓存暂未合并",
-                        f"翻译文件已应用，但缓存仍保留在：{output_dir / 'cache'}，请稍后重试应用。",
-                        parent=ui_parent,
-                    )
-                    return
-                if output_dir.exists():
-                    shutil.rmtree(str(output_dir), ignore_errors=True)
-                staging_input = getattr(self, "_incremental_dir", None)
-                if staging_input and Path(staging_input).exists():
-                    shutil.rmtree(str(staging_input), ignore_errors=True)
-                # 应用增量后恢复全局主路径，并把运行清单更新到已经
-                # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
-                configure_main_translation_paths(
-                    config,
-                    self.game_dir,
-                    tl_name,
-                    remember_run = True,
-                )
-                config.save()
-                self._last_onekey_output_dir = main_output
-                self._incremental_dir = None
-                self._incremental_output_dir = None
-                self._apply_target_dir = None
-                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=ui_parent)
-                if self._onekey_translation_started and self._auto_hook_pending:
-                    self._auto_hook_pending = False
-                    QTimer.singleShot(0, self._start_auto_hook_supplement)
-                elif self._onekey_translation_started:
-                    self._reset_auto_hook_state()
-                return
-            except Exception as e:
-                self.logger.error(f"应用增量翻译失败: {e}")
-                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=ui_parent)
-                return
-
-        # 全量翻译按批次应用；任一文件失败就恢复本批次已覆盖的目标。
-        try:
-            success_count = apply_translation_files_transactionally(
-                output_files,
-                output_dir,
-                input_dir,
+            # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
+            main_output = (
+                project_paths.translation_output_dir
+                if project_paths is not None
+                else output_dir.parent / tl_name
             )
-            InfoBar.success(
-                "应用成功",
-                f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
-                f"现在可以启动游戏查看翻译效果。",
-                duration=5000,
-                parent=ui_parent
+            staging_input = getattr(self, "_incremental_dir", None)
+            worker = ApplyTranslationWorker(
+                self.unified_extractor,
+                incremental_mode=True,
+                game_dir=self.game_dir,
+                tl_name=tl_name,
+                output_dir=output_dir,
+                main_output=main_output,
+                incremental_dir=staging_input,
+                config=config,
+            )
+        else:
+            # 全量翻译按批次应用；任一文件失败就恢复本批次已覆盖的目标。
+            worker = ApplyTranslationWorker(
+                self.unified_extractor,
+                incremental_mode=False,
+                output_dir=output_dir,
+                input_dir=input_dir,
+                output_files=output_files,
+                config=config,
+                project_root=(
+                    project_paths.project_root if project_paths is not None else None
+                ),
+                project_language=(
+                    project_paths.language if project_paths is not None else None
+                ),
             )
 
-            # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
-            # hook 接续；这样 hook 扫描到的是真实的最新 TL。
-            if project_paths is not None:
-                configure_main_translation_paths(
-                    config,
-                    project_paths.project_root,
-                    project_paths.language,
-                    remember_run = False,
-                )
-                config.save()
-                self._last_onekey_output_dir = project_paths.translation_output_dir
+        progress_dialog = QProgressDialog(
+            "正在应用翻译到游戏，请稍候…",
+            None,
+            0,
+            100,
+            ui_parent,
+        )
+        progress_dialog.setWindowTitle("应用翻译")
+        progress_dialog.setWindowModality(Qt.ApplicationModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+
+        # 用页面绑定方法接收信号，保证跨线程排队投递到 UI 线程。
+        self._apply_card = card
+        self._apply_parent = ui_parent
+        self._apply_project_paths = project_paths
+        self._apply_progress_dialog = progress_dialog
+        worker.progress.connect(self._on_apply_progress)
+        worker.finished.connect(self._on_apply_finished)
+        self._apply_worker = worker
+        worker.start()
+
+    def _on_apply_progress(self, msg: str, pct: int) -> None:
+        """后台进度信号：更新进度对话框（运行在 UI 线程）。"""
+        dialog = getattr(self, "_apply_progress_dialog", None)
+        if dialog is not None:
+            dialog.setLabelText(str(msg))
+            dialog.setValue(int(pct))
+
+    def _on_apply_finished(self, success: bool, msg: str, payload: dict | None):
+        """后台应用结束后回到 UI 线程：恢复入口、展示结果、接续 hook。"""
+        card = getattr(self, "_apply_card", None)
+        ui_parent = getattr(self, "_apply_parent", None)
+        project_paths = getattr(self, "_apply_project_paths", None)
+        progress_dialog = getattr(self, "_apply_progress_dialog", None)
+        self._apply_running = False
+        self._apply_worker = None
+        self._apply_card = None
+        self._apply_parent = None
+        self._apply_project_paths = None
+        self._apply_progress_dialog = None
+        if card is not None and hasattr(card, "setEnabled"):
+            card.setEnabled(True)
+        if progress_dialog is not None:
+            progress_dialog.close()
+
+        if success:
+            if payload:
+                if payload.get("main_output"):
+                    self._last_onekey_output_dir = Path(payload["main_output"])
+                    self._incremental_dir = None
+                    self._incremental_output_dir = None
+                    self._apply_target_dir = None
+                elif payload.get("count") is not None and project_paths is not None:
+                    self._last_onekey_output_dir = project_paths.translation_output_dir
+            InfoBar.success("应用成功", msg, duration=5000, parent=ui_parent)
             if self._onekey_translation_started and self._auto_hook_pending:
                 self._auto_hook_pending = False
                 QTimer.singleShot(0, self._start_auto_hook_supplement)
             elif self._onekey_translation_started:
                 self._reset_auto_hook_state()
-                
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            InfoBar.error("错误", f"应用翻译失败：{e}", parent=ui_parent)
+            return
+
+        if payload and payload.get("warning"):
+            InfoBar.warning("提示", msg, parent=ui_parent)
+        else:
+            InfoBar.error("错误", msg, parent=ui_parent)
 
     def _tool_hook_supplement(self, card):
         """打开补全漏翻页面，并沿用当前项目上下文。"""

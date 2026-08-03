@@ -1,4 +1,5 @@
 import hashlib
+import time
 from pathlib import Path
 
 import pytest
@@ -897,3 +898,85 @@ def test_transactional_apply_preserves_backups_when_rollback_fails(
     # 回滚失败时备份目录必须保留（带 rollback- 后缀），而不是被删除。
     leftovers = list(Path(tmp_path / "game" / "tl").glob(".renpybox-apply-*"))
     assert leftovers, "backup root must be preserved when rollback fails"
+
+
+def test_apply_worker_incremental_merges_off_thread_and_cleans_staging(
+    tmp_path, monkeypatch
+):
+    """后台工作线程应完成增量合并、上报进度、清理 staging 且不阻塞调用方。"""
+    from PyQt5.QtWidgets import QApplication
+
+    from frontend.RenpyToolbox.OneKeyTranslatePage import ApplyTranslationWorker
+    from module.Config import Config
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    app = QApplication.instance() or QApplication([])
+
+    config_path = tmp_path / "renpybox_config.json"
+    monkeypatch.setattr(Config, "CONFIG_PATH", str(config_path))
+    config = Config().load()
+
+    game_dir = tmp_path / "project"
+    tl = game_dir / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+    (tl / "main.rpy").write_text(
+        'translate chinese strings:\n'
+        '    old "AlreadyThere"\n'
+        '    new "已有"\n',
+        encoding="utf-8",
+    )
+
+    staging = game_dir / "game" / "tl" / "chinese_new"
+    staging.mkdir(parents=True)
+    output = game_dir / "RenpyBox_Translation" / "chinese_new"
+    output.mkdir(parents=True)
+    entry = (
+        'translate chinese strings:\n'
+        '    old "BrandNewSmoke"\n'
+        '    new "烟雾测试"\n'
+    )
+    (staging / "new.rpy").write_text(entry, encoding="utf-8")
+    (output / "new.rpy").write_text(entry, encoding="utf-8")
+
+    worker = ApplyTranslationWorker(
+        UnifiedExtractor(),
+        incremental_mode=True,
+        game_dir=str(game_dir),
+        tl_name="chinese",
+        output_dir=output,
+        main_output=game_dir / "RenpyBox_Translation" / "chinese",
+        incremental_dir=staging,
+        config=config,
+    )
+
+    progress: list[tuple[str, int]] = []
+    result: dict = {}
+
+    def on_progress(msg: str, pct: int) -> None:
+        progress.append((msg, pct))
+
+    def on_finished(ok: bool, msg: str, payload) -> None:
+        result["ok"] = ok
+        result["msg"] = msg
+        result["payload"] = payload
+
+    worker.progress.connect(on_progress)
+    worker.finished.connect(on_finished)
+    worker.start()
+    deadline = time.monotonic() + 30
+    while worker.isRunning() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    for _ in range(5):
+        app.processEvents()
+        time.sleep(0.02)
+    worker.wait(5000)
+
+    assert result.get("ok") is True, result.get("msg")
+    assert progress, "progress signals must be emitted during apply"
+    assert any(pct >= 100 for _msg, pct in progress)
+    merged_text = (tl / "new.rpy").read_text(encoding="utf-8")
+    assert "BrandNewSmoke" in merged_text
+    assert "烟雾测试" in merged_text
+    assert not staging.exists(), "staging dir must be removed after apply"
+    assert not output.exists(), "incremental output dir must be removed after apply"

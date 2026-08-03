@@ -118,6 +118,8 @@ class UnifiedExtractor:
         self._progress_callback: Optional[Callable[[str, int], None]] = None
         self._last_suspicious_manifest: Optional[Path] = None
         self._last_suspicious_removed_count: int = 0
+        # 内置 UI 文件跳过日志每个文件仅记录一次，避免多次全目录扫描时刷屏
+        self._logged_ui_skips: set = set()
 
     def _warn_if_writeback_report(self, tl_dir: Path) -> None:
         report_path = tl_dir / "writeback_report_renpy.json"
@@ -160,8 +162,9 @@ class UnifiedExtractor:
     
     def _emit_progress(self, message: str, percent: int):
         self.logger.info(f"[{percent}%] {message}")
-        if self._progress_callback:
-            self._progress_callback(message, percent)
+        callback = getattr(self, "_progress_callback", None)
+        if callback:
+            callback(message, percent)
 
     def _is_builtin_ui_file(self, path: Path) -> bool:
         """检查是否为内置 UI/字体模板文件"""
@@ -188,7 +191,14 @@ class UnifiedExtractor:
             if rpy_file.name.startswith("miss_ready_replace"):
                 continue
             if self._is_builtin_ui_file(rpy_file):
-                self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
+                # 每次全目录扫描都会经过同一组内置 UI 文件；只记录一次即可定位，
+                # 避免日志刷屏拖慢大批量扫描。
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(rpy_file) not in logged_ui_skips:
+                    logged_ui_skips.add(str(rpy_file))
+                    self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
                 continue
             yield rpy_file
 
@@ -1814,6 +1824,8 @@ class UnifiedExtractor:
             result.message = f"未找到增量目录: {incremental_dir}"
             return result
 
+        self._emit_progress("正在分析已有翻译与增量内容...", 10)
+
         def decode_literal(quote: str, text: str) -> str:
             return self._decode_rpy_string(quote, text)
 
@@ -1899,6 +1911,7 @@ class UnifiedExtractor:
             if key in existing_block_fingerprints
             and existing_block_fingerprints[key] != fingerprint
         }
+        self._emit_progress("正在合并新增翻译...", 30)
         self._replace_changed_numbered_blocks(
             tl_dir,
             incremental_dir,
@@ -1930,6 +1943,7 @@ class UnifiedExtractor:
             if key not in current_translations.block_names
         }
         if numbered_translation_updates or numbered_name_updates:
+            self._emit_progress("正在回填编号块译文...", 50)
             merge_errors.extend(
                 self._merge_translations(
                     tl_dir,
@@ -1948,7 +1962,13 @@ class UnifiedExtractor:
         added_entries += len(incremental_blocks - existing_blocks_before)
         cross_file_placeholder_updates: Dict[str, str] = {}
 
-        for rpy_file in self._iter_rpy_files(incremental_dir):
+        inc_rpy_files = list(self._iter_rpy_files(incremental_dir))
+        total_inc_files = len(inc_rpy_files) or 1
+        for file_index, rpy_file in enumerate(inc_rpy_files, 1):
+            self._emit_progress(
+                f"正在写入合并文件 {file_index}/{total_inc_files}...",
+                55 + int(file_index * 20 / total_inc_files),
+            )
             try:
                 inc_lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception as exc:
@@ -2090,6 +2110,7 @@ class UnifiedExtractor:
             or unapplied_numbered_names
             or merge_errors
         ):
+            self._emit_progress("合并校验未通过，已保留增量目录", 100)
             details = list(merge_errors)
             if missing_strings:
                 details.append(f"缺少 {len(missing_strings)} 条 strings")
@@ -2109,6 +2130,7 @@ class UnifiedExtractor:
         merged_files = len(list(self._iter_rpy_files(incremental_dir)))
 
         if clean_duplicates:
+            self._emit_progress("正在清理重复与空文件...", 80)
             try:
                 rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
             except Exception as exc:
@@ -2150,6 +2172,7 @@ class UnifiedExtractor:
                     )
 
         # 合并完成后再次做跨文件 old 唯一性校验，杜绝 Ren'Py 重复翻译报错。
+        self._emit_progress("正在校验跨文件唯一性...", 88)
         self._dedupe_string_translations(tl_dir, tl_name)
 
         # 记录本周期提出但未进入翻译输出的候选，后续增量不再重复提出。
@@ -2169,6 +2192,7 @@ class UnifiedExtractor:
             self.logger.warning(f"记录判定不译候选失败: {exc}")
 
         # 合并完成后按源行号整理编号块，strings 块保持文件最后。
+        self._emit_progress("正在按行号整理编号块...", 93)
         try:
             organized = self._sort_numbered_blocks_by_source_line(game_dir, tl_dir)
             if organized:
@@ -2199,6 +2223,7 @@ class UnifiedExtractor:
         except Exception as exc:
             self.logger.warning(f"合并完成但清理增量目录失败 {incremental_dir}: {exc}")
 
+        self._emit_progress("合并完成", 100)
         result.success = True
         result.total_files = len(list(self._iter_rpy_files(tl_dir)))
         result.message = (
