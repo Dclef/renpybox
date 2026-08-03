@@ -1039,7 +1039,7 @@ RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
 TRANSLATABLE_UI_WORDS = {
     "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
     "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
-    "OFF", "NEW", "AUTO",
+    "OFF", "NEW", "AUTO", "OK",
 }
 
 

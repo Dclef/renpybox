@@ -64,7 +64,7 @@ class ResponseChecker(Base):
     TRANSLATABLE_UPPERCASE_UI_WORDS = {
         "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
         "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
-        "OFF", "NEW", "AUTO",
+        "OFF", "NEW", "AUTO", "OK",
     }
     # 模型按提示词输出的翻译失败标记。这不是“相似度高”，应优先归类为异常回复。
     RE_TRANSLATION_ERROR_MARKER = re.compile(
