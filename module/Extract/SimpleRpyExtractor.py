@@ -62,6 +62,8 @@ class SimpleRpyExtractor:
 
     def __init__(self) -> None:
         self.logger = LogManager.get()
+        # 内置 UI 文件跳过日志每个文件仅记录一次，避免全目录扫描时刷屏
+        self._logged_ui_skips: set = set()
 
     def extract_from_directory(
         self,
@@ -112,7 +114,12 @@ class SimpleRpyExtractor:
 
             # 跳过内置 UI / 字体模板文件
             if not include_builtin_ui and self._is_builtin_ui_file(rpy_file):
-                self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(rpy_file) not in logged_ui_skips:
+                    logged_ui_skips.add(str(rpy_file))
+                    self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
                 continue
 
             try:
@@ -160,7 +167,12 @@ class SimpleRpyExtractor:
                 continue
 
             if self._is_builtin_ui_file(file_path):
-                self.logger.debug(f"跳过内置 UI 文件: {file_path}")
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(file_path) not in logged_ui_skips:
+                    logged_ui_skips.add(str(file_path))
+                    self.logger.debug(f"跳过内置 UI 文件: {file_path}")
                 continue
 
             file_entries = self._parse_rpy_file(file_path, tl_name, str(file_path))
