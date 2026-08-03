@@ -175,7 +175,7 @@ def test_verify_uppercase_50_word_case(tmp_path, monkeypatch) -> None:
         "src/menu/pref.rpy",
         "src/menu/logs.rpy",
         "src/gui/tel.rpy",
-        "zz_renpybox_bytecode_strings.rpy",
+        "renpybox_bytecode_strings.rpy",
     ]
 
     items = []

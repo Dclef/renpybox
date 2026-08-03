@@ -2768,7 +2768,7 @@ class UnifiedExtractor:
             candidates = candidates - declined
 
         existing = self._get_string_originals(tl_dir)
-        target_file = tl_dir / "zz_renpybox_bytecode_strings.rpy"
+        target_file = tl_dir / "renpybox_bytecode_strings.rpy"
         header_re = re.compile(
             rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
         )
