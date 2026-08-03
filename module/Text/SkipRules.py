@@ -21,42 +21,24 @@ from typing import Iterable, List, Set, Tuple, Optional
 # ============================================================
 
 # 形状判定：2~6 位、首字母大写、其余为大写字母或数字。
-# 例如 USB、DLC、GPS、HP、TBD 都匹配；A+、Alpha、Start 不匹配。
+# 例如 USB、DLC、GPS、TBD 都匹配；A+、Alpha、Start 不匹配。
 RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
 
-# 形状像缩写、但本身是普通英文词的候选，必须照常翻译，不能当作缩写冻结。
-# 判断标准：该串是常见英文单词/称呼/指令（如 GO、DAD、ART、SENT、SPAM、
-# IT、PIN、OPEN、EDIT……）；真正的中英文通用缩写（USB、DLC、GPS、NPC、
-# HP、MP、TBD、HR、PING……）不在此列，保持不译。
-TRANSLATABLE_UPPERCASE_WORDS = frozenset({
-    # 界面按钮 / 导航
-    "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
-    "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
-    "OFF", "NEW", "AUTO", "OK", "OPEN", "CLOSE", "ADD", "EDIT",
-    "DELETE", "COPY", "PASTE", "CUT", "UNDO", "REDO", "HOME",
-    "END", "UP", "DOWN", "LEFT", "RIGHT", "TOP", "BOTTOM", "MAX",
-    "MIN", "SET", "RESET", "PUSH", "PULL", "ENTER", "RETURN",
-    # 常用问候 / 应答
-    "HI", "HEY", "BYE", "OKAY", "YEP", "NOPE", "SURE", "WOW",
-    # 称呼 / 家庭成员 / 头衔
-    "DAD", "MOM", "MUM", "SIR", "MR", "MRS", "MS", "DR", "MISS",
-    "LADY", "LORD", "KING", "QUEEN", "HONEY", "DEAR", "BABE",
-    # 常见动词 / 指令
-    "GO", "RUN", "WAIT", "HOLD", "TURN", "MOVE", "JUMP", "FIGHT",
-    "HIDE", "SHOW", "CALL", "MEET", "BUY", "SELL", "PAY", "WIN",
-    "LOSE", "LOVE", "HATE", "WORK", "SLEEP", "EAT", "DRINK",
-    "TALK", "LOOK", "USE", "GIVE", "TAKE", "FIND", "LEAVE",
-    "STAY", "ASK", "TELL", "FOLLOW", "SEND", "SENT", "PICK",
-    "DROP", "LOCK", "UNLOCK", "JOIN", "SIGN", "HUG", "KISS",
-    # 常见名词 / 状态（普通单词而非缩写）
-    "DAY", "NIGHT", "WEEK", "YEAR", "AGE", "TIME", "NAME",
-    "FRIEND", "FAMILY", "SCHOOL", "MONEY", "GOLD", "KEY", "MAP",
-    "TITLE", "SHOP", "STORE", "ROOM", "BED", "CITY", "TOWN",
-    "TEAM", "RANK", "LEVEL", "POINT", "SCORE", "TURN", "PACK",
-    "ART", "CODE", "PIN", "SPAM", "MAIL", "TEXT", "GAME",
-    # 常见两字母单词
-    "IN", "AT", "WE", "MY", "US", "TO", "DO", "IS", "ME", "IT",
-    "BY", "AS", "OF", "OR", "AN", "BE",
+# 判定策略：默认翻译，只冻结“中文语境同样保留原文”的通用缩写。
+# 普通英文词（GO、DAD、ART、SENT、SPAM、IT、PIN……）和普通缩写
+# （TBD→待定、AM/PM→上午/下午、HR→小时……）都不在此列，必须照常翻译；
+# 只有科技/游戏通用缩写（USB、DLC、GPS、NPC、HP、MP……）保持原样。
+KEEP_AS_IS_UPPERCASE = frozenset({
+    # 科技 / 硬件 / 网络
+    "USB", "HDMI", "CPU", "GPU", "RAM", "ROM", "SSD", "HDD", "LED",
+    "LCD", "OLED", "API", "URL", "HTML", "XML", "JSON", "CSS", "PHP",
+    "SQL", "DNS", "VPN", "HTTP", "HTTPS", "FTP", "SSH", "IP", "ID",
+    "AI", "VR", "AR", "PC", "TV", "DVD", "MP3", "MP4", "PNG", "JPG",
+    "GIF", "BMP", "PDF", "EXE", "ZIP", "RAR", "AVI", "MKV", "WAV",
+    "OGG", "ISO", "BIOS", "SATA", "LTE", "4G", "5G", "3D", "HD",
+    # 游戏 / 类型 / 属性（中文语境通常保留原文）
+    "NPC", "RPG", "FPS", "MMO", "MOBA", "RTS", "HP", "MP", "XP",
+    "DLC", "GPS", "SMS", "KPI", "MVP", "FAQ", "VIP",
 })
 
 # ============================================================

@@ -6,8 +6,8 @@ from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Text.TextBase import TextBase
 from module.Text.SkipRules import (
+    KEEP_AS_IS_UPPERCASE,
     RE_UPPERCASE_ACRONYM_CANDIDATE,
-    TRANSLATABLE_UPPERCASE_WORDS,
 )
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
@@ -469,7 +469,7 @@ class ResponseChecker(Base):
 
         if (
             RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(s) is not None
-            and s not in TRANSLATABLE_UPPERCASE_WORDS
+            and s in KEEP_AS_IS_UPPERCASE
         ):
             return True
 
