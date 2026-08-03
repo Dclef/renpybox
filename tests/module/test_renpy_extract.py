@@ -2272,9 +2272,11 @@ def test_acronym_separation_keeps_ui_words():
     from module.Extract import ReplaceGenerator as generator
 
     acronyms = generator._separate_acronym_candidates(
-        {"USB", "DLC", "START", "Noon (first-time)."}
+        {"USB", "DLC", "START", "OK", "Noon (first-time)."}
     )
     assert acronyms == {"USB", "DLC"}
+    # OK 属于常见 UI 词，应进入白名单正常翻译，不能被当作缩写。
+    assert "OK" not in acronyms
 
 
 def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
