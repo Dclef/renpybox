@@ -70,6 +70,76 @@ def test_resumed_round_progress_uses_completed_plus_remaining() -> None:
     assert translator.extras["total_line"] == 8
 
 
+def test_verify_uppercase_untranslated_only_excludes_double_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    """第二次整体翻译验证：两次都未被翻译才判定不译，翻译过/请求失败不误判。"""
+    from module.Engine.Translator.Translator import Translator
+
+    items = [
+        CacheItem(src="TBD", dst="TBD", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="GO", dst="GO", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="ART", dst="ART", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="Hello", dst="Hello", status=Base.TranslationStatus.UNTRANSLATED),
+    ]
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    translator = Translator.__new__(Translator)
+    translator.cache_manager = SimpleNamespace(get_items=lambda: items)
+    translator.config = config
+    translator.task_context = SimpleNamespace(to_runtime_config=lambda cfg: cfg)
+    translator.platform = {"name": "test"}
+    translator.data_lock = threading.Lock()
+    translator.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+    translator._should_stop_requested = lambda *a, **k: False
+    translator._merge_analysis_candidates_for_run = lambda *a, **k: None
+    translator._record_verified_declined = lambda items: None
+
+    class FakeTask:
+        def __init__(
+            self,
+            task_context,
+            platform,
+            local_flag,
+            items,
+            precedings,
+            runtime_config=None,
+            candidate_sink=None,
+        ):
+            self.items = items
+
+        def start(self, round_index):
+            for item in self.items:
+                if item.get_src() == "GO":
+                    # 第二次被 AI 翻译 → 保留译文
+                    item.set_dst("去")
+                    item.set_status(Base.TranslationStatus.TRANSLATED)
+                elif item.get_src() == "ART":
+                    # 第二次请求失败（空响应）→ 不是“未翻译”证据
+                    item.set_dst("")
+                # TBD 第二次仍干净返回原文
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.TranslatorTask", FakeTask
+    )
+
+    excluded = translator._verify_uppercase_untranslated(None, None, 1, True)
+
+    assert excluded == 1
+    statuses = {item.get_src(): item.get_status() for item in items}
+    assert statuses["TBD"] == Base.TranslationStatus.EXCLUDED
+    assert statuses["GO"] == Base.TranslationStatus.TRANSLATED
+    assert statuses["ART"] == Base.TranslationStatus.UNTRANSLATED
+    assert statuses["Hello"] == Base.TranslationStatus.UNTRANSLATED
+
+
 def test_runtime_manifest_preserves_incremental_scope_on_resume(tmp_path) -> None:
     project = tmp_path / "fictional-game"
     main_input = project / "game" / "tl" / "chinese"

@@ -28,8 +28,8 @@ from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Renpy.renpy_tl_core import tl_dir_signature
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import (
+    KEEP_AS_IS_UPPERCASE,
     RE_UPPERCASE_ACRONYM_CANDIDATE,
-    TRANSLATABLE_UPPERCASE_WORDS,
     should_skip_text,
 )
 
@@ -75,8 +75,12 @@ def load_declined_candidates(game_dir, tl_name) -> Set[str]:
     return {str(value) for value in values if isinstance(value, str) and value}
 
 
-def record_declined_candidates(game_dir, tl_name, originals) -> int:
-    """把判定不译的候选追加到项目清单，返回新增条数。"""
+def record_declined_candidates(game_dir, tl_name, originals, source_map=None) -> int:
+    """把判定不译的候选追加到项目清单，返回新增条数。
+
+    source_map: 可选的 {原文: 相对 tl 文件路径}，用于保留溯源，方便后续
+    定位/放回其原本所属的翻译文件。
+    """
     originals = {
         str(value) for value in originals if isinstance(value, str) and value
     }
@@ -88,12 +92,31 @@ def record_declined_candidates(game_dir, tl_name, originals) -> int:
         return 0
     path = declined_candidates_path(game_dir, tl_name)
     try:
+        existing_payload: dict = {}
+        try:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    existing_payload = raw
+        except Exception:
+            existing_payload = {}
+        existing_sources = existing_payload.get("sources")
+        if not isinstance(existing_sources, dict):
+            existing_sources = {}
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema_version": DECLINED_CANDIDATES_SCHEMA_VERSION,
             "language": tl_name,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "declined": sorted(merged),
+            "sources": {
+                str(src): str(src_path)
+                for src, src_path in {
+                    **existing_sources,
+                    **(source_map or {}),
+                }.items()
+                if str(src) in merged
+            },
         }
         temp_path = path.with_suffix(".json.tmp")
         temp_path.write_text(
@@ -1040,12 +1063,12 @@ RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _separate_acronym_candidates(candidates: Set[str]) -> Set[str]:
-    """返回其中的大写缩写候选（可翻译 UI 词除外）。"""
+    """返回应保持不译的通用缩写候选（默认翻译，仅冻结明确清单）。"""
     return {
         text
         for text in candidates
         if RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(text.strip())
-        and text.strip() not in TRANSLATABLE_UPPERCASE_WORDS
+        and text.strip() in KEEP_AS_IS_UPPERCASE
     }
 
 
