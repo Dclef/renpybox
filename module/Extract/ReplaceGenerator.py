@@ -27,7 +27,11 @@ from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Renpy.renpy_tl_core import tl_dir_signature
 from module.Renpy import renpy_extract as rx
-from module.Text.SkipRules import should_skip_text
+from module.Text.SkipRules import (
+    RE_UPPERCASE_ACRONYM_CANDIDATE,
+    TRANSLATABLE_UPPERCASE_WORDS,
+    should_skip_text,
+)
 
 Pair = Tuple[str, str]
 
@@ -1035,21 +1039,13 @@ RE_COMPILED_ERROR_FRAGMENT = re.compile(
 RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
-TRANSLATABLE_UI_WORDS = {
-    "START", "SAVE", "LOAD", "EXIT", "QUIT", "BACK", "NEXT",
-    "SKIP", "PLAY", "STOP", "MENU", "HELP", "YES", "NO", "ON",
-    "OFF", "NEW", "AUTO", "OK",
-}
-
-
 def _separate_acronym_candidates(candidates: Set[str]) -> Set[str]:
     """返回其中的大写缩写候选（可翻译 UI 词除外）。"""
     return {
         text
         for text in candidates
         if RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(text.strip())
-        and text.strip() not in TRANSLATABLE_UI_WORDS
+        and text.strip() not in TRANSLATABLE_UPPERCASE_WORDS
     }
 
 
