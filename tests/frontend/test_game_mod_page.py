@@ -13,6 +13,8 @@ APP = QApplication.instance() or QApplication([])
 def test_game_mod_page_has_buttons_and_disables_them_while_running():
     page = GameModPage("game-mod")
 
+    assert page.gallery_install_button.text() == "安装"
+    assert page.gallery_uninstall_button.text() == "卸载"
     assert page.urm_install_button.text() == "安装"
     assert page.urm_uninstall_button.text() == "卸载"
     assert page.quick_menu_install_button.text() == "安装"

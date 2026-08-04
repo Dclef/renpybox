@@ -25,6 +25,18 @@ class ModInjector:
     """将随包模组复制到 Ren'Py 游戏目录。"""
 
     MODS: dict[str, ModSpec] = {
+        "gallery_unlock": ModSpec(
+            key="gallery_unlock",
+            title="解锁画廊（ZLZK 通用画廊解锁器改写版）",
+            resource_parts=(
+                "resource",
+                "mods",
+                "gallery_unlock",
+                "hook_gallery_unlock.rpy",
+            ),
+            target_name="hook_gallery_unlock.rpy",
+            has_rpyc=True,
+        ),
         "urm": ModSpec(
             key="urm",
             title="修改器（0x52-URM 2.6.2 汉化版）",
@@ -99,6 +111,8 @@ class ModInjector:
             self._ensure_safe_target(target)
             if target.exists():
                 target.replace(target.with_name(f"{target.name}.bak"))
+            if spec.has_rpyc:
+                target.with_suffix(".rpyc").unlink(missing_ok=True)
 
             shutil.copy2(source, target)
             return True, f"{spec.title}安装成功"

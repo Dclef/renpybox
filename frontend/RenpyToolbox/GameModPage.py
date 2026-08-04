@@ -59,6 +59,16 @@ class GameModPage(Base, QWidget):
         layout.addWidget(self._build_intro_card())
         layout.addWidget(self._build_game_dir_card())
 
+        gallery_card, self.gallery_install_button, self.gallery_uninstall_button = (
+            self._build_mod_card(
+                "gallery_unlock",
+                "解锁画廊（ZLZK 通用画廊解锁器改写版）",
+                "装后会在游戏内显示“解锁画廊 / 锁住画廊”按钮，可随时切换；"
+                "提供 F10 快捷键兜底，避免按钮被其他模组覆盖。",
+            )
+        )
+        layout.addWidget(gallery_card)
+
         urm_card, self.urm_install_button, self.urm_uninstall_button = (
             self._build_mod_card(
                 "urm",
@@ -84,6 +94,8 @@ class GameModPage(Base, QWidget):
 
         self._buttons = (
             self.browse_button,
+            self.gallery_install_button,
+            self.gallery_uninstall_button,
             self.urm_install_button,
             self.urm_uninstall_button,
             self.quick_menu_install_button,
@@ -98,7 +110,7 @@ class GameModPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("使用说明", self))
 
         copyright_label = CaptionLabel(
-            "本页模组均为第三方作品，版权归各自作者（0x52、独木桥），用完建议卸载。",
+            "本页模组均为第三方作品，版权归各自作者（ZLZK、0x52、独木桥），用完建议卸载。",
             self,
         )
         copyright_label.setWordWrap(True)
@@ -126,8 +138,10 @@ class GameModPage(Base, QWidget):
         path_row.addWidget(self.browse_button)
         layout.addLayout(path_row)
 
+        self.gallery_status_label = CaptionLabel("解锁画廊：未选择游戏目录", self)
         self.urm_status_label = CaptionLabel("修改器：未选择游戏目录", self)
         self.quick_menu_status_label = CaptionLabel("底部按钮栏：未选择游戏目录", self)
+        layout.addWidget(self.gallery_status_label)
         layout.addWidget(self.urm_status_label)
         layout.addWidget(self.quick_menu_status_label)
         return card
@@ -178,11 +192,15 @@ class GameModPage(Base, QWidget):
     def _refresh_status(self) -> None:
         game_dir = self.game_dir_edit.text().strip()
         if not game_dir:
+            self.gallery_status_label.setText("解锁画廊：未选择游戏目录")
             self.urm_status_label.setText("修改器：未选择游戏目录")
             self.quick_menu_status_label.setText("底部按钮栏：未选择游戏目录")
             return
 
         status = self.injector.status(game_dir)
+        self.gallery_status_label.setText(
+            f"解锁画廊：{'已安装' if status['gallery_unlock'] else '未安装'}"
+        )
         self.urm_status_label.setText(
             f"修改器：{'已安装' if status['urm'] else '未安装'}"
         )
