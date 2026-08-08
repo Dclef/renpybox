@@ -12,20 +12,34 @@ init -1100 python:
         _rb_int_types = (int,)
 
 init -1000 python:
-    import renpy
+    import renpy as _rb_renpy
 
     _rb_gallery_hijacked = []
     _rb_gallery_installed = False
 
-    def _rb_is_private_name(name):
-        return isinstance(name, _rb_text_types) and name.startswith("_")
+    def _rb_is_protected_name(name):
+        return isinstance(name, _rb_text_types) and (
+            name.startswith("_")
+            or name.startswith("dumuqiao")
+            or name == "URMSettings"
+        )
 
     def _rb_unlocked():
         try:
-            persistent_map = renpy.game.persistent.__dict__
+            persistent_map = _rb_renpy.game.persistent.__dict__
             return bool(persistent_map.get("_rb_gallery_unlocked", False))
         except Exception:
             return False
+
+    def _rb_has_urm():
+        try:
+            urm = globals().get("x52URM")
+            return urm is not None and hasattr(urm, "Open")
+        except Exception:
+            return False
+
+    def _rb_has_simple_modifier():
+        return bool(globals().get("_rb_simple_modifier_available", False))
 
     def _rb_swap_one(value):
         if isinstance(value, bool):
@@ -93,7 +107,7 @@ init -1000 python:
 
     def _rb_wrap_getattr(original):
         def wrapper(self, name):
-            if _rb_is_private_name(name):
+            if _rb_is_protected_name(name):
                 return original(self, name)
             if _rb_unlocked():
                 return True
@@ -103,7 +117,7 @@ init -1000 python:
 
     def _rb_wrap_getattribute(original):
         def wrapper(self, name):
-            if _rb_is_private_name(name):
+            if _rb_is_protected_name(name):
                 return original(self, name)
             if not _rb_unlocked():
                 return original(self, name)
@@ -124,12 +138,12 @@ init -1000 python:
             return
 
         _rb_gallery_installed = True
-        _rb_hook(renpy.exports, "seen_label", _rb_wrap_seen)
-        _rb_hook(renpy.exports, "seen_image", _rb_wrap_seen)
-        _rb_hook(renpy.exports, "seen_audio", _rb_wrap_seen)
-        _rb_hook(renpy.game.Persistent, "__getattr__", _rb_wrap_getattr)
-        _rb_hook(renpy.game.Persistent, "__getattribute__", _rb_wrap_getattribute)
-        _rb_hook(renpy.exports, "utter_restart", _rb_wrap_restart)
+        _rb_hook(_rb_renpy.exports, "seen_label", _rb_wrap_seen)
+        _rb_hook(_rb_renpy.exports, "seen_image", _rb_wrap_seen)
+        _rb_hook(_rb_renpy.exports, "seen_audio", _rb_wrap_seen)
+        _rb_hook(_rb_renpy.game.Persistent, "__getattr__", _rb_wrap_getattr)
+        _rb_hook(_rb_renpy.game.Persistent, "__getattribute__", _rb_wrap_getattribute)
+        _rb_hook(_rb_renpy.exports, "utter_restart", _rb_wrap_restart)
 
 init 999 python:
     if "_rb_gallery_toggle" not in config.overlay_screens:
@@ -140,6 +154,7 @@ init 1000 python:
 
 screen _rb_gallery_toggle():
     zorder 100
+    key "K_F9" action ToggleScreen("_rb_game_tools")
     key "K_F10" action ToggleField(persistent, "_rb_gallery_unlocked")
 
     frame:
@@ -148,12 +163,57 @@ screen _rb_gallery_toggle():
         xpadding 10
         ypadding 6
 
+        textbutton "MOD":
+            action ToggleScreen("_rb_game_tools")
+
+screen _rb_game_tools():
+    zorder 101
+    modal True
+    key "K_F9" action Hide("_rb_game_tools")
+    key "K_F10" action ToggleField(persistent, "_rb_gallery_unlocked")
+
+    frame:
+        xalign 0.98
+        yalign 0.09
+        xsize 360
+        xpadding 16
+        ypadding 14
+
         vbox:
-            spacing 4
-            textbutton (
-                "锁住画廊"
+            spacing 10
+
+            hbox:
+                xfill True
+                text "游戏工具" size 24
+                null width 20
+                textbutton "关闭":
+                    action Hide("_rb_game_tools")
+
+            text (
+                "画廊全解锁：（开）"
                 if persistent._rb_gallery_unlocked
-                else "解锁画廊"
+                else "画廊全解锁：（关）"
+            ) size 16
+
+            textbutton (
+                "恢复游戏原本的画廊进度"
+                if persistent._rb_gallery_unlocked
+                else "开启全部画廊"
             ):
                 action ToggleField(persistent, "_rb_gallery_unlocked")
-            text "快捷键：F10" size 14
+
+            if persistent._rb_gallery_unlocked:
+                text "开启期间会绕过部分游戏判定，看完请关闭" size 14
+
+            if _rb_has_urm():
+                textbutton "打开修改器":
+                    action x52URM.Open()
+
+            if _rb_has_simple_modifier():
+                textbutton "内置修改器":
+                    action [
+                        Hide("_rb_game_tools"),
+                        Show("_rb_simple_modifier"),
+                    ]
+
+            text "F9：关闭面板    F10：切换画廊状态" size 14

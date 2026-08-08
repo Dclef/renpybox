@@ -12,7 +12,7 @@
 [ModInjector.install](../module/Tool/ModInjector.py#L90-L107) 备份并覆盖了 `.rpy`，但**没有清理同名
 `.rpyc`**。`uninstall` 清了（`ModInjector.py:116-117`），`install` 没清。
 
-后果：用户手工装过 `dumuqiao.rpy` 并让游戏编译出 `dumuqiao.rpyc`，之后用本工具安装时，
+后果：用户手工装过同名旧 hook 并让游戏编译出 `.rpyc`，之后用本工具安装时，
 `shutil.copy2` 会连源文件的 mtime 一起复制过去（源文件在 PyInstaller 解包目录里，mtime 可能比那个
 `.rpyc` 还旧）。Ren'Py 判断 `.rpyc` 是否过期依赖 rpy 的时间戳/摘要，一个"看起来更新"的旧 `.rpyc`
 有让新装的 rpy 不生效的风险。加了画廊 hook 之后这个坑会更明显 —— 用户装完发现开关没出现，
@@ -168,22 +168,21 @@ init 999 python:
         config.overlay_screens.append("_rb_gallery_toggle")
 ```
 
-**必须 append，不能 `define config.overlay_screens = [...]`。** `dumuqiao.rpy:17` 就是整个覆盖的
-写法，那会踩掉别人的 overlay —— 这也正是两个 mod 同时装时按钮互相顶掉的根源。加 `not in` 判断是
+**必须 append，不能覆盖 `config.overlay_screens`。** 覆盖整个列表会踩掉别人的 overlay，也是按钮
+互相顶掉的根源。加 `not in` 判断是
 防重复（热重载时 `init` 可能再跑一次）。
 
-文案随状态切换：
+现行实现显示自研「MOD」入口，面板内再展示状态和动作：
 
 ```renpy
 screen _rb_gallery_toggle():
     zorder 100
-    textbutton ("锁住画廊" if persistent._rb_gallery_unlocked else "解锁画廊"):
-        action ToggleField(persistent, "_rb_gallery_unlocked")
+    textbutton "MOD":
+        action ToggleScreen("_rb_game_tools")
 ```
 
-位置自己定，避开常见 quick_menu 区域（底部居中），建议靠某个角。另外配一个快捷键
-（`config.keymap` 加一项，或 screen 里 `key`）作为按钮被别的 mod 顶掉时的兜底，
-在 UI 说明里写出来。
+面板位于右上角，`F9` 打开或关闭面板，`F10` 直接切换画廊状态。文案使用「开启全部画廊」与
+「恢复游戏原本的画廊进度」；后者仅关闭强制解锁，不会清除游戏进度。
 
 ## 5. 接进现有代码
 
@@ -206,16 +205,16 @@ screen _rb_gallery_toggle():
 
 ### 5.2 GameModPage
 
-[GameModPage._init_ui](../frontend/RenpyToolbox/GameModPage.py#L43-L91) 里照 `urm` / `quick_menu`
-的样子加一张卡，放在两者**之前**（issue 里画廊解锁是主诉求）：
+[GameModPage._init_ui](../frontend/RenpyToolbox/GameModPage.py#L43-L91) 里将画廊卡放在修改器卡之前
+（issue 里画廊解锁是主诉求）：
 
 - 调 `self._build_mod_card("gallery_unlock", ...)`，拿到两个按钮。
 - 把新按钮加进 `self._buttons`，否则操作期间它不会被禁用，能重复点。
 - `_build_game_dir_card` 加一个 `self.gallery_status_label`，`_refresh_status` 里两条分支都要更新它
   （未选目录时的文案 + 已选目录时的已装/未装），漏一个会显示上一次的残留状态。
 
-卡片说明文字要写清：装后游戏内出现「解锁画廊 / 锁住画廊」按钮，可随时切换；按钮可能与独木桥模组
-冲突，附快捷键兜底；第三方作品（ZLZK），用完建议卸载。
+卡片说明文字要写清：装后游戏内出现「MOD」面板，可随时开启全部画廊或恢复游戏原本的画廊进度；
+提供 `F9` / `F10` 快捷键；画廊解锁器为第三方作品（ZLZK）。
 
 ### 5.3 测试
 
@@ -224,8 +223,7 @@ screen _rb_gallery_toggle():
 要改到的地方：
 
 - `_fake_resources` 的 `resources` 字典加新文件。
-- `test_install_status_and_uninstall_both_mods` 的 `status` 断言现在是精确字典比较
-  （`== {"urm": True, "quick_menu": True}`），加了第三个 mod 会**直接失败**，必须同步更新。
+- `test_install_status_and_uninstall_all_mods` 的 `status` 断言是精确字典比较，必须与当前两个随包模组同步。
 - `test_resource_directory_is_never_modified` 的循环加一项。
 - 新增：装 `gallery_unlock` → 造 `.rpyc` → 卸载 → 断言 rpy 和 rpyc 都没了。
 - 新增：第 0 节那条，安装时清理旧 `.rpyc`。
@@ -243,28 +241,22 @@ Ren'Py 7 和 8 各准备一个真实游戏，逐条走：
 
 1. 装解锁画廊 → 游戏能正常启动（不崩、无 `RecursionError`）。
 2. 开关默认关闭 → 画廊仍是锁的（确认没有装上即生效）。
-3. 点「解锁画廊」→ **不重启** → 画廊立即可看。
-4. 点「锁住画廊」→ 立即恢复锁住。
+3. 点「MOD」→ 选择「开启全部画廊」→ **不重启** → 画廊立即可看。
+4. 选择「恢复游戏原本的画廊进度」→ 立即按游戏进度显示画廊。
 5. 退出重进 → 开关状态被 persistent 记住。
 6. 卸载 → 确认 `.rpy` 和 `.rpyc` 都没了 → 游戏正常启动、画廊回到原状。
-7. 与独木桥模组同时装 → 看两边按钮是否互相顶掉；顶掉了就靠快捷键，并把结论写进
-   `resource/mods/README.md`。
+7. 装 URM → 确认 MOD 面板能打开修改器；只装 URM 时，确认独立「修改器」按钮可用。
 
 第 1、3 两条是这次的核心风险点：第 1 条查 Py2/Py3 兼容和递归，第 3 条查"能切换"这个主诉求。
 
 ## 7. 第 5 步（URM 按钮）的前置条件
 
-还是卡在同一件事上：**URM 的 screen 名和默认按键没有静态确认**。rpa 里 68 个条目全是编译过的
-`.rpyc`，母文档记录过 zlib 解压搜 `urm*` / `K_*` / `screen *` 都没拿到明文，我这次也没有新增手段。
-
-所以第 5 步的入口条件是：装进一个测试游戏，从游戏内或 `game/log.txt` 拿到真实 screen 名。
-**拿到之前不要凭猜测写 `ShowMenu("urm")` 之类的死值** —— 按钮点了没反应比没有按钮更难排查。
-既然第 6 节的验收本来就要装一次 URM，顺手把 screen 名记下来写进
-`resource/mods/README.md`，第 5 步就解锁了。
+已从上游 PC 压缩包确认安全入口是 `x52URM.Open()`，默认快捷键为 `Alt+M`。不要写
+`ShowMenu("URM_main")`，否则会绕过 URM 自己的欢迎页和警告流程。画廊 Hook 已安装时由 MOD 面板
+调用此入口；只装 URM 时由伴随 Hook 显示独立按钮。
 
 ## 8. 完成后要更新的文档
 
 - [game-mod-injection-design.md](game-mod-injection-design.md) 第 8 节第 4 步划掉。
 - [roadmap.md](roadmap.md) 的「注入画廊解锁器」勾上（目前状态与实现一致，本次做完才需要动它）。
-- `resource/mods/README.md`：把 `gallery_unlock/` 那行的「（待实现）」去掉，
-  补实测结论（Ren'Py 版本、与独木桥的冲突情况、URM screen 名）。
+- `resource/mods/README.md`：记录 MOD 面板的快捷键、画廊动作含义和 URM 入口。
