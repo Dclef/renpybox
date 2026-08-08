@@ -9,6 +9,8 @@
 /storage
 # Test files
 *.rpa
+# 随包分发的模组本体需要入库
+!resource/mods/**/*.rpa
 
 # Python
 *.egg-info/
@@ -25,3 +27,9 @@ config.json
 coverage.xml
 htmlcov/
 /test
+
+/docs/internal/
+/.claude/
+/.codex/
+AGENTS.md
+CLAUDE.md

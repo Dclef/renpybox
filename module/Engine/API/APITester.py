@@ -50,6 +50,7 @@ class APITester(Base):
 
         # 测试结果
         failure = []
+        failure_details = []
         success = []
 
         # 构造提示词
@@ -81,11 +82,16 @@ class APITester(Base):
             self.print("")
             self.info(f"{Localizer.get().platofrm_tester_key} - {key}")
             self.info(f"{Localizer.get().platofrm_tester_messages}\n{messages}")
-            skip, response_think, response_result, _, _ = requester.request(messages)
+            skip, response_think, response_result, _, _ = requester.request(
+                messages,
+                response_shape = "none",
+            )
 
             # 提取回复内容
             if skip == True:
                 failure.append(key)
+                if requester.last_error_message:
+                    failure_details.append(requester.last_error_message)
                 self.warning(Localizer.get().log_api_test_fail)
             elif response_think == "":
                 success.append(key)
@@ -101,6 +107,8 @@ class APITester(Base):
                                                   .replace("{SUCCESS}", f"{len(success)}")
                                                   .replace("{FAILURE}", f"{len(failure)}")
         )
+        if failure_details:
+            result_msg = result_msg + "\n" + "\n".join(dict.fromkeys(failure_details))
         self.print("")
         self.info(result_msg)
 
