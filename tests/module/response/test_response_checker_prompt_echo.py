@@ -10,12 +10,20 @@ from pathlib import Path
 import pytest
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
+from module.PromptBuilder import PromptBuilder
 from module.Response.ResponseChecker import ResponseChecker
 
 
 PROMPT_ROOT = Path(__file__).resolve().parents[3] / "resource" / "prompt"
+PROMPT_TITLE_FILES = (
+    *PromptBuilder.MODE_FILES.values(),
+    "engineering.txt",
+    *PromptBuilder.PROTOCOL_FILES.values(),
+    *PromptBuilder.STYLE_FILES.values(),
+)
 
 
 # 实际泄漏进游戏文件的五段（截断保留特征），与提示词段落一一对应
@@ -55,10 +63,10 @@ def _load_prompt_title_cases():
     cases = []
     for language in ("zh", "en"):
         language_root = PROMPT_ROOT / language
-        for path in sorted(language_root.glob("*.txt")):
+        for filename in PROMPT_TITLE_FILES:
+            path = language_root / filename
             lines = path.read_text(encoding="utf-8-sig").splitlines()
-            if lines and lines[0].lstrip().startswith("###"):
-                cases.append((language, path.name, lines[0]))
+            cases.append((language, filename, lines[0] if lines else ""))
     return tuple(cases)
 
 
@@ -91,7 +99,16 @@ def test_non_string_input_is_not_flagged():
     ids=lambda value: str(value),
 )
 def test_prompt_resource_titles_are_recognized(language, filename, title):
+    assert title.lstrip().startswith("###"), f"{language}/{filename}: 缺少标题行"
     assert ResponseChecker.has_prompt_echo(title), f"{language}/{filename}: {title}"
+
+
+@pytest.mark.parametrize("target_language", (BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN))
+def test_single_line_control_sample_titles_are_recognized(target_language):
+    builder = PromptBuilder(Config(target_language=target_language))
+    title_and_samples = builder.build_single_line_control_samples(["{b}"])
+
+    assert ResponseChecker.has_prompt_echo(title_and_samples)
 
 
 def test_similarity_check_alone_cannot_catch_prompt_echo():

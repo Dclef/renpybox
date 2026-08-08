@@ -80,11 +80,13 @@ class ResponseChecker(Base):
         r"|输出协议\s*[：:]"
         r"|写作风格\s*[：:]"
         r"|控制字符示例\s*[：:]"
+        r"|需要原样保留的控制字符示例\s*[：:]"
         r"|Base\s+Mode\s*[：:]"
         r"|Non-Overridable\s+Engineering\s+Protocol"
         r"|Output\s+Protocol\s*[：:]"
         r"|Writing\s+Style\s*[：:]"
         r"|Control\s+Characters\s+Samples\s*[：:]"
+        r"|Control\s+character\s+examples\s+that\s+must\s+be\s+preserved\s*[：:]"
         r")",
         flags = re.IGNORECASE,
     )
