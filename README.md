@@ -11,7 +11,8 @@
 <p align="center">使用 AI 能力一键翻译 Ren'Py / 视觉小说文本的工具箱</p>
 
 ## README 🌍
-- 中文（本页）
+- [中文（本页）](./README.md)
+- [English](./README_EN.md)
 - 请不要有中文路径
 
 ## 概述 📢
@@ -92,14 +93,8 @@
 
 
 ## 致谢 🙏
-此项目继承[LinguaGacha](https://github.com/neavo/LinguaGacha) 它的UI和翻译引擎(本人太懒了没有灵感写额外的UI😂)。
-
-由于目的是专注于Ren'py的翻译,所以此项目并不是LinguaGacha的分支版本。
-
-相较于LinguaGacha，本项目的独特优势是Renpy相关的工具使用。
-
-- 相关代码取于[AiNiee](https://github.com/NEKOparapa/AiNiee)
+- UI代码和部分代码取自于[LinguaGacha](https://github.com/neavo/LinguaGacha)和[AiNiee](https://github.com/NEKOparapa/AiNiee)
 - 模块的设计理念来自于[renpy-translator](https://github.com/anonymousException/renpy-translator)
-- 教程请看[RenpyBox使用教程](https://www.bilibili.com/video/BV1KPBoBhEMD)
-- 文档请看[Renpy汉化教程](https://docs.dclef.com/)
+- 本工具使用教程请看[RenpyBox使用教程](https://www.bilibili.com/video/BV1KPBoBhEMD)
+- 本工具使用文档请看[Renpy汉化教程](https://docs.dclef.com/)
 
