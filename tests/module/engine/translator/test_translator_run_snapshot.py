@@ -140,6 +140,33 @@ def test_verify_uppercase_untranslated_only_excludes_double_unchanged(
     assert statuses["Hello"] == Base.TranslationStatus.UNTRANSLATED
 
 
+def test_verify_uppercase_candidates_can_be_disabled(monkeypatch) -> None:
+    item = CacheItem(
+        src="TBD",
+        dst="TBD",
+        status=Base.TranslationStatus.UNTRANSLATED,
+    )
+    translator = Translator.__new__(Translator)
+    translator.config = Config(renpy_verify_uppercase_candidates=False)
+    translator.cache_manager = SimpleNamespace(get_items=lambda: [item])
+
+    class UnexpectedTask:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("关闭开关后不应构造二次验证任务")
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.TranslatorTask",
+        UnexpectedTask,
+    )
+
+    assert translator._verify_uppercase_untranslated(None, None, 1, True) == 0
+    assert item.get_status() == Base.TranslationStatus.UNTRANSLATED
+
+
+def test_verify_uppercase_candidates_defaults_to_enabled() -> None:
+    assert Config().renpy_verify_uppercase_candidates is True
+
+
 def test_verify_uppercase_50_word_case(tmp_path, monkeypatch) -> None:
     """50 词真实案例：25 个需要翻译 + 25 个不需要翻译。
 
