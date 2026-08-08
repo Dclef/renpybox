@@ -1,4 +1,5 @@
 {
+    "group": "machine",
     "id": 12,
     "name": "DeepLX",
     "api_url": "https://dplx.xi-xu.me",

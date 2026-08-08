@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 10,
     "name": "火山引擎",
     "api_url": "https://ark.cn-beijing.volces.com/api/v3",

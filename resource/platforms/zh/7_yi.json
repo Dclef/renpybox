@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 7,
     "name": "零一万物",
     "api_url": "https://api.lingyiwanwu.com/v1",

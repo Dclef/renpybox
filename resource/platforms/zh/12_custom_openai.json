@@ -1,4 +1,5 @@
 {
+    "group": "custom",
     "id": 14,
     "name": "自定义 OpenAI 接口",
     "api_url": "http://127.0.0.1:8080",
