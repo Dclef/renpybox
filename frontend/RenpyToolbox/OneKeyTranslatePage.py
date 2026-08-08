@@ -1111,6 +1111,24 @@ class YiJianFanyiPage(Base, QWidget):
         self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
         options_layout.addWidget(self.extract_compiled_chk)
 
+        self.verify_uppercase_chk = CheckBox(
+            "对未翻译的大写缩写做二次确认（会额外消耗额度）"
+        )
+        self.verify_uppercase_chk.setChecked(
+            getattr(config, "renpy_verify_uppercase_candidates", True)
+        )
+        self.verify_uppercase_chk.stateChanged.connect(
+            self._on_verify_uppercase_changed
+        )
+        options_layout.addWidget(self.verify_uppercase_chk)
+
+        self.clear_declined_btn = PushButton(
+            "清除判定不译清单",
+            icon=FluentIcon.DELETE,
+        )
+        self.clear_declined_btn.clicked.connect(self._clear_declined_candidates)
+        options_layout.addWidget(self.clear_declined_btn)
+
         layout.addWidget(options_card)
 
         layout.addSpacing(20)        # 语言设置（简化）
@@ -1406,6 +1424,51 @@ class YiJianFanyiPage(Base, QWidget):
             config.save()
         except Exception as exc:
             self.logger.warning(f"保存编译字符串提取配置失败: {exc}")
+
+    def _on_verify_uppercase_changed(self, state: int):
+        """同步大写缩写二次确认开关到配置。"""
+        try:
+            from module.Config import Config
+
+            config = Config().load()
+            config.renpy_verify_uppercase_candidates = bool(state)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"保存大写缩写二次确认配置失败: {exc}")
+
+    def _clear_declined_candidates(self):
+        """确认后清除当前项目的判定不译清单。"""
+        if not self.game_dir:
+            InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+            return
+
+        from qfluentwidgets import MessageBox
+        from module.Extract.ReplaceGenerator import clear_declined_candidates
+
+        msg_box = MessageBox(
+            "清除判定不译清单",
+            "清除后这些词会在下次翻译时重新尝试翻译。",
+            self,
+        )
+        msg_box.yesButton.setText("确认清除")
+        msg_box.cancelButton.setText("取消")
+        if not msg_box.exec():
+            return
+
+        tl_name = self.tl_folder_edit.text().strip() or "chinese"
+        cleared = clear_declined_candidates(self.game_dir, tl_name)
+        if cleared:
+            InfoBar.success(
+                "清除完成",
+                f"已清除 {cleared} 条判定不译记录",
+                parent=self,
+            )
+        else:
+            InfoBar.info(
+                "提示",
+                "当前没有判定不译记录",
+                parent=self,
+            )
 
     def _merge_incremental_dir(self):
         """合并增量目录并清理重复"""
