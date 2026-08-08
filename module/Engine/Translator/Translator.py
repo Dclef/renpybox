@@ -391,9 +391,17 @@ class Translator(Base):
 
         # 复制一份以避免影响原始数据
         def task(event: str, data: dict) -> None:
-            items = self.cache_manager.copy_items()
-            self.mtool_optimizer_postprocess(items)
-            self.check_and_wirte_result(items)
+            try:
+                items = self.cache_manager.copy_items()
+                self.mtool_optimizer_postprocess(items)
+                self.check_and_wirte_result(items)
+            except Exception as exc:
+                # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
+                self.error("[EXPORT] 手动导出失败", exc)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(exc),
+                })
         threading.Thread(target = task, args = (event, data)).start()
 
     # 从缓存重新注入翻译结果
@@ -424,7 +432,16 @@ class Translator(Base):
             config.input_folder = output_folder
 
             self.info(f"[REINJECT] 从缓存重新注入：{output_folder} (items={len(items)})")
-            FileManager(config).write_to_path(items)
+            try:
+                FileManager(config).write_to_path(items)
+            except Exception as exc:
+                # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
+                self.error("[REINJECT] 从缓存重新注入失败", exc)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(exc),
+                })
+                return
             self.info(f"[REINJECT] 注入完成：{output_folder}")
 
             self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -1780,7 +1797,13 @@ class Translator(Base):
             self.warning(f"[ResultChecker] 检查阶段出现异常，已跳过: {e}")
 
         # 写入文件
-        FileManager(self.config).write_to_path(items)
+        # 写回失败时 write_to_path 会抛出，但兜底注入仍要按写回报告尝试一次，
+        # 之后再把原始异常抛给调用方，保证失败不会被静默吞掉。
+        try:
+            FileManager(self.config).write_to_path(items)
+        except Exception:
+            self._auto_reinject_on_writeback_fail(items)
+            raise
         self.info(f"[WRITEBACK] 输出目录写回完成: {self.config.output_folder}")
         self._auto_reinject_on_writeback_fail(items)
         self.print("")
