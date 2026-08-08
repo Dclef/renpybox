@@ -39,6 +39,9 @@ RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
 RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
+# say 语句的 show_lang 属性（原语言教学辅助文本）。该 Ren'Py 构建并不显示它，
+# 其引号内容不应作为翻译候选。
+RE_SHOW_LANG_ATTR = re.compile(r'show_lang\s*=\s*(["\'])(?:\\.|(?!\1).)*\1')
 # ============================================
 
 # 检测字符串是否包含中文字符（或其他CJK字符）
@@ -152,10 +155,10 @@ def iter_relaxed_single_quoted_literals(line_content: str):
             quote_start = index
             continue
 
-        if not prev_char or prev_char.isspace() or prev_char in "([{,:":
-            continue
-        if next_char.isalnum() or next_char == '_':
-            continue
+        # 已进入单引号字符串后，下一个引号就是闭合符（撇号已在开头按
+        # “两侧都是字母”排除）。不能复用开启引号的启发式，否则像
+        # __('Replay ') 这样以空格结尾的字符串，其闭合引号会被误判为
+        # 开启引号，把整行代码吞成一条文本（如 'Replay ') + s.image.replace('_）。
         yield scan_line[quote_start + 1:index]
         quote_start = None
 
@@ -596,6 +599,22 @@ def is_resource_filename(_string):
     return is_resource_name(_string)
 
 
+def _escape_rpy_string_for_write(value: str) -> str:
+    """转义写入 rpy 字符串字面量。
+
+    提取器返回的是解码后的文本（真实换行/引号），若不转义直接写入，
+    会生成未闭合引号的非法 rpy，Ren'Py 加载时直接报
+    ``Could not parse string`` 并停在错误界面。
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\n")
+        .replace('"', '\\"')
+    )
+
+
 def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True):
     if remove_duplicates:
         remove_repeat_for_file(p)
@@ -607,6 +626,10 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     f.close()
     # print(_read)
     _read_line = _read.split('\n')
+    # 合并 Python 相邻字符串字面量，避免把跨行书写的一句长文本拆成多段。
+    _read_line = [
+        merged_line for merged_line, _start in merge_string_literal_continuations(_read_line)
+    ]
     is_in_condition_switch = False
     is_in__p = False
     is_in_translate_block = False
@@ -614,6 +637,12 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     p_content = ''
     for index, line_content in enumerate(_read_line):
         indent_level = len(line_content) - len(line_content.lstrip(' '))
+        # show_lang 属性是原语言教学辅助文本（本构建不显示），剔除其引号
+        # 内容，避免把法语等原文拆成多余翻译候选。
+        if 'show_lang=' in line_content:
+            line_content = RE_SHOW_LANG_ATTR.sub('', line_content)
+            if not line_content.strip():
+                continue
         stripped_line = line_content.strip()
 
         if skip_translate_block:
@@ -920,7 +949,7 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
                 f.write('\ntranslate ' + tl + ' strings:\n\n')
                 for j in eDiff:
                     if not j.startswith('_p("""') and not j.endswith('""")'):
-                        j = '"' + j + '"'
+                        j = '"' + _escape_rpy_string_for_write(j) + '"'
                     if not is_gen_empty:
                         writeData = '    old ' + j + '\n    new ' + j + '\n'
                     else:
@@ -984,7 +1013,7 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
             if j in global_e:
                 continue
             if not j.startswith('_p("""') and not j.endswith('""")'):
-                j = '"' + j + '"'
+                j = '"' + _escape_rpy_string_for_write(j) + '"'
             if not is_gen_empty:
                 writeData = '    old ' + j + '\n    new ' + j + '\n'
             else:
@@ -1035,6 +1064,179 @@ def collect_static_menu_strings(game_dir):
     return result
 
 
+def _collect_static_line_texts(line):
+    """Collect literals only from source constructs that can display text."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return set()
+
+    literals = []
+    index = 0
+    while index < len(line):
+        if line[index] not in {'"', "'"}:
+            index += 1
+            continue
+        quote = line[index]
+        start = index
+        index += 1
+        escaped = False
+        while index < len(line):
+            char = line[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                raw = line[start:index + 1]
+                try:
+                    literals.append(ast.literal_eval(raw))
+                except Exception:
+                    literals.append(raw[1:-1])
+                index += 1
+                break
+            index += 1
+    if not literals:
+        return set()
+
+    if (
+        re.search(r"(?<![\w.])_{1,2}\s*\(", line)
+        or RE_RENPY_NOTIFY.search(line)
+        or RE_DICT_STRING_FIELD.search(line)
+        or re.match(r"^\s*(?:show\s+)?(?:text|textbutton)\b", line)
+        or re.match(r"^\s*label\s+[\"']", line)
+    ):
+        return set(literals)
+
+    # Menu choices and say statements are user-visible. Arbitrary literals,
+    # such as ATL `contains: 'image tag'`, are resource identifiers.
+    say_match = re.match(r"^\s*(?P<speaker>[A-Za-z_]\w*)\s+[\"']", line)
+    if say_match and say_match.group("speaker").lower() not in {
+        "image", "scene", "show", "hide", "play", "queue", "voice",
+        "call", "jump", "label", "define", "default", "transform",
+        "style", "screen", "contains", "add", "use",
+        "side", "fixed", "hbox", "vbox", "grid", "viewport", "window",
+        "button", "imagemap", "hotspot", "drag", "bar", "key", "timer",
+        "on", "mousearea", "input",
+    }:
+        return {literals[0]}
+    return set()
+
+
+def merge_string_literal_continuations(lines):
+    """合并 Python 相邻字符串字面量，避免把一句长文本拆成多个片段。
+
+    Ren'Py 源码常用跨行隐式拼接书写长文本：:
+
+        text _('Start with money and stats as there is no '
+               'way to earn them yet. ...'
+               'future releases.'):
+
+    Python 会把相邻（仅以空白分隔）的字符串字面量拼接成一句。逐行扫描的
+    提取器若不处理这一点，就会把完整句子拆成多条独立候选写入 tl，造成
+    「整句可显示、拆块是多余操作」的问题。
+
+    本函数分两步：
+    1. 跨行续接：本行以引号结尾且下一行以引号开头时，合并为同一逻辑行；
+    2. 行内拼接：同一逻辑行内仅以空白分隔的相邻字面量，合并为一个
+       双引号字面量。
+
+    返回 ``(merged_line, start_line_index)`` 列表，第二个元素是合并后
+    逻辑行对应的原始起始行号（从 0 开始），便于定位位置注释。
+    """
+    logical: list[tuple[str, int]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        start_index = index
+        while (
+            line.rstrip().endswith(("'", '"'))
+            and index + 1 < len(lines)
+            and lines[index + 1].lstrip().startswith(("'", '"'))
+        ):
+            index += 1
+            line = line.rstrip() + " " + lines[index].lstrip()
+        logical.append((line, start_index))
+        index += 1
+
+    return [
+        (_merge_adjacent_literals_in_line(line), start_index)
+        for line, start_index in logical
+    ]
+
+
+def _merge_adjacent_literals_in_line(line):
+    """把一行内仅以空白分隔的相邻字符串字面量拼成一个双引号字面量。"""
+    spans: list[tuple[int, int]] = []
+    values: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch not in ("'", '"'):
+            i += 1
+            continue
+        if i + 2 < n and line[i + 1] == ch and line[i + 2] == ch:
+            # 三引号字符串不参与相邻拼接（_p("""...""") 等由专用路径处理）。
+            end = line.find(ch * 3, i + 3)
+            i = n if end == -1 else end + 3
+            continue
+        start = i
+        i += 1
+        buf: list[str] = []
+        closed = False
+        while i < n:
+            c = line[i]
+            if c == "\\":
+                buf.append(line[i:i + 2])
+                i += 2
+                continue
+            if c == ch:
+                closed = True
+                i += 1
+                break
+            buf.append(c)
+            i += 1
+        if not closed:
+            # 未闭合引号（跨行三引号等）：保持原样，不参与合并。
+            return line
+        try:
+            value = ast.literal_eval(line[start:i])
+        except Exception:
+            value = line[start + 1:i - 1]
+        spans.append((start, i))
+        values.append(value)
+
+    if len(spans) <= 1:
+        return line
+
+    # 仅空白分隔的相邻字面量构成一组（Python 隐式拼接）。
+    groups: list[list[int]] = []
+    current = [0]
+    for idx in range(1, len(spans)):
+        gap = line[spans[idx - 1][1]:spans[idx][0]]
+        if gap.strip() == "":
+            current.append(idx)
+        else:
+            groups.append(current)
+            current = [idx]
+    groups.append(current)
+
+    if all(len(group) == 1 for group in groups):
+        return line
+
+    # 从右往左重写，保证左侧偏移不受前面替换影响。
+    result = line
+    for group in reversed(groups):
+        if len(group) <= 1:
+            continue
+        first_start = spans[group[0]][0]
+        last_end = spans[group[-1]][1]
+        joined = "".join(values[idx] for idx in group)
+        new_literal = '"' + joined.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        result = result[:first_start] + new_literal + result[last_end:]
+    return result
+
+
 def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False):
     """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
     from pathlib import Path
@@ -1057,12 +1259,33 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
             continue
         try:
             # 源码扫描不可调用带写入前处理的旧接口，避免修改游戏原文。
-            texts = ExtractFromFile(
+            extracted_texts = ExtractFromFile(
                 str(source_file), is_open_filter, filter_length, is_skip_underline,
                 is_py2, True, False,
             )
         except Exception:
             continue
+        texts = set()
+        screen_label_texts = set()
+        try:
+            merged_lines = merge_string_literal_continuations(
+                source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            for line, _start_index in merged_lines:
+                line_texts = _collect_static_line_texts(line)
+                texts.update(line_texts)
+                if re.match(r"^\s*label\s+[\"']", line):
+                    screen_label_texts.update(line_texts)
+        except Exception:
+            continue
+        extracted_texts = {
+            text.replace('\\"', '"').replace("\\'", "'")
+            for text in extracted_texts
+        }
+        # The legacy extractor does not recognize screen-language ``label``
+        # displayables. They are nevertheless normal Ren'Py string literals and
+        # belong in standard old/new TL blocks.
+        texts.intersection_update(extracted_texts | screen_label_texts)
         # 菜单选项必须使用 strings 翻译；即使同文先作为对话出现，也应以
         # 真实菜单位置为准，并保留简短选项文本。
         for text in sorted(texts):
