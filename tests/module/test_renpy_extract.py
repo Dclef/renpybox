@@ -2278,9 +2278,9 @@ def test_acronym_separation_keeps_ui_words():
             "Noon (first-time).",
         }
     )
-    # 真正的通用缩写保持不译；普通英文词（GO/DAD/ART/SENT/SPAM/OK/IT/PIN）
-    # 必须照常翻译，不能被形状判定误冻结。
-    assert acronyms == {"USB", "DLC", "TBD"}
+    # 只有明确的中英文通用缩写保持不译；TBD 以及普通英文词
+    # （GO/DAD/ART/SENT/SPAM/OK/IT/PIN）必须照常翻译。
+    assert acronyms == {"USB", "DLC"}
 
 
 def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
