@@ -75,6 +75,20 @@ def load_declined_candidates(game_dir, tl_name) -> Set[str]:
     return {str(value) for value in values if isinstance(value, str) and value}
 
 
+def clear_declined_candidates(game_dir, tl_name) -> int:
+    """清除项目级判定不译清单，并返回清除前的记录数。"""
+    path = declined_candidates_path(game_dir, tl_name)
+    if not path.exists():
+        return 0
+    count = len(load_declined_candidates(game_dir, tl_name))
+    try:
+        path.unlink()
+    except Exception as exc:
+        LogManager.get().warning(f"清除判定不译候选失败: {exc}")
+        return 0
+    return count
+
+
 def record_declined_candidates(game_dir, tl_name, originals, source_map=None) -> int:
     """把判定不译的候选追加到项目清单，返回新增条数。
 
