@@ -33,3 +33,4 @@ htmlcov/
 /.codex/
 AGENTS.md
 CLAUDE.md
+/.agents/skills

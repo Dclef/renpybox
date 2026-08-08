@@ -69,6 +69,27 @@ class ResponseChecker(Base):
         r"\[!!!\s*TRANSLATION ERROR\b.*?!!!\]",
         flags = re.IGNORECASE,
     )
+    # 模型把系统提示词的段落当成译文填回来（多个连续 request_index 各拿一段）。
+    # 段落标题取自 resource/prompt/<语言>/*.txt 的首行与控制字符示例前缀，
+    # 改动那些文件的标题时要同步这里。译文一旦命中就是异常回复，必须重试，
+    # 否则提示词会被写进游戏翻译文件。
+    RE_PROMPT_ECHO = re.compile(
+        r"(?:^|\n)\s*(?:#{1,4}\s*)?(?:"
+        r"基础模式\s*[：:]"
+        r"|不可覆盖的工程协议"
+        r"|输出协议\s*[：:]"
+        r"|写作风格\s*[：:]"
+        r"|控制字符示例\s*[：:]"
+        r"|需要原样保留的控制字符示例\s*[：:]"
+        r"|Base\s+Mode\s*[：:]"
+        r"|Non-Overridable\s+Engineering\s+Protocol"
+        r"|Output\s+Protocol\s*[：:]"
+        r"|Writing\s+Style\s*[：:]"
+        r"|Control\s+Characters\s+Samples\s*[：:]"
+        r"|Control\s+character\s+examples\s+that\s+must\s+be\s+preserved\s*[：:]"
+        r")",
+        flags = re.IGNORECASE,
+    )
     # 只有来源明确的姓名/角色名才允许原样保留，避免按单词形态误放行 UI 文本。
     EXPLICIT_PROPER_NOUN_MARKERS: tuple[str, ...] = (
         "角色",
@@ -144,6 +165,13 @@ class ResponseChecker(Base):
             # 原文不为空而译文为空时，判断为错误翻译
             if src != "" and dst == "":
                 checks.append(__class__.Error.LINE_ERROR_EMPTY_LINE)
+                continue
+
+            # 提示词回显必须在规则/语言过滤之前判定：那两个过滤器命中就直接
+            # 放行，会让被填进提示词段落的条目当成“正确翻译”写进游戏文件。
+            # 原文本身若是提示词标题，则允许它的正常翻译，不把标题误判为回显。
+            if self.has_prompt_echo(dst) and not self.has_prompt_echo(src):
+                checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 
             # 原文内容符合规则过滤条件时，判断为正确翻译
@@ -270,6 +298,17 @@ class ResponseChecker(Base):
         if not isinstance(text, str):
             return False
         return cls.RE_TRANSLATION_ERROR_MARKER.search(text) is not None
+
+    @classmethod
+    def has_prompt_echo(cls, text: str) -> bool:
+        """译文里出现系统提示词段落标题时判为回显。
+
+        模型偶尔会把提示词各段当成待填内容，按 request_index 逐条填回来。
+        这类响应长度远超原文，相似度检查因长度比越界而提前放行，必须单独拦。
+        """
+        if not isinstance(text, str) or text.strip() == "":
+            return False
+        return cls.RE_PROMPT_ECHO.search(text) is not None
 
     @classmethod
     def has_high_similarity(cls, src: str, dst: str) -> bool:

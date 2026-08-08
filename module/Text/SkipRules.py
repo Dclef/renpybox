@@ -32,13 +32,13 @@ KEEP_AS_IS_UPPERCASE = frozenset({
     # 科技 / 硬件 / 网络
     "USB", "HDMI", "CPU", "GPU", "RAM", "ROM", "SSD", "HDD", "LED",
     "LCD", "OLED", "API", "URL", "HTML", "XML", "JSON", "CSS", "PHP",
-    "SQL", "DNS", "VPN", "HTTP", "HTTPS", "FTP", "SSH", "IP", "ID",
-    "AI", "VR", "AR", "PC", "TV", "DVD", "MP3", "MP4", "PNG", "JPG",
+    "SQL", "DNS", "VPN", "HTTP", "HTTPS", "FTP", "SSH", "IP",
+    "AI", "VR", "AR", "PC", "DVD", "MP3", "MP4", "PNG", "JPG",
     "GIF", "BMP", "PDF", "EXE", "ZIP", "RAR", "AVI", "MKV", "WAV",
-    "OGG", "ISO", "BIOS", "SATA", "LTE", "4G", "5G", "3D", "HD",
+    "OGG", "ISO", "BIOS", "SATA", "LTE", "HD",
     # 游戏 / 类型 / 属性（中文语境通常保留原文）
     "NPC", "RPG", "FPS", "MMO", "MOBA", "RTS", "HP", "MP", "XP",
-    "DLC", "GPS", "SMS", "KPI", "MVP", "FAQ", "VIP",
+    "DLC", "GPS",
 })
 
 # ============================================================
