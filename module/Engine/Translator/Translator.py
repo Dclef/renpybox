@@ -1426,15 +1426,16 @@ class Translator(Base):
             # 再翻译一遍。两次 AI 都未翻译（第二次干净返回原文且通过格式
             # 审查）的，判定为“不需要翻译”并标记 EXCLUDED，由合并流程连同
             # 文件溯源记入项目级判定不译清单；任一一次被翻译则保留译文。
-            try:
-                self._verify_uppercase_untranslated(
-                    run_id,
-                    cancel_event,
-                    current_round + 1,
-                    local_flag,
-                )
-            except Exception as exc:
-                self.warning(f"[VERIFY] 大写特殊候选二次验证失败: {exc}")
+            if getattr(self.config, "renpy_verify_uppercase_candidates", True):
+                try:
+                    self._verify_uppercase_untranslated(
+                        run_id,
+                        cancel_event,
+                        current_round + 1,
+                        local_flag,
+                    )
+                except Exception as exc:
+                    self.warning(f"[VERIFY] 大写特殊候选二次验证失败: {exc}")
 
             if self._should_stop_requested():
                 return None
@@ -1577,6 +1578,9 @@ class Translator(Base):
         的候选才是“不需要翻译”的内容，标记为 EXCLUDED 并记入项目级判定
         不译清单（保留文件溯源）；任一一次被翻译则保留该译文。
         """
+        if not getattr(self.config, "renpy_verify_uppercase_candidates", True):
+            return 0
+
         from module.Text.SkipRules import RE_UPPERCASE_ACRONYM_CANDIDATE
         from module.Response.ResponseChecker import ResponseChecker
 
