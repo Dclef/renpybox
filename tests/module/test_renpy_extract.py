@@ -2147,6 +2147,16 @@ def test_delete_empty_translation_files(tmp_path):
     )
     comment_rpyc = comment_only.with_suffix(".rpyc")
     comment_rpyc.write_text("user cache", encoding="utf-8")
+    location_only = tl / "src" / "location_only.rpy"
+    location_only.write_text(
+        "  # game/script.rpy:120  \n",
+        encoding="utf-8",
+    )
+    mixed_comments = tl / "src" / "mixed_comments.rpy"
+    mixed_comments.write_text(
+        "# game/script.rpy:120\n# 我的翻译备注\n",
+        encoding="utf-8",
+    )
     normal = tl / "src" / "normal.rpy"
     normal.write_text(
         "translate chinese strings:\n\n"
@@ -2163,12 +2173,14 @@ def test_delete_empty_translation_files(tmp_path):
     extractor = UnifiedExtractor()
     removed = extractor._delete_empty_translation_files(tl, "chinese")
 
-    assert removed == 2
+    assert removed == 3
     assert not empty.exists()
     assert not header_only.exists()
     assert not stale_rpyc.exists()
     assert comment_only.exists()
     assert comment_rpyc.exists()
+    assert not location_only.exists()
+    assert mixed_comments.exists()
     assert normal.exists()
     assert python_file.exists()
 
