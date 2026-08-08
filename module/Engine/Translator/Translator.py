@@ -36,8 +36,10 @@ from module.Localizer.Localizer import Localizer
 from module.ProgressBar import ProgressBar
 from module.PromptBuilder import PromptBuilder
 from module.ResultChecker import ResultChecker
+from module.Response.ResponseChecker import ResponseChecker
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
+    read_run_manifest,
     resolve_translation_output,
     write_run_manifest,
 )
@@ -389,9 +391,17 @@ class Translator(Base):
 
         # 复制一份以避免影响原始数据
         def task(event: str, data: dict) -> None:
-            items = self.cache_manager.copy_items()
-            self.mtool_optimizer_postprocess(items)
-            self.check_and_wirte_result(items)
+            try:
+                items = self.cache_manager.copy_items()
+                self.mtool_optimizer_postprocess(items)
+                self.check_and_wirte_result(items)
+            except Exception as exc:
+                # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
+                self.error("[EXPORT] 手动导出失败", exc)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(exc),
+                })
         threading.Thread(target = task, args = (event, data)).start()
 
     # 从缓存重新注入翻译结果
@@ -422,7 +432,16 @@ class Translator(Base):
             config.input_folder = output_folder
 
             self.info(f"[REINJECT] 从缓存重新注入：{output_folder} (items={len(items)})")
-            FileManager(config).write_to_path(items)
+            try:
+                FileManager(config).write_to_path(items)
+            except Exception as exc:
+                # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
+                self.error("[REINJECT] 从缓存重新注入失败", exc)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.ERROR,
+                    "message": str(exc),
+                })
+                return
             self.info(f"[REINJECT] 注入完成：{output_folder}")
 
             self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -575,17 +594,46 @@ class Translator(Base):
             ):
                 return
 
+            output_folder = getattr(config, "output_folder", "")
+            input_folder = getattr(config, "input_folder", "")
+            application_target_dir = paths.application_target_dir
+            existing = read_run_manifest(paths)
+
+            def same_path(left, right) -> bool:
+                if not left or not right:
+                    return False
+                return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+                    os.path.abspath(str(right))
+                )
+
             if getattr(config, "renpy_hook_translate", False):
                 run_kind = "hook"
             elif getattr(config, "renpy_source_translate", False):
                 run_kind = "source"
+            elif existing is not None and same_path(
+                output_folder,
+                existing.get("output_folder"),
+            ):
+                # A resumed incremental run may be launched after the global config
+                # has been restored to the stable main paths.  Keep the manifest's
+                # scope when the selected cache still matches it.
+                run_kind = str(existing.get("run_kind", "translation") or "translation")
+                input_folder = existing.get("input_folder") or input_folder
+                application_target_dir = (
+                    existing.get("application_target_dir") or application_target_dir
+                )
+            elif same_path(
+                output_folder,
+                paths.translation_output_dir.parent / f"{paths.language}_new",
+            ):
+                run_kind = "incremental"
             else:
                 run_kind = "translation"
             write_run_manifest(
                 paths,
-                output_folder = getattr(config, "output_folder", ""),
-                input_folder = getattr(config, "input_folder", ""),
-                application_target_dir = paths.application_target_dir,
+                output_folder = output_folder,
+                input_folder = input_folder,
+                application_target_dir = application_target_dir,
                 run_kind = run_kind,
                 status = "active",
             )
@@ -915,6 +963,27 @@ class Translator(Base):
             "time": time.time() - start_time,
         }
 
+    def _reconcile_round_progress(self, remaining: int, *, fresh_run: bool) -> None:
+        """Keep run-local completed and total counts consistent after prefilters."""
+        remaining = max(0, int(remaining or 0))
+        try:
+            completed = max(0, int(self.extras.get("line", 0) or 0))
+        except (TypeError, ValueError):
+            completed = 0
+
+        if fresh_run:
+            try:
+                initial_total = max(0, int(self.extras.get("total_line", 0) or 0))
+            except (TypeError, ValueError):
+                initial_total = 0
+            # Rules may complete/exclude entries before the first task is built.
+            # Preserve those completed rows instead of replacing the run total
+            # with only the remaining rows.
+            completed = max(completed, initial_total - remaining)
+
+        self.extras["line"] = completed
+        self.extras["total_line"] = completed + remaining
+
     def _finish_no_items_run(self, run_id: int | None) -> None:
         """以明确的空数据结果结束任务，避免误走“用户停止”流程。"""
         progress = dict(self.cache_manager.get_project().get_progress() or {})
@@ -1119,6 +1188,28 @@ class Translator(Base):
             if self._should_stop_requested():
                 return None
 
+            # Older validators may have left unchanged technical tokens (for
+            # example ``USB``) in a failed state.  Reconcile cached results with
+            # the current preservation rules before creating remote requests.
+            accepted_preserved = self.accept_preserved_untranslated_items(
+                self.cache_manager.get_items()
+            )
+            if accepted_preserved:
+                remaining = self.cache_manager.get_item_count_by_status(
+                    Base.TranslationStatus.UNTRANSLATED
+                )
+                try:
+                    total_line = max(0, int(self.extras.get("total_line", 0)))
+                except (TypeError, ValueError):
+                    total_line = 0
+                if total_line:
+                    self.extras["line"] = max(
+                        int(self.extras.get("line", 0) or 0),
+                        total_line - remaining,
+                    )
+                self.cache_manager.get_project().set_progress(self.extras)
+                self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
+
             # MTool 优化器预处理
             self.mtool_optimizer_preprocess(self.cache_manager.get_items())
             if self._should_stop_requested():
@@ -1142,10 +1233,10 @@ class Translator(Base):
                 # 第一轮且不是继续翻译时，记录任务的总行数
                 if current_round == 0:
                     remaining = self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED)
-                    if normalized_status == Base.TranslationStatus.UNTRANSLATED:
-                        self.extras["total_line"] = remaining
-                    else:
-                        self.extras["total_line"] = self.extras.get("line", 0) + remaining
+                    self._reconcile_round_progress(
+                        remaining,
+                        fresh_run=(normalized_status == Base.TranslationStatus.UNTRANSLATED),
+                    )
 
                 # 第二轮开始切分（基于初始值计算，避免累积除法）
                 # 采用 2 倍率衰减而非 3 倍率，避免重试时批次过快坍缩到单行，
@@ -1330,6 +1421,24 @@ class Translator(Base):
             if self._should_stop_requested():
                 return None
 
+            # ============ 大写特殊候选：第二次整体翻译验证 ============
+            # 第一轮仍保持原文未译的大写特殊候选（2~6 位大写/数字），整体
+            # 再翻译一遍。两次 AI 都未翻译（第二次干净返回原文且通过格式
+            # 审查）的，判定为“不需要翻译”并标记 EXCLUDED，由合并流程连同
+            # 文件溯源记入项目级判定不译清单；任一一次被翻译则保留译文。
+            try:
+                self._verify_uppercase_untranslated(
+                    run_id,
+                    cancel_event,
+                    current_round + 1,
+                    local_flag,
+                )
+            except Exception as exc:
+                self.warning(f"[VERIFY] 大写特殊候选二次验证失败: {exc}")
+
+            if self._should_stop_requested():
+                return None
+
             # MTool 优化器后处理
             self.mtool_optimizer_postprocess(self.cache_manager.get_items())
 
@@ -1439,6 +1548,128 @@ class Translator(Base):
         return max_workers, rpm_threshold
 
     # 规则过滤
+    def accept_preserved_untranslated_items(self, items: list[CacheItem]) -> int:
+        """Complete unchanged cached items explicitly allowed by validation."""
+        checker = ResponseChecker(self.config, items)
+        accepted = 0
+        for item in items:
+            if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
+                continue
+            src = str(item.get_src() or "")
+            dst = str(item.get_dst() or "")
+            if src == "" or src != dst:
+                continue
+            if checker.is_preserve_allowed(src, dst, item):
+                item.set_status(Base.TranslationStatus.TRANSLATED)
+                accepted += 1
+        return accepted
+
+    def _verify_uppercase_untranslated(
+        self,
+        run_id: int | None,
+        cancel_event: threading.Event | None,
+        round_index: int,
+        local_flag: bool,
+    ) -> int:
+        """第二次整体翻译：对第一轮仍未被翻译的大写特殊候选再整体翻译一遍。
+
+        判定规则：两次 AI 都未翻译（第二次响应干净返回原文、通过格式审查）
+        的候选才是“不需要翻译”的内容，标记为 EXCLUDED 并记入项目级判定
+        不译清单（保留文件溯源）；任一一次被翻译则保留该译文。
+        """
+        from module.Text.SkipRules import RE_UPPERCASE_ACRONYM_CANDIDATE
+        from module.Response.ResponseChecker import ResponseChecker
+
+        items = [
+            item
+            for item in self.cache_manager.get_items()
+            if item.get_status() == Base.TranslationStatus.UNTRANSLATED
+            and isinstance(item.get_src(), str)
+            and RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(item.get_src().strip())
+        ]
+        if not items or self._should_stop_requested(run_id, cancel_event):
+            return 0
+
+        self.info(f"[VERIFY] 大写特殊候选第二次整体翻译：{len(items)} 条")
+        checker = ResponseChecker(self.config, items)
+        excluded: list[CacheItem] = []
+        chunk_size = 40
+        chunks = [
+            items[index : index + chunk_size]
+            for index in range(0, len(items), chunk_size)
+        ]
+        for chunk in chunks:
+            if self._should_stop_requested(run_id, cancel_event):
+                break
+            task_config = self.task_context.to_runtime_config(self.config)
+            try:
+                task = TranslatorTask(
+                    self.task_context,
+                    self.platform,
+                    local_flag,
+                    chunk,
+                    [[] for _ in chunk],
+                    runtime_config=task_config,
+                    candidate_sink=lambda candidates, cid=run_id, ce=cancel_event: self._merge_analysis_candidates_for_run(
+                        cid,
+                        ce,
+                        candidates,
+                    ),
+                )
+                task.start(round_index)
+            except Exception as exc:
+                self.warning(f"[VERIFY] 第二次翻译请求失败: {exc}")
+                continue
+            for item in chunk:
+                if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
+                    continue
+                try:
+                    checks = checker.check(
+                        [str(item.get_src() or "")],
+                        [str(item.get_dst() or "")],
+                        item.get_text_type(),
+                        line_items=[item],
+                    )
+                except Exception:
+                    continue
+                # 只有“干净返回原文”才构成未翻译证据；请求失败/格式错误
+                # （FAIL_*）不判定为不需要翻译。
+                if checks == [ResponseChecker.Error.LINE_ERROR_SIMILARITY]:
+                    item.set_status(Base.TranslationStatus.EXCLUDED)
+                    excluded.append(item)
+
+        if excluded:
+            self._record_verified_declined(excluded)
+            self.info(f"[VERIFY] 两次都未翻译，判定不译 {len(excluded)} 条")
+        return len(excluded)
+
+    def _record_verified_declined(self, items: list[CacheItem]) -> None:
+        """把二次验证判定不译的候选连同文件溯源记入项目清单。"""
+        try:
+            from module.Renpy.ProjectPaths import RenpyProjectPaths
+            from module.Extract.ReplaceGenerator import record_declined_candidates
+
+            paths = RenpyProjectPaths.from_config(self.config)
+            if paths is None:
+                return
+            tl_name = paths.language or "chinese"
+            srcs = {str(item.get_src() or "") for item in items if item.get_src()}
+            source_map = {
+                str(item.get_src() or ""): str(item.get_file_path() or "")
+                for item in items
+                if item.get_src()
+            }
+            recorded = record_declined_candidates(
+                paths.project_root,
+                tl_name,
+                srcs,
+                source_map=source_map,
+            )
+            if recorded:
+                self.info(f"[VERIFY] 已记录 {recorded} 条判定不译候选（含溯源）")
+        except Exception as exc:
+            self.warning(f"[VERIFY] 记录判定不译候选失败: {exc}")
+
     def rule_filter(self, items: list[CacheItem]) -> None:
         if len(items) == 0:
             return None
@@ -1566,7 +1797,13 @@ class Translator(Base):
             self.warning(f"[ResultChecker] 检查阶段出现异常，已跳过: {e}")
 
         # 写入文件
-        FileManager(self.config).write_to_path(items)
+        # 写回失败时 write_to_path 会抛出，但兜底注入仍要按写回报告尝试一次，
+        # 之后再把原始异常抛给调用方，保证失败不会被静默吞掉。
+        try:
+            FileManager(self.config).write_to_path(items)
+        except Exception:
+            self._auto_reinject_on_writeback_fail(items)
+            raise
         self.info(f"[WRITEBACK] 输出目录写回完成: {self.config.output_folder}")
         self._auto_reinject_on_writeback_fail(items)
         self.print("")
