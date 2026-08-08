@@ -22,6 +22,7 @@ from frontend.AppSettingsPage import AppSettingsPage
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+from widget.ThemeHelper import get_theme_accent_color
 
 
 APP = QApplication.instance() or QApplication([])
@@ -44,9 +45,10 @@ def _set_state(manager, status, downloaded=0, total=0, version="v99.0.0"):
         manager.error = ""
 
 
-def _assert_status_icon(page, icon, color):
+def _assert_status_icon(page, icon, color=None):
+    # 状态图标跟随主题主色，不再硬编码色值，避免主色调整后各处强调色互相不一致。
     actual = page.update_status_icon._icon
-    expected = icon.icon(color=QColor(color))
+    expected = icon.icon(color=QColor(color) if color else get_theme_accent_color())
     assert actual.pixmap(16, 16).toImage() == expected.pixmap(16, 16).toImage()
 
 
@@ -76,21 +78,21 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
         assert page.update_status_icon.size().width() == 16
         assert page.update_status_icon.size().height() == 16
         assert page.update_progress_bar.minimumWidth() == 0
-        assert page.update_progress_bar.height() == 4
+        assert page.update_progress_bar.height() == 8
 
         _set_state(manager, VersionManager.Status.NONE, version=Version.CURRENT)
         page.refresh_update_ui()
         assert page.update_status_label.text() == "已是最新版本"
         assert not page.update_action_button.isVisible()
         assert page.update_status_row.sizeHint().height() < 72
-        _assert_status_icon(page, FluentIcon.ACCEPT, "#BCA483")
+        _assert_status_icon(page, FluentIcon.ACCEPT)
 
         _set_state(manager, VersionManager.Status.NEW_VERSION)
         page.refresh_update_ui()
         assert "v99.0.0" in page.update_status_label.text()
         assert page.update_action_button.text() == "查看详情"
         assert page.update_action_button.isVisible()
-        _assert_status_icon(page, FluentIcon.UPDATE, "#BCA483")
+        _assert_status_icon(page, FluentIcon.UPDATE)
 
         _set_state(
             manager,
@@ -101,8 +103,10 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
         page.refresh_update_ui()
         assert page.update_progress_bar.value() == 25
         assert page.update_progress_bar.isVisible()
+        assert page.update_progress_label.text() == "25%"
+        assert page.update_progress_label.isVisible()
         assert page.update_action_button.text() == "取消"
-        _assert_status_icon(page, FluentIcon.CLOUD_DOWNLOAD, "#BCA483")
+        _assert_status_icon(page, FluentIcon.CLOUD_DOWNLOAD)
 
         _set_state(
             manager,
@@ -113,7 +117,7 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
         page.refresh_update_ui()
         assert page.update_install_button.isVisible()
         assert page.update_progress_bar.value() == 0
-        _assert_status_icon(page, FluentIcon.ACCEPT, "#BCA483")
+        _assert_status_icon(page, FluentIcon.ACCEPT)
 
         _set_state(manager, VersionManager.Status.NONE)
         page.refresh_update_ui()
@@ -121,7 +125,7 @@ def test_update_group_rebuilds_all_manager_states_with_adaptive_status_row(
         assert page.update_action_button.text() == "查看详情"
         assert page.update_action_button.isVisible()
         assert page.update_progress_bar.value() == 0
-        _assert_status_icon(page, FluentIcon.UPDATE, "#BCA483")
+        _assert_status_icon(page, FluentIcon.UPDATE)
     finally:
         for event, handler in (
             (Base.Event.APP_UPDATE_CHECK_START, page._on_update_check_start),

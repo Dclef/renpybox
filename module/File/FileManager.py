@@ -160,50 +160,66 @@ class FileManager(Base):
                 extension = os.path.splitext(path)[1].lower()
                 paths_by_extension.setdefault(extension, []).append(path)
 
-            def read_if_active(parser, extension: str) -> None:
+            read_errors: list[str] = []
+
+            def read_if_active(parser_name: str, parser, extension: str) -> None:
                 """仅在未收到停止请求时运行单个文件解析器。"""
                 if self._is_stop_requested():
                     return
-                items.extend(parser.read_from_path(paths_by_extension.get(extension, [])))
+                try:
+                    items.extend(parser.read_from_path(paths_by_extension.get(extension, [])))
+                except Exception as exc:
+                    self.error(f"{parser_name} 读取失败", exc)
+                    read_errors.append(f"{parser_name}: {exc}")
 
             # 优先处理 translations JSON（避免被其他 json 解析器抢先处理）
-            read_if_active(RENPYTRANSLATIONSJSON(self.config), ".json")
-            read_if_active(MD(self.config), ".md")
-            read_if_active(TXT(self.config), ".txt")
-            read_if_active(ASS(self.config), ".ass")
-            read_if_active(SRT(self.config), ".srt")
-            read_if_active(EPUB(self.config), ".epub")
-            read_if_active(XLSX(self.config), ".xlsx")
-            read_if_active(WOLFXLSX(self.config), ".xlsx")
-            read_if_active(RENPY(self.config), ".rpy")
-            read_if_active(TRANS(self.config), ".trans")
-            read_if_active(KVJSON(self.config), ".json")
-            read_if_active(MESSAGEJSON(self.config), ".json")
+            read_if_active("RENPYTRANSLATIONSJSON", RENPYTRANSLATIONSJSON(self.config), ".json")
+            read_if_active("MD", MD(self.config), ".md")
+            read_if_active("TXT", TXT(self.config), ".txt")
+            read_if_active("ASS", ASS(self.config), ".ass")
+            read_if_active("SRT", SRT(self.config), ".srt")
+            read_if_active("EPUB", EPUB(self.config), ".epub")
+            read_if_active("XLSX", XLSX(self.config), ".xlsx")
+            read_if_active("WOLFXLSX", WOLFXLSX(self.config), ".xlsx")
+            read_if_active("RENPY", RENPY(self.config), ".rpy")
+            read_if_active("TRANS", TRANS(self.config), ".trans")
+            read_if_active("KVJSON", KVJSON(self.config), ".json")
+            read_if_active("MESSAGEJSON", MESSAGEJSON(self.config), ".json")
+            if read_errors:
+                raise RuntimeError("部分输入文件读取失败：" + "；".join(read_errors))
         except Exception as e:
             self.error(f"{Localizer.get().log_read_file_fail}", e)
+            raise
 
         return project, items
 
     # 写
     def write_to_path(self, items: list[CacheItem]) -> None:
-        try:
-            items_to_write = self._prepare_items_for_write(items)
-
-            RENPYTRANSLATIONSJSON(self.config).write_to_path(items_to_write)
-            MD(self.config).write_to_path(items_to_write)
-            TXT(self.config).write_to_path(items_to_write)
-            ASS(self.config).write_to_path(items_to_write)
-            SRT(self.config).write_to_path(items_to_write)
-            EPUB(self.config).write_to_path(items_to_write)
-            XLSX(self.config).write_to_path(items_to_write)
-            WOLFXLSX(self.config).write_to_path(items_to_write)
-            # 按条目类型分别写回，避免“从缓存重新注入”时因配置开关不一致导致
-            # RENPYSOURCE / RENPY 写回分支走错。
-            RENPYHOOK(self.config).write_to_path(items_to_write)
-            RENPYSOURCE(self.config).write_to_path(items_to_write)
-            RENPY(self.config).write_to_path(items_to_write)
-            TRANS(self.config).write_to_path(items_to_write)
-            KVJSON(self.config).write_to_path(items_to_write)
-            MESSAGEJSON(self.config).write_to_path(items_to_write)
-        except Exception as e:
-            self.error(f"{Localizer.get().log_write_file_fail}", e)
+        items_to_write = self._prepare_items_for_write(items)
+        writers = (
+            ("RENPYTRANSLATIONSJSON", RENPYTRANSLATIONSJSON(self.config)),
+            ("MD", MD(self.config)),
+            ("TXT", TXT(self.config)),
+            ("ASS", ASS(self.config)),
+            ("SRT", SRT(self.config)),
+            ("EPUB", EPUB(self.config)),
+            ("XLSX", XLSX(self.config)),
+            ("WOLFXLSX", WOLFXLSX(self.config)),
+            ("RENPYHOOK", RENPYHOOK(self.config)),
+            ("RENPYSOURCE", RENPYSOURCE(self.config)),
+            ("RENPY", RENPY(self.config)),
+            ("TRANS", TRANS(self.config)),
+            ("KVJSON", KVJSON(self.config)),
+            ("MESSAGEJSON", MESSAGEJSON(self.config)),
+        )
+        errors: list[str] = []
+        for writer_name, writer in writers:
+            try:
+                writer.write_to_path(items_to_write)
+            except Exception as exc:
+                self.error(f"{writer_name} 写回失败", exc)
+                errors.append(f"{writer_name}: {exc}")
+        if errors:
+            error = RuntimeError("部分文件写回失败：" + "；".join(errors))
+            self.error(f"{Localizer.get().log_write_file_fail}", error)
+            raise error

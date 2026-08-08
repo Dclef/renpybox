@@ -17,6 +17,31 @@ import re
 from typing import Iterable, List, Set, Tuple, Optional
 
 # ============================================================
+# 大写缩写判定（提取端与翻译引擎共用，避免两处规则漂移）
+# ============================================================
+
+# 形状判定：2~6 位、首字母大写、其余为大写字母或数字。
+# 例如 USB、DLC、GPS、TBD 都匹配；A+、Alpha、Start 不匹配。
+RE_UPPERCASE_ACRONYM_CANDIDATE = re.compile(r"^[A-Z][A-Z0-9]{1,5}$")
+
+# 判定策略：默认翻译，只冻结“中文语境同样保留原文”的通用缩写。
+# 普通英文词（GO、DAD、ART、SENT、SPAM、IT、PIN……）和普通缩写
+# （TBD→待定、AM/PM→上午/下午、HR→小时……）都不在此列，必须照常翻译；
+# 只有科技/游戏通用缩写（USB、DLC、GPS、NPC、HP、MP……）保持原样。
+KEEP_AS_IS_UPPERCASE = frozenset({
+    # 科技 / 硬件 / 网络
+    "USB", "HDMI", "CPU", "GPU", "RAM", "ROM", "SSD", "HDD", "LED",
+    "LCD", "OLED", "API", "URL", "HTML", "XML", "JSON", "CSS", "PHP",
+    "SQL", "DNS", "VPN", "HTTP", "HTTPS", "FTP", "SSH", "IP", "ID",
+    "AI", "VR", "AR", "PC", "TV", "DVD", "MP3", "MP4", "PNG", "JPG",
+    "GIF", "BMP", "PDF", "EXE", "ZIP", "RAR", "AVI", "MKV", "WAV",
+    "OGG", "ISO", "BIOS", "SATA", "LTE", "4G", "5G", "3D", "HD",
+    # 游戏 / 类型 / 属性（中文语境通常保留原文）
+    "NPC", "RPG", "FPS", "MMO", "MOBA", "RTS", "HP", "MP", "XP",
+    "DLC", "GPS", "SMS", "KPI", "MVP", "FAQ", "VIP",
+})
+
+# ============================================================
 # 正则表达式模式
 # ============================================================
 
@@ -346,11 +371,10 @@ def should_skip_text(text: str | None, extra_checks: Iterable = ()) -> bool:
     if ' ' not in candidate and not _contains_cjk(candidate):
         if '_' in candidate:
             return True
-        # 形如 xxx.yyy（无空格）也视为代码/函数名
-        if candidate.count('.') >= 1:
-            parts = [p for p in candidate.split('.') if p]
-            if parts and all(p.isalnum() for p in parts):
-                return True
+        # 形如 xxx.yyy（无空格）也视为代码/函数名；句末句点不是
+        # 属性访问，例如 "Narrative." 仍是需要翻译的 UI 文本。
+        if re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', candidate):
+            return True
     
     # 2. 占位符和标签检测
     if is_placeholder_or_tag(candidate):
