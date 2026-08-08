@@ -3,7 +3,7 @@
 import threading
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
@@ -63,8 +63,8 @@ class GameModPage(Base, QWidget):
             self._build_mod_card(
                 "gallery_unlock",
                 "解锁画廊（ZLZK 通用画廊解锁器改写版）",
-                "装后会在游戏内显示“解锁画廊 / 锁住画廊”按钮，可随时切换；"
-                "提供 F10 快捷键兜底，避免按钮被其他模组覆盖。",
+                "安装后游戏右上角会显示“MOD”按钮，可开启全部画廊，或恢复游戏原本的画廊进度；"
+                "F9 打开面板，F10 直接切换画廊状态。",
             )
         )
         layout.addWidget(gallery_card)
@@ -73,21 +73,25 @@ class GameModPage(Base, QWidget):
             self._build_mod_card(
                 "urm",
                 "修改器（0x52-URM 2.6.2 汉化版）",
-                "将修改器 RPA 注入 game/。注入后按模组自带快捷键唤出；"
+                "将修改器和游戏内“修改器”按钮注入 game/，也可按 Alt+M 唤出；"
                 "若出现 API.rpyc 错误，目前没有压缩包版兜底。",
             )
         )
         layout.addWidget(urm_card)
 
-        quick_menu_card, self.quick_menu_install_button, self.quick_menu_uninstall_button = (
+        (
+            simple_modifier_card,
+            self.simple_modifier_install_button,
+            self.simple_modifier_uninstall_button,
+        ) = (
             self._build_mod_card(
-                "quick_menu",
-                "底部按钮栏（独木桥模组 6.27 版）",
-                "会隐藏游戏原本的 quick_menu，并整体覆盖 config.overlay_screens，"
-                "可能与其他模组的按钮冲突。",
+                "simple_modifier",
+                "内置修改器（RenpyBox）",
+                "提供对话框、选项框和快捷菜单调整；可单独安装，和画廊解锁器同时安装时会在游戏内 MOD 面板中显示。",
             )
         )
-        layout.addWidget(quick_menu_card)
+        layout.addWidget(simple_modifier_card)
+
         layout.addStretch(1)
         scroll.setWidget(content)
         root.addWidget(scroll, 1)
@@ -98,8 +102,9 @@ class GameModPage(Base, QWidget):
             self.gallery_uninstall_button,
             self.urm_install_button,
             self.urm_uninstall_button,
-            self.quick_menu_install_button,
-            self.quick_menu_uninstall_button,
+            self.simple_modifier_install_button,
+            self.simple_modifier_uninstall_button,
+            self.legacy_dumuqiao_cleanup_button,
         )
 
     def _build_intro_card(self) -> CardWidget:
@@ -110,7 +115,7 @@ class GameModPage(Base, QWidget):
         layout.addWidget(StrongBodyLabel("使用说明", self))
 
         copyright_label = CaptionLabel(
-            "本页模组均为第三方作品，版权归各自作者（ZLZK、0x52、独木桥），用完建议卸载。",
+            "画廊解锁器由 ZLZK 提供，修改器由 0x52 提供；游戏内 MOD 面板由 RenpyBox 提供。",
             self,
         )
         copyright_label.setWordWrap(True)
@@ -140,10 +145,23 @@ class GameModPage(Base, QWidget):
 
         self.gallery_status_label = CaptionLabel("解锁画廊：未选择游戏目录", self)
         self.urm_status_label = CaptionLabel("修改器：未选择游戏目录", self)
-        self.quick_menu_status_label = CaptionLabel("底部按钮栏：未选择游戏目录", self)
+        self.simple_modifier_status_label = CaptionLabel(
+            "内置修改器：未选择游戏目录", self
+        )
+        self.legacy_dumuqiao_label = CaptionLabel("", self)
+        self.legacy_dumuqiao_cleanup_button = PushButton(
+            "删除旧版独木桥", icon=FluentIcon.DELETE, parent=self
+        )
+        self.legacy_dumuqiao_cleanup_button.clicked.connect(
+            self._confirm_legacy_dumuqiao_cleanup
+        )
+        self.legacy_dumuqiao_label.hide()
+        self.legacy_dumuqiao_cleanup_button.hide()
         layout.addWidget(self.gallery_status_label)
         layout.addWidget(self.urm_status_label)
-        layout.addWidget(self.quick_menu_status_label)
+        layout.addWidget(self.simple_modifier_status_label)
+        layout.addWidget(self.legacy_dumuqiao_label)
+        layout.addWidget(self.legacy_dumuqiao_cleanup_button)
         return card
 
     def _build_mod_card(
@@ -194,7 +212,11 @@ class GameModPage(Base, QWidget):
         if not game_dir:
             self.gallery_status_label.setText("解锁画廊：未选择游戏目录")
             self.urm_status_label.setText("修改器：未选择游戏目录")
-            self.quick_menu_status_label.setText("底部按钮栏：未选择游戏目录")
+            self.simple_modifier_status_label.setText(
+                "内置修改器：未选择游戏目录"
+            )
+            self.legacy_dumuqiao_label.hide()
+            self.legacy_dumuqiao_cleanup_button.hide()
             return
 
         status = self.injector.status(game_dir)
@@ -204,9 +226,28 @@ class GameModPage(Base, QWidget):
         self.urm_status_label.setText(
             f"修改器：{'已安装' if status['urm'] else '未安装'}"
         )
-        self.quick_menu_status_label.setText(
-            f"底部按钮栏：{'已安装' if status['quick_menu'] else '未安装'}"
+        self.simple_modifier_status_label.setText(
+            f"内置修改器：{'已安装' if status['simple_modifier'] else '未安装'}"
         )
+        has_legacy_dumuqiao = self.injector.has_legacy_dumuqiao(game_dir)
+        self.legacy_dumuqiao_label.setVisible(has_legacy_dumuqiao)
+        self.legacy_dumuqiao_cleanup_button.setVisible(has_legacy_dumuqiao)
+        if has_legacy_dumuqiao:
+            self.legacy_dumuqiao_label.setText(
+                "检测到旧版独木桥，删除后重启游戏，避免覆盖原游戏菜单。"
+            )
+
+    def _confirm_legacy_dumuqiao_cleanup(self) -> None:
+        result = QMessageBox.warning(
+            self,
+            "删除旧版独木桥",
+            "将永久删除 game/dumuqiao.rpy 与 game/dumuqiao.rpyc。"
+            "不会删除 .bak 或其他用户脚本。是否继续？",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if result == QMessageBox.Yes:
+            self._start_operation("cleanup_legacy", "legacy_dumuqiao")
 
     def _start_operation(self, action: str, key: str) -> None:
         if self._running:
@@ -225,12 +266,12 @@ class GameModPage(Base, QWidget):
 
         def task() -> None:
             try:
-                operation = (
-                    self.injector.install
-                    if action == "install"
-                    else self.injector.uninstall
-                )
-                success, message = operation(game_dir, key)
+                if action == "cleanup_legacy":
+                    success, message = self.injector.remove_legacy_dumuqiao(game_dir)
+                elif action == "install":
+                    success, message = self.injector.install(game_dir, key)
+                else:
+                    success, message = self.injector.uninstall(game_dir, key)
                 signal = self.operation_done if success else self.operation_failed
                 signal.emit(action, key, message)
             except Exception as exc:
@@ -249,7 +290,13 @@ class GameModPage(Base, QWidget):
         self._set_running(False)
         self._refresh_status()
         InfoBar.success(
-            "安装完成" if action == "install" else "卸载完成",
+            (
+                "安装完成"
+                if action == "install"
+                else "清理完成"
+                if action == "cleanup_legacy"
+                else "卸载完成"
+            ),
             message,
             parent=self,
         )
@@ -259,7 +306,13 @@ class GameModPage(Base, QWidget):
         self._set_running(False)
         self._refresh_status()
         InfoBar.error(
-            "安装失败" if action == "install" else "卸载失败",
+            (
+                "安装失败"
+                if action == "install"
+                else "清理失败"
+                if action == "cleanup_legacy"
+                else "卸载失败"
+            ),
             message,
             parent=self,
         )
