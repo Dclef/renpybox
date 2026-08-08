@@ -167,7 +167,8 @@ class ResponseChecker(Base):
 
             # 提示词回显必须在规则/语言过滤之前判定：那两个过滤器命中就直接
             # 放行，会让被填进提示词段落的条目当成“正确翻译”写进游戏文件。
-            if self.has_prompt_echo(dst):
+            # 原文本身若是提示词标题，则允许它的正常翻译，不把标题误判为回显。
+            if self.has_prompt_echo(dst) and not self.has_prompt_echo(src):
                 checks.append(__class__.Error.LINE_ERROR_FAKE_REPLY)
                 continue
 

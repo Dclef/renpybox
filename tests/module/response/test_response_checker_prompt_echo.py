@@ -5,12 +5,17 @@
 返回“不相似”，其余三道检查也都不针对这种情况，于是全部放行。
 """
 
+from pathlib import Path
+
 import pytest
 
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Response.ResponseChecker import ResponseChecker
+
+
+PROMPT_ROOT = Path(__file__).resolve().parents[3] / "resource" / "prompt"
 
 
 # 实际泄漏进游戏文件的五段（截断保留特征），与提示词段落一一对应
@@ -45,6 +50,21 @@ INNOCENT_TRANSLATIONS = (
 )
 
 
+# 从实际提示词资源读取标题，避免测试与资源文件各维护一份标题清单。
+def _load_prompt_title_cases():
+    cases = []
+    for language in ("zh", "en"):
+        language_root = PROMPT_ROOT / language
+        for path in sorted(language_root.glob("*.txt")):
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+            if lines and lines[0].lstrip().startswith("###"):
+                cases.append((language, path.name, lines[0]))
+    return tuple(cases)
+
+
+PROMPT_TITLE_CASES = _load_prompt_title_cases()
+
+
 @pytest.mark.parametrize("dst", LEAKED_SECTIONS)
 def test_detects_leaked_chinese_prompt_sections(dst):
     assert ResponseChecker.has_prompt_echo(dst) is True
@@ -63,6 +83,15 @@ def test_does_not_flag_normal_translations(dst):
 def test_non_string_input_is_not_flagged():
     assert ResponseChecker.has_prompt_echo(None) is False
     assert ResponseChecker.has_prompt_echo(123) is False
+
+
+@pytest.mark.parametrize(
+    ("language", "filename", "title"),
+    PROMPT_TITLE_CASES,
+    ids=lambda value: str(value),
+)
+def test_prompt_resource_titles_are_recognized(language, filename, title):
+    assert ResponseChecker.has_prompt_echo(title), f"{language}/{filename}: {title}"
 
 
 def test_similarity_check_alone_cannot_catch_prompt_echo():
@@ -127,3 +156,27 @@ def test_prompt_echo_beats_rule_filter_shortcut():
     )
 
     assert checks == [ResponseChecker.Error.LINE_ERROR_FAKE_REPLY]
+
+
+@pytest.mark.parametrize(
+    ("src", "dst"),
+    (
+        ("Output Protocol: JSON", "输出协议：JSON"),
+        ("Writing Style: Literary", "写作风格：文学"),
+        ("Non-Overridable Engineering Protocol", "不可覆盖的工程协议"),
+    ),
+)
+def test_prompt_heading_translation_is_not_fake_reply(src, dst):
+    assert ResponseChecker.has_prompt_echo(src) is True
+    assert ResponseChecker.has_prompt_echo(dst) is True
+
+    item = _make_item(src, dst)
+    checker = ResponseChecker(Config(), [item])
+    checks = checker.check_lines(
+        [src],
+        [dst],
+        CacheItem.TextType.RENPY,
+        line_items=[item],
+    )
+
+    assert checks == [ResponseChecker.Error.NONE]
