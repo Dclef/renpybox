@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 10,
     "name": "Volcengine",
     "api_url": "https://ark.cn-beijing.volces.com/api/v3",

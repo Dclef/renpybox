@@ -319,7 +319,10 @@ class TranslatorTask(Base):
             item = item,
         )
 
-        skip, response_think, response_result, input_tokens, output_tokens = requester.request(messages)
+        skip, response_think, response_result, input_tokens, output_tokens = requester.request(
+            messages,
+            response_shape = "none",
+        )
         response_think = response_think or ""
         response_result = response_result or ""
         input_tokens = int(input_tokens or 0)
@@ -497,8 +500,16 @@ class TranslatorTask(Base):
 
         # 发起请求
         requester = TaskRequester(self.config, self.platform, current_round)
+        structured_response = (
+            self.config.structured_output_enable
+            and self.platform.get("api_format")
+            not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+        )
         self.debug(f"[REQUEST] 发起API请求...")
-        skip, response_think, response_result, input_tokens, output_tokens = requester.request(self.messages)
+        skip, response_think, response_result, input_tokens, output_tokens = requester.request(
+            self.messages,
+            response_shape = "json_object" if structured_response else "none",
+        )
 
         if TaskRequester.is_cancel_requested():
             return self._cancelled_result()
@@ -585,11 +596,6 @@ class TranslatorTask(Base):
             return self._cancelled_result()
 
         # 解析并按 request_index 对齐。严格协议失败时返回空记录，整批进入重试。
-        structured_response = (
-            self.config.structured_output_enable
-            and self.platform.get("api_format")
-            not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
-        )
         decode_result = ResponseDecoder().decode_result(
             response_result,
             expected_count = len(srcs),
@@ -611,7 +617,10 @@ class TranslatorTask(Base):
                 console_log.extend(retry_log)
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
-            retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(retry_messages)
+            retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(
+                retry_messages,
+                response_shape = "none",
+            )
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
             if retry_skip == False and isinstance(retry_result, str):
