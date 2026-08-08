@@ -6,6 +6,7 @@ from typing import Any
 from PyQt5.QtWidgets import QFrame
 from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import CaptionLabel
+from qfluentwidgets import FluentIcon
 from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import SubtitleLabel
 from qfluentwidgets import TextBrowser
@@ -89,15 +90,5 @@ class UpdateDetailsDialog(MessageBoxBase):
 
         self.yesButton.setText(strings.app_update_download)
         self.cancelButton.setText(strings.later)
-
-        # 主题色 #BCA483 上白字对比度仅 2.39:1（AA 需 4.5:1），实心主按钮会被
-        # 误读为禁用状态，这里单独压深底色，不改全局 APP_THEME_COLOR。
-        self.yesButton.setStyleSheet(
-            "PrimaryPushButton {"
-            "    background-color: #8A7355;"
-            "    border: 1px solid #7A6549;"
-            "}"
-            "PrimaryPushButton:hover { background-color: #977F5F; }"
-            "PrimaryPushButton:pressed { background-color: #7A6549; }"
-        )
+        self.yesButton.setIcon(FluentIcon.CLOUD_DOWNLOAD)
 

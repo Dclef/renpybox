@@ -12,6 +12,7 @@ from module.Engine.Engine import Engine
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
+from module.File.AtomicWrite import atomic_write_text
 
 
 class RENPY(Base):
@@ -90,16 +91,19 @@ class RENPY(Base):
         extractor = RenpyTlItemExtractor()
 
         report: list[dict] = []
+        errors: list[str] = []
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 导出源文件不存在: {source_path}")
+                errors.append(f"源文件不存在: {source_path}")
                 continue
 
             try:
                 text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
                 self.error(f"Failed to read Ren'Py file {source_path}", exc)
+                errors.append(f"读取失败 {source_path}: {exc}")
                 continue
 
             lines = text.splitlines()
@@ -111,13 +115,15 @@ class RENPY(Base):
             )
             items_to_apply.sort(key=self.get_item_target_line)
 
-            translated_items = sum(
-                1
+            translated_group_items = [
+                item
                 for item in group_items
-                if isinstance(item.get_dst(), str)
-                and item.get_dst() != ""
-                and item.get_dst() != item.get_src()
-            )
+                if self._has_translated_value(item.get_src(), item.get_dst())
+                or self._has_translated_value(
+                    item.get_name_src(), item.get_name_dst()
+                )
+            ]
+            translated_items = len(translated_group_items)
             applied, skipped = writer.apply_items_to_lines(lines, items_to_apply)
             fallback_items: list[CacheItem] | None = None
             if skipped > 0:
@@ -156,9 +162,33 @@ class RENPY(Base):
                     console=False,
                 )
 
+            result_doc = parse_tl_document(lines)
+            result_items = extractor.extract(result_doc, rel_path)
+            unapplied_items = self.find_unapplied_translations(
+                translated_group_items,
+                result_items,
+            )
+            if unapplied_items:
+                errors.append(
+                    f"译文未完整写入 {rel_path} "
+                    f"(translated={translated_items}, unapplied={len(unapplied_items)}, "
+                    f"applied={applied}, skipped={skipped})"
+                )
+                continue
+
             target_path = self.output_path / rel_path
             os.makedirs(target_path.parent, exist_ok=True)
-            target_path.write_text("\n".join(lines), encoding="utf-8")
+            try:
+                atomic_write_text(
+                    target_path,
+                    "\n".join(lines),
+                    validator=lambda value: parse_tl_document(value.splitlines()),
+                    allowed_roots=[self.output_path],
+                )
+            except Exception as exc:
+                self.error(f"Failed to write Ren'Py file {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
 
             report.append(
                 {
@@ -181,6 +211,8 @@ class RENPY(Base):
                 )
             except Exception:
                 pass
+        if errors:
+            raise RuntimeError("Ren'Py 写回未完整完成：" + "；".join(errors))
 
     def build_items_for_writeback(
         self,
@@ -332,6 +364,76 @@ class RENPY(Base):
                 return candidates.pop(i)
 
         return candidates.pop(0)
+
+    def find_unapplied_translations(
+        self,
+        expected_items: list[CacheItem],
+        result_items: list[CacheItem],
+    ) -> list[CacheItem]:
+        """返回未能在最终 AST 中找到对应译文的缓存条目。"""
+        remaining = list(result_items)
+        unapplied: list[CacheItem] = []
+
+        for expected in expected_items:
+            expected_keys = set(self.build_ast_keys(expected))
+            candidate_indexes = [
+                index
+                for index, actual in enumerate(remaining)
+                if expected_keys.intersection(self.build_ast_keys(actual))
+            ]
+            if not candidate_indexes:
+                expected_name = self._normalize_name_key(expected.get_name_src())
+                candidate_indexes = [
+                    index
+                    for index, actual in enumerate(remaining)
+                    if actual.get_src() == expected.get_src()
+                    and self._normalize_name_key(actual.get_name_src()) == expected_name
+                ]
+            if not candidate_indexes:
+                unapplied.append(expected)
+                continue
+
+            picked_index = candidate_indexes[0]
+            for index in candidate_indexes:
+                actual = remaining[index]
+                if (
+                    actual.get_src() == expected.get_src()
+                    and actual.get_name_src() == expected.get_name_src()
+                ):
+                    picked_index = index
+                    break
+            actual = remaining.pop(picked_index)
+            dialogue_unapplied = (
+                self._has_translated_value(expected.get_src(), expected.get_dst())
+                and self._normalize_compare_value(actual.get_dst())
+                != self._normalize_compare_value(expected.get_dst())
+            )
+            name_unapplied = (
+                self._has_translated_value(
+                    expected.get_name_src(), expected.get_name_dst()
+                )
+                and self._normalize_compare_value(actual.get_name_dst())
+                != self._normalize_compare_value(expected.get_name_dst())
+            )
+            if dialogue_unapplied or name_unapplied:
+                unapplied.append(expected)
+
+        return unapplied
+
+    @staticmethod
+    def _has_translated_value(source, target) -> bool:
+        if isinstance(target, str):
+            return target != "" and target != source
+        if isinstance(target, list):
+            return bool(target) and target != source
+        return False
+
+    @staticmethod
+    def _normalize_compare_value(value) -> str:
+        """归一化后比较写回结果，避免列表/空白差异造成误报。"""
+        if isinstance(value, list):
+            return "|".join(str(v) for v in value if v is not None)
+        return str(value or "").strip()
 
     def _normalize_name_key(self, value: str | list[str] | None) -> str:
         if isinstance(value, list):

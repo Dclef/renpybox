@@ -8,6 +8,9 @@ from module.Extract.ReplaceGenerator import (
 )
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 import types
+import py_compile
+import re
+import sys
 from enum import Enum
 from pathlib import Path
 
@@ -228,6 +231,206 @@ def test_incremental_repairs_official_comment_from_anchored_source_line(tmp_path
     ) == 1
     repaired = tl.read_text(encoding="utf-8")
     assert '# narrator "( We finally crossed the portal with [story.partner]! )"' in repaired
+
+
+def test_incremental_retranslates_block_repaired_from_anchored_source(tmp_path, monkeypatch):
+    project = tmp_path / "fictional_project"
+    source = project / "game" / "src" / "plot" / "signal.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl = tl_dir / "src" / "plot" / "signal.rpy"
+    source.parent.mkdir(parents=True)
+    tl.parent.mkdir(parents=True)
+    source.write_text('guide "The fictional signal is bright."\n', encoding="utf-8")
+    tl.write_text(
+        '# game/src/plot/signal.rpy:1\n'
+        'translate chinese signal_report_12345678:\n\n'
+        '    # guide "The fictional signal is dim."\n'
+        '    guide "旧的虚构信号译文。"\n',
+        encoding="utf-8",
+    )
+
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=False,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "plot" / "signal.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            '# game/src/plot/signal.rpy:1\n'
+            'translate chinese signal_report_12345678:\n\n'
+            '    # guide "The fictional signal is bright."\n'
+            '    guide "The fictional signal is bright."\n\n'
+            'translate chinese strings:\n\n'
+            '    old "The fictional signal is bright."\n'
+            '    new "The fictional signal is bright."\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_post_process",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=True,
+    )
+
+    assert result.success is True
+    assert result.new_strings == 1
+    incremental = project / "game" / "tl" / "chinese_new" / "src" / "plot" / "signal.rpy"
+    assert 'guide "The fictional signal is bright."' in incremental.read_text(
+        encoding="utf-8"
+    )
+    assert "translate chinese strings:" not in incremental.read_text(encoding="utf-8")
+
+
+def test_incremental_does_not_reextract_base_box_or_structural_placeholder(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "fictional_ui_project"
+    source = project / "game" / "src" / "menu.rpy"
+    source_registered = project / "game" / "source_registered.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    base = tl_dir / "base_box" / "screens_box.rpy"
+    prop = tl_dir / "res" / "meta" / "prop.rpy"
+    source.parent.mkdir(parents=True)
+    base.parent.mkdir(parents=True)
+    prop.parent.mkdir(parents=True)
+    source.write_text('_(("Window"))\n_(("USB"))\n', encoding="utf-8")
+    source_registered.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Source UI"\n    new "源码界面"\n',
+        encoding="utf-8",
+    )
+    base.write_text(
+        'translate chinese strings:\n\n    old "Window"\n    new "窗口"\n',
+        encoding="utf-8",
+    )
+    prop.write_text(
+        'translate chinese strings:\n\n    old "USB"\n    new "USB"\n',
+        encoding="utf-8",
+    )
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=True,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "menu.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            'translate chinese strings:\n\n'
+            '    old "Window"\n    new "Window"\n\n'
+            '    old "USB"\n    new "USB"\n\n'
+            '    old "Source UI"\n    new "Source UI"\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(UnifiedExtractor, "_post_process", lambda *_args, **_kwargs: None)
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=True,
+    )
+
+    assert result.success is True
+    assert result.new_strings == 0
+    incremental = project / "game" / "tl" / "chinese_new"
+    assert not list(incremental.rglob("*.rpy"))
+
+
+def test_direct_incremental_does_not_restore_stale_translation_after_comment_repair(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "fictional_direct_project"
+    source = project / "game" / "src" / "plot" / "beacon.rpy"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl = tl_dir / "src" / "plot" / "beacon.rpy"
+    source.parent.mkdir(parents=True)
+    tl.parent.mkdir(parents=True)
+    source.write_text('pilot "The fictional beacon is blue."\n', encoding="utf-8")
+    tl.write_text(
+        '# game/src/plot/beacon.rpy:1\n'
+        'translate chinese beacon_report_12345678:\n\n'
+        '    # pilot "The fictional beacon is red."\n'
+        '    pilot "旧的虚构信标译文。"\n',
+        encoding="utf-8",
+    )
+
+    config = types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        renpy_incremental_include_untranslated=False,
+        onekey_inject_base_box=False,
+    )
+    monkeypatch.setattr("module.Extract.UnifiedExtractor.Config.load", lambda _self: config)
+
+    def write_fresh_extract(output_dir, *_args, **_kwargs):
+        fresh = Path(output_dir) / "src" / "plot" / "beacon.rpy"
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(
+            '# game/src/plot/beacon.rpy:1\n'
+            'translate chinese beacon_report_12345678:\n\n'
+            '    # pilot "The fictional beacon is blue."\n'
+            '    pilot "The fictional beacon is blue."\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.rx.ExtractAllFilesInDir",
+        write_fresh_extract,
+    )
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_append_static_supplement_entries",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(UnifiedExtractor, "_post_process", lambda *_args, **_kwargs: None)
+
+    result = UnifiedExtractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=False,
+    )
+
+    content = tl.read_text(encoding="utf-8")
+    assert result.success is True
+    assert result.new_strings == 1
+    assert 'pilot "The fictional beacon is blue."' in content
+    assert "旧的虚构信标译文。" not in content
 
 
 def test_comment_repair_does_not_cross_from_strings_entry_into_dialogue(tmp_path):
@@ -498,9 +701,32 @@ def test_incremental_merge_cleans_staging_folder_and_base_box_placeholders(tmp_p
 
     assert result.success
     assert not staging_dir.exists()
-    assert 'old "Back"' not in hud.read_text(encoding="utf-8")
+    # hud.rpy 的 "Back" 与 base_box 重复被移除后只剩 translate 头，
+    # 按规则整个文件删除，避免 Ren'Py 空块报错。
+    assert not hud.exists()
     assert 'new "回来"' in (base_box / "screens_box.rpy").read_text(encoding="utf-8")
     assert 'old "New menu text"' in (tl_dir / "src" / "plot" / "new_text.rpy").read_text(encoding="utf-8")
+
+
+def test_incremental_cleanup_removes_comment_only_artifacts(tmp_path):
+    incremental = tmp_path / "chinese_new"
+    empty = incremental / "src" / "plot" / "empty.rpy"
+    valid = incremental / "src" / "plot" / "valid.rpy"
+    empty.parent.mkdir(parents=True)
+    empty.write_text("# 增量抽取 - 虚拟内容\n# 来源: empty.rpy\n", encoding="utf-8")
+    valid.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Fictional option"\n    new "虚拟选项"\n',
+        encoding="utf-8",
+    )
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(warning=lambda *args, **kwargs: None)
+
+    removed = extractor._remove_empty_incremental_artifacts(incremental)
+
+    assert removed == 1
+    assert not empty.exists()
+    assert valid.exists()
 
 
 def test_incremental_merge_removes_empty_block_after_truncated_duplicate(tmp_path):
@@ -616,7 +842,7 @@ def test_removes_strings_already_registered_by_game_source(tmp_path):
     assert 'old "Only in TL"' in content
 
 
-def test_incremental_merge_canonicalizes_double_escaped_quote_duplicates(tmp_path):
+def test_incremental_merge_keeps_literal_backslash_quote_distinct(tmp_path):
     game_dir = tmp_path / "project"
     tl_dir = game_dir / "game" / "tl" / "chinese"
     staging_dir = game_dir / "game" / "tl" / "chinese_new"
@@ -650,8 +876,8 @@ def test_incremental_merge_canonicalizes_double_escaped_quote_duplicates(tmp_pat
 
     assert result.success
     content = target.read_text(encoding="utf-8")
-    assert content.count('old "- Training Bot') == 1
-    assert '\\\\\\"Copper Finch' not in content
+    assert content.count('old "- Training Bot') == 2
+    assert '\\\\\\"Copper Finch' in content
 
 
 def test_incremental_static_supplement_reaches_corresponding_tl_file(tmp_path, monkeypatch):
@@ -868,6 +1094,26 @@ def test_static_menu_candidates_accept_single_quoted_choices(tmp_path):
     assert candidates["Pilot's route."] == "src/plot/chapter_gamma.rpy"
 
 
+def test_static_candidates_reject_atl_image_tags(tmp_path):
+    project = tmp_path / "project"
+    source = project / "game" / "res" / "art" / "mono.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "image mono sample:\n"
+        "    contains:\n"
+        "        'character pose frame'\n"
+        "    side 'tl t l c':\n"
+        "    show text 'Visible overlay text'\n",
+        encoding="utf-8",
+    )
+
+    candidates = rx.collect_static_source_strings(project)
+
+    assert "character pose frame" not in candidates
+    assert "tl t l c" not in candidates
+    assert candidates["Visible overlay text"] == "res/art/mono.rpy"
+
+
 def test_static_source_scan_opens_original_file_read_only(monkeypatch):
     opened_modes = []
 
@@ -965,8 +1211,8 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
     game.mkdir()
     monkeypatch.setattr(
         generator,
-        "collect_glossary_candidate_texts",
-        lambda *args, **kwargs: {text},
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: ({text}, set(), 0),
     )
     monkeypatch.setattr(
         generator.rx,
@@ -986,6 +1232,426 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
 
     assert [entry["src"] for entry in entries] == [text]
     assert stats["missing_count"] == 1
+
+
+def test_hook_name_discovery_ignores_compiled_only_identifiers(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    seen = []
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: (
+            {"Captain Rowan"},
+            {"WidgetEngine", "Crew Roster"},
+            3,
+        ),
+    )
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(
+        generator,
+        "_detect_missing_character_names",
+        lambda items: seen.append(set(items)) or set(),
+    )
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+    )
+
+    assert {entry["src"] for entry in entries} == {
+        "Captain Rowan",
+        "WidgetEngine",
+        "Crew Roster",
+    }
+    assert seen == [{"Captain Rowan"}]
+    assert stats["rpy_candidate_count"] == 1
+    assert stats["compiled_candidate_count"] == 2
+    assert stats["filtered_technical_count"] == 3
+
+
+def test_hook_filter_keeps_readable_text_with_dynamic_placeholders():
+    from module.Extract import ReplaceGenerator as generator
+
+    candidates = {
+        "Rank: [pilot.rank]",
+        "[crew.navigator]'s route continues in the next chapter.",
+        "The expedition will return in a future release.",
+        "Narrative.",
+        "Midday (debut).",
+        "[crew.navigator]",
+    }
+
+    assert generator._filter_valid_strings(candidates) == {
+        "Rank: [pilot.rank]",
+        "[crew.navigator]'s route continues in the next chapter.",
+        "The expedition will return in a future release.",
+        "Narrative.",
+        "Midday (debut).",
+    }
+
+
+def test_compiled_string_scan_uses_constants_without_executing_module(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    marker = tmp_path / "module-was-executed.txt"
+    source = saga / "chapter.py"
+    source.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('unexpected')\n"
+        "HEADING = 'Crew Roster'\n"
+        "NOTICE = \"[crew.scout]'s expedition continues in a future release.\"\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "chapter.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert "Crew Roster" in strings
+    assert "[crew.scout]'s expedition continues in a future release." in strings
+    assert not marker.exists()
+
+
+def test_compiled_string_scan_cache_invalidates_when_bytecode_changes(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "notice.py"
+    compiled = saga / "notice.pyc"
+    cache = tmp_path / "compiled-cache.json"
+
+    source.write_text("LABEL = 'Observatory Deck'\n", encoding="utf-8")
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    first = generator._extract_compiled_python_strings(
+        game,
+        cache_path=cache,
+        python_executable=sys.executable,
+    )
+
+    source.write_text("LABEL = 'Navigation Gallery'\n", encoding="utf-8")
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    second = generator._extract_compiled_python_strings(
+        game,
+        cache_path=cache,
+        python_executable=sys.executable,
+    )
+
+    assert "Observatory Deck" in first
+    assert "Navigation Gallery" in second
+
+
+def test_compiled_scan_skips_import_names_but_keeps_data_tuples(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "schedule.py"
+    source.write_text(
+        "from imaginary_widgets import Widget, Renderable\n"
+        "TIMES = ('Morning Watch', 'Evening Watch')\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "schedule.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert {"Morning Watch", "Evening Watch"} <= strings
+    assert "Widget" not in strings
+    assert "Renderable" not in strings
+
+
+def test_compiled_scan_skips_class_metadata_but_keeps_class_ui_text(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    saga = game / "saga"
+    saga.mkdir(parents=True)
+    source = saga / "panel.py"
+    source.write_text(
+        "class TelescopePanel:\n"
+        "    HEADING = 'Observation Schedule'\n",
+        encoding="utf-8",
+    )
+    compiled = saga / "panel.pyc"
+    py_compile.compile(str(source), cfile=str(compiled), doraise=True)
+    source.unlink()
+
+    strings = generator._extract_compiled_python_strings(
+        game,
+        python_executable=sys.executable,
+    )
+
+    assert "TelescopePanel" not in strings
+    assert "Observation Schedule" in strings
+
+
+def test_compiled_technical_filter_rejects_code_but_keeps_ui_text():
+    from module.Extract import ReplaceGenerator as generator
+
+    candidates = {
+        "uniform sampler2D starlight;",
+        "void paint(vec2 uv) {\n    gl_FragColor = texture2D(starlight, uv);\n}",
+        '<polygon fill="#fff" /></svg>',
+        "v_tex_coord = a_tex_coord;",
+        "const float samples = 10.;",
+        "107 to 215",
+        '".*", line \\d+',
+        ", subpixel=True)",
+        "C+",
+        'viewBox="0 0 32 32"',
+        "CAMslut <stats@camslut.dc>",
+        "Invalid listener",
+        "zip() argument 2 is shorter than argument 1",
+        "xoffset yoffset rotate xzoom zoom",
+        "<PPV:",
+        "The observatory story will return in a future release.",
+        "Crew Roster",
+    }
+
+    assert {
+        text for text in candidates if not generator._is_compiled_technical_text(text)
+    } == {
+        "The observatory story will return in a future release.",
+        "Crew Roster",
+    }
+
+
+def test_valid_string_filter_skips_save_page_markers():
+    from module.Extract.ReplaceGenerator import _filter_valid_strings
+
+    assert _filter_valid_strings({"A{#auto_page}", "Q{#quick_page}", "Save"}) == {
+        "Save"
+    }
+
+
+def test_candidate_sets_drop_compiled_only_identifiers_but_keep_source_ui(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_extract_all_strings_regex",
+        lambda *args, **kwargs: {"Back", "Audio", "Age: [who.age]"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_extract_compiled_python_strings",
+        lambda *args, **kwargs: {
+            "Back",
+            "Audio",
+            "Age: [who.age]",
+            "Angelica",
+            "Arousable",
+            "const float samples = 10.;",
+            "C+",
+        },
+    )
+
+    rpy_candidates, compiled_candidates, technical = (
+        generator._collect_glossary_candidate_sets(game, tl_name="chinese")
+    )
+
+    assert rpy_candidates == {"Back", "Audio", "Age: [who.age]"}
+    # Source-present UI and dynamic labels stay; bytecode-only identifiers,
+    # shader constants and grade marks are dropped.
+    assert compiled_candidates == {"Back", "Audio", "Age: [who.age]"}
+    assert technical == 4
+
+
+def test_candidate_sets_keep_substring_constants(tmp_path, monkeypatch):
+    """独立 UI 常量即使恰是更长常量的子串，也不能被当作片段丢弃。"""
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_extract_all_strings_regex",
+        lambda *args, **kwargs: {"Save"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_extract_compiled_python_strings",
+        lambda *args, **kwargs: {
+            "Save",
+            "Save your progress before continuing?",
+            "fool around",
+            "Fool around with the task list for a while.",
+        },
+    )
+
+    _rpy, compiled, _technical = generator._collect_glossary_candidate_sets(
+        game, tl_name="chinese"
+    )
+
+    assert "Save" in compiled
+    assert "Save your progress before continuing?" in compiled
+    assert "fool around" in compiled
+    assert "Fool around with the task list for a while." in compiled
+
+
+def test_tl_coverage_includes_builtin_ui_pack(tmp_path):
+    from module.Extract.ReplaceGenerator import _get_tl_covered_strings
+
+    game = tmp_path / "game"
+    base_box = game / "tl" / "chinese" / "base_box"
+    base_box.mkdir(parents=True)
+    (base_box / "common_box.rpy").write_text(
+        "translate chinese strings:\n"
+        '    old "font size"\n'
+        '    new "字体大小"\n'
+        "\n"
+        '    old "Audio"\n'
+        '    new "音频"\n',
+        encoding="utf-8",
+    )
+
+    covered = _get_tl_covered_strings(game, "chinese")
+
+    assert "font size" in covered
+    assert "Audio" in covered
+
+
+def test_uncovered_filter_treats_trimmed_and_fragment_chunks_as_covered():
+    from module.Extract.ReplaceGenerator import _filter_uncovered_candidates
+
+    covered = {
+        "Go away... ",
+        "your bank!\n\n",
+        (
+            "Adds outlines around buttons making them easier to spot at the "
+            "expense of visuals.\n\nTurn this off to have a more pleasant viewing"
+        ),
+        "Audio Filename:",
+    }
+    candidates = {
+        "Go away...",
+        "your bank!",
+        "Turn this off to have a more pleasant viewing",
+        "Audio",
+        "Dance.",
+        "Age: [who.age]",
+    }
+
+    uncovered = _filter_uncovered_candidates(candidates, covered)
+
+    assert uncovered == {"Audio", "Dance.", "Age: [who.age]"}
+
+
+def test_uncovered_filter_keeps_short_ui_labels_that_are_long_string_substrings():
+    from module.Extract.ReplaceGenerator import _filter_uncovered_candidates
+
+    candidates = {
+        "Save",
+        "Start",
+        "Next",
+        "A long chunk of a covered multi-line string.",
+    }
+    covered = {
+        "Save me from these harpies, champ... I beg ya!",
+        "Start savin' up and buy something more appropriate, capisce?",
+        "Next time you need more than wife to protect you.",
+        "A long chunk of a covered multi-line string.",
+    }
+
+    uncovered = _filter_uncovered_candidates(candidates, covered)
+
+    # 短 UI 标签绝不能因为“是长对话的子串”而被判为已覆盖。
+    assert "Save" in uncovered
+    assert "Start" in uncovered
+    assert "Next" in uncovered
+    # 真正的整句块仍然视为已覆盖。
+    assert "A long chunk of a covered multi-line string." not in uncovered
+
+
+def test_replace_rule_preserves_interpolated_values():
+    from module.Extract import ReplaceGenerator as generator
+
+    rule = generator._build_interpolated_replace_rule(
+        "[crew.scout] reached Rank [profile.rank].",
+        "[crew.scout]已达到[profile.rank]级。",
+    )
+
+    assert rule is not None
+    pattern, replacement = rule
+    assert re.sub(pattern, replacement, "Nova reached Rank 7.") == "Nova已达到7级。"
+
+
+def test_replace_rule_consumes_interpolation_at_end_of_source():
+    from module.Extract import ReplaceGenerator as generator
+
+    rule = generator._build_interpolated_replace_rule(
+        "Level: [level]",
+        "[level] ranks",
+    )
+
+    assert rule is not None
+    pattern, replacement = rule
+    assert re.sub(pattern, replacement, "Level: 27") == "27 ranks"
+
+
+def test_replace_scan_collects_dynamic_label_text(tmp_path):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    source = game / "src" / "gui" / "profile.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text("screen profile(who):\n    label 'Rank: [who.rank]'\n", encoding="utf-8")
+
+    strings = generator._extract_all_strings_regex(game)
+
+    assert "Rank: [who.rank]" in strings
+
+
+def test_static_scan_routes_screen_label_literal_to_standard_tl(tmp_path):
+    game = tmp_path / "game"
+    source = game / "src" / "gui" / "profile.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "screen profile(who):\n"
+        "    label 'Rank: [who.rank]'\n"
+        "\n"
+        "label internal_route(default_name='debug_value'):\n"
+        "    return\n",
+        encoding="utf-8",
+    )
+
+    strings = rx.collect_static_source_strings(tmp_path)
+
+    assert strings["Rank: [who.rank]"] == "src/gui/profile.rpy"
+    assert "debug_value" not in strings
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(info=lambda *args, **kwargs: None)
+    tl_dir = tmp_path / "generated" / "game" / "tl" / "chinese"
+    assert extractor._append_static_supplement_entries(
+        tmp_path, tl_dir, "chinese", candidates=strings
+    ) == 1
+    output = (tl_dir / "src" / "gui" / "profile.rpy").read_text(encoding="utf-8")
+    assert 'old "Rank: [who.rank]"' in output
+    assert 'new "Rank: [who.rank]"' in output
 
 
 def test_menu_string_is_incremental_even_when_dialogue_block_exists(tmp_path):
@@ -1045,3 +1711,709 @@ def test_incremental_menu_string_uses_real_menu_file_and_line(tmp_path):
     content = (target / "src" / "plot" / "chapter_beta.rpy").read_text(encoding="utf-8")
     assert content.count('old "Proceed."') == 1
     assert "# game/src/plot/chapter_beta.rpy:3" in content
+
+
+def test_compiled_supplement_entries_written_natively_unique(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+
+    candidates = {
+        "Virtual (first-time).",
+        "Another virtual notice.",
+        "Dummy label.",
+    }
+    added = extractor._append_compiled_supplement_entries(
+        game, tl_dir, "chinese", candidates=candidates
+    )
+
+    assert added == 3
+    output = tl_dir / "renpybox_bytecode_strings.rpy"
+    content = output.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' in content
+    assert content.count('old "Virtual (first-time)."') == 1
+
+    # 再次运行只补新增，绝不重复写入已有 old。
+    added2 = extractor._append_compiled_supplement_entries(
+        game,
+        tl_dir,
+        "chinese",
+        candidates=candidates | {"Second run only."},
+    )
+    assert added2 == 1
+    content2 = output.read_text(encoding="utf-8")
+    assert content2.count('old "Virtual (first-time)."') == 1
+    assert 'old "Second run only."' in content2
+
+
+def test_compiled_supplement_flows_into_incremental_folder(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "_temp" / "game" / "tl" / "chinese"
+
+    candidates = {"Virtual (first-time)."}
+    extractor._append_compiled_supplement_entries(
+        game, tl_dir, "chinese", candidates=candidates
+    )
+    incremental_dir = tmp_path / "game" / "tl" / "chinese_new"
+    extractor._extract_new_entries_to_folder(
+        tl_dir, incremental_dir, candidates, "chinese"
+    )
+
+    output = incremental_dir / "renpybox_bytecode_strings.rpy"
+    assert output.exists()
+    content = output.read_text(encoding="utf-8")
+    assert 'translate chinese strings:' in content
+    assert 'old "Virtual (first-time)."' in content
+    assert 'new "Virtual (first-time)."' in content
+
+
+def test_incremental_selection_keeps_compiled_candidates(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    selected = extractor._select_incremental_originals(
+        extracted_originals=set(),
+        existing_string_originals={"Old covered entry."},
+        block_originals=set(),
+        static_candidates={},
+        tl_dir=tmp_path,
+        trusted_originals=set(),
+        compiled_candidates={"Virtual (first-time).", "Old covered entry."},
+    )
+
+    assert selected == {"Virtual (first-time)."}
+
+
+def test_dedupe_string_translations_removes_cross_file_duplicate_old(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    first = tl / "a.rpy"
+    second = tl / "b.rpy"
+    work = tl / "miss" / "miss_ready_replace.rpy"
+    first.parent.mkdir(parents=True)
+    work.parent.mkdir(parents=True)
+    first.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文A。"\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文B。"\n',
+        encoding="utf-8",
+    )
+    work.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟译文C。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 2
+    assert 'old "Virtual (first-time)."' in first.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' not in second.read_text(encoding="utf-8")
+    assert 'old "Virtual (first-time)."' not in work.read_text(encoding="utf-8")
+
+
+def test_dedupe_keeps_translated_entry_over_placeholder(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    placeholder_file = tl / "a_placeholder.rpy"
+    translated_file = tl / "b_translated.rpy"
+    placeholder_file.parent.mkdir(parents=True)
+    placeholder_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual dynamic message."\n'
+        '    new "Virtual dynamic message."\n',
+        encoding="utf-8",
+    )
+    translated_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual dynamic message."\n'
+        '    new "虚拟动态消息。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 1
+    assert 'old "Virtual dynamic message."' not in placeholder_file.read_text(encoding="utf-8")
+    assert 'old "Virtual dynamic message."' in translated_file.read_text(encoding="utf-8")
+
+
+def test_dedupe_preserves_unique_entries(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    first = tl / "a.rpy"
+    second = tl / "b.rpy"
+    first.parent.mkdir(parents=True)
+    first.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual unique A."\n'
+        '    new "虚拟唯一A。"\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual unique B."\n'
+        '    new "虚拟唯一B。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    assert 'old "Virtual unique A."' in first.read_text(encoding="utf-8")
+    assert 'old "Virtual unique B."' in second.read_text(encoding="utf-8")
+
+
+def test_dedupe_removes_comments_with_removed_duplicate_entries(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    keeper = tl / "a.rpy"
+    duplicate = tl / "b.rpy"
+    keeper.parent.mkdir(parents=True)
+    keeper.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        '    old "Virtual duplicate."\n'
+        '    new "虚拟译文。"\n',
+        encoding="utf-8",
+    )
+    duplicate.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        '    old "Virtual duplicate."\n'
+        '    new "虚拟译文。"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 1
+    duplicate_text = duplicate.read_text(encoding="utf-8")
+    assert "# game/src/menu/gate.rpy:20" not in duplicate_text
+    assert 'old "Virtual duplicate."' not in duplicate_text
+    keeper_text = keeper.read_text(encoding="utf-8")
+    assert "# game/src/menu/gate.rpy:21" in keeper_text
+    assert 'old "Virtual duplicate."' in keeper_text
+
+
+def test_dedupe_keeps_only_first_orphaned_position_comment(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    gate = tl / "src" / "menu" / "gate.rpy"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(
+        "translate chinese strings:\n\n"
+        "    # game/src/menu/gate.rpy:14\n"
+        '    old "MATURE CONTENT"\n'
+        '    new "成人内容"\n\n'
+        "    # game/src/menu/gate.rpy:20\n"
+        "\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        "    # game/src/menu/gate.rpy:21\n"
+        "    # game/src/menu/gate.rpy:20\n"
+        "    # game/src/menu/gate.rpy:21\n",
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    text = gate.read_text(encoding="utf-8")
+    assert text.count("# game/src/menu/gate.rpy:20") == 1
+    assert "# game/src/menu/gate.rpy:21" not in text
+    assert 'old "MATURE CONTENT"' in text
+    assert 'old "I am 18 years of age or older."' not in text
+
+
+def test_merge_string_literal_continuations_joins_adjacent_literals():
+    from module.Renpy.renpy_extract import merge_string_literal_continuations
+
+    lines = [
+        "text _('Start with money and stats as there is no '",
+        "       'way to earn them yet. Extra money can be found in the '",
+        "       'ATM in the bank. More content will be restored in '",
+        "       'future releases.'):",
+    ]
+    merged = merge_string_literal_continuations(lines)
+
+    assert len(merged) == 1
+    merged_line, start_index = merged[0]
+    assert start_index == 0
+    assert (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    ) in merged_line
+    # 合并后的行内只剩一个双引号字面量（完整句子），而不是四个独立片段。
+    assert merged_line.count('"') == 2
+
+
+def test_extract_from_file_merges_adjacent_string_literals(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "mode.rpy"
+    source.write_text(
+        "text _('Start with money and stats as there is no '\n"
+        "       'way to earn them yet. Extra money can be found in the '\n"
+        "       'ATM in the bank. More content will be restored in '\n"
+        "       'future releases.'):\n",
+        encoding="utf-8",
+    )
+    full = (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert full in extracted
+    assert "Start with money and stats as there is no " not in extracted
+    assert "future releases." not in extracted
+
+
+def test_write_extracted_escapes_newlines_in_strings(tmp_path):
+    """补充抽取写出的 old/new 必须转义换行，否则 Ren'Py 报解析错误。"""
+    from module.Renpy.renpy_extract import ExtractAllFilesInDir
+    from module.Renpy.renpy_tl_core import parse_tl_document
+
+    project = tmp_path / "gameproj"
+    src = project / "game" / "src" / "menu"
+    src.mkdir(parents=True)
+    (src / "pref.rpy").write_text(
+        'tooltip _("Enables the wheel of conception, allowing the "\n'
+        '         "player to see the result of pregnancy attempts immediately.\\n\\n'
+        'Turn this off to learn about pregnancies.")\n',
+        encoding="utf-8",
+    )
+    tl = project / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+
+    ExtractAllFilesInDir(str(tl), True, 4, False, True)
+
+    written = tl / "src" / "menu" / "pref.rpy"
+    text = written.read_text(encoding="utf-8")
+    # 可被 Ren'Py 语法解析（换行已转义，不产生未闭合引号）
+    doc = parse_tl_document(text.splitlines())
+    assert doc is not None
+    assert "\\n\\n" in text
+    assert "immediately.\n\nTurn" not in text
+
+
+def test_collect_static_source_strings_merges_adjacent_literals(tmp_path):
+    from module.Renpy.renpy_extract import collect_static_source_strings
+
+    project = tmp_path / "gameproj"
+    src = project / "game" / "src" / "menu"
+    src.mkdir(parents=True)
+    (src / "mode.rpy").write_text(
+        "text _('Start with money and stats as there is no '\n"
+        "       'way to earn them yet. Extra money can be found in the '\n"
+        "       'ATM in the bank. More content will be restored in '\n"
+        "       'future releases.'):\n",
+        encoding="utf-8",
+    )
+    full = (
+        "Start with money and stats as there is no way to earn them yet. "
+        "Extra money can be found in the ATM in the bank. "
+        "More content will be restored in future releases."
+    )
+
+    candidates = collect_static_source_strings(project)
+
+    assert candidates.get(full) == "src/menu/mode.rpy"
+    assert "Start with money and stats as there is no " not in candidates
+    assert "future releases." not in candidates
+
+
+def test_extract_from_file_skips_show_lang_attribute(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "inv.rpy"
+    source.write_text(
+        '    anon "( \\"I slip slowly under the satin sheets.\\" )" '
+        '(show_lang="( {i}\\"Je me glisse lentement sous les draps de satin.\\"{/i} )")\n',
+        encoding="utf-8",
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert any("I slip slowly under the satin sheets" in text for text in extracted)
+    assert not any("Je me glisse" in text for text in extracted)
+
+
+def test_relaxed_single_quotes_do_not_swallow_code_fragment():
+    from module.Renpy.renpy_extract import iter_relaxed_single_quoted_literals
+
+    line = "alt __('Replay ') + s.image.replace('_', ' ')"
+    literals = list(iter_relaxed_single_quoted_literals(line))
+
+    assert "Replay " in literals
+    assert all("image.replace" not in value for value in literals)
+
+
+def test_extract_from_file_does_not_emit_code_fragment(tmp_path):
+    from module.Renpy.renpy_extract import ExtractFromFile
+
+    source = tmp_path / "lewd.rpy"
+    source.write_text(
+        "        alt __('Replay ') + s.image.replace('_', ' ')\n",
+        encoding="utf-8",
+    )
+
+    extracted = ExtractFromFile(str(source), True, 4, False, False, True, False)
+
+    assert any("Replay" in text for text in extracted)
+    assert not any("image.replace" in text for text in extracted)
+
+
+def test_dedupe_removes_comment_above_strings_header(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    rpy = tl / "lewd.rpy"
+    rpy.parent.mkdir(parents=True)
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Got it!"\n'
+        '    new "知道了！"\n\n'
+        "    # game/src/menu/lewd.rpy:66\n"
+        "translate chinese strings:\n\n"
+        '    old "Welcome to the cookie jar!"\n'
+        '    new "欢迎来到角色图鉴！"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 0
+    text = rpy.read_text(encoding="utf-8")
+    assert "# game/src/menu/lewd.rpy:66" not in text
+    assert 'old "Got it!"' in text
+    assert 'old "Welcome to the cookie jar!"' in text
+
+
+def test_delete_empty_translation_files(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    tl = tmp_path / "tl" / "chinese"
+    (tl / "src").mkdir(parents=True)
+    empty = tl / "src" / "empty.rpy"
+    empty.write_text("", encoding="utf-8")
+    header_only = tl / "src" / "header_only.rpy"
+    header_only.write_text("translate chinese strings:\n", encoding="utf-8")
+    stale_rpyc = header_only.with_suffix(".rpyc")
+    stale_rpyc.write_text("stale", encoding="utf-8")
+    comment_only = tl / "src" / "comment.rpy"
+    comment_only.write_text("# TODO: Translation updated\n", encoding="utf-8")
+    normal = tl / "src" / "normal.rpy"
+    normal.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Hello"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+    python_file = tl / "src" / "python.rpy"
+    python_file.write_text(
+        "translate chinese python:\n    renpy.store.x = 1\n",
+        encoding="utf-8",
+    )
+
+    extractor = UnifiedExtractor()
+    removed = extractor._delete_empty_translation_files(tl, "chinese")
+
+    assert removed == 3
+    assert not empty.exists()
+    assert not header_only.exists()
+    assert not stale_rpyc.exists()
+    assert not comment_only.exists()
+    assert normal.exists()
+    assert python_file.exists()
+
+
+def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    tl_file = (
+        game
+        / "tl"
+        / "chinese"
+        / "renpybox_bytecode_strings.rpy"
+    )
+    tl_file.parent.mkdir(parents=True)
+    tl_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual (first-time)."\n'
+        '    new "虚拟首次。"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: (set(), {"Virtual (first-time)."}, 0),
+    )
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+    )
+
+    assert entries == []
+    assert stats["missing_count"] == 0
+
+
+def test_runtime_write_incremental_only_appends_missing(tmp_path):
+    from module.Extract.RenpyExtractor import RenpyExtractor
+
+    extractor = RenpyExtractor.__new__(RenpyExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+    )
+    project = tmp_path / "project"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    (tl_dir / "existing.rpy").write_text(
+        "translate chinese strings:\n\n"
+        '    old "Already covered string."\n'
+        '    new "已覆盖字符串。"\n',
+        encoding="utf-8",
+    )
+    runtime_data = {
+        "dialogues": {
+            "game/script.rpy": [
+                ["virtual_start", "", "Virtual dialogue line.", 1],
+            ]
+        },
+        "strings": {
+            "game/script.rpy": [
+                ["Already covered string.", "已覆盖字符串。"],
+                ["Virtual runtime string.", "虚拟运行时字符串。"],
+            ]
+        },
+    }
+
+    extractor._write_runtime_tl(
+        project, "chinese", runtime_data, generate_empty=False, incremental=True
+    )
+
+    script = (tl_dir / "script.rpy").read_text(encoding="utf-8")
+    assert 'translate chinese virtual_start:' in script
+    assert 'old "Virtual runtime string."' in script
+    assert 'old "Already covered string."' not in script
+    assert (
+        (tl_dir / "existing.rpy").read_text(encoding="utf-8").count(
+            'old "Already covered string."'
+        )
+        == 1
+    )
+
+
+def test_substring_constants_are_kept_not_dropped():
+    """独立常量即使恰是更长常量的子串，也必须保留（不得当作片段丢弃）。"""
+    from module.Extract.ReplaceGenerator import _filter_valid_strings
+
+    candidates = {
+        "Fool around with a fictional character in the garden.",
+        "Let's fool around together later.",
+        "fool around",
+        "do it",
+        "Please do it again tomorrow.",
+        "Noon (first-time).",
+        "First time with [saga.cast.tony]'s blessing.",
+    }
+
+    kept = _filter_valid_strings(candidates)
+
+    assert "fool around" in kept
+    assert "do it" in kept
+    assert "Fool around with a fictional character in the garden." in kept
+    assert "Noon (first-time)." in kept
+    assert "First time with [saga.cast.tony]'s blessing." in kept
+
+
+def test_acronym_separation_keeps_ui_words():
+    from module.Extract import ReplaceGenerator as generator
+
+    acronyms = generator._separate_acronym_candidates(
+        {
+            "USB", "DLC", "TBD",
+            "START", "GO", "DAD", "ART", "SENT", "SPAM", "OK", "IT", "PIN",
+            "Noon (first-time).",
+        }
+    )
+    # 只有明确的中英文通用缩写保持不译；TBD 以及普通英文词
+    # （GO/DAD/ART/SENT/SPAM/OK/IT/PIN）必须照常翻译。
+    assert acronyms == {"USB", "DLC"}
+
+
+def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: ({"START"}, {"USB"}, 0),
+    )
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+    monkeypatch.setattr(generator, "record_declined_candidates", lambda *a, **k: len(a[2]))
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=True,
+    )
+
+    assert {entry["src"] for entry in entries} == {"START"}
+    assert stats["preserved_acronym_count"] == 1
+
+
+def test_compiled_supplement_excludes_acronyms_and_records_declined(
+    tmp_path, monkeypatch
+):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    game = tmp_path / "game"
+    game.mkdir()
+    tl_dir = tmp_path / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    registered = []
+    monkeypatch.setattr(
+        "module.Extract.ReplaceGenerator.record_declined_candidates",
+        lambda *args: registered.append(set(args[2])) or len(args[2]),
+    )
+
+    added = extractor._append_compiled_supplement_entries(
+        game,
+        tl_dir,
+        "chinese",
+        candidates={"USB", "Noon (first-time)."},
+    )
+
+    assert added == 1
+    assert registered == [{"USB"}]
+    content = (tl_dir / "renpybox_bytecode_strings.rpy").read_text(encoding="utf-8")
+    assert 'old "Noon (first-time)."' in content
+    assert 'old "USB"' not in content
+
+
+def test_string_originals_cache_invalidates_on_file_change(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    tl_dir = tmp_path / "tl" / "chinese"
+    rpy = tl_dir / "a.rpy"
+    rpy.parent.mkdir(parents=True)
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "First entry."\n'
+        '    new "First entry."\n',
+        encoding="utf-8",
+    )
+
+    first = extractor._get_string_originals(tl_dir)
+    assert first == {"First entry."}
+    # 同一内容重复读取命中缓存，结果一致。
+    assert extractor._get_string_originals(tl_dir) == first
+
+    # 文件变化后必须重新计算，不能返回旧缓存。
+    rpy.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Second entry."\n'
+        '    new "Second entry."\n',
+        encoding="utf-8",
+    )
+    assert extractor._get_string_originals(tl_dir) == {"Second entry."}
+
+
+def test_extract_new_entries_legacy_fallback_skips_blank_between_old_and_new(
+    tmp_path, monkeypatch
+):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    source_dir = tmp_path / "source"
+    target_dir = tmp_path / "target"
+    source_file = source_dir / "script.rpy"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Virtual legacy entry."\n'
+        "\n"
+        '    new "虚拟旧回退条目。"\n',
+        encoding="utf-8",
+    )
+
+    # 强制走旧正则回退路径（AST 抛错）。
+    def boom(*args, **kwargs):
+        raise RuntimeError("forced AST failure")
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.parse_tl_document", boom
+    )
+
+    extractor._extract_new_entries_to_folder(
+        source_dir, target_dir, {"Virtual legacy entry."}, "chinese"
+    )
+
+    output = target_dir / "script.rpy"
+    content = output.read_text(encoding="utf-8")
+    assert 'old "Virtual legacy entry."' in content
+    assert 'new "虚拟旧回退条目。"' in content

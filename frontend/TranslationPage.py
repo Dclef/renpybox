@@ -44,10 +44,38 @@ from module.Engine.Translator.TranslationPreflightService import TranslationPref
 from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
-from module.Renpy.ProjectPaths import resolve_translation_output
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    read_run_manifest,
+    resolve_translation_output,
+)
 from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
+
+
+def restore_resumable_translation_paths(config: Config) -> Config:
+    """Bind a resume request to the cache selected by the last-run manifest."""
+    output_path = resolve_translation_output(config)
+    if output_path is None:
+        return config
+
+    config.output_folder = str(output_path)
+    paths = RenpyProjectPaths.from_config(config)
+    manifest = read_run_manifest(paths) if paths is not None else None
+    if manifest is None:
+        return config
+
+    manifest_output = os.path.normcase(os.path.abspath(manifest["output_folder"]))
+    selected_output = os.path.normcase(os.path.abspath(str(output_path)))
+    if manifest_output != selected_output:
+        return config
+
+    input_folder = str(manifest.get("input_folder", "") or "").strip()
+    if input_folder:
+        config.input_folder = input_folder
+    return config
+
 
 class DashboardCard(CardWidget):
 
@@ -300,11 +328,11 @@ class TranslationPage(QWidget, Base):
 
         if engine_status == Engine.Status.IDLE:
             # 任务结束后使用缓存中的耗时快照，不能继续用 start_time 累加。
-            total_time = int(self.data.get("time", 0) or 0)
+            total_time = max(0, int(self.data.get("time", 0) or 0))
         elif self.data.get("start_time", 0) == 0:
             total_time = 0
         else:
-            total_time = int(time.time() - self.data.get("start_time", 0))
+            total_time = max(0, int(time.time() - self.data.get("start_time", 0)))
 
         if total_time < 60:
             self.time.set_unit("S")
@@ -316,7 +344,10 @@ class TranslationPage(QWidget, Base):
             self.time.set_unit("H")
             self.time.set_value(f"{(total_time / 60 / 60):.2f}")
 
-        remaining_time = int(total_time / max(1, self.data.get("line", 0)) * (self.data.get("total_line", 0) - self.data.get("line", 0)))
+        line = max(0, int(self.data.get("line", 0) or 0))
+        total_line = max(0, int(self.data.get("total_line", 0) or 0))
+        remaining = max(0, total_line - line)
+        remaining_time = max(0, int(total_time / max(1, line) * remaining))
         if remaining_time < 60:
             self.remaining_time.set_unit("S")
             self.remaining_time.set_value(f"{remaining_time}")
@@ -336,7 +367,7 @@ class TranslationPage(QWidget, Base):
         ):
             return None
 
-        line = self.data.get("line", 0)
+        line = max(0, int(self.data.get("line", 0) or 0))
         if line < 1000:
             self.line_card.set_unit("Line")
             self.line_card.set_value(f"{line}")
@@ -347,7 +378,8 @@ class TranslationPage(QWidget, Base):
             self.line_card.set_unit("MLine")
             self.line_card.set_value(f"{(line / 1000 / 1000):.2f}")
 
-        remaining_line = self.data.get("total_line", 0) - self.data.get("line", 0)
+        total_line = max(0, int(self.data.get("total_line", 0) or 0))
+        remaining_line = max(0, total_line - line)
         if remaining_line < 1000:
             self.remaining_line.set_unit("Line")
             self.remaining_line.set_value(f"{remaining_line}")
@@ -406,11 +438,11 @@ class TranslationPage(QWidget, Base):
     # 更新进度环
     def update_status(self, data: dict) -> None:
         if Engine.get().get_status() == Engine.Status.STOPPING:
-            percent = self.data.get("line", 0) / max(1, self.data.get("total_line", 0))
+            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
             self.ring.setValue(int(percent * 10000))
             self.ring.setFormat(f"{Localizer.get().translation_page_status_stopping}\n{percent * 100:.2f}%")
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
-            percent = self.data.get("line", 0) / max(1, self.data.get("total_line", 0))
+            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
             self.ring.setValue(int(percent * 10000))
             self.ring.setFormat(f"{Localizer.get().translation_page_status_translating}\n{percent * 100:.2f}%")
         elif Engine.get().get_status() == Engine.Status.QUALITY:
@@ -426,7 +458,7 @@ class TranslationPage(QWidget, Base):
             line = self.data.get("line", 0)
             total_line = self.data.get("total_line", 0)
             if line > 0 and total_line > 0:
-                percent = line / total_line
+                percent = min(1.0, max(0.0, line / total_line))
                 self.ring.setValue(int(percent * 10000))
                 self.ring.setFormat(f"{Localizer.get().translation_page_status_idle}\n{line}/{total_line}")
             else:
@@ -716,6 +748,8 @@ class TranslationPage(QWidget, Base):
         # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
         # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
         config = Config().load()
+        if status in Base.PROJECT_RESUMABLE_STATUSES:
+            config = restore_resumable_translation_paths(config)
         payload = {"status": status}
         # 旧的轻量事件调用方可能提供 SimpleNamespace 配置；真实页面
         # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。

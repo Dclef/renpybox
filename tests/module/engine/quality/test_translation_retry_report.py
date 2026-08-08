@@ -181,6 +181,21 @@ def test_completed_item_retry_threshold_remains_visible_until_confirmed() -> Non
     assert warnings == [WarningType.RETRY_THRESHOLD]
 
 
+def test_response_checker_accepts_unchanged_technical_acronym_but_not_ui_command() -> None:
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    checker = ResponseChecker(config, [CacheItem(src="USB")])
+
+    assert checker.check(["USB"], ["USB"], CacheItem.TextType.NONE) == [
+        ResponseChecker.Error.NONE
+    ]
+    assert checker.check(["START"], ["START"], CacheItem.TextType.NONE) == [
+        ResponseChecker.Error.LINE_ERROR_SIMILARITY
+    ]
+
+
 def test_quality_report_combines_item_reasons_with_progress_counts() -> None:
     first = CacheItem(
         src = "source one",
