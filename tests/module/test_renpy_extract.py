@@ -684,6 +684,8 @@ def test_incremental_merge_cleans_staging_folder_and_base_box_placeholders(tmp_p
         'translate chinese strings:\n\n    old "Back"\n    new "回来"\n',
         encoding="utf-8",
     )
+    notes = tl_dir / "src" / "notes.rpy"
+    notes.write_text("# 用户手写说明\n# 暂时保留此文件\n", encoding="utf-8")
     staging = staging_dir / "src" / "plot" / "new_text.rpy"
     staging.parent.mkdir(parents=True)
     staging.write_text(
@@ -704,6 +706,7 @@ def test_incremental_merge_cleans_staging_folder_and_base_box_placeholders(tmp_p
     # hud.rpy 的 "Back" 与 base_box 重复被移除后只剩 translate 头，
     # 按规则整个文件删除，避免 Ren'Py 空块报错。
     assert not hud.exists()
+    assert notes.exists()
     assert 'new "回来"' in (base_box / "screens_box.rpy").read_text(encoding="utf-8")
     assert 'old "New menu text"' in (tl_dir / "src" / "plot" / "new_text.rpy").read_text(encoding="utf-8")
 
@@ -2136,7 +2139,14 @@ def test_delete_empty_translation_files(tmp_path):
     stale_rpyc = header_only.with_suffix(".rpyc")
     stale_rpyc.write_text("stale", encoding="utf-8")
     comment_only = tl / "src" / "comment.rpy"
-    comment_only.write_text("# TODO: Translation updated\n", encoding="utf-8")
+    comment_only.write_text(
+        "# translate chinese strings:\n"
+        '#     old "Temporarily disabled"\n'
+        '#     new "暂时禁用"\n',
+        encoding="utf-8",
+    )
+    comment_rpyc = comment_only.with_suffix(".rpyc")
+    comment_rpyc.write_text("user cache", encoding="utf-8")
     normal = tl / "src" / "normal.rpy"
     normal.write_text(
         "translate chinese strings:\n\n"
@@ -2153,11 +2163,12 @@ def test_delete_empty_translation_files(tmp_path):
     extractor = UnifiedExtractor()
     removed = extractor._delete_empty_translation_files(tl, "chinese")
 
-    assert removed == 3
+    assert removed == 2
     assert not empty.exists()
     assert not header_only.exists()
     assert not stale_rpyc.exists()
-    assert not comment_only.exists()
+    assert comment_only.exists()
+    assert comment_rpyc.exists()
     assert normal.exists()
     assert python_file.exists()
 
