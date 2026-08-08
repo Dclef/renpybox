@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from base.LogManager import LogManager
-from module.Renpy.renpy_tl_core import TlStmtKind
+from module.Renpy.renpy_tl_core import TlStmtKind, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Text.SkipRules import should_skip_text
@@ -62,6 +62,8 @@ class SimpleRpyExtractor:
 
     def __init__(self) -> None:
         self.logger = LogManager.get()
+        # 内置 UI 文件跳过日志每个文件仅记录一次，避免全目录扫描时刷屏
+        self._logged_ui_skips: set = set()
 
     def extract_from_directory(
         self,
@@ -69,6 +71,7 @@ class SimpleRpyExtractor:
         tl_name: str,
         *,
         skip_system_files: bool = True,
+        include_builtin_ui: bool = False,
         filter_garbage: bool = True,
     ) -> List[Dict]:
         """
@@ -78,6 +81,7 @@ class SimpleRpyExtractor:
             tl_dir: tl 语言目录路径 (如 game/tl/chinese)
             tl_name: 语言名称 (如 chinese)
             skip_system_files: 是否跳过系统文件 (common.rpy等)
+            include_builtin_ui: 是否读取内置 UI 模板目录 (base_box)，用于统计已覆盖原文
             filter_garbage: 是否过滤垃圾数据
 
         Returns:
@@ -109,8 +113,13 @@ class SimpleRpyExtractor:
                 continue
 
             # 跳过内置 UI / 字体模板文件
-            if self._is_builtin_ui_file(rpy_file):
-                self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
+            if not include_builtin_ui and self._is_builtin_ui_file(rpy_file):
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(rpy_file) not in logged_ui_skips:
+                    logged_ui_skips.add(str(rpy_file))
+                    self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
                 continue
 
             try:
@@ -158,7 +167,12 @@ class SimpleRpyExtractor:
                 continue
 
             if self._is_builtin_ui_file(file_path):
-                self.logger.debug(f"跳过内置 UI 文件: {file_path}")
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(file_path) not in logged_ui_skips:
+                    logged_ui_skips.add(str(file_path))
+                    self.logger.debug(f"跳过内置 UI 文件: {file_path}")
                 continue
 
             file_entries = self._parse_rpy_file(file_path, tl_name, str(file_path))
@@ -222,7 +236,7 @@ class SimpleRpyExtractor:
                 lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
                 if tl_name and lang and lang != tl_name:
                     continue
-                kind = str(block.get("kind") or "")
+                kind = tl_block_kind_name(block.get("kind"))
                 entry_type = "strings" if kind == "STRINGS" else "dialogue"
 
                 template_line = item.get_row()

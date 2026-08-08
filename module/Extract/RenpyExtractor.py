@@ -9,11 +9,11 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Set, Tuple
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
-from module.Renpy.renpy_tl_core import TlStmtKind, escape_tl_string
+from module.Renpy.renpy_tl_core import TlStmtKind, escape_tl_string, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.json_handler import JsonExporter
@@ -38,6 +38,8 @@ class RenpyExtractor:
 
     def __init__(self) -> None:
         self.logger = LogManager.get()
+        # 内置 UI 文件跳过日志每个文件仅记录一次，避免全目录扫描时刷屏
+        self._logged_ui_skips: set = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,6 +183,7 @@ class RenpyExtractor:
         tl_name: str,
         *,
         generate_empty: bool = False,
+        incremental: bool = True,
         timeout: int = 300,
         progress_callback: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
@@ -244,7 +247,13 @@ class RenpyExtractor:
 
             runtime_data = self._load_runtime_mapping(result_path, project)
             self._report_progress(progress_callback, "运行时抽取完成，正在写入 tl 目录")
-            tl_dir = self._write_runtime_tl(project, normalized_tl_name, runtime_data, generate_empty)
+            tl_dir = self._write_runtime_tl(
+                project,
+                normalized_tl_name,
+                runtime_data,
+                generate_empty,
+                incremental,
+            )
             self._report_progress(progress_callback, f"已写入 tl 目录：{tl_dir}")
             return tl_dir
         finally:
@@ -671,7 +680,12 @@ class RenpyExtractor:
             except Exception:
                 pass
             if self._is_builtin_ui_file(tl_file):
-                self.logger.debug(f"跳过内置 UI 文件: {tl_file}")
+                logged_ui_skips = getattr(self, "_logged_ui_skips", None)
+                if logged_ui_skips is None:
+                    logged_ui_skips = self._logged_ui_skips = set()
+                if str(tl_file) not in logged_ui_skips:
+                    logged_ui_skips.add(str(tl_file))
+                    self.logger.debug(f"跳过内置 UI 文件: {tl_file}")
                 continue
             # 跳过工具生成的钩子文件
             if tl_file.name in self.HOOK_FILES:
@@ -718,7 +732,7 @@ class RenpyExtractor:
                 lang = block.get("lang") if isinstance(block.get("lang"), str) else ""
                 if tl_name and lang and lang != tl_name:
                     continue
-                kind = str(block.get("kind") or "")
+                kind = tl_block_kind_name(block.get("kind"))
                 entry_type = "strings" if kind == "STRINGS" else "dialogue"
 
                 template_line = item.get_row()
@@ -881,6 +895,7 @@ class RenpyExtractor:
         tl_name: str,
         runtime_data: Dict[str, Dict[str, List[List[Any]]]],
         generate_empty: bool,
+        incremental: bool = True,
     ) -> Path:
         tl_dir = project / "game" / "tl" / tl_name
         tl_dir.mkdir(parents=True, exist_ok=True)
@@ -888,10 +903,41 @@ class RenpyExtractor:
         dialogues_by_file = runtime_data.get("dialogues", {}) or {}
         strings_by_file = runtime_data.get("strings", {}) or {}
 
+        # 全局已有身份：增量模式只提交缺失的对话/字符串，避免把已翻译的
+        # 条目再次列入本次运行清单（写侧仍只追加缺失，绝不覆盖已有译文）。
+        all_existing_ids: Set[str] = set()
+        all_existing_strings: Set[str] = set()
+        if incremental and tl_dir.exists():
+            for existing_file in tl_dir.rglob("*.rpy"):
+                try:
+                    existing_lines = existing_file.read_text(
+                        encoding="utf-8", errors="ignore"
+                    ).splitlines()
+                except Exception:
+                    continue
+                all_existing_ids.update(
+                    self._collect_existing_dialogue_ids(existing_lines, tl_name)
+                )
+                all_existing_strings.update(
+                    self._collect_existing_string_originals(existing_lines)
+                )
+
         for filename in sorted(set(dialogues_by_file) | set(strings_by_file)):
             dialogue_entries = list(dialogues_by_file.get(filename, []) or [])
             string_entries = list(strings_by_file.get(filename, []) or [])
             dialogue_entries.sort(key=lambda item: item[3] if len(item) > 3 else 0)
+
+            if incremental:
+                dialogue_entries = [
+                    entry
+                    for entry in dialogue_entries
+                    if entry[0] not in all_existing_ids
+                ]
+                string_entries = [
+                    entry
+                    for entry in string_entries
+                    if entry[0] not in all_existing_strings
+                ]
 
             if filename.startswith("game/"):
                 rel = Path(filename[5:])
@@ -925,7 +971,11 @@ class RenpyExtractor:
 
                 who_prefix = f"{who} " if who else ""
                 encoded = encode_say_string(str(what)) if what is not None else ""
-                append_lines.append(f"# game/{filename}:{linenumber}")
+                # filename 来自运行时 payload，已带 ``game/`` 前缀；注释统一
+                # 使用相对 game 目录的 ``# game/<path>:<line>`` 形式，避免
+                # 生成 ``# game/game/...`` 双前缀。
+                comment_rel = rel.as_posix()
+                append_lines.append(f"# game/{comment_rel}:{linenumber}")
                 append_lines.append(f"translate {tl_name} {identifier}:")
                 append_lines.append("")
                 append_lines.append(f"    # {who_prefix}\"{encoded}\"")
@@ -962,6 +1012,29 @@ class RenpyExtractor:
                     if existing_lines[-1].strip():
                         writer.write("\n")
                 writer.write("\n".join(append_lines).rstrip() + "\n")
+
+        # 写侧只追加缺失，但跨文件可能残留重复 old（例如旧版本遗留），
+        # 运行后统一做唯一性校验，保证 Ren'Py 启动不会报重复翻译错误。
+        try:
+            from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+            removed = dedupe_string_translations(tl_dir, tl_name)
+            if removed:
+                self.logger.info(f"运行时抽取后清理 {removed} 条重复 old")
+        except Exception as exc:
+            self.logger.warning(f"运行时抽取后唯一性校验失败: {exc}")
+
+        # 追加写回可能打乱编号块顺序，统一按源行号整理，strings 块保持最后。
+        try:
+            from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+            organized = UnifiedExtractor()._sort_numbered_blocks_by_source_line(
+                project / "game", tl_dir
+            )
+            if organized:
+                self.logger.info(f"已按源行号整理 {organized} 个文件的编号块顺序")
+        except Exception as exc:
+            self.logger.warning(f"运行时抽取后整理编号块顺序失败: {exc}")
 
         return tl_dir
 

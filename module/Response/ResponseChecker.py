@@ -5,6 +5,10 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Text.TextHelper import TextHelper
 from module.Text.TextBase import TextBase
+from module.Text.SkipRules import (
+    KEEP_AS_IS_UPPERCASE,
+    RE_UPPERCASE_ACRONYM_CANDIDATE,
+)
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Filter.RuleFilter import RuleFilter
@@ -42,14 +46,17 @@ class ResponseChecker(Base):
 
     # 退化检测规则
     RE_DEGRADATION = re.compile(r"(.{1,3})\1{16,}", flags = re.IGNORECASE)
-    # 代码/条件表达式（不应要求“必须翻译”）
+    # 代码/条件表达式（不应要求“必须翻译”）。只认真正的比较/逻辑运算符：
+    # 自然语言里的 and/or/not 是常见单词（如 “not ugly”、“and then”），
+    # 不能据此把整句判成结构文本而跳过翻译。
     RE_LOGIC_EXPRESSION = re.compile(
-        r"(==|!=|<=|>=|&&|\|\||\b(and|or|not|True|False|None)\b)",
+        r"(==|!=|<=|>=|&&|\|\|)",
         flags = re.IGNORECASE,
     )
-    # 标识符/版本号/资源键（含数字或连接符）
+    # 标识符/版本号/资源键：必须含数字或下划线，避免把 “Dance.”、
+    # “Annoyed.” 这类“单词+句号”的自然语言误判成标识符而跳过翻译。
     RE_IDENTIFIER_WITH_SYMBOL = re.compile(
-        r"^[A-Za-z_][A-Za-z0-9_.:-]*[0-9_.:-][A-Za-z0-9_.:-]*$",
+        r"^[A-Za-z_][A-Za-z0-9_.:-]*[0-9_][A-Za-z0-9_.:-]*$",
         flags = re.IGNORECASE,
     )
     # 常见按键名
@@ -458,6 +465,12 @@ class ResponseChecker(Base):
 
         # 常见按键名
         if cls.RE_KEY_NAME.fullmatch(s) is not None:
+            return True
+
+        if (
+            RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(s) is not None
+            and s in KEEP_AS_IS_UPPERCASE
+        ):
             return True
 
         # 邮箱/句柄类文本（如 Karl Casey @ White Bat Audio）
