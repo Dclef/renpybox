@@ -12,6 +12,7 @@ def atomic_write_text(
     text: str,
     *,
     encoding: str = "utf-8",
+    newline: str | None = None,
     validator: Callable[[str], object] | None = None,
     allowed_roots: Iterable[Path] | None = None,
 ) -> None:
@@ -67,7 +68,12 @@ def atomic_write_text(
         if descriptor is None or temp_path is None:
             raise FileExistsError(f"Unable to create temporary file for {target}")
 
-        with os.fdopen(descriptor, mode="w", encoding=encoding, newline="") as writer:
+        with os.fdopen(
+            descriptor,
+            mode="w",
+            encoding=encoding,
+            newline=newline,
+        ) as writer:
             writer.write(text)
             writer.flush()
             os.fsync(writer.fileno())

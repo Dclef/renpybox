@@ -1225,7 +1225,7 @@ class UnifiedExtractor:
 
         空文件对 Ren'Py 无意义；若删除条目后文件只剩 ``translate <lang>
         strings:`` 头而没有条目，Ren'Py 启动会报错，因此整个文件删除。
-        纯注释文件可能是用户手写说明，不得按空文件删除。
+        纯用户注释可能是手写说明，不得删除；仅含工具位置注释仍视为空文件。
         同名 .rpyc 一并删除，避免 Ren'Py 读到过期的编译缓存。
         """
         header_re = re.compile(
@@ -1246,6 +1246,9 @@ class UnifiedExtractor:
                 if not stripped:
                     continue
                 if stripped.startswith("#"):
+                    # 工具生成的位置注释不算内容；其它注释可能是用户备注。
+                    if _BLOCK_LOCATION_RE.fullmatch(line):
+                        continue
                     has_content = True
                     break
                 if header_re.match(line):
