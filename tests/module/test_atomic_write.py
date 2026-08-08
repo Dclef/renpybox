@@ -42,6 +42,25 @@ def test_atomic_write_copies_existing_file_mode(tmp_path, monkeypatch):
     assert copied[0][0] == target
 
 
+def test_atomic_write_default_newline_matches_path_write_text(tmp_path):
+    expected = tmp_path / "expected.rpy"
+    target = tmp_path / "actual.rpy"
+    text = "first line\nsecond line\n"
+    expected.write_text(text, encoding="utf-8")
+
+    atomic_write_text(target, text)
+
+    assert target.read_bytes() == expected.read_bytes()
+
+
+def test_atomic_write_can_explicitly_preserve_lf(tmp_path):
+    target = tmp_path / "lf.rpy"
+
+    atomic_write_text(target, "first line\nsecond line\n", newline="")
+
+    assert target.read_bytes() == b"first line\nsecond line\n"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
 def test_atomic_write_preserves_posix_permissions(tmp_path):
     target = tmp_path / "fictional.rpy"

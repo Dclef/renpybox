@@ -202,6 +202,8 @@ class Config():
     renpy_hook_translate: bool = False  # replace_text 补全模式
     # 运行 EXE 的运行时 HOOK 提取：默认增量补全（仅追加缺失项，保留已有翻译）
     renpy_hook_incremental: bool = True
+    # 对首次未翻译的大写缩写再请求一次确认；关闭可避免额外消耗额度。
+    renpy_verify_uppercase_candidates: bool = True
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
     # 兼容旧配置；strings 与编号块作用域不同，不能按原文互相去重。
