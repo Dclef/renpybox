@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 
 from base.Base import Base
-from frontend.TranslationPage import TranslationPage
+from frontend.TranslationPage import TranslationPage, restore_resumable_translation_paths
+from module.Renpy.ProjectPaths import RenpyProjectPaths, write_run_manifest
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Quality.QualityTaskCoordinator import QualityTaskType
@@ -39,6 +40,36 @@ class _RuntimeSignalStub:
 
     def emit(self, event, data) -> None:
         self.events.append((event, data))
+
+
+class _MetricCardStub:
+    def __init__(self) -> None:
+        self.unit = None
+        self.value = None
+
+    def set_unit(self, unit) -> None:
+        self.unit = unit
+
+    def set_value(self, value) -> None:
+        self.value = value
+
+
+def test_dashboard_never_displays_negative_remaining_values(monkeypatch) -> None:
+    monkeypatch.setattr(Engine.get(), "get_status", lambda: Engine.Status.TRANSLATING)
+    page = SimpleNamespace(
+        data={"line": 14, "total_line": 9, "start_time": 100},
+        time=_MetricCardStub(),
+        remaining_time=_MetricCardStub(),
+        line_card=_MetricCardStub(),
+        remaining_line=_MetricCardStub(),
+    )
+    monkeypatch.setattr("frontend.TranslationPage.time.time", lambda: 160)
+
+    TranslationPage.update_time(page, page.data)
+    TranslationPage.update_line(page, page.data)
+
+    assert page.remaining_time.value == "0"
+    assert page.remaining_line.value == "0"
 
 
 def _install_assets(monkeypatch, assets: ProjectAssets) -> None:
@@ -332,3 +363,36 @@ def test_token_estimate_dialog_uses_page_as_parent(monkeypatch) -> None:
     assert captured["parent"] is page
     assert captured["executed"] is True
     assert captured["enabled"] is True
+def test_resume_restores_incremental_input_and_output_from_manifest(tmp_path) -> None:
+    project = tmp_path / "fictional-game"
+    main_input = project / "game" / "tl" / "chinese"
+    delta_input = project / "game" / "tl" / "chinese_new"
+    delta_output = project / "RenpyBox_Translation" / "chinese_new"
+    main_input.mkdir(parents=True)
+    delta_input.mkdir(parents=True)
+    cache = delta_output / "cache"
+    cache.mkdir(parents=True)
+    (cache / "items.json").write_text("[]", encoding="utf-8")
+    (cache / "project.json").write_text("{}", encoding="utf-8")
+
+    paths = RenpyProjectPaths.from_path(project, "chinese")
+    assert paths is not None
+    write_run_manifest(
+        paths,
+        delta_output,
+        input_folder=delta_input,
+        application_target_dir=main_input,
+        run_kind="incremental",
+    )
+    config = Config(
+        renpy_project_path=str(project),
+        renpy_game_folder=str(project),
+        renpy_tl_folder=str(main_input),
+        input_folder=str(main_input),
+        output_folder=str(paths.translation_output_dir),
+    )
+
+    restored = restore_resumable_translation_paths(config)
+
+    assert restored.input_folder == str(delta_input.resolve())
+    assert restored.output_folder == str(delta_output.resolve())

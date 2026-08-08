@@ -11,6 +11,7 @@ from module.Renpy.renpy_tl_core import (
     TlBlock,
     TlDocument,
     parse_tl_document,
+    tl_block_kind_name,
 )
 from module.Renpy.renpy_tl_io import (
     RenpyTlItemExtractor,
@@ -27,6 +28,7 @@ __all__ = [
     "TlBlock",
     "TlDocument",
     "parse_tl_document",
+    "tl_block_kind_name",
     "RenpyTlItemExtractor",
     "RenpyTlLineUpdater",
 ]

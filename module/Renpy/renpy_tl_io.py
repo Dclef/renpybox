@@ -21,7 +21,9 @@ from module.Renpy.renpy_tl_core import (
     pair_old_new_lines,
     scan_quoted_literals,
     sha1_hex,
+    tl_statement_ordinal,
     build_line_skeleton,
+    tl_block_kind_name,
     split_indent,
     strip_comment_prefix,
 )
@@ -138,12 +140,15 @@ class RenpyTlItemExtractor(Base):
                 "block": {
                     "lang": block.lang,
                     "label": block.label,
-                    "kind": block.kind,
+                    "kind": tl_block_kind_name(block.kind),
                     "header_line": block.header_line_no,
                 },
                 "pair": {
                     "template_line": template_stmt.line_no,
                     "target_line": target_stmt.line_no,
+                    "statement_ordinal": tl_statement_ordinal(
+                        block, template_stmt.line_no
+                    ),
                 },
                 "slots": [{"role": s.role, "lit_index": s.lit_index} for s in slots],
                 "digest": {

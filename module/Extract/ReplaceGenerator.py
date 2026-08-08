@@ -15,14 +15,23 @@ import json
 import os
 import re
 import shutil
+import ast
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.Renpy.renpy_tl_core import tl_dir_signature
 from module.Renpy import renpy_extract as rx
-from module.Text.SkipRules import should_skip_text
+from module.Text.SkipRules import (
+    KEEP_AS_IS_UPPERCASE,
+    RE_UPPERCASE_ACRONYM_CANDIDATE,
+    should_skip_text,
+)
 
 Pair = Tuple[str, str]
 
@@ -31,8 +40,196 @@ MISS_RPY = "miss_ready_replace.rpy"
 LEGACY_MISS_TXT = "miss_ready_replace.txt"
 MISS_DIR = "miss"
 REGEX_CACHE = "regex_extracted.json"  # 正则提取缓存
+COMPILED_CACHE = "compiled_extracted.json"
 HOOK_MANIFEST = "hook_translate_manifest.json"
-REGEX_CACHE_VERSION = 2  # 宽松引号扫描规则已修正，必须作废旧候选缓存。
+REGEX_CACHE_VERSION = 3  # 过滤规则新增存档页标记等，必须作废旧候选缓存。
+COMPILED_CACHE_VERSION = 3
+
+# tl 覆盖结果缓存：键为 (tl 目录解析路径, 文件签名)，文件变化即失效。
+_TL_COVERED_CACHE: dict = {}
+
+DECLINED_CANDIDATES_SCHEMA_VERSION = 1
+
+
+def declined_candidates_path(game_dir, tl_name) -> Path:
+    """返回项目级“判定不译候选”清单路径（位于 RenpyBox_Translation 下）。"""
+    return (
+        Path(game_dir)
+        / "RenpyBox_Translation"
+        / f".renpybox_declined_{tl_name}.json"
+    )
+
+
+def load_declined_candidates(game_dir, tl_name) -> Set[str]:
+    """读取历史上被判定不译的候选原文集合。"""
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    values = payload.get("declined")
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if isinstance(value, str) and value}
+
+
+def record_declined_candidates(game_dir, tl_name, originals, source_map=None) -> int:
+    """把判定不译的候选追加到项目清单，返回新增条数。
+
+    source_map: 可选的 {原文: 相对 tl 文件路径}，用于保留溯源，方便后续
+    定位/放回其原本所属的翻译文件。
+    """
+    originals = {
+        str(value) for value in originals if isinstance(value, str) and value
+    }
+    if not originals:
+        return 0
+    existing = load_declined_candidates(game_dir, tl_name)
+    merged = existing | originals
+    if merged == existing:
+        return 0
+    path = declined_candidates_path(game_dir, tl_name)
+    try:
+        existing_payload: dict = {}
+        try:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    existing_payload = raw
+        except Exception:
+            existing_payload = {}
+        existing_sources = existing_payload.get("sources")
+        if not isinstance(existing_sources, dict):
+            existing_sources = {}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": DECLINED_CANDIDATES_SCHEMA_VERSION,
+            "language": tl_name,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "declined": sorted(merged),
+            "sources": {
+                str(src): str(src_path)
+                for src, src_path in {
+                    **existing_sources,
+                    **(source_map or {}),
+                }.items()
+                if str(src) in merged
+            },
+        }
+        temp_path = path.with_suffix(".json.tmp")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(str(temp_path), str(path))
+    except Exception as exc:
+        LogManager.get().warning(f"记录判定不译候选失败: {exc}")
+        return 0
+    return len(merged) - len(existing)
+
+# This helper is intentionally executed by the game's own Python runtime so its
+# marshal format always matches the game's .pyc files.  It only walks code
+# constants; code objects are never imported or executed.
+_COMPILED_STRING_HELPER = r'''
+import json
+import dis
+import marshal
+import os
+import sys
+import types
+
+try:
+    text_types = (basestring,)
+except NameError:
+    text_types = (str,)
+
+root = os.path.abspath(sys.argv[1])
+strings = set()
+failures = 0
+
+def add_constant(value):
+    if isinstance(value, text_types):
+        strings.add(value)
+    elif isinstance(value, (tuple, frozenset)):
+        for item in value:
+            add_constant(item)
+
+def walk_legacy(value):
+    if isinstance(value, types.CodeType):
+        for item in value.co_consts:
+            if isinstance(item, types.CodeType):
+                walk_legacy(item)
+            else:
+                add_constant(item)
+
+def walk_code(code):
+    get_instructions = getattr(dis, 'get_instructions', None)
+    if get_instructions is None:
+        walk_legacy(code)
+        return
+    instructions = list(get_instructions(code))
+    for index, instruction in enumerate(instructions):
+        if instruction.opname != 'LOAD_CONST':
+            continue
+        value = instruction.argval
+        if isinstance(value, types.CodeType):
+            walk_code(value)
+            continue
+        next_opname = instructions[index + 1].opname if index + 1 < len(instructions) else ''
+        next_argval = instructions[index + 1].argval if index + 1 < len(instructions) else None
+        previous_opname = instructions[index - 1].opname if index > 0 else ''
+        # ``from package import Name`` stores imported names in a tuple
+        # constant immediately before IMPORT_NAME.  They are identifiers, not
+        # player-visible text.  Other tuple constants can contain real menu/UI
+        # strings and must still be retained.
+        if isinstance(value, (tuple, frozenset)) and next_opname == 'IMPORT_NAME':
+            continue
+        # Function/class display names are compiler metadata placed directly
+        # before MAKE_FUNCTION, not player-visible constants.
+        if isinstance(value, text_types) and next_opname == 'MAKE_FUNCTION':
+            continue
+        if (
+            isinstance(value, text_types)
+            and previous_opname == 'MAKE_FUNCTION'
+            and next_opname in ('CALL', 'PRECALL', 'CALL_FUNCTION')
+        ):
+            continue
+        if (
+            isinstance(value, text_types)
+            and next_opname in ('STORE_NAME', 'STORE_FAST')
+            and next_argval in ('__qualname__', '__doc__')
+        ):
+            continue
+        add_constant(value)
+
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [name for name in dirnames if name.lower() not in ('tl', 'cache')]
+    for filename in filenames:
+        if not filename.lower().endswith('.pyc'):
+            continue
+        path = os.path.join(dirpath, filename)
+        try:
+            data = open(path, 'rb').read()
+            code = None
+            for offset in (16, 12, 8):
+                try:
+                    candidate = marshal.loads(data[offset:])
+                except Exception:
+                    continue
+                if isinstance(candidate, types.CodeType):
+                    code = candidate
+                    break
+            if code is None:
+                failures += 1
+                continue
+            walk_code(code)
+        except Exception:
+            failures += 1
+
+sys.stdout.write(json.dumps({'strings': sorted(strings), 'failures': failures}))
+'''
 RE_RELAXED_ENGLISH_SOURCE_LINE = re.compile(
     r'^(?!.*#)(?!\s*translate\s+\w+\b)(?=.*\b[A-Za-z]{3,}\b).*$',
     re.IGNORECASE,
@@ -41,6 +238,7 @@ RE_RELAXED_DOUBLE_QUOTED = re.compile(r'"((?:\\.|[^"\\])*)"')
 RE_RELAXED_SINGLE_QUOTED = re.compile(r"'((?:\\.|[^'\\])*)'")
 RE_RELAXED_ENGLISH_WORD = re.compile(r'\b[A-Za-z]{3,}\b')
 RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
+RE_RENPY_INTERPOLATION = re.compile(r'(?<!\[)\[([^\[\]]+)\]')
 COMMON_NON_NAME_WORDS = {
     "about",
     "access",
@@ -211,6 +409,142 @@ def _collect_source_rpy_files(game_dir: Path) -> Tuple[List[Path], int, int]:
                 pass
 
     return rpy_files, file_count, max_mtime_ns
+
+
+def _collect_source_pyc_signature(game_dir: Path) -> Tuple[int, int, bytes | None]:
+    """Return a cheap cache signature for game-owned Python bytecode."""
+    file_count = 0
+    max_mtime_ns = 0
+    magic: bytes | None = None
+    for dirpath, dirnames, filenames in os.walk(game_dir):
+        dirnames[:] = [
+            name for name in dirnames if name.casefold() not in {"tl", "cache"}
+        ]
+        for filename in filenames:
+            if not filename.casefold().endswith(".pyc"):
+                continue
+            path = Path(dirpath) / filename
+            file_count += 1
+            try:
+                stat = path.stat()
+                max_mtime_ns = max(max_mtime_ns, stat.st_mtime_ns)
+                if magic is None:
+                    with path.open("rb") as stream:
+                        magic = stream.read(4)
+            except Exception:
+                continue
+    return file_count, max_mtime_ns, magic
+
+
+def _find_compatible_game_python(game_dir: Path, pyc_magic: bytes | None) -> Path | None:
+    """Locate a Python executable compatible with the project's .pyc files."""
+    try:
+        from utils.call_game_python import get_python_path_from_game_dir
+
+        project_root = game_dir.parent
+        found = get_python_path_from_game_dir(str(project_root) + os.sep)
+        if found and Path(found).is_file():
+            return Path(found)
+    except Exception:
+        pass
+
+    # Source projects used during development may not ship an embedded runtime.
+    # The running interpreter is safe only when its bytecode magic matches.
+    try:
+        import importlib.util
+
+        if pyc_magic and pyc_magic == importlib.util.MAGIC_NUMBER:
+            current = Path(sys.executable)
+            if current.is_file():
+                return current
+    except Exception:
+        pass
+    return None
+
+
+def _extract_compiled_python_strings(
+    game_dir: Path,
+    *,
+    cache_path: Path | None = None,
+    python_executable: str | Path | None = None,
+) -> Set[str]:
+    """Read string constants from game-owned .pyc files without executing them."""
+    logger = LogManager.get()
+    file_count, max_mtime_ns, pyc_magic = _collect_source_pyc_signature(game_dir)
+    if file_count == 0:
+        return set()
+
+    if cache_path is not None:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(cached, dict)
+                and cached.get("version") == COMPILED_CACHE_VERSION
+                and cached.get("file_count") == file_count
+                and cached.get("max_mtime_ns") == max_mtime_ns
+                and isinstance(cached.get("strings"), list)
+            ):
+                return {str(value) for value in cached["strings"] if value}
+        except Exception:
+            pass
+
+    executable = (
+        Path(python_executable)
+        if python_executable is not None
+        else _find_compatible_game_python(game_dir, pyc_magic)
+    )
+    if executable is None or not executable.is_file():
+        logger.warning(
+            f"检测到 {file_count} 个游戏 .pyc，但未找到兼容的 Python，已跳过编译文本扫描"
+        )
+        return set()
+
+    try:
+        result = subprocess.run(
+            [str(executable), "-c", _COMPILED_STRING_HELPER, str(game_dir)],
+            cwd=str(game_dir.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            logger.warning(f"编译文本扫描失败（退出码 {result.returncode}）{suffix}")
+            return set()
+        payload = json.loads(result.stdout)
+        raw_strings = payload.get("strings", []) if isinstance(payload, dict) else []
+        strings = {str(value) for value in raw_strings if isinstance(value, str) and value}
+        failures = int(payload.get("failures", 0) or 0) if isinstance(payload, dict) else 0
+        if failures:
+            logger.warning(f"编译文本扫描有 {failures} 个 .pyc 无法读取")
+        logger.info(f"编译文本扫描：{file_count} 个 .pyc，提取 {len(strings)} 条常量")
+    except Exception as exc:
+        logger.warning(f"编译文本扫描失败: {exc}")
+        return set()
+
+    if cache_path is not None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "version": COMPILED_CACHE_VERSION,
+                        "file_count": file_count,
+                        "max_mtime_ns": max_mtime_ns,
+                        "strings": sorted(strings),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return strings
 
 
 def _try_load_regex_cache(cache_path: Path, *, file_count: int, max_mtime_ns: int) -> Optional[Set[str]]:
@@ -447,7 +781,7 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
         # 2. 文本控件
         for pattern in [
             r'\btext\s+(["\'])((?:\\\1|.)*?)\1\s*:',
-            r'\b(?:text|textbutton|show\s+text)\s+(["\'])((?:\\\1|.)*?)\1',
+            r'\b(?:text|textbutton|label|show\s+text)\s+(["\'])((?:\\\1|.)*?)\1',
             r'renpy\.input\s*\(\s*(["\'])((?:\\\1|.)*?)\1',
             r'renpy\.notify\s*\(\s*(["\'])((?:\\\1|.)*?)\1',
             r'_\(\s*(["\'])((?:\\\1|.)*?)\1\s*\)',  # gettext 风格 _(...)
@@ -511,10 +845,25 @@ def _get_tl_covered_strings(target_path: str | Path, tl_name: str) -> Set[str]:
         return set()
 
     try:
+        cache_key = (str(tl_dir.resolve()), tl_dir_signature(tl_dir))
+        cached = _TL_COVERED_CACHE.get(cache_key)
+        if cached is not None:
+            return set(cached)
+    except Exception:
+        cache_key = None
+
+    try:
         extractor = SimpleRpyExtractor()
-        entries = extractor.extract_from_directory(tl_dir, tl_name, filter_garbage=False)
+        entries = extractor.extract_from_directory(
+            tl_dir,
+            tl_name,
+            filter_garbage=False,
+            include_builtin_ui=True,
+        )
         originals = {e.get("original", "") for e in entries if e.get("original")}
         logger.debug(f"tl 覆盖：已读取 {len(originals)} 条原文")
+        if cache_key is not None:
+            _TL_COVERED_CACHE[cache_key] = frozenset(originals)
         return originals
     except Exception as e:
         logger.warning(f"读取 tl 覆盖失败: {e}")
@@ -551,7 +900,7 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         r'^(scene|event|label|screen|init|python|define|default)_\w+$',  # 内部标识符
         r'^[a-z][a-z0-9]*_[a-z0-9_]+$',  # snake_case 变量名（如 bath_room）
         r'^\w+\s*\([^)]*\)\s*$',  # 函数调用
-        r'SetVariable|SetField|Function|Return|Jump|Show|Hide|Play|Stop',  # Ren'Py 函数
+        r'^(?:SetVariable|SetField|Function|Return|Jump|Show|Hide|Play|Stop)\s*\(',  # Ren'Py 函数调用
         r'^\.mp4$|^\.txt$|^\.rpy$|^\.png$|^\.jpg$',  # 文件扩展名
         r'\.txt$|\.rpy$',  # 以扩展名结尾
         r'^movies?/',  # 路径
@@ -562,6 +911,7 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         r'^text_size|^text_outlines|^text_text_align|^text_line_spacing',  # 样式代码
         r'^absolute\(|^Transform\(|^Dissolve\(',  # 函数
         r'^\(\s*\d',  # 以 ( 数字开头的元组
+        r'^[A-Za-z]\{#\w+\}$',  # Ren'Py 存档页标记（A{#auto_page} 等）
     ]
     
     compiled_patterns = [re.compile(p, re.IGNORECASE) for p in code_patterns]
@@ -616,16 +966,15 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
         if re.match(r'^\[[a-z_][a-z0-9_\.]*\]$', s, re.IGNORECASE):
             continue
 
-        # 跳过包含变量占位或 URL 的
-        if re.search(r'\[[^\]]+\]', s):
-            continue
+        # 纯变量占位已在上方过滤；带有可读正文的动态文本必须保留，
+        # 例如 "Age: [profile.age]" 或 "[person]'s chapter continues soon."。
         if "http://" in s.lower() or "https://" in s.lower():
             continue
 
         # 跳过明显的代码片段/占位符
         if '+' in s and '_' in s:
             continue
-        if re.search(r'\w+\s*\([^)]*\)', s):  # 函数调用样式
+        if re.fullmatch(r'[A-Za-z_]\w*\([^)]*\)', s):  # 紧凑函数调用样式
             continue
         if s.strip().startswith('(') and s.strip().endswith(')') and len(s.strip()) <= 20:
             continue
@@ -675,17 +1024,346 @@ def _get_regex_cache_path(game_dir: Path, tl_name: str = "chinese") -> Path:
     return game_dir / "tl" / normalized_tl_name / MISS_DIR / REGEX_CACHE
 
 
+RE_COMPILED_SHADER = re.compile(
+    r"(?:\b(?:uniform|attribute|varying|precision)\s+"
+    r"(?:lowp\s+|mediump\s+|highp\s+)?"
+    r"(?:float|int|bool|[bi]?vec[234]|mat[234]|sampler\w*)\b|"
+    r"\b(?:gl_FragColor|gl_Position|texture2D|textureCube|smoothstep)\b)",
+    re.IGNORECASE,
+)
+RE_COMPILED_MARKUP = re.compile(
+    r"(?:</?svg\b|</?(?:polygon|polyline|path)\b|\b(?:fill|stroke|viewBox)\s*=)",
+    re.IGNORECASE,
+)
+RE_COMPILED_SHADER_STATEMENT = re.compile(
+    r"\b(?:v_tex_coord|a_tex_coord|gl_FragColor|gl_Position)\s*=",
+    re.IGNORECASE,
+)
+RE_COMPILED_CONST_DECLARATION = re.compile(
+    r"(?m)^\s*const\s+(?:float|int|bool|vec[234]|mat[234]|sampler\w*)\s+\w+\s*=",
+    re.IGNORECASE,
+)
+RE_COMPILED_NUMERIC_RANGE = re.compile(r"^\d+(?:\.\d+)?\s+to\s+\d+(?:\.\d+)?$")
+RE_COMPILED_GRADE = re.compile(r"^[A-Za-z][+-]$")
+RE_COMPILED_REGEX_LIKE = re.compile(r"\\(?:d|w|s|n|t|b|\.|\\)|\(\?P<")
+RE_COMPILED_CODE_ARGUMENT = re.compile(r"^\s*[,\(]\s*\w+\s*=")
+RE_COMPILED_EMAIL_SENDER = re.compile(r"<\S+@\S+>")
+RE_COMPILED_ERROR_FRAGMENT = re.compile(
+    r"^(?:"
+    r"Attribute conflict for|Invalid listener|Invalid signature redefiniton|"
+    r"Partial listener conflict:|Signature mismatch|Migrated persistent from|"
+    r"Unable to find active signal for|Unknown attributes for|"
+    r"Unrecognised phase of the moon|Quest step cannot have both a fence and rails\.|"
+    r"Message DarkCookie if you have received this error\.|already exists|"
+    r"conflicts with plan for|is not a container|is not usable|"
+    r"zip\(\) argument \d is shorter than argument \d|<PPV:|"
+    r"xoffset yoffset rotate xzoom zoom)"
+)
+RE_SINGLE_TOKEN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _separate_acronym_candidates(candidates: Set[str]) -> Set[str]:
+    """返回应保持不译的通用缩写候选（默认翻译，仅冻结明确清单）。"""
+    return {
+        text
+        for text in candidates
+        if RE_UPPERCASE_ACRONYM_CANDIDATE.fullmatch(text.strip())
+        and text.strip() in KEEP_AS_IS_UPPERCASE
+    }
+
+
+def _is_compiled_technical_text(text: str) -> bool:
+    """Return whether a bytecode constant is clearly code/markup, not UI text."""
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if RE_COMPILED_SHADER.search(value) or RE_COMPILED_MARKUP.search(value):
+        return True
+    if (
+        RE_COMPILED_SHADER_STATEMENT.search(value)
+        or RE_COMPILED_CONST_DECLARATION.search(value)
+        or RE_COMPILED_NUMERIC_RANGE.fullmatch(value)
+        or RE_COMPILED_GRADE.fullmatch(value)
+        or RE_COMPILED_REGEX_LIKE.search(value)
+        or RE_COMPILED_CODE_ARGUMENT.match(value)
+        or RE_COMPILED_EMAIL_SENDER.search(value)
+        or RE_COMPILED_ERROR_FRAGMENT.match(value)
+    ):
+        return True
+    if re.search(
+        r"(?m)^\s*(?:const\s+)?(?:void|float|int|bool|vec[234]|mat[234])\s+"
+        r"[A-Za-z_]\w*\s*\([^)]*\)\s*\{",
+        value,
+    ):
+        return True
+    return False
+
+
+def _collect_glossary_candidate_sets(
+    target_path: str | Path,
+    *,
+    tl_name: str = "chinese",
+) -> tuple[Set[str], Set[str], int]:
+    """Collect source and bytecode candidates while retaining provenance."""
+    game_dir = _get_game_dir(target_path)
+    cache_path = _get_regex_cache_path(game_dir, tl_name)
+    regex_all = _extract_all_strings_regex(game_dir, cache_path=cache_path)
+    compiled_all = _extract_compiled_python_strings(
+        game_dir,
+        cache_path=cache_path.with_name(COMPILED_CACHE),
+    )
+    regex_filtered = _filter_valid_strings(regex_all)
+    compiled_prefiltered = _filter_valid_strings(compiled_all)
+    compiled_filtered = {
+        text
+        for text in compiled_prefiltered
+        if not _is_compiled_technical_text(text)
+        and not (
+            RE_SINGLE_TOKEN_IDENTIFIER.fullmatch(text.strip())
+            and text not in regex_filtered
+        )
+    }
+    return regex_filtered, compiled_filtered, len(compiled_prefiltered - compiled_filtered)
+
+
 def collect_glossary_candidate_texts(
     target_path: str | Path,
     *,
     tl_name: str = "chinese",
 ) -> tuple[str, ...]:
     """收集术语候选扫描使用的源码文本。"""
-    game_dir = _get_game_dir(target_path)
-    cache_path = _get_regex_cache_path(game_dir, tl_name)
-    regex_all = _extract_all_strings_regex(game_dir, cache_path = cache_path)
-    regex_filtered = _filter_valid_strings(regex_all)
-    return tuple(sorted(regex_filtered))
+    regex_filtered, compiled_filtered, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
+    )
+    return tuple(sorted(regex_filtered | compiled_filtered))
+
+
+def collect_compiled_candidate_texts(
+    target_path: str | Path,
+    *,
+    tl_name: str = "chinese",
+) -> tuple[str, ...]:
+    """Collect player-visible strings found in game-owned .pyc bytecode.
+
+    These constants are usable with Ren'Py's native ``translate <lang>
+    strings:`` old/new format, so the one-key flow writes them into the
+    standard TL instead of leaving them to the replace_text hook.
+    """
+    _, compiled_filtered, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
+    )
+    return tuple(sorted(compiled_filtered))
+
+
+_DUPLICATE_OLD_RE = re.compile(
+    r'^\s*old\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$'
+)
+_DUPLICATE_NEW_RE = re.compile(
+    r'^\s*new\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$'
+)
+_DUPLICATE_SKIP_NAMES = {
+    "replace_text_auto.rpy",
+    "set_default_language_at_startup.rpy",
+}
+
+
+def _decode_duplicate_literal(quote: str, value: str) -> str:
+    """Decode an rpy quoted literal using Python escape rules."""
+    literal = f"{quote}{value}{quote}"
+    try:
+        decoded = ast.literal_eval(literal)
+        return decoded if isinstance(decoded, str) else str(decoded)
+    except Exception:
+        return value.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
+
+
+def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
+    """Ensure ``old`` is unique across every ``translate <lang> strings:`` block.
+
+    Ren'Py registers string translations into one per-language dictionary, so a
+    duplicate ``old`` anywhere under ``tl/<lang>/`` (including miss/ work files)
+    makes the game fail at startup with a duplicate translation error. This
+    helper keeps the best entry per ``old`` (real TL files before miss/ work
+    files, translated before placeholder) and removes the rest.
+
+    Position comments are kept consistent with the entries:
+
+    - Comments attached to a removed duplicate entry (directly above its
+      ``old``, or between ``old`` and ``new``) are removed together with it.
+    - ``# game/<path>:<line>`` comments that no longer precede any ``old``
+      (their entries were already removed by an earlier run) are orphaned;
+      only the first orphaned comment in a file is kept as the position
+      marker, the rest are removed.
+
+    Returns the number of duplicate entries removed.
+    """
+    if not tl_dir.is_dir():
+        return 0
+
+    records: dict[str, list[tuple[Path, int, int, bool]]] = {}
+    ordered: list[tuple[Path, int, int, str]] = []
+    scanned_files: list[Path] = []
+    for rpy_file in sorted(tl_dir.rglob("*.rpy")):
+        if rpy_file.name in _DUPLICATE_SKIP_NAMES:
+            continue
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        scanned_files.append(rpy_file)
+
+        rel_posix = rpy_file.relative_to(tl_dir).as_posix()
+        under_miss = "/miss/" in f"/{rel_posix}"
+
+        i = 0
+        while i < len(lines):
+            old_match = _DUPLICATE_OLD_RE.match(lines[i])
+            if not old_match:
+                i += 1
+                continue
+            j = i + 1
+            while j < len(lines) and (
+                not lines[j].strip() or lines[j].lstrip().startswith("#")
+            ):
+                j += 1
+            if j >= len(lines):
+                i += 1
+                continue
+            new_match = _DUPLICATE_NEW_RE.match(lines[j])
+            if not new_match:
+                i += 1
+                continue
+
+            old_value = _decode_duplicate_literal(
+                old_match.group(1), old_match.group("text")
+            )
+            new_value = _decode_duplicate_literal(
+                new_match.group(1), new_match.group("text")
+            )
+            translated = bool(new_value and new_value != old_value)
+            records.setdefault(old_value, []).append(
+                (rpy_file, i, j, translated)
+            )
+            ordered.append((rpy_file, i, j, old_value))
+            i = j + 1
+
+    keep_lines: set[tuple[Path, int]] = set()
+    duplicated_olds: set[str] = set()
+    removed = 0
+    for old_value, candidates in records.items():
+        if len(candidates) < 2:
+            continue
+        duplicated_olds.add(old_value)
+        # Prefer real TL files over miss/ work files, translated over
+        # placeholders, then the first occurrence in file order.
+        keeper = min(
+            candidates,
+            key=lambda entry: (
+                not entry[3],
+                "/miss/" in f"/{entry[0].relative_to(tl_dir).as_posix()}",
+                entry[0],
+                entry[1],
+            ),
+        )
+        keep_lines.add((keeper[0], keeper[1]))
+        removed += len(candidates) - 1
+
+    if not removed:
+        changed = False
+    else:
+        changed = True
+
+    remove_pairs: dict[Path, list[tuple[int, int]]] = {}
+    for rpy_file, old_index, new_index, old_value in ordered:
+        if old_value not in duplicated_olds:
+            continue
+        if (rpy_file, old_index) in keep_lines:
+            continue
+        remove_pairs.setdefault(rpy_file, []).append((old_index, new_index))
+
+    for rpy_file, pairs in remove_pairs.items():
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        remove_indexes: set[int] = set()
+        for old_index, new_index in pairs:
+            remove_indexes.update((old_index, new_index))
+            # 紧贴在 old 上方的连续注释行是这条目的位置注释
+            # （# game/<path>:<line>），必须随条目一起删除。
+            cursor = old_index - 1
+            while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+                remove_indexes.add(cursor)
+                cursor -= 1
+            # old 与 new 之间夹着的注释行同样属于该条目。
+            for cursor in range(old_index + 1, new_index):
+                if lines[cursor].lstrip().startswith("#"):
+                    remove_indexes.add(cursor)
+        kept = [
+            line
+            for index, line in enumerate(lines)
+            if index not in remove_indexes
+        ]
+        if len(kept) == len(lines):
+            continue
+        rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        changed = True
+
+    # 清理孤儿位置注释：条目已被删除后残留的 ``# game/<path>:<line>``。
+    # 判定：注释之后（跳过空行和其它注释）既不是 old/new 行、也不是
+    # translate 编号对话块头，说明它不再属于任何条目；同一文件里只保留
+    # 第一行作为位置标记，其余删除。直接顶在 translate ... strings: 头
+    # 之上的位置注释不属于任何条目（位置注释只应位于 old/new 之前），
+    # 无条件删除。
+    strings_header_re = re.compile(r"^\s*translate\s+\S+\s+strings\s*:\s*$")
+    for rpy_file in scanned_files:
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
+        remove_indexes: set[int] = set()
+        orphan_indexes: list[int] = []
+        for index, line in enumerate(lines):
+            if not line.lstrip().startswith("# game/"):
+                continue
+            nxt = index + 1
+            while nxt < len(lines) and (
+                not lines[nxt].strip() or lines[nxt].lstrip().startswith("#")
+            ):
+                nxt += 1
+            if nxt < len(lines) and strings_header_re.match(lines[nxt]):
+                remove_indexes.add(index)
+                continue
+            if nxt >= len(lines):
+                orphan_indexes.append(index)
+                continue
+            if (
+                _DUPLICATE_OLD_RE.match(lines[nxt])
+                or _DUPLICATE_NEW_RE.match(lines[nxt])
+                or re.match(r"^\s*translate\s+", lines[nxt])
+            ):
+                continue
+            orphan_indexes.append(index)
+        if len(orphan_indexes) > 1:
+            remove_indexes.update(orphan_indexes[1:])
+        if not remove_indexes:
+            continue
+        kept = [
+            line
+            for index, line in enumerate(lines)
+            if index not in remove_indexes
+        ]
+        if len(kept) == len(lines):
+            continue
+        rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        changed = True
+
+    if not changed:
+        return 0
+
+    return removed
 
 
 def _detect_missing_character_names(strings: Set[str]) -> Set[str]:
@@ -715,6 +1393,11 @@ def _write_hook_manifest(
         "target_path": str(target_path),
         "tl_name": tl_name,
         "regex_count": int(stats.get("regex_count", 0) or 0),
+        "rpy_candidate_count": int(stats.get("rpy_candidate_count", 0) or 0),
+        "compiled_candidate_count": int(stats.get("compiled_candidate_count", 0) or 0),
+        "missing_rpy_count": int(stats.get("missing_rpy_count", 0) or 0),
+        "missing_compiled_count": int(stats.get("missing_compiled_count", 0) or 0),
+        "filtered_technical_count": int(stats.get("filtered_technical_count", 0) or 0),
         "covered_count": int(stats.get("covered_count", 0) or 0),
         "missing_count": int(stats.get("missing_count", 0) or 0),
         "auto_filled_count": int(stats.get("auto_filled_count", 0) or 0),
@@ -739,6 +1422,43 @@ def _write_hook_manifest(
     return manifest_path
 
 
+def _build_coverage_index(covered: Set[str]) -> tuple[Set[str], str]:
+    """Normalize covered originals for whitespace-tolerant matching.
+
+    Ren'Py TL entries frequently retain a trailing space or ``\\n`` (for example
+    ``"Go away... "`` or ``"your bank!\\n\\n"``), while the relaxed source scan
+    produces the trimmed text.  Long multi-line strings are also scanned as
+    individual quoted chunks, so a chunk of an already-translated long string
+    must be treated as covered too.
+    """
+    stripped = {text.strip() for text in covered if text.strip()}
+    long_covered = {text for text in stripped if len(text) >= 40}
+    return stripped, "\u0000".join(sorted(long_covered))
+
+
+def _filter_uncovered_candidates(
+    candidates: Set[str],
+    covered: Set[str],
+) -> Set[str]:
+    """Return candidates that have no matching translation block in TL."""
+    stripped_covered, long_corpus = _build_coverage_index(covered)
+    uncovered: Set[str] = set()
+    for candidate in candidates:
+        text = candidate.strip()
+        if text in stripped_covered:
+            continue
+        # 长字符串按引号切块扫描时，整句块（通常较长）可以视为已覆盖；但
+        # 短标签（Save/Start/Next 等独立 UI 文本）绝不能因为“是某条长对话
+        # 的子串”就被判为已覆盖，否则会被静默漏掉。
+        if (
+            len(text) >= 15
+            and re.search(rf"(?<!\w){re.escape(text)}(?!\w)", long_corpus) is not None
+        ):
+            continue
+        uncovered.add(candidate)
+    return uncovered
+
+
 def collect_hook_translation_entries(
     target_path: str | Path,
     tl_name: str,
@@ -756,14 +1476,31 @@ def collect_hook_translation_entries(
     miss_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("正在扫描 HOOK 缺失文本...")
-    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
+    rpy_candidates, compiled_candidates, filtered_technical_count = (
+        _collect_glossary_candidate_sets(target_path, tl_name=tl_name)
+    )
+    regex_filtered = rpy_candidates | compiled_candidates
 
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
-    missing = regex_filtered - tl_covered
+    missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
     glossary_map = _load_glossary_map()
 
-    detected_names = _detect_missing_character_names(missing)
+    # 大写缩写（USB 等）在采集时分离：以 src==dst 写入术语库，既不进
+    # 补全列表也不会被误译；记入项目级“判定不译”清单，避免改用户全局术语库。
+    preserved_acronyms = _separate_acronym_candidates(missing)
+    if preserved_acronyms and auto_update_glossary:
+        try:
+            record_declined_candidates(target_path, tl_name, preserved_acronyms)
+        except Exception:
+            pass
+    missing -= preserved_acronyms
+
+    missing_rpy = missing & rpy_candidates
+    missing_compiled = missing & compiled_candidates
+    # Bytecode contains class/import/internal identifiers.  Restrict automatic
+    # glossary discovery to candidates that were also found in source files.
+    detected_names = _detect_missing_character_names(missing_rpy)
     added_names = 0
     if auto_update_glossary and detected_names:
         added_names = add_names_to_glossary(detected_names)
@@ -790,8 +1527,14 @@ def collect_hook_translation_entries(
 
     stats: dict[str, Any] = {
         "regex_count": len(regex_filtered),
+        "rpy_candidate_count": len(rpy_candidates),
+        "compiled_candidate_count": len(compiled_candidates),
+        "missing_rpy_count": len(missing_rpy),
+        "missing_compiled_count": len(missing_compiled),
+        "filtered_technical_count": filtered_technical_count,
         "covered_count": len(tl_covered),
         "missing_count": len(missing),
+        "preserved_acronym_count": len(preserved_acronyms),
         "auto_filled_count": auto_filled_count,
         "detected_names_count": len(detected_names),
         "added_names_count": added_names,
@@ -836,14 +1579,26 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     
     # 1. 正则全量扫描
     logger.info("正在使用正则扫描源码...")
-    regex_filtered = set(collect_glossary_candidate_texts(target_path, tl_name = tl_name))
+    rpy_candidates, compiled_candidates, _ = _collect_glossary_candidate_sets(
+        target_path,
+        tl_name=tl_name,
+    )
+    regex_filtered = rpy_candidates | compiled_candidates
     
     # 2. tl 覆盖（已抽取的文本）
     logger.info("正在读取 tl 已覆盖文本...")
     tl_covered = _get_tl_covered_strings(target_path, tl_name)
     
     # 3. 计算差集
-    missing = regex_filtered - tl_covered
+    missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
+    # 大写缩写（USB 等）在采集时分离：记入项目级“判定不译”清单。
+    preserved_acronyms = _separate_acronym_candidates(missing)
+    if preserved_acronyms:
+        try:
+            record_declined_candidates(target_path, tl_name, preserved_acronyms)
+        except Exception:
+            pass
+    missing -= preserved_acronyms
     
     logger.info(f"扫描统计: 正则={len(regex_filtered)}, tl覆盖={len(tl_covered)}, 缺失={len(missing)}")
     
@@ -893,15 +1648,9 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     else:
         logger.info(f"✓ 已生成缺失补丁: {miss_path} ({len(missing)} 条)")
     
-    # 识别缺失文本中的角色名，并清理格式标签
-    detected_names = set()
-    for text in missing:
-        if _is_character_name(text):
-            # 清理格式标签，得到纯文本名字
-            clean_name = _strip_format_tags(text)
-            if clean_name and not should_skip_text(clean_name):
-                detected_names.add(clean_name)
-    
+    # 只从源码候选识别角色名，避免把字节码元数据写入术语表。
+    detected_names = _detect_missing_character_names(missing & rpy_candidates)
+
     return miss_path, len(missing), len(regex_filtered), len(tl_covered), detected_names
 
 
@@ -1299,6 +2048,49 @@ def filter_replace_pairs_covered_by_tl(
     ]
 
 
+def _build_interpolated_replace_rule(original: str, translation: str) -> tuple[str, str] | None:
+    """Build a regex rule that preserves values substituted into Ren'Py ``[...]`` fields."""
+    matches = list(RE_RENPY_INTERPOLATION.finditer(original))
+    if not matches:
+        return None
+
+    expression_groups: dict[str, str] = {}
+    pattern_parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        pattern_parts.append(re.escape(original[cursor:match.start()]))
+        expression = match.group(1)
+        group_name = expression_groups.get(expression)
+        if group_name is None:
+            group_name = f"rbx_{index}"
+            expression_groups[expression] = group_name
+            pattern_parts.append(f"(?P<{group_name}>.*?)")
+        else:
+            pattern_parts.append(f"(?P={group_name})")
+        cursor = match.end()
+    pattern_parts.append(re.escape(original[cursor:]))
+    if matches[-1].end() == len(original):
+        # A lazy final capture otherwise succeeds with an empty value because
+        # there is no following literal to bound it.  Requiring the source
+        # pattern to reach the end makes that capture consume the rendered
+        # interpolation value.
+        pattern_parts.append(r"\Z")
+
+    replacement_parts: list[str] = []
+    cursor = 0
+    for match in RE_RENPY_INTERPOLATION.finditer(translation):
+        # Backslashes in literal replacement text must be escaped for re.sub.
+        replacement_parts.append(translation[cursor:match.start()].replace("\\", "\\\\"))
+        group_name = expression_groups.get(match.group(1))
+        if group_name is None:
+            replacement_parts.append(match.group(0).replace("\\", "\\\\"))
+        else:
+            replacement_parts.append(f"\\g<{group_name}>")
+        cursor = match.end()
+    replacement_parts.append(translation[cursor:].replace("\\", "\\\\"))
+    return "".join(pattern_parts), "".join(replacement_parts)
+
+
 def render_replace_script(
     pairs: Sequence[Pair],
     *,
@@ -1325,6 +2117,9 @@ def render_replace_script(
         block_header,
         "",
     ]
+
+    if any(RE_RENPY_INTERPOLATION.search(original) for original, _ in normalized_pairs):
+        lines.extend(["    import re", ""])
 
     if wrap_existing:
         lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
@@ -1367,9 +2162,17 @@ def render_replace_script(
 
     if normalized_pairs:
         for original, translation in normalized_pairs:
-            escaped_old = _escape_string(original)
-            escaped_new = _escape_string(translation)
-            lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
+            rule = _build_interpolated_replace_rule(original, translation)
+            if rule is None:
+                escaped_old = _escape_string(original)
+                escaped_new = _escape_string(translation)
+                lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
+            else:
+                pattern, replacement = rule
+                lines.append(
+                    f'        {target_name} = re.sub("{_escape_string(pattern)}", '
+                    f'"{_escape_string(replacement)}", {target_name})'
+                )
     else:
         lines.append("        pass")
     lines.append("")
