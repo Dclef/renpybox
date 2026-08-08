@@ -298,11 +298,11 @@ TOOL_SPECS = (
     ToolSpec(
         "game_mod",
         "游戏模组注入",
-        "注入修改器、自定义按钮栏等通用模组",
+        "注入画廊解锁、修改器等通用模组",
         ENGINEER,
         object_name="game-mod",
         icon=ToolIcon.MOD,
-        keywords=("模组", "mod", "修改器", "urm", "按钮栏", "注入"),
+        keywords=("模组", "mod", "修改器", "urm", "画廊", "注入"),
         lazy_import="frontend.RenpyToolbox.GameModPage:GameModPage",
     ),
 )
