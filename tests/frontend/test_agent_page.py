@@ -10,6 +10,7 @@ from frontend.Agent.AgentPage import (
     AgentMessageWidget,
     AgentPage,
     AgentRoundHeader,
+    AgentThinkingWidget,
     AgentToolWidget,
     format_elapsed,
     status_color,
@@ -228,6 +229,70 @@ def test_agent_page_respects_manual_scroll(monkeypatch) -> None:
     bar.setValue(1000)
     page._on_history_scrolled()
     assert page._auto_follow
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_folds_intermediate_text_under_one_assistant_turn(monkeypatch) -> None:
+    """工具前的普通说明只进折叠过程，不应和最终答案重复显示。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    page._on_worker_event("request", {"iteration": 1})
+    page._on_worker_event(
+        "reply_delta",
+        {"text": "The model is preparing a tool call.我来读取当前项目。"},
+    )
+    page._on_worker_event("tool_start", {"name": "get_project_info"})
+    page._on_worker_event(
+        "tool_done",
+        {"name": "get_project_info", "success": True, "message": "项目已读取"},
+    )
+    page._on_worker_event("request", {"iteration": 2})
+    page._on_worker_event("reply_delta", {"text": "正在整理结果。"})
+    page._on_worker_event("reply", {"message": "项目检查完成。"})
+
+    assert len(page.history_widgets) == 1
+    turn = page.history_widgets[0]
+    assert isinstance(turn, AgentMessageWidget)
+    assert turn.text_view.toPlainText() == "项目检查完成。"
+    thinking = turn.findChildren(AgentThinkingWidget)
+    assert len(thinking) == 1
+    assert all(not item.detail_label.isVisible() for item in thinking)
+    assert any("The model" in item.detail_label.text() for item in thinking)
+    assert any(
+        item.tool_name == "get_project_info"
+        for item in turn.findChildren(AgentToolWidget)
+    )
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_content_width_and_markdown_height_follow_layout(monkeypatch) -> None:
+    """宽屏正文使用主要列宽，长 Markdown 由外层滚动区承载。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    window.resize(1600, 900)
+    page = AgentPage("agent_page", window)
+    page.resize(1550, 820)
+    message = page._append("\n\n".join(f"第 {i} 行" for i in range(1, 61)), role="assistant")
+    window.show()
+    APP.processEvents()
+
+    assert page.history_content.width() >= 1000
+    assert message.text_view.maximumHeight() > 1000
+    assert message.text_view.height() >= 600
 
     page.deleteLater()
     window.deleteLater()
