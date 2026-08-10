@@ -92,6 +92,8 @@ class Config():
     activate_platform: int = 0
     # Agent 使用的独立 LLM 接口；0 表示尚未设置。
     agent_platform: int = 0
+    # Agent 专用思考等级；不改动平台页面保存的翻译思考设置。
+    agent_thinking_level: str = "OFF"
     platforms: list[dict[str, Any]] = None
 
     # AppSettingsPage
