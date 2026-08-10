@@ -92,7 +92,13 @@ class AgentService:
             ],
         }
 
-    def run(self, user_text: str, *, callback: EventCallback | None = None) -> AgentRunResult:
+    def run(
+        self,
+        user_text: str,
+        *,
+        callback: EventCallback | None = None,
+        thinking_level: str | None = None,
+    ) -> AgentRunResult:
         text = str(user_text or "").strip()
         if not text:
             return AgentRunResult(False, "请输入要执行的任务。", code="EMPTY_MESSAGE")
@@ -109,7 +115,12 @@ class AgentService:
                 "content": AgentPromptBuilder.build_system_prompt(config),
             })
         self.messages.append({"role": "user", "content": text})
-        self._requester = TaskRequester(config, platform, 0)
+        # Agent 的思考等级是本次 Agent 请求的覆盖项，不写回平台配置，
+        # 这样平台页面保持 OFF 时，助手也不会悄悄替用户打开思考模式。
+        request_platform = dict(platform)
+        if thinking_level is not None:
+            request_platform["thinking"] = {"level": str(thinking_level).upper().strip()}
+        self._requester = TaskRequester(config, request_platform, 0)
         self._project_changed_during_run = False
         details: list[dict[str, Any]] = []
 
@@ -122,6 +133,14 @@ class AgentService:
                 )
             else:
                 # 增量只用于界面显示；完整文本仍由 requester 返回并写入会话上下文。
+                reasoning_seen = False
+
+                def emit_reasoning(text: str) -> None:
+                    nonlocal reasoning_seen
+                    if text:
+                        reasoning_seen = True
+                        self._emit(callback, "reasoning_delta", {"text": str(text)})
+
                 result = self._requester.request_tools(
                     self.messages,
                     list(self.dispatcher.tools.values()),
@@ -130,7 +149,11 @@ class AgentService:
                         "reply_delta",
                         {"text": str(text or "")},
                     ),
+                    on_reasoning_delta=emit_reasoning,
                 )
+                # 某些兼容端点只在最终响应中提供 reasoning_content。
+                if result.success and result.reasoning and not reasoning_seen:
+                    emit_reasoning(result.reasoning)
             if not result.success:
                 self._emit(callback, "error", {
                     "code": result.error_code,
