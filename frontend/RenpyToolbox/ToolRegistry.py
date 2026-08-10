@@ -254,6 +254,17 @@ TOOL_SPECS = (
         lazy_import="frontend.RenpyToolbox.ErrorRepairPage:ErrorRepairPage",
     ),
     ToolSpec(
+        "translation_reuse",
+        "更新翻译复用",
+        "按原文将旧译文安全填入新版本的空条目",
+        ENGINEER,
+        object_name="translation-reuse",
+        icon=ToolIcon.REUSE,
+        requires_project=True,
+        keywords=("更新", "复用", "旧译文", "哈希", "reuse", "migrate"),
+        lazy_import="frontend.RenpyToolbox.TranslationReusePage:TranslationReusePage",
+    ),
+    ToolSpec(
         "formatter",
         "代码格式化",
         "格式化 .rpy 文件",
@@ -283,5 +294,15 @@ TOOL_SPECS = (
         icon=ToolIcon.HTML,
         keywords=("html", "txt", "excel", "导入", "导出", "convert"),
         lazy_import="frontend.RenpyToolbox.HtmlImportPage:HtmlImportPage",
+    ),
+    ToolSpec(
+        "game_mod",
+        "游戏模组注入",
+        "注入画廊解锁、修改器等通用模组",
+        ENGINEER,
+        object_name="game-mod",
+        icon=ToolIcon.MOD,
+        keywords=("模组", "mod", "修改器", "urm", "画廊", "注入"),
+        lazy_import="frontend.RenpyToolbox.GameModPage:GameModPage",
     ),
 )

@@ -71,6 +71,21 @@ class ExtractionResult:
 
 
 @dataclass
+class TranslationReuseResult:
+    """按原文复用旧译文的预览/执行结果。"""
+
+    source_translations: int = 0
+    target_entries: int = 0
+    matched_entries: int = 0
+    reusable_entries: int = 0
+    applied_entries: int = 0
+    already_reused: int = 0
+    conflicts: int = 0
+    unmatched_entries: int = 0
+    backup_path: Optional[Path] = None
+
+
+@dataclass
 class ExistingTranslations:
     """按 Ren'Py 作用域保存已有译文，避免编号块按原文串译。"""
 
@@ -180,7 +195,11 @@ class UnifiedExtractor:
 
     def _iter_rpy_files(self, tl_dir: Path):
         """遍历 tl 目录下的 rpy 文件，自动跳过内置 UI/模板文件"""
-        for rpy_file in tl_dir.rglob("*.rpy"):
+        files = sorted(
+            tl_dir.rglob("*.rpy"),
+            key=lambda path: path.relative_to(tl_dir).as_posix().casefold(),
+        )
+        for rpy_file in files:
             try:
                 rel_parts = [part.lower() for part in rpy_file.relative_to(tl_dir).parts[:-1]]
                 if any(part in self.INTERNAL_TL_DIRS for part in rel_parts):
@@ -1604,7 +1623,9 @@ class UnifiedExtractor:
                     static_candidates=static_candidates,
                     tl_dir=temp_tl_dir,
                     menu_candidates=menu_candidates,
-                    trusted_originals=official_string_originals,
+                    # 官方抽取未运行时无可信集合，传 None 走全量差集，
+                    # 否则空集交集会把补充抽取结果全部丢弃。
+                    trusted_originals=official_string_originals if allow_official else None,
                     compiled_candidates=compiled_candidates,
                 )
                 # 历史判定不译的候选不再重复提出。
@@ -2138,11 +2159,19 @@ class UnifiedExtractor:
 
         if clean_duplicates:
             self._emit_progress("正在清理重复与空文件...", 80)
+            config = Config().load()
             try:
-                rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
+                rx.remove_repeat_extracted_from_tl(
+                    str(tl_dir),
+                    is_py2=False,
+                    duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
+                )
             except Exception as exc:
                 self.logger.warning(f"清理重复失败 {tl_dir}: {exc}")
-            config = Config().load()
+            if getattr(config, "renpy_remove_string_duplicates", False):
+                removed = self._remove_string_duplicates_with_blocks(tl_dir)
+                if removed:
+                    self.logger.info(f"已移除 {removed} 条与翻译块重复的 strings 翻译")
             # base_box 一旦存在就会被 Ren'Py 加载；即使本次未启用注入，
             # 也要清理它与增量占位条目的重复。
             if (tl_dir / "base_box").exists():
@@ -2431,11 +2460,11 @@ class UnifiedExtractor:
         extractor = RenpyTlItemExtractor()
         for rpy_file in list(incremental_dir.rglob("*.rpy")):
             try:
-                doc = parse_tl_document(
-                    rpy_file.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).splitlines()
-                )
+                text = rpy_file.read_text(encoding="utf-8", errors="replace")
+                # ponytail: 被注释的重复条目是纯注释产物，但需保留作去重记录
+                if rx.DUPLICATE_MARKER in text:
+                    continue
+                doc = parse_tl_document(text.splitlines())
                 if extractor.extract(doc, str(rpy_file)):
                     continue
                 rpy_file.unlink()
@@ -3449,8 +3478,8 @@ class UnifiedExtractor:
                 ):
                     output_lines.extend(sel.get("location") or [])
                     output_lines.append(sel["header_line"])
-                    if output_lines and output_lines[-1].strip() != "":
-                        output_lines.append("")
+                    # header 与条目之间不留空行：duplicate marker 记录的行号
+                    # 依赖紧凑布局（issue22 测试断言 first at a_first.rpy:5）。
                     output_lines.extend(sel["lines"])
                     if output_lines and output_lines[-1].strip() != "":
                         output_lines.append("")
@@ -4077,7 +4106,11 @@ class UnifiedExtractor:
 
         # 抽取后统一做一次 old/new 去重，避免同一原文重复导致 Ren'Py 报错。
         try:
-            rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
+            rx.remove_repeat_extracted_from_tl(
+                str(tl_dir),
+                is_py2=False,
+                duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
+            )
         except Exception as exc:
             self.logger.warning(f"去重失败 {tl_dir}: {exc}")
 
@@ -4304,6 +4337,196 @@ class UnifiedExtractor:
             except Exception:
                 pass
         return translations
+
+    def preview_translation_reuse(
+        self,
+        source_tl_dir: str | Path,
+        target_tl_dir: str | Path,
+    ) -> TranslationReuseResult:
+        """只读统计旧译文可安全复用到目标目录的数量。"""
+        source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
+        translations = self._get_existing_translations(source)
+        return self._apply_translation_reuse(target, translations.strings, dry_run=True)
+
+    def reuse_translations(
+        self,
+        source_tl_dir: str | Path,
+        target_tl_dir: str | Path,
+    ) -> TranslationReuseResult:
+        """仅填充目标中的空白/原文占位译文，绝不覆盖已有译文。"""
+        source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
+        translations = self._get_existing_translations(source)
+        preview = self._apply_translation_reuse(target, translations.strings, dry_run=True)
+        if preview.reusable_entries == 0:
+            return preview
+
+        backup_path = self._copy_tl_backup(target)
+        result = self._apply_translation_reuse(target, translations.strings, dry_run=False)
+        result.backup_path = backup_path
+        return result
+
+    def _validate_translation_reuse_paths(
+        self,
+        source_tl_dir: str | Path,
+        target_tl_dir: str | Path,
+    ) -> tuple[Path, Path]:
+        source = Path(source_tl_dir).expanduser().resolve()
+        target = Path(target_tl_dir).expanduser().resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(f"旧译文目录不存在: {source}")
+        if not target.is_dir():
+            raise FileNotFoundError(f"目标译文目录不存在: {target}")
+        if source == target:
+            raise ValueError("旧译文目录和目标译文目录不能相同")
+        return source, target
+
+    def _copy_tl_backup(self, target_tl_dir: Path) -> Path:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        backup_parent = target_tl_dir.parent
+        for ancestor in target_tl_dir.parents:
+            if ancestor.name.lower() == "game":
+                backup_parent = ancestor.parent
+                break
+
+        base = backup_parent / f"tl_backup_{target_tl_dir.name}_reuse_{timestamp}"
+        backup = base
+        suffix = 1
+        while backup.exists():
+            backup = Path(f"{base}_{suffix}")
+            suffix += 1
+        shutil.copytree(target_tl_dir, backup)
+        return backup
+
+    def _apply_translation_reuse(
+        self,
+        tl_dir: Path,
+        translations: Dict[str, str],
+        *,
+        dry_run: bool = False,
+    ) -> TranslationReuseResult:
+        """按原文回填译文；已有非占位译文只计为冲突，不覆盖。"""
+        result = TranslationReuseResult(source_translations=len(translations))
+
+        extractor = RenpyTlItemExtractor()
+        writer = RenpyTlLineUpdater()
+
+        for rpy_file in self._iter_rpy_files(tl_dir):
+            # 优先使用 AST 回填，失败再走旧正则逻辑
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="replace")
+                lines = content.splitlines()
+                doc = parse_tl_document(lines)
+                items = extractor.extract(doc, str(rpy_file))
+                if items:
+                    items_to_apply = []
+                    for item in items:
+                        src = item.get_src()
+                        dst = item.get_dst()
+                        result.target_entries += 1
+                        if src not in translations:
+                            result.unmatched_entries += 1
+                            continue
+
+                        result.matched_entries += 1
+                        translated = translations[src]
+                        if not dst or dst == src:
+                            result.reusable_entries += 1
+                            if not dry_run:
+                                item.set_dst(translated)
+                                items_to_apply.append(item)
+                        elif dst == translated:
+                            result.already_reused += 1
+                        else:
+                            result.conflicts += 1
+
+                    if items_to_apply:
+                        def get_target_line(cache_item) -> int:
+                            extra_raw = cache_item.get_extra_field()
+                            extra = extra_raw if isinstance(extra_raw, dict) else {}
+                            renpy = extra.get("renpy", {}) if isinstance(extra.get("renpy"), dict) else {}
+                            pair = renpy.get("pair", {}) if isinstance(renpy.get("pair"), dict) else {}
+                            line = pair.get("target_line")
+                            return int(line) if isinstance(line, int) else 0
+
+                        items_to_apply.sort(key=get_target_line)
+                        applied, _ = writer.apply_items_to_lines(lines, items_to_apply)
+                        if applied > 0:
+                            atomic_write_text(
+                                rpy_file,
+                                "\n".join(lines),
+                                validator=lambda value: parse_tl_document(value.splitlines()),
+                                allowed_roots=[tl_dir],
+                            )
+                            result.applied_entries += applied
+                    continue
+            except Exception as e:
+                self.logger.warning(f"AST 回填翻译失败 {rpy_file}: {e}")
+
+            # 回退旧正则逻辑
+            try:
+                content = rpy_file.read_text(encoding="utf-8")
+                lines = content.split("\n")
+                file_modified = False
+
+                i = 0
+                while i < len(lines):
+                    line = lines[i]
+                    old_match = self.OLD_LINE_RE.match(line)
+                    if old_match is None:
+                        i += 1
+                        continue
+
+                    old_text = old_match.group("text")
+                    old_text_unescaped = old_text.replace('\\"', '"').replace("\\'", "'")
+                    j = i + 1
+                    while j < len(lines):
+                        probe = lines[j].strip()
+                        if not probe or probe.startswith("#"):
+                            j += 1
+                            continue
+                        break
+                    if j >= len(lines):
+                        i += 1
+                        continue
+
+                    new_match = self.NEW_LINE_RE.match(lines[j])
+                    if new_match is None:
+                        i += 1
+                        continue
+
+                    new_text = new_match.group("text")
+                    new_text_unescaped = new_text.replace('\\"', '"').replace("\\'", "'")
+                    result.target_entries += 1
+                    if old_text_unescaped not in translations:
+                        result.unmatched_entries += 1
+                    else:
+                        result.matched_entries += 1
+                        translated = translations[old_text_unescaped]
+                        if not new_text_unescaped or new_text_unescaped == old_text_unescaped:
+                            result.reusable_entries += 1
+                            if not dry_run:
+                                indent = lines[j][:len(lines[j]) - len(lines[j].lstrip())]
+                                lines[j] = f'{indent}new "{escape_tl_string(translated)}"'
+                                result.applied_entries += 1
+                                file_modified = True
+                        elif new_text_unescaped == translated:
+                            result.already_reused += 1
+                        else:
+                            result.conflicts += 1
+                    i = j
+                    i += 1
+
+                if file_modified:
+                    atomic_write_text(
+                        rpy_file,
+                        "\n".join(lines),
+                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        allowed_roots=[tl_dir],
+                    )
+            except Exception as e:
+                self.logger.warning(f"回填翻译失败 {rpy_file}: {e}")
+
+        return result
 
     def _merge_translations(
         self,
