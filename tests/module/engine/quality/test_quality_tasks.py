@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheItem import CacheItem
@@ -11,6 +13,7 @@ from module.Engine.Quality._common import (
     QualityPromptBuilder,
     collect_constraints,
 )
+from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TranslationTaskContext,
@@ -29,6 +32,47 @@ class QueueRequester:
         if isinstance(response, tuple):
             return response
         return False, "", response, 3, 5
+
+
+@pytest.mark.parametrize(
+    ("task_type", "protocol", "expected_shape"),
+    (
+        (PolisherTask, Config.OUTPUT_PROTOCOL_STRUCTURED, "json_object"),
+        (PolisherTask, Config.OUTPUT_PROTOCOL_JSONLINE, "none"),
+        (ProofreadTask, Config.OUTPUT_PROTOCOL_JSONLINE, "none"),
+    ),
+)
+def test_quality_task_declares_request_shape(
+    monkeypatch,
+    task_type,
+    protocol: str,
+    expected_shape: str,
+) -> None:
+    context = make_context(protocol = protocol)
+    requester = TaskRequester(
+        Config(),
+        {
+            "api_key": ["test-key"],
+            "api_url": "https://example.invalid",
+            "api_format": Base.APIFormat.OPENAI,
+            "model": "test-model",
+            "thinking": False,
+        },
+        0,
+    )
+    observed: list[str] = []
+
+    def request(messages, *, response_shape = "none"):
+        observed.append(response_shape)
+        return False, "", "ok", 1, 1
+
+    monkeypatch.setattr(requester, "request", request)
+    task = task_type(context, requester = requester)
+
+    outcome = task._request([{"role": "user", "content": "test"}])
+
+    assert outcome.ok is True
+    assert observed == [expected_shape]
 
 
 def make_context(

@@ -249,7 +249,7 @@ def test_cancelled_request_does_not_record_retry_metadata(monkeypatch) -> None:
         [],
     )
 
-    def cancelled_request(self, messages):
+    def cancelled_request(self, messages, *, response_shape = "none"):
         TaskRequester.CANCEL_EVENT.set()
         return True, None, None, None, None
 

@@ -10,6 +10,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
+from module.File.AtomicWrite import atomic_write_text
 
 
 class RENPYSOURCE(Base):
@@ -61,6 +62,67 @@ class RENPYSOURCE(Base):
             return self.input_path
         return self.input_path / rel_path
 
+    @staticmethod
+    def _literal_slot(line: str, text: str, occurrence: int = 0) -> int | None:
+        """Return the quoted-literal slot containing a parser entry."""
+        matches = list(RenpySourceTranslator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        matching_slots = [
+            index for index, match in enumerate(matches) if match.group("text") == text
+        ]
+        if 0 <= occurrence < len(matching_slots):
+            return matching_slots[occurrence]
+        return None
+
+    @staticmethod
+    def _literal_slot_has_destination(
+        translator: RenpySourceTranslator,
+        line: str,
+        slot: int,
+        destination: str,
+    ) -> bool:
+        matches = list(translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        if slot < 0 or slot >= len(matches):
+            return False
+        literal = matches[slot]
+        current = literal.group(0)
+        expected = translator._replace_text_in_line(
+            current, literal.group("text"), destination
+        )
+        return current == expected
+
+    @staticmethod
+    def _recorded_literal_slot(item: CacheItem) -> int | None:
+        extra = item.get_extra_field()
+        if not isinstance(extra, dict):
+            return None
+        source_meta = extra.get("renpy_source")
+        if not isinstance(source_meta, dict):
+            return None
+        candidate = source_meta.get("literal_slot")
+        return candidate if isinstance(candidate, int) else None
+
+    @staticmethod
+    def _replace_literal_at_slot(
+        translator: RenpySourceTranslator,
+        line: str,
+        slot: int,
+        source: str,
+        destination: str,
+    ) -> str:
+        matches = list(translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        if slot < 0 or slot >= len(matches):
+            return line
+        literal = matches[slot]
+        if literal.group("text") != source:
+            return line
+        current = literal.group(0)
+        replacement = translator._replace_text_in_line(
+            current, source, destination
+        )
+        if replacement == current:
+            return line
+        return line[:literal.start()] + replacement + line[literal.end():]
+
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """读取 .rpy 源码并生成 CacheItem"""
         items: List[CacheItem] = []
@@ -93,10 +155,17 @@ class RENPYSOURCE(Base):
             if not entries:
                 continue
 
+            entry_occurrences: dict[tuple[int, str], int] = {}
             for entry in entries:
                 text = (entry.text or "").strip()
                 if not entry.needs_translation or text == "":
                     continue
+                occurrence_key = (entry.line_number, entry.text)
+                occurrence = entry_occurrences.get(occurrence_key, 0)
+                literal_slot = self._literal_slot(
+                    entry.original_line, entry.text, occurrence
+                )
+                entry_occurrences[occurrence_key] = occurrence + 1
                 items.append(
                     CacheItem.from_dict(
                         {
@@ -111,6 +180,7 @@ class RENPYSOURCE(Base):
                                 "renpy_source": {
                                     "line": entry.line_number,
                                     "line_type": getattr(entry.line_type, "name", str(entry.line_type)),
+                                    "literal_slot": literal_slot,
                                 }
                             },
                         }
@@ -135,11 +205,13 @@ class RENPYSOURCE(Base):
 
         translator = RenpySourceTranslator()
         report: list[dict] = []
+        errors: list[str] = []
 
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 源码不存在: {source_path}")
+                errors.append(f"源文件不存在: {source_path}")
                 continue
 
             reference_path = self._resolve_reference_path(rel_path)
@@ -148,6 +220,7 @@ class RENPYSOURCE(Base):
                 text = source_path.read_text(encoding="utf-8", errors="replace")
             except Exception as exc:
                 self.error(f"读取 Ren'Py 源码失败: {source_path}", exc)
+                errors.append(f"读取失败 {source_path}: {exc}")
                 continue
 
             reference_lines: list[str] | None = None
@@ -160,6 +233,7 @@ class RENPYSOURCE(Base):
 
             lines = text.split("\n")
             applied = 0
+            already_applied = 0
             skipped = 0
             translated_items = 0
 
@@ -183,11 +257,50 @@ class RENPYSOURCE(Base):
                     continue
 
                 original_line = lines[row - 1]
-                new_line = translator._replace_text_in_line(original_line, src, dst)
+                literal_slot = self._recorded_literal_slot(item)
+                if (
+                    literal_slot is None
+                    and reference_lines is not None
+                    and row <= len(reference_lines)
+                ):
+                    reference_line = reference_lines[row - 1]
+                    matching_slots = [
+                        index
+                        for index, match in enumerate(
+                            translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(
+                                reference_line
+                            )
+                        )
+                        if match.group("text") == src
+                    ]
+                    if len(matching_slots) == 1:
+                        literal_slot = matching_slots[0]
+
+                if literal_slot is None:
+                    new_line = translator._replace_text_in_line(
+                        original_line, src, dst
+                    )
+                else:
+                    new_line = self._replace_literal_at_slot(
+                        translator,
+                        original_line,
+                        literal_slot,
+                        src,
+                        dst,
+                    )
                 if reference_lines is not None and row <= len(reference_lines):
                     # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
                     new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
                 if new_line == original_line:
+                    if (
+                        dst != src
+                        and literal_slot is not None
+                        and self._literal_slot_has_destination(
+                            translator, original_line, literal_slot, dst
+                        )
+                    ):
+                        already_applied += 1
+                        continue
                     skipped += 1
                     continue
 
@@ -206,7 +319,21 @@ class RENPYSOURCE(Base):
                     except Exception:
                         pass
 
-            target_path.write_text("\n".join(lines), encoding="utf-8")
+            if applied + already_applied < translated_items:
+                errors.append(
+                    f"译文未生效 {rel_path} (translated={translated_items}, "
+                    f"applied={applied}, already_applied={already_applied}, skipped={skipped})"
+                )
+            try:
+                atomic_write_text(
+                    target_path,
+                    "\n".join(lines),
+                    allowed_roots=[self.output_path],
+                )
+            except Exception as exc:
+                self.error(f"写入 Ren'Py 源码失败: {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
 
             report.append(
                 {
@@ -216,6 +343,7 @@ class RENPYSOURCE(Base):
                     "items": len(group_items),
                     "translated_items": translated_items,
                     "applied": applied,
+                    "already_applied": already_applied,
                     "skipped": skipped,
                 }
             )
@@ -229,3 +357,5 @@ class RENPYSOURCE(Base):
                 )
             except Exception:
                 pass
+        if errors:
+            raise RuntimeError("Ren'Py 源码写回未完整完成：" + "；".join(errors))
