@@ -1,9 +1,11 @@
 """
 错误修复页面 - 扫描并修复 Ren'Py 脚本错误
 """
+import threading
 from pathlib import Path
+from typing import Callable, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 from qfluentwidgets import (
     CardWidget,
@@ -28,6 +30,9 @@ from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 class ErrorRepairPage(Base, QWidget):
     """错误修复页面"""
 
+    operation_finished = pyqtSignal(str, object)
+    operation_failed = pyqtSignal(str, str)
+
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
         QWidget.__init__(self, parent)
@@ -35,7 +40,11 @@ class ErrorRepairPage(Base, QWidget):
         mark_toolbox_widget(self)
         
         self.window = parent
+        self._running_operation: Optional[str] = None
+        self._last_scan_report: Optional[dict] = None
         self._init_ui()
+        self.operation_finished.connect(self._on_operation_finished)
+        self.operation_failed.connect(self._on_operation_failed)
 
     def _init_ui(self):
         """初始化界面"""
@@ -110,17 +119,13 @@ class ErrorRepairPage(Base, QWidget):
         self.fix_indent_level_check.setChecked(False)
         layout.addWidget(self.fix_indent_level_check)
 
-        self.fix_quotes_check = CheckBox("修复引号问题")
-        self.fix_quotes_check.setChecked(True)
+        self.fix_quotes_check = CheckBox("规范化外层中文引号")
+        self.fix_quotes_check.setChecked(False)
         layout.addWidget(self.fix_quotes_check)
 
         self.fix_dialogue_quotes_check = CheckBox("修复未转义引号（源码翻译）")
-        self.fix_dialogue_quotes_check.setChecked(True)
+        self.fix_dialogue_quotes_check.setChecked(False)
         layout.addWidget(self.fix_dialogue_quotes_check)
-
-        self.fix_encoding_check = CheckBox("修复编码问题")
-        self.fix_encoding_check.setChecked(False)
-        layout.addWidget(self.fix_encoding_check)
 
         return card
 
@@ -170,8 +175,13 @@ class ErrorRepairPage(Base, QWidget):
         self.repair_button = PrimaryPushButton("自动修复", icon=FluentIcon.ACCEPT)
         self.repair_button.clicked.connect(self._repair_errors)
 
+        self.export_report_button = PushButton("导出报告", icon=FluentIcon.SAVE)
+        self.export_report_button.setEnabled(False)
+        self.export_report_button.clicked.connect(self._export_report)
+
         layout.addWidget(self.scan_button)
         layout.addWidget(self.repair_button)
+        layout.addWidget(self.export_report_button)
         layout.addStretch(1)
 
         return card
@@ -184,72 +194,73 @@ class ErrorRepairPage(Base, QWidget):
 
     def _scan_errors(self):
         """扫描错误"""
-        try:
-            game_dir = self.game_dir_edit.text().strip()
-            if not game_dir:
-                InfoBar.warning("提示", "请选择 game 目录", parent=self)
-                return
+        game_dir = self.game_dir_edit.text().strip()
+        if not game_dir:
+            InfoBar.warning("提示", "请选择 game 目录", parent=self)
+            return
+        if not Path(game_dir).is_dir():
+            InfoBar.error("错误", "目录不存在", parent=self)
+            return
 
-            if not Path(game_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
-                return
+        check_indent = self.fix_indent_check.isChecked()
+        check_indent_level = self.fix_indent_level_check.isChecked()
+        LogManager.get().info(f"开始扫描错误: {game_dir}")
 
-            LogManager.get().info(f"开始扫描错误: {game_dir}")
-             
+        def task():
             repairer = ErrorRepairer()
-            report = repairer.check_folder(
+            return repairer.check_folder(
                 game_dir,
-                check_indent=self.fix_indent_check.isChecked(),
-                check_indent_level=self.fix_indent_level_check.isChecked(),
-                check_quotes=self.fix_quotes_check.isChecked(),
-                check_dialogue_quotes=self.fix_dialogue_quotes_check.isChecked(),
+                check_indent=check_indent,
+                check_indent_level=check_indent_level,
+                check_quotes=True,
+                check_dialogue_quotes=True,
                 encoding="utf-8",
             )
-            
-            total_issues = sum(len(issues) for issues in report.values())
-            LogManager.get().info(f"扫描完成，发现 {total_issues} 个问题")
-            
-            InfoBar.info("扫描完成", f"发现 {total_issues} 个问题（详情见日志）", parent=self)
-            
-        except Exception as e:
-            LogManager.get().error(f"扫描失败: {e}")
-            InfoBar.error("错误", f"扫描失败: {e}", parent=self)
+
+        self._start_background_operation("scan", task)
 
     def _repair_errors(self):
         """修复错误"""
-        try:
-            game_dir = self.game_dir_edit.text().strip()
-            if not game_dir:
-                InfoBar.warning("提示", "请选择 game 目录", parent=self)
-                return
+        game_dir = self.game_dir_edit.text().strip()
+        if not game_dir:
+            InfoBar.warning("提示", "请选择 game 目录", parent=self)
+            return
+        if not Path(game_dir).is_dir():
+            InfoBar.error("错误", "目录不存在", parent=self)
+            return
 
-            if not Path(game_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
-                return
+        fix_indent = self.fix_indent_check.isChecked()
+        fix_indent_level = self.fix_indent_level_check.isChecked()
+        fix_quotes = self.fix_quotes_check.isChecked()
+        fix_dialogue_quotes = self.fix_dialogue_quotes_check.isChecked()
+        LogManager.get().info(f"开始修复错误: {game_dir}")
 
-            LogManager.get().info(f"开始修复错误: {game_dir}")
-            
+        def task():
             repairer = ErrorRepairer()
-            fixed_count = 0
-            
+            fixed_files = 0
+            fixed_items = 0
+            failed_files = 0
             for rpy_file in Path(game_dir).rglob("*.rpy"):
                 success, count = repairer.auto_fix_file(
                     str(rpy_file),
-                    fix_indent=self.fix_indent_check.isChecked(),
-                    fix_indent_level=self.fix_indent_level_check.isChecked(),
-                    fix_quotes=self.fix_quotes_check.isChecked(),
-                    fix_dialogue_quotes=self.fix_dialogue_quotes_check.isChecked(),
+                    fix_indent=fix_indent,
+                    fix_indent_level=fix_indent_level,
+                    fix_quotes=fix_quotes,
+                    fix_dialogue_quotes=fix_dialogue_quotes,
                     encoding="utf-8"
                 )
                 if success and count > 0:
-                    fixed_count += 1
-            
-            LogManager.get().info(f"修复完成，共修复 {fixed_count} 个文件")
-            InfoBar.success("完成", f"已修复 {fixed_count} 个文件", parent=self)
-            
-        except Exception as e:
-            LogManager.get().error(f"修复失败: {e}")
-            InfoBar.error("错误", f"修复失败: {e}", parent=self)
+                    fixed_files += 1
+                    fixed_items += count
+                elif not success:
+                    failed_files += 1
+            return {
+                "fixed_files": fixed_files,
+                "fixed_items": fixed_items,
+                "failed_files": failed_files,
+            }
+
+        self._start_background_operation("repair", task)
 
     def _browse_game_exe(self):
         """浏览游戏可执行文件"""
@@ -261,30 +272,132 @@ class ErrorRepairPage(Base, QWidget):
 
     def _run_lint_check(self):
         """执行深度 Lint 检查"""
-        try:
-            game_exe = self.game_exe_edit.text().strip()
-            if not game_exe:
-                InfoBar.warning("提示", "请选择游戏主程序", parent=self)
-                return
+        game_exe = self.game_exe_edit.text().strip()
+        if not game_exe:
+            InfoBar.warning("提示", "请选择游戏主程序", parent=self)
+            return
+        if not Path(game_exe).is_file():
+            InfoBar.error("错误", "游戏主程序不存在", parent=self)
+            return
 
-            if not Path(game_exe).exists():
-                InfoBar.error("错误", "游戏主程序不存在", parent=self)
-                return
+        LogManager.get().info(f"开始深度 Lint 检查: {game_exe}")
 
-            LogManager.get().info(f"开始深度 Lint 检查: {game_exe}")
-            
+        def task():
             repairer = ErrorRepairer()
             lint_output = repairer.exec_renpy_lint(game_exe)
-            
+            if lint_output is None:
+                raise RuntimeError("Ren'Py Lint 执行失败，请查看日志")
+            errors = repairer.parse_lint_errors(lint_output) if lint_output else []
+            return {"output": lint_output, "errors": errors}
+
+        self._start_background_operation("lint", task)
+
+    def _start_background_operation(self, operation: str, task: Callable[[], object]) -> None:
+        if self._running_operation is not None:
+            InfoBar.warning("提示", "已有任务正在进行中", parent=self)
+            return
+
+        self._set_running_operation(operation)
+
+        def run() -> None:
+            try:
+                self.operation_finished.emit(operation, task())
+            except Exception as exc:
+                LogManager.get().error(f"错误修复任务失败 ({operation}): {exc}")
+                self.operation_failed.emit(operation, str(exc))
+
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except Exception as exc:
+            self._on_operation_failed(operation, str(exc))
+
+    def _set_running_operation(self, operation: Optional[str]) -> None:
+        self._running_operation = operation
+        idle = operation is None
+        self.scan_button.setEnabled(idle)
+        self.repair_button.setEnabled(idle)
+        self.lint_check_button.setEnabled(idle)
+        self.export_report_button.setEnabled(
+            idle and self._last_scan_report is not None
+        )
+
+    def _on_operation_finished(self, operation: str, payload: object) -> None:
+        if operation == "scan":
+            report = payload if isinstance(payload, dict) else {}
+            self._last_scan_report = report
+            total_issues = sum(len(issues) for issues in report.values())
+            LogManager.get().info(f"扫描完成，发现 {total_issues} 个问题")
+            self._set_running_operation(None)
+            InfoBar.info(
+                "扫描完成",
+                f"发现 {total_issues} 个问题（可导出报告）",
+                parent=self,
+            )
+        elif operation == "repair":
+            result = payload if isinstance(payload, dict) else {}
+            fixed_files = int(result.get("fixed_files", 0))
+            fixed_items = int(result.get("fixed_items", 0))
+            failed_files = int(result.get("failed_files", 0))
+            LogManager.get().info(
+                f"修复完成，共修复 {fixed_files} 个文件、{fixed_items} 处"
+            )
+            self._set_running_operation(None)
+            if failed_files:
+                InfoBar.warning(
+                    "修复完成",
+                    f"已修复 {fixed_files} 个文件，{failed_files} 个文件失败",
+                    parent=self,
+                )
+            else:
+                InfoBar.success(
+                    "完成",
+                    f"已修复 {fixed_files} 个文件、{fixed_items} 处",
+                    parent=self,
+                )
+        elif operation == "lint":
+            result = payload if isinstance(payload, dict) else {}
+            lint_output = result.get("output")
+            errors = result.get("errors") or []
+            self._set_running_operation(None)
             if lint_output:
-                errors = repairer.parse_lint_errors(lint_output)
                 LogManager.get().info(f"Lint 检查发现 {len(errors)} 个问题")
-                InfoBar.warning("检查完成", f"发现 {len(errors)} 个问题（详情见日志和 lint_errors.txt）", parent=self)
+                InfoBar.warning(
+                    "检查完成",
+                    f"发现 {len(errors)} 个问题（详情见日志和 lint_errors.txt）",
+                    parent=self,
+                )
             else:
                 LogManager.get().info("Lint 检查完成，未发现错误")
                 InfoBar.success("检查完成", "未发现语法错误", parent=self)
-                
-        except Exception as e:
-            LogManager.get().error(f"Lint 检查失败: {e}")
-            InfoBar.error("错误", f"Lint 检查失败: {e}", parent=self)
+        else:
+            self._set_running_operation(None)
+
+    def _on_operation_failed(self, operation: str, message: str) -> None:
+        labels = {"scan": "扫描", "repair": "修复", "lint": "Lint 检查"}
+        label = labels.get(operation, "任务")
+        self._set_running_operation(None)
+        LogManager.get().error(f"{label}失败: {message}")
+        InfoBar.error("错误", f"{label}失败: {message}", parent=self)
+
+    def _export_report(self) -> None:
+        if self._last_scan_report is None:
+            InfoBar.warning("提示", "请先扫描错误", parent=self)
+            return
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出错误报告",
+            "error_report.xlsx",
+            "Excel 文件 (*.xlsx)",
+        )
+        if not output_path:
+            return
+        if Path(output_path).suffix.lower() != ".xlsx":
+            output_path += ".xlsx"
+
+        ErrorRepairer().export_error_report(self._last_scan_report, output_path)
+        if Path(output_path).is_file():
+            InfoBar.success("导出完成", f"报告已保存到 {output_path}", parent=self)
+        else:
+            InfoBar.error("导出失败", "未能生成报告文件", parent=self)
 

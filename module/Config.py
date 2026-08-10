@@ -208,6 +208,8 @@ class Config():
     renpy_default_encoding: str = "utf-8"
     # 兼容旧配置；strings 与编号块作用域不同，不能按原文互相去重。
     renpy_remove_string_duplicates: bool = False
+    # strings 内重复 old 的处置方式：comment 保留审计记录，delete 兼容旧行为
+    renpy_duplicate_string_action: str = "comment"
     # 过滤疑似被误提取的布尔表达式（例如 "foo == True"、"bar = false"），并备份到 tl/<lang>/_filtered_suspicious
     renpy_filter_suspicious_bool_expr: bool = True
     # 增量抽取时，把 old/new 中未翻译（new==old 或 new==""）的条目也纳入“待翻译新增包”。
