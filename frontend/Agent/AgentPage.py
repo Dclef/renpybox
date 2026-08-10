@@ -62,6 +62,9 @@ SUPPORTED_FORMATS = {
 # 对话区最大宽度。宽屏下保持可读行长，窄屏时随窗口收缩。
 CONVERSATION_MAX_WIDTH = 1120
 
+# 顶栏思考等级只作用于 Agent 请求；OFF 保持平台默认关闭行为。
+THINKING_LEVELS = ("OFF", "LOW", "MEDIUM", "HIGH", "MAX")
+
 # Markdown 正文的最小可读高度；超长内容由外层对话滚动区承载。
 MESSAGE_MIN_HEIGHT = 48
 
@@ -608,9 +611,7 @@ class AgentThinkingWidget(AgentToolWidget):
             parent,
         )
         self._text = ""
-        self.name_label.setText(
-            "Thinking" if localizer.__name__.endswith("EN") else "思考过程"
-        )
+        self.name_label.setText(localizer.agent_page_thinking_process)
         self.toggle_button.setToolTip(localizer.agent_page_tool_expand)
 
     def append_text(self, text: str) -> None:
@@ -786,6 +787,30 @@ class AgentPage(Base, QWidget):
         self.refresh_button.clicked.connect(self.refresh_platforms)
         layout.addWidget(self.refresh_button, 0)
 
+        self.thinking_label = CaptionLabel(
+            localizer.platform_edit_page_thinking_title,
+            bar,
+        )
+        layout.addWidget(self.thinking_label, 0, Qt.AlignVCenter)
+
+        self.thinking_combo = ComboBox(bar)
+        self.thinking_combo.setFixedWidth(96)
+        self.thinking_combo.setFixedHeight(30)
+        self.thinking_combo.setToolTip(localizer.platform_edit_page_thinking_content)
+        for level, label in zip(
+            THINKING_LEVELS,
+            (
+                localizer.platform_edit_page_thinking_off,
+                localizer.platform_edit_page_thinking_low,
+                localizer.platform_edit_page_thinking_medium,
+                localizer.platform_edit_page_thinking_high,
+                localizer.platform_edit_page_thinking_max,
+            ),
+        ):
+            self.thinking_combo.addItem(label, userData=level)
+        self.thinking_combo.currentIndexChanged.connect(self._thinking_changed)
+        layout.addWidget(self.thinking_combo, 0)
+
         self.project_label = CaptionLabel("", bar)
         layout.addWidget(self.project_label, 0)
         layout.addStretch(1)
@@ -824,15 +849,9 @@ class AgentPage(Base, QWidget):
         self.history.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         mark_toolbox_scroll_area(self.history)
 
-        # 外层负责居中，正文使用更高的 stretch 权重，避免被左右占位项压成窄列。
-        holder = QWidget(self.history)
-        mark_toolbox_widget(holder, "toolboxScroll")
-        holder_layout = QHBoxLayout(holder)
-        holder_layout.setContentsMargins(0, 0, 0, 0)
-        holder_layout.setSpacing(0)
-        holder_layout.addStretch(1)
-
-        self.history_content = QWidget(holder)
+        # 让滚动区直接管理唯一的 expanding 内容列，避免左右 stretch 把正文压窄。
+        self.history.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.history_content = QWidget(self.history)
         self.history_content.setMaximumWidth(CONVERSATION_MAX_WIDTH)
         self.history_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         mark_toolbox_widget(self.history_content, "toolboxScroll")
@@ -840,10 +859,7 @@ class AgentPage(Base, QWidget):
         self.history_layout.setContentsMargins(20, 18, 20, 24)
         self.history_layout.setSpacing(14)
         self.history_layout.addStretch(1)
-        holder_layout.addWidget(self.history_content, 6)
-        holder_layout.addStretch(1)
-
-        self.history.setWidget(holder)
+        self.history.setWidget(self.history_content)
         self.history.enableTransparentBackground()
         self.conversation_stack.addWidget(self.history)
         self.conversation_stack.setCurrentWidget(self.empty_state)
