@@ -22,15 +22,11 @@ config.json
 
 # Local test sandbox
 /.test
+/docs/internal
+/.claude
 .pytest_cache/
 .coverage
 coverage.xml
 htmlcov/
 /test
-
-/docs/internal/
-/.claude/
-/.codex/
-AGENTS.md
-CLAUDE.md
-/.agents/skills
+.agents/skills/
