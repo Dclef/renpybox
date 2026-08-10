@@ -940,6 +940,104 @@ def test_global_dedup_keeps_menu_string_equal_to_dialogue_comment(tmp_path):
 
 
 
+def test_same_file_dedup_comments_later_entry_and_is_idempotent(tmp_path):
+    target = tmp_path / "strings.rpy"
+    target.write_text(
+        'translate chinese strings:\n\n'
+        '    # first source\n'
+        '    old "Same"\n'
+        '    new "第一个"\n\n'
+        '    # second source\n'
+        '    old "Same"\n'
+        '    new "第二个"\n',
+        encoding="utf-8",
+    )
+
+    remove_repeat_extracted_from_tl(str(tmp_path), is_py2=False)
+    first_pass = target.read_text(encoding="utf-8")
+    remove_repeat_extracted_from_tl(str(tmp_path), is_py2=False)
+
+    assert target.read_text(encoding="utf-8") == first_pass
+    assert first_pass.count('old "Same"') == 2
+    assert first_pass.count('# old "Same"') == 1
+    assert '# new "第二个"' in first_pass
+    assert "[renpybox] duplicate; first at strings.rpy:4" in first_pass
+    assert "# second source" in first_pass
+
+
+def test_cross_file_dedup_uses_sorted_first_file_and_preserves_comment_only_block(tmp_path):
+    later = tmp_path / "z_later.rpy"
+    first = tmp_path / "a_first.rpy"
+    later.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Same"\n'
+        '    new "后者"\n',
+        encoding="utf-8",
+    )
+    first.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Same"\n'
+        '    new "先者"\n',
+        encoding="utf-8",
+    )
+
+    remove_repeat_extracted_from_tl(str(tmp_path), is_py2=False)
+
+    assert 'old "Same"' in first.read_text(encoding="utf-8")
+    later_content = later.read_text(encoding="utf-8")
+    assert "# translate chinese strings:" in later_content
+    assert "[renpybox] duplicate; first at a_first.rpy:3" in later_content
+    assert '# old "Same"' in later_content
+    assert '# new "后者"' in later_content
+
+
+def test_cross_file_dedup_stops_empty_block_at_next_top_level_statement(tmp_path):
+    first = tmp_path / "a_first.rpy"
+    later = tmp_path / "z_later.rpy"
+    first.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Same"\n'
+        '    new "先者"\n',
+        encoding="utf-8",
+    )
+    later.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Same"\n'
+        '    new "后者"\n\n'
+        'label after_strings:\n'
+        '    "Still active"\n',
+        encoding="utf-8",
+    )
+
+    remove_repeat_extracted_from_tl(str(tmp_path), is_py2=False)
+
+    later_content = later.read_text(encoding="utf-8")
+    assert "# translate chinese strings:" in later_content
+    assert "label after_strings:" in later_content
+    assert '    "Still active"' in later_content
+
+
+def test_dedup_delete_action_keeps_legacy_destructive_behavior(tmp_path):
+    first = tmp_path / "a.rpy"
+    duplicate = tmp_path / "b.rpy"
+    content = (
+        'translate chinese strings:\n\n'
+        '    old "Same"\n'
+        '    new "译文"\n'
+    )
+    first.write_text(content, encoding="utf-8")
+    duplicate.write_text(content, encoding="utf-8")
+
+    remove_repeat_extracted_from_tl(
+        str(tmp_path),
+        is_py2=False,
+        duplicate_action="delete",
+    )
+
+    assert 'old "Same"' in first.read_text(encoding="utf-8")
+    assert duplicate.read_text(encoding="utf-8").strip() == ""
+
+
 def test_static_supplement_uses_first_source_file_for_duplicate_menu_text(tmp_path):
     project = tmp_path / "project"
     first_source = project / "game" / "src" / "chapter01.rpy"
@@ -1032,6 +1130,106 @@ def test_regular_extract_appends_static_supplement_entries(tmp_path, monkeypatch
     assert result.success
     output = project / "game" / "tl" / "chinese" / "script.rpy"
     assert 'old "Standalone display text"' in output.read_text(encoding="utf-8")
+
+
+def _duplicate_comment_flow_config():
+    return types.SimpleNamespace(
+        extract_use_official=False,
+        extract_use_custom=True,
+        onekey_inject_base_box=False,
+        renpy_filter_suspicious_bool_expr=False,
+        renpy_duplicate_string_action="comment",
+        renpy_remove_string_duplicates=False,
+        extract_skip_hook_files=False,
+        extract_export_excel=False,
+        renpy_incremental_include_untranslated=False,
+        text_preserve_enable=False,
+        text_preserve_data=[],
+        glossary_enable=False,
+        glossary_data=[],
+    )
+
+
+def _write_duplicate_extract_output(tl_dir):
+    tl_dir = Path(tl_dir)
+    tl_dir.mkdir(parents=True, exist_ok=True)
+    for name, translation in (("a_first.rpy", "先者"), ("z_later.rpy", "后者")):
+        tl_dir.joinpath(name).write_text(
+            'translate chinese strings:\n\n'
+            '    old "Same extracted text"\n'
+            f'    new "{translation}"\n',
+            encoding="utf-8",
+        )
+
+
+def _flow_extractor():
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(
+        debug=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+    )
+    extractor.renpy_extractor = None
+    extractor._progress_callback = None
+    extractor._last_suspicious_manifest = None
+    extractor._last_suspicious_removed_count = 0
+    return extractor
+
+
+def test_regular_extract_flow_comments_cross_file_duplicates(tmp_path, monkeypatch):
+    from module.Extract import UnifiedExtractor as ux
+
+    project = tmp_path / "project"
+    project.joinpath("game").mkdir(parents=True)
+    config = _duplicate_comment_flow_config()
+    monkeypatch.setattr(ux.Config, "load", lambda self: config)
+    monkeypatch.setattr(
+        rx,
+        "ExtractAllFilesInDir",
+        lambda tl_dir, *args, **kwargs: _write_duplicate_extract_output(tl_dir),
+    )
+
+    result = _flow_extractor().extract_regular(
+        project,
+        "chinese",
+        use_official=False,
+    )
+
+    assert result.success
+    later = project / "game" / "tl" / "chinese" / "z_later.rpy"
+    content = later.read_text(encoding="utf-8")
+    assert "# translate chinese strings:" in content
+    assert "[renpybox] duplicate; first at a_first.rpy:3" in content
+    assert '# old "Same extracted text"' in content
+
+
+def test_incremental_extract_flow_comments_cross_file_duplicates(tmp_path, monkeypatch):
+    from module.Extract import UnifiedExtractor as ux
+
+    project = tmp_path / "project"
+    project.joinpath("game", "tl", "chinese").mkdir(parents=True)
+    config = _duplicate_comment_flow_config()
+    monkeypatch.setattr(ux.Config, "load", lambda self: config)
+    monkeypatch.setattr(
+        rx,
+        "ExtractAllFilesInDir",
+        lambda tl_dir, *args, **kwargs: _write_duplicate_extract_output(tl_dir),
+    )
+
+    result = _flow_extractor().extract_incremental(
+        project,
+        "chinese",
+        use_official=False,
+        output_to_separate_folder=True,
+    )
+
+    assert result.success
+    later = project / "game" / "tl" / "chinese_new" / "z_later.rpy"
+    content = later.read_text(encoding="utf-8")
+    assert "# translate chinese strings:" in content
+    assert "[renpybox] duplicate; first at a_first.rpy:5" in content
+    assert '# old "Same extracted text"' in content
 
 
 def test_static_candidates_prefer_menu_location_and_keep_short_choices(tmp_path):

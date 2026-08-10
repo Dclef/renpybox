@@ -4,25 +4,57 @@ Ren'Py 错误修复工具
 """
 
 import io
+import json
 import os
 import re
 import subprocess
+from collections import Counter
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 
 from base.LogManager import LogManager
+from module.Renpy.renpy_tl_core import (
+    TlBlockKind,
+    TlStmtKind,
+    match_tpl_to_target,
+    pair_old_new_lines,
+    parse_tl_document,
+)
 from utils.call_game_python import get_python_path_from_game_path, get_py_path
 
 
 class ErrorRepairer:
     """错误修复器"""
 
-    # 识别 Ren'Py 对话/翻译行中最外层字符串的简单模式。
-    # 使用贪婪主体，配合后续“正文内仍存在未转义同引号”判断，可定位
-    # doctor "..."、"..."、old "..."、new "..." 这类常见写法。
+    # 仅匹配单行、双引号定界的翻译或简单 say 语句。suffix 被限制为
+    # 空白/注释，避免跨过 menu 条件、screen action 和同一行的其他代码。
     RE_RENPY_STRING_LINE = re.compile(
-        r'^(?P<prefix>\s*(?:[\w\.\[\]]+\s+)*)?(?P<quote>["\'])(?P<body>.*)(?P=quote)(?P<suffix>[^\r\n]*)$'
+        r'^(?P<indent>[ \t]*)(?:(?P<prefix>old|new|[A-Za-z_]\w*)(?P<separator>[ \t]+))?'
+        r'"(?P<body>.*?)"(?P<suffix>[ \t]*(?:#.*)?)$'
     )
+    RE_CURLY_DOUBLE_STRING_LINE = re.compile(
+        r'^(?P<indent>[ \t]*)(?:(?P<prefix>old|new|[A-Za-z_]\w*)(?P<separator>[ \t]+))?'
+        r'“(?P<body>.*?)”(?P<suffix>[ \t]*(?:#.*)?)$'
+    )
+    RE_CURLY_SINGLE_STRING_LINE = re.compile(
+        r'^(?P<indent>[ \t]*)(?:(?P<prefix>old|new|[A-Za-z_]\w*)(?P<separator>[ \t]+))?'
+        r'‘(?P<body>.*?)’(?P<suffix>[ \t]*(?:#.*)?)$'
+    )
+    NON_DIALOGUE_PREFIXES = {
+        "add", "bar", "button", "call", "camera", "default", "define",
+        "drag", "else", "elif", "fixed", "for", "frame", "grid", "hide",
+        "hbox", "if", "image", "imagebutton", "init", "jump", "key",
+        "layeredimage", "menu", "on", "pass", "pause", "play", "python",
+        "queue", "return", "scene", "screen", "show", "stop", "style",
+        "text", "textbutton", "timer", "transform", "use", "vbar", "vbox",
+        "viewport", "voice", "while", "window", "with",
+    }
+    SAFE_LINT_FIX_TYPES = frozenset({
+        "parse_error",
+        "syntax_error",
+        "indentation_mismatch",
+        "indentation_level",
+    })
     SCREEN_BLOCK_PREFIXES = (
         "textbutton",
         "imagebutton",
@@ -55,8 +87,12 @@ class ErrorRepairer:
         return line, ""
 
     def _has_unescaped_quote(self, text: str, quote_char: str) -> bool:
+        return bool(self._unescaped_quote_offsets(text, quote_char))
+
+    def _unescaped_quote_offsets(self, text: str, quote_char: str) -> list[int]:
+        offsets: list[int] = []
         escaped = False
-        for ch in text:
+        for offset, ch in enumerate(text):
             if escaped:
                 escaped = False
                 continue
@@ -64,8 +100,8 @@ class ErrorRepairer:
                 escaped = True
                 continue
             if ch == quote_char:
-                return True
-        return False
+                offsets.append(offset)
+        return offsets
 
     def _escape_unescaped_quotes(self, text: str, quote_char: str) -> tuple[str, bool]:
         result: list[str] = []
@@ -93,46 +129,452 @@ class ErrorRepairer:
 
         return "".join(result), changed
 
-    def _looks_like_renpy_string_statement(self, prefix: str) -> bool:
+    def _looks_like_renpy_string_statement(self, prefix: Optional[str]) -> bool:
         """仅对类似对话/翻译语句的行执行未转义引号修复。"""
         stripped = (prefix or "").strip()
         if stripped == "":
             return True
+        return stripped in {"old", "new"} or stripped not in self.NON_DIALOGUE_PREFIXES
 
-        # 避免误伤 Python 赋值、函数调用、列表/字典等结构。
-        if any(token in stripped for token in ("=", "+", ",", "(", "[", "{")):
-            return False
-        if stripped.endswith(":"):
+    def _can_repair_unescaped_quotes(self, body: str) -> bool:
+        """只接受成对的正文内双引号，并拒绝明显的多个字符串参数。"""
+        offsets = self._unescaped_quote_offsets(body, '"')
+        if len(offsets) < 2 or len(offsets) % 2 != 0:
             return False
 
+        for opening, closing in zip(offsets[::2], offsets[1::2]):
+            between = body[opening + 1:closing].strip()
+            if not between:
+                return False
+            if re.fullmatch(r'(?:[,;+*/%|&]|==?|!=|<=?|>=?|\+|-)+', between):
+                return False
         return True
 
     def repair_unescaped_dialogue_quotes(self, line: str) -> tuple[str, bool]:
-        """修复 Ren'Py 对话行中未转义的内层引号。"""
+        """保守修复 Ren'Py 对话/old/new 行中成对的未转义双引号。"""
         content, line_ending = self._split_line_ending(line)
-        if content.strip() == "" or content.lstrip().startswith("#"):
+        if content.strip() == "" or content.lstrip().startswith("#") or '"""' in content:
             return line, False
 
         match = self.RE_RENPY_STRING_LINE.match(content)
         if not match:
             return line, False
 
-        prefix = match.group("prefix") or ""
-        quote_char = match.group("quote")
+        indent = match.group("indent") or ""
+        prefix = match.group("prefix")
         body = match.group("body")
         suffix = match.group("suffix") or ""
 
         if not self._looks_like_renpy_string_statement(prefix):
             return line, False
-        if not self._has_unescaped_quote(body, quote_char):
+        if not self._can_repair_unescaped_quotes(body):
             return line, False
 
-        escaped_body, changed = self._escape_unescaped_quotes(body, quote_char)
+        escaped_body, changed = self._escape_unescaped_quotes(body, '"')
         if not changed:
             return line, False
 
-        repaired = f"{prefix}{quote_char}{escaped_body}{quote_char}{suffix}{line_ending}"
+        statement_prefix = f"{prefix}{match.group('separator')}" if prefix else ""
+        repaired = f'{indent}{statement_prefix}"{escaped_body}"{suffix}{line_ending}'
         return repaired, True
+
+    def repair_curly_string_delimiters(self, line: str) -> tuple[str, bool]:
+        """仅规范化明确用作字符串外层定界符的中文弯引号。"""
+        content, line_ending = self._split_line_ending(line)
+        if content.strip() == "" or content.lstrip().startswith("#"):
+            return line, False
+
+        for pattern, target_quote in (
+            (self.RE_CURLY_DOUBLE_STRING_LINE, '"'),
+            (self.RE_CURLY_SINGLE_STRING_LINE, "'"),
+        ):
+            match = pattern.match(content)
+            if not match or not self._looks_like_renpy_string_statement(match.group("prefix")):
+                continue
+
+            body = match.group("body")
+            # 变更外层定界符后，正文中的同类直引号会改变解析边界；无法
+            # 无歧义判断其意图时保持原样。
+            if self._has_unescaped_quote(body, target_quote):
+                return line, False
+
+            indent = match.group("indent") or ""
+            prefix = match.group("prefix")
+            statement_prefix = f"{prefix}{match.group('separator')}" if prefix else ""
+            suffix = match.group("suffix") or ""
+            repaired = (
+                f"{indent}{statement_prefix}{target_quote}{body}{target_quote}"
+                f"{suffix}{line_ending}"
+            )
+            return repaired, True
+
+        return line, False
+
+    def _detect_quote_issue(self, line: str) -> Optional[str]:
+        """返回可高置信识别的引号问题；不对整行单双引号做奇偶计数。"""
+        content, _ = self._split_line_ending(line)
+        if content.strip() == "" or content.lstrip().startswith("#"):
+            return None
+        if '"""' in content or "'''" in content:
+            return None
+
+        for pattern in (self.RE_CURLY_DOUBLE_STRING_LINE, self.RE_CURLY_SINGLE_STRING_LINE):
+            match = pattern.match(content)
+            if match and self._looks_like_renpy_string_statement(match.group("prefix")):
+                return "字符串使用了中文弯引号作为外层定界符"
+
+        match = self.RE_RENPY_STRING_LINE.match(content)
+        if match and self._looks_like_renpy_string_statement(match.group("prefix")):
+            if self._can_repair_unescaped_quotes(match.group("body")):
+                return "Ren'Py 字符串正文存在成对的未转义双引号"
+            return None
+
+        candidate = re.match(
+            r'^[ \t]*(?:(?P<prefix>old|new|[A-Za-z_]\w*)[ \t]+)?"',
+            content,
+        )
+        if candidate and self._looks_like_renpy_string_statement(candidate.group("prefix")):
+            if len(self._unescaped_quote_offsets(content, '"')) % 2 != 0:
+                return "双引号不匹配"
+        return None
+
+    @staticmethod
+    def _decode_renpy_literal(raw_inner: str) -> str:
+        """按扫描规则解码少量可靠的 Ren'Py 字符串转义。"""
+        result: list[str] = []
+        index = 0
+        escape_map = {"n": "\n", "r": "\r", "t": "\t"}
+
+        while index < len(raw_inner):
+            char = raw_inner[index]
+            if char != "\\" or index + 1 >= len(raw_inner):
+                result.append(char)
+                index += 1
+                continue
+
+            escaped = raw_inner[index + 1]
+            if escaped in escape_map:
+                result.append(escape_map[escaped])
+            elif escaped in {'"', "'", "\\"}:
+                result.append(escaped)
+            else:
+                # 未知转义保持原样，扫描器不能擅自改变其语义。
+                result.extend(("\\", escaped))
+            index += 2
+
+        return "".join(result)
+
+    @staticmethod
+    def _scan_string_literals(code: str) -> list[dict]:
+        """扫描一行代码中的单双引号字面量，忽略字符串外的注释。"""
+        if '"""' in code or "'''" in code:
+            return []
+
+        literals: list[dict] = []
+        index = 0
+        while index < len(code):
+            char = code[index]
+            if char == "#":
+                break
+            if char not in {'"', "'"}:
+                index += 1
+                continue
+
+            quote = char
+            start = index
+            index += 1
+            raw: list[str] = []
+            while index < len(code):
+                char = code[index]
+                if char == "\\" and index + 1 < len(code):
+                    raw.extend((char, code[index + 1]))
+                    index += 2
+                    continue
+                if char == quote:
+                    raw_inner = "".join(raw)
+                    literals.append({
+                        "start": start,
+                        "end": index + 1,
+                        "raw": raw_inner,
+                        "value": ErrorRepairer._decode_renpy_literal(raw_inner),
+                    })
+                    index += 1
+                    break
+                raw.append(char)
+                index += 1
+            else:
+                break
+
+        return literals
+
+    @staticmethod
+    def _extract_placeholders(text: str) -> Counter:
+        """提取方括号插值与花括号文本标签，并忽略转义的双括号。"""
+        placeholders: Counter = Counter()
+        index = 0
+
+        while index < len(text):
+            opening = text[index]
+            if opening not in {"[", "{"}:
+                index += 1
+                continue
+
+            closing = "]" if opening == "[" else "}"
+            doubled_open = opening * 2
+            doubled_close = closing * 2
+            if text.startswith(doubled_open, index):
+                escaped_end = text.find(doubled_close, index + 2)
+                index = escaped_end + 2 if escaped_end >= 0 else index + 2
+                continue
+
+            end = text.find(closing, index + 1)
+            if end < 0:
+                break
+
+            body = text[index + 1:end]
+            if body.strip() and opening not in body:
+                placeholders[f"{opening}{body}{closing}"] += 1
+            index = end + 1
+
+        return placeholders
+
+    @staticmethod
+    def _classify_placeholder_diff(
+        source: Counter,
+        target: Counter,
+    ) -> tuple[Counter, Counter, list[dict]]:
+        """把 Counter 差异拆成缺失、额外和同类括号内的疑似改写。"""
+        missing = source - target
+        extra = target - source
+        rewrite_counts: Counter = Counter()
+
+        for opening in ("[", "{"):
+            missing_tokens = sorted(
+                token
+                for token, count in missing.items()
+                for _ in range(count)
+                if token.startswith(opening)
+            )
+            extra_tokens = sorted(
+                token
+                for token, count in extra.items()
+                for _ in range(count)
+                if token.startswith(opening)
+            )
+            for source_token, target_token in zip(missing_tokens, extra_tokens):
+                missing[source_token] -= 1
+                extra[target_token] -= 1
+                rewrite_counts[(source_token, target_token)] += 1
+
+        missing += Counter()
+        extra += Counter()
+        rewrites = [
+            {"source": source_token, "target": target_token, "count": count}
+            for (source_token, target_token), count in sorted(rewrite_counts.items())
+        ]
+        return missing, extra, rewrites
+
+    @staticmethod
+    def _counter_details(counter: Counter) -> Dict[str, int]:
+        return {token: counter[token] for token in sorted(counter)}
+
+    def _iter_translation_pairs(self, lines: List[str]) -> list[dict]:
+        """返回 tl 文档中可可靠配对的模板/译文语句。"""
+        content_lines = [self._split_line_ending(line)[0] for line in lines]
+        document = parse_tl_document(content_lines)
+        pairs: list[dict] = []
+
+        for block in document.blocks:
+            if block.kind == TlBlockKind.STRINGS:
+                mapping = pair_old_new_lines(block)
+            elif block.kind == TlBlockKind.LABEL:
+                mapping = match_tpl_to_target(block)
+            else:
+                continue
+
+            statements = {statement.line_no: statement for statement in block.statements}
+            for source_line, target_line in mapping.items():
+                source = statements.get(source_line)
+                target = statements.get(target_line)
+                if source is None or target is None:
+                    continue
+
+                source_literals = self._scan_string_literals(source.code)
+                target_literals = self._scan_string_literals(target.code)
+                if not source_literals:
+                    continue
+
+                pairs.append({
+                    "language": block.lang,
+                    "is_old_new": block.kind == TlBlockKind.STRINGS,
+                    "source": source,
+                    "target": target,
+                    "source_values": [
+                        literal["value"]
+                        for literal in source_literals
+                    ],
+                    "target_values": [
+                        literal["value"]
+                        for literal in target_literals
+                    ],
+                })
+
+        return pairs
+
+    def _duplicate_old_new_error(
+        self,
+        pair: dict,
+        first_path: str,
+        first_line: int,
+    ) -> Dict:
+        source = pair["source"]
+        original = pair["source_values"]
+        return {
+            "line": source.line_no,
+            "type": "duplicate_old_new",
+            "message": "检测到重复 old/new 条目",
+            "content": source.raw_line.strip(),
+            "original": original[0] if len(original) == 1 else original,
+            "first_file": first_path,
+            "first_line": first_line,
+        }
+
+    def _scan_extra_empty_strings(self, lines: List[str]) -> List[Dict]:
+        """报告简单翻译语句中与其他字面量相邻的多余空字符串。"""
+        content_lines = [self._split_line_ending(line)[0] for line in lines]
+        document = parse_tl_document(content_lines)
+        errors: list[Dict] = []
+
+        for block in document.blocks:
+            if block.kind == TlBlockKind.PYTHON:
+                continue
+            for statement in block.statements:
+                if statement.stmt_kind != TlStmtKind.TARGET:
+                    continue
+
+                literals = self._scan_string_literals(statement.code)
+                if len(literals) < 2:
+                    continue
+
+                prefix = statement.code[:literals[0]["start"]].strip()
+                if prefix and (
+                    re.fullmatch(r"[A-Za-z_]\w*", prefix) is None
+                    or not self._looks_like_renpy_string_statement(prefix)
+                ):
+                    continue
+
+                components: list[list[dict]] = []
+                component = [literals[0]]
+                for previous, current in zip(literals, literals[1:]):
+                    between = statement.code[previous["end"]:current["start"]]
+                    if between.strip() == "":
+                        component.append(current)
+                    else:
+                        components.append(component)
+                        component = [current]
+                components.append(component)
+
+                extra_count = 0
+                for component in components:
+                    if len(component) < 2:
+                        continue
+                    empty_count = sum(literal["value"] == "" for literal in component)
+                    if empty_count == 0:
+                        continue
+                    has_non_empty = empty_count < len(component)
+                    extra_count += empty_count if has_non_empty else empty_count - 1
+                if extra_count <= 0:
+                    continue
+
+                errors.append({
+                    "line": statement.line_no,
+                    "type": "extra_empty_string",
+                    "message": f"翻译语句包含 {extra_count} 个多余空字符串",
+                    "content": statement.raw_line.strip(),
+                    "count": extra_count,
+                })
+
+        return errors
+
+    def _scan_translation_issues(self, lines: List[str], file_path: str) -> List[Dict]:
+        """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
+        errors: list[Dict] = []
+        seen_old: dict[tuple, tuple[str, int]] = {}
+
+        for pair in self._iter_translation_pairs(lines):
+            source = pair["source"]
+            target = pair["target"]
+            source_values = pair["source_values"]
+            target_values = pair["target_values"]
+
+            if pair["is_old_new"]:
+                duplicate_key = (pair["language"], tuple(source_values))
+                first = seen_old.get(duplicate_key)
+                if first is None:
+                    seen_old[duplicate_key] = (file_path, source.line_no)
+                else:
+                    errors.append(self._duplicate_old_new_error(pair, first[0], first[1]))
+
+            source_placeholders: Counter = Counter()
+            target_placeholders: Counter = Counter()
+            source_linebreaks = 0
+            target_linebreaks = 0
+            compared = False
+            for source_value, target_value in zip(source_values, target_values):
+                # 空 new 是合法的未翻译占位，不属于翻译损坏。
+                if target_value == "":
+                    continue
+                compared = True
+                source_placeholders.update(self._extract_placeholders(source_value))
+                target_placeholders.update(self._extract_placeholders(target_value))
+                source_linebreaks += source_value.count("\n")
+                target_linebreaks += target_value.count("\n")
+
+            if not compared:
+                continue
+
+            missing, extra, rewrites = self._classify_placeholder_diff(
+                source_placeholders,
+                target_placeholders,
+            )
+            common = {
+                "line": target.line_no,
+                "content": target.raw_line.strip(),
+                "source_line": source.line_no,
+                "source_content": source.raw_line.strip(),
+            }
+            if rewrites:
+                errors.append({
+                    **common,
+                    "type": "placeholder_rewritten",
+                    "message": "译文中的占位符疑似被改写",
+                    "rewrites": rewrites,
+                })
+            if missing:
+                errors.append({
+                    **common,
+                    "type": "placeholder_missing",
+                    "message": "译文缺少原文占位符",
+                    "placeholders": self._counter_details(missing),
+                })
+            if extra:
+                errors.append({
+                    **common,
+                    "type": "placeholder_extra",
+                    "message": "译文包含原文没有的占位符",
+                    "placeholders": self._counter_details(extra),
+                })
+            if source_linebreaks != target_linebreaks:
+                errors.append({
+                    **common,
+                    "type": "linebreak_mismatch",
+                    "message": "译文与原文的换行数量不一致",
+                    "source_count": source_linebreaks,
+                    "target_count": target_linebreaks,
+                })
+
+        errors.extend(self._scan_extra_empty_strings(lines))
+        return errors
 
     def _get_indent_width(self, line: str) -> int:
         expanded = line.expandtabs(4)
@@ -207,7 +649,8 @@ class ErrorRepairer:
         check_indent_level: bool = True,
         check_quotes: bool = True,
         check_dialogue_quotes: bool = True,
-        encoding: str = "utf-8"
+        encoding: str = "utf-8",
+        check_translation_issues: bool = True,
     ) -> List[Dict[str, any]]:
         """
         检查单个文件
@@ -218,6 +661,7 @@ class ErrorRepairer:
             check_indent: 是否检查缩进
             check_quotes: 是否检查引号匹配
             encoding: 文件编码
+            check_translation_issues: 是否扫描译文占位符、换行、空字符串和重复项
 
         Returns:
             错误列表 [{"line": 行号, "type": 错误类型, "message": 错误信息}, ...]
@@ -271,29 +715,19 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
-                # 引号匹配检查
+                quote_issue_found = False
                 if check_quotes:
-                    # 统计引号数量
-                    double_quotes = line.count('"') - line.count('\\"')
-                    single_quotes = line.count("'") - line.count("\\'")
-
-                    if double_quotes % 2 != 0:
+                    quote_message = self._detect_quote_issue(line)
+                    if quote_message:
                         errors.append({
                             "line": line_num,
                             "type": "quotes",
-                            "message": "双引号不匹配",
+                            "message": quote_message,
                             "content": line.strip()
                         })
+                        quote_issue_found = True
 
-                    if single_quotes % 2 != 0:
-                        errors.append({
-                            "line": line_num,
-                            "type": "quotes",
-                            "message": "单引号不匹配",
-                            "content": line.strip()
-                        })
-
-                if check_dialogue_quotes:
+                if check_dialogue_quotes and not quote_issue_found:
                     _, changed = self.repair_unescaped_dialogue_quotes(line)
                     if changed:
                         errors.append({
@@ -302,6 +736,9 @@ class ErrorRepairer:
                             "message": "Ren'Py 对话行存在未转义引号",
                             "content": line.strip()
                         })
+
+            if check_translation_issues:
+                errors.extend(self._scan_translation_issues(lines, file_path))
 
         except Exception as e:
             self.logger.error(f"检查文件失败 {file_path}: {e}")
@@ -316,7 +753,8 @@ class ErrorRepairer:
         check_indent_level: bool = True,
         check_quotes: bool = True,
         check_dialogue_quotes: bool = True,
-        encoding: str = "utf-8"
+        encoding: str = "utf-8",
+        check_translation_issues: bool = True,
     ) -> Dict[str, List[Dict]]:
         """
         批量检查文件夹
@@ -327,28 +765,61 @@ class ErrorRepairer:
             check_indent: 是否检查缩进
             check_quotes: 是否检查引号匹配
             encoding: 文件编码
+            check_translation_issues: 是否扫描译文占位符、换行、空字符串和重复项
 
         Returns:
             {文件路径: 错误列表}
         """
         all_errors = {}
-        rpy_files = list(Path(folder_path).rglob("*.rpy"))
+        rpy_files = sorted(Path(folder_path).rglob("*.rpy"))
 
         self.logger.info(f"检查 {len(rpy_files)} 个 .rpy 文件")
 
         for file_path in rpy_files:
             errors = self.check_file(
                 str(file_path),
-                check_syntax,
-                check_indent,
-                check_indent_level,
-                check_quotes,
-                check_dialogue_quotes,
-                encoding
+                check_syntax=check_syntax,
+                check_indent=check_indent,
+                check_indent_level=check_indent_level,
+                check_quotes=check_quotes,
+                check_dialogue_quotes=check_dialogue_quotes,
+                encoding=encoding,
+                check_translation_issues=check_translation_issues,
             )
 
             if errors:
                 all_errors[str(file_path)] = errors
+
+        if check_translation_issues:
+            seen_old: dict[tuple, tuple[str, int]] = {}
+            for file_path in rpy_files:
+                try:
+                    with open(file_path, "r", encoding=encoding, errors="ignore") as source_file:
+                        pairs = self._iter_translation_pairs(source_file.readlines())
+                except Exception as e:
+                    self.logger.error(f"检查跨文件重复失败 {file_path}: {e}")
+                    continue
+
+                for pair in pairs:
+                    if not pair["is_old_new"]:
+                        continue
+                    duplicate_key = (pair["language"], tuple(pair["source_values"]))
+                    first = seen_old.get(duplicate_key)
+                    if first is None:
+                        seen_old[duplicate_key] = (str(file_path), pair["source"].line_no)
+                        continue
+
+                    file_errors = all_errors.setdefault(str(file_path), [])
+                    line_number = pair["source"].line_no
+                    already_reported = any(
+                        error.get("type") == "duplicate_old_new"
+                        and error.get("line") == line_number
+                        for error in file_errors
+                    )
+                    if not already_reported:
+                        file_errors.append(
+                            self._duplicate_old_new_error(pair, first[0], first[1])
+                        )
 
         total_errors = sum(len(errs) for errs in all_errors.values())
         self.logger.info(f"检查完成: 发现 {total_errors} 个错误")
@@ -391,21 +862,16 @@ class ErrorRepairer:
                     new_line = new_line.replace("\t", "    ")
                     fix_count += 1
 
-                # 修复引号 (简单替换: 中文引号转英文引号)
-                if fix_quotes:
-                    old_line = new_line
-                    new_line = (
-                        new_line
-                        .replace("“", '"')
-                        .replace("”", '"')
-                        .replace("‘", "'")
-                        .replace("’", "'")
-                    )
-                    if new_line != old_line:
-                        fix_count += 1
-
                 if fix_dialogue_quotes:
                     repaired_line, changed = self.repair_unescaped_dialogue_quotes(new_line)
+                    if changed:
+                        new_line = repaired_line
+                        fix_count += 1
+
+                # 中文弯引号只有在明确充当整条字符串的外层定界符时才转换。
+                # 字符串正文中的正常中文引号必须原样保留。
+                if fix_quotes:
+                    repaired_line, changed = self.repair_curly_string_delimiters(new_line)
                     if changed:
                         new_line = repaired_line
                         fix_count += 1
@@ -449,18 +915,24 @@ class ErrorRepairer:
             ws.title = "Error Report"
 
             # 写入表头
-            headers = ["文件", "行号", "错误类型", "错误信息", "内容"]
+            headers = ["文件", "行号", "错误类型", "错误信息", "内容", "详情"]
             ws.append(headers)
 
             # 写入数据
             for file_path, file_errors in errors.items():
                 for error in file_errors:
+                    details = {
+                        key: value
+                        for key, value in error.items()
+                        if key not in {"line", "type", "message", "content"}
+                    }
                     ws.append([
-                        os.path.basename(file_path),
+                        file_path,
                         error.get("line", 0),
                         error.get("type", ""),
                         error.get("message", ""),
-                        error.get("content", "")
+                        error.get("content", ""),
+                        json.dumps(details, ensure_ascii=False, sort_keys=True),
                     ])
 
             wb.save(output_path)
@@ -479,7 +951,8 @@ class ErrorRepairer:
             game_path: 游戏可执行文件路径 (.exe)
             
         Returns:
-            错误输出内容，如果无错误则返回 None
+            None 表示执行失败，空字符串表示执行成功且无输出，非空字符串
+            表示执行成功并获得 Lint 输出。
         """
         try:
             python_path = get_python_path_from_game_path(game_path)
@@ -497,15 +970,15 @@ class ErrorRepairer:
             # 错误输出文件
             error_output = os.path.join(game_dir, "lint_errors.txt")
             
-            # 构建 lint 命令
-            command = f'"{python_path}" -O "{py_path}" "{game_dir}" lint'
+            # 使用参数列表执行，避免 shell 对游戏路径做二次解释。
+            command = [python_path, "-O", py_path, game_dir, "lint"]
             
             self.logger.info(f"执行 Lint 命令: {command}")
             
             # 执行命令
             result = subprocess.run(
                 command,
-                shell=True,
+                shell=False,
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
@@ -516,6 +989,12 @@ class ErrorRepairer:
             
             # 合并 stdout 和 stderr
             output = (result.stdout or "") + (result.stderr or "")
+
+            if result.returncode != 0:
+                self.logger.error(f"Lint 执行失败，退出码: {result.returncode}")
+                if output.strip():
+                    self.logger.error(output.strip())
+                return None
             
             if output.strip():
                 # 保存到文件
@@ -525,7 +1004,7 @@ class ErrorRepairer:
                 return output
             else:
                 self.logger.info("Lint 检查完成，未发现错误")
-                return None
+                return ""
                 
         except Exception as e:
             self.logger.error(f"执行 Lint 失败: {e}")
@@ -553,26 +1032,18 @@ class ErrorRepairer:
                 
             error_info = {"raw": line}
             
-            # 解析常见错误格式: "file.rpy", line X: error message
-            if ', line ' in line:
-                try:
-                    # 提取文件名
-                    idx = line.index(', line ')
-                    file_part = line[:idx]
-                    if ' ' in file_part:
-                        file_part = file_part[file_part.index(' ') + 1:]
-                    error_info["file"] = file_part.strip('"')
-                    
-                    # 提取行号
-                    rest = line[idx + len(', line '):]
-                    if ':' in rest:
-                        line_num = rest[:rest.index(':')]
-                        error_info["line"] = int(line_num.strip())
-                        error_info["message"] = rest[rest.index(':') + 1:].strip()
-                    
-                except Exception:
-                    pass
-            
+            # 解析常见错误格式，保留路径中的空格。
+            location_match = re.match(
+                r'^(?:File\s+)?["\']?(?P<file>.+?\.rpy)["\']?,\s*'
+                r'line\s+(?P<line>\d+):\s*(?P<message>.*)$',
+                line,
+                re.IGNORECASE,
+            )
+            if location_match:
+                error_info["file"] = location_match.group("file")
+                error_info["line"] = int(location_match.group("line"))
+                error_info["message"] = location_match.group("message").strip()
+
             # 解析翻译重复错误
             elif line.startswith('Exception: A translation for '):
                 error_info["type"] = "duplicate_translation"
@@ -617,65 +1088,81 @@ class ErrorRepairer:
             max_iterations: 最大迭代次数
             
         Returns:
-            (是否成功, 修复的文件数)
+            (是否已由 Lint 验证无错误, 安全修复的数量)
         """
+        if max_iterations <= 0:
+            return False, 0
+
         total_fixed = 0
         game_dir = os.path.dirname(game_path)
-        
+        game_root = Path(game_dir).resolve()
+
         for iteration in range(max_iterations):
             self.logger.info(f"开始第 {iteration + 1}/{max_iterations} 轮 Lint 检查...")
-            
+
             # 执行 lint
             lint_output = self.exec_renpy_lint(game_path)
-            
-            if not lint_output:
+
+            if lint_output is None:
+                self.logger.error("Lint 执行失败，停止自动修复")
+                return False, total_fixed
+            if lint_output == "":
                 self.logger.info("没有更多错误，修复完成!")
-                break
-                
+                return True, total_fixed
+
             # 解析错误
             errors = self.parse_lint_errors(lint_output)
-            
+
             if not errors:
-                self.logger.info("没有可解析的错误，修复完成!")
-                break
-            
-            fixed_in_round = 0
-            processed_files = set()
-            
+                self.logger.warning("Lint 有输出，但没有可解析的错误；未修改文件")
+                return False, total_fixed
+
+            # 每轮最多改一处，然后重新执行 lint，避免继续使用已经失效的行号。
+            fixed_in_round = False
+            processed_locations: set[tuple[str, int]] = set()
             for error in errors:
                 file_path = error.get("file")
                 line_num = error.get("line")
                 error_type = error.get("type", "")
-                
-                if not file_path or not line_num:
+
+                if error_type not in self.SAFE_LINT_FIX_TYPES:
                     continue
-                    
+                if not file_path or not isinstance(line_num, int) or line_num < 1:
+                    continue
+
                 # 构建完整路径
-                if not os.path.isabs(file_path):
-                    file_path = os.path.join(game_dir, file_path)
-                    
-                if not os.path.isfile(file_path):
-                    self.logger.warning(f"文件不存在: {file_path}")
+                candidate = Path(file_path)
+                if not candidate.is_absolute():
+                    candidate = game_root / candidate
+                try:
+                    candidate = candidate.resolve()
+                    candidate.relative_to(game_root)
+                except (OSError, ValueError):
+                    self.logger.warning(f"忽略游戏目录外的 Lint 路径: {file_path}")
                     continue
-                
-                # 避免重复处理同一文件的同一行
-                key = f"{file_path}:{line_num}"
-                if key in processed_files:
+
+                if not candidate.is_file():
+                    self.logger.warning(f"文件不存在: {candidate}")
                     continue
-                processed_files.add(key)
-                
-                # 尝试修复
-                if self._fix_single_lint_error(file_path, line_num, error_type):
-                    fixed_in_round += 1
+
+                location = (str(candidate), line_num)
+                if location in processed_locations:
+                    continue
+                processed_locations.add(location)
+
+                if self._fix_single_lint_error(str(candidate), line_num, error_type):
+                    fixed_in_round = True
                     total_fixed += 1
-            
-            if fixed_in_round == 0:
-                self.logger.info("本轮没有修复任何错误，停止迭代")
-                break
-                
-            self.logger.info(f"第 {iteration + 1} 轮修复了 {fixed_in_round} 个错误")
-        
-        return True, total_fixed
+                    break
+
+            if not fixed_in_round:
+                self.logger.warning("没有可安全自动修复的 Lint 错误；未继续修改文件")
+                return False, total_fixed
+
+            self.logger.info(f"第 {iteration + 1} 轮安全修复了 1 个错误")
+
+        self.logger.warning("达到 Lint 自动修复轮次上限，结果尚未验证为无错误")
+        return False, total_fixed
     
     def _fix_single_lint_error(self, file_path: str, line_num: int, error_type: str) -> bool:
         """
@@ -689,6 +1176,9 @@ class ErrorRepairer:
         Returns:
             是否修复成功
         """
+        if error_type not in self.SAFE_LINT_FIX_TYPES:
+            return False
+
         try:
             with io.open(file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -697,78 +1187,42 @@ class ErrorRepairer:
                 return False
                 
             idx = line_num - 1  # 转为 0-based
-            original_line = lines[idx]
-            
-            self.logger.info(f"修复 {file_path} 第 {line_num} 行: {original_line.strip()[:50]}...")
-            
-            # 根据错误类型修复
-            if error_type == "duplicate_translation":
-                # 重复翻译：删除 old/new 对
-                if lines[idx].strip().startswith('old ') and idx + 1 < len(lines) and lines[idx + 1].strip().startswith('new '):
-                    lines[idx] = ''
-                    lines[idx + 1] = ''
-                    if idx > 0 and lines[idx - 1].strip().startswith('#'):
-                        lines[idx - 1] = ''
-                elif lines[idx].strip().startswith('new ') and idx > 0 and lines[idx - 1].strip().startswith('old '):
-                    lines[idx] = ''
-                    lines[idx - 1] = ''
-                    if idx > 1 and lines[idx - 2].strip().startswith('#'):
-                        lines[idx - 2] = ''
-                        
-            elif error_type in ("unknown_statement", "expected_statement"):
-                # 未知语句：替换为空行
-                lines[idx] = '\n'
-                
-            elif error_type in ("unterminated_string", "parse_error"):
-                repaired_line, changed = self.repair_unescaped_dialogue_quotes(lines[idx])
-                if changed:
-                    lines[idx] = repaired_line
-                else:
-                    # 字符串未结束：替换为空字符串
-                    if lines[idx].strip().startswith('translate'):
-                        lines[idx] = '\n'
-                    else:
-                        lines[idx] = '    ""\n'
-                    
-            elif error_type == "syntax_error":
-                repaired_line, changed = self.repair_unescaped_dialogue_quotes(lines[idx])
-                if changed:
-                    lines[idx] = repaired_line
-                elif idx > 0:
-                    repaired_prev, changed_prev = self.repair_unescaped_dialogue_quotes(lines[idx - 1])
-                    if changed_prev:
-                        lines[idx - 1] = repaired_prev
-                    else:
-                        lines[idx] = '    ""\n'
-                else:
-                    lines[idx] = '    ""\n'
+            self.logger.info(f"修复 {file_path} 第 {line_num} 行: {lines[idx].strip()[:50]}...")
 
-            elif error_type in ("indentation_mismatch", "indentation_level"):
-                repaired_line, changed = self.repair_indentation_level(lines, idx)
-                if changed:
-                    lines[idx] = repaired_line
-                elif idx > 0:
-                    repaired_prev, changed_prev = self.repair_indentation_level(lines, idx - 1)
-                    if changed_prev:
-                        lines[idx - 1] = repaired_prev
-                    else:
-                        return False
-                else:
-                    return False
-                    
-            else:
-                # 默认：替换为空字符串
-                lines[idx] = '    ""\n'
-            
-            # 移除连续空行
-            lines = self._remove_consecutive_empty_lines(lines)
-            
-            # 写回文件
+            changed = False
+            if error_type in {"parse_error", "syntax_error"}:
+                candidate_indices = [idx]
+                if error_type == "syntax_error" and idx > 0:
+                    candidate_indices.append(idx - 1)
+                for candidate_idx in candidate_indices:
+                    repaired_line, repaired = self.repair_unescaped_dialogue_quotes(
+                        lines[candidate_idx]
+                    )
+                    if repaired:
+                        lines[candidate_idx] = repaired_line
+                        changed = True
+                        break
+            elif error_type in {"indentation_mismatch", "indentation_level"}:
+                candidate_indices = [idx] + ([idx - 1] if idx > 0 else [])
+                for candidate_idx in candidate_indices:
+                    repaired_line, repaired = self.repair_indentation_level(
+                        lines,
+                        candidate_idx,
+                    )
+                    if repaired:
+                        lines[candidate_idx] = repaired_line
+                        changed = True
+                        break
+
+            if not changed:
+                return False
+
+            # 保持行数不变，避免本轮错误位置整体漂移。
             with io.open(file_path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
-                
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"修复错误失败 {file_path}:{line_num} - {e}")
             return False

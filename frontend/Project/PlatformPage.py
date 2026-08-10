@@ -100,8 +100,8 @@ class PlatformPage(QWidget, Base):
             orient=Qt.Orientation.Vertical,
         )
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.enableTransparentBackground()
         self.scroll_area.setWidget(self.content)
+        self.scroll_area.enableTransparentBackground()
         self.root.addWidget(self.scroll_area)
 
         # 添加控件
