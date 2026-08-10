@@ -1,4 +1,4 @@
-"""Agent 专用的非流式工具请求器。
+"""Agent 专用的工具请求器。
 
 翻译请求器的取消标记和客户端注册表是全局共享的，不能直接拿来跑 Agent。
 本类保留相同的三家 SDK 依赖，但把生命周期完全隔离出来。
@@ -30,7 +30,7 @@ THINKING_LEVELS = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"}
 
 
 class AgentRequester:
-    """执行一次 Agent 回合的非流式请求。"""
+    """执行一次 Agent 回合，并按需回报文本与思考增量。"""
 
     CLIENT_REGISTRY: dict[tuple[str, str, str, int], Any] = {}
     CLIENT_LOCK = threading.RLock()
@@ -690,6 +690,7 @@ class AgentRequester:
         tools: list[ToolDef],
         *,
         on_text_delta: TextDeltaCallback | None = None,
+        on_reasoning_delta: TextDeltaCallback | None = None,
     ) -> AgentRequestResult:
         client = self._get_client()
         system, contents = self._google_contents(messages)
@@ -711,18 +712,25 @@ class AgentRequester:
             "tools": [google_tool],
             "max_output_tokens": max(1024, int(getattr(self.config, "token_threshold", 0) or 0)),
         }
+        thinking_config = self._google_thinking_config(
+            str(self.platform.get("model") or ""),
+            self.thinking_level,
+        )
+        if thinking_config is not None:
+            config_kwargs["thinking_config"] = thinking_config
         if system:
             config_kwargs["system_instruction"] = system
         try:
             request_config = types.GenerateContentConfig(**config_kwargs)
         except Exception:
             request_config = config_kwargs
-        if on_text_delta is not None:
+        if on_text_delta is not None or on_reasoning_delta is not None:
             return self._request_google_stream(
                 client,
                 contents,
                 request_config,
                 on_text_delta,
+                on_reasoning_delta,
             )
         response = client.models.generate_content(
             model=self.platform.get("model"),
@@ -736,11 +744,12 @@ class AgentRequester:
         content = self._value(candidates[0], "content", {}) if candidates else {}
         parts = self._value(content, "parts", []) or []
         texts: list[str] = []
+        reasoning: list[str] = []
         calls: list[AgentToolCall] = []
         for index, part in enumerate(parts):
             text = self._value(part, "text", None)
             if isinstance(text, str) and text:
-                texts.append(text)
+                (reasoning if self._value(part, "thought", False) else texts).append(text)
             function_call = self._value(part, "function_call", None)
             if function_call is not None:
                 calls.append(AgentToolCall(
@@ -756,6 +765,7 @@ class AgentRequester:
         return AgentRequestResult(
             success=True,
             text="".join(texts),
+            reasoning="".join(reasoning),
             tool_calls=calls,
             usage=usage,
         )
@@ -765,7 +775,8 @@ class AgentRequester:
         client: Any,
         contents: list[Any],
         request_config: Any,
-        callback: TextDeltaCallback,
+        callback: TextDeltaCallback | None,
+        reasoning_callback: TextDeltaCallback | None,
     ) -> AgentRequestResult:
         texts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
@@ -789,6 +800,9 @@ class AgentRequester:
                 for index, part in enumerate(self._value(content, "parts", []) or []):
                     text = self._value(part, "text", None)
                     if isinstance(text, str) and text:
+                        if bool(self._value(part, "thought", False)):
+                            self._emit_text(reasoning_callback, text)
+                            continue
                         # 兼容少数端点返回“累计文本”而不是增量文本。
                         current = "".join(texts)
                         delta = text[len(current):] if current and text.startswith(current) else text
