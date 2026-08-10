@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 8,
     "name": "MoonShot",
     "api_url": "https://api.moonshot.cn/v1",

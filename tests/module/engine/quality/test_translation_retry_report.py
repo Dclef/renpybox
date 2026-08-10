@@ -101,10 +101,16 @@ def test_strict_decode_failure_skips_checker_and_never_writes_back(monkeypatch) 
         "translations": [{"request_index": 1, "text": "错误索引"}],
         "new_glossary": [],
     })
+    response_shapes: list[str] = []
+
+    def request(self, messages, *, response_shape = "none"):
+        response_shapes.append(response_shape)
+        return False, "", response, 3, 2
+
     monkeypatch.setattr(
         TaskRequester,
         "request",
-        lambda self, messages: (False, "", response, 3, 2),
+        request,
     )
 
     def fail_if_checked(*args, **kwargs):
@@ -122,6 +128,7 @@ def test_strict_decode_failure_skips_checker_and_never_writes_back(monkeypatch) 
     assert item.get_metadata()["translation_retry"]["reasons"] == [
         {"code": "INDEX_ALIGNMENT", "line_indices": [0]}
     ]
+    assert response_shapes == ["json_object"]
 
 
 def test_successful_write_clears_only_temporary_retry_metadata(monkeypatch) -> None:
@@ -147,7 +154,7 @@ def test_successful_write_clears_only_temporary_retry_metadata(monkeypatch) -> N
     monkeypatch.setattr(
         TaskRequester,
         "request",
-        lambda self, messages: (False, "", response, 3, 2),
+        lambda self, messages, *, response_shape = "none": (False, "", response, 3, 2),
     )
 
     result = task.request(task.items, task.processors, [], False, 0)
@@ -172,6 +179,21 @@ def test_completed_item_retry_threshold_remains_visible_until_confirmed() -> Non
     ).check_single_item(item)
 
     assert warnings == [WarningType.RETRY_THRESHOLD]
+
+
+def test_response_checker_accepts_unchanged_technical_acronym_but_not_ui_command() -> None:
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    checker = ResponseChecker(config, [CacheItem(src="USB")])
+
+    assert checker.check(["USB"], ["USB"], CacheItem.TextType.NONE) == [
+        ResponseChecker.Error.NONE
+    ]
+    assert checker.check(["START"], ["START"], CacheItem.TextType.NONE) == [
+        ResponseChecker.Error.LINE_ERROR_SIMILARITY
+    ]
 
 
 def test_quality_report_combines_item_reasons_with_progress_counts() -> None:

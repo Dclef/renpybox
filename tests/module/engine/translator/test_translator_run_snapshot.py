@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
+from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
 from module.Engine.Translator.Translator import Translator
+from module.Renpy.ProjectPaths import RenpyProjectPaths, read_run_manifest, write_run_manifest
 
 
 def _platform(*, model: str, api_key: str, api_url: str = "https://old.invalid/v1") -> dict:
@@ -46,6 +48,302 @@ def _translator() -> Translator:
     translator.cache_manager = CacheManager(service = False)
     translator.data_lock = threading.Lock()
     return translator
+
+
+def test_round_progress_keeps_prefiltered_rows_inside_total() -> None:
+    translator = _translator()
+    translator.extras = {"line": 0, "total_line": 12}
+
+    translator._reconcile_round_progress(remaining=8, fresh_run=True)
+
+    assert translator.extras["line"] == 4
+    assert translator.extras["total_line"] == 12
+
+
+def test_resumed_round_progress_uses_completed_plus_remaining() -> None:
+    translator = _translator()
+    translator.extras = {"line": 5, "total_line": 12}
+
+    translator._reconcile_round_progress(remaining=3, fresh_run=False)
+
+    assert translator.extras["line"] == 5
+    assert translator.extras["total_line"] == 8
+
+
+def test_verify_uppercase_untranslated_only_excludes_double_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    """第二次整体翻译验证：两次都未被翻译才判定不译，翻译过/请求失败不误判。"""
+    from module.Engine.Translator.Translator import Translator
+
+    items = [
+        CacheItem(src="TBD", dst="TBD", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="GO", dst="GO", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="ART", dst="ART", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="Hello", dst="Hello", status=Base.TranslationStatus.UNTRANSLATED),
+    ]
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    translator = Translator.__new__(Translator)
+    translator.cache_manager = SimpleNamespace(get_items=lambda: items)
+    translator.config = config
+    translator.task_context = SimpleNamespace(to_runtime_config=lambda cfg: cfg)
+    translator.platform = {"name": "test"}
+    translator.data_lock = threading.Lock()
+    translator.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+    translator._should_stop_requested = lambda *a, **k: False
+    translator._merge_analysis_candidates_for_run = lambda *a, **k: None
+    translator._record_verified_declined = lambda items: None
+
+    class FakeTask:
+        def __init__(
+            self,
+            task_context,
+            platform,
+            local_flag,
+            items,
+            precedings,
+            runtime_config=None,
+            candidate_sink=None,
+        ):
+            self.items = items
+
+        def start(self, round_index):
+            for item in self.items:
+                if item.get_src() == "GO":
+                    # 第二次被 AI 翻译 → 保留译文
+                    item.set_dst("去")
+                    item.set_status(Base.TranslationStatus.TRANSLATED)
+                elif item.get_src() == "ART":
+                    # 第二次请求失败（空响应）→ 不是“未翻译”证据
+                    item.set_dst("")
+                # TBD 第二次仍干净返回原文
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.TranslatorTask", FakeTask
+    )
+
+    excluded = translator._verify_uppercase_untranslated(None, None, 1, True)
+
+    assert excluded == 1
+    statuses = {item.get_src(): item.get_status() for item in items}
+    assert statuses["TBD"] == Base.TranslationStatus.EXCLUDED
+    assert statuses["GO"] == Base.TranslationStatus.TRANSLATED
+    assert statuses["ART"] == Base.TranslationStatus.UNTRANSLATED
+    assert statuses["Hello"] == Base.TranslationStatus.UNTRANSLATED
+
+
+def test_verify_uppercase_candidates_can_be_disabled(monkeypatch) -> None:
+    item = CacheItem(
+        src="TBD",
+        dst="TBD",
+        status=Base.TranslationStatus.UNTRANSLATED,
+    )
+    translator = Translator.__new__(Translator)
+    translator.config = Config(renpy_verify_uppercase_candidates=False)
+    translator.cache_manager = SimpleNamespace(get_items=lambda: [item])
+
+    class UnexpectedTask:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("关闭开关后不应构造二次验证任务")
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.TranslatorTask",
+        UnexpectedTask,
+    )
+
+    assert translator._verify_uppercase_untranslated(None, None, 1, True) == 0
+    assert item.get_status() == Base.TranslationStatus.UNTRANSLATED
+
+
+def test_verify_uppercase_candidates_defaults_to_enabled() -> None:
+    assert Config().renpy_verify_uppercase_candidates is True
+
+
+def test_verify_uppercase_50_word_case(tmp_path, monkeypatch) -> None:
+    """50 词真实案例：25 个需要翻译 + 25 个不需要翻译。
+
+    需要翻译的词由 AI 在第一次或第二次整体翻译中译出；不需要翻译的词
+    两次 AI 都原样返回，最终判定不译并连同文件溯源写入项目清单。
+    """
+    from module.Engine.Translator.Translator import Translator
+
+    TRANSLATE = {
+        "GO": "出发", "DAD": "爸爸", "MOM": "妈妈", "HI": "嗨",
+        "ART": "美术", "CODE": "代码", "PIN": "密码", "SENT": "已发送",
+        "SPAM": "垃圾邮件", "OK": "确定", "IT": "它", "TBD": "待定",
+        "AM": "上午", "PM": "下午", "HR": "小时", "OPEN": "打开",
+        "EDIT": "编辑", "SAVE": "保存", "LOAD": "读取", "STOP": "停止",
+        "PLAY": "播放", "NEXT": "下一个", "HOME": "主页", "SEND": "发送",
+        "DAY": "天",
+    }
+    MISSED_IN_PASS1 = {"TBD", "AM", "HR", "SENT"}
+    KEEP = {
+        "ATK", "DEF", "SPD", "INT", "STR", "VIT", "AGI", "MAG", "RES",
+        "CRT", "CDR", "LUK", "MDEF", "PDEF", "ASPD", "MCRT", "DPS",
+        "HPS", "TIC", "BUF", "DEB", "AOE", "CD", "GCD", "TP",
+    }
+    assert len(TRANSLATE) == 25
+    assert len(KEEP) == 25
+
+    # 模拟一个真实项目结构，供溯源记录解析项目根目录
+    project = tmp_path / "fictional-game"
+    tl_dir = project / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    files = [
+        "src/menu/lewd.rpy",
+        "src/menu/pref.rpy",
+        "src/menu/logs.rpy",
+        "src/gui/tel.rpy",
+        "renpybox_bytecode_strings.rpy",
+    ]
+
+    items = []
+    all_words = list(TRANSLATE) + list(KEEP)
+    for index, word in enumerate(all_words):
+        items.append(
+            CacheItem.from_dict(
+                {
+                    "src": word,
+                    "dst": word,
+                    "status": Base.TranslationStatus.UNTRANSLATED,
+                    "file_path": files[index % len(files)],
+                    "text_type": CacheItem.TextType.RENPY,
+                }
+            )
+        )
+
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+        input_folder=str(tl_dir),
+        output_folder=str(tl_dir),
+    )
+    translator = Translator.__new__(Translator)
+    translator.cache_manager = SimpleNamespace(get_items=lambda: items)
+    translator.config = config
+    translator.task_context = SimpleNamespace(to_runtime_config=lambda cfg: cfg)
+    translator.platform = {"name": "test"}
+    translator.data_lock = threading.Lock()
+    translator.logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        debug=lambda *a, **k: None,
+        error=lambda *a, **k: None,
+    )
+    translator._should_stop_requested = lambda *a, **k: False
+    translator._merge_analysis_candidates_for_run = lambda *a, **k: None
+
+    # 第一次整体翻译：25 个需要翻译的词中 21 个被译出，4 个漏译；
+    # 25 个不需要翻译的词第一次原样返回。
+    for item in items:
+        word = item.get_src()
+        if word in TRANSLATE and word not in MISSED_IN_PASS1:
+            item.set_dst(TRANSLATE[word])
+            item.set_status(Base.TranslationStatus.TRANSLATED)
+
+    class FakeVerificationTask:
+        def __init__(
+            self,
+            task_context,
+            platform,
+            local_flag,
+            items,
+            precedings,
+            runtime_config=None,
+            candidate_sink=None,
+        ):
+            self.items = items
+
+        def start(self, round_index):
+            for item in self.items:
+                word = item.get_src()
+                if word in MISSED_IN_PASS1:
+                    # 第二次整体翻译把漏译的词译出 → 保留译文
+                    item.set_dst(TRANSLATE[word])
+                    item.set_status(Base.TranslationStatus.TRANSLATED)
+                # 25 个不需要翻译的词第二次仍原样返回
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.TranslatorTask", FakeVerificationTask
+    )
+
+    excluded = translator._verify_uppercase_untranslated(None, None, 1, True)
+
+    assert excluded == 25
+    statuses = {item.get_src(): item.get_status() for item in items}
+    for word in TRANSLATE:
+        assert statuses[word] == Base.TranslationStatus.TRANSLATED, word
+    for word in KEEP:
+        assert statuses[word] == Base.TranslationStatus.EXCLUDED, word
+
+    # 判定不译清单：25 条，且每条都带文件溯源
+    declined_file = (
+        project / "RenpyBox_Translation" / ".renpybox_declined_chinese.json"
+    )
+    assert declined_file.exists()
+    payload = json.loads(declined_file.read_text(encoding="utf-8"))
+    assert set(payload["declined"]) == KEEP
+    assert set(payload.get("sources", {})) == KEEP
+    for word in KEEP:
+        assert payload["sources"][word].endswith(".rpy")
+
+
+def test_runtime_manifest_preserves_incremental_scope_on_resume(tmp_path) -> None:
+    project = tmp_path / "fictional-game"
+    main_input = project / "game" / "tl" / "chinese"
+    delta_input = project / "game" / "tl" / "chinese_new"
+    delta_output = project / "RenpyBox_Translation" / "chinese_new"
+    main_input.mkdir(parents=True)
+    delta_input.mkdir(parents=True)
+    delta_output.mkdir(parents=True)
+    paths = RenpyProjectPaths.from_path(project, "chinese")
+    assert paths is not None
+    write_run_manifest(
+        paths,
+        delta_output,
+        input_folder=delta_input,
+        application_target_dir=main_input,
+        run_kind="incremental",
+    )
+    config = Config(
+        renpy_project_path=str(project),
+        renpy_game_folder=str(project),
+        renpy_tl_folder=str(main_input),
+        input_folder=str(delta_input),
+        output_folder=str(delta_output),
+        renpy_source_translate=False,
+        renpy_hook_translate=False,
+    )
+
+    Translator._remember_runtime_manifest(config)
+
+    manifest = read_run_manifest(paths)
+    assert manifest is not None
+    assert manifest["run_kind"] == "incremental"
+    assert manifest["input_folder"] == str(delta_input.resolve())
+    assert manifest["output_folder"] == str(delta_output.resolve())
+    assert manifest["application_target_dir"] == str(main_input.resolve())
+
+
+def test_resume_completes_allowed_acronym_but_not_translatable_ui_word() -> None:
+    translator = _translator()
+    translator.config = Config(glossary_data=[])
+    usb = CacheItem(src="USB", dst="USB", status=Base.TranslationStatus.UNTRANSLATED)
+    start = CacheItem(src="START", dst="START", status=Base.TranslationStatus.UNTRANSLATED)
+
+    accepted = translator.accept_preserved_untranslated_items([usb, start])
+
+    assert accepted == 1
+    assert usb.get_status() == Base.TranslationStatus.TRANSLATED
+    assert start.get_status() == Base.TranslationStatus.UNTRANSLATED
 
 
 def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_path) -> None:

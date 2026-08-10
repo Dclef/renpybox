@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 9,
     "name": "SiliconFlow",
     "api_url": "https://api.siliconflow.cn/v1",

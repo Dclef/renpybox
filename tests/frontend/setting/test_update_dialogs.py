@@ -1,13 +1,24 @@
 import os
+import re
+
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QCoreApplication, QEvent
-from PyQt5.QtGui import QPalette
+from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import QApplication, QFrame, QWidget
-from qfluentwidgets import TextBrowser, Theme, qconfig, setTheme
+from qfluentwidgets import (
+    TextBrowser,
+    Theme,
+    ThemeColor,
+    qconfig,
+    setTheme,
+    setThemeColor,
+)
 
 import frontend.Setting.ChangelogDialog as changelog_dialog_module
+from frontend.AppFluentWindow import AppFluentWindow
 from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from frontend.Setting.ChangelogDialog import ChangelogDialog
@@ -46,6 +57,16 @@ def test_update_details_dialog_renders_release_metadata() -> None:
     assert dialog.yesButton.text() == "下载更新"
     assert dialog.cancelButton.text() == "稍后"
     assert dialog.widget.minimumWidth() == 720
+    assert not dialog.yesButton.icon().isNull()
+
+    # 主按钮底色必须跟随主题主色，不能再被控件级 setStyleSheet 钉成固定棕色——那样
+    # 会整片顶掉 qfluentwidgets 基础 qss（圆角、内边距、color 一起丢），按钮退化成
+    # 方角色块，也和全应用其他主按钮不同色。
+    accent_qss = dialog.yesButton.styleSheet()
+    assert "border-radius" in accent_qss
+    accent_block = re.search(r"PrimaryPushButton[^{]*\{[^}]*\}", accent_qss)
+    assert accent_block is not None, "主按钮缺少 PrimaryPushButton 规则"
+    assert ThemeColor.PRIMARY.color().name() in accent_block.group(0).lower()
 
     _dispose_widgets(dialog, parent)
 
@@ -122,4 +143,41 @@ def test_changelog_dialog_uses_dark_theme_content_colors(monkeypatch) -> None:
         assert dialog.browser.palette().color(QPalette.Text).name() == "#ffffff"
     finally:
         _dispose_widgets(dialog, parent)
+        setTheme(previous_theme)
+
+
+def _contrast(fg: QColor, bg: QColor) -> float:
+    def channel(value: int) -> float:
+        srgb = value / 255
+        return srgb / 12.92 if srgb <= 0.03928 else ((srgb + 0.055) / 1.055) ** 2.4
+
+    def luminance(color: QColor) -> float:
+        return (
+            0.2126 * channel(color.red())
+            + 0.7152 * channel(color.green())
+            + 0.0722 * channel(color.blue())
+        )
+
+    high, low = sorted((luminance(fg), luminance(bg)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_primary_button_accent_contrast_is_tracked() -> None:
+    """记录主按钮配色的实际对比度，明确哪一侧是已知取舍。
+
+    qfluentwidgets 给主按钮的文字色是固定的：浅色主题白字、深色主题黑字，能不能过
+    AA 完全取决于主色明度。深色主题必须守住 4.5:1。浅色主题是产品定的取舍——品牌
+    橘棕 #BCA483 配白字只有 2.39:1，为保留品牌调性接受不达标，这里钉住这个数值，
+    以后主色再动会失败，好让人重新做一次决定而不是悄悄劣化。
+    """
+    previous_theme = qconfig.theme
+    setThemeColor(AppFluentWindow.APP_THEME_COLOR)
+    try:
+        setTheme(Theme.DARK)
+        assert _contrast(ThemeColor.PRIMARY.color(), QColor("black")) >= 4.5
+
+        setTheme(Theme.LIGHT)
+        light_contrast = _contrast(ThemeColor.PRIMARY.color(), QColor("white"))
+        assert light_contrast == pytest.approx(2.39, abs=0.01)
+    finally:
         setTheme(previous_theme)

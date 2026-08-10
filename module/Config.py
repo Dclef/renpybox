@@ -64,6 +64,13 @@ class Config():
 
     DEFAULT_ASSET_PROMPT_TOKEN_BUDGET: ClassVar[int] = 2048
     DEFAULT_ASSET_PROMPT_MAX_ITEMS: ClassVar[int] = 64
+    # Qt5 在设备像素比小于 1 时会错误绘制 QWidget 后备缓冲，因此只提供放大比例。
+    UI_SCALE_FACTORS: ClassVar[dict[str, str]] = {
+        "125%": "1.25",
+        "150%": "1.50",
+        "175%": "1.75",
+        "200%": "2.00",
+    }
 
     # 主题枚举
     THEME_DARK = "DARK"
@@ -180,6 +187,9 @@ class Config():
     renpy_tl_folder: str = ""
     extract_use_official: bool = True
     extract_use_custom: bool = True
+    # 一键翻译时，把随包 .pyc 中玩家可见的字符串写成标准 translate strings
+    # old/new，而不是留给 replace_text 补全钩子
+    extract_use_compiled: bool = True
     extract_skip_hook_files: bool = True
     extract_export_excel: bool = False
     extract_split_names: bool = True
@@ -190,10 +200,14 @@ class Config():
     # 源码翻译：引擎读取 .rpy 源码
     renpy_source_translate: bool = False
     renpy_hook_translate: bool = False  # replace_text 补全模式
+    # 运行 EXE 的运行时 HOOK 提取：默认增量补全（仅追加缺失项，保留已有翻译）
+    renpy_hook_incremental: bool = True
+    # 对首次未翻译的大写缩写再请求一次确认；关闭可避免额外消耗额度。
+    renpy_verify_uppercase_candidates: bool = True
     renpy_auto_detect_encoding: bool = True
     renpy_default_encoding: str = "utf-8"
-    # 删除与 translate 块重复的 strings 项，避免双份：保留块翻译，移除 old/new
-    renpy_remove_string_duplicates: bool = True
+    # 兼容旧配置；strings 与编号块作用域不同，不能按原文互相去重。
+    renpy_remove_string_duplicates: bool = False
     # strings 内重复 old 的处置方式：comment 保留审计记录，delete 兼容旧行为
     renpy_duplicate_string_action: str = "comment"
     # 过滤疑似被误提取的布尔表达式（例如 "foo == True"、"bar = false"），并备份到 tl/<lang>/_filtered_suspicious
@@ -324,6 +338,10 @@ class Config():
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""
+
+        # 已移除的缩放档位（如 50% / 75%）刷成自动，避免配置里留下无效值。
+        if config.get("scale_factor") not in cls.UI_SCALE_FACTORS:
+            config["scale_factor"] = ""
 
         config["translation_prompt_mode"] = cls._normalize_choice(
             config.get("translation_prompt_mode"),

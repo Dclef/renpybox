@@ -233,6 +233,18 @@ class LocalizerEN(LocalizerZH):
     platform_page_api_delete: str = "Delete API"
     platform_page_widget_add_title: str = "API List"
     platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI, Anthropic, DeepL and DeepLX here"
+    platform_page_active_hint: str = "Active API: {NAME}"
+    platform_page_active_none: str = "No active API selected"
+    platform_page_empty_title: str = "No APIs yet"
+    platform_page_empty_content: str = 'Click "Add" in the top-right corner to create your first API'
+    platform_page_group_local_title: str = "Local Models"
+    platform_page_group_local_content: str = "Model APIs deployed locally or on the local network"
+    platform_page_group_machine_title: str = "Machine Translation"
+    platform_page_group_machine_content: str = "Non-LLM translation APIs such as DeepL and DeepLX"
+    platform_page_group_online_title: str = "Online LLMs"
+    platform_page_group_online_content: str = "Online large language model APIs provided by various platforms"
+    platform_page_group_custom_title: str = "Custom APIs"
+    platform_page_group_custom_content: str = "Third-party or self-configured APIs"
 
     # 接口编辑
     platform_edit_page_name: str = "Please enter API name …"
