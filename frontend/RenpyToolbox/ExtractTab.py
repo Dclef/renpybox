@@ -24,6 +24,7 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Config import Config
 from module.Text.SkipRules import should_skip_text
 from module.Renpy.json_handler import JsonExporter, JsonImporter
 from module.Renpy import renpy_extract as rx
@@ -300,7 +301,12 @@ class ExtractTab(Base, QWidget):
             if not tl_dir.exists():
                 InfoBar.warning("提示", f"未找到 tl 目录: {tl_dir}", parent=self)
                 return
-            rx.remove_repeat_extracted_from_tl(str(tl_dir), is_py2=False)
+            config = Config().load()
+            rx.remove_repeat_extracted_from_tl(
+                str(tl_dir),
+                is_py2=False,
+                duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
+            )
             LogManager.get().info(f"Cleaned TL duplicates in: {tl_dir}")
             InfoBar.success("完成", "tl 清理完成", parent=self)
         except Exception as e:

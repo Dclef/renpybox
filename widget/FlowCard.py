@@ -16,10 +16,11 @@ class FlowCard(CardWidget):
     def __init__(self, parent: QWidget, title: str, description: str, init: Callable = None, clicked: Callable = None) -> None:
         super().__init__(parent)
 
-        # 设置容器
+        # 设置容器（紧凑边距，减少分组卡之间的空洞感）
         self.setBorderRadius(4)
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
+        self.root.setContentsMargins(16, 10, 16, 10) # 左、上、右、下
+        self.root.setSpacing(8)
 
         # 添加头部容器
         self.head_container = QWidget(self)

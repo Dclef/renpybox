@@ -40,9 +40,11 @@ class ToolIcon(FluentIconBase, Enum):
     NAME = "users-round"
     PACK = "archive"
     REPAIR = "wrench"
+    REUSE = "clipboard-check"
     FORMAT = "text-align-start"
     ANDROID = "smartphone"
     HTML = "file-input"
+    MOD = "puzzle"
 
     def path(self, theme: Theme = Theme.AUTO) -> str:
         del theme
