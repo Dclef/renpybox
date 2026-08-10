@@ -376,6 +376,15 @@ class AgentMessageWidget(QWidget):
             self.detail_container.hide()
         self.updateGeometry()
 
+    def move_answer_to_thinking(self) -> None:
+        """工具调用开始后，把已显示的前置说明收进折叠过程条。"""
+        if self.role != "assistant" or not self._text.strip():
+            return
+        pending = self._text
+        self.set_text("")
+        self.append_thinking_text(pending)
+        self.finish_thinking()
+
     def add_tool_widget(self, widget: "AgentToolWidget") -> None:
         """把工具条目挂到本轮 Agent 消息下。"""
         if self.role != "assistant":
@@ -504,6 +513,13 @@ class AgentToolWidget(CardWidget):
         root.addWidget(self.detail_label)
         self._refresh_state_colors()
 
+    def sizeHint(self) -> QSize:
+        """展开详情时把正文高度明确交给父布局，避免卡片裁切 QLabel。"""
+        hint = super().sizeHint()
+        if self.detail_label.isVisible():
+            hint.setHeight(max(hint.height(), 34 + self.detail_label.minimumHeight()))
+        return hint
+
     @property
     def state(self) -> str:
         return self._state
@@ -541,8 +557,28 @@ class AgentToolWidget(CardWidget):
             self.detail_label.setMinimumHeight(
                 min(360, max(0, self.detail_label.sizeHint().height()))
             )
+            self.adjustSize()
+            container = self.parentWidget()
+            if container is not None:
+                required = self.sizeHint().height()
+                container.setMinimumHeight(required)
+                body = container.parentWidget()
+                if body is not None:
+                    body.setMinimumHeight(required)
+                    turn = body.parentWidget()
+                    if turn is not None:
+                        turn.setMinimumHeight(turn.sizeHint().height())
         else:
             self.detail_label.setMinimumHeight(0)
+            container = self.parentWidget()
+            if container is not None:
+                container.setMinimumHeight(0)
+                body = container.parentWidget()
+                if body is not None:
+                    body.setMinimumHeight(0)
+                    turn = body.parentWidget()
+                    if turn is not None:
+                        turn.setMinimumHeight(0)
         self.toggle_button.setIcon(
             FluentIcon.CHEVRON_DOWN_MED if expanded else FluentIcon.CHEVRON_RIGHT
         )
@@ -572,6 +608,9 @@ class AgentThinkingWidget(AgentToolWidget):
             parent,
         )
         self._text = ""
+        self.name_label.setText(
+            "Thinking" if localizer.__name__.endswith("EN") else "思考过程"
+        )
         self.toggle_button.setToolTip(localizer.agent_page_tool_expand)
 
     def append_text(self, text: str) -> None:
@@ -1005,12 +1044,12 @@ class AgentPage(Base, QWidget):
         return self._assistant_turn
 
     def _append_reply_delta(self, text: str) -> None:
-        """把尚未确认的模型增量写入折叠思考条。"""
+        """实时显示模型增量；若后续调用工具，再由事件处理器折叠。"""
         delta = str(text or "")
         if not delta:
             return
         turn = self._ensure_assistant_turn()
-        turn.append_thinking_text(delta)
+        turn.append_text(delta)
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
         self._history_scroll_timer.start(0)
 
@@ -1162,6 +1201,7 @@ class AgentPage(Base, QWidget):
             self._complete_reply(str(payload.get("message", "")))
         elif event_name == "tool_start":
             if self._assistant_turn is not None:
+                self._assistant_turn.move_answer_to_thinking()
                 self._assistant_turn.finish_thinking()
             self._append_tool_start(str(payload.get("name", "")))
         elif event_name == "tool_done":
