@@ -291,18 +291,24 @@ class TaskRequester(Base):
         tools: list[Any],
         *,
         on_text_delta=None,
+        on_reasoning_delta=None,
     ):
         """调用与翻译请求隔离的 Agent 工具通道。"""
         from module.Agent.AgentRequester import AgentRequester
 
         if self._agent_requester is None:
-            self._agent_requester = AgentRequester(self.config, self.platform)
-        if on_text_delta is None:
+            self._agent_requester = AgentRequester(
+                self.config,
+                self.platform,
+                thinking_level=self.thinking_level,
+            )
+        if on_text_delta is None and on_reasoning_delta is None:
             return self._agent_requester.request_tools(messages, tools)
         return self._agent_requester.request_tools(
             messages,
             tools,
             on_text_delta=on_text_delta,
+            on_reasoning_delta=on_reasoning_delta,
         )
 
     def cancel_tools(self) -> None:

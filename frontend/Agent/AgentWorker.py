@@ -13,13 +13,23 @@ class AgentWorker(QThread):
     event = pyqtSignal(str, object)
     finished = pyqtSignal(object)
 
-    def __init__(self, service: AgentService, message: str) -> None:
+    def __init__(
+        self,
+        service: AgentService,
+        message: str,
+        thinking_level: str | None = None,
+    ) -> None:
         super().__init__()
         self.service = service
         self.message = message
+        self.thinking_level = thinking_level
 
     def run(self) -> None:
-        result = self.service.run(self.message, callback=self._on_event)
+        result = self.service.run(
+            self.message,
+            callback=self._on_event,
+            thinking_level=self.thinking_level,
+        )
         self.finished.emit(result)
 
     def cancel(self) -> None:

@@ -26,6 +26,9 @@ from module.Config import Config
 TextDeltaCallback = Callable[[str], None]
 
 
+THINKING_LEVELS = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"}
+
+
 class AgentRequester:
     """执行一次 Agent 回合的非流式请求。"""
 
@@ -33,12 +36,46 @@ class AgentRequester:
     CLIENT_LOCK = threading.RLock()
     MAX_RETRY = 2
     RE_O_SERIES = re.compile(r"o\d(?:$|-)", re.IGNORECASE)
+    RE_GPT5 = re.compile(r"gpt-5", re.IGNORECASE)
+    RE_QWEN3_5 = re.compile(r"qwen3(?:\.|-)?5", re.IGNORECASE)
+    RE_QWEN3 = re.compile(r"qwen3", re.IGNORECASE)
+    RE_DOUBAO = (
+        re.compile(r"doubao-seed-1(?:\.|-)6", re.IGNORECASE),
+        re.compile(r"doubao-seed-1(?:\.|-)8", re.IGNORECASE),
+        re.compile(r"doubao-seed-2(?:\.|-)0", re.IGNORECASE),
+    )
+    RE_THINKING = tuple(
+        re.compile(name, re.IGNORECASE) for name in ("glm", "kimi", "deepseek")
+    )
+    RE_CLAUDE = tuple(
+        re.compile(name, re.IGNORECASE)
+        for name in ("claude-3-7-sonnet", "claude-opus-4-0", "claude-sonnet-4-0")
+    )
 
-    def __init__(self, config: Config, platform: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: Config,
+        platform: dict[str, Any],
+        *,
+        thinking_level: Any = None,
+    ) -> None:
         self.config = config
         self.platform = platform
         self.cancel_event = threading.Event()
         self.last_error_message = ""
+        self.thinking_level = self._normalize_thinking_level(
+            platform.get("thinking") if thinking_level is None else thinking_level
+        )
+
+    @staticmethod
+    def _normalize_thinking_level(value: Any) -> str:
+        """兼容平台旧布尔值与新档位结构，非法值保持关闭。"""
+        if isinstance(value, dict):
+            value = value.get("level", "OFF")
+        elif value is True:
+            value = "HIGH"
+        level = str(value or "OFF").upper().strip()
+        return level if level in THINKING_LEVELS else "OFF"
 
     @staticmethod
     def _value(value: Any, name: str, default: Any = None) -> Any:
@@ -217,6 +254,7 @@ class AgentRequester:
         tools: list[ToolDef | dict[str, Any]],
         *,
         on_text_delta: TextDeltaCallback | None = None,
+        on_reasoning_delta: TextDeltaCallback | None = None,
     ) -> AgentRequestResult:
         """执行一次工具请求；传入回调时按 token 增量回报可见文本。"""
         api_format = self._api_format()
@@ -250,17 +288,20 @@ class AgentRequester:
                         messages,
                         definitions,
                         on_text_delta=on_text_delta,
+                        on_reasoning_delta=on_reasoning_delta,
                     )
                 if api_format == str(Base.APIFormat.GOOGLE).casefold():
                     return self._request_google(
                         messages,
                         definitions,
                         on_text_delta=on_text_delta,
+                        on_reasoning_delta=on_reasoning_delta,
                     )
                 return self._request_openai(
                     messages,
                     definitions,
                     on_text_delta=on_text_delta,
+                    on_reasoning_delta=on_reasoning_delta,
                 )
             except openai.BadRequestError as exc:
                 self.last_error_message = str(exc)
@@ -274,12 +315,78 @@ class AgentRequester:
                     continue
         return AgentRequestResult.failure("REQUEST_FAILED", "Agent 请求失败，请检查接口配置或网络。")
 
+    def _apply_openai_thinking(self, payload: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+        """按 OpenAI 兼容模型的约定写入思考控制参数。"""
+        model = str(self.platform.get("model") or "")
+        level = self.thinking_level
+        extra_body = dict(payload.get("extra_body") or {})
+
+        if self.RE_GPT5.search(model):
+            extra_body["reasoning_effort"] = "none" if level == "OFF" else level.lower()
+        elif self.RE_QWEN3_5.search(model):
+            extra_body["enable_thinking"] = level != "OFF"
+        elif any(pattern.search(model) for pattern in self.RE_DOUBAO):
+            extra_body["reasoning_effort"] = "minimal" if level == "OFF" else level.lower()
+        elif any(pattern.search(model) for pattern in self.RE_THINKING):
+            if level == "OFF":
+                extra_body["thinking"] = {"type": "disabled"}
+            else:
+                extra_body["thinking"] = {"type": "enabled"}
+                if "deepseek" in model.casefold():
+                    extra_body["reasoning_effort"] = (
+                        "low" if level == "LOW" else "max" if level == "MAX" else "high"
+                    )
+        elif self.RE_QWEN3.search(model) and level == "OFF" and messages:
+            # 旧版 Qwen 兼容端点没有 thinking 字段时，用提示后缀关闭思考。
+            last = messages[-1]
+            if last.get("role") == "user" and isinstance(last.get("content"), str):
+                if "/no_think" not in last["content"]:
+                    last["content"] = last["content"].rstrip() + "\n/no_think"
+
+        if extra_body:
+            payload["extra_body"] = extra_body
+
+    @classmethod
+    def _google_thinking_config(cls, model: str, level: str) -> Any:
+        """构造 Gemini 思考配置；未知模型不强行注入供应商私有字段。"""
+        lowered = model.casefold()
+        known = any(token in lowered for token in ("gemini-2.5", "gemini-3"))
+        if not known:
+            return None
+
+        budgets = {"OFF": 0, "LOW": 384, "MEDIUM": 768, "HIGH": 1024, "MAX": 1024}
+        budget = budgets.get(level, 0)
+        thinking_config_type = getattr(types, "ThinkingConfig", None)
+        if not callable(thinking_config_type):
+            return {"thinking_budget": budget, "include_thoughts": level != "OFF"}
+
+        thinking_level_enum = getattr(types, "ThinkingLevel", None)
+        if level != "OFF" and thinking_level_enum is not None:
+            enum_name = "HIGH" if level == "MAX" else level
+            enum_value = getattr(thinking_level_enum, enum_name, None)
+            if enum_value is not None:
+                try:
+                    return thinking_config_type(
+                        thinking_level=enum_value,
+                        include_thoughts=True,
+                    )
+                except Exception:
+                    pass
+        try:
+            return thinking_config_type(
+                thinking_budget=budget,
+                include_thoughts=level != "OFF",
+            )
+        except Exception:
+            return {"thinking_budget": budget, "include_thoughts": level != "OFF"}
+
     def _request_openai(
         self,
         messages: list[dict[str, Any]],
         tools: list[ToolDef],
         *,
         on_text_delta: TextDeltaCallback | None = None,
+        on_reasoning_delta: TextDeltaCallback | None = None,
     ) -> AgentRequestResult:
         client = self._get_client()
         payload: dict[str, Any] = {
@@ -295,8 +402,14 @@ class AgentRequester:
             payload["max_completion_tokens"] = max_tokens
         else:
             payload["max_tokens"] = max_tokens
-        if on_text_delta is not None:
-            return self._request_openai_stream(client, payload, on_text_delta)
+        self._apply_openai_thinking(payload, messages)
+        if on_text_delta is not None or on_reasoning_delta is not None:
+            return self._request_openai_stream(
+                client,
+                payload,
+                on_text_delta,
+                on_reasoning_delta,
+            )
 
         response = client.chat.completions.create(**payload)
         return self._parse_openai_response(response)
@@ -331,7 +444,8 @@ class AgentRequester:
         self,
         client: Any,
         payload: dict[str, Any],
-        callback: TextDeltaCallback,
+        callback: TextDeltaCallback | None,
+        reasoning_callback: TextDeltaCallback | None,
     ) -> AgentRequestResult:
         """使用底层块流；SDK 的便捷管理器不接受 tools/tool_choice 参数。"""
         completions = client.chat.completions
@@ -358,7 +472,7 @@ class AgentRequester:
                 thought = self._value(delta, "reasoning_content", "")
                 if isinstance(thought, str) and thought:
                     reasoning.append(thought)
-                    self._emit_text(callback, thought)
+                    self._emit_text(reasoning_callback, thought)
                 for call_delta in self._value(delta, "tool_calls", []) or []:
                     index = int(self._value(call_delta, "index", len(calls)))
                     item = calls.setdefault(index, {"id": f"call-{index}", "name": "", "arguments": ""})
@@ -433,18 +547,34 @@ class AgentRequester:
         tools: list[ToolDef],
         *,
         on_text_delta: TextDeltaCallback | None = None,
+        on_reasoning_delta: TextDeltaCallback | None = None,
     ) -> AgentRequestResult:
         client = self._get_client()
         system, converted = self._anthropic_messages(messages)
+        model = str(self.platform.get("model") or "")
+        thinking_budget = {"LOW": 384, "MEDIUM": 768, "HIGH": 1024, "MAX": 1024}.get(
+            self.thinking_level,
+            0,
+        )
         payload: dict[str, Any] = {
             "model": self.platform.get("model"),
             "messages": converted,
             "tools": [tool.anthropic_schema() for tool in tools],
-            "max_tokens": max(1024, int(getattr(self.config, "token_threshold", 0) or 0)),
+            "max_tokens": max(
+                1024,
+                int(getattr(self.config, "token_threshold", 0) or 0),
+                thinking_budget + 512,
+            ),
         }
         if system:
             payload["system"] = system
-        if on_text_delta is not None:
+        if any(pattern.search(model) for pattern in self.RE_CLAUDE):
+            payload["thinking"] = (
+                {"type": "disabled"}
+                if self.thinking_level == "OFF"
+                else {"type": "enabled", "budget_tokens": thinking_budget}
+            )
+        if on_text_delta is not None or on_reasoning_delta is not None:
             with client.messages.stream(**payload) as stream:
                 for event in stream:
                     if self._cancelled():
@@ -452,8 +582,14 @@ class AgentRequester:
                     if str(self._value(event, "type", "")) != "content_block_delta":
                         continue
                     delta = self._value(event, "delta", {})
-                    if str(self._value(delta, "type", "")) == "text_delta":
+                    delta_type = str(self._value(delta, "type", ""))
+                    if delta_type == "text_delta":
                         self._emit_text(on_text_delta, self._value(delta, "text", ""))
+                    elif delta_type == "thinking_delta":
+                        self._emit_text(
+                            on_reasoning_delta,
+                            self._value(delta, "thinking", ""),
+                        )
                 response = stream.get_final_message()
         else:
             response = client.messages.create(**payload)
