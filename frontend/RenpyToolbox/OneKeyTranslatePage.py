@@ -5,6 +5,7 @@ YiJianFanyiPage - 一键翻译向导页面
 
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
@@ -15,6 +16,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QStackedWidget,
     QSizePolicy,
+    QProgressDialog,
 )
 from qfluentwidgets import (
     FlowLayout,
@@ -57,6 +59,8 @@ from module.Renpy.ProjectPaths import (
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScanner
 from frontend.TranslationPage import TranslationPage
 
@@ -162,14 +166,188 @@ def _remember_translation_run(
         return None
 
 
-def _cache_item_identity(item) -> tuple[str, int, str, str]:
-    """返回跨主/增量缓存合并使用的稳定条目标识。"""
+def _renpy_cache_metadata(item) -> tuple[dict, dict, dict]:
+    extra = item.get_extra_field()
+    renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+    block = renpy.get("block", {}) if isinstance(renpy.get("block"), dict) else {}
+    pair = renpy.get("pair", {}) if isinstance(renpy.get("pair"), dict) else {}
+    digest = renpy.get("digest", {}) if isinstance(renpy.get("digest"), dict) else {}
+    return block, pair, digest
+
+
+def _cache_item_identity(item) -> tuple:
+    """优先使用不受文件整体行号漂移影响的 Ren'Py AST 身份。"""
+    block, pair, digest = _renpy_cache_metadata(item)
+    template_digest = digest.get("template_raw_sha1")
+    lang = block.get("lang")
+    label = block.get("label")
+    header_line = block.get("header_line")
+    template_line = pair.get("template_line")
+    statement_ordinal = pair.get("statement_ordinal")
+    if (
+        tl_block_kind_name(block.get("kind")) == "STRINGS"
+        and isinstance(lang, str)
+        and lang
+        and str(item.get_src() or "")
+    ):
+        # Ren'Py old/new 以原文全局注册，文件路径和块内偏移不是身份的一部分。
+        return ("renpy-strings", lang, str(item.get_src()))
+    if (
+        all(isinstance(value, str) and value for value in (lang, label, template_digest))
+        and isinstance(header_line, int)
+        and isinstance(template_line, int)
+    ):
+        if not isinstance(statement_ordinal, int):
+            statement_ordinal = template_line - header_line
+        return (
+            "renpy-ast",
+            str(item.get_file_path() or ""),
+            lang,
+            label,
+            template_digest,
+            statement_ordinal,
+            str(item.get_tag() or ""),
+        )
     return (
+        "legacy",
         str(item.get_file_path() or ""),
         int(item.get_row() or 0),
         str(item.get_src() or ""),
         str(item.get_tag() or ""),
     )
+
+
+def _cache_item_source_location(item) -> tuple | None:
+    """返回编号翻译块中的稳定槽位；全局 strings 不做位置淘汰。"""
+    block, pair, _digest = _renpy_cache_metadata(item)
+    # 同一文件可包含多个 label 都为 ``strings`` 的块，且它们的块内偏移
+    # 可能完全相同。没有稳定的块实例身份时按位置淘汰会误删另一个块。
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
+        return None
+    header_line = block.get("header_line")
+    template_line = pair.get("template_line")
+    lang = block.get("lang")
+    label = block.get("label")
+    if not (
+        isinstance(header_line, int)
+        and isinstance(template_line, int)
+        and isinstance(lang, str)
+        and isinstance(label, str)
+    ):
+        return None
+    return (
+        str(item.get_file_path() or ""),
+        lang,
+        label,
+        template_line - header_line,
+        str(item.get_tag() or ""),
+    )
+
+
+def _cache_item_label_block_identity(item) -> tuple | None:
+    """返回可由增量完整快照安全替换的编号翻译块身份。"""
+    block, _pair, _digest = _renpy_cache_metadata(item)
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
+        return None
+    lang = block.get("lang")
+    label = block.get("label")
+    if not (
+        isinstance(lang, str)
+        and lang
+        and isinstance(label, str)
+        and label
+    ):
+        return None
+    return (str(item.get_file_path() or ""), lang, label)
+
+
+def _numbered_disk_identity(item) -> tuple | None:
+    """匹配缓存与磁盘中的同一编号语句，不依赖运行期 tag。"""
+    block, pair, digest = _renpy_cache_metadata(item)
+    if tl_block_kind_name(block.get("kind")) != "LABEL":
+        return None
+    header_line = block.get("header_line")
+    template_line = pair.get("template_line")
+    statement_ordinal = pair.get("statement_ordinal")
+    template_digest = digest.get("template_raw_sha1")
+    lang = block.get("lang")
+    label = block.get("label")
+    if not (
+        isinstance(header_line, int)
+        and isinstance(template_line, int)
+        and isinstance(template_digest, str)
+        and template_digest
+        and isinstance(lang, str)
+        and isinstance(label, str)
+    ):
+        return None
+    if not isinstance(statement_ordinal, int):
+        statement_ordinal = template_line - header_line
+    return (
+        str(item.get_file_path() or ""),
+        lang,
+        label,
+        template_digest,
+        statement_ordinal,
+        str(item.get_src() or ""),
+    )
+
+
+def _is_strings_cache_item(item) -> bool:
+    block, _pair, _digest = _renpy_cache_metadata(item)
+    return tl_block_kind_name(block.get("kind")) == "STRINGS"
+
+
+def _merge_strings_cache_translation(existing, incoming):
+    """把全局 strings 译文迁入主条目的真实文件位置。"""
+    existing_dst = str(existing.get_dst() or "")
+    existing_translated = bool(existing_dst and existing_dst != existing.get_src())
+    if existing_translated:
+        return existing
+
+    data = existing.asdict()
+    incoming_data = incoming.asdict()
+    for field in ("dst", "name_dst", "status", "retry_count", "metadata"):
+        data[field] = incoming_data[field]
+    return type(existing).from_dict(data)
+
+
+def _merge_numbered_cache_translation(existing, incoming):
+    """把磁盘最终结果中的有效编号译文迁入增量缓存条目。"""
+    data = incoming.asdict()
+    existing_dst = existing.get_dst()
+    if isinstance(existing_dst, str) and existing_dst and existing_dst != existing.get_src():
+        existing_data = existing.asdict()
+        for field in ("dst", "status", "retry_count", "metadata"):
+            data[field] = existing_data[field]
+
+    existing_name_dst = existing.get_name_dst()
+    if existing_name_dst and existing_name_dst != existing.get_name_src():
+        data["name_dst"] = existing_name_dst
+    return type(incoming).from_dict(data)
+
+
+def _load_numbered_disk_translations(output_dir: Path) -> dict[tuple, object]:
+    """读取磁盘合并后的编号块；其内容是本轮应用结果的最终依据。"""
+    translations: dict[tuple, object] = {}
+    extractor = RenpyTlItemExtractor()
+    for rpy_file in Path(output_dir).rglob("*.rpy"):
+        try:
+            rel_path = rpy_file.relative_to(output_dir).as_posix()
+            doc = parse_tl_document(
+                rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            for item in extractor.extract(doc, rel_path):
+                if _cache_item_label_block_identity(item) is None:
+                    continue
+                dst = item.get_dst()
+                if isinstance(dst, str) and dst and dst != item.get_src():
+                    identity = _numbered_disk_identity(item)
+                    if identity is not None:
+                        translations[identity] = item
+        except Exception:
+            continue
+    return translations
 
 
 def _project_assets_have_state(payload) -> bool:
@@ -216,18 +394,59 @@ def merge_incremental_translation_cache(
     except Exception:
         pass
 
-    merged: dict[tuple[str, int, str, str], object] = {}
-    order: list[tuple[str, int, str, str]] = []
+    merged: dict[tuple, object] = {}
+    order: list[tuple] = []
+    main_locations: dict[tuple, tuple] = {}
+    disk_numbered_items = _load_numbered_disk_translations(main_output)
+    incremental_items = incremental_manager.get_items()
+    replaced_label_blocks = {
+        block_identity
+        for item in incremental_items
+        if (block_identity := _cache_item_label_block_identity(item)) is not None
+    }
     if main_loaded:
         for item in main_manager.get_items():
             key = _cache_item_identity(item)
+            # 变更编号块的增量缓存是完整块快照。先清除该块的全部旧条目，
+            # 才能同步其中被删除的语句；全局 strings 不参与整块淘汰。
+            if _cache_item_label_block_identity(item) in replaced_label_blocks:
+                continue
             if key not in merged:
                 order.append(key)
-            merged[key] = item
-    for item in incremental_manager.get_items():
+                merged[key] = item
+            elif _is_strings_cache_item(item):
+                merged[key] = _merge_strings_cache_translation(merged[key], item)
+            else:
+                merged[key] = item
+            location = _cache_item_source_location(item)
+            if location is not None:
+                main_locations[location] = key
+    for item in incremental_items:
         key = _cache_item_identity(item)
+        if _cache_item_label_block_identity(item) is not None:
+            disk_item = disk_numbered_items.get(_numbered_disk_identity(item))
+            if disk_item is not None:
+                item = _merge_numbered_cache_translation(disk_item, item)
+        if key in merged and _is_strings_cache_item(item):
+            # 跨文件 old/new 共用全局身份，但主缓存条目的路径对应磁盘合并后的
+            # 实际目标；只迁移译文状态，不能保留即将删除的 staging 路径。
+            merged[key] = _merge_strings_cache_translation(merged[key], item)
+            continue
+        location = _cache_item_source_location(item)
+        stale_key = main_locations.get(location) if location is not None else None
+        if stale_key is not None and stale_key != key and stale_key in merged:
+            # 同一 AST 槽的原文/模板已变化：用增量条目整体替换，绝不沿用旧译文。
+            merged.pop(stale_key)
+            if key in order:
+                order.remove(stale_key)
+            else:
+                try:
+                    order[order.index(stale_key)] = key
+                except ValueError:
+                    order.append(key)
         if key not in merged:
-            order.append(key)
+            if key not in order:
+                order.append(key)
         # 增量任务的状态/译文是本轮刚生成的，覆盖同键旧占位条目。
         merged[key] = item
 
@@ -265,10 +484,18 @@ def merge_incremental_translation_cache(
     saver = CacheManager(service = False)
     if not saver.save_to_file(project, items, str(main_output), strict = False):
         # 坏 SQLite 不应阻止把有效增量缓存落到 JSON；当前实例切换后端，
-        # 后续校对页会按同一目录继续读取 JSON 回退。
+        # JSON 成功写入后必须移除旧数据库，否则后续新实例仍会优先读取
+        # 可读但未合并的 SQLite，并在增量目录删除后丢失本轮条目。
         try:
             saver._mark_json_fallback(str(main_output))
-            saver.save_to_file(project, items, str(main_output), strict = True)
+            if not saver.save_to_file(
+                project, items, str(main_output), strict = True
+            ):
+                return False
+            stale_db = Path(saver._get_db_path(str(main_output)))
+            stale_db.unlink(missing_ok = True)
+            if stale_db.exists():
+                return False
         except Exception:
             return False
     return True
@@ -281,6 +508,133 @@ def resolve_translation_apply_paths(config, incremental_output=None, incremental
             return Path(incremental_output), None
         return Path(incremental_output), Path(incremental_target)
     return Path(config.output_folder), Path(config.input_folder)
+
+
+def apply_translation_files_transactionally(
+    output_files: list[Path],
+    output_dir: Path,
+    input_dir: Path,
+) -> int:
+    """应用整批翻译文件；任一文件失败时恢复此前所有目标。"""
+    # 相对目标必须按输出目录中的词法路径计算，不能先解引用源符号链接。
+    output_dir = Path(os.path.abspath(os.fspath(output_dir)))
+    input_dir = Path(input_dir).resolve()
+    input_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_root = Path(
+        tempfile.mkdtemp(prefix=".renpybox-apply-", dir=str(input_dir.parent))
+    )
+    input_dir_resolved = input_dir.resolve()
+    # 允许 tl 目录内部及游戏目录内的符号链接目标，但禁止写回项目之外。
+    allowed_roots = (
+        input_dir_resolved,
+        input_dir_resolved.parent,
+        input_dir_resolved.parent.parent,
+    )
+    applied: list[tuple[Path, Path | None]] = []
+    temp_targets: list[Path] = []
+    rollback_failed = False
+    try:
+        for index, source in enumerate(output_files):
+            lexical_source = Path(os.path.abspath(os.fspath(source)))
+            rel_path = lexical_source.relative_to(output_dir)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                raise ValueError(f"输出文件越过翻译目录: {lexical_source}")
+            source = lexical_source.resolve(strict=True)
+            if not source.is_file():
+                raise ValueError(f"输出翻译源不是文件: {lexical_source}")
+            target = input_dir / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            # os.replace 会替换符号链接本身，而不是写入其指向文件。
+            # 对链接的真实目标执行整套事务，才能同时保留链接和回滚能力。
+            if target.is_symlink():
+                try:
+                    unresolved_target = target.resolve(strict=False)
+                    write_target = (
+                        unresolved_target.parent.resolve(strict=True)
+                        / unresolved_target.name
+                    )
+                except (OSError, RuntimeError) as exc:
+                    raise RuntimeError(
+                        f"无法解析翻译目标符号链接: {target}: {exc}"
+                    ) from exc
+                if write_target.exists() and not write_target.is_file():
+                    raise RuntimeError(f"翻译目标符号链接未指向文件: {target}")
+            else:
+                write_target = target
+
+            # 防止翻译目录内被植入指向项目外的符号链接，导致写回覆盖外部文件。
+            resolved_write_target = write_target.resolve(strict=False)
+            if not any(
+                resolved_write_target == root
+                or root in resolved_write_target.parents
+                for root in allowed_roots
+            ):
+                raise RuntimeError(
+                    f"翻译目标符号链接指向翻译目录之外: {target} -> {write_target}"
+                )
+
+            backup: Path | None = None
+            if write_target.exists():
+                backup = backup_root / rel_path
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(write_target, backup)
+
+            temp_fd, temp_name = tempfile.mkstemp(
+                prefix=f".{write_target.name}.apply-{index}-",
+                suffix=".tmp",
+                dir=str(write_target.parent),
+            )
+            os.close(temp_fd)
+            temp_target = Path(temp_name)
+            temp_targets.append(temp_target)
+            shutil.copy2(source, temp_target)
+            os.replace(str(temp_target), str(write_target))
+            temp_targets.remove(temp_target)
+            applied.append((write_target, backup))
+        return len(applied)
+    except Exception as apply_exc:
+        rollback_errors: list[str] = []
+        for target, backup in reversed(applied):
+            try:
+                if backup is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    restore_fd, restore_name = tempfile.mkstemp(
+                        prefix=f".{target.name}.rollback-",
+                        suffix=".tmp",
+                        dir=str(target.parent),
+                    )
+                    os.close(restore_fd)
+                    restore_temp = Path(restore_name)
+                    try:
+                        shutil.copy2(backup, restore_temp)
+                        os.replace(str(restore_temp), str(target))
+                    finally:
+                        restore_temp.unlink(missing_ok=True)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"{target}: {rollback_exc}")
+        rollback_failed = bool(rollback_errors)
+        preserved_hint = ""
+        if rollback_errors:
+            # 回滚失败时原文件唯一副本仍在 backup_root，必须保留而不是删除。
+            preserved = backup_root.with_name(
+                f"{backup_root.name}-rollback-{int(time.time())}"
+            )
+            try:
+                backup_root.replace(preserved)
+                preserved_hint = f"；原始文件备份保留在: {preserved}"
+            except Exception:
+                preserved_hint = f"；原始文件备份目录: {backup_root}（未能重命名）"
+        detail = f"；回滚失败：{'；'.join(rollback_errors)}" if rollback_errors else ""
+        raise RuntimeError(
+            f"应用翻译失败，已回滚本批次：{apply_exc}{detail}{preserved_hint}"
+        ) from apply_exc
+    finally:
+        for temp_target in temp_targets:
+            temp_target.unlink(missing_ok=True)
+        if not rollback_failed:
+            shutil.rmtree(backup_root, ignore_errors=True)
 
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):
@@ -330,6 +684,140 @@ class ExtractionWorker(QThread):
         finally:
             self.unified_extractor.set_progress_callback(None)
 
+
+class ApplyTranslationWorker(QThread):
+    """后台执行“应用翻译到游戏”，避免大批量文件操作阻塞 UI。
+
+    - incremental 模式：语义合并增量目录 -> 迁移缓存 -> 清理增量目录 -> 恢复主路径；
+    - 全量模式：事务性覆盖目标 TL 文件。
+    进度通过 progress 信号上报，结果通过 finished 信号回传 UI 线程。
+    """
+
+    progress = pyqtSignal(str, int)  # message, percent
+    finished = pyqtSignal(bool, str, object)  # success, message, payload
+
+    def __init__(
+        self,
+        unified_extractor,
+        *,
+        incremental_mode: bool,
+        game_dir=None,
+        tl_name: str = "chinese",
+        output_dir=None,
+        input_dir=None,
+        output_files=None,
+        main_output=None,
+        incremental_dir=None,
+        config=None,
+        project_root=None,
+        project_language=None,
+    ):
+        super().__init__()
+        self.unified_extractor = unified_extractor
+        self.incremental_mode = incremental_mode
+        self.game_dir = game_dir
+        self.tl_name = tl_name
+        self.output_dir = Path(output_dir) if output_dir else None
+        self.input_dir = Path(input_dir) if input_dir else None
+        self.output_files = list(output_files) if output_files else []
+        self.main_output = Path(main_output) if main_output else None
+        self.incremental_dir = Path(incremental_dir) if incremental_dir else None
+        self.config = config
+        self.project_root = project_root
+        self.project_language = project_language
+
+    def run(self):
+        try:
+            self.unified_extractor.set_progress_callback(
+                lambda msg, pct: self.progress.emit(msg, pct)
+            )
+            if self.incremental_mode:
+                self._run_incremental()
+            else:
+                self._run_full()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self.finished.emit(False, f"应用翻译失败：{exc}", None)
+        finally:
+            self.unified_extractor.set_progress_callback(None)
+
+    def _run_incremental(self):
+        merge_result = self.unified_extractor.merge_incremental_folder(
+            self.game_dir,
+            self.tl_name,
+            self.output_dir,
+            clean_duplicates=True,
+        )
+        if not merge_result.success:
+            self.finished.emit(
+                False,
+                merge_result.message,
+                {"warning": True},
+            )
+            return
+        cache_dir = self.output_dir / "cache"
+        cache_was_present = cache_dir.is_dir()
+        cache_migrated = (
+            merge_incremental_translation_cache(self.output_dir, self.main_output)
+            if cache_was_present
+            else True
+        )
+        if cache_was_present and not cache_migrated:
+            # 合并函数已写回 TL，但缓存迁移失败时保留增量目录，
+            # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
+            self.finished.emit(
+                False,
+                f"翻译文件已应用，但缓存仍保留在：{self.output_dir / 'cache'}，请稍后重试应用。",
+                {"warning": True},
+            )
+            return
+        self.progress.emit("正在清理增量目录...", 92)
+        if self.output_dir.exists():
+            shutil.rmtree(str(self.output_dir), ignore_errors=True)
+        if self.incremental_dir and self.incremental_dir.exists():
+            shutil.rmtree(str(self.incremental_dir), ignore_errors=True)
+        # 应用增量后恢复全局主路径，并把运行清单更新到已经
+        # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
+        self.progress.emit("正在恢复翻译路径配置...", 96)
+        configure_main_translation_paths(
+            self.config,
+            self.game_dir,
+            self.tl_name,
+            remember_run=True,
+        )
+        self.config.save()
+        self.finished.emit(
+            True,
+            merge_result.message,
+            {"main_output": str(self.main_output)},
+        )
+
+    def _run_full(self):
+        success_count = apply_translation_files_transactionally(
+            self.output_files,
+            self.output_dir,
+            self.input_dir,
+        )
+        # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
+        # hook 接续；这样 hook 扫描到的是真实的最新 TL。
+        self.progress.emit("正在恢复翻译路径配置...", 96)
+        if self.project_root and self.project_language:
+            configure_main_translation_paths(
+                self.config,
+                self.project_root,
+                self.project_language,
+                remember_run=False,
+            )
+            self.config.save()
+        self.finished.emit(
+            True,
+            f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
+            f"现在可以启动游戏查看翻译效果。",
+            {"count": success_count},
+        )
+
+
 class YiJianFanyiPage(Base, QWidget):
     """一键翻译页面 - 向导式分步骤流程"""
     
@@ -352,12 +840,19 @@ class YiJianFanyiPage(Base, QWidget):
         self._ner_model_loaded = False
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
+        self._onekey_translation_completed = False
         self._auto_hook_pending = False
         self._auto_hook_running = False
         self._incremental_dir = None
         self._incremental_output_dir = None
         self._apply_target_dir = None
         self._last_onekey_output_dir = None
+        self._apply_running = False  # 防止“应用翻译到游戏”重入
+        self._apply_worker = None
+        self._apply_card = None
+        self._apply_parent = None
+        self._apply_project_paths = None
+        self._apply_progress_dialog = None
         # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
         # 最近运行清单指向 hook 缓存，供校对页继续载入。
         self._hook_restore_paths = None
@@ -601,6 +1096,38 @@ class YiJianFanyiPage(Base, QWidget):
         )
         self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
         options_layout.addWidget(self.inject_base_box_chk)
+
+        self.extract_compiled_chk = CheckBox(
+            "提取游戏内置隐藏文本并翻译（生成 renpybox_bytecode_strings.rpy）"
+        )
+        self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
+        self.extract_compiled_chk.setToolTip(
+            "游戏中部分玩家可见文本写死在程序文件里，"
+            "Ren'Py 官方抽取识别不到。\n"
+            "勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译"
+            "（写入 tl/<语言>/renpybox_bytecode_strings.rpy）。\n"
+            "不勾选则这些文本不纳入标准翻译，翻译时容易漏掉，需要之后靠补全功能兜底。"
+        )
+        self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
+        options_layout.addWidget(self.extract_compiled_chk)
+
+        self.verify_uppercase_chk = CheckBox(
+            "对未翻译的大写缩写做二次确认（会额外消耗额度）"
+        )
+        self.verify_uppercase_chk.setChecked(
+            getattr(config, "renpy_verify_uppercase_candidates", True)
+        )
+        self.verify_uppercase_chk.stateChanged.connect(
+            self._on_verify_uppercase_changed
+        )
+        options_layout.addWidget(self.verify_uppercase_chk)
+
+        self.clear_declined_btn = PushButton(
+            "清除判定不译清单",
+            icon=FluentIcon.DELETE,
+        )
+        self.clear_declined_btn.clicked.connect(self._clear_declined_candidates)
+        options_layout.addWidget(self.clear_declined_btn)
 
         layout.addWidget(options_card)
 
@@ -887,6 +1414,61 @@ class YiJianFanyiPage(Base, QWidget):
             config.save()
         except Exception as exc:
             self.logger.warning(f"保存自动合并配置失败: {exc}")
+
+    def _on_extract_compiled_changed(self, state: int):
+        """同步编译字符串提取开关到配置"""
+        try:
+            from module.Config import Config
+            config = Config().load()
+            config.extract_use_compiled = bool(state)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"保存编译字符串提取配置失败: {exc}")
+
+    def _on_verify_uppercase_changed(self, state: int):
+        """同步大写缩写二次确认开关到配置。"""
+        try:
+            from module.Config import Config
+
+            config = Config().load()
+            config.renpy_verify_uppercase_candidates = bool(state)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"保存大写缩写二次确认配置失败: {exc}")
+
+    def _clear_declined_candidates(self):
+        """确认后清除当前项目的判定不译清单。"""
+        if not self.game_dir:
+            InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+            return
+
+        from qfluentwidgets import MessageBox
+        from module.Extract.ReplaceGenerator import clear_declined_candidates
+
+        msg_box = MessageBox(
+            "清除判定不译清单",
+            "清除后这些词会在下次翻译时重新尝试翻译。",
+            self,
+        )
+        msg_box.yesButton.setText("确认清除")
+        msg_box.cancelButton.setText("取消")
+        if not msg_box.exec():
+            return
+
+        tl_name = self.tl_folder_edit.text().strip() or "chinese"
+        cleared = clear_declined_candidates(self.game_dir, tl_name)
+        if cleared:
+            InfoBar.success(
+                "清除完成",
+                f"已清除 {cleared} 条判定不译记录",
+                parent=self,
+            )
+        else:
+            InfoBar.info(
+                "提示",
+                "当前没有判定不译记录",
+                parent=self,
+            )
 
     def _merge_incremental_dir(self):
         """合并增量目录并清理重复"""
@@ -1759,7 +2341,13 @@ class YiJianFanyiPage(Base, QWidget):
     def _go_step4(self):
         self.current_step = 4
         self.stacked.setCurrentIndex(3)
-        self._refresh_step4_ready()
+        self._refresh_step4_state()
+
+    def showEvent(self, event):
+        """从翻译面板返回本页时刷新第 4 步状态，避免显示“未翻译”的假象。"""
+        super().showEvent(event)
+        if self.current_step == 4:
+            self._refresh_step4_state()
     
     def _on_start_translate_clicked(self):
         """检查配置后再进入翻译面板"""
@@ -1795,6 +2383,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         if msg_box.exec():
             self._onekey_translation_started = True
+            self._onekey_translation_completed = False
             self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
             self._auto_hook_running = False
             self._open_legacy_translation_page()
@@ -1982,15 +2571,53 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         if self._onekey_translation_started:
+            self._onekey_translation_completed = not failed
             self._reset_auto_hook_state()
+            self._refresh_step4_state()
 
     def _on_translation_stop(self, event, data):
         """翻译停止时清理一键翻译的自动补漏状态。"""
         if self._onekey_translation_started or self._auto_hook_pending or self._auto_hook_running:
             if self._auto_hook_running:
                 self._restore_paths_after_auto_hook()
+            self._onekey_translation_completed = False
             self._reset_auto_hook_state()
-    
+            self._refresh_step4_state()
+
+    def _translation_output_completed(self) -> bool:
+        """翻译输出目录缓存已完成时为 True（用于向导重建后的兜底判断）。"""
+        try:
+            from module.Cache.CacheManager import CacheManager
+
+            cfg = Config().load()
+            output = str(getattr(cfg, "output_folder", "") or "")
+            if not output:
+                return False
+            manager = CacheManager(service=False)
+            manager.load_project_from_file(output)
+            return (
+                manager.get_project().get_status()
+                == Base.TranslationStatus.TRANSLATED
+            )
+        except Exception:
+            return False
+
+    def _refresh_step4_state(self) -> None:
+        """刷新第 4 步界面：翻译已完成时给出明确指引，否则走配置检查。"""
+        if self._onekey_translation_completed or self._translation_output_completed():
+            self._onekey_translation_completed = True
+            self.step4_status.setText(
+                "✔ 翻译已完成，可直接进入「后续处理」应用翻译到游戏。"
+            )
+            self.step4_status.setStyleSheet("color: #27ae60;")
+            self.start_trans_btn.setText("重新翻译")
+            self.start_trans_btn.setEnabled(True)
+            self.skip_trans_btn.setText("进入后续处理 →")
+            return
+        self.start_trans_btn.setText("🚀 开始翻译")
+        self.skip_trans_btn.setText("跳过翻译 →")
+        self._refresh_step4_ready()
+
     def _refresh_step4_ready(self) -> bool:
         """检查翻译前的必备配置"""
         from module.Config import Config
@@ -2054,6 +2681,7 @@ class YiJianFanyiPage(Base, QWidget):
         # 重置状态（为下次使用做准备）
         self.current_step = 1
         self.stacked.setCurrentIndex(0)
+        self._onekey_translation_completed = False
         self.step1_next_btn.setEnabled(False)
         self.skip_extract_btn.setVisible(False)
         self.game_path = ""
@@ -2134,127 +2762,122 @@ class YiJianFanyiPage(Base, QWidget):
         if not msg_box.exec():
             return
         
-        # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
+        # 防重入：应用进行中不允许再次触发（乱点会导致重复合并/卡死）。
+        if getattr(self, "_apply_running", False):
+            InfoBar.warning(
+                "正在应用",
+                "翻译应用正在进行中，请稍候…",
+                parent=ui_parent,
+            )
+            return
+        self._apply_running = True
+        if card is not None and hasattr(card, "setEnabled"):
+            card.setEnabled(False)
+
         if incremental_output:
-            try:
-                tl_name = self.tl_folder_edit.text().strip() or "chinese"
-                merge_result = self.unified_extractor.merge_incremental_folder(
-                    self.game_dir,
-                    tl_name,
-                    output_dir,
-                    clean_duplicates=True,
-                )
-                if not merge_result.success:
-                    InfoBar.warning("合并失败", merge_result.message, parent=ui_parent)
-                    return
-                main_output = (
-                    project_paths.translation_output_dir
-                    if project_paths is not None
-                    else output_dir.parent / tl_name
-                )
-                cache_dir = output_dir / "cache"
-                cache_was_present = cache_dir.is_dir()
-                cache_migrated = merge_incremental_translation_cache(
-                    output_dir,
-                    main_output,
-                ) if cache_was_present else True
-                if cache_was_present and not cache_migrated:
-                    # 合并函数已写回 TL，但缓存迁移失败时保留增量目录，
-                    # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
-                    InfoBar.warning(
-                        "缓存暂未合并",
-                        f"翻译文件已应用，但缓存仍保留在：{output_dir / 'cache'}，请稍后重试应用。",
-                        parent=ui_parent,
-                    )
-                    return
-                if output_dir.exists():
-                    shutil.rmtree(str(output_dir), ignore_errors=True)
-                staging_input = getattr(self, "_incremental_dir", None)
-                if staging_input and Path(staging_input).exists():
-                    shutil.rmtree(str(staging_input), ignore_errors=True)
-                # 应用增量后恢复全局主路径，并把运行清单更新到已经
-                # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
-                configure_main_translation_paths(
-                    config,
-                    self.game_dir,
-                    tl_name,
-                    remember_run = True,
-                )
-                config.save()
-                self._last_onekey_output_dir = main_output
-                self._incremental_dir = None
-                self._incremental_output_dir = None
-                self._apply_target_dir = None
-                InfoBar.success("应用成功", merge_result.message, duration=5000, parent=ui_parent)
-                if self._onekey_translation_started and self._auto_hook_pending:
-                    self._auto_hook_pending = False
-                    QTimer.singleShot(0, self._start_auto_hook_supplement)
-                elif self._onekey_translation_started:
-                    self._reset_auto_hook_state()
-                return
-            except Exception as e:
-                self.logger.error(f"应用增量翻译失败: {e}")
-                InfoBar.error("错误", f"应用增量翻译失败：{e}", parent=ui_parent)
-                return
+            # 增量文件只包含部分条目，必须通过语义合并写回，不能整文件覆盖主 TL。
+            main_output = (
+                project_paths.translation_output_dir
+                if project_paths is not None
+                else output_dir.parent / tl_name
+            )
+            staging_input = getattr(self, "_incremental_dir", None)
+            worker = ApplyTranslationWorker(
+                self.unified_extractor,
+                incremental_mode=True,
+                game_dir=self.game_dir,
+                tl_name=tl_name,
+                output_dir=output_dir,
+                main_output=main_output,
+                incremental_dir=staging_input,
+                config=config,
+            )
+        else:
+            # 全量翻译按批次应用；任一文件失败就恢复本批次已覆盖的目标。
+            worker = ApplyTranslationWorker(
+                self.unified_extractor,
+                incremental_mode=False,
+                output_dir=output_dir,
+                input_dir=input_dir,
+                output_files=output_files,
+                config=config,
+                project_root=(
+                    project_paths.project_root if project_paths is not None else None
+                ),
+                project_language=(
+                    project_paths.language if project_paths is not None else None
+                ),
+            )
 
-        # 全量翻译沿用整文件复制行为。
-        try:
-            success_count = 0
-            failed_files = []
-            
-            for file in output_files:
-                try:
-                    # 计算相对路径
-                    rel_path = file.relative_to(output_dir)
-                    target_file = input_dir / rel_path
-                    
-                    # 确保目标目录存在
-                    target_file.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # 复制文件
-                    shutil.copy2(file, target_file)
-                    success_count += 1
-                    
-                except Exception as e:
-                    failed_files.append((file.name, str(e)))
-            
-            # 显示结果
-            if failed_files:
-                msg = f"应用完成：成功 {success_count} 个，失败 {len(failed_files)} 个\n\n失败文件：\n"
-                msg += "\n".join([f"- {name}: {err}" for name, err in failed_files[:5]])
-                if len(failed_files) > 5:
-                    msg += f"\n... 还有 {len(failed_files) - 5} 个"
-                InfoBar.warning("部分成功", msg, duration=5000, parent=ui_parent)
-            else:
-                InfoBar.success(
-                    "应用成功",
-                    f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
-                    f"现在可以启动游戏查看翻译效果。",
-                    duration=5000,
-                    parent=ui_parent
-                )
+        progress_dialog = QProgressDialog(
+            "正在应用翻译到游戏，请稍候…",
+            None,
+            0,
+            100,
+            ui_parent,
+        )
+        progress_dialog.setWindowTitle("应用翻译")
+        progress_dialog.setWindowModality(Qt.ApplicationModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
 
-                # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
-                # hook 接续；这样 hook 扫描到的是真实的最新 TL。
-                if project_paths is not None:
-                    configure_main_translation_paths(
-                        config,
-                        project_paths.project_root,
-                        project_paths.language,
-                        remember_run = False,
-                    )
-                    config.save()
+        # 用页面绑定方法接收信号，保证跨线程排队投递到 UI 线程。
+        self._apply_card = card
+        self._apply_parent = ui_parent
+        self._apply_project_paths = project_paths
+        self._apply_progress_dialog = progress_dialog
+        worker.progress.connect(self._on_apply_progress)
+        worker.finished.connect(self._on_apply_finished)
+        self._apply_worker = worker
+        worker.start()
+
+    def _on_apply_progress(self, msg: str, pct: int) -> None:
+        """后台进度信号：更新进度对话框（运行在 UI 线程）。"""
+        dialog = getattr(self, "_apply_progress_dialog", None)
+        if dialog is not None:
+            dialog.setLabelText(str(msg))
+            dialog.setValue(int(pct))
+
+    def _on_apply_finished(self, success: bool, msg: str, payload: dict | None):
+        """后台应用结束后回到 UI 线程：恢复入口、展示结果、接续 hook。"""
+        card = getattr(self, "_apply_card", None)
+        ui_parent = getattr(self, "_apply_parent", None)
+        project_paths = getattr(self, "_apply_project_paths", None)
+        progress_dialog = getattr(self, "_apply_progress_dialog", None)
+        self._apply_running = False
+        self._apply_worker = None
+        self._apply_card = None
+        self._apply_parent = None
+        self._apply_project_paths = None
+        self._apply_progress_dialog = None
+        if card is not None and hasattr(card, "setEnabled"):
+            card.setEnabled(True)
+        if progress_dialog is not None:
+            progress_dialog.close()
+
+        if success:
+            if payload:
+                if payload.get("main_output"):
+                    self._last_onekey_output_dir = Path(payload["main_output"])
+                    self._incremental_dir = None
+                    self._incremental_output_dir = None
+                    self._apply_target_dir = None
+                elif payload.get("count") is not None and project_paths is not None:
                     self._last_onekey_output_dir = project_paths.translation_output_dir
-                if self._onekey_translation_started and self._auto_hook_pending:
-                    self._auto_hook_pending = False
-                    QTimer.singleShot(0, self._start_auto_hook_supplement)
-                elif self._onekey_translation_started:
-                    self._reset_auto_hook_state()
-                
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            InfoBar.error("错误", f"应用翻译失败：{e}", parent=ui_parent)
+            InfoBar.success("应用成功", msg, duration=5000, parent=ui_parent)
+            if self._onekey_translation_started and self._auto_hook_pending:
+                self._auto_hook_pending = False
+                QTimer.singleShot(0, self._start_auto_hook_supplement)
+            elif self._onekey_translation_started:
+                self._reset_auto_hook_state()
+            return
+
+        if payload and payload.get("warning"):
+            InfoBar.warning("提示", msg, parent=ui_parent)
+        else:
+            InfoBar.error("错误", msg, parent=ui_parent)
 
     def _tool_hook_supplement(self, card):
         """打开补全漏翻页面，并沿用当前项目上下文。"""

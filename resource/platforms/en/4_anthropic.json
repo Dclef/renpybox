@@ -1,4 +1,5 @@
 {
+    "group": "online",
     "id": 4,
     "name": "Anthropic",
     "api_url": "https://api.anthropic.com",

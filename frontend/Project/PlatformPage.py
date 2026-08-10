@@ -1,30 +1,80 @@
-import os
+import copy
 import json
-from functools import partial
+import os
 
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtWidgets import QLayout
-from PyQt5.QtWidgets import QVBoxLayout
-from qfluentwidgets import Action
-from qfluentwidgets import RoundMenu
-from qfluentwidgets import FluentIcon
-from qfluentwidgets import FluentWindow
-from qfluentwidgets import DropDownPushButton
-from qfluentwidgets import PrimaryDropDownPushButton
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import QLayout, QVBoxLayout, QWidget
+from qfluentwidgets import (
+    Action,
+    CaptionLabel,
+    FluentIcon,
+    FluentWindow,
+    RoundMenu,
+    SingleDirectionScrollArea,
+    StrongBodyLabel,
+)
 
 from base.Base import Base
+from base.PathHelper import get_resource_path
+from frontend.Project.ArgsEditPage import ArgsEditPage
+from frontend.Project.PlatformEditPage import PlatformEditPage
+from frontend.Project.PlatformGroupCard import PlatformGroupCard
+from frontend.Project.PlatformHeaderCard import PlatformHeaderCard
+from frontend.Project.PlatformItemCard import PlatformItemCard
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
-from widget.FlowCard import FlowCard
-from frontend.Project.PlatformEditPage import PlatformEditPage
-from frontend.Project.ArgsEditPage import ArgsEditPage
-from base.PathHelper import get_resource_path
+
+
+PLATFORM_GROUPS = ("local", "machine", "online", "custom")
+
+
+def infer_group(platform: dict) -> str:
+    """根据旧接口配置推断展示分组，不修改原配置。"""
+    api_format = str(platform.get("api_format", ""))
+
+    if api_format in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+        return "machine"
+
+    if api_format == Base.APIFormat.SAKURALLM:
+        return "local"
+
+    api_url = str(platform.get("api_url", "")).lower()
+    if any(host in api_url for host in ("127.0.0.1", "localhost", "0.0.0.0", "[::1]")):
+        return "local"
+
+    name = str(platform.get("name", "")).strip().lower()
+    if name.startswith("自定义") or name.startswith("custom"):
+        return "custom"
+
+    return "online"
+
+
+def resolve_group(platform: dict) -> str:
+    group = platform.get("group")
+    return group if group in PLATFORM_GROUPS else infer_group(platform)
+
+
+def deduplicate_platform_name(name: str, platforms: list[dict]) -> str:
+    """按精确名称匹配，为重复接口名追加递增数字后缀。"""
+    existing_names = {str(platform.get("name", "")) for platform in platforms}
+    if name not in existing_names:
+        return name
+
+    suffix = 2
+    while f"{name} {suffix}" in existing_names:
+        suffix += 1
+    return f"{name} {suffix}"
+
 
 class PlatformPage(QWidget, Base):
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        self.window = window
+        self.item_cards: dict[int, PlatformItemCard] = {}
+        self.item_groups: dict[int, str] = {}
 
         # 载入配置
         config = Config().load()
@@ -37,12 +87,25 @@ class PlatformPage(QWidget, Base):
             config.save()
 
         # 设置主容器
-        self.vbox = QVBoxLayout(self)
+        self.root = QVBoxLayout(self)
+        self.root.setContentsMargins(24, 24, 24, 24)  # 左、上、右、下
+
+        self.content = QWidget(self)
+        self.vbox = QVBoxLayout(self.content)
         self.vbox.setSpacing(8)
-        self.vbox.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+        self.vbox.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll_area = SingleDirectionScrollArea(
+            self,
+            orient=Qt.Orientation.Vertical,
+        )
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.enableTransparentBackground()
+        self.scroll_area.setWidget(self.content)
+        self.root.addWidget(self.scroll_area)
 
         # 添加控件
-        self.add_widget(self.vbox, config, window)
+        self.add_widget(self.vbox)
 
         # 填充
         self.vbox.addStretch(1)
@@ -51,7 +114,7 @@ class PlatformPage(QWidget, Base):
         self.subscribe(Base.Event.PLATFORM_TEST_DONE, self.platform_test_done)
 
     # 执行接口测试
-    def platform_test_start(self, id: int, widget: FlowCard, window: FluentWindow) -> None:
+    def platform_test_start(self, id: int) -> None:
         self.emit(Base.Event.PLATFORM_TEST_START, {
             "id": id,
         })
@@ -60,12 +123,12 @@ class PlatformPage(QWidget, Base):
     def platform_test_done(self, event: str, data: dict) -> None:
         self.emit(Base.Event.APP_TOAST_SHOW, {
             "type": Base.ToastType.SUCCESS if data.get("result", True) else Base.ToastType.ERROR,
-            "message": data.get("result_msg", "")
+            "message": data.get("result_msg", ""),
         })
 
     # 加载默认平台数据
     def load_default_platforms(self) -> list[dict]:
-        platforms:list[dict[str, str | list[str]]] = []
+        platforms: list[dict[str, str | list[str]]] = []
 
         platforms_path = get_resource_path("resource", "platforms", Localizer.get_app_language().lower())
 
@@ -74,14 +137,14 @@ class PlatformPage(QWidget, Base):
             return []
 
         for path in [file.path for file in os.scandir(platforms_path) if file.is_file() and file.name.endswith(".json")]:
-            with open(path, "r", encoding = "utf-8-sig") as reader:
+            with open(path, "r", encoding="utf-8-sig") as reader:
                 platforms.append(json.load(reader))
 
         # 重设 id 以避免 id 不连续的问题
-        for i, platform in enumerate(sorted(platforms, key = lambda x: x.get('id'))):
+        for i, platform in enumerate(sorted(platforms, key=lambda x: x.get("id"))):
             platform["id"] = i
 
-        return sorted(platforms, key = lambda x: x.get('id'))
+        return sorted(platforms, key=lambda x: x.get("id"))
 
     # 补全默认平台（用于旧配置升级）
     def ensure_default_platforms(self, platforms: list[dict]) -> bool:
@@ -99,6 +162,17 @@ class PlatformPage(QWidget, Base):
             name = str(item.get("name", "")).strip()
             if name in ("Deel API", "DeepL API"):
                 item["name"] = "DeepL"
+                changed = True
+
+        # DeepSeek 官方接口已停用旧模型别名；自定义中转保持用户原值。
+        for item in platforms:
+            api_url = str(item.get("api_url", "")).strip().lower().rstrip("/")
+            if (
+                str(item.get("api_format", "")) == str(Base.APIFormat.OPENAI)
+                and api_url in ("https://api.deepseek.com", "https://api.deepseek.com/v1")
+                and str(item.get("model", "")).strip().lower() == "deepseek-chat"
+            ):
+                item["model"] = "deepseek-v4-flash"
                 changed = True
 
         # 统一思考字段：旧版 bool -> 新版 {"level": "..."}，并修正非法值。
@@ -141,160 +215,199 @@ class PlatformPage(QWidget, Base):
             name = str(item.get("name", "")).strip().lower()
             return name.startswith("自定义") or name.startswith("custom")
 
-        platforms.sort(key = lambda x: (1 if is_custom(x) else 0, x.get("id", 0)))
+        platforms.sort(key=lambda x: (1 if is_custom(x) else 0, x.get("id", 0)))
         for i, item in enumerate(platforms):
             item["id"] = i
 
         return True
 
     # 添加接口
-    def add_platform(self, item: dict, widget: FlowCard, window: FluentWindow) -> None:
-        # 载入配置
+    def add_platform(self, item: dict) -> None:
         config = Config().load()
 
-        # 添加指定条目
+        item = copy.deepcopy(item)
         item["id"] = len(config.platforms)
+        item["name"] = deduplicate_platform_name(
+            str(item.get("name", "")),
+            config.platforms,
+        )
         config.platforms.append(item)
-
-        # 保存配置文件
         config.save()
 
-        # 更新控件
-        self.update_custom_platform_widgets(widget, window)
+        self.rebuild_all()
 
     # 删除接口
-    def delete_platform(self, id: int, widget: FlowCard, window: FluentWindow) -> None:
-        # 载入配置
+    def delete_platform(self, id: int) -> None:
         config = Config().load()
+        removed = False
 
-        # 删除指定条目
         for i, platform in enumerate(config.platforms):
-            if platform.get('id') == id:
+            if platform.get("id") == id:
                 del config.platforms[i]
-
-                # 修正激活接口的ID
-                if config.activate_platform == i:
-                    config.activate_platform = 0
-                elif config.activate_platform > i:
-                    config.activate_platform = config.activate_platform - 1
+                removed = True
                 break
 
-        # 修正条目id
-        for i, platform in enumerate(sorted(config.platforms, key = lambda x: x.get('id'))):
-            config.platforms[i]["id"] = i
+        if not removed:
+            return
 
-        # 保存配置文件
+        if not config.platforms:
+            config.activate_platform = 0
+        elif config.activate_platform == id:
+            config.activate_platform = 0
+        elif config.activate_platform > id:
+            config.activate_platform -= 1
+
+        # 修正条目 id
+        for i, platform in enumerate(sorted(config.platforms, key=lambda x: x.get("id"))):
+            platform["id"] = i
+
         config.save()
-
-        # 更新控件
-        self.update_custom_platform_widgets(widget, window)
+        self.rebuild_all()
 
     # 激活接口
-    def activate_platform(self, id: int, widget: FlowCard, window: FluentWindow) -> None:
+    def activate_platform(self, id: int) -> None:
         config = Config().load()
         config.activate_platform = id
         config.save()
 
-        # 更新控件
-        self.update_custom_platform_widgets(widget, window)
+        self.refresh_active()
 
     # 显示编辑接口对话框
-    def show_api_edit_page(self, id: int, widget: FlowCard, window: FluentWindow) -> None:
-        PlatformEditPage(id, window).exec()
+    def show_api_edit_page(self, id: int) -> None:
+        PlatformEditPage(id, self.window).exec()
 
-        # 激活接口
-        config = Config().load()
-        config.activate_platform = id
-        config.save()
-
-        # 更新控件
-        self.update_custom_platform_widgets(widget, window)
+        self.refresh_item(id)
+        self.refresh_active()
 
     # 显示编辑参数对话框
-    def show_args_edit_page(self, id: int, widget: FlowCard, window: FluentWindow) -> None:
-        ArgsEditPage(id, window).exec()
+    def show_args_edit_page(self, id: int) -> None:
+        ArgsEditPage(id, self.window).exec()
 
-    # 更新自定义平台控件
-    def update_custom_platform_widgets(self, widget: FlowCard, window: FluentWindow) -> None:
+    def rebuild_all(self) -> None:
+        """在增删接口后重建四个分组中的条目卡。"""
         config = Config().load()
-        platforms = sorted(config.platforms, key = lambda x: x.get("id", 0))
+        platforms = sorted(config.platforms, key=lambda x: x.get("id", 0))
 
-        widget.take_all_widgets()
-        for item in platforms:
-            if item.get("id", 0) != config.activate_platform:
-                drop_down_push_button = DropDownPushButton(item.get('name'))
-            else:
-                drop_down_push_button = PrimaryDropDownPushButton(item.get('name'))
-            drop_down_push_button.setFixedWidth(192)
-            drop_down_push_button.setContentsMargins(4, 0, 4, 0) # 左、上、右、下
-            widget.add_widget(drop_down_push_button)
+        for group_card in self.group_cards.values():
+            group_card.take_all_widgets()
+        self.item_cards.clear()
+        self.item_groups.clear()
 
-            menu = RoundMenu("", drop_down_push_button)
-            menu.addAction(
-                Action(
-                    FluentIcon.EXPRESSIVE_INPUT_ENTRY,
-                    Localizer.get().platform_page_api_activate,
-                    triggered = partial(self.activate_platform, item.get("id", 0), widget, window),
-                )
+        for platform in platforms:
+            platform_id = int(platform.get("id", 0))
+            group = resolve_group(platform)
+            item_card = PlatformItemCard(platform, self.group_cards[group])
+            item_card.activate_requested.connect(self.activate_platform)
+            item_card.edit_requested.connect(self.show_api_edit_page)
+            item_card.args_requested.connect(self.show_args_edit_page)
+            item_card.test_requested.connect(self.platform_test_start)
+            item_card.delete_requested.connect(self.delete_platform)
+            self.group_cards[group].add_widget(item_card)
+            self.item_cards[platform_id] = item_card
+            self.item_groups[platform_id] = group
+
+        for group_card in self.group_cards.values():
+            group_card.set_count_visible()
+        self.empty_state.setVisible(not platforms)
+        self.refresh_active(config)
+
+    def refresh_active(self, config: Config | None = None) -> None:
+        """仅刷新条目激活态与顶部说明。"""
+        config = config or Config().load()
+        active_platform = config.get_platform(config.activate_platform)
+
+        for platform_id, item_card in self.item_cards.items():
+            item_card.set_active(
+                active_platform is not None and platform_id == config.activate_platform
             )
-            menu.addSeparator()
-            menu.addAction(
-                Action(
-                    FluentIcon.EDIT,
-                    Localizer.get().platform_page_api_edit,
-                    triggered = partial(self.show_api_edit_page, item.get("id", 0), widget, window),
-                )
-            )
-            menu.addSeparator()
-            menu.addAction(
-                Action(
-                    FluentIcon.DEVELOPER_TOOLS,
-                    Localizer.get().platform_page_api_args,
-                    triggered = partial(self.show_args_edit_page, item.get("id", 0), widget, window),
-                )
-            )
-            menu.addSeparator()
-            menu.addAction(
-                Action(
-                    FluentIcon.SEND,
-                    Localizer.get().platform_page_api_test,
-                    triggered = partial(self.platform_test_start, item.get("id", 0), widget, window),
-                )
-            )
-            menu.addSeparator()
-            menu.addAction(
-                Action(
-                    FluentIcon.DELETE,
-                    Localizer.get().platform_page_api_delete,
-                    triggered = partial(self.delete_platform, item.get("id", 0), widget, window),
-                )
-            )
-            drop_down_push_button.setMenu(menu)
 
-    # 添加控件
-    def add_widget(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
-
-        def init(widget: FlowCard) -> None:
-            # 添加新增按钮
-            add_button = DropDownPushButton(Localizer.get().add)
-            add_button.setIcon(FluentIcon.ADD_TO)
-            add_button.setContentsMargins(4, 0, 4, 0)
-            widget.add_widget_to_head(add_button)
-
-            menu = RoundMenu("", add_button)
-            platforms = self.load_default_platforms()
-            for i, item in enumerate(platforms):
-                menu.addAction(Action(item.get('name'), triggered = partial(self.add_platform, item, widget, window)))
-                menu.addSeparator() if i < len(platforms) - 1 else None
-            add_button.setMenu(menu)
-
-            # 更新控件
-            self.update_custom_platform_widgets(widget, window)
-
-        self.flow_card = FlowCard(
-            parent = self,
-            title = Localizer.get().platform_page_widget_add_title,
-            description = Localizer.get().platform_page_widget_add_content,
-            init = init,
+        active_name = (
+            str(active_platform.get("name", ""))
+            if active_platform is not None
+            else None
         )
-        parent.addWidget(self.flow_card)
+        self.header_card.set_active_name(active_name)
+
+    def refresh_item(self, id: int) -> None:
+        """编辑后原位更新单个条目卡。"""
+        config = Config().load()
+        platform = config.get_platform(id)
+        item_card = self.item_cards.get(id)
+        if platform is None or item_card is None:
+            return
+
+        group = resolve_group(platform)
+        old_group = self.item_groups[id]
+        if group != old_group:
+            self.group_cards[old_group].flow_layout.removeWidget(item_card)
+            self.group_cards[group].add_widget(item_card)
+            self.item_groups[id] = group
+            self.group_cards[old_group].set_count_visible()
+            self.group_cards[group].set_count_visible()
+
+        item_card.update_info(platform)
+
+    # 添加页面控件
+    def add_widget(self, parent: QLayout) -> None:
+        localizer = Localizer.get()
+
+        self.header_card = PlatformHeaderCard(self)
+        parent.addWidget(self.header_card)
+
+        add_menu = RoundMenu("", self.header_card.add_button)
+        platforms = self.load_default_platforms()
+        for i, item in enumerate(platforms):
+            add_menu.addAction(Action(
+                str(item.get("name", "")),
+                triggered=lambda _checked=False, preset=item: self.add_platform(preset),
+            ))
+            if i < len(platforms) - 1:
+                add_menu.addSeparator()
+        self.header_card.add_button.setMenu(add_menu)
+
+        self.group_cards = {
+            "local": PlatformGroupCard(
+                self,
+                localizer.platform_page_group_local_title,
+                localizer.platform_page_group_local_content,
+                FluentIcon.CONNECT,
+            ),
+            "machine": PlatformGroupCard(
+                self,
+                localizer.platform_page_group_machine_title,
+                localizer.platform_page_group_machine_content,
+                FluentIcon.LANGUAGE,
+            ),
+            "online": PlatformGroupCard(
+                self,
+                localizer.platform_page_group_online_title,
+                localizer.platform_page_group_online_content,
+                FluentIcon.CLOUD,
+            ),
+            "custom": PlatformGroupCard(
+                self,
+                localizer.platform_page_group_custom_title,
+                localizer.platform_page_group_custom_content,
+                FluentIcon.ASTERISK,
+            ),
+        }
+        for group_card in self.group_cards.values():
+            parent.addWidget(group_card)
+
+        self.empty_state = QWidget(self)
+        empty_layout = QVBoxLayout(self.empty_state)
+        empty_layout.setContentsMargins(0, 32, 0, 32)
+        empty_layout.setSpacing(8)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        empty_title = StrongBodyLabel(localizer.platform_page_empty_title, self.empty_state)
+        empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(empty_title)
+
+        empty_content = CaptionLabel(localizer.platform_page_empty_content, self.empty_state)
+        empty_content.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_content.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
+        empty_layout.addWidget(empty_content)
+        parent.addWidget(self.empty_state)
+
+        self.rebuild_all()
