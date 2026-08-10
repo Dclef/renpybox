@@ -30,6 +30,7 @@ PROJECT_TOOLS = {
     "hook_supplement",
     "name_extraction",
     "android_build",
+    "translation_reuse",
 }
 
 
