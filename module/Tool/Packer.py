@@ -9,12 +9,13 @@ Notes:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
-from pathlib import Path
 import sys
+import tempfile
+from pathlib import Path
 from typing import Iterator, List, Tuple
-import re
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
@@ -508,134 +509,310 @@ class Packer:
         self.logger.info(f"解包完成: {unpacked}/{total_files}")
         return unpacked, msgs
 
+    @staticmethod
+    def _normalized_path_key(path: Path) -> str:
+        """生成可比较的绝对路径，兼容 Windows 长路径前缀。"""
+        value = os.path.normcase(os.path.abspath(str(path)))
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return value.rstrip("\\/")
+
+    @staticmethod
+    def _part_output_path(output_path: Path, index: int) -> Path:
+        suffix = output_path.suffix or ".rpa"
+        stem = output_path.stem if output_path.suffix else output_path.name
+        return output_path.with_name(f"{stem}.part{index:03d}{suffix}")
+
+    @staticmethod
+    def _part_name_pattern(output_path: Path) -> re.Pattern[str]:
+        suffix = output_path.suffix or ".rpa"
+        stem = output_path.stem if output_path.suffix else output_path.name
+        return re.compile(
+            rf"^{re.escape(stem)}\.part\d{{3,}}{re.escape(suffix)}$",
+            re.IGNORECASE,
+        )
+
+    def _write_rpa_part(
+        self,
+        entries: List[Tuple[Path, str, int]],
+        output_path: Path,
+        stop_check=None,
+    ) -> None:
+        archive = RenPyArchive(version=3, verbose=False)
+        try:
+            for source_path, archive_name, _size in entries:
+                if stop_check and stop_check():
+                    raise RuntimeError("打包已取消")
+                archive.add_file_path(archive_name, str(source_path))
+
+            archive.save(str(output_path))
+            if stop_check and stop_check():
+                raise RuntimeError("打包已取消")
+        finally:
+            # save() 会重新打开成品；发布临时文件前必须释放 Windows 文件句柄。
+            if archive.handle is not None:
+                archive.handle.close()
+                archive.handle = None
+
+    def _publish_rpa_outputs(
+        self,
+        staged_paths: List[Path],
+        output_path: Path,
+        stage_dir: Path,
+    ) -> List[Path]:
+        part_pattern = self._part_name_pattern(output_path)
+        existing_paths: List[Path] = []
+        if output_path.is_file():
+            existing_paths.append(output_path)
+        existing_paths.extend(
+            path
+            for path in output_path.parent.iterdir()
+            if path.is_file() and part_pattern.fullmatch(path.name)
+        )
+
+        backup_dir = stage_dir / "backup"
+        backup_dir.mkdir()
+        backups: List[Tuple[Path, Path]] = []
+        published: List[Path] = []
+        try:
+            for existing_path in sorted(
+                existing_paths,
+                key=lambda path: path.name.casefold(),
+            ):
+                backup_path = backup_dir / existing_path.name
+                existing_path.replace(backup_path)
+                backups.append((existing_path, backup_path))
+
+            for staged_path in staged_paths:
+                target_path = output_path.parent / staged_path.name
+                staged_path.replace(target_path)
+                published.append(target_path)
+        except Exception:
+            for target_path in published:
+                try:
+                    target_path.unlink(missing_ok=True)
+                except Exception as cleanup_error:
+                    self.logger.error(
+                        f"清理未完成的 RPA 输出失败 {target_path}: {cleanup_error}"
+                    )
+            for original_path, backup_path in reversed(backups):
+                try:
+                    backup_path.replace(original_path)
+                except Exception as restore_error:
+                    self.logger.error(
+                        f"恢复旧 RPA 输出失败 {original_path}: {restore_error}"
+                    )
+            raise
+
+        return published
+
     def pack_from_dir(
         self,
         source_dir: str,
         out_rpa: str,
         progress_callback=None,
         stop_check=None,
-    ) -> None:
-        """
-        Pack a directory back to .rpa using rpatool_core (direct python call).
+        max_part_size_bytes: int | None = None,
+    ) -> List[Path]:
+        """把目录打包为一个或多个 RPA 文件。
 
-        Args:
-            source_dir: Directory to pack
-            out_rpa: Output .rpa file path
-            progress_callback: Optional callback(current, total, filename) for progress
-            stop_check: Optional callable returning True to abort
+        参数：
+            source_dir: 要打包的源目录。
+            out_rpa: 单包输出路径或分包输出的基准路径。
+            progress_callback: 可选进度回调，参数为当前数、总数和状态文字。
+            stop_check: 可选取消检查，返回 True 时终止打包。
+            max_part_size_bytes: 每个 RPA 的可选成品大小上限，单位为字节。
         """
-        # Import locally to avoid top-level dependency issues and ensure it's loaded when needed
-        # from module.Tool.rpatool_core import RenPyArchive
+        if max_part_size_bytes is not None and max_part_size_bytes <= 0:
+            raise ValueError("RPA 分包上限必须大于 0")
 
-        # Handle long paths on Windows for source directory
+        # Windows 下优先使用长路径前缀扫描源目录。
         abs_source = os.path.abspath(source_dir)
-        if os.name == 'nt' and not abs_source.startswith('\\\\?\\'):
-            abs_source = '\\\\?\\' + abs_source
-            
+        if os.name == "nt" and not abs_source.startswith("\\\\?\\"):
+            abs_source = "\\\\?\\" + abs_source
+
         src = Path(abs_source)
-        
-        # Fallback check if the long path somehow fails or original was intended
+
+        # 长路径前缀不可用时回退到用户传入的原始路径。
         if not src.exists():
-             # Try original path just in case
-             src = Path(source_dir)
-             if not src.exists():
+            src = Path(source_dir)
+            if not src.exists():
                 raise FileNotFoundError(f"源目录不存在: {source_dir}")
+
+        if not src.is_dir():
+            raise NotADirectoryError(f"源路径不是目录: {source_dir}")
 
         if progress_callback:
             progress_callback(0, 0, "正在扫描文件...")
 
-        # Resolve output path early to exclude it from scanning
-        out_path_resolved = Path(out_rpa).resolve()
-        # Handle long paths on Windows for output file check
-        if os.name == 'nt' and not str(out_path_resolved).startswith('\\\\?\\'):
-             # We use the long path version for comparison if the system uses it, 
-             # but pathlib resolution might be tricky. 
-             # Simplest is to compare resolved paths.
-             pass
+        # 提前确定完整输出族，避免输出位于源目录时把旧包再次打进去。
+        output_path = Path(out_rpa).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_key = self._normalized_path_key(output_path)
+        output_parent_key = self._normalized_path_key(output_path.parent)
+        part_pattern = self._part_name_pattern(output_path)
 
-        files: List[Path] = []
+        src_name = src.name
+        should_prepend_root = src_name.lower() != "game"
+        entries: List[Tuple[Path, str, int]] = []
         try:
-            for entry in src.rglob('*'):
+            for entry in src.rglob("*"):
                 if stop_check and stop_check():
                     raise RuntimeError("打包已取消")
-                if entry.is_file():
-                    # Exclude the output file itself if it's inside the source directory
-                    if entry.resolve() == out_path_resolved:
-                        continue
+                if not entry.is_file():
+                    continue
 
-                    files.append(entry)
-                    if progress_callback and len(files) % 200 == 0:
-                        progress_callback(0, 0, f"已发现 {len(files)} 个文件...")
+                entry_key = self._normalized_path_key(entry)
+                entry_parent_key = self._normalized_path_key(entry.parent)
+                if entry_key == output_key:
+                    continue
+                if entry_parent_key == output_parent_key and part_pattern.fullmatch(entry.name):
+                    continue
+
+                relative_name = entry.relative_to(src).as_posix()
+                archive_name = (
+                    f"{src_name}/{relative_name}"
+                    if should_prepend_root
+                    else relative_name
+                )
+                entries.append((entry, archive_name, entry.stat().st_size))
+                if progress_callback and len(entries) % 200 == 0:
+                    progress_callback(0, 0, f"已发现 {len(entries)} 个文件...")
         except RuntimeError:
             raise
         except Exception as scan_err:
             raise RuntimeError(f"扫描目录失败: {scan_err}")
 
-        if not files:
+        if not entries:
             raise RuntimeError("源目录为空，未找到可打包的文件")
 
-        total_files = len(files)
+        entries.sort(key=lambda item: (item[1].casefold(), item[1]))
+        total_files = len(entries)
         if progress_callback:
             progress_callback(0, total_files, f"共找到 {total_files} 个文件，开始打包...")
-        self.logger.info(f"打包 RPA: {source_dir} -> {out_rpa} (共 {total_files} 个文件)")
+        self.logger.info(
+            f"打包 RPA: {source_dir} -> {out_rpa} (共 {total_files} 个文件)"
+        )
 
-        out_path = Path(out_rpa).resolve()
-        # Handle long paths on Windows for output file
-        if os.name == 'nt' and not str(out_path).startswith('\\\\?\\'):
-            out_path = Path('\\\\?\\' + str(out_path))
+        groups: List[List[Tuple[Path, str, int]]] = []
+        if max_part_size_bytes is None:
+            groups.append(entries)
+        else:
+            current_group: List[Tuple[Path, str, int]] = []
+            estimated_size = 34
+            for entry in entries:
+                source_path, archive_name, source_size = entry
+                if source_size + 34 >= max_part_size_bytes:
+                    size_mib = source_size / (1024 * 1024)
+                    limit_mib = max_part_size_bytes / (1024 * 1024)
+                    raise RuntimeError(
+                        f"单个文件 {archive_name}（{size_mib:.2f} MiB）无法放入 "
+                        f"{limit_mib:.2f} MiB 的 RPA 分包"
+                    )
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if out_path.exists():
-            out_path.unlink()
+                # 文件内容不压缩；额外预算覆盖路径、偏移和压缩索引开销。
+                entry_budget = source_size + len(archive_name.encode("utf-8")) + 128
+                if current_group and estimated_size + entry_budget > max_part_size_bytes:
+                    groups.append(current_group)
+                    current_group = []
+                    estimated_size = 34
+                current_group.append(entry)
+                estimated_size += entry_budget
+            if current_group:
+                groups.append(current_group)
 
-        # Create archive object (RPAv3 default)
-        archive = RenPyArchive(version=3, verbose=False)
-
-        # 自动检测是否需要保留根目录名
-        # 只要源目录名不是 'game'，就默认保留目录名作为前缀
-        # 这样打包 'images' 会生成 'images/xxx'，打包 'videos' 会生成 'videos/xxx'
-        src_name = src.name
-        should_prepend_root = src_name.lower() != 'game'
-
+        stage_dir = Path(
+            tempfile.mkdtemp(
+                prefix=f".{output_path.stem}.packing-",
+                dir=str(output_path.parent),
+            )
+        )
+        staged_paths: List[Path] = []
         processed = 0
-        for p in files:
+        publish_complete = False
+        try:
+            group_index = 0
+            while group_index < len(groups):
+                if stop_check and stop_check():
+                    raise RuntimeError("打包已取消")
+
+                group = groups[group_index]
+                staged_name = (
+                    output_path.name
+                    if max_part_size_bytes is None
+                    else self._part_output_path(output_path, group_index + 1).name
+                )
+                staged_path = stage_dir / staged_name
+                staged_path.unlink(missing_ok=True)
+
+                if progress_callback:
+                    progress_callback(
+                        processed,
+                        total_files,
+                        f"正在写入第 {group_index + 1}/{len(groups)} 个 RPA...",
+                    )
+
+                self._write_rpa_part(group, staged_path, stop_check)
+                actual_size = staged_path.stat().st_size
+                if max_part_size_bytes is not None and actual_size > max_part_size_bytes:
+                    staged_path.unlink(missing_ok=True)
+                    if len(group) == 1:
+                        _source_path, archive_name, _source_size = group[0]
+                        actual_mib = actual_size / (1024 * 1024)
+                        limit_mib = max_part_size_bytes / (1024 * 1024)
+                        raise RuntimeError(
+                            f"单个文件 {archive_name} 打包后为 {actual_mib:.2f} MiB，"
+                            f"超过 {limit_mib:.2f} MiB 上限"
+                        )
+
+                    moved_entry = group.pop()
+                    if group_index + 1 < len(groups):
+                        groups[group_index + 1].insert(0, moved_entry)
+                    else:
+                        groups.append([moved_entry])
+                    continue
+
+                staged_paths.append(staged_path)
+                processed += len(group)
+                if progress_callback:
+                    progress_callback(
+                        processed,
+                        total_files,
+                        f"已完成第 {group_index + 1}/{len(groups)} 个 RPA",
+                    )
+                group_index += 1
+
             if stop_check and stop_check():
-                self.logger.info("打包被用户取消")
-                if out_path.exists():
-                    out_path.unlink()
                 raise RuntimeError("打包已取消")
 
-            rel = str(p.relative_to(src)).replace('\\', '/')
-            
-            # 如果需要保留根目录名，则添加前缀
-            if should_prepend_root:
-                rel = f"{src_name}/{rel}"
+            published_paths = self._publish_rpa_outputs(
+                staged_paths,
+                output_path,
+                stage_dir,
+            )
+            publish_complete = True
+        except RuntimeError:
+            raise
+        except Exception as error:
+            raise RuntimeError(f"保存 RPA 失败: {error}") from error
+        finally:
+            backup_dir = stage_dir / "backup"
+            has_unrestored_backup = (
+                not publish_complete
+                and backup_dir.is_dir()
+                and any(backup_dir.iterdir())
+            )
+            if has_unrestored_backup:
+                self.logger.error(f"旧 RPA 恢复不完整，备份已保留在: {backup_dir}")
+            else:
+                shutil.rmtree(stage_dir, ignore_errors=True)
 
-            # Add file path to archive (lazy load via modified rpatool_core)
-            try:
-                archive.add_file_path(rel, str(p))
-            except Exception as e:
-                self.logger.error(f"添加文件失败 {rel}: {e}")
-                raise
-
-            processed += 1
-            if progress_callback and processed % 100 == 0:
-                progress_callback(processed, total_files, rel)
-
-        self.logger.info("正在写入 RPA 文件...")
-        if progress_callback:
-            # 计算预估大小
-            total_size_mb = sum(p.stat().st_size for p in files) / (1024 * 1024)
-            progress_callback(total_files, total_files, f"正在写入 RPA ({total_size_mb:.1f} MB)，请稍候...")
-
-        try:
-            archive.save(str(out_path))
-        except Exception as e:
-            if out_path.exists():
-                out_path.unlink()
-            raise RuntimeError(f"保存 RPA 失败: {e}")
-
-        self.logger.info(f"RPA 打包完成: {out_rpa}")
+        self.logger.info(
+            f"RPA 打包完成: {', '.join(str(path) for path in published_paths)}"
+        )
+        return published_paths
 
 
 

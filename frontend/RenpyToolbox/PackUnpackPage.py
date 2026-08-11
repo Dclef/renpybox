@@ -1,4 +1,6 @@
 """解包/反编译/打包页面 - 后台线程调用 UnRen/rpatool 解包，unrpyc 反编译，以及 rpatool 打包能力。"""
+import re
+from decimal import Decimal
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -27,6 +29,28 @@ EXE_SUFFIX = ".exe"
 GAME_DIR_NAME = "game"
 RPY_SUFFIX = ".rpy"
 RPYC_SUFFIX = ".rpyc"
+SIZE_LIMIT_PATTERN = re.compile(
+    r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(G(?:I?B)?|M(?:I?B)?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_rpa_size_limit(value: str) -> int:
+    """解析 G、GB、GiB、M、MB、MiB 容量格式，无单位时按 MiB。"""
+    match = SIZE_LIMIT_PATTERN.fullmatch(value)
+    if not match:
+        raise ValueError("分包上限格式不正确，请输入 1G、1.5G 或 1024M")
+
+    number = Decimal(match.group(1))
+    if number <= 0:
+        raise ValueError("分包上限必须大于 0")
+
+    unit = (match.group(2) or "M").upper()
+    multiplier = 1024 ** 3 if unit.startswith("G") else 1024 ** 2
+    size_bytes = int(number * multiplier)
+    if size_bytes <= 0:
+        raise ValueError("分包上限必须大于 0")
+    return size_bytes
 
 
 class PackWorker(QThread):
@@ -34,26 +58,32 @@ class PackWorker(QThread):
     progress = pyqtSignal(int, int, str)  # current, total, message
     finished = pyqtSignal(bool, str)  # success, message
 
-    def __init__(self, src_dir: str, output_file: str):
+    def __init__(
+        self,
+        src_dir: str,
+        output_file: str,
+        max_part_size_bytes: int | None = None,
+    ):
         super().__init__()
         self.src_dir = src_dir
         self.output_file = output_file
+        self.max_part_size_bytes = max_part_size_bytes
         self.should_stop = False
 
     def run(self):
         try:
-            from module.Tool.Packer import Packer
             packer = Packer()
-            packer.pack_from_dir(
+            output_paths = packer.pack_from_dir(
                 self.src_dir,
                 self.output_file,
                 progress_callback=self._on_progress,
                 stop_check=lambda: self.should_stop,
+                max_part_size_bytes=self.max_part_size_bytes,
             )
-            if self.should_stop:
-                self.finished.emit(False, "打包已取消")
-            else:
-                self.finished.emit(True, "打包完成")
+            self.finished.emit(
+                True,
+                f"打包完成，共生成 {len(output_paths)} 个 RPA 文件",
+            )
         except Exception as e:
             LogManager.get().error(f"打包失败: {e}")
             self.finished.emit(False, str(e))
@@ -502,14 +532,39 @@ class PackUnpackPage(Base, QWidget):
 
         # 输出文件
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("输出文件:"))
+        row2.addWidget(QLabel("输出基准文件:"))
         self.pack_output_edit = LineEdit()
-        self.pack_output_edit.setPlaceholderText("留空则使用目录名.rpa，保存在源目录内")
+        self.pack_output_edit.setPlaceholderText("留空则使用目录名.rpa，保存在源目录的上级目录")
+        self.pack_output_edit.setToolTip(
+            "启用分包后，例如 images.rpa 将生成 images.part001.rpa 等文件"
+        )
         btn_browse_pack_out = PushButton("选择", icon=FluentIcon.SAVE)
         btn_browse_pack_out.clicked.connect(self._browse_pack_output)
         row2.addWidget(self.pack_output_edit, 1)
         row2.addWidget(btn_browse_pack_out)
         layout.addLayout(row2)
+
+        # 分包选项
+        split_row = QHBoxLayout()
+        self.pack_split_check = CheckBox("按大小分包")
+        self.pack_split_check.setToolTip(
+            "生成名称为 .part001.rpa、.part002.rpa 的多个独立 RPA 文件"
+        )
+        self.pack_part_size_edit = LineEdit()
+        self.pack_part_size_edit.setText("1G")
+        self.pack_part_size_edit.setPlaceholderText("如 1G 或 1024M")
+        self.pack_part_size_edit.setToolTip(
+            "支持 1G、1.5G、1024M、1024MiB；不写单位时按 MiB"
+        )
+        self.pack_part_size_edit.setMaxLength(20)
+        self.pack_part_size_edit.setEnabled(False)
+        self.pack_part_size_edit.setFixedWidth(150)
+        self.pack_split_check.toggled.connect(self.pack_part_size_edit.setEnabled)
+        split_row.addWidget(self.pack_split_check)
+        split_row.addStretch(1)
+        split_row.addWidget(QLabel("每包上限:"))
+        split_row.addWidget(self.pack_part_size_edit)
+        layout.addLayout(split_row)
 
         # 进度条
         self.pack_progress = ProgressBar(self)
@@ -606,7 +661,7 @@ class PackUnpackPage(Base, QWidget):
     def _browse_pack_output(self):
         """选择打包输出文件"""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存 RPA 文件", "archive.rpa", "RPA 文件 (*.rpa)"
+            self, "选择 RPA 输出基准文件", "archive.rpa", "RPA 文件 (*.rpa)"
         )
         if file_path:
             self.pack_output_edit.setText(file_path)
@@ -885,6 +940,17 @@ class PackUnpackPage(Base, QWidget):
             InfoBar.warning("提示", "打包任务正在进行中", parent=self)
             return
 
+        max_part_size_bytes = None
+        if self.pack_split_check.isChecked():
+            try:
+                max_part_size_bytes = _parse_rpa_size_limit(
+                    self.pack_part_size_edit.text()
+                )
+            except ValueError as error:
+                InfoBar.warning("提示", str(error), parent=self)
+                self.pack_part_size_edit.setFocus()
+                return
+
         LogManager.get().info(f"开始打包: {src_dir} -> {output_file}")
 
         # 更新 UI 状态
@@ -896,7 +962,11 @@ class PackUnpackPage(Base, QWidget):
         self.pack_status_label.setText("正在扫描文件...")
 
         # 创建并启动后台线程
-        self.pack_worker = PackWorker(src_dir, output_file)
+        self.pack_worker = PackWorker(
+            src_dir,
+            output_file,
+            max_part_size_bytes=max_part_size_bytes,
+        )
         self.pack_worker.progress.connect(self._on_pack_progress)
         self.pack_worker.finished.connect(self._on_pack_finished)
         self.pack_worker.start()
@@ -906,7 +976,7 @@ class PackUnpackPage(Base, QWidget):
         if self.pack_worker and self.pack_worker.isRunning():
             self.pack_worker.stop()
             self.pack_cancel_button.setEnabled(False)
-            self.pack_status_label.setText("正在取消...")
+            self.pack_status_label.setText("正在取消，当前分包写完后停止...")
 
     def _on_pack_progress(self, current: int, total: int, filename: str):
         """打包进度更新"""
