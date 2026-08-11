@@ -11,7 +11,16 @@ import time
 from typing import Any
 
 from PyQt5.QtCore import QTimer, Qt, QSize, pyqtSignal
-from PyQt5.QtGui import QColor, QKeyEvent, QPainter, QPalette
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QKeyEvent,
+    QPainter,
+    QPalette,
+    QTextLength,
+    QTextTable,
+    QTextTableFormat,
+)
 from PyQt5.QtWidgets import (
     QAbstractScrollArea,
     QApplication,
@@ -40,6 +49,7 @@ from qfluentwidgets import (
     ThemeColor,
     TransparentPushButton,
     TransparentToolButton,
+    isDarkTheme,
     qconfig,
 )
 
@@ -115,6 +125,36 @@ class AgentInputEdit(PlainTextEdit):
 
 class AgentMarkdownView(TextBrowser):
     """让 Markdown 正文按文档尺寸参与布局，避免被 QTextBrowser 默认高度截断。"""
+
+    def setMarkdown(self, markdown: str) -> None:
+        super().setMarkdown(markdown)
+        self._format_tables()
+
+    def _format_tables(self) -> None:
+        """覆盖 Qt 默认的紧缩表格样式，使表格与正文列对齐。"""
+        border_color = QColor("#666666" if isDarkTheme() else "#d0d0d0")
+        header_color = QColor("#444444" if isDarkTheme() else "#f3f3f3")
+        for frame in self.document().rootFrame().childFrames():
+            if not isinstance(frame, QTextTable):
+                continue
+            table_format = frame.format()
+            table_format.setWidth(QTextLength(QTextLength.PercentageLength, 100))
+            table_format.setBorderCollapse(True)
+            table_format.setBorder(1)
+            table_format.setBorderStyle(QTextTableFormat.BorderStyle_Solid)
+            table_format.setBorderBrush(QBrush(border_color))
+            table_format.setCellSpacing(0)
+            table_format.setCellPadding(7)
+            frame.setFormat(table_format)
+
+            for column in range(frame.columns()):
+                cell = frame.cellAt(0, column)
+                cell_format = cell.format()
+                cell_format.setBackground(QBrush(header_color))
+                cell.setFormat(cell_format)
+
+    def refresh_theme(self) -> None:
+        self._format_tables()
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
@@ -405,6 +445,8 @@ class AgentMessageWidget(QWidget):
 
     def refresh_theme(self) -> None:
         self.avatar.refresh_theme()
+        if isinstance(self.text_view, AgentMarkdownView):
+            self.text_view.refresh_theme()
         for widget in (*self._thinking_widgets, *self._tool_widgets):
             refresh = getattr(widget, "refresh_theme", None)
             if callable(refresh):
@@ -953,6 +995,18 @@ class AgentPage(Base, QWidget):
         config = Config().load()
         self._refresh_project_context(config)
         current = int(getattr(config, "agent_platform", 0) or 0)
+        thinking_level = str(
+            getattr(config, "agent_thinking_level", "OFF") or "OFF"
+        ).upper()
+        if thinking_level not in THINKING_LEVELS:
+            thinking_level = "OFF"
+
+        self.thinking_combo.blockSignals(True)
+        self.thinking_combo.setCurrentIndex(
+            self.thinking_combo.findData(thinking_level)
+        )
+        self.thinking_combo.blockSignals(False)
+
         self.platform_combo.blockSignals(True)
         self.platform_combo.clear()
         self._platform_ids = []
@@ -982,6 +1036,12 @@ class AgentPage(Base, QWidget):
             else Localizer.get().agent_page_platform_saved
         )
         self._update_send_button()
+
+    def _thinking_changed(self, index: int) -> None:
+        level = str(self.thinking_combo.itemData(index) or "OFF")
+        config = Config().load()
+        config.agent_thinking_level = level
+        config.save()
 
     def _refresh_project_context(self, config: Config | None = None) -> None:
         current = config or Config().load()
@@ -1065,13 +1125,20 @@ class AgentPage(Base, QWidget):
         if not delta:
             return
         turn = self._ensure_assistant_turn()
+        turn.finish_thinking()
         turn.append_text(delta)
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
         self._history_scroll_timer.start(0)
 
     def _append_thinking_delta(self, text: str) -> None:
-        """兼容后端明确标记的思考增量，和普通中间文本共用折叠条。"""
-        self._append_reply_delta(text)
+        """把后端明确标记的思考增量放进折叠过程条。"""
+        delta = str(text or "")
+        if not delta:
+            return
+        turn = self._ensure_assistant_turn()
+        turn.append_thinking_text(delta)
+        self.activity_widget.label.setText(Localizer.get().agent_page_running)
+        self._history_scroll_timer.start(0)
 
     def _complete_reply(self, text: str) -> None:
         """用最终响应校正流式消息；无增量时退回一次性追加。"""
@@ -1080,7 +1147,7 @@ class AgentPage(Base, QWidget):
         if turn is None:
             self._append(final_text, role="assistant")
         else:
-            turn.discard_active_thinking()
+            turn.finish_thinking()
             turn.set_text(final_text)
         self._stream_message = None
         self._reply_rendered = True
@@ -1187,7 +1254,11 @@ class AgentPage(Base, QWidget):
         self.activity_widget.set_running(True, localizer.agent_page_running)
         self.send_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self._worker = AgentWorker(self._service, message)
+        self._worker = AgentWorker(
+            self._service,
+            message,
+            str(self.thinking_combo.currentData() or "OFF"),
+        )
         self._worker.event.connect(self._on_worker_event)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)

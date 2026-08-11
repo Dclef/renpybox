@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtGui import QTextLength, QTextTable
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from base.Base import Base
@@ -15,6 +16,7 @@ from frontend.Agent.AgentPage import (
     format_elapsed,
     status_color,
 )
+from frontend.Agent.AgentWorker import AgentWorker
 from module.Config import Config
 
 
@@ -54,6 +56,42 @@ def test_agent_page_filters_unsupported_platforms_and_saves_selection(monkeypatc
     assert saved
     assert page.send_button.isEnabled()
 
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_restores_saves_and_sends_thinking_level(monkeypatch) -> None:
+    config = Config()
+    config.agent_platform = 1
+    config.agent_thinking_level = "HIGH"
+    config.platforms = [
+        {
+            "id": 1,
+            "name": "OpenAI",
+            "api_format": Base.APIFormat.OPENAI,
+            "model": "gpt-5",
+        },
+    ]
+    saved = []
+    config.save = lambda: saved.append(config.agent_thinking_level) or config
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(AgentWorker, "start", lambda self: None)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    assert page.thinking_combo.currentData() == "HIGH"
+    page.thinking_combo.setCurrentIndex(page.thinking_combo.findData("LOW"))
+    assert config.agent_thinking_level == "LOW"
+    assert saved == ["LOW"]
+
+    page.input_box.setPlainText("检查项目")
+    page.send_message()
+    assert page._worker is not None
+    assert page._worker.thinking_level == "LOW"
+
+    page._worker.deleteLater()
+    page._worker = None
     page.deleteLater()
     window.deleteLater()
 
@@ -273,6 +311,56 @@ def test_agent_page_folds_intermediate_text_under_one_assistant_turn(monkeypatch
 
     page.deleteLater()
     window.deleteLater()
+
+
+def test_agent_page_keeps_reasoning_delta_in_thinking_process(monkeypatch) -> None:
+    """模型明确返回的思考增量应折叠保留，不得混入最终回答。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    page._on_worker_event("reasoning_delta", {"text": "先分析项目结构。"})
+    turn = page.history_widgets[0]
+    assert isinstance(turn, AgentMessageWidget)
+    assert turn.text == ""
+
+    page._on_worker_event("reply_delta", {"text": "正在生成结论。"})
+    page._on_worker_event("reply", {"message": "检查完成。"})
+
+    assert turn.text_view.toPlainText() == "检查完成。"
+    thinking = turn.findChildren(AgentThinkingWidget)
+    assert len(thinking) == 1
+    assert thinking[0].detail_label.text() == "先分析项目结构。"
+    assert not thinking[0].detail_label.isVisible()
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_markdown_table_uses_readable_full_width_layout() -> None:
+    message = AgentMessageWidget(
+        "| 文件 |\n| --- |\n| `audio.rpa` |\n| `script.rpa` |",
+        "assistant",
+    )
+
+    tables = [
+        frame
+        for frame in message.text_view.document().rootFrame().childFrames()
+        if isinstance(frame, QTextTable)
+    ]
+    assert len(tables) == 1
+    table_format = tables[0].format()
+    assert table_format.width().type() == QTextLength.PercentageLength
+    assert table_format.width().rawValue() == 100
+    assert table_format.borderCollapse()
+    assert table_format.cellSpacing() == 0
+    assert table_format.cellPadding() == 7
+
+    message.deleteLater()
 
 
 def test_agent_page_content_width_and_markdown_height_follow_layout(monkeypatch) -> None:
