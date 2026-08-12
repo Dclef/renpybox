@@ -185,6 +185,7 @@ class TranslationPage(QWidget, Base):
             Engine.Status.TESTING: Localizer.get().translation_page_status_testing,
             Engine.Status.TRANSLATING: Localizer.get().translation_page_status_translating,
             Engine.Status.QUALITY: getattr(Localizer.get(), "translation_page_status_quality", "质量处理中"),
+            Engine.Status.AGENT: getattr(Localizer.get(), "translation_page_status_agent", "Agent 操作中"),
             Engine.Status.STOPPING: Localizer.get().translation_page_status_stopping,
         }
 
