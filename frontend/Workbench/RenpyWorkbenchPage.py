@@ -36,6 +36,7 @@ from base.Base import Base
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+from module.Localizer.Localizer import Localizer
 from module.PromptBuilder import PromptBuilder
 from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError, WorkbenchAnalysisService
 from module.Workbench.CharacterScanner import CharacterScanner
@@ -52,6 +53,8 @@ from module.Workbench.WorkbenchData import (
     normalize_worldbook,
 )
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+
+
 
 
 class _WorkbenchSignals(QObject):
@@ -110,8 +113,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(24, 24, 24, 12)
         header_layout.setSpacing(10)
-        header_layout.addWidget(TitleLabel("角色 / 世界观工作台"))
-        sub = CaptionLabel("在这里维护当前输出项目的世界观、人设和提示词上下文，并可手动触发 AI 生成草稿。")
+        header_layout.addWidget(TitleLabel(Localizer.get().workbench_character_worldbuilding_workbench))
+        sub = CaptionLabel(Localizer.get().workbench_manage_worldbuilding_character_profiles_prompt_context_current)
         sub.setWordWrap(True)
         header_layout.addWidget(sub)
         root.addWidget(header)
@@ -125,10 +128,10 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         self.tab_buttons: dict[str, PillPushButton] = {}
         self.panel_order = [
-            ("overview", "概览"),
-            ("worldbook", "世界观"),
-            ("characters", "角色卡"),
-            ("preview", "提示词预览"),
+            ("overview", Localizer.get().workbench_overview),
+            ("worldbook", Localizer.get().workbench_worldbuilding_2),
+            ("characters", Localizer.get().workbench_character_cards),
+            ("preview", Localizer.get().workbench_prompt_preview),
         ]
         for idx, (key, text) in enumerate(self.panel_order):
             button = PillPushButton(text, self)
@@ -207,24 +210,24 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.setSpacing(16)
 
         summary_card, summary_layout = self._create_card(
-            "当前项目摘要",
-            "这里聚合当前接口、路径、工作台状态和草稿状态，作为主入口总览。",
+            Localizer.get().workbench_current_project_summary,
+            Localizer.get().workbench_single_view_current_api_paths_workbench_state,
         )
         summary_grid = QGridLayout()
         summary_grid.setHorizontalSpacing(18)
         summary_grid.setVerticalSpacing(10)
         self.summary_labels: dict[str, BodyLabel] = {}
         summary_items = [
-            ("platform", "当前接口"),
-            ("model", "当前模型"),
-            ("source_target", "语言方向"),
-            ("input_folder", "输入目录"),
-            ("output_folder", "输出目录"),
-            ("project_root", "项目目录"),
-            ("tl_folder", "TL 目录"),
-            ("worldbook", "世界观"),
-            ("characters", "角色卡"),
-            ("drafts", "草稿状态"),
+            ("platform", Localizer.get().workbench_current_api),
+            ("model", Localizer.get().workbench_current_model),
+            ("source_target", Localizer.get().workbench_language_pair),
+            ("input_folder", Localizer.get().workbench_input_folder),
+            ("output_folder", Localizer.get().workbench_output_folder),
+            ("project_root", Localizer.get().workbench_project_folder),
+            ("tl_folder", Localizer.get().workbench_tl_folder),
+            ("worldbook", Localizer.get().workbench_worldbuilding_2),
+            ("characters", Localizer.get().workbench_character_cards),
+            ("drafts", Localizer.get().workbench_draft_status),
         ]
         for index, (key, text) in enumerate(summary_items):
             title = CaptionLabel(text)
@@ -239,18 +242,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.addWidget(summary_card)
 
         action_card, action_layout = self._create_card(
-            "分析与跳转",
-            "默认手动触发 AI 生成；支持先当前范围，再扩展到全项目重分析。",
+            Localizer.get().workbench_analysis_shortcuts,
+            Localizer.get().workbench_generate_ai_drafts_demand_current_scope_then,
         )
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self.btn_generate_current = PrimaryPushButton("生成当前范围草稿")
+        self.btn_generate_current = PrimaryPushButton(Localizer.get().workbench_generate_current_scope_drafts)
         self.btn_generate_current.clicked.connect(lambda: self._start_analysis("all", ANALYSIS_SCOPE_CURRENT))
-        self.btn_generate_full = PushButton("扩展到全项目重分析")
+        self.btn_generate_full = PushButton(Localizer.get().workbench_reanalyze_full_project)
         self.btn_generate_full.clicked.connect(lambda: self._start_analysis("all", ANALYSIS_SCOPE_FULL))
-        self.btn_sync_characters = PushButton("同步角色名")
+        self.btn_sync_characters = PushButton(Localizer.get().workbench_sync_character_names)
         self.btn_sync_characters.clicked.connect(self._start_sync_characters)
-        self.btn_apply_all = PushButton("应用全部草稿")
+        self.btn_apply_all = PushButton(Localizer.get().workbench_apply_all_drafts)
         self.btn_apply_all.clicked.connect(self._apply_all_drafts)
         action_row.addWidget(self.btn_generate_current)
         action_row.addWidget(self.btn_generate_full)
@@ -261,11 +264,11 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         shortcut_row = QHBoxLayout()
         shortcut_row.setSpacing(10)
-        self.btn_open_glossary = PushButton("打开本地词库")
+        self.btn_open_glossary = PushButton(Localizer.get().workbench_open_local_glossary)
         self.btn_open_glossary.clicked.connect(self._open_glossary_page)
-        self.btn_open_preserve = PushButton("打开禁翻表")
+        self.btn_open_preserve = PushButton(Localizer.get().workbench_open_do_not_translate_list)
         self.btn_open_preserve.clicked.connect(self._open_text_preserve_page)
-        self.btn_open_prompt = PushButton("打开自定义提示词")
+        self.btn_open_prompt = PushButton(Localizer.get().workbench_open_custom_prompts)
         self.btn_open_prompt.clicked.connect(self._open_custom_prompt_page)
         shortcut_row.addWidget(self.btn_open_glossary)
         shortcut_row.addWidget(self.btn_open_preserve)
@@ -273,7 +276,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         shortcut_row.addStretch(1)
         action_layout.addLayout(shortcut_row)
 
-        self.overview_status_label = BodyLabel("等待操作")
+        self.overview_status_label = BodyLabel(Localizer.get().workbench_ready)
         self.overview_status_label.setWordWrap(True)
         action_layout.addWidget(self.overview_status_label)
         self.overview_hint_label = CaptionLabel("")
@@ -291,17 +294,20 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.setSpacing(16)
 
         header_card, header_layout = self._create_card(
-            "世界观设定",
-            "左侧维护正式世界观，右侧查看 AI 草稿与原始响应预览。",
+            Localizer.get().workbench_worldbuilding,
+            Localizer.get().workbench_edit_approved_worldbuilding_left_review_ai_drafts,
         )
-        self.worldbook_enable = CheckBox("启用世界观上下文注入")
+        self.worldbook_enable = CheckBox(Localizer.get().workbench_inject_worldbuilding_context)
         self.worldbook_enable.stateChanged.connect(self._on_worldbook_toggle_changed)
         header_layout.addWidget(self.worldbook_enable)
         layout.addWidget(header_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        official_card, official_layout = self._create_card("正式世界观", "这些内容会直接进入提示词构建。")
+        official_card, official_layout = self._create_card(
+            Localizer.get().workbench_approved_worldbuilding,
+            Localizer.get().workbench_content_inserted_directly_generated_prompts,
+        )
         official_form = QFormLayout()
         official_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         official_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -309,14 +315,14 @@ class RenpyWorkbenchPage(Base, QWidget):
         official_form.setVerticalSpacing(12)
         self.worldbook_widgets: dict[str, QWidget] = {}
         worldbook_specs = [
-            ("project_name", "项目名", False),
-            ("genre", "类型", False),
-            ("setting_summary", "背景摘要", True),
-            ("era_background", "时代与环境", True),
-            ("tone_style", "整体语气", True),
-            ("narrative_rules", "叙事规则", True),
-            ("format_rules", "格式规则", True),
-            ("spoiler_notes", "剧透备注", True),
+            ("project_name", Localizer.get().workbench_project_name, False),
+            ("genre", Localizer.get().workbench_genre, False),
+            ("setting_summary", Localizer.get().workbench_setting_summary, True),
+            ("era_background", Localizer.get().workbench_era_environment, True),
+            ("tone_style", Localizer.get().workbench_tone_style, True),
+            ("narrative_rules", Localizer.get().workbench_narrative_rules, True),
+            ("format_rules", Localizer.get().workbench_formatting_rules, True),
+            ("spoiler_notes", Localizer.get().workbench_spoiler_notes, True),
         ]
         for field, label, multiline in worldbook_specs:
             if multiline:
@@ -331,14 +337,17 @@ class RenpyWorkbenchPage(Base, QWidget):
         official_layout.addLayout(official_form)
         splitter.addWidget(official_card)
 
-        draft_card, draft_layout = self._create_card("AI 草稿预览", "生成成功后只进入草稿区，确认后再应用。")
+        draft_card, draft_layout = self._create_card(
+            Localizer.get().workbench_ai_draft_preview,
+            Localizer.get().workbench_generated_content_remains_draft_until_you_apply,
+        )
         draft_action_row = QHBoxLayout()
         draft_action_row.setSpacing(10)
-        self.btn_world_current = PrimaryPushButton("生成当前范围")
+        self.btn_world_current = PrimaryPushButton(Localizer.get().workbench_generate_current_scope)
         self.btn_world_current.clicked.connect(lambda: self._start_analysis("worldbook", ANALYSIS_SCOPE_CURRENT))
-        self.btn_world_full = PushButton("扩展重分析")
+        self.btn_world_full = PushButton(Localizer.get().workbench_expand_reanalyze)
         self.btn_world_full.clicked.connect(lambda: self._start_analysis("worldbook", ANALYSIS_SCOPE_FULL))
-        self.btn_apply_worldbook = PushButton("应用世界观草稿")
+        self.btn_apply_worldbook = PushButton(Localizer.get().workbench_apply_worldbuilding_draft)
         self.btn_apply_worldbook.clicked.connect(self._apply_worldbook_draft)
         draft_action_row.addWidget(self.btn_world_current)
         draft_action_row.addWidget(self.btn_world_full)
@@ -346,11 +355,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         draft_action_row.addStretch(1)
         draft_layout.addLayout(draft_action_row)
 
-        self.worldbook_draft_preview = self._create_preview_edit("生成后在这里查看世界观草稿。")
-        self.worldbook_raw_preview = self._create_preview_edit("解析失败时，这里会显示模型原始响应。")
-        draft_layout.addWidget(BodyLabel("结构化草稿"))
+        self.worldbook_draft_preview = self._create_preview_edit(Localizer.get().workbench_generated_worldbuilding_drafts_appear_here)
+        self.worldbook_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears)
+        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.worldbook_draft_preview)
-        draft_layout.addWidget(BodyLabel("原始响应 / 错误预览"))
+        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
         draft_layout.addWidget(self.worldbook_raw_preview)
         splitter.addWidget(draft_card)
         splitter.setStretchFactor(0, 3)
@@ -366,24 +375,24 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.setSpacing(16)
 
         header_card, header_layout = self._create_card(
-            "角色卡工作台",
-            "左侧角色列表，中间正式角色卡，右侧 AI 草稿与原始响应。",
+            Localizer.get().workbench_character_card_workbench,
+            Localizer.get().workbench_browse_characters_left_edit_approved_cards_center,
         )
-        self.character_cards_enable = CheckBox("启用角色卡上下文注入")
+        self.character_cards_enable = CheckBox(Localizer.get().workbench_inject_character_card_context)
         self.character_cards_enable.stateChanged.connect(self._on_character_cards_toggle_changed)
         header_layout.addWidget(self.character_cards_enable)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self.btn_character_batch = PrimaryPushButton("整批生成角色卡")
+        self.btn_character_batch = PrimaryPushButton(Localizer.get().workbench_generate_all_character_cards)
         self.btn_character_batch.clicked.connect(lambda: self._start_analysis("characters", ANALYSIS_SCOPE_CURRENT))
-        self.btn_character_current = PushButton("重生当前角色")
+        self.btn_character_current = PushButton(Localizer.get().workbench_regenerate_current_character)
         self.btn_character_current.clicked.connect(self._regenerate_current_character)
-        self.btn_character_apply = PushButton("应用当前角色草稿")
+        self.btn_character_apply = PushButton(Localizer.get().workbench_apply_current_character_draft)
         self.btn_character_apply.clicked.connect(self._apply_current_character_draft)
-        self.btn_character_add = PushButton("新增空白角色卡")
+        self.btn_character_add = PushButton(Localizer.get().workbench_add_blank_character_card)
         self.btn_character_add.clicked.connect(self._add_character_card)
-        self.btn_character_delete = PushButton("删除当前角色")
+        self.btn_character_delete = PushButton(Localizer.get().workbench_delete_current_character)
         self.btn_character_delete.clicked.connect(self._delete_current_character)
         action_row.addWidget(self.btn_character_batch)
         action_row.addWidget(self.btn_character_current)
@@ -396,13 +405,19 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
-        roster_card, roster_layout = self._create_card("角色列表", "同步角色名后，会把候选角色预填到这里。")
+        roster_card, roster_layout = self._create_card(
+            Localizer.get().workbench_character_list,
+            Localizer.get().workbench_synced_character_candidates_added_here_review,
+        )
         self.character_list = ListWidget(self)
         self.character_list.currentItemChanged.connect(self._on_character_item_changed)
         roster_layout.addWidget(self.character_list, 1)
         splitter.addWidget(roster_card)
 
-        editor_card, editor_layout = self._create_card("正式角色卡", "手工修改后会立即写入当前项目资产。")
+        editor_card, editor_layout = self._create_card(
+            Localizer.get().workbench_approved_character_card,
+            Localizer.get().workbench_manual_edits_saved_immediately_current_project_assets,
+        )
         editor_form = QFormLayout()
         editor_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         editor_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -410,16 +425,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         editor_form.setVerticalSpacing(12)
         self.character_widgets: dict[str, QWidget] = {}
         char_specs = [
-            ("name", "角色名", False),
-            ("name_translation", "推荐译名", False),
-            ("aliases", "别名", True),
-            ("match_keywords", "匹配关键词", True),
-            ("identity", "身份", True),
-            ("personality", "性格", True),
-            ("speech_style", "说话风格", True),
-            ("relationship_notes", "关系备注", True),
-            ("prompt_notes", "翻译提示", True),
-            ("sample_lines", "代表台词", True),
+            ("name", Localizer.get().workbench_character_name, False),
+            ("name_translation", Localizer.get().workbench_suggested_translation, False),
+            ("aliases", Localizer.get().workbench_aliases, True),
+            ("match_keywords", Localizer.get().workbench_match_keywords, True),
+            ("identity", Localizer.get().workbench_identity, True),
+            ("personality", Localizer.get().workbench_personality, True),
+            ("speech_style", Localizer.get().workbench_speech_style, True),
+            ("relationship_notes", Localizer.get().workbench_relationship_notes, True),
+            ("prompt_notes", Localizer.get().workbench_translation_notes, True),
+            ("sample_lines", Localizer.get().workbench_sample_lines, True),
         ]
         for field, label, multiline in char_specs:
             if multiline:
@@ -436,9 +451,9 @@ class RenpyWorkbenchPage(Base, QWidget):
         toggle_layout = QHBoxLayout(toggle_box)
         toggle_layout.setContentsMargins(0, 0, 0, 0)
         toggle_layout.setSpacing(12)
-        self.character_enabled_checkbox = CheckBox("启用此角色卡")
+        self.character_enabled_checkbox = CheckBox(Localizer.get().workbench_enable_character_card)
         self.character_enabled_checkbox.stateChanged.connect(lambda value: self._on_character_flag_changed("enabled", value))
-        self.character_primary_checkbox = CheckBox("标记为主要角色")
+        self.character_primary_checkbox = CheckBox(Localizer.get().workbench_mark_main_character)
         self.character_primary_checkbox.stateChanged.connect(lambda value: self._on_character_flag_changed("is_primary", value))
         toggle_layout.addWidget(self.character_enabled_checkbox)
         toggle_layout.addWidget(self.character_primary_checkbox)
@@ -448,12 +463,15 @@ class RenpyWorkbenchPage(Base, QWidget):
         editor_layout.addLayout(editor_form)
         splitter.addWidget(editor_card)
 
-        draft_card, draft_layout = self._create_card("角色草稿预览", "AI 生成的人设草稿会显示在这里。")
-        self.character_draft_preview = self._create_preview_edit("选择角色后，这里显示草稿详情。")
-        self.character_raw_preview = self._create_preview_edit("解析失败时，这里显示模型原始响应。")
-        draft_layout.addWidget(BodyLabel("结构化草稿"))
+        draft_card, draft_layout = self._create_card(
+            Localizer.get().workbench_character_draft_preview,
+            Localizer.get().workbench_ai_generated_character_drafts_appear_here,
+        )
+        self.character_draft_preview = self._create_preview_edit(Localizer.get().workbench_select_character_view_draft_details)
+        self.character_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears_2)
+        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.character_draft_preview)
-        draft_layout.addWidget(BodyLabel("原始响应 / 错误预览"))
+        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
         draft_layout.addWidget(self.character_raw_preview)
         splitter.addWidget(draft_card)
 
@@ -471,32 +489,35 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.setSpacing(16)
 
         input_card, input_layout = self._create_card(
-            "提示词命中预览",
-            "输入样例原文后，会实时显示命中的角色卡和最终注入片段。",
+            Localizer.get().workbench_prompt_match_preview,
+            Localizer.get().workbench_enter_sample_source_text_preview_matching_character,
         )
         self.preview_input_edit = PlainTextEdit(self)
-        self.preview_input_edit.setPlaceholderText("在这里输入一段样例原文，支持多行。")
+        self.preview_input_edit.setPlaceholderText(Localizer.get().workbench_enter_one_more_lines_sample_source_text)
         self.preview_input_edit.setMinimumHeight(160)
         self.preview_input_edit.textChanged.connect(self._schedule_prompt_preview)
         input_layout.addWidget(self.preview_input_edit)
-        self.preview_matched_label = BodyLabel("未输入样例原文。")
+        self.preview_matched_label = BodyLabel(Localizer.get().workbench_no_sample_source_text_entered)
         self.preview_matched_label.setWordWrap(True)
         input_layout.addWidget(self.preview_matched_label)
         layout.addWidget(input_card)
 
-        preview_card, preview_layout = self._create_card("注入结果", "这里展示工作台上下文如何进入真实提示词构建。")
+        preview_card, preview_layout = self._create_card(
+            Localizer.get().workbench_injected_context,
+            Localizer.get().workbench_preview_how_workbench_context_inserted_final_prompt,
+        )
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(12)
-        self.preview_world_context = self._create_preview_edit("世界观块将在这里显示。")
-        self.preview_character_context = self._create_preview_edit("命中角色块将在这里显示。")
-        self.preview_final_context = self._create_preview_edit("最终注入片段将在这里显示。")
-        grid.addWidget(BodyLabel("世界观块"), 0, 0)
+        self.preview_world_context = self._create_preview_edit(Localizer.get().workbench_worldbuilding_context_appears_here)
+        self.preview_character_context = self._create_preview_edit(Localizer.get().workbench_matched_character_context_appears_here)
+        self.preview_final_context = self._create_preview_edit(Localizer.get().workbench_final_injected_context_appears_here)
+        grid.addWidget(BodyLabel(Localizer.get().workbench_worldbuilding_context), 0, 0)
         grid.addWidget(self.preview_world_context, 1, 0)
-        grid.addWidget(BodyLabel("角色块"), 0, 1)
+        grid.addWidget(BodyLabel(Localizer.get().workbench_character_context), 0, 1)
         grid.addWidget(self.preview_character_context, 1, 1)
         preview_layout.addLayout(grid)
-        preview_layout.addWidget(BodyLabel("最终注入片段"))
+        preview_layout.addWidget(BodyLabel(Localizer.get().workbench_final_injected_context))
         preview_layout.addWidget(self.preview_final_context)
         layout.addWidget(preview_card)
         layout.addStretch(1)
@@ -577,28 +598,46 @@ class RenpyWorkbenchPage(Base, QWidget):
     def _refresh_summary(self, config: Config) -> None:
         """刷新摘要。"""
         platform = config.get_platform(config.activate_platform)
-        platform_name = normalize_text(platform.get("name", "")) if platform else "未配置"
-        model_name = normalize_text(platform.get("model", "")) if platform else "未配置"
+        not_configured = Localizer.get().workbench_not_configured
+        not_set = Localizer.get().workbench_not_set
+        platform_name = normalize_text(platform.get("name", "")) if platform else not_configured
+        model_name = normalize_text(platform.get("model", "")) if platform else not_configured
         worldbook = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
         drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
         enabled_cards = sum(1 for card in cards if card.get("enabled", True))
-        world_ready = "已启用" if getattr(config, "renpy_workbench_worldbook_enable", False) and any(worldbook.values()) else "未启用"
+        world_ready = (
+            Localizer.get().workbench_enabled
+            if getattr(config, "renpy_workbench_worldbook_enable", False) and any(worldbook.values())
+            else Localizer.get().workbench_not_enabled
+        )
         draft_scope = normalize_analysis_scope(getattr(config, "renpy_workbench_last_analysis_scope", ANALYSIS_SCOPE_CURRENT))
-        draft_text = f"世界观草稿：{'有' if any(normalize_worldbook(getattr(config, 'renpy_workbench_generated_worldbook_draft', {})).values()) else '无'}"
-        draft_text += f"；角色草稿：{len(drafts)} 张；最近范围：{'当前范围' if draft_scope == ANALYSIS_SCOPE_CURRENT else '全项目'}"
+        has_worldbook_draft = any(normalize_worldbook(
+            getattr(config, "renpy_workbench_generated_worldbook_draft", {})
+        ).values())
+        draft_text = Localizer.get().workbench_draft_summary.format(
+            worldbook_status=(
+                Localizer.get().available if has_worldbook_draft else Localizer.get().none
+            ),
+            draft_count=len(drafts),
+            scope=(
+                Localizer.get().current_scope
+                if draft_scope == ANALYSIS_SCOPE_CURRENT
+                else Localizer.get().full_project
+            ),
+        )
         resolved_project_root = self.analysis_service.resolve_project_root(config)
 
         summary = {
-            "platform": platform_name or "未配置",
-            "model": model_name or "未配置",
+            "platform": platform_name or not_configured,
+            "model": model_name or not_configured,
             "source_target": f"{config.source_language} -> {config.target_language}",
-            "input_folder": normalize_text(config.input_folder) or "未设置",
-            "output_folder": normalize_text(config.output_folder) or "未设置",
-            "project_root": str(resolved_project_root) if resolved_project_root else (normalize_text(config.renpy_game_folder) or "未设置"),
-            "tl_folder": normalize_text(config.renpy_tl_folder) or "未设置",
+            "input_folder": normalize_text(config.input_folder) or not_set,
+            "output_folder": normalize_text(config.output_folder) or not_set,
+            "project_root": str(resolved_project_root) if resolved_project_root else (normalize_text(config.renpy_game_folder) or not_set),
+            "tl_folder": normalize_text(config.renpy_tl_folder) or not_set,
             "worldbook": world_ready,
-            "characters": f"共 {len(cards)} 张，启用 {enabled_cards} 张",
+            "characters": Localizer.get().workbench_total_enabled.format(cards_count=len(cards), enabled_cards=enabled_cards),
             "drafts": draft_text,
         }
         for key, value in summary.items():
@@ -606,21 +645,23 @@ class RenpyWorkbenchPage(Base, QWidget):
             if label is not None:
                 label.setText(value)
 
-        self.overview_hint_label.setText(self._analysis_source_summary or "当前尚未执行 AI 分析。")
+        self.overview_hint_label.setText(
+            self._analysis_source_summary or Localizer.get().workbench_no_ai_analysis_has_been_run_yet
+        )
 
     def _refresh_worldbook_draft_view(self, config: Config) -> None:
         """刷新世界观草稿预览。"""
         draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
         if any(draft.values()):
             lines = [
-                f"项目名：{draft.get('project_name', '')}",
-                f"类型：{draft.get('genre', '')}",
-                f"背景摘要：{draft.get('setting_summary', '')}",
-                f"时代与环境：{draft.get('era_background', '')}",
-                f"整体语气：{draft.get('tone_style', '')}",
-                f"叙事规则：{draft.get('narrative_rules', '')}",
-                f"格式规则：{draft.get('format_rules', '')}",
-                f"剧透备注：{draft.get('spoiler_notes', '')}",
+                Localizer.get().workbench_project_name_2.format(draft_get_project_name=draft.get('project_name', '')),
+                Localizer.get().workbench_genre_2.format(draft_get_genre=draft.get('genre', '')),
+                Localizer.get().workbench_setting_summary_2.format(draft_get_setting_summary=draft.get('setting_summary', '')),
+                Localizer.get().workbench_era_environment_2.format(draft_get_era_background=draft.get('era_background', '')),
+                Localizer.get().workbench_tone_style_2.format(draft_get_tone_style=draft.get('tone_style', '')),
+                Localizer.get().workbench_narrative_rules_2.format(draft_get_narrative_rules=draft.get('narrative_rules', '')),
+                Localizer.get().workbench_formatting_rules_2.format(draft_get_format_rules=draft.get('format_rules', '')),
+                Localizer.get().workbench_spoiler_notes_2.format(draft_get_spoiler_notes=draft.get('spoiler_notes', '')),
             ]
             self.worldbook_draft_preview.setPlainText("\n\n".join(lines))
         else:
@@ -640,17 +681,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         formal_ids = {card.get("id") for card in cards}
         visible_cards.extend(draft for draft in drafts if draft.get("id") not in formal_ids)
         for card in visible_cards:
-            item = QListWidgetItem(card.get("name", "未命名角色"))
+            unnamed = Localizer.get().workbench_unnamed_character
+            item = QListWidgetItem(card.get("name", unnamed))
             item.setData(Qt.ItemDataRole.UserRole, card.get("id", ""))
             suffix = []
             if card.get("is_primary", False):
-                suffix.append("主")
+                suffix.append(Localizer.get().workbench_main)
             if card.get("enabled", True) is False:
-                suffix.append("关")
+                suffix.append(Localizer.get().workbench_off)
             if card.get("id") in draft_ids:
-                suffix.append("草稿")
+                suffix.append(Localizer.get().workbench_draft)
             if suffix:
-                item.setText(f"{card.get('name', '未命名角色')} [{' / '.join(suffix)}]")
+                item.setText(f"{card.get('name', unnamed)} [{' / '.join(suffix)}]")
             self.character_list.addItem(item)
 
         self._selected_character_id = (
@@ -716,20 +758,25 @@ class RenpyWorkbenchPage(Base, QWidget):
         if draft is None:
             self.character_draft_preview.setPlainText("")
         else:
+            empty_value = Localizer.get().workbench_none
             lines = [
-                f"角色名：{draft.get('name', '')}",
-                f"推荐译名：{draft.get('name_translation', '')}",
-                f"别名：{'、'.join(draft.get('aliases', [])) or '暂无'}",
-                f"匹配关键词：{'、'.join(draft.get('match_keywords', [])) or '暂无'}",
-                f"身份：{draft.get('identity', '') or '暂无'}",
-                f"性格：{draft.get('personality', '') or '暂无'}",
-                f"说话风格：{draft.get('speech_style', '') or '暂无'}",
-                f"关系备注：{draft.get('relationship_notes', '') or '暂无'}",
-                f"翻译提示：{draft.get('prompt_notes', '') or '暂无'}",
+                Localizer.get().workbench_character_name_2.format(draft_get_name=draft.get('name', '')),
+                Localizer.get().workbench_suggested_translation_2.format(draft_get_name_translation=draft.get('name_translation', '')),
+                Localizer.get().workbench_aliases_preview.format(
+                    aliases=Localizer.get().list_separator.join(draft.get("aliases", [])) or empty_value
+                ),
+                Localizer.get().workbench_match_keywords_preview.format(
+                    keywords=Localizer.get().list_separator.join(draft.get("match_keywords", [])) or empty_value
+                ),
+                Localizer.get().workbench_identity_2.format(identity_or_empty_value=draft.get('identity', '') or empty_value),
+                Localizer.get().workbench_personality_2.format(personality_or_empty_value=draft.get('personality', '') or empty_value),
+                Localizer.get().workbench_speech_style_2.format(speech_style_or_empty_value=draft.get('speech_style', '') or empty_value),
+                Localizer.get().workbench_relationship_notes_2.format(relationship_notes_or_empty_value=draft.get('relationship_notes', '') or empty_value),
+                Localizer.get().workbench_translation_notes_2.format(prompt_notes_or_empty_value=draft.get('prompt_notes', '') or empty_value),
             ]
             samples = draft.get("sample_lines", [])
             if samples:
-                lines.append("代表台词：")
+                lines.append(Localizer.get().workbench_sample_lines_2)
                 lines.extend(f"- {line}" for line in samples)
             self.character_draft_preview.setPlainText("\n".join(lines))
         self.character_raw_preview.setPlainText(self._last_character_raw)
@@ -771,13 +818,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_character_delete.setEnabled(not self._analysis_running and not self._sync_running and self._selected_character_id != "")
 
         if engine_busy:
-            self.overview_status_label.setText("当前翻译任务运行中，AI 生成与角色同步已暂时禁用。")
+            self.overview_status_label.setText(Localizer.get().workbench_translation_task_running_ai_generation_character_sync)
         elif supported is False:
-            self.overview_status_label.setText("当前接口不支持 AI 分析。请切换到 OpenAI / Google / Anthropic / SakuraLLM 类接口。")
+            self.overview_status_label.setText(Localizer.get().workbench_current_api_does_not_support_ai_analysis)
         elif self._analysis_running:
-            self.overview_status_label.setText("AI 分析进行中，请稍候。")
+            self.overview_status_label.setText(Localizer.get().workbench_ai_analysis_running_please_wait)
         elif self._sync_running:
-            self.overview_status_label.setText("角色同步进行中，请稍候。")
+            self.overview_status_label.setText(Localizer.get().workbench_character_sync_running_please_wait)
 
     def _on_worldbook_toggle_changed(self, state: int) -> None:
         """世界观开关变化。"""
@@ -874,7 +921,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         """新增空白角色卡。"""
         config = self._load_config()
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
-        card = create_default_character_card(f"角色{len(cards) + 1}")
+        card = create_default_character_card(Localizer.get().workbench_character.format(len_cards=len(cards) + 1))
         cards.append(card)
         config.renpy_workbench_character_cards = cards
         self._save_config(config)
@@ -924,11 +971,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.preview_character_context.setPlainText(character_context)
         self.preview_final_context.setPlainText(final_text)
         if sample_text == "":
-            self.preview_matched_label.setText("未输入样例原文。")
+            self.preview_matched_label.setText(Localizer.get().workbench_no_sample_source_text_entered)
         else:
             names = [card.get("name", "") for card in matched_cards]
             self.preview_matched_label.setText(
-                f"命中角色：{'、'.join(names) if names else '无'}"
+                Localizer.get().workbench_matched_characters.format(
+                    names=Localizer.get().list_separator.join(names) if names else Localizer.get().none
+                )
             )
 
     def _start_analysis(self, mode: str, scope: str) -> None:
@@ -945,7 +994,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._analysis_running = False
             Engine.get().release_status(Engine.Status.TESTING)
             raise
-        self.overview_status_label.setText("正在执行 AI 分析…")
+        self.overview_status_label.setText(Localizer.get().workbench_running_ai_analysis)
         scope = normalize_analysis_scope(scope)
         current_id = self._selected_character_id
 
@@ -980,7 +1029,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                         engine_reserved = True,
                     )
                 else:
-                    raise AnalysisServiceError("未知的分析模式。")
+                    raise AnalysisServiceError(Localizer.get().workbench_unknown_analysis_mode)
                 success_payload = {
                     "mode": mode,
                     "scope": scope,
@@ -1010,7 +1059,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 self.signals.analysis_failed.emit(failure_payload or {
                     "mode": mode,
                     "scope": scope,
-                    "message": "AI 分析失败。",
+                    "message": Localizer.get().workbench_ai_analysis_failed_2,
                     "raw_response": "",
                 })
 
@@ -1031,7 +1080,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         card_id = payload.get("card_id", "")
         config = self._load_config()
         config.renpy_workbench_last_analysis_scope = result.scope
-        self._analysis_source_summary = f"最近分析来源：{result.source_summary}"
+        self._analysis_source_summary = Localizer.get().workbench_latest_analysis_source.format(source_summary=result.source_summary)
 
         if result.worldbook_draft:
             config.renpy_workbench_generated_worldbook_draft = normalize_worldbook(result.worldbook_draft)
@@ -1063,22 +1112,26 @@ class RenpyWorkbenchPage(Base, QWidget):
         if card_id:
             self._selected_character_id = card_id
         self.refresh_from_config()
-        self.overview_status_label.setText("AI 草稿已生成，请在右侧预览并决定是否应用。")
-        InfoBar.success("完成", "AI 草稿生成完成。", parent = self)
+        self.overview_status_label.setText(Localizer.get().workbench_ai_drafts_ready_review_them_right_before)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_ai_draft_generation_complete,
+            parent = self,
+        )
 
     def _on_analysis_failed(self, payload: dict[str, Any]) -> None:
         """处理分析失败。"""
         self._analysis_running = False
         mode = payload.get("mode", "")
         raw_response = normalize_text(payload.get("raw_response", ""))
-        message = normalize_text(payload.get("message", "AI 分析失败"))
+        message = normalize_text(payload.get("message", Localizer.get().workbench_ai_analysis_failed))
         if mode == "worldbook" or "世界观" in message:
             self._last_worldbook_raw = raw_response
         else:
             self._last_character_raw = raw_response
         self.refresh_from_config()
         self.overview_status_label.setText(message)
-        InfoBar.error("错误", message, parent = self, duration = 5000)
+        InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _merge_candidates_into_cards(
         self,
@@ -1123,7 +1176,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             return
         self._sync_running = True
         self._refresh_action_state()
-        self.overview_status_label.setText("正在同步角色候选…")
+        self.overview_status_label.setText(Localizer.get().workbench_syncing_character_candidates)
 
         def task() -> None:
             try:
@@ -1154,44 +1207,62 @@ class RenpyWorkbenchPage(Base, QWidget):
         )
         config.renpy_workbench_generated_character_drafts = merged_drafts
         self._save_config(config)
-        self._analysis_source_summary = f"角色同步来源：{payload.get('source_summary', '')}"
+        self._analysis_source_summary = Localizer.get().workbench_character_sync_source.format(payload_get_source_summary=payload.get('source_summary', ''))
         if self._selected_character_id == "" and payload["drafts"]:
             self._selected_character_id = payload["drafts"][0]["id"]
         self.refresh_from_config()
-        self.overview_status_label.setText(f"角色同步完成，共新增 {payload.get('added', 0)} 张待确认草稿。")
-        InfoBar.success("完成", f"角色同步完成，新增 {payload.get('added', 0)} 张待确认草稿。", parent = self)
+        added = payload.get("added", 0)
+        sync_result = Localizer.get().workbench_character_sync_complete_new_drafts_ready_review.format(added=added)
+        self.overview_status_label.setText(sync_result)
+        InfoBar.success(Localizer.get().complete, sync_result, parent = self)
 
     def _on_sync_failed(self, message: str) -> None:
         """同步失败回调。"""
         self._sync_running = False
         self._refresh_action_state()
         self.overview_status_label.setText(message)
-        InfoBar.error("错误", message, parent = self, duration = 5000)
+        InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _apply_worldbook_draft(self) -> None:
         """应用世界观草稿。"""
         config = self._load_config()
         draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
         if any(draft.values()) is False:
-            InfoBar.warning("提示", "当前没有可应用的世界观草稿。", parent = self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_there_no_worldbuilding_draft_apply,
+                parent = self,
+            )
             return
         config.renpy_workbench_worldbook_data = draft
         config.renpy_workbench_worldbook_enable = True
         config.renpy_workbench_generated_worldbook_draft = {}
         self._save_config(config)
         self.refresh_from_config()
-        InfoBar.success("完成", "世界观草稿已应用。", parent = self)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_worldbuilding_draft_has_been_applied,
+            parent = self,
+        )
 
     def _apply_current_character_draft(self) -> None:
         """应用当前角色草稿。"""
         if self._selected_character_id == "":
-            InfoBar.warning("提示", "请先选择一个角色。", parent = self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_select_character_first,
+                parent = self,
+            )
             return
         config = self._load_config()
         drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
         draft = next((card for card in drafts if card.get("id") == self._selected_character_id), None)
         if draft is None:
-            InfoBar.warning("提示", "当前角色没有可应用的草稿。", parent = self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_selected_character_has_no_draft_apply,
+                parent = self,
+            )
             return
 
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
@@ -1214,7 +1285,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         ]
         self._save_config(config)
         self.refresh_from_config()
-        InfoBar.success("完成", "当前角色草稿已应用。", parent = self)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_character_draft_has_been_applied,
+            parent = self,
+        )
 
     def _apply_all_drafts(self) -> None:
         """应用全部草稿。"""
@@ -1222,7 +1297,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         world_draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
         char_drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
         if any(world_draft.values()) is False and char_drafts == []:
-            InfoBar.warning("提示", "当前没有可应用的草稿。", parent = self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_there_no_drafts_apply,
+                parent = self,
+            )
             return
 
         if any(world_draft.values()):
@@ -1243,7 +1322,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         config.renpy_workbench_generated_character_drafts = []
         self._save_config(config)
         self.refresh_from_config()
-        InfoBar.success("完成", "全部草稿已应用。", parent = self)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_all_drafts_have_been_applied,
+            parent = self,
+        )
 
     def _regenerate_current_character(self) -> None:
         """重生当前角色。"""
@@ -1267,7 +1350,11 @@ class RenpyWorkbenchPage(Base, QWidget):
             return
         toolbox = getattr(self.window, "renpy_toolbox_page", None)
         if toolbox is None:
-            InfoBar.warning("提示", "未找到 Ren'Py 工具箱页面。", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_ren_py_toolbox_page_unavailable,
+                parent=self,
+            )
             return
         self.window.navigate_to_page(toolbox.get_tool_page(key))
 

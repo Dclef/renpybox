@@ -171,7 +171,7 @@ class BasicSettingsPage(QWidget, Base):
         def init_group(widget: GroupCard) -> None:
             edit = PlainTextEdit(widget)
             edit.setPlainText(config.custom_prompt_zh_data or "")
-            edit.setPlaceholderText("在此粘贴或编写中文提示词主体（不含前缀/后缀）")
+            edit.setPlaceholderText(Localizer.get().translation_custom_prompt_zh_placeholder)
             def on_changed():
                 cfg = Config().load()
                 cfg.custom_prompt_zh_data = edit.toPlainText()
@@ -191,7 +191,7 @@ class BasicSettingsPage(QWidget, Base):
             GroupCard(
                 parent = self,
                 title = Localizer.get().app_custom_prompt_zh_page,
-                description = "仅在目标语言为中文时使用本自定义提示词主体。",
+                description = Localizer.get().translation_custom_prompt_zh_desc,
                 init = init_group,
             )
         )
@@ -210,7 +210,7 @@ class BasicSettingsPage(QWidget, Base):
         def init_group(widget: GroupCard) -> None:
             edit = PlainTextEdit(widget)
             edit.setPlainText(config.custom_prompt_en_data or "")
-            edit.setPlaceholderText("Write English prompt body here (without prefix/suffix)")
+            edit.setPlaceholderText(Localizer.get().translation_custom_prompt_en_placeholder)
             def on_changed():
                 cfg = Config().load()
                 cfg.custom_prompt_en_data = edit.toPlainText()
@@ -230,7 +230,7 @@ class BasicSettingsPage(QWidget, Base):
             GroupCard(
                 parent = self,
                 title = Localizer.get().app_custom_prompt_en_page,
-                description = "Used only when target language is not Chinese.",
+                description = Localizer.get().translation_custom_prompt_en_desc,
                 init = init_group,
             )
         )

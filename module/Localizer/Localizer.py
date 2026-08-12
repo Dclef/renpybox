@@ -18,5 +18,9 @@ class Localizer():
         return cls.APP_LANGUAGE
 
     @classmethod
+    def localize(cls, zh: str, en: str) -> str:
+        return en if cls.APP_LANGUAGE == BaseLanguage.Enum.EN else zh
+
+    @classmethod
     def set_app_language(cls, app_language: BaseLanguage.Enum) -> None:
         cls.APP_LANGUAGE = app_language

@@ -30,6 +30,7 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Localizer.Localizer import Localizer
 from module.Tool.FontReplacer import FontReplacer
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -62,7 +63,9 @@ class FontReplacePage(Base, QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
-        layout.addWidget(TitleLabel("🔤 字体注入"))
+        layout.addWidget(
+            TitleLabel(Localizer.get().font_replace_font_injection)
+        )
 
         # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -96,9 +99,7 @@ class FontReplacePage(Base, QWidget):
         layout.setSpacing(8)
 
         intro = CaptionLabel(
-            "💡 说明：游戏无法显示中文通常是因为字体不支持。\n"
-            "本功能默认会注入一套预置字体包到 tl 目录（不改原文件）。\n"
-            "只需选择游戏目录，点击「一键注入字体」即可。",
+            Localizer.get().font_replace_if_game_cannot_display_translated_text_font,
             self
         )
         intro.setWordWrap(True)
@@ -112,39 +113,58 @@ class FontReplacePage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(16)
 
-        layout.addWidget(StrongBodyLabel("📁 选择游戏目录"))
+        layout.addWidget(
+            StrongBodyLabel(
+                Localizer.get().font_replace_select_game_folder_2
+            )
+        )
 
         # 目录选择
         dir_row = QHBoxLayout()
         self.game_dir_edit = LineEdit()
-        self.game_dir_edit.setPlaceholderText("选择游戏目录（项目根或 game 目录）")
+        self.game_dir_edit.setPlaceholderText(
+            Localizer.get().font_replace_select_project_root_game_folder
+        )
         self.game_dir_edit.editingFinished.connect(self._on_game_dir_edit_finished)
-        btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
+        btn_browse = PushButton(
+            Localizer.get().browse, icon=FluentIcon.FOLDER
+        )
         btn_browse.clicked.connect(self._browse_game_dir)
         dir_row.addWidget(self.game_dir_edit, 1)
         dir_row.addWidget(btn_browse)
         layout.addLayout(dir_row)
 
         # 扫描状态
-        self.status_label = CaptionLabel("请先选择游戏目录", self)
+        self.status_label = CaptionLabel(
+            Localizer.get().font_replace_select_game_folder_first,
+            self,
+        )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
         # 目标语言选择
         lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("目标语言:"))
+        lang_row.addWidget(QLabel(Localizer.get().direct_rpy_target_language))
         self.target_lang_combo = ComboBox(self)
-        self.target_lang_combo.addItem("自动检测", None)
+        self.target_lang_combo.addItem(
+            Localizer.get().font_replace_auto_detect, None
+        )
         self.target_lang_combo.setMinimumWidth(200)
         lang_row.addWidget(self.target_lang_combo, 1)
         layout.addLayout(lang_row)
 
-        lang_hint = CaptionLabel("选择要注入字体包的翻译语言。如果是汉化，通常选择 chinese。", self)
+        lang_hint = CaptionLabel(
+            Localizer.get().font_replace_select_translation_language_receive_font_pack_chinese,
+            self,
+        )
         lang_hint.setWordWrap(True)
         layout.addWidget(lang_hint)
 
         # 一键注入按钮
-        self.action_button = PrimaryPushButton("✨ 一键注入字体", icon=FluentIcon.FONT)
+        self.action_button = PrimaryPushButton(
+            Localizer.get().font_replace_inject_fonts,
+            icon=FluentIcon.FONT,
+        )
         self.action_button.setFixedHeight(56)
         self.action_button.clicked.connect(self._one_click_inject)
         layout.addWidget(self.action_button)
@@ -159,8 +179,15 @@ class FontReplacePage(Base, QWidget):
 
         # 折叠标题
         header_row = QHBoxLayout()
-        header_row.addWidget(StrongBodyLabel("⚙️ 高级选项"))
-        self.toggle_advanced_btn = PushButton("展开", icon=FluentIcon.CHEVRON_DOWN_MED)
+        header_row.addWidget(
+            StrongBodyLabel(
+                Localizer.get().font_replace_advanced_options
+            )
+        )
+        self.toggle_advanced_btn = PushButton(
+            Localizer.get().font_replace_expand,
+            icon=FluentIcon.CHEVRON_DOWN_MED,
+        )
         self.toggle_advanced_btn.setFixedWidth(80)
         self.toggle_advanced_btn.clicked.connect(self._toggle_advanced)
         header_row.addStretch(1)
@@ -175,10 +202,14 @@ class FontReplacePage(Base, QWidget):
 
         # 自定义字体
         font_row = QHBoxLayout()
-        font_row.addWidget(QLabel("自定义字体:"))
+        font_row.addWidget(QLabel(Localizer.get().font_replace_custom_font))
         self.custom_font_edit = LineEdit()
-        self.custom_font_edit.setPlaceholderText("留空则使用内置中文字体")
-        btn_browse_font = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.custom_font_edit.setPlaceholderText(
+            Localizer.get().font_replace_leave_blank_use_bundled_font
+        )
+        btn_browse_font = PushButton(
+            Localizer.get().browse, icon=FluentIcon.FOLDER
+        )
         btn_browse_font.clicked.connect(self._browse_custom_font)
         font_row.addWidget(self.custom_font_edit, 1)
         font_row.addWidget(btn_browse_font)
@@ -186,30 +217,42 @@ class FontReplacePage(Base, QWidget):
 
         # 检测到的字体引用列表
         detected_row = QHBoxLayout()
-        detected_row.addWidget(QLabel("检测到的字体引用:"))
+        detected_row.addWidget(
+            QLabel(
+                Localizer.get().font_replace_detected_font_references
+            )
+        )
         self.detected_font_combo = ComboBox(self)
-        self.detected_font_combo.addItem("尚未扫描")
+        self.detected_font_combo.addItem(
+            Localizer.get().font_replace_not_scanned
+        )
         self.detected_font_combo.setEnabled(False)
         detected_row.addWidget(self.detected_font_combo, 1)
         advanced_layout.addLayout(detected_row)
 
         self.font_scan_summary_label = CaptionLabel(
-            "这里只显示脚本中实际引用到的字体；game/fonts 中存在但未被引用的字体会单独统计。",
+            Localizer.get().font_replace_only_fonts_referenced_scripts_listed_here_unreferenced,
             self,
         )
         self.font_scan_summary_label.setWordWrap(True)
         advanced_layout.addWidget(self.font_scan_summary_label)
 
         # 替换模式
-        self.replace_all_check = CheckBox("替换所有检测到的字体")
+        self.replace_all_check = CheckBox(
+            Localizer.get().font_replace_replace_all_detected_fonts
+        )
         self.replace_all_check.setChecked(False)
         advanced_layout.addWidget(self.replace_all_check)
 
         # 手动指定原字体
         old_font_row = QHBoxLayout()
-        old_font_row.addWidget(QLabel("指定原字体:"))
+        old_font_row.addWidget(
+            QLabel(Localizer.get().font_replace_original_font)
+        )
         self.old_font_edit = LineEdit()
-        self.old_font_edit.setPlaceholderText("留空则替换所有检测到的字体")
+        self.old_font_edit.setPlaceholderText(
+            Localizer.get().font_replace_leave_blank_replace_all_detected_fonts
+        )
         self.old_font_edit.setEnabled(True)
         old_font_row.addWidget(self.old_font_edit, 1)
         advanced_layout.addLayout(old_font_row)
@@ -219,22 +262,34 @@ class FontReplacePage(Base, QWidget):
         )
 
         # 生成 GUI Hook（旧逻辑）
-        self.generate_gui_check = CheckBox("同时生成 GUI 字体 Hook（可选）")
-        self.generate_gui_check.setToolTip("会在 tl/<lang>/gui.rpy 生成字体 Hook（兼容旧项目）")
+        self.generate_gui_check = CheckBox(
+            Localizer.get().font_replace_also_generate_gui_font_hook_optional
+        )
+        self.generate_gui_check.setToolTip(
+            Localizer.get().font_replace_creates_font_hook_tl_lang_gui_rpy
+        )
         advanced_layout.addWidget(self.generate_gui_check)
 
         # 备份选项
-        self.auto_backup_check = CheckBox("替换前自动备份（推荐）")
+        self.auto_backup_check = CheckBox(
+            Localizer.get().font_replace_automatically_back_up_before_replacing_recommended
+        )
         self.auto_backup_check.setChecked(True)
         advanced_layout.addWidget(self.auto_backup_check)
         
         # 操作按钮
         backup_row = QHBoxLayout()
-        self.rescan_btn = PushButton("检测所有字体", icon=FluentIcon.SEARCH)
+        self.rescan_btn = PushButton(
+            Localizer.get().font_replace_scan_all_fonts,
+            icon=FluentIcon.SEARCH,
+        )
         self.rescan_btn.clicked.connect(self._manual_rescan)
         backup_row.addWidget(self.rescan_btn)
 
-        self.replace_all_fonts_btn = PushButton("替换所有字体", icon=FluentIcon.EDIT)
+        self.replace_all_fonts_btn = PushButton(
+            Localizer.get().font_replace_replace_all_fonts,
+            icon=FluentIcon.EDIT,
+        )
         self.replace_all_fonts_btn.clicked.connect(self._replace_all_fonts)
         backup_row.addWidget(self.replace_all_fonts_btn)
 
@@ -251,15 +306,21 @@ class FontReplacePage(Base, QWidget):
         visible = not self.advanced_widget.isVisible()
         self.advanced_widget.setVisible(visible)
         if visible:
-            self.toggle_advanced_btn.setText("收起")
+            self.toggle_advanced_btn.setText(
+                Localizer.get().font_replace_collapse
+            )
             self.toggle_advanced_btn.setIcon(FluentIcon.UP)
         else:
-            self.toggle_advanced_btn.setText("展开")
+            self.toggle_advanced_btn.setText(Localizer.get().font_replace_expand)
             self.toggle_advanced_btn.setIcon(FluentIcon.CHEVRON_DOWN_MED)
 
     def _browse_game_dir(self):
         """浏览游戏目录"""
-        directory = QFileDialog.getExistingDirectory(self, "选择 game 目录", "")
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.get().font_replace_select_game_folder,
+            "",
+        )
         if directory:
             self.game_dir_edit.setText(directory)
             self._scan_game_dir(directory)
@@ -273,7 +334,10 @@ class FontReplacePage(Base, QWidget):
     def _browse_custom_font(self):
         """浏览自定义字体"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择字体文件", "", "字体文件 (*.ttf *.otf);;所有文件 (*)"
+            self,
+            Localizer.get().font_replace_select_font_file,
+            "",
+            Localizer.get().font_replace_font_files_ttf_otf_all_files,
         )
         if file_path:
             self.custom_font_edit.setText(file_path)
@@ -284,7 +348,9 @@ class FontReplacePage(Base, QWidget):
         try:
             game_path = Path(game_dir)
             if not game_path.exists():
-                self.status_label.setText("❌ 目录不存在")
+                self.status_label.setText(
+                    Localizer.get().font_replace_folder_does_not_exist
+                )
                 return
 
             # 扫描脚本里的字体引用
@@ -313,17 +379,22 @@ class FontReplacePage(Base, QWidget):
             else:
                 if discovered_font_files:
                     self.detected_font_combo.addItem(
-                        f"未检测到字体引用（已发现 {len(discovered_font_files)} 个字体文件）"
+                        Localizer.get().font_replace_no_font_references_detected_font_file_s.format(discovered_font_files_count=len(discovered_font_files))
                     )
                 else:
-                    self.detected_font_combo.addItem("未检测到字体引用")
+                    self.detected_font_combo.addItem(
+                        Localizer.get().font_replace_no_font_references_detected
+                    )
                 self.detected_font_combo.setEnabled(False)
             self.detected_font_combo.blockSignals(False)
 
             # 更新语言下拉框
             self.target_lang_combo.blockSignals(True)
             self.target_lang_combo.clear()
-            self.target_lang_combo.addItem("默认语言 (全局替换)", None)
+            self.target_lang_combo.addItem(
+                Localizer.get().font_replace_default_language_global_replacement,
+                None,
+            )
             for lang in detected_languages:
                 self.target_lang_combo.addItem(lang, lang)
             # 如果有 chinese，默认选中
@@ -338,12 +409,11 @@ class FontReplacePage(Base, QWidget):
             font_file_count = len(discovered_font_files)
             lang_count = len(detected_languages)
             self.status_label.setText(
-                f"✅ 扫描完成：检测到 {font_count} 个字体引用，发现 {font_file_count} 个字体文件，{lang_count} 个翻译语言"
+                Localizer.get().font_replace_scan_complete_font_reference_s_font_file.format(font_count=font_count, font_file_count=font_file_count, lang_count=lang_count)
             )
 
             self.font_scan_summary_label.setText(
-                f"脚本中引用了 {font_count} 个字体；game/fonts、game/gui 等目录中共发现 {font_file_count} 个字体文件。"
-                "“替换所有检测到的字体”只会替换脚本中实际引用到的字体。"
+                Localizer.get().font_replace_scripts_reference_font_s_font_file_s.format(font_count=font_count, font_file_count=font_file_count)
             )
 
             LogManager.get().info(
@@ -352,18 +422,28 @@ class FontReplacePage(Base, QWidget):
 
         except Exception as e:
             LogManager.get().error(f"扫描游戏目录失败: {e}")
-            self.status_label.setText(f"❌ 扫描失败: {e}")
+            self.status_label.setText(
+                Localizer.get().font_replace_scan_failed.format(e=e)
+            )
 
     def _one_click_inject(self):
         """一键注入预置字体包（默认非破坏性）"""
         try:
             game_dir = self.game_dir_edit.text().strip()
             if not game_dir:
-                InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().font_replace_select_game_folder_first,
+                    parent=self,
+                )
                 return
 
             if not Path(game_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().font_replace_folder_does_not_exist_2,
+                    parent=self,
+                )
                 return
 
             # 获取目标语言
@@ -372,7 +452,7 @@ class FontReplacePage(Base, QWidget):
             # 尝试从文本获取（当 data 为空但选择了有效语言时）
             if not target_lang:
                 current_text = self.target_lang_combo.currentText()
-                if current_text and current_text not in ["自动检测", "默认语言 (全局替换)"]:
+                if current_text in self.detected_languages:
                     target_lang = current_text
 
             # 默认若未选择，使用 chinese（方便新建汉化）
@@ -382,7 +462,11 @@ class FontReplacePage(Base, QWidget):
             # 1) 注入预置字体包（tl/<lang>/base_box + tl/<lang>/fonts）
             ok, message = self.replacer.deploy_builtin_font_pack(game_dir, target_lang)
             if not ok:
-                InfoBar.error("错误", f"注入失败: {message}", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().font_replace_font_injection_failed.format(message=message),
+                    parent=self,
+                )
                 return
 
             # 2) 可选：生成 GUI Hook（旧逻辑，放在高级选项）
@@ -390,22 +474,40 @@ class FontReplacePage(Base, QWidget):
                 custom_font = self.custom_font_edit.text().strip()
                 if custom_font:
                     if not Path(custom_font).exists():
-                        InfoBar.error("错误", "自定义字体文件不存在", parent=self)
+                        InfoBar.error(
+                            Localizer.get().error,
+                            Localizer.get().font_replace_custom_font_file_does_not_exist,
+                            parent=self,
+                        )
                         return
                     font_source_path = custom_font
                 else:
                     font_source_path = self.replacer.get_builtin_font_path()
                     if not font_source_path:
-                        InfoBar.error("错误", "未找到内置字体", parent=self)
+                        InfoBar.error(
+                            Localizer.get().error,
+                            Localizer.get().font_replace_bundled_font_not_found,
+                            parent=self,
+                        )
                         return
 
                 success = self.replacer.gen_gui_fonts(
                     game_dir, target_lang, font_source_path, is_rtl=False
                 )
                 if not success:
-                    InfoBar.warning("提示", "字体包已注入，但 GUI Hook 生成失败", parent=self)
+                    InfoBar.warning(
+                        Localizer.get().notice,
+                        Localizer.get().font_replace_font_pack_injected_but_gui_hook_could,
+                        parent=self,
+                    )
 
-            InfoBar.success("完成", f"{message}", parent=self)
+            InfoBar.success(
+                Localizer.get().android_build_done,
+                Localizer.get().font_replace_font_pack_injected_into_tl.format(
+                    target_lang=target_lang
+                ),
+                parent=self,
+            )
             return
 
             # 确定要替换的字体
@@ -427,30 +529,50 @@ class FontReplacePage(Base, QWidget):
             
         except Exception as e:
             LogManager.get().error(f"一键注入失败: {e}")
-            InfoBar.error("错误", f"注入失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().font_replace_font_injection_failed_2.format(e=e),
+                parent=self,
+            )
 
     def _replace_all_fonts(self):
         """替换所有检测到的字体引用（破坏性操作）"""
         try:
             game_dir = self.game_dir_edit.text().strip()
             if not game_dir:
-                InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().font_replace_select_game_folder_first,
+                    parent=self,
+                )
                 return
             if not Path(game_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().font_replace_folder_does_not_exist_2,
+                    parent=self,
+                )
                 return
 
             # 确定新字体
             custom_font = self.custom_font_edit.text().strip()
             if custom_font:
                 if not Path(custom_font).exists():
-                    InfoBar.error("错误", "自定义字体文件不存在", parent=self)
+                    InfoBar.error(
+                        Localizer.get().error,
+                        Localizer.get().font_replace_custom_font_file_does_not_exist,
+                        parent=self,
+                    )
                     return
                 font_source_path = custom_font
             else:
                 font_source_path = self.replacer.get_builtin_font_path()
                 if not font_source_path:
-                    InfoBar.error("错误", "未找到内置字体", parent=self)
+                    InfoBar.error(
+                        Localizer.get().error,
+                        Localizer.get().font_replace_bundled_font_not_found,
+                        parent=self,
+                    )
                     return
 
             # 确定要替换的字体集合
@@ -467,9 +589,17 @@ class FontReplacePage(Base, QWidget):
 
             if not original_fonts:
                 if self.detected_fonts:
-                    InfoBar.warning("提示", "请勾选“替换所有检测到的字体”或填写要替换的原字体", parent=self)
+                    InfoBar.warning(
+                        Localizer.get().notice,
+                        Localizer.get().font_replace_select_replace_all_detected_fonts_enter_original,
+                        parent=self,
+                    )
                 else:
-                    InfoBar.warning("提示", "未检测到任何字体引用", parent=self)
+                    InfoBar.warning(
+                        Localizer.get().notice,
+                        Localizer.get().font_replace_no_font_references_detected_2,
+                        parent=self,
+                    )
                 return
 
             create_backup = self.auto_backup_check.isChecked()
@@ -492,7 +622,11 @@ class FontReplacePage(Base, QWidget):
         except Exception as e:
             self._set_replace_running(False)
             LogManager.get().error(f"替换所有字体失败: {e}")
-            InfoBar.error("错误", f"替换失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().font_replace_font_replacement_failed_3.format(e=e),
+                parent=self,
+            )
 
     def _set_replace_running(self, running: bool) -> None:
         """更新字体替换期间的页面状态。"""
@@ -500,7 +634,9 @@ class FontReplacePage(Base, QWidget):
         self.rescan_btn.setEnabled(not running)
         self.action_button.setEnabled(not running)
         if running:
-            self.status_label.setText("正在替换字体，请稍候...")
+            self.status_label.setText(
+                Localizer.get().font_replace_replacing_fonts_please_wait
+            )
 
     def _on_font_replace_done(self, success: bool, message: str, details: dict) -> None:
         """在 UI 线程显示字体替换结果。"""
@@ -509,25 +645,43 @@ class FontReplacePage(Base, QWidget):
             replaced_files = details.get("replaced_files", 0)
             replaced_count = details.get("replaced_count", 0)
             self.status_label.setText(
-                f"字体替换完成：修改 {replaced_files} 个文件，共 {replaced_count} 处"
+                Localizer.get().font_replace_font_replacement_complete_file_s_replacement_s.format(replaced_files=replaced_files, replaced_count=replaced_count)
             )
             backup_info = ""
             if details.get("backup_name"):
-                backup_info = f"\n已备份到: fonts_backup/{details['backup_name']}"
+                backup_info = Localizer.get().font_replace_backup_fonts_backup.format(details_backup_name=details['backup_name'])
             InfoBar.success(
-                "完成",
-                f"已修改 {replaced_files} 个文件，{message}{backup_info}",
+                Localizer.get().android_build_done,
+                Localizer.get().font_replace_modified_files_with_replacements.format(
+                    replaced_files=replaced_files,
+                    replaced_count=replaced_count,
+                    backup_info=backup_info,
+                ),
                 parent=self,
             )
         else:
-            self.status_label.setText(f"字体替换失败：{message}")
-            InfoBar.error("错误", f"替换失败: {message}", parent=self)
+            self.status_label.setText(
+                Localizer.get().font_replace_font_replacement_failed.format(message=message)
+            )
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().font_replace_font_replacement_failed_2.format(message=message),
+                parent=self,
+            )
 
     def _manual_rescan(self):
         """手动重新扫描游戏目录"""
         game_dir = self.game_dir_edit.text().strip()
         if not game_dir:
-            InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().font_replace_select_game_folder_first,
+                parent=self,
+            )
             return
         self._scan_game_dir(game_dir)
-        InfoBar.success("完成", "已重新扫描游戏目录", parent=self)
+        InfoBar.success(
+            Localizer.get().android_build_done,
+            Localizer.get().font_replace_game_folder_rescanned,
+            parent=self,
+        )

@@ -20,6 +20,7 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Localizer.Localizer import Localizer
 from module.Tool.Formatter import Formatter
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -43,7 +44,7 @@ class FormatterPage(Base, QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
-        layout.addWidget(TitleLabel("🎨 代码格式化"))
+        layout.addWidget(TitleLabel(Localizer.localize("🎨 代码格式化", "🎨 Code Formatter")))
 
         # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -76,13 +77,14 @@ class FormatterPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("📁 目标目录"))
+        strings = Localizer.get()
+        layout.addWidget(StrongBodyLabel(Localizer.localize("📁 目标目录", "📁 Target Folder")))
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("game 目录:"))
+        row.addWidget(QLabel(Localizer.localize("game 目录:", "Game Folder:")))
         self.game_dir_edit = LineEdit()
-        self.game_dir_edit.setPlaceholderText("选择包含 .rpy 文件的 game 目录")
-        btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.game_dir_edit.setPlaceholderText(Localizer.localize("选择包含 .rpy 文件的 game 目录", "Select the game folder containing .rpy files"))
+        btn_browse = PushButton(strings.browse, icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_game_dir)
         row.addWidget(self.game_dir_edit, 1)
         row.addWidget(btn_browse)
@@ -96,17 +98,18 @@ class FormatterPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("⚙️ 格式化选项"))
+        strings = Localizer.get()
+        layout.addWidget(StrongBodyLabel(Localizer.localize("⚙️ 格式化选项", "⚙️ Formatting Options")))
 
-        self.preserve_comments_check = CheckBox("保留注释")
+        self.preserve_comments_check = CheckBox(Localizer.localize("保留注释", "Preserve Comments"))
         self.preserve_comments_check.setChecked(True)
         layout.addWidget(self.preserve_comments_check)
 
-        self.fix_indentation_check = CheckBox("修复缩进（Tab 转空格）")
+        self.fix_indentation_check = CheckBox(Localizer.localize("修复缩进（Tab 转空格）", "Fix Indentation (Convert Tabs to Spaces)"))
         self.fix_indentation_check.setChecked(True)
         layout.addWidget(self.fix_indentation_check)
 
-        self.remove_trailing_spaces_check = CheckBox("移除行尾空格")
+        self.remove_trailing_spaces_check = CheckBox(Localizer.localize("移除行尾空格", "Remove Trailing Spaces"))
         self.remove_trailing_spaces_check.setChecked(True)
         layout.addWidget(self.remove_trailing_spaces_check)
 
@@ -117,7 +120,7 @@ class FormatterPage(Base, QWidget):
         card = CardWidget(self)
         layout = QHBoxLayout(card)
 
-        self.format_button = PrimaryPushButton("开始格式化", icon=FluentIcon.BRUSH)
+        self.format_button = PrimaryPushButton(Localizer.localize("开始格式化", "Start Formatting"), icon=FluentIcon.BRUSH)
         self.format_button.setFixedHeight(48)
         self.format_button.clicked.connect(self._format_files)
 
@@ -129,7 +132,9 @@ class FormatterPage(Base, QWidget):
 
     def _browse_game_dir(self):
         """浏览目录"""
-        directory = QFileDialog.getExistingDirectory(self, "选择 game 目录", "")
+        directory = QFileDialog.getExistingDirectory(
+            self, Localizer.localize("选择 game 目录", "Select Game Folder"), ""
+        )
         if directory:
             self.game_dir_edit.setText(directory)
 
@@ -138,11 +143,19 @@ class FormatterPage(Base, QWidget):
         try:
             game_dir = self.game_dir_edit.text().strip()
             if not game_dir:
-                InfoBar.warning("提示", "请选择 game 目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize("请选择 game 目录", "Select a game folder."),
+                    parent=self,
+                )
                 return
 
             if not Path(game_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.localize("目录不存在", "The folder does not exist."),
+                    parent=self,
+                )
                 return
 
             LogManager.get().info(f"开始格式化: {game_dir}")
@@ -157,8 +170,16 @@ class FormatterPage(Base, QWidget):
             )
             
             LogManager.get().info(f"格式化完成，共处理 {count} 个文件")
-            InfoBar.success("完成", f"已格式化 {count} 个 .rpy 文件", parent=self)
+            InfoBar.success(
+                Localizer.get().complete,
+                Localizer.localize("已格式化 {count} 个 .rpy 文件", "Formatted {count} .rpy file(s).").format(count=count),
+                parent=self,
+            )
             
         except Exception as e:
             LogManager.get().error(f"格式化失败: {e}")
-            InfoBar.error("错误", f"格式化失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("格式化失败: {error}", "Formatting failed: {error}").format(error=e),
+                parent=self,
+            )
