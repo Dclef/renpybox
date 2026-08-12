@@ -23,6 +23,7 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Localizer.Localizer import Localizer
 from module.Tool.ErrorRepairer import ErrorRepairer
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -53,7 +54,7 @@ class ErrorRepairPage(Base, QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
-        layout.addWidget(TitleLabel("🔧 错误修复"))
+        layout.addWidget(TitleLabel(Localizer.localize("🔧 错误修复", "🔧 Error Repair")))
 
         # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -89,13 +90,13 @@ class ErrorRepairPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("📁 目标目录"))
+        layout.addWidget(StrongBodyLabel(Localizer.localize("📁 目标目录", "📁 Target Folder")))
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("game 目录:"))
+        row.addWidget(QLabel(Localizer.localize("game 目录:", "Game Folder:")))
         self.game_dir_edit = LineEdit()
-        self.game_dir_edit.setPlaceholderText("选择包含 .rpy 文件的 game 目录")
-        btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.game_dir_edit.setPlaceholderText(Localizer.localize("选择包含 .rpy 文件的 game 目录", "Select the game folder containing .rpy files"))
+        btn_browse = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_game_dir)
         row.addWidget(self.game_dir_edit, 1)
         row.addWidget(btn_browse)
@@ -109,21 +110,21 @@ class ErrorRepairPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("🔨 修复选项"))
+        layout.addWidget(StrongBodyLabel(Localizer.localize("🔨 修复选项", "🔨 Repair Options")))
 
-        self.fix_indent_check = CheckBox("修复缩进问题（Tab 转空格）")
+        self.fix_indent_check = CheckBox(Localizer.localize("修复缩进问题（Tab 转空格）", "Fix Indentation (Convert Tabs to Spaces)"))
         self.fix_indent_check.setChecked(True)
         layout.addWidget(self.fix_indent_check)
 
-        self.fix_indent_level_check = CheckBox("修复缩进层级问题（按父块回退）")
+        self.fix_indent_level_check = CheckBox(Localizer.localize("修复缩进层级问题（按父块回退）", "Fix Indentation Levels (Follow Parent Blocks)"))
         self.fix_indent_level_check.setChecked(False)
         layout.addWidget(self.fix_indent_level_check)
 
-        self.fix_quotes_check = CheckBox("规范化外层中文引号")
+        self.fix_quotes_check = CheckBox(Localizer.localize("规范化外层中文引号", "Normalize Outer Chinese Quotation Marks"))
         self.fix_quotes_check.setChecked(False)
         layout.addWidget(self.fix_quotes_check)
 
-        self.fix_dialogue_quotes_check = CheckBox("修复未转义引号（源码翻译）")
+        self.fix_dialogue_quotes_check = CheckBox(Localizer.localize("修复未转义引号（源码翻译）", "Fix Unescaped Quotes (Source Translation)"))
         self.fix_dialogue_quotes_check.setChecked(False)
         layout.addWidget(self.fix_dialogue_quotes_check)
 
@@ -135,18 +136,18 @@ class ErrorRepairPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("🔍 深度 Lint 检查"))
+        layout.addWidget(StrongBodyLabel(Localizer.localize("🔍 深度 Lint 检查", "🔍 Deep Lint Check")))
 
-        desc = CaptionLabel("调用 Ren'Py 内置 lint 命令进行深度语法检查", self)
+        desc = CaptionLabel(Localizer.localize("调用 Ren'Py 内置 lint 命令进行深度语法检查", "Run Ren'Py's built-in lint command for a deeper syntax check"), self)
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
         # 游戏可执行文件选择
         row = QHBoxLayout()
-        row.addWidget(QLabel("游戏主程序:"))
+        row.addWidget(QLabel(Localizer.localize("游戏主程序:", "Game Executable:")))
         self.game_exe_edit = LineEdit()
-        self.game_exe_edit.setPlaceholderText("选择游戏 .exe 文件（如 game.exe）")
-        btn_browse_exe = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.game_exe_edit.setPlaceholderText(Localizer.localize("选择游戏 .exe 文件（如 game.exe）", "Select the game .exe file, such as game.exe"))
+        btn_browse_exe = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_browse_exe.clicked.connect(self._browse_game_exe)
         row.addWidget(self.game_exe_edit, 1)
         row.addWidget(btn_browse_exe)
@@ -155,7 +156,7 @@ class ErrorRepairPage(Base, QWidget):
         # 操作按钮
         btn_row = QHBoxLayout()
         
-        self.lint_check_button = PushButton("执行 Lint 检查", icon=FluentIcon.SEARCH)
+        self.lint_check_button = PushButton(Localizer.localize("执行 Lint 检查", "Run Lint Check"), icon=FluentIcon.SEARCH)
         self.lint_check_button.clicked.connect(self._run_lint_check)
 
         btn_row.addWidget(self.lint_check_button)
@@ -169,13 +170,13 @@ class ErrorRepairPage(Base, QWidget):
         card = CardWidget(self)
         layout = QHBoxLayout(card)
 
-        self.scan_button = PushButton("扫描错误", icon=FluentIcon.SEARCH)
+        self.scan_button = PushButton(Localizer.localize("扫描错误", "Scan for Errors"), icon=FluentIcon.SEARCH)
         self.scan_button.clicked.connect(self._scan_errors)
 
-        self.repair_button = PrimaryPushButton("自动修复", icon=FluentIcon.ACCEPT)
+        self.repair_button = PrimaryPushButton(Localizer.localize("自动修复", "Repair Automatically"), icon=FluentIcon.ACCEPT)
         self.repair_button.clicked.connect(self._repair_errors)
 
-        self.export_report_button = PushButton("导出报告", icon=FluentIcon.SAVE)
+        self.export_report_button = PushButton(Localizer.localize("导出报告", "Export Report"), icon=FluentIcon.SAVE)
         self.export_report_button.setEnabled(False)
         self.export_report_button.clicked.connect(self._export_report)
 
@@ -188,7 +189,7 @@ class ErrorRepairPage(Base, QWidget):
 
     def _browse_game_dir(self):
         """浏览目录"""
-        directory = QFileDialog.getExistingDirectory(self, "选择 game 目录", "")
+        directory = QFileDialog.getExistingDirectory(self, Localizer.localize("选择 game 目录", "Select Game Folder"), "")
         if directory:
             self.game_dir_edit.setText(directory)
 
@@ -196,10 +197,10 @@ class ErrorRepairPage(Base, QWidget):
         """扫描错误"""
         game_dir = self.game_dir_edit.text().strip()
         if not game_dir:
-            InfoBar.warning("提示", "请选择 game 目录", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择 game 目录", "Select a game folder."), parent=self)
             return
         if not Path(game_dir).is_dir():
-            InfoBar.error("错误", "目录不存在", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("目录不存在", "The folder does not exist."), parent=self)
             return
 
         check_indent = self.fix_indent_check.isChecked()
@@ -223,10 +224,10 @@ class ErrorRepairPage(Base, QWidget):
         """修复错误"""
         game_dir = self.game_dir_edit.text().strip()
         if not game_dir:
-            InfoBar.warning("提示", "请选择 game 目录", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择 game 目录", "Select a game folder."), parent=self)
             return
         if not Path(game_dir).is_dir():
-            InfoBar.error("错误", "目录不存在", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("目录不存在", "The folder does not exist."), parent=self)
             return
 
         fix_indent = self.fix_indent_check.isChecked()
@@ -265,7 +266,7 @@ class ErrorRepairPage(Base, QWidget):
     def _browse_game_exe(self):
         """浏览游戏可执行文件"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择游戏主程序", "", "可执行文件 (*.exe);;所有文件 (*.*)"
+            self, Localizer.localize("选择游戏主程序", "Select Game Executable"), "", Localizer.localize("可执行文件 (*.exe);;所有文件 (*.*)", "Executable Files (*.exe);;All Files (*.*)")
         )
         if file_path:
             self.game_exe_edit.setText(file_path)
@@ -274,10 +275,10 @@ class ErrorRepairPage(Base, QWidget):
         """执行深度 Lint 检查"""
         game_exe = self.game_exe_edit.text().strip()
         if not game_exe:
-            InfoBar.warning("提示", "请选择游戏主程序", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择游戏主程序", "Select the game executable."), parent=self)
             return
         if not Path(game_exe).is_file():
-            InfoBar.error("错误", "游戏主程序不存在", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("游戏主程序不存在", "The game executable does not exist."), parent=self)
             return
 
         LogManager.get().info(f"开始深度 Lint 检查: {game_exe}")
@@ -286,7 +287,7 @@ class ErrorRepairPage(Base, QWidget):
             repairer = ErrorRepairer()
             lint_output = repairer.exec_renpy_lint(game_exe)
             if lint_output is None:
-                raise RuntimeError("Ren'Py Lint 执行失败，请查看日志")
+                raise RuntimeError(Localizer.localize("Ren'Py Lint 执行失败，请查看日志", "Ren'Py Lint failed. Check the logs."))
             errors = repairer.parse_lint_errors(lint_output) if lint_output else []
             return {"output": lint_output, "errors": errors}
 
@@ -294,7 +295,7 @@ class ErrorRepairPage(Base, QWidget):
 
     def _start_background_operation(self, operation: str, task: Callable[[], object]) -> None:
         if self._running_operation is not None:
-            InfoBar.warning("提示", "已有任务正在进行中", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("已有任务正在进行中", "Another task is already running."), parent=self)
             return
 
         self._set_running_operation(operation)
@@ -329,8 +330,8 @@ class ErrorRepairPage(Base, QWidget):
             LogManager.get().info(f"扫描完成，发现 {total_issues} 个问题")
             self._set_running_operation(None)
             InfoBar.info(
-                "扫描完成",
-                f"发现 {total_issues} 个问题（可导出报告）",
+                Localizer.localize("扫描完成", "Scan Complete"),
+                Localizer.localize("发现 {count} 个问题（可导出报告）", "Found {count} issue(s). You can export the report.").format(count=total_issues),
                 parent=self,
             )
         elif operation == "repair":
@@ -344,14 +345,14 @@ class ErrorRepairPage(Base, QWidget):
             self._set_running_operation(None)
             if failed_files:
                 InfoBar.warning(
-                    "修复完成",
-                    f"已修复 {fixed_files} 个文件，{failed_files} 个文件失败",
+                    Localizer.localize("修复完成", "Repair Complete"),
+                    Localizer.localize("已修复 {fixed} 个文件，{failed} 个文件失败", "Repaired {fixed} file(s); {failed} file(s) failed.").format(fixed=fixed_files, failed=failed_files),
                     parent=self,
                 )
             else:
                 InfoBar.success(
-                    "完成",
-                    f"已修复 {fixed_files} 个文件、{fixed_items} 处",
+                    Localizer.get().complete,
+                    Localizer.localize("已修复 {files} 个文件、{items} 处", "Repaired {items} issue(s) in {files} file(s).").format(files=fixed_files, items=fixed_items),
                     parent=self,
                 )
         elif operation == "lint":
@@ -362,33 +363,44 @@ class ErrorRepairPage(Base, QWidget):
             if lint_output:
                 LogManager.get().info(f"Lint 检查发现 {len(errors)} 个问题")
                 InfoBar.warning(
-                    "检查完成",
-                    f"发现 {len(errors)} 个问题（详情见日志和 lint_errors.txt）",
+                    Localizer.localize("检查完成", "Check Complete"),
+                    Localizer.localize("发现 {count} 个问题（详情见日志和 lint_errors.txt）", "Found {count} issue(s). See the logs and lint_errors.txt for details.").format(count=len(errors)),
                     parent=self,
                 )
             else:
                 LogManager.get().info("Lint 检查完成，未发现错误")
-                InfoBar.success("检查完成", "未发现语法错误", parent=self)
+                InfoBar.success(Localizer.localize("检查完成", "Check Complete"), Localizer.localize("未发现语法错误", "No syntax errors were found."), parent=self)
         else:
             self._set_running_operation(None)
 
     def _on_operation_failed(self, operation: str, message: str) -> None:
-        labels = {"scan": "扫描", "repair": "修复", "lint": "Lint 检查"}
-        label = labels.get(operation, "任务")
+        labels = {
+            "scan": Localizer.localize("扫描", "Scan"),
+            "repair": Localizer.localize("修复", "Repair"),
+            "lint": Localizer.localize("Lint 检查", "Lint check"),
+        }
+        label = labels.get(operation, Localizer.localize("任务", "Task"))
         self._set_running_operation(None)
         LogManager.get().error(f"{label}失败: {message}")
-        InfoBar.error("错误", f"{label}失败: {message}", parent=self)
+        InfoBar.error(
+            Localizer.get().error,
+            Localizer.localize(
+                "{label}失败: {message}",
+                "{label} failed. Check the logs for details.",
+            ).format(label=label, message=message),
+            parent=self,
+        )
 
     def _export_report(self) -> None:
         if self._last_scan_report is None:
-            InfoBar.warning("提示", "请先扫描错误", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("请先扫描错误", "Scan for errors first."), parent=self)
             return
 
         output_path, _ = QFileDialog.getSaveFileName(
             self,
-            "导出错误报告",
+            Localizer.localize("导出错误报告", "Export Error Report"),
             "error_report.xlsx",
-            "Excel 文件 (*.xlsx)",
+            Localizer.localize("Excel 文件 (*.xlsx)", "Excel Files (*.xlsx)"),
         )
         if not output_path:
             return
@@ -397,7 +409,7 @@ class ErrorRepairPage(Base, QWidget):
 
         ErrorRepairer().export_error_report(self._last_scan_report, output_path)
         if Path(output_path).is_file():
-            InfoBar.success("导出完成", f"报告已保存到 {output_path}", parent=self)
+            InfoBar.success(Localizer.localize("导出完成", "Export Complete"), Localizer.localize("报告已保存到 {path}", "The report was saved to {path}").format(path=output_path), parent=self)
         else:
-            InfoBar.error("导出失败", "未能生成报告文件", parent=self)
+            InfoBar.error(Localizer.localize("导出失败", "Export Failed"), Localizer.localize("未能生成报告文件", "The report file could not be generated."), parent=self)
 

@@ -31,11 +31,14 @@ from base.LogManager import LogManager
 from frontend.RenpyToolbox.ToolRegistry import (
     FLOW,
     GROUP_TITLES,
+    GROUP_TITLES_EN,
     TOOL_SPECS,
     ToolSpec,
+    get_group_title,
 )
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     read_run_manifest,
@@ -75,12 +78,12 @@ class RenpyToolboxPage(Base, QWidget):
 
         header_layout = QHBoxLayout()
         header_layout.setSpacing(16)
-        self.title = TitleLabel("Ren'Py 工具箱", self)
+        self.title = TitleLabel(Localizer.get().app_renpy_toolbox_page, self)
         header_layout.addWidget(self.title)
         header_layout.addStretch(1)
 
         self.search_edit = SearchLineEdit(self)
-        self.search_edit.setPlaceholderText("搜索工具")
+        self.search_edit.setPlaceholderText(Localizer.get().toolbox_search_tools)
         self.search_edit.setMinimumWidth(220)
         self.search_edit.setMaximumWidth(320)
         self.search_edit.textChanged.connect(self._filter_cards)
@@ -101,8 +104,8 @@ class RenpyToolboxPage(Base, QWidget):
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(18)
 
-        for group, title in GROUP_TITLES.items():
-            self._create_flow_section(group, title)
+        for group in GROUP_TITLES:
+            self._create_flow_section(group, get_group_title(group))
         self._create_empty_state(scroll_widget)
         self.scroll_layout.addStretch(0)
 
@@ -124,12 +127,17 @@ class RenpyToolboxPage(Base, QWidget):
         icon_effect.setOpacity(0.4)
         icon.setGraphicsEffect(icon_effect)
         layout.addWidget(icon, alignment=Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(
-            BodyLabel("没有匹配的工具", self.empty_state),
-            alignment=Qt.AlignmentFlag.AlignHCenter,
+        self.empty_title = BodyLabel(
+            Localizer.get().toolbox_no_matching_tools,
+            self.empty_state,
+        )
+        layout.addWidget(self.empty_title, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.empty_description = CaptionLabel(
+            Localizer.get().toolbox_try_another_keyword_clear_search_box,
+            self.empty_state,
         )
         layout.addWidget(
-            CaptionLabel("换个关键词试试，或清空搜索框", self.empty_state),
+            self.empty_description,
             alignment=Qt.AlignmentFlag.AlignHCenter,
         )
         layout.addStretch(1)
@@ -168,10 +176,12 @@ class RenpyToolboxPage(Base, QWidget):
             if spec.group == FLOW and spec.key != "continue_translation":
                 workflow_step += 1
 
+            title = spec.localized_title()
+            description = spec.localized_description()
             card = ItemCard(
                 parent=self,
-                title=spec.title,
-                description=spec.description,
+                title=title,
+                description=description,
                 icon=spec.icon,
                 step=workflow_step if spec.group == FLOW and spec.key != "continue_translation" else 0,
                 project_ready=project_ready or not spec.requires_project,
@@ -182,6 +192,10 @@ class RenpyToolboxPage(Base, QWidget):
                 ),
                 clicked=lambda widget, current=spec: self._open_tool(current, widget),
             )
+            card._open_tooltip = Localizer.get().onekey_open.format(title=title)
+            card._project_requirement = Localizer.get().toolbox_select_game_folder_first
+            card.project_requirement_label.setText(card._project_requirement)
+            card.set_project_ready(project_ready or not spec.requires_project)
             self._flow_layouts[spec.group].addWidget(card)
             self._cards[spec.key] = card
 
@@ -198,8 +212,11 @@ class RenpyToolboxPage(Base, QWidget):
             search_text = " ".join(
                 (
                     spec.title,
+                    spec.title_en,
                     spec.description,
+                    spec.description_en,
                     GROUP_TITLES[spec.group],
+                    GROUP_TITLES_EN[spec.group],
                     *spec.keywords,
                 )
             ).casefold()
@@ -280,7 +297,9 @@ class RenpyToolboxPage(Base, QWidget):
         page_cls = spec.page_cls
         if page_cls is None:
             if not spec.lazy_import:
-                raise ValueError(f"工具 {spec.key} 未配置页面")
+                raise ValueError(
+                    Localizer.get().toolbox_tool_has_no_configured_page.format(key=spec.key)
+                )
             module_name, class_name = spec.lazy_import.rsplit(":", 1)
             page_cls = getattr(importlib.import_module(module_name), class_name)
 
@@ -292,7 +311,7 @@ class RenpyToolboxPage(Base, QWidget):
         """获取工具页单例，供一键流程和工作台复用。"""
         spec = self._spec_by_key.get(key)
         if spec is None:
-            raise KeyError(f"未知工具入口: {key}")
+            raise KeyError(Localizer.get().toolbox_unknown_tool.format(key=key))
 
         page = self._page_cache.get(key)
         if page is None:
@@ -305,8 +324,8 @@ class RenpyToolboxPage(Base, QWidget):
         try:
             if spec.requires_project and not self._has_project():
                 InfoBar.warning(
-                    "未选择游戏目录",
-                    "请先在「一键翻译」中选择游戏目录",
+                    Localizer.get().toolbox_game_folder_not_selected,
+                    Localizer.get().toolbox_select_game_folder_one_click_translation_first,
                     parent=self,
                 )
                 return
@@ -317,8 +336,13 @@ class RenpyToolboxPage(Base, QWidget):
             page = self.get_tool_page(spec.key)
             self.window.navigate_to_page(page)
         except Exception as exc:
+            title = spec.localized_title()
             LogManager.get().error(f"打开{spec.title}页面失败: {exc}")
-            InfoBar.error("打开失败", f"无法打开「{spec.title}」: {exc}", parent=self)
+            InfoBar.error(
+                Localizer.get().toolbox_failed_open,
+                Localizer.get().toolbox_could_not_open.format(title=title, exc=exc),
+                parent=self,
+            )
 
     def _get_one_key_translate_page(self) -> QWidget:
         return self.get_tool_page("one_key_translate")
@@ -361,7 +385,11 @@ class RenpyToolboxPage(Base, QWidget):
             self.window.navigate_to_page(page)
         except Exception as exc:
             LogManager.get().error(f"打开翻译面板失败: {exc}")
-            InfoBar.error("错误", f"打开翻译面板失败: {exc}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().toolbox_failed_open_translation_panel.format(exc=exc),
+                parent=self,
+            )
 
     def _check_pending_translation(self) -> bool:
         """检查是否存在尚未完成的翻译任务。"""
