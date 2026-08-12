@@ -22,7 +22,10 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
+from module.Localizer.Localizer import Localizer
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+
+
 
 
 class SetDefaultLanguagePage(Base, QWidget):
@@ -45,7 +48,7 @@ class SetDefaultLanguagePage(Base, QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
-        layout.addWidget(TitleLabel("🌍 设置默认语言"))
+        layout.addWidget(TitleLabel(Localizer.get().default_language_set_default_language))
 
         # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -81,14 +84,14 @@ class SetDefaultLanguagePage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("📁 项目配置"))
+        layout.addWidget(StrongBodyLabel(Localizer.get().add_language_project_settings))
 
         # 项目目录（包含 game 目录的上级）
         row = QHBoxLayout()
-        row.addWidget(QLabel("项目目录:"))
+        row.addWidget(QLabel(Localizer.get().android_build_project_folder))
         self.project_dir_edit = LineEdit()
-        self.project_dir_edit.setPlaceholderText("选择项目根目录（包含 game/ 的上级目录）")
-        btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.project_dir_edit.setPlaceholderText(Localizer.get().default_language_select_project_root_containing_game)
+        btn_browse = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_project_dir)
         row.addWidget(self.project_dir_edit, 1)
         row.addWidget(btn_browse)
@@ -106,11 +109,11 @@ class SetDefaultLanguagePage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("🗣️ 默认语言"))
+        layout.addWidget(StrongBodyLabel(Localizer.get().default_language_default_language))
 
         # 语言选择
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("默认语言:"))
+        row1.addWidget(QLabel(Localizer.get().default_language_default_language_2))
         self.language_combo = ComboBox()
         self.language_combo.addItems([
             "chinese",
@@ -126,9 +129,9 @@ class SetDefaultLanguagePage(Base, QWidget):
 
         # 或自定义
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("自定义名称:"))
+        row2.addWidget(QLabel(Localizer.get().default_language_custom_name))
         self.custom_lang_edit = LineEdit()
-        self.custom_lang_edit.setPlaceholderText("留空则使用上方选择的语言")
+        self.custom_lang_edit.setPlaceholderText(Localizer.get().default_language_leave_blank_use_selected_language)
         row2.addWidget(self.custom_lang_edit, 1)
         layout.addLayout(row2)
 
@@ -140,15 +143,9 @@ class SetDefaultLanguagePage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("ℹ️ 功能说明"))
+        layout.addWidget(StrongBodyLabel(Localizer.get().add_language_about_tool))
 
-        info_text = CaptionLabel(
-            "此功能将设置游戏启动时使用的默认语言。\n\n"
-            "操作步骤：\n"
-            "1. 选择项目根目录\n"
-            "2. 选择或输入默认语言名称（必须与 tl 目录下的语言目录名一致）\n"
-            "3. 点击'设置默认语言'按钮\n\n"
-            "注意：语言名称必须与 game/tl/ 下的目录名完全一致",
+        info_text = CaptionLabel(Localizer.get().default_language_sets_language_used_when_game_starts_steps,
             self
         )
         info_text.setWordWrap(True)
@@ -161,7 +158,7 @@ class SetDefaultLanguagePage(Base, QWidget):
         card = CardWidget(self)
         layout = QHBoxLayout(card)
 
-        self.set_button = PrimaryPushButton("设置默认语言", icon=FluentIcon.ACCEPT)
+        self.set_button = PrimaryPushButton(Localizer.get().onekey_set_default_language, icon=FluentIcon.ACCEPT)
         self.set_button.setFixedHeight(48)
         self.set_button.clicked.connect(self._set_default_language)
 
@@ -173,7 +170,7 @@ class SetDefaultLanguagePage(Base, QWidget):
 
     def _browse_project_dir(self):
         """浏览目录"""
-        directory = QFileDialog.getExistingDirectory(self, "选择项目根目录", "")
+        directory = QFileDialog.getExistingDirectory(self, Localizer.get().default_language_select_project_root, "")
         if directory:
             self.project_dir_edit.setText(directory)
 
@@ -182,11 +179,11 @@ class SetDefaultLanguagePage(Base, QWidget):
         try:
             project_dir = self.project_dir_edit.text().strip()
             if not project_dir:
-                InfoBar.warning("提示", "请选择项目目录", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.get().default_language_select_project_folder, parent=self)
                 return
 
             if not Path(project_dir).exists():
-                InfoBar.error("错误", "目录不存在", parent=self)
+                InfoBar.error(Localizer.get().error, Localizer.get().add_language_folder_does_not_exist, parent=self)
                 return
 
             # 获取语言名称
@@ -194,29 +191,45 @@ class SetDefaultLanguagePage(Base, QWidget):
             language = custom_lang if custom_lang else self.language_combo.currentText()
 
             if not language:
-                InfoBar.warning("提示", "请选择或输入语言名称", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().default_language_select_enter_language_name,
+                    parent=self,
+                )
                 return
 
             # 检查 tl 目录是否存在
             game_dir = Path(project_dir) / "game"
             tl_dir = game_dir / "tl" / language
             if not tl_dir.exists():
-                InfoBar.warning("警告", f"未找到语言目录: {tl_dir}\n请确保已创建该语言的翻译", parent=self)
+                InfoBar.warning(
+                    Localizer.get().warning,
+                    Localizer.get().default_language_language_folder_not_found_make_sure_translations.format(tl_dir=tl_dir),
+                    parent=self,
+                )
                 return
 
             LogManager.get().info(f"设置默认语言: {language}")
 
             template = Path(get_resource_path("resource", "templates", "default_langauge_template.txt"))
             if not template.exists():
-                raise FileNotFoundError(f"缺少模板: {template}")
+                raise FileNotFoundError(Localizer.get().default_language_template_missing.format(template=template))
 
             target = game_dir / "set_default_language_at_startup.rpy"
             data = template.read_text(encoding="utf-8").replace('{tl_name}', language)
             target.write_text(data, encoding="utf-8")
 
             LogManager.get().info(f"默认语言已设置为: {language}")
-            InfoBar.success("完成", f"默认语言脚本已生成: {target.name}", parent=self)
+            InfoBar.success(
+                Localizer.get().complete,
+                Localizer.get().default_language_default_language_script_created.format(name=target.name),
+                parent=self,
+            )
             
         except Exception as e:
             LogManager.get().error(f"设置默认语言失败: {e}")
-            InfoBar.error("错误", f"设置默认语言失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().default_language_failed_set_default_language.format(e=e),
+                parent=self,
+            )

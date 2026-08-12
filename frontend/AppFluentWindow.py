@@ -129,9 +129,10 @@ class AppFluentWindow(FluentWindow, Base):
     # 重写窗口关闭函数
     def closeEvent(self, event: QEvent) -> None:
         self._is_closing = True
-        message_box = MessageBox("警告", "确定要关闭应用吗？", self)
-        message_box.yesButton.setText("确认")
-        message_box.cancelButton.setText("取消")
+        strings = Localizer.get()
+        message_box = MessageBox(strings.warning, strings.app_close_message_box, self)
+        message_box.yesButton.setText(strings.confirm)
+        message_box.cancelButton.setText(strings.cancel)
 
         if not message_box.exec():
             self._is_closing = False
@@ -238,8 +239,6 @@ class AppFluentWindow(FluentWindow, Base):
         # 更新全局样式
         QApplication.instance().setStyleSheet(get_current_stylesheet())
 
-    # 切换语言
-
     def open_app_settings_page(self) -> None:
         self.switchTo(self.app_settings_page)
 
@@ -338,11 +337,23 @@ class AppFluentWindow(FluentWindow, Base):
             routeKey = "theme_navigation_button",
             widget = NavigationPushButton(
                 FluentIcon.CONSTRACT,
-                "切换主题",
+                Localizer.get().app_theme_btn,
                 False
             ),
             onClick = self.switch_theme,
             position = NavigationItemPosition.BOTTOM
+        )
+
+        # 语言设置按钮
+        self.navigationInterface.addWidget(
+            routeKey = "language_navigation_button",
+            widget = NavigationPushButton(
+                FluentIcon.LANGUAGE,
+                Localizer.get().app_language_btn,
+                False,
+            ),
+            onClick = self.open_app_settings_page,
+            position = NavigationItemPosition.BOTTOM,
         )
 
         # 应用设置按钮
@@ -350,7 +361,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.app_settings_page,
             FluentIcon.SETTING,
-            "应用设置",
+            Localizer.get().app_settings_page,
             NavigationItemPosition.BOTTOM,
         )
 
@@ -373,7 +384,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             PlatformPage("platform_page", self),
             FluentIcon.IOT,
-            "接口管理",
+            Localizer.get().app_platform_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -381,7 +392,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             ProjectPage("project_page", self),
             FluentIcon.FOLDER,
-            "项目设置",
+            Localizer.get().app_project_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -392,7 +403,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.renpy_toolbox_page,
             FluentIcon.GAME,
-            "Ren'Py 百宝箱",
+            Localizer.get().app_renpy_toolbox_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -402,7 +413,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.renpy_workbench_page,
             FluentIcon.PEOPLE,
-            "角色/世界观工作台",
+            Localizer.get().app_workbench_page,
             NavigationItemPosition.SCROLL,
         )
 
@@ -423,7 +434,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             BasicSettingsPage("basic_settings_page", self),
             FluentIcon.ZOOM,
-            "基础设置",
+            Localizer.get().app_basic_settings_page,
             NavigationItemPosition.SCROLL,
         )
 
@@ -433,7 +444,7 @@ class AppFluentWindow(FluentWindow, Base):
             self.addSubInterface(
                 ExpertSettingsPage("expert_settings_page", self),
                 FluentIcon.EDUCATION,
-                "专家设置",
+                Localizer.get().app_expert_settings_page,
                 NavigationItemPosition.SCROLL
             )
 

@@ -22,6 +22,7 @@ from qfluentwidgets import SwitchButton
 from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.Version import Version
 from base.VersionManager import VersionManager
 from frontend.Setting.ChangelogDialog import ChangelogDialog
@@ -70,6 +71,7 @@ class AppSettingsPage(QWidget, Base):
         self.root.addWidget(scroll_area)
 
         # 添加控件
+        self.add_widget_language(scroll_area_vbox, config)
         self.add_widget_about_updates(scroll_area_vbox)
         self.add_widget_startup_sound(scroll_area_vbox, config, window)
         self.add_widget_expert_mode(scroll_area_vbox, config, window)
@@ -87,6 +89,48 @@ class AppSettingsPage(QWidget, Base):
         self.subscribe(Base.Event.APP_UPDATE_DOWNLOAD_DONE, self._on_update_event)
         self.subscribe(Base.Event.APP_UPDATE_DOWNLOAD_ERROR, self._on_update_event)
         self.refresh_update_ui()
+
+    def add_widget_language(self, parent: QLayout, config: Config) -> None:
+        strings = Localizer.get()
+        languages = (
+            strings.app_settings_page_language_zh,
+            strings.app_settings_page_language_en,
+        )
+
+        def init(widget: ComboBoxCard) -> None:
+            index = 1 if config.app_language == BaseLanguage.Enum.EN else 0
+            widget.get_combo_box().setCurrentIndex(index)
+
+        def current_changed(widget: ComboBoxCard) -> None:
+            language = (
+                BaseLanguage.Enum.EN
+                if widget.get_combo_box().currentIndex() == 1
+                else BaseLanguage.Enum.ZH
+            )
+            current = Config().load()
+            if current.app_language == language:
+                return
+            current.app_language = language
+            current.save()
+
+            message_box = MessageBox(
+                strings.app_settings_page_language_title,
+                strings.switch_language_toast,
+                self,
+            )
+            message_box.yesButton.setText(strings.confirm)
+            message_box.cancelButton.hide()
+            message_box.exec()
+
+        parent.addWidget(
+            ComboBoxCard(
+                title = strings.app_settings_page_language_title,
+                description = strings.app_settings_page_language_content,
+                items = languages,
+                init = init,
+                current_changed = current_changed,
+            )
+        )
 
     def add_widget_about_updates(self, parent: QLayout) -> None:
         strings = Localizer.get()

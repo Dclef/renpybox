@@ -30,6 +30,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Tool.AndroidBuilder import AndroidBuilder
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -99,7 +100,7 @@ class AndroidBuildPage(Base, QWidget):
         layout.setSpacing(20)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        layout.addWidget(TitleLabel("安卓打包"))
+        layout.addWidget(TitleLabel(Localizer.get().android_build_android_build))
 
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
         scroll_area.setWidgetResizable(True)
@@ -131,25 +132,33 @@ class AndroidBuildPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("路径设置"))
-        note = QLabel("如果制作安卓壳子，请在群：821152470 下载魔改 SDK。")
+        layout.addWidget(StrongBodyLabel(Localizer.get().android_build_paths))
+        note = QLabel(
+            Localizer.get().android_build_android_shell_projects_download_modified_sdk_qq
+        )
         layout.addWidget(note)
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Ren'Py SDK:"))
         self.sdk_path_edit = LineEdit()
-        self.sdk_path_edit.setPlaceholderText("选择 renpy-sdk 目录")
-        btn_sdk = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.sdk_path_edit.setPlaceholderText(
+            Localizer.get().android_build_select_renpy_sdk_folder
+        )
+        btn_sdk = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_sdk.clicked.connect(self._browse_sdk_path)
         row1.addWidget(self.sdk_path_edit, 1)
         row1.addWidget(btn_sdk)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("项目目录:"))
+        row2.addWidget(QLabel(Localizer.get().android_build_project_folder))
         self.project_path_edit = LineEdit()
-        self.project_path_edit.setPlaceholderText("选择 Ren'Py 项目根目录")
-        btn_project = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.project_path_edit.setPlaceholderText(
+            Localizer.get().android_build_select_ren_py_project_root_folder
+        )
+        btn_project = PushButton(
+            Localizer.get().browse, icon=FluentIcon.FOLDER
+        )
         btn_project.clicked.connect(self._browse_project_path)
         row2.addWidget(self.project_path_edit, 1)
         row2.addWidget(btn_project)
@@ -162,53 +171,72 @@ class AndroidBuildPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("Android 配置 (android.json)"))
+        layout.addWidget(
+            StrongBodyLabel(
+                Localizer.get().android_build_android_configuration_android_json
+            )
+        )
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("应用名:"))
+        row1.addWidget(QLabel(Localizer.get().android_build_app_name))
         self.app_name_edit = LineEdit()
-        self.app_name_edit.setPlaceholderText("显示名称")
+        self.app_name_edit.setPlaceholderText(
+            Localizer.get().android_build_display_name
+        )
         row1.addWidget(self.app_name_edit, 1)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("包名:"))
+        row2.addWidget(QLabel(Localizer.get().android_build_package_name))
         self.package_name_edit = LineEdit()
-        self.package_name_edit.setPlaceholderText("例如 com.example.game")
+        self.package_name_edit.setPlaceholderText(
+            Localizer.get().android_build_e_g_com_example_game
+        )
         row2.addWidget(self.package_name_edit, 1)
         layout.addLayout(row2)
 
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("版本:"))
+        row3.addWidget(QLabel(Localizer.get().android_build_version))
         self.version_edit = LineEdit()
-        self.version_edit.setPlaceholderText("例如 1.0.0")
+        self.version_edit.setPlaceholderText(
+            Localizer.get().android_build_e_g_1_0_0
+        )
         row3.addWidget(self.version_edit, 1)
         layout.addLayout(row3)
 
-        self.update_always_check = CheckBox("自动更新 Java 代码", card)
+        self.update_always_check = CheckBox(
+            Localizer.get().android_build_automatically_update_java_code,
+            card,
+        )
         self.update_always_check.setVisible(False)
-        self.update_icons_check = CheckBox("自动更新图标", card)
+        self.update_icons_check = CheckBox(
+            Localizer.get().android_build_automatically_update_icons, card
+        )
         self.update_icons_check.setVisible(False)
 
         hint = QLabel(
-            "图标替换：项目根目录放 android-icon_foreground.png 与 android-icon_background.png（PNG，建议 1024x1024）。\n"
-            "启动图：android-presplash.png/jpg、android-downloading.png/jpg（建议 930x580 或保持同比例）。"
+            Localizer.get().android_build_icons_place_android_icon_foreground_png_android
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         row7 = QHBoxLayout()
-        self.dname_label = QLabel("签名名称:")
+        self.dname_label = QLabel(Localizer.get().android_build_signing_name)
         self.dname_label.setVisible(False)
         row7.addWidget(self.dname_label)
         self.dname_edit = LineEdit()
-        self.dname_edit.setPlaceholderText("生成 keystore 时的组织/名称 (可选)")
+        self.dname_edit.setPlaceholderText(
+            Localizer.get().android_build_organization_name_used_generate_keystore_optional
+        )
         self.dname_edit.setVisible(False)
         row7.addWidget(self.dname_edit, 1)
         layout.addLayout(row7)
 
         btn_row = QHBoxLayout()
-        self.write_json_button = PrimaryPushButton("写入 android.json", icon=FluentIcon.SAVE)
+        self.write_json_button = PrimaryPushButton(
+            Localizer.get().android_build_write_android_json,
+            icon=FluentIcon.SAVE,
+        )
         self.write_json_button.clicked.connect(self._write_android_json)
         btn_row.addWidget(self.write_json_button)
         btn_row.addStretch(1)
@@ -221,14 +249,25 @@ class AndroidBuildPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("环境与签名"))
+        layout.addWidget(
+            StrongBodyLabel(
+                Localizer.get().android_build_environment_signing
+            )
+        )
 
         btn_row = QHBoxLayout()
-        self.check_env_button = PushButton("检查环境", icon=FluentIcon.SEARCH)
+        self.check_env_button = PushButton(
+            Localizer.get().android_build_check_environment, icon=FluentIcon.SEARCH
+        )
         self.check_env_button.clicked.connect(self._check_env)
-        self.install_sdk_button = PrimaryPushButton("安装 SDK", icon=FluentIcon.DOWNLOAD)
+        self.install_sdk_button = PrimaryPushButton(
+            Localizer.get().android_build_install_sdk, icon=FluentIcon.DOWNLOAD
+        )
         self.install_sdk_button.clicked.connect(self._install_sdk)
-        self.generate_keys_button = PushButton("生成签名", icon=FluentIcon.SAVE)
+        self.generate_keys_button = PushButton(
+            Localizer.get().android_build_generate_signing_key,
+            icon=FluentIcon.SAVE,
+        )
         self.generate_keys_button.clicked.connect(self._generate_keys)
         btn_row.addWidget(self.check_env_button)
         btn_row.addWidget(self.install_sdk_button)
@@ -243,15 +282,22 @@ class AndroidBuildPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("构建"))
+        layout.addWidget(StrongBodyLabel(Localizer.get().android_build_build))
 
-        hint = QLabel("仅生成 APK。构建完成后自动打开 rapt/bin。")
+        hint = QLabel(
+            Localizer.get().android_build_generates_apk_only_opens_rapt_bin_when
+        )
         layout.addWidget(hint)
 
         btn_row = QHBoxLayout()
-        self.build_button = PrimaryPushButton("开始构建", icon=FluentIcon.PLAY)
+        self.build_button = PrimaryPushButton(
+            Localizer.get().android_build_start_build, icon=FluentIcon.PLAY
+        )
         self.build_button.clicked.connect(self._build_android)
-        self.open_bin_button = PushButton("打开 rapt/bin", icon=FluentIcon.FOLDER)
+        self.open_bin_button = PushButton(
+            Localizer.get().android_build_open_rapt_bin,
+            icon=FluentIcon.FOLDER,
+        )
         self.open_bin_button.clicked.connect(self._open_bin_dir)
         btn_row.addWidget(self.build_button)
         btn_row.addWidget(self.open_bin_button)
@@ -269,16 +315,28 @@ class AndroidBuildPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel("壳子制作"))
-        layout.addWidget(QLabel("将指定目录打包为 archive.rpa（保存到项目根目录），并清理大体积资源目录。"))
+        layout.addWidget(
+            StrongBodyLabel(Localizer.get().android_build_shell_package)
+        )
+        layout.addWidget(
+            QLabel(
+                Localizer.get().android_build_pack_selected_folders_archive_rpa_project_root
+            )
+        )
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("打包目录:"))
+        row1.addWidget(QLabel(Localizer.get().android_build_package_folders))
         self.archive_source_edit = LineEdit()
-        self.archive_source_edit.setPlaceholderText("多个目录用分号或换行分隔，留空默认使用 game")
-        btn_browse_archive = PushButton("添加", icon=FluentIcon.FOLDER)
+        self.archive_source_edit.setPlaceholderText(
+            Localizer.get().android_build_separate_multiple_folders_semicolons_new_lines_leave
+        )
+        btn_browse_archive = PushButton(
+            Localizer.get().android_build_add, icon=FluentIcon.FOLDER
+        )
         btn_browse_archive.clicked.connect(self._browse_archive_source_dir)
-        self.detect_archive_button = PushButton("检测", icon=FluentIcon.SEARCH)
+        self.detect_archive_button = PushButton(
+            Localizer.get().android_build_detect, icon=FluentIcon.SEARCH
+        )
         self.detect_archive_button.clicked.connect(self._detect_archive_dirs)
         row1.addWidget(self.archive_source_edit, 1)
         row1.addWidget(btn_browse_archive)
@@ -286,28 +344,35 @@ class AndroidBuildPage(Base, QWidget):
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        self.shell_backup_check = CheckBox("备份打包目录并压缩为 zip（保存到项目根目录）")
+        self.shell_backup_check = CheckBox(
+            Localizer.get().android_build_back_up_package_folders_zip_file_project
+        )
         row2.addWidget(self.shell_backup_check)
         row2.addStretch(1)
         layout.addLayout(row2)
 
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("清理目录:"))
+        row3.addWidget(QLabel(Localizer.get().android_build_cleanup_folders))
         self.shell_remove_dirs_edit = LineEdit()
         default_dirs = (self.config.android_shell_remove_dirs or "").strip()
         if default_dirs:
-            placeholder = f"多个目录用逗号/分号分隔，留空不删除（默认: {default_dirs}）"
+            placeholder = Localizer.get().android_build_separate_folders_commas_semicolons_leave_blank_delete.format(default_dirs=default_dirs)
         else:
-            placeholder = "多个目录用逗号/分号分隔，留空不删除"
+            placeholder = Localizer.get().android_build_separate_folders_commas_semicolons_leave_blank_delete_2
         self.shell_remove_dirs_edit.setPlaceholderText(placeholder)
         row3.addWidget(self.shell_remove_dirs_edit, 1)
-        self.detect_remove_button = PushButton("检测", icon=FluentIcon.SEARCH)
+        self.detect_remove_button = PushButton(
+            Localizer.get().android_build_detect, icon=FluentIcon.SEARCH
+        )
         self.detect_remove_button.clicked.connect(self._detect_remove_dirs)
         row3.addWidget(self.detect_remove_button)
         layout.addLayout(row3)
 
         btn_row = QHBoxLayout()
-        self.make_shell_button = PrimaryPushButton("生成 archive.rpa + 清理资源", icon=FluentIcon.ZIP_FOLDER)
+        self.make_shell_button = PrimaryPushButton(
+            Localizer.get().android_build_generate_archive_rpa_clean_resources,
+            icon=FluentIcon.ZIP_FOLDER,
+        )
         self.make_shell_button.clicked.connect(self._make_shell_only)
         btn_row.addWidget(self.make_shell_button)
         btn_row.addStretch(1)
@@ -345,17 +410,26 @@ class AndroidBuildPage(Base, QWidget):
         self.config.save()
 
     def _browse_sdk_path(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择 Ren'Py SDK 目录")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.get().android_build_select_ren_py_sdk_folder,
+        )
         if folder:
             self.sdk_path_edit.setText(folder)
 
     def _browse_project_path(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择 Ren'Py 项目目录")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.get().android_build_select_ren_py_project_folder,
+        )
         if folder:
             self.project_path_edit.setText(folder)
 
     def _browse_archive_source_dir(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "选择打包目录")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.get().android_build_select_package_folder,
+        )
         if folder:
             existing = self.archive_source_edit.text().strip()
             if existing:
@@ -367,16 +441,26 @@ class AndroidBuildPage(Base, QWidget):
         sdk_path = self.sdk_path_edit.text().strip()
         project_path = self.project_path_edit.text().strip()
         if not sdk_path:
-            InfoBar.warning("提示", "请先选择 Ren'Py SDK 目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_select_ren_py_sdk_folder_first,
+                parent=self,
+            )
             return None
         if not project_path:
-            InfoBar.warning("提示", "请先选择项目目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_select_project_folder_first,
+                parent=self,
+            )
             return None
 
         builder = AndroidBuilder(sdk_path, project_path)
         errors = builder.validate_paths()
         if errors:
-            InfoBar.error("错误", "\n".join(errors), parent=self)
+            InfoBar.error(
+                Localizer.get().error, "\n".join(errors), parent=self
+            )
             for err in errors:
                 self._log(err)
             return None
@@ -385,15 +469,27 @@ class AndroidBuildPage(Base, QWidget):
     def _get_project_dir(self) -> Path | None:
         project_path = self.project_path_edit.text().strip()
         if not project_path:
-            InfoBar.warning("提示", "请先选择项目目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_select_project_folder_first,
+                parent=self,
+            )
             return None
         project_dir = Path(project_path)
         if not project_dir.exists():
-            InfoBar.error("错误", f"项目目录不存在: {project_dir}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().android_build_project_folder_does_not_exist.format(project_dir=project_dir),
+                parent=self,
+            )
             return None
         game_dir = project_dir / "game"
         if not game_dir.exists():
-            InfoBar.error("错误", f"未找到 game 目录: {game_dir}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().android_build_game_folder_not_found.format(game_dir=game_dir),
+                parent=self,
+            )
             return None
         return project_dir
 
@@ -479,9 +575,17 @@ class AndroidBuildPage(Base, QWidget):
         game_dir = project_dir / "game"
         detected = self._detect_resource_dirs(game_dir)
         if not self._apply_detected_items(self.archive_source_edit, detected, replace=True):
-            InfoBar.warning("提示", "未检测到资源目录，已清空", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_no_resource_folders_detected_field_cleared,
+                parent=self,
+            )
             return
-        InfoBar.success("完成", f"已检测到 {len(detected)} 个目录，已覆盖", parent=self)
+        InfoBar.success(
+            Localizer.get().android_build_done,
+            Localizer.get().android_build_detected_folder_s_replaced_current_list.format(detected_count=len(detected)),
+            parent=self,
+        )
 
     def _detect_remove_dirs(self) -> None:
         project_dir = self._get_project_dir()
@@ -490,9 +594,17 @@ class AndroidBuildPage(Base, QWidget):
         game_dir = project_dir / "game"
         detected = self._detect_resource_dirs(game_dir)
         if not self._apply_detected_items(self.shell_remove_dirs_edit, detected, replace=True):
-            InfoBar.warning("提示", "未检测到资源目录，已清空", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_no_resource_folders_detected_field_cleared,
+                parent=self,
+            )
             return
-        InfoBar.success("完成", f"已检测到 {len(detected)} 个目录，已覆盖", parent=self)
+        InfoBar.success(
+            Localizer.get().android_build_done,
+            Localizer.get().android_build_detected_folder_s_replaced_current_list.format(detected_count=len(detected)),
+            parent=self,
+        )
 
     def _get_external_archive_dir(self, project_dir: Path) -> Path:
         return project_dir
@@ -593,7 +705,11 @@ class AndroidBuildPage(Base, QWidget):
         app_name = self.app_name_edit.text().strip()
         version = self.version_edit.text().strip()
         if not package or not app_name or not version:
-            InfoBar.warning("提示", "请填写应用名、包名和版本", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_enter_app_name_package_name_version,
+                parent=self,
+            )
             return
 
         json_path = builder.write_android_json(
@@ -605,7 +721,11 @@ class AndroidBuildPage(Base, QWidget):
         )
         self._log(f"已写入: {json_path}")
         self._save_config()
-        InfoBar.success("完成", "android.json 已更新", parent=self)
+        InfoBar.success(
+            Localizer.get().android_build_done,
+            Localizer.get().android_build_android_json_updated,
+            parent=self,
+        )
 
     def _check_env(self) -> None:
         builder = self._get_builder()
@@ -616,9 +736,15 @@ class AndroidBuildPage(Base, QWidget):
         def task(output):
             output("开始检查环境...")
             ok = builder.check_env(on_output=output)
-            return ok, "环境检查完成" if ok else "环境检查失败"
+            return ok, (
+                Localizer.get().android_build_environment_check_completed
+                if ok
+                else Localizer.get().android_build_environment_check_failed
+            )
 
-        self._start_worker(task, "检查环境中...")
+        self._start_worker(
+            task, Localizer.get().android_build_checking_environment
+        )
 
     def _install_sdk(self) -> None:
         builder = self._get_builder()
@@ -629,9 +755,15 @@ class AndroidBuildPage(Base, QWidget):
         def task(output):
             output("开始安装 Android SDK...")
             ok = builder.install_sdk(on_output=output)
-            return ok, "SDK 安装完成" if ok else "SDK 安装失败"
+            return ok, (
+                Localizer.get().android_build_sdk_installation_completed
+                if ok
+                else Localizer.get().android_build_sdk_installation_failed
+            )
 
-        self._start_worker(task, "安装 SDK 中...")
+        self._start_worker(
+            task, Localizer.get().android_build_installing_sdk
+        )
 
     def _generate_keys(self) -> None:
         builder = self._get_builder()
@@ -644,9 +776,16 @@ class AndroidBuildPage(Base, QWidget):
         def task(output):
             output("开始生成签名文件...")
             ok = builder.generate_keys(dname=dname, on_output=output)
-            return ok, "签名生成完成" if ok else "签名生成失败"
+            return ok, (
+                Localizer.get().android_build_signing_key_generated
+                if ok
+                else Localizer.get().android_build_signing_key_generation_failed
+            )
 
-        self._start_worker(task, "生成签名中...")
+        self._start_worker(
+            task,
+            Localizer.get().android_build_generating_signing_key,
+        )
 
     def _build_android(self) -> None:
         builder = self._get_builder()
@@ -658,12 +797,20 @@ class AndroidBuildPage(Base, QWidget):
         app_name = self.app_name_edit.text().strip()
         version = self.version_edit.text().strip()
         if not package or not app_name or not version:
-            InfoBar.warning("提示", "请填写应用名、包名和版本", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_enter_app_name_package_name_version,
+                parent=self,
+            )
             return
 
         keystore = Path(builder.project_dir) / "android.keystore"
         if not keystore.exists():
-            InfoBar.warning("提示", "未检测到签名文件，请先生成签名", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_no_signing_key_found_generate_one_first,
+                parent=self,
+            )
             return
 
         dist_dir = str(Path(builder.project_dir) / "android.dist")
@@ -679,29 +826,28 @@ class AndroidBuildPage(Base, QWidget):
             )
             output(f"准备分发目录: {dist_dir}")
             if not builder.run_distribute(dist_dir=dist_dir, on_output=output):
-                return False, "分发目录生成失败"
+                return False, Localizer.get().android_build_failed_create_distribution_folder
             self._sanitize_android_dist_assets(Path(dist_dir), output)
 
             output("开始构建 Android 包...")
             ok = builder.build_android(dist_dir=dist_dir, on_output=output)
             if not ok:
-                return False, "构建失败"
+                return False, Localizer.get().android_build_build_failed
 
             outputs = builder.list_outputs()
             if outputs:
                 output("产物: " + ", ".join(p.name for p in outputs[:3]))
 
-            return True, "构建完成"
+            return True, Localizer.get().android_build_build_completed
 
         self._save_config()
         self._open_bin_after_build = True
-        self._start_worker(task, "构建中...")
+        self._start_worker(task, Localizer.get().android_build_building)
 
     def _make_shell_only(self) -> None:
         reply = MessageBox(
-            "确认壳子处理",
-            "将打包 archive.rpa（保存到项目根目录），并清理配置的资源目录。\n"
-            "此操作会修改工程文件，建议先备份。",
+            Localizer.get().android_build_confirm_shell_processing,
+            Localizer.get().android_build_build_archive_rpa_project_root_clean_configured,
             self,
         ).exec()
         if not reply:
@@ -718,19 +864,21 @@ class AndroidBuildPage(Base, QWidget):
             return ok, message
 
         self._save_config()
-        self._start_worker(task, "壳子处理中...")
+        self._start_worker(
+            task, Localizer.get().android_build_processing_shell_package
+        )
 
     def _make_shell_archive(self, project_dir: Path, output) -> tuple[bool, str]:
         game_dir = project_dir / "game"
         if not game_dir.exists():
-            return False, f"未找到 game 目录: {game_dir}"
+            return False, Localizer.get().android_build_game_folder_not_found.format(game_dir=game_dir)
 
         source_dirs = self._resolve_archive_source_dirs(project_dir)
         for source_dir in source_dirs:
             if not source_dir.exists():
-                return False, f"打包目录不存在: {source_dir}"
+                return False, Localizer.get().android_build_package_folder_does_not_exist.format(source_dir=source_dir)
             if not source_dir.is_dir():
-                return False, f"打包目录不是文件夹: {source_dir}"
+                return False, Localizer.get().android_build_package_path_not_folder.format(source_dir=source_dir)
 
         external_dir = self._get_external_archive_dir(project_dir)
         external_dir.mkdir(parents=True, exist_ok=True)
@@ -766,7 +914,7 @@ class AndroidBuildPage(Base, QWidget):
                             zf.write(entry, arcname)
                 output("备份完成")
             except Exception as exc:
-                return False, f"备份失败: {exc}"
+                return False, Localizer.get().android_build_backup_failed.format(exc=exc)
 
         output(f"开始打包 archive.rpa: {archive_path}")
         ok, message = self._pack_archive_from_dirs(
@@ -810,7 +958,7 @@ class AndroidBuildPage(Base, QWidget):
             except Exception as exc:
                 output(f"移除 game/archive.rpa 失败: {exc}")
 
-        return True, "壳子制作完成"
+        return True, Localizer.get().android_build_shell_package_completed
 
     def _pack_archive_from_dirs(
         self,
@@ -860,12 +1008,12 @@ class AndroidBuildPage(Base, QWidget):
                     output(f"已加入 {added} 个文件...")
 
         if added == 0:
-            return False, "未找到可打包的文件"
+            return False, Localizer.get().android_build_no_files_found_package
 
         output(f"已加入 {added} 个文件，正在写入 RPA 文件...")
         archive.save(str(out_path))
         output("RPA 写入完成")
-        return True, "archive.rpa 打包完成"
+        return True, Localizer.get().android_build_archive_rpa_created
 
     def _open_bin_dir(self) -> None:
         builder = self._get_builder()
@@ -873,13 +1021,21 @@ class AndroidBuildPage(Base, QWidget):
             return
         bin_dir = builder.rapt_bin
         if not bin_dir.exists():
-            InfoBar.warning("提示", "未找到 rapt/bin，请先构建", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_rapt_bin_not_found_run_build_first,
+                parent=self,
+            )
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(bin_dir)))
 
     def _start_worker(self, task, status: str) -> None:
         if self.worker and self.worker.isRunning():
-            InfoBar.warning("提示", "任务正在进行中", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().android_build_task_already_running,
+                parent=self,
+            )
             return
         self._set_busy(True, status)
         self.worker = AndroidTaskWorker(task)
@@ -890,9 +1046,18 @@ class AndroidBuildPage(Base, QWidget):
     def _on_worker_finished(self, ok: bool, message: str) -> None:
         self._set_busy(False)
         if ok:
-            InfoBar.success("完成", message or "任务完成", parent=self)
+            InfoBar.success(
+                Localizer.get().android_build_done,
+                message
+                or Localizer.get().android_build_task_completed,
+                parent=self,
+            )
         else:
-            InfoBar.error("失败", message or "任务失败", parent=self)
+            InfoBar.error(
+                Localizer.get().android_build_failed,
+                message or Localizer.get().android_build_task_failed,
+                parent=self,
+            )
         if ok and self._open_bin_after_build:
             self._open_bin_after_build = False
             self._open_bin_dir()
