@@ -90,6 +90,8 @@ class Config():
 
     # PlatformPage
     activate_platform: int = 0
+    # Agent 使用的独立 LLM 接口；0 表示尚未设置。
+    agent_platform: int = 0
     platforms: list[dict[str, Any]] = None
 
     # AppSettingsPage

@@ -25,6 +25,7 @@ from base.PathHelper import get_resource_path
 from base.Version import Version
 from base.VersionManager import VersionManager
 from frontend.AppSettingsPage import AppSettingsPage
+from frontend.Agent.AgentPage import AgentPage
 from frontend.Project.PlatformPage import PlatformPage
 from frontend.Project.ProjectPage import ProjectPage
 from frontend.Setting.BasicSettingsPage import BasicSettingsPage
@@ -419,6 +420,15 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 添加任务类页面
     def add_task_pages(self) -> None:
+        # Agent 助手
+        self.agent_page = AgentPage("agent_page", self)
+        self.addSubInterface(
+            self.agent_page,
+            FluentIcon.ROBOT,
+            Localizer.get().app_agent_page,
+            NavigationItemPosition.SCROLL,
+        )
+
         # 开始翻译
         self.translation_page = TranslationPage("translation_page", self)
         self.addSubInterface(
