@@ -26,6 +26,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from widget.EmptyCard import EmptyCard
 from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
@@ -59,13 +60,14 @@ class BatchCorrectionPage(Base, QWidget):
 
         # 标题卡片
         title_card = EmptyCard(
-            title="批量修正",
-            description=(
+            title=Localizer.localize("批量修正", "Batch Corrections"),
+            description=Localizer.localize(
                 "根据翻译完成时生成的结果检查文件中的数据，对可能存在的翻译错误进行批量修正，然后生成修正后的译文文件<br><br>"
                 "<b>工作流程：</b><br>"
                 "• 从输入文件夹的翻译结果检查文件中提取可能需要修正的数据<br>"
                 "• 检查提取出的数据，并根据实际情况对需要修正的条目进行修正<br>"
-                "• 将修正后的数据注入译文文件，然后在输出文件夹生成修正后的译文文件"
+                "• 将修正后的数据注入译文文件，然后在输出文件夹生成修正后的译文文件",
+                "Use result-check files to review possible translation errors in Excel, then apply the corrections to translation files.",
             ),
             init=None,
         )
@@ -96,7 +98,7 @@ class BatchCorrectionPage(Base, QWidget):
         layout.addWidget(self.command_bar_card)
         self.command_bar_card.add_stretch(1)
         
-        wiki_btn = TransparentPushButton(FluentIcon.HELP, "帮助文档")
+        wiki_btn = TransparentPushButton(FluentIcon.HELP, Localizer.get().wiki)
         wiki_btn.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl("https://github.com/dclef/RenpyBox/wiki")
         ))
@@ -105,15 +107,16 @@ class BatchCorrectionPage(Base, QWidget):
     def _create_step1_card(self) -> EmptyCard:
         """创建步骤一卡片"""
         def init(widget: EmptyCard) -> None:
-            btn = PushButton(FluentIcon.PLAY, "开始")
+            btn = PushButton(FluentIcon.PLAY, Localizer.get().start)
             btn.clicked.connect(self._step_01_clicked)
             widget.add_widget(btn)
 
         return EmptyCard(
-            title="第一步 - 生成修正数据",
-            description=(
+            title=Localizer.localize("第一步 - 生成修正数据", "Step 1 - Generate Correction Data"),
+            description=Localizer.localize(
                 "从结果检查文件中提取可能包含翻译错误的数据<br>"
-                "然后自动在输出文件夹内生成用于编辑的数据文件 <b>批量修正.xlsx</b>"
+                "然后自动在输出文件夹内生成用于编辑的数据文件 <b>批量修正.xlsx</b>",
+                "Extract possible translation errors from result-check files and create an editable <b>批量修正.xlsx</b> workbook.",
             ),
             init=init,
         )
@@ -121,17 +124,18 @@ class BatchCorrectionPage(Base, QWidget):
     def _create_step2_card(self) -> EmptyCard:
         """创建步骤二卡片"""
         def init(widget: EmptyCard) -> None:
-            btn = PushButton(FluentIcon.SAVE_AS, "注入")
+            btn = PushButton(FluentIcon.SAVE_AS, Localizer.get().inject)
             btn.clicked.connect(self._step_02_clicked)
             widget.add_widget(btn)
 
         return EmptyCard(
-            title="第二步 - 注入修正数据",
-            description=(
+            title=Localizer.localize("第二步 - 注入修正数据", "Step 2 - Apply Corrections"),
+            description=Localizer.localize(
                 "检查数据文件中的内容，确认无误后关闭文件，开始注入<br><br>"
                 "<b>请注意：</b><br>"
                 "• 除<b>修正列</b>以外，不要修改数据文件内的其他数据<br>"
-                "• 部分格式的译文文件名中会包含类似 .zh 的语言后缀，在注入前请从文件名中移除语言后缀以正确匹配数据"
+                "• 部分格式的译文文件名中会包含类似 .zh 的语言后缀，在注入前请从文件名中移除语言后缀以正确匹配数据",
+                "Review and close the workbook, then apply its corrections. Edit only the correction column and remove language suffixes such as .zh when needed for matching.",
             ),
             init=init,
         )
@@ -142,7 +146,7 @@ class BatchCorrectionPage(Base, QWidget):
             # 选择输入文件夹
             if not self.input_folder:
                 self.input_folder = QFileDialog.getExistingDirectory(
-                    self, "选择包含结果检查文件的输入文件夹", ""
+                    self, Localizer.localize("选择包含结果检查文件的输入文件夹", "Select the Folder Containing Result-check Files"), ""
                 )
                 if not self.input_folder:
                     return
@@ -150,7 +154,7 @@ class BatchCorrectionPage(Base, QWidget):
             # 选择输出文件夹
             if not self.output_folder:
                 self.output_folder = QFileDialog.getExistingDirectory(
-                    self, "选择输出文件夹", self.input_folder
+                    self, Localizer.localize("选择输出文件夹", "Select Output Folder"), self.input_folder
                 )
                 if not self.output_folder:
                     return
@@ -197,7 +201,7 @@ class BatchCorrectionPage(Base, QWidget):
             
             # 有效性检查
             if len(data_dict) == 0:
-                InfoBar.warning("提示", "未找到需要修正的数据，请检查输入文件夹中是否有结果检查文件", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("未找到需要修正的数据，请检查输入文件夹中是否有结果检查文件", "No correction data was found. Check the input folder for result-check files."), parent=self)
                 return
             
             # 排序
@@ -208,7 +212,13 @@ class BatchCorrectionPage(Base, QWidget):
             sheet = book.active
             
             # 设置表头
-            headers = ["文件名", "错误类型", "原文（勿修改此列）", "译文（勿修改此列）", "修正（请修改此列）"]
+            headers = [
+                Localizer.localize("文件名", "File"),
+                Localizer.localize("错误类型", "Error Type"),
+                Localizer.localize("原文（勿修改此列）", "Source (Do Not Edit)"),
+                Localizer.localize("译文（勿修改此列）", "Translation (Do Not Edit)"),
+                Localizer.localize("修正（请修改此列）", "Correction (Edit This Column)"),
+            ]
             for col, header in enumerate(headers, 1):
                 cell = sheet.cell(row=1, column=col)
                 cell.value = header
@@ -236,14 +246,14 @@ class BatchCorrectionPage(Base, QWidget):
             
             LogManager.get().info(f"修正数据已生成: {output_path}")
             InfoBar.success(
-                "任务完成", 
-                f"已生成修正数据文件（共 {len(items)} 条数据）\n{output_path}", 
+                Localizer.localize("任务完成", "Task Complete"),
+                Localizer.localize("已生成修正数据文件（共 {count} 条数据）\n{path}", "Generated a correction workbook with {count} entries.\n{path}").format(count=len(items), path=output_path),
                 parent=self
             )
             
         except Exception as e:
             LogManager.get().error(f"生成修正数据失败: {e}")
-            InfoBar.error("错误", f"生成修正数据失败: {e}", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("生成修正数据失败: {error}", "Failed to generate correction data: {error}").format(error=e), parent=self)
 
     def _step_02_clicked(self):
         """第二步：注入修正数据"""
@@ -251,7 +261,7 @@ class BatchCorrectionPage(Base, QWidget):
             # 确保有输出文件夹
             if not self.output_folder:
                 self.output_folder = QFileDialog.getExistingDirectory(
-                    self, "选择包含批量修正.xlsx的输出文件夹", ""
+                    self, Localizer.localize("选择包含批量修正.xlsx的输出文件夹", "Select the Folder Containing 批量修正.xlsx"), ""
                 )
                 if not self.output_folder:
                     return
@@ -261,7 +271,7 @@ class BatchCorrectionPage(Base, QWidget):
             # 读取 Excel 文件
             excel_path = Path(self.output_folder) / "批量修正.xlsx"
             if not excel_path.exists():
-                InfoBar.warning("提示", "未找到批量修正.xlsx文件，请先执行步骤一", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("未找到批量修正.xlsx文件，请先执行步骤一", "批量修正.xlsx was not found. Run step 1 first."), parent=self)
                 return
             
             data_dict: dict[str, list[dict]] = {}
@@ -269,7 +279,7 @@ class BatchCorrectionPage(Base, QWidget):
             sheet = book.active
             
             if sheet.max_row == 0 or sheet.max_column == 0:
-                InfoBar.warning("提示", "Excel文件为空", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("Excel文件为空", "The Excel workbook is empty."), parent=self)
                 return
             
             # 读取修正数据
@@ -297,7 +307,7 @@ class BatchCorrectionPage(Base, QWidget):
                 })
             
             if len(data_dict) == 0:
-                InfoBar.warning("提示", "没有需要修正的数据（修正列与译文列相同）", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("没有需要修正的数据（修正列与译文列相同）", "There are no corrections to apply; the correction and translation columns are identical."), parent=self)
                 return
             
             # 统计信息
@@ -306,7 +316,7 @@ class BatchCorrectionPage(Base, QWidget):
             LogManager.get().info(f"找到 {total_files} 个文件，共 {total_corrections} 处需要修正")
 
             if not self._ensure_translation_root():
-                InfoBar.info("提示", "已取消注入操作。", parent=self)
+                InfoBar.info(Localizer.get().notice, Localizer.localize("已取消注入操作。", "The apply operation was cancelled."), parent=self)
                 return
 
             applied_files = 0
@@ -338,25 +348,25 @@ class BatchCorrectionPage(Base, QWidget):
 
             if applied_changes > 0:
                 InfoBar.success(
-                    "注入完成",
-                    f"已更新 {applied_files} 个文件，共应用 {applied_changes} 处修正",
+                    Localizer.localize("注入完成", "Corrections Applied"),
+                    Localizer.localize("已更新 {files} 个文件，共应用 {changes} 处修正", "Updated {files} file(s) and applied {changes} correction(s).").format(files=applied_files, changes=applied_changes),
                     parent=self
                 )
             else:
-                InfoBar.info("提示", "未在目标文件中找到可匹配的修正项，请检查修正数据。", parent=self)
+                InfoBar.info(Localizer.get().notice, Localizer.localize("未在目标文件中找到可匹配的修正项，请检查修正数据。", "No matching corrections were found in the target files. Check the correction data."), parent=self)
 
             if unmatched:
                 details = "\n".join(f"{path}（未匹配 {len(items)} 项）" for path, items in unmatched[:5])
                 LogManager.get().warning(f"有 {len(unmatched)} 个文件的修正未应用。\n{details}")
                 InfoBar.warning(
-                    "部分修正未应用",
-                    f"有 {len(unmatched)} 个文件未成功注入，详情请查看日志。",
+                    Localizer.localize("部分修正未应用", "Some Corrections Were Not Applied"),
+                    Localizer.localize("有 {count} 个文件未成功注入，详情请查看日志。", "Corrections could not be applied to {count} file(s). Check the logs for details.").format(count=len(unmatched)),
                     parent=self
                 )
             
         except Exception as e:
             LogManager.get().error(f"注入修正数据失败: {e}")
-            InfoBar.error("错误", f"注入修正数据失败: {e}", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("注入修正数据失败: {error}", "Failed to apply correction data: {error}").format(error=e), parent=self)
 
     def _auto_convert_line_break(self, src: str, fix: str) -> str:
         """根据原文换行符对修正文本中的换行符进行转换"""
@@ -381,7 +391,7 @@ class BatchCorrectionPage(Base, QWidget):
 
         folder = QFileDialog.getExistingDirectory(
             self,
-            "选择翻译文件所在目录（通常为 tl/<语言> 目录）",
+            Localizer.localize("选择翻译文件所在目录（通常为 tl/<语言> 目录）", "Select the Translation Folder (usually tl/<language>)"),
             default_root
         )
         if folder:
