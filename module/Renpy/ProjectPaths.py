@@ -46,6 +46,20 @@ def normalise_path(value: Any) -> Path | None:
         return Path(text)
 
 
+def looks_like_renpy_path(raw_path: Any) -> bool:
+    """判断路径是否明显包含 Ren'Py 项目结构。"""
+    path = normalise_path(raw_path)
+    if path is None or not path.exists():
+        return False
+    if path.is_file():
+        path = path.parent
+    return (
+        path.name.casefold() in {"game", "tl"}
+        or path.parent.name.casefold() == "tl"
+        or (path / "game").is_dir()
+    )
+
+
 def _key(path: Path) -> str:
     return os.path.normcase(os.path.normpath(str(path)))
 

@@ -283,6 +283,32 @@ class TaskRequester(Base):
         self.current_round = current_round
         self.thinking_level = self.resolve_thinking_level(self.platform.get("thinking"))
         self.last_error_message = ""
+        self._agent_requester = None
+
+    def request_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[Any],
+        *,
+        on_text_delta=None,
+    ):
+        """调用与翻译请求隔离的 Agent 工具通道。"""
+        from module.Agent.AgentRequester import AgentRequester
+
+        if self._agent_requester is None:
+            self._agent_requester = AgentRequester(self.config, self.platform)
+        if on_text_delta is None:
+            return self._agent_requester.request_tools(messages, tools)
+        return self._agent_requester.request_tools(
+            messages,
+            tools,
+            on_text_delta=on_text_delta,
+        )
+
+    def cancel_tools(self) -> None:
+        """只取消当前 Agent 请求，不设置翻译全局取消标记。"""
+        if self._agent_requester is not None:
+            self._agent_requester.cancel()
 
     @classmethod
     def resolve_thinking_level(cls, thinking: Any) -> ThinkingLevel:
