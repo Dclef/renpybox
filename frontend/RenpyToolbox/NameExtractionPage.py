@@ -20,6 +20,7 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
+from module.Localizer.Localizer import Localizer
 from widget.EmptyCard import EmptyCard
 from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
@@ -60,13 +61,14 @@ class NameExtractionPage(Base, QWidget):
 
         # 标题卡片
         title_card = EmptyCard(
-            title="姓名字段提取",
-            description=(
+            title=Localizer.localize("姓名字段提取", "Name Extraction"),
+            description=Localizer.localize(
                 "将从输入文件夹中所有符合条件的文件中提取角色姓名字段，自动生成对应的术语表数据<br><br>"
                 "<b>请注意：</b>此功能不能提取正文内的术语，不能代替 KeywordGacha 工具<br><br>"
                 "<b>支持格式：</b><br>"
                 "• Ren'Py 导出游戏文本（.rpy）<br>"
-                "• VNTextPatch 或 SExtractor 导出带 name 字段的游戏文本（.json）"
+                "• VNTextPatch 或 SExtractor 导出带 name 字段的游戏文本（.json）",
+                "Extract character names from Ren'Py .rpy files and VNTextPatch or SExtractor .json files, then create glossary data. This does not extract terms from dialogue text.",
             ),
             init=None,
         )
@@ -97,7 +99,7 @@ class NameExtractionPage(Base, QWidget):
         layout.addWidget(self.command_bar_card)
         self.command_bar_card.add_stretch(1)
         
-        wiki_btn = TransparentPushButton(FluentIcon.HELP, "帮助文档")
+        wiki_btn = TransparentPushButton(FluentIcon.HELP, Localizer.get().wiki)
         wiki_btn.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl("https://github.com/dclef/RenpyBox/wiki")
         ))
@@ -106,15 +108,16 @@ class NameExtractionPage(Base, QWidget):
     def _create_step1_card(self) -> EmptyCard:
         """创建步骤一卡片"""
         def init(widget: EmptyCard) -> None:
-            btn = PushButton(FluentIcon.PLAY, "开始")
+            btn = PushButton(FluentIcon.PLAY, Localizer.get().start)
             btn.clicked.connect(self._step_01_clicked)
             widget.add_widget(btn)
 
         return EmptyCard(
-            title="第一步 - 提取数据",
-            description=(
+            title=Localizer.localize("第一步 - 提取数据", "Step 1 - Extract Names"),
+            description=Localizer.localize(
                 "提取姓名字段及与其相关的上下文，发送至翻译器进行翻译<br>"
-                "（如果不需要翻译，可以直接执行第二步生成术语表）"
+                "（如果不需要翻译，可以直接执行第二步生成术语表）",
+                "Extract names and their context. You can continue directly to step 2 when translation is not required.",
             ),
             init=init,
         )
@@ -122,16 +125,13 @@ class NameExtractionPage(Base, QWidget):
     def _create_step2_card(self) -> EmptyCard:
         """创建步骤二卡片"""
         def init(widget: EmptyCard) -> None:
-            btn = PushButton(FluentIcon.SAVE_AS, "生成")
+            btn = PushButton(FluentIcon.SAVE_AS, Localizer.get().generate)
             btn.clicked.connect(self._step_02_clicked)
             widget.add_widget(btn)
 
         return EmptyCard(
-            title="第二步 - 生成术语表",
-            description=(
-                "从提取的姓名数据中生成术语表<br>"
-                "然后生成对应的术语表数据，检查生成的术语表数据是否正确"
-            ),
+            title=Localizer.localize("第二步 - 生成术语表", "Step 2 - Generate Glossary"),
+            description=Localizer.localize("从提取的姓名数据中生成术语表<br>然后生成对应的术语表数据，检查生成的术语表数据是否正确", "Generate a glossary from the extracted names, then review the resulting entries."),
             init=init,
         )
 
@@ -141,7 +141,7 @@ class NameExtractionPage(Base, QWidget):
             # 选择输入文件夹
             if not self.input_folder:
                 self.input_folder = QFileDialog.getExistingDirectory(
-                    self, "选择包含 Ren'Py 脚本的输入文件夹", ""
+                    self, Localizer.localize("选择包含 Ren'Py 脚本的输入文件夹", "Select the Folder Containing Ren'Py Scripts"), ""
                 )
                 if not self.input_folder:
                     return
@@ -192,7 +192,7 @@ class NameExtractionPage(Base, QWidget):
             
             # 有效性检查
             if len(name_src_dict) == 0:
-                InfoBar.warning("提示", "未找到任何角色姓名定义，请检查输入文件夹", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("未找到任何角色姓名定义，请检查输入文件夹", "No character-name definitions were found. Check the input folder."), parent=self)
                 return
             
             # 保存提取结果
@@ -200,10 +200,8 @@ class NameExtractionPage(Base, QWidget):
             
             LogManager.get().info(f"提取完成，找到 {len(name_src_dict)} 个角色姓名")
             InfoBar.success(
-                "提取完成", 
-                f"找到 {len(name_src_dict)} 个角色姓名\n"
-                f"如需翻译，请配置翻译引擎后使用翻译功能\n"
-                f"否则可直接执行第二步生成术语表",
+                Localizer.localize("提取完成", "Extraction Complete"),
+                Localizer.localize("找到 {count} 个角色姓名\n如需翻译，请配置翻译引擎后使用翻译功能\n否则可直接执行第二步生成术语表", "Found {count} character name(s). Configure a translation engine to translate them, or continue to step 2 to generate the glossary.").format(count=len(name_src_dict)),
                 parent=self
             )
             
@@ -215,14 +213,14 @@ class NameExtractionPage(Base, QWidget):
             
         except Exception as e:
             LogManager.get().error(f"提取姓名字段失败: {e}")
-            InfoBar.error("错误", f"提取姓名字段失败: {e}", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("提取姓名字段失败: {error}", "Name extraction failed: {error}").format(error=e), parent=self)
 
     def _step_02_clicked(self):
         """第二步：生成术语表"""
         try:
             # 检查是否已提取姓名
             if not self.extracted_names:
-                InfoBar.warning("提示", "请先执行步骤一提取姓名字段", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.localize("请先执行步骤一提取姓名字段", "Run step 1 to extract names first."), parent=self)
                 return
             
             # 选择输出文件
@@ -232,8 +230,8 @@ class NameExtractionPage(Base, QWidget):
                 default_path = str(Path(self.output_folder) / "glossary_names.txt")
             
             output_file, _ = QFileDialog.getSaveFileName(
-                self, "保存术语表文件", default_path,
-                "文本文件 (*.txt);;JSON文件 (*.json);;所有文件 (*.*)"
+                self, Localizer.localize("保存术语表文件", "Save Glossary File"), default_path,
+                Localizer.localize("文本文件 (*.txt);;JSON文件 (*.json);;所有文件 (*.*)", "Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)")
             )
             if not output_file:
                 return
@@ -256,9 +254,8 @@ class NameExtractionPage(Base, QWidget):
             
             LogManager.get().info(f"术语表已生成: {output_path}")
             InfoBar.success(
-                "任务完成", 
-                f"已生成术语表文件（共 {len(glossary_lines)} 个条目）\n{output_path}\n\n"
-                f"请手动编辑文件，将 -> 右侧修改为正确的译文",
+                Localizer.localize("任务完成", "Task Complete"),
+                Localizer.localize("已生成术语表文件（共 {count} 个条目）\n{path}\n\n请手动编辑文件，将 -> 右侧修改为正确的译文", "Generated a glossary with {count} entries.\n{path}\n\nEdit the file and replace the text to the right of -> with the correct translation.").format(count=len(glossary_lines), path=output_path),
                 parent=self
             )
             
@@ -270,7 +267,7 @@ class NameExtractionPage(Base, QWidget):
             
         except Exception as e:
             LogManager.get().error(f"生成术语表失败: {e}")
-            InfoBar.error("错误", f"生成术语表失败: {e}", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.localize("生成术语表失败: {error}", "Glossary generation failed: {error}").format(error=e), parent=self)
 
     def _parse_glossary_from_translations(self, translations: dict[str, str]) -> dict[str, str]:
         """从翻译结果中解析术语表（如果姓名已被翻译）"""

@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from qfluentwidgets import FluentIconBase
 
 from frontend.RenpyToolbox.ToolIcon import ToolIcon
+from module.Localizer.Localizer import Localizer
+from module.Localizer.LocalizerEN import LocalizerEN
+from module.Localizer.LocalizerZH import LocalizerZH
 
 
 FLOW = "flow"
@@ -10,12 +13,26 @@ TRANSLATE = "translate"
 ASSET = "asset"
 ENGINEER = "engineer"
 
-GROUP_TITLES = {
-    FLOW: "推荐流程",
-    TRANSLATE: "翻译方式",
-    ASSET: "资源与词表",
-    ENGINEER: "工程与修复",
+GROUP_TITLE_KEYS = {
+    FLOW: "toolbox_group_flow",
+    TRANSLATE: "toolbox_group_translate",
+    ASSET: "toolbox_group_asset",
+    ENGINEER: "toolbox_group_engineer",
 }
+
+GROUP_TITLES = {
+    group: getattr(LocalizerZH, resource_key)
+    for group, resource_key in GROUP_TITLE_KEYS.items()
+}
+
+GROUP_TITLES_EN = {
+    group: getattr(LocalizerEN, resource_key)
+    for group, resource_key in GROUP_TITLE_KEYS.items()
+}
+
+
+def get_group_title(group: str) -> str:
+    return getattr(Localizer.get(), GROUP_TITLE_KEYS[group])
 
 
 @dataclass(frozen=True)
@@ -23,8 +40,8 @@ class ToolSpec:
     """工具箱入口的声明式配置。"""
 
     key: str
-    title: str
-    description: str
+    title_key: str
+    description_key: str
     group: str
     page_cls: type | None = None
     object_name: str = ""
@@ -34,12 +51,34 @@ class ToolSpec:
     handler: str = ""
     lazy_import: str = ""
 
+    @property
+    def title(self) -> str:
+        return getattr(LocalizerZH, self.title_key)
+
+    @property
+    def description(self) -> str:
+        return getattr(LocalizerZH, self.description_key)
+
+    @property
+    def title_en(self) -> str:
+        return getattr(LocalizerEN, self.title_key)
+
+    @property
+    def description_en(self) -> str:
+        return getattr(LocalizerEN, self.description_key)
+
+    def localized_title(self) -> str:
+        return getattr(Localizer.get(), self.title_key)
+
+    def localized_description(self) -> str:
+        return getattr(Localizer.get(), self.description_key)
+
 
 TOOL_SPECS = (
     ToolSpec(
         "continue_translation",
-        "继续翻译",
-        "检测到上次未完成的翻译任务",
+        'toolbox_tool_continue_translation_title',
+        'toolbox_tool_continue_translation_description',
         FLOW,
         icon=ToolIcon.CONTINUE,
         keywords=("恢复", "未完成", "进度", "resume"),
@@ -47,8 +86,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "one_key_translate",
-        "一键翻译",
-        "选择游戏目录，自动完成抽取和翻译",
+        'toolbox_tool_one_key_translate_title',
+        'toolbox_tool_one_key_translate_description',
         FLOW,
         object_name="yi-jian-fanyi",
         icon=ToolIcon.ONE_KEY,
@@ -58,8 +97,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "proofreading",
-        "检查与润色",
-        "查看质量报告、校对或润色译文并导出",
+        'toolbox_tool_proofreading_title',
+        'toolbox_tool_proofreading_description',
         FLOW,
         object_name="proofreading_page",
         icon=ToolIcon.PROOFREAD,
@@ -69,8 +108,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "apply_translation",
-        "应用翻译到游戏",
-        "将翻译结果写入游戏的 TL 目录",
+        'toolbox_tool_apply_translation_title',
+        'toolbox_tool_apply_translation_description',
         FLOW,
         icon=ToolIcon.APPLY,
         requires_project=True,
@@ -79,8 +118,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "font_replace",
-        "字体注入",
-        "注入预置字体包及对应的界面适配脚本",
+        'toolbox_tool_font_replace_title',
+        'toolbox_tool_font_replace_description',
         FLOW,
         object_name="font-replace",
         icon=ToolIcon.FONT,
@@ -90,8 +129,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "add_language",
-        "添加语言入口",
-        "向游戏添加语言切换功能",
+        'toolbox_tool_add_language_title',
+        'toolbox_tool_add_language_description',
         FLOW,
         object_name="add-language",
         icon=ToolIcon.ADD_LANGUAGE,
@@ -101,8 +140,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "set_default_language",
-        "设置默认语言",
-        "设置游戏启动时的默认语言",
+        'toolbox_tool_set_default_language_title',
+        'toolbox_tool_set_default_language_description',
         FLOW,
         object_name="set-default-language",
         icon=ToolIcon.DEFAULT_LANGUAGE,
@@ -112,8 +151,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "extract_to_tl",
-        "翻译抽取到 TL",
-        "使用官方抽取、运行时抽取等高级抽取方式",
+        'toolbox_tool_extract_to_tl_title',
+        'toolbox_tool_extract_to_tl_description',
         TRANSLATE,
         icon=ToolIcon.EXTRACT_TL,
         keywords=("tl", "抽取", "extract", "官方抽取", "运行时抽取"),
@@ -121,8 +160,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "direct_rpy_translate",
-        "直接翻译 RPY",
-        "直接翻译 tl/*.rpy 文件",
+        'toolbox_tool_direct_rpy_translate_title',
+        'toolbox_tool_direct_rpy_translate_description',
         TRANSLATE,
         object_name="direct-rpy-translate",
         icon=ToolIcon.DIRECT_RPY,
@@ -131,8 +170,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "hook_translate",
-        "HOOK 翻译",
-        "运行游戏并抽取文本后直接翻译",
+        'toolbox_tool_hook_translate_title',
+        'toolbox_tool_hook_translate_description',
         TRANSLATE,
         object_name="hook-translate",
         icon=ToolIcon.HOOK,
@@ -142,8 +181,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "source_translate",
-        "源码翻译",
-        "直接翻译 game/*.rpy 源码",
+        'toolbox_tool_source_translate_title',
+        'toolbox_tool_source_translate_description',
         TRANSLATE,
         object_name="source-translate",
         icon=ToolIcon.SOURCE,
@@ -153,8 +192,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "hook_supplement",
-        "补全翻译",
-        "扫描漏提文本并生成补全脚本",
+        'toolbox_tool_hook_supplement_title',
+        'toolbox_tool_hook_supplement_description',
         TRANSLATE,
         object_name="hook-supplement",
         icon=ToolIcon.SUPPLEMENT,
@@ -164,8 +203,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "extract_json",
-        "文本提取 JSON",
-        "导出 JSON 供人工翻译，再导入并应用到 TL",
+        'toolbox_tool_extract_json_title',
+        'toolbox_tool_extract_json_description',
         TRANSLATE,
         object_name="extract-json",
         icon=ToolIcon.JSON,
@@ -174,8 +213,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "local_glossary",
-        "本地词库",
-        "管理术语表，统一专有名词翻译",
+        'toolbox_tool_local_glossary_title',
+        'toolbox_tool_local_glossary_description',
         ASSET,
         object_name="local-glossary",
         icon=ToolIcon.GLOSSARY,
@@ -184,8 +223,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "text_preserve",
-        "禁翻表",
-        "管理不需要翻译的变量和代码",
+        'toolbox_tool_text_preserve_title',
+        'toolbox_tool_text_preserve_description',
         ASSET,
         object_name="text-preserve",
         icon=ToolIcon.PRESERVE,
@@ -194,8 +233,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "honorific_placeholder",
-        "称呼桥接",
-        "处理称呼和变量组合文本",
+        'toolbox_tool_honorific_placeholder_title',
+        'toolbox_tool_honorific_placeholder_description',
         ASSET,
         object_name="honorific-placeholder",
         icon=ToolIcon.HONORIFIC,
@@ -204,8 +243,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "ma_suite",
-        "终极结构导出",
-        "导出 Excel 和结构化翻译脚本",
+        'toolbox_tool_ma_suite_title',
+        'toolbox_tool_ma_suite_description',
         ASSET,
         object_name="ma-suite",
         icon=ToolIcon.STRUCTURE,
@@ -214,8 +253,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "batch_correction",
-        "批量修正",
-        "通过 Excel 批量修正质检报告中的译文",
+        'toolbox_tool_batch_correction_title',
+        'toolbox_tool_batch_correction_description',
         ASSET,
         object_name="batch-correction",
         icon=ToolIcon.BATCH,
@@ -224,8 +263,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "name_extraction",
-        "姓名提取",
-        "扫描脚本与 JSON，生成角色名清单",
+        'toolbox_tool_name_extraction_title',
+        'toolbox_tool_name_extraction_description',
         ASSET,
         object_name="name-extraction",
         icon=ToolIcon.NAME,
@@ -235,8 +274,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "pack_unpack",
-        "解包/打包",
-        "解包 RPA 文件或打包游戏资源",
+        'toolbox_tool_pack_unpack_title',
+        'toolbox_tool_pack_unpack_description',
         ENGINEER,
         object_name="pack-unpack",
         icon=ToolIcon.PACK,
@@ -245,8 +284,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "error_repair",
-        "错误修复",
-        "扫描并修复常见脚本错误",
+        'toolbox_tool_error_repair_title',
+        'toolbox_tool_error_repair_description',
         ENGINEER,
         object_name="error-repair",
         icon=ToolIcon.REPAIR,
@@ -255,8 +294,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "translation_reuse",
-        "更新翻译复用",
-        "按原文将旧译文安全填入新版本的空条目",
+        'toolbox_tool_translation_reuse_title',
+        'toolbox_tool_translation_reuse_description',
         ENGINEER,
         object_name="translation-reuse",
         icon=ToolIcon.REUSE,
@@ -266,8 +305,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "formatter",
-        "代码格式化",
-        "格式化 .rpy 文件",
+        'toolbox_tool_formatter_title',
+        'toolbox_tool_formatter_description',
         ENGINEER,
         object_name="formatter",
         icon=ToolIcon.FORMAT,
@@ -276,8 +315,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "android_build",
-        "安卓打包",
-        "安装 SDK、生成签名并构建 APK",
+        'toolbox_tool_android_build_title',
+        'toolbox_tool_android_build_description',
         ENGINEER,
         object_name="android-build",
         icon=ToolIcon.ANDROID,
@@ -287,8 +326,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "html_import",
-        "HTML 导入",
-        "在 HTML、TXT 与 Excel 之间转换翻译文本",
+        'toolbox_tool_html_import_title',
+        'toolbox_tool_html_import_description',
         ENGINEER,
         object_name="html-import",
         icon=ToolIcon.HTML,
@@ -297,8 +336,8 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "game_mod",
-        "游戏模组注入",
-        "注入画廊解锁、修改器等通用模组",
+        'toolbox_tool_game_mod_title',
+        'toolbox_tool_game_mod_description',
         ENGINEER,
         object_name="game-mod",
         icon=ToolIcon.MOD,

@@ -38,8 +38,6 @@ from module.TextProcessor import TextProcessor
 class HonorificPlaceholderPage(Base, QWidget):
     """称呼变量智能桥接管理页面"""
 
-    HEADERS = ("称呼词", "备注")
-
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
         QWidget.__init__(self, parent)
@@ -61,13 +59,16 @@ class HonorificPlaceholderPage(Base, QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
 
         # 标题
-        title = TitleLabel("称呼变量智能桥接")
+        title = TitleLabel(Localizer.localize("称呼变量智能桥接", "Honorific Variable Bridge"))
         layout.addWidget(title)
 
         # 描述
         desc = CaptionLabel(
-            "管理用于识别「称呼 + 变量」结构的称呼词列表。"
-            + "翻译时将 Mr.[xx] 等模式临时替换为结构化占位符，译后自动还原并修正中文语序（如 [xx]先生）。"
+            Localizer.localize(
+                "管理用于识别「称呼 + 变量」结构的称呼词列表。"
+                "翻译时将 Mr.[xx] 等模式临时替换为结构化占位符，译后自动还原并修正中文语序（如 [xx]先生）。",
+                "Manage honorific terms used to recognize honorific-plus-variable patterns. During translation, patterns such as Mr.[xx] become structured placeholders and are restored afterward with the correct word order.",
+            )
         )
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -90,11 +91,11 @@ class HonorificPlaceholderPage(Base, QWidget):
         h_layout.setContentsMargins(16, 12, 16, 12)
         h_layout.setSpacing(12)
 
-        label = StrongBodyLabel("启用称呼变量智能桥接")
+        label = StrongBodyLabel(Localizer.localize("启用称呼变量智能桥接", "Enable Honorific Variable Bridge"))
         h_layout.addWidget(label)
 
         desc_label = CaptionLabel(
-            "开启后，翻译流程会自动检测并处理 称呼+变量 结构"
+            Localizer.localize("开启后，翻译流程会自动检测并处理 称呼+变量 结构", "Automatically detect and process honorific-plus-variable patterns during translation.")
         )
         desc_label.setWordWrap(True)
         h_layout.addWidget(desc_label, 1)
@@ -124,11 +125,11 @@ class HonorificPlaceholderPage(Base, QWidget):
         row1 = QHBoxLayout()
         row1.setSpacing(12)
 
-        save_btn = PrimaryPushButton("保存到配置", icon=FluentIcon.SAVE)
+        save_btn = PrimaryPushButton(Localizer.localize("保存到配置", "Save to Settings"), icon=FluentIcon.SAVE)
         save_btn.clicked.connect(self._save_to_config)
         row1.addWidget(save_btn)
 
-        load_btn = PushButton("从配置加载", icon=FluentIcon.HISTORY)
+        load_btn = PushButton(Localizer.localize("从配置加载", "Load from Settings"), icon=FluentIcon.HISTORY)
         load_btn.clicked.connect(self._load_from_config)
         row1.addWidget(load_btn)
 
@@ -139,26 +140,26 @@ class HonorificPlaceholderPage(Base, QWidget):
         row2 = QHBoxLayout()
         row2.setSpacing(12)
 
-        add_btn = PushButton("新增条目", icon=FluentIcon.ADD)
+        add_btn = PushButton(Localizer.localize("新增条目", "Add Entry"), icon=FluentIcon.ADD)
         add_btn.clicked.connect(self._add_row)
         row2.addWidget(add_btn)
 
-        delete_btn = PushButton("删除选中", icon=FluentIcon.DELETE)
+        delete_btn = PushButton(Localizer.localize("删除选中", "Delete Selected"), icon=FluentIcon.DELETE)
         delete_btn.clicked.connect(self._remove_selected_rows)
         row2.addWidget(delete_btn)
 
-        dedup_btn = PushButton("去重", icon=FluentIcon.FILTER)
-        dedup_btn.setToolTip("按称呼词去重，合并备注")
+        dedup_btn = PushButton(Localizer.localize("去重", "Remove Duplicates"), icon=FluentIcon.FILTER)
+        dedup_btn.setToolTip(Localizer.localize("按称呼词去重，合并备注", "Remove duplicate honorifics and merge notes"))
         dedup_btn.clicked.connect(self._deduplicate_rows)
         row2.addWidget(dedup_btn)
 
-        clear_btn = PushButton("清空全部", icon=FluentIcon.CLOSE)
-        clear_btn.setToolTip("清空所有称呼词")
+        clear_btn = PushButton(Localizer.localize("清空全部", "Clear All"), icon=FluentIcon.CLOSE)
+        clear_btn.setToolTip(Localizer.localize("清空所有称呼词", "Remove all honorific terms"))
         clear_btn.clicked.connect(self._clear_all)
         row2.addWidget(clear_btn)
 
-        restore_btn = PushButton("恢复默认", icon=FluentIcon.SYNC)
-        restore_btn.setToolTip("恢复为内置默认称呼词列表")
+        restore_btn = PushButton(Localizer.localize("恢复默认", "Restore Defaults"), icon=FluentIcon.SYNC)
+        restore_btn.setToolTip(Localizer.localize("恢复为内置默认称呼词列表", "Restore the built-in honorific list"))
         restore_btn.clicked.connect(self._restore_defaults)
         row2.addWidget(restore_btn)
 
@@ -174,11 +175,15 @@ class HonorificPlaceholderPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 16)
         v_layout.setSpacing(12)
 
-        table_label = StrongBodyLabel("称呼词列表（可直接编辑单元格）")
+        table_label = StrongBodyLabel(Localizer.localize("称呼词列表（可直接编辑单元格）", "Honorific Terms (cells are editable)"))
         v_layout.addWidget(table_label)
 
-        self.table = QTableWidget(0, len(self.HEADERS), self)
-        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        headers = (
+            Localizer.localize("称呼词", "Honorific"),
+            Localizer.localize("备注", "Notes"),
+        )
+        self.table = QTableWidget(0, len(headers), self)
+        self.table.setHorizontalHeaderLabels(headers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -257,14 +262,14 @@ class HonorificPlaceholderPage(Base, QWidget):
     def _add_row(self):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        for col in range(len(self.HEADERS)):
+        for col in range(self.table.columnCount()):
             self.table.setItem(row, col, QTableWidgetItem(""))
         self.table.setCurrentCell(row, 0)
 
     def _remove_selected_rows(self):
         row = self.table.currentRow()
         if row < 0:
-            InfoBar.warning("提示", "请选择需要删除的条目", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择需要删除的条目", "Select an entry to delete."), parent=self)
             return
         self.table.removeRow(row)
 
@@ -272,7 +277,7 @@ class HonorificPlaceholderPage(Base, QWidget):
         """按称呼词去重，优先保留有备注的条目"""
         entries = self._collect_table_data()
         if not entries:
-            InfoBar.info("提示", "表格为空，暂无可去重的数据", parent=self)
+            InfoBar.info(Localizer.get().notice, Localizer.localize("表格为空，暂无可去重的数据", "The table is empty."), parent=self)
             return
 
         seen: dict[str, int] = {}
@@ -294,20 +299,20 @@ class HonorificPlaceholderPage(Base, QWidget):
         removed = len(entries) - len(deduped)
         if removed > 0:
             self._set_table_data(deduped)
-            InfoBar.success("完成", f"已去除重复 {removed} 条，保留 {len(deduped)} 条", parent=self)
+            InfoBar.success(Localizer.get().complete, Localizer.localize("已去除重复 {removed} 条，保留 {kept} 条", "Removed {removed} duplicate(s); kept {kept}.").format(removed=removed, kept=len(deduped)), parent=self)
         else:
-            InfoBar.info("提示", "未发现重复条目", parent=self)
+            InfoBar.info(Localizer.get().notice, Localizer.localize("未发现重复条目", "No duplicate entries were found."), parent=self)
 
     def _clear_all(self):
         """清空表格"""
         self.table.setRowCount(0)
-        InfoBar.success("已清空", "已清空所有称呼词", parent=self)
+        InfoBar.success(Localizer.localize("已清空", "Cleared"), Localizer.localize("已清空所有称呼词", "All honorific terms were removed."), parent=self)
 
     def _restore_defaults(self):
         """恢复为内置默认称呼词"""
         items = [{"src": t, "comment": ""} for t in TextProcessor.DEFAULT_HONORIFIC_TITLES]
         self._set_table_data(items)
-        InfoBar.success("已恢复", f"已恢复为内置默认 {len(TextProcessor.DEFAULT_HONORIFIC_TITLES)} 个称呼词", parent=self)
+        InfoBar.success(Localizer.localize("已恢复", "Restored"), Localizer.localize("已恢复为内置默认 {count} 个称呼词", "Restored {count} built-in honorific terms.").format(count=len(TextProcessor.DEFAULT_HONORIFIC_TITLES)), parent=self)
 
     def _load_from_config(self):
         self.config = Config().load()
@@ -322,7 +327,7 @@ class HonorificPlaceholderPage(Base, QWidget):
             elif isinstance(t, str) and t.strip():
                 items.append({"src": t.strip(), "comment": ""})
         self._set_table_data(items)
-        InfoBar.success("完成", f"已从配置加载 {len(items)} 个称呼词", parent=self)
+        InfoBar.success(Localizer.get().complete, Localizer.localize("已从配置加载 {count} 个称呼词", "Loaded {count} honorific terms from settings.").format(count=len(items)), parent=self)
 
     def _save_to_config(self):
         entries = self._collect_table_data()
@@ -330,7 +335,7 @@ class HonorificPlaceholderPage(Base, QWidget):
         self.config.honorific_placeholder_titles = [e["src"] for e in entries]
         self.config.honorific_placeholder_bridge_enable = self.switch_btn.isChecked()
         self.config.save()
-        InfoBar.success("保存成功", f"已写入 {len(entries)} 个称呼词到配置", parent=self)
+        InfoBar.success(Localizer.localize("保存成功", "Saved"), Localizer.localize("已写入 {count} 个称呼词到配置", "Saved {count} honorific terms to settings.").format(count=len(entries)), parent=self)
 
     # ------------------------------------------------------------------ 工具方法
     def _set_table_data(self, items: List[dict]):

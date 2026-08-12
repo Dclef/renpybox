@@ -31,6 +31,7 @@ from base.LogManager import LogManager
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Extract.RenpyExtractor import RenpyExtractor
+from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 
@@ -75,7 +76,7 @@ class HookTranslatePage(Base, QWidget):
         layout.setSpacing(0)
 
         header = QHBoxLayout()
-        header.addWidget(TitleLabel("HOOK翻译"))
+        header.addWidget(TitleLabel(Localizer.localize("HOOK翻译", "HOOK Translation")))
         header.addStretch(1)
         layout.addLayout(header)
 
@@ -102,26 +103,49 @@ class HookTranslatePage(Base, QWidget):
         box = QVBoxLayout(card)
         box.setSpacing(12)
 
-        box.addWidget(StrongBodyLabel("运行时 EXE HOOK 抽取并翻译"))
+        box.addWidget(
+            StrongBodyLabel(
+                Localizer.localize(
+                    "运行时 EXE HOOK 抽取并翻译",
+                    "Runtime EXE HOOK Extraction and Translation",
+                )
+            )
+        )
         intro = CaptionLabel(
-            "流程：向游戏 game 目录注入临时 hook，启动 EXE 进行运行时抽取，"
-            "生成 tl/<lang> 后直接交给统一翻译引擎。"
+            Localizer.localize(
+                "流程：向游戏 game 目录注入临时 hook，启动 EXE 进行运行时抽取，"
+                "生成 tl/<lang> 后直接交给统一翻译引擎。",
+                "Workflow: inject a temporary hook into the game's game folder, launch the EXE "
+                "for runtime extraction, and pass the generated tl/<lang> content directly to "
+                "the unified translation engine.",
+            )
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #777;")
         box.addWidget(intro)
 
         row_exe = QHBoxLayout()
-        row_exe.addWidget(QLabel("游戏 EXE / 项目目录:"))
+        row_exe.addWidget(
+            QLabel(Localizer.localize("游戏 EXE / 项目目录:", "Game EXE / Project Folder:"))
+        )
         self.exe_edit = LineEdit()
-        self.exe_edit.setPlaceholderText("优先选择 .exe，也支持选择项目根目录自动查找")
+        self.exe_edit.setPlaceholderText(
+            Localizer.localize(
+                "优先选择 .exe，也支持选择项目根目录自动查找",
+                "Select an .exe, or select the project root to find one automatically",
+            )
+        )
         default_exe = self._guess_default_target()
         if default_exe:
             self.exe_edit.setText(str(default_exe))
         self.exe_edit.textChanged.connect(self._refresh_output_hint)
-        btn_browse_exe = PushButton("选择 EXE", icon = FluentIcon.FOLDER)
+        btn_browse_exe = PushButton(
+            Localizer.localize("选择 EXE", "Select EXE"), icon = FluentIcon.FOLDER
+        )
         btn_browse_exe.clicked.connect(self._browse_exe)
-        btn_browse_dir = PushButton("选择目录", icon = FluentIcon.FOLDER)
+        btn_browse_dir = PushButton(
+            Localizer.localize("选择目录", "Select Folder"), icon = FluentIcon.FOLDER
+        )
         btn_browse_dir.clicked.connect(self._browse_project_dir)
         row_exe.addWidget(self.exe_edit, 1)
         row_exe.addWidget(btn_browse_exe)
@@ -129,7 +153,7 @@ class HookTranslatePage(Base, QWidget):
         box.addLayout(row_exe)
 
         row_tl = QHBoxLayout()
-        row_tl.addWidget(QLabel("语言目录名:"))
+        row_tl.addWidget(QLabel(Localizer.localize("语言目录名:", "Language Folder Name:")))
         self.tl_name_edit = LineEdit()
         self.tl_name_edit.setText(self._guess_default_tl_name())
         self.tl_name_edit.setFixedWidth(160)
@@ -139,35 +163,84 @@ class HookTranslatePage(Base, QWidget):
         box.addLayout(row_tl)
 
         row_source = QHBoxLayout()
-        row_source.addWidget(QLabel("源语言:"))
+        row_source.addWidget(QLabel(Localizer.localize("源语言:", "Source Language:")))
         self.source_lang_combo = ComboBox()
-        self.source_lang_combo.addItems(["简体中文", "繁体中文", "英语", "日语", "韩语"])
-        self.source_lang_combo.setCurrentText("英语")
+        self.source_lang_combo.addItem(
+            Localizer.localize("简体中文", "Simplified Chinese"),
+            userData = BaseLanguage.Enum.ZH,
+        )
+        self.source_lang_combo.addItem(
+            Localizer.localize("繁体中文", "Traditional Chinese"),
+            userData = BaseLanguage.Enum.ZH,
+        )
+        self.source_lang_combo.addItem(
+            Localizer.localize("英语", "English"), userData = BaseLanguage.Enum.EN
+        )
+        self.source_lang_combo.addItem(
+            Localizer.localize("日语", "Japanese"), userData = BaseLanguage.Enum.JA
+        )
+        self.source_lang_combo.addItem(
+            Localizer.localize("韩语", "Korean"), userData = BaseLanguage.Enum.KO
+        )
+        self.source_lang_combo.setCurrentIndex(2)
         row_source.addWidget(self.source_lang_combo, 1)
         box.addLayout(row_source)
 
         row_target = QHBoxLayout()
-        row_target.addWidget(QLabel("目标语言:"))
+        row_target.addWidget(QLabel(Localizer.localize("目标语言:", "Target Language:")))
         self.target_lang_combo = ComboBox()
-        self.target_lang_combo.addItems(["简体中文", "繁体中文", "英语", "日语", "韩语"])
-        self.target_lang_combo.setCurrentText("简体中文")
+        self.target_lang_combo.addItem(
+            Localizer.localize("简体中文", "Simplified Chinese"),
+            userData = BaseLanguage.Enum.ZH,
+        )
+        self.target_lang_combo.addItem(
+            Localizer.localize("繁体中文", "Traditional Chinese"),
+            userData = BaseLanguage.Enum.ZH,
+        )
+        self.target_lang_combo.addItem(
+            Localizer.localize("英语", "English"), userData = BaseLanguage.Enum.EN
+        )
+        self.target_lang_combo.addItem(
+            Localizer.localize("日语", "Japanese"), userData = BaseLanguage.Enum.JA
+        )
+        self.target_lang_combo.addItem(
+            Localizer.localize("韩语", "Korean"), userData = BaseLanguage.Enum.KO
+        )
+        self.target_lang_combo.setCurrentIndex(0)
         row_target.addWidget(self.target_lang_combo, 1)
         box.addLayout(row_target)
 
         row_options = QHBoxLayout()
-        self.backup_switch = SwitchButton("写回前自动备份 .bak")
+        self.backup_switch = SwitchButton(
+            Localizer.localize("写回前自动备份 .bak", "Automatically Back Up .bak Before Writing")
+        )
         self.backup_switch.setChecked(False)
         row_options.addWidget(self.backup_switch)
-        self.incremental_switch = SwitchButton("增量补全（仅追加缺失项）")
+        self.incremental_switch = SwitchButton(
+            Localizer.localize(
+                "增量补全（仅追加缺失项）",
+                "Incremental Supplement (Append Missing Entries Only)",
+            )
+        )
         self.incremental_switch.setChecked(
             getattr(self.config, "renpy_hook_incremental", True)
         )
         self.incremental_switch.setToolTip(
-            "增量补全：只把本次运行时抽取到的缺失对话/字符串追加到 tl，保留已有翻译。\n"
-            "关闭后仍不会覆盖已有译文，只是把本次会话收集到的全部条目都列出。"
+            Localizer.localize(
+                "增量补全：只把本次运行时抽取到的缺失对话/字符串追加到 tl，保留已有翻译。\n"
+                "关闭后仍不会覆盖已有译文，只是把本次会话收集到的全部条目都列出。",
+                "Incremental supplement appends only missing dialogue and strings extracted in "
+                "this runtime session to tl, preserving existing translations.\nWhen disabled, "
+                "existing translations are still preserved, but all entries collected in this "
+                "session are listed.",
+            )
         )
         row_options.addWidget(self.incremental_switch)
-        self.generate_empty_switch = SwitchButton("抽取时生成空白译文")
+        self.generate_empty_switch = SwitchButton(
+            Localizer.localize(
+                "抽取时生成空白译文", "Generate Blank Translations During Extraction"
+            )
+        )
         self.generate_empty_switch.setChecked(False)
         row_options.addWidget(self.generate_empty_switch)
         row_options.addStretch(1)
@@ -179,7 +252,10 @@ class HookTranslatePage(Base, QWidget):
         box.addWidget(self.output_hint_label)
 
         tip = CaptionLabel(
-            "这里的 HOOK翻译 指的是 EXE 运行时 hook 模式，不是 replace_text 补全。"
+            Localizer.localize(
+                "这里的 HOOK翻译 指的是 EXE 运行时 hook 模式，不是 replace_text 补全。",
+                "HOOK Translation here means EXE runtime hook mode, not replace_text supplementation.",
+            )
         )
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #666;")
@@ -194,9 +270,12 @@ class HookTranslatePage(Base, QWidget):
         box.setSpacing(10)
 
         row = QHBoxLayout()
-        self.btn_start = PrimaryPushButton("开始 HOOK翻译", icon = FluentIcon.PLAY)
+        self.btn_start = PrimaryPushButton(
+            Localizer.localize("开始 HOOK翻译", "Start HOOK Translation"),
+            icon = FluentIcon.PLAY,
+        )
         self.btn_start.clicked.connect(self._start_translation)
-        self.btn_stop = PushButton("停止", icon = FluentIcon.CANCEL)
+        self.btn_stop = PushButton(Localizer.localize("停止", "Stop"), icon = FluentIcon.CANCEL)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop_translation)
         row.addWidget(self.btn_start)
@@ -209,7 +288,7 @@ class HookTranslatePage(Base, QWidget):
         self.progress_bar.setValue(0)
         box.addWidget(self.progress_bar)
 
-        self.status_label = CaptionLabel("等待开始")
+        self.status_label = CaptionLabel(Localizer.localize("等待开始", "Ready"))
         box.addWidget(self.status_label)
 
         return card
@@ -243,15 +322,20 @@ class HookTranslatePage(Base, QWidget):
     def _browse_exe(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择游戏 EXE",
+            Localizer.localize("选择游戏 EXE", "Select Game EXE"),
             "",
-            "Executable (*.exe);;All Files (*)",
+            Localizer.localize(
+                "可执行文件 (*.exe);;所有文件 (*)",
+                "Executable Files (*.exe);;All Files (*)",
+            ),
         )
         if path:
             self.exe_edit.setText(path)
 
     def _browse_project_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "选择项目目录", "")
+        path = QFileDialog.getExistingDirectory(
+            self, Localizer.localize("选择项目目录", "Select Project Folder"), ""
+        )
         if path:
             self.exe_edit.setText(path)
 
@@ -318,16 +402,30 @@ class HookTranslatePage(Base, QWidget):
             return
 
         if exe_path is None:
-            self.output_hint_label.setText(f"输出目录：{tl_dir}\n当前还未找到可用 EXE。")
+            self.output_hint_label.setText(
+                Localizer.localize(
+                    "输出目录：{tl_dir}\n当前还未找到可用 EXE。",
+                    "Output folder: {tl_dir}\nNo usable EXE has been found yet.",
+                ).format(tl_dir=tl_dir)
+            )
             return
 
         self.output_hint_label.setText(
-            f"将使用 EXE：{exe_path}\n运行时抽取与翻译输出目录：{tl_dir}"
+            Localizer.localize(
+                "将使用 EXE：{exe_path}\n运行时抽取与翻译输出目录：{tl_dir}",
+                "EXE to use: {exe_path}\nRuntime extraction and translation output folder: {tl_dir}",
+            ).format(exe_path=exe_path, tl_dir=tl_dir)
         )
 
     def _start_translation(self) -> None:
         if Engine.get().get_status() != Engine.Status.IDLE:
-            InfoBar.warning("提示", "当前已有翻译任务在运行", parent = self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.localize(
+                    "当前已有翻译任务在运行", "Another translation task is already running."
+                ),
+                parent = self,
+            )
             return
 
         exe_path = self._resolve_exe_path()
@@ -336,25 +434,55 @@ class HookTranslatePage(Base, QWidget):
         tl_name = self.tl_name_edit.text().strip() or "chinese"
 
         if exe_path is None:
-            InfoBar.error("错误", "未找到可用的游戏 EXE", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("未找到可用的游戏 EXE", "No usable game EXE was found."),
+                parent = self,
+            )
             return
         if not exe_path.exists():
-            InfoBar.error("错误", f"EXE 不存在：{exe_path}", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize(
+                    "EXE 不存在：{exe_path}", "EXE does not exist: {exe_path}"
+                ).format(exe_path=exe_path),
+                parent = self,
+            )
             return
         if project_root is None or not project_root.exists():
-            InfoBar.error("错误", "项目目录不存在", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("项目目录不存在", "The project folder does not exist."),
+                parent = self,
+            )
             return
         if not (project_root / "game").exists():
-            InfoBar.error("错误", f"未找到 game 目录：{project_root / 'game'}", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize(
+                    "未找到 game 目录：{game_dir}", "game folder not found: {game_dir}"
+                ).format(game_dir=project_root / "game"),
+                parent = self,
+            )
             return
         if tl_dir is None:
-            InfoBar.error("错误", "无法解析 tl 输出目录", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize(
+                    "无法解析 tl 输出目录", "Could not resolve the tl output folder."
+                ),
+                parent = self,
+            )
             return
 
         config = Config().load()
         paths = RenpyProjectPaths.from_path(tl_dir, tl_name)
         if paths is None:
-            InfoBar.error("错误", "无法解析项目路径", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("无法解析项目路径", "Could not resolve the project path."),
+                parent = self,
+            )
             return
         tl_dir = paths.tl_language_dir
         apply_to_config(
@@ -369,17 +497,10 @@ class HookTranslatePage(Base, QWidget):
         config.renpy_hook_incremental = self.incremental_switch.isChecked()
         config.save()
 
-        lang_map = {
-            "简体中文": BaseLanguage.Enum.ZH,
-            "繁体中文": BaseLanguage.Enum.ZH,
-            "英语": BaseLanguage.Enum.EN,
-            "日语": BaseLanguage.Enum.JA,
-            "韩语": BaseLanguage.Enum.KO,
-        }
-        source_lang = lang_map.get(self.source_lang_combo.currentText())
+        source_lang = self.source_lang_combo.currentData()
         if source_lang:
             config.source_language = source_lang
-        target_lang = lang_map.get(self.target_lang_combo.currentText())
+        target_lang = self.target_lang_combo.currentData()
         if target_lang:
             config.target_language = target_lang
 
@@ -388,7 +509,11 @@ class HookTranslatePage(Base, QWidget):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress_bar.setRange(0, 0)
-        self.status_label.setText("正在准备运行时 HOOK 抽取…")
+        self.status_label.setText(
+            Localizer.localize(
+                "正在准备运行时 HOOK 抽取…", "Preparing runtime HOOK extraction..."
+            )
+        )
 
         self._runtime_thread = threading.Thread(
             target = self._runtime_extract_and_translate,
@@ -438,7 +563,9 @@ class HookTranslatePage(Base, QWidget):
     def _set_runtime_status(self, message: str) -> None:
         if self._state != "extracting":
             return
-        self.status_label.setText(message)
+        self.status_label.setText(
+            Localizer.localize(message, "Runtime extraction in progress...")
+        )
 
     def _start_engine_translation(self, config: Config, tl_dir: Path) -> None:
         if self._stop_requested.is_set():
@@ -446,12 +573,22 @@ class HookTranslatePage(Base, QWidget):
             return
 
         if Engine.get().get_status() != Engine.Status.IDLE:
-            self._finish_runtime_failed("运行时抽取完成，但当前已有翻译任务在运行")
+            self._finish_runtime_failed(
+                Localizer.localize(
+                    "运行时抽取完成，但当前已有翻译任务在运行",
+                    "Runtime extraction completed, but another translation task is already running.",
+                )
+            )
             return
 
         self._state = "translating"
         self.progress_bar.setRange(0, 0)
-        self.status_label.setText("运行时抽取完成，正在启动统一翻译引擎…")
+        self.status_label.setText(
+            Localizer.localize(
+                "运行时抽取完成，正在启动统一翻译引擎…",
+                "Runtime extraction completed. Starting the unified translation engine...",
+            )
+        )
 
         self.emit(
             Base.Event.TRANSLATION_START,
@@ -464,19 +601,34 @@ class HookTranslatePage(Base, QWidget):
                 "target_language": config.target_language,
             },
         )
-        InfoBar.success("已开始", f"运行时抽取完成，开始翻译：{tl_dir}", parent = self)
+        InfoBar.success(
+            Localizer.localize("已开始", "Started"),
+            Localizer.localize(
+                "运行时抽取完成，开始翻译：{tl_dir}",
+                "Runtime extraction completed. Translation started: {tl_dir}",
+            ).format(tl_dir=tl_dir),
+            parent = self,
+        )
 
     def _stop_translation(self) -> None:
         if self._state == "extracting":
             self._stop_requested.set()
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("正在停止运行时抽取…")
+            self.status_label.setText(
+                Localizer.localize(
+                    "正在停止运行时抽取…", "Stopping runtime extraction..."
+                )
+            )
             return
 
         if self._state == "translating":
             self.emit(Base.Event.TRANSLATION_STOP, {})
             self.btn_stop.setEnabled(False)
-            self.status_label.setText("正在请求停止翻译…")
+            self.status_label.setText(
+                Localizer.localize(
+                    "正在请求停止翻译…", "Requesting translation to stop..."
+                )
+            )
 
     def _finish_runtime_failed(self, message: str) -> None:
         self._state = "idle"
@@ -484,9 +636,18 @@ class HookTranslatePage(Base, QWidget):
         self.btn_stop.setEnabled(False)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label.setText("运行时 HOOK 抽取失败")
+        self.status_label.setText(
+            Localizer.localize("运行时 HOOK 抽取失败", "Runtime HOOK Extraction Failed")
+        )
         self.logger.error(f"HOOK 翻译失败: {message}")
-        InfoBar.error("错误", message, parent = self)
+        InfoBar.error(
+            Localizer.get().error,
+            Localizer.localize(
+                message,
+                "Runtime extraction failed. Check the logs for details.",
+            ),
+            parent = self,
+        )
 
     def _finish_runtime_cancelled(self) -> None:
         self._state = "idle"
@@ -494,7 +655,7 @@ class HookTranslatePage(Base, QWidget):
         self.btn_stop.setEnabled(False)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label.setText("已停止")
+        self.status_label.setText(Localizer.localize("已停止", "Stopped"))
 
     def _on_engine_update(self, event, extras) -> None:
         if self._state != "translating" or not isinstance(extras, dict):
@@ -502,7 +663,7 @@ class HookTranslatePage(Base, QWidget):
 
         if extras.get("phase") == "preparing":
             self.progress_bar.setRange(0, 0)
-            self.status_label.setText(extras.get("message") or "预处理中…")
+            self.status_label.setText(Localizer.localize("预处理中…", "Preparing..."))
             return
 
         total = extras.get("total_line", 0) or 0
@@ -511,9 +672,13 @@ class HookTranslatePage(Base, QWidget):
             percent = int(max(0.0, min(1.0, current / total)) * 100)
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(percent)
-            self.status_label.setText(f"翻译中… {current}/{total}")
+            self.status_label.setText(
+                Localizer.localize(
+                    "翻译中… {current}/{total}", "Translating... {current}/{total}"
+                ).format(current=current, total=total)
+            )
         else:
-            self.status_label.setText("翻译中…")
+            self.status_label.setText(Localizer.localize("翻译中…", "Translating..."))
 
     def _on_engine_done(self, event, data) -> None:
         if self._state != "translating":
@@ -524,8 +689,12 @@ class HookTranslatePage(Base, QWidget):
         self.btn_stop.setEnabled(False)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
-        self.status_label.setText("HOOK翻译完成")
-        InfoBar.success("完成", "HOOK翻译完成", parent = self)
+        self.status_label.setText(Localizer.localize("HOOK翻译完成", "HOOK Translation Complete"))
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.localize("HOOK翻译完成", "HOOK translation is complete."),
+            parent = self,
+        )
 
     def _on_engine_stop(self, event, data) -> None:
         if self._state != "translating":
@@ -536,4 +705,4 @@ class HookTranslatePage(Base, QWidget):
         self.btn_stop.setEnabled(False)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.status_label.setText("已停止")
+        self.status_label.setText(Localizer.localize("已停止", "Stopped"))
