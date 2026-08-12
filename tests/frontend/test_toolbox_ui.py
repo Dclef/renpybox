@@ -7,9 +7,15 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QWidget
 
+from base.BaseLanguage import BaseLanguage
 from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
-from frontend.RenpyToolbox.ToolRegistry import TOOL_SPECS
+from frontend.RenpyToolbox.ToolRegistry import (
+    GROUP_TITLES,
+    GROUP_TITLES_EN,
+    TOOL_SPECS,
+)
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from widget.ItemCard import ItemCard
 
 
@@ -34,7 +40,11 @@ PROJECT_TOOLS = {
 }
 
 
-def _create_toolbox(monkeypatch, width: int = 1180) -> tuple[QWidget, RenpyToolboxPage]:
+def _create_toolbox(
+    monkeypatch,
+    width: int = 1180,
+    language: BaseLanguage.Enum = BaseLanguage.Enum.ZH,
+) -> tuple[QWidget, RenpyToolboxPage]:
     clean_config = Config()
     clean_config.input_folder = ""
     clean_config.output_folder = ""
@@ -42,6 +52,7 @@ def _create_toolbox(monkeypatch, width: int = 1180) -> tuple[QWidget, RenpyToolb
     clean_config.renpy_game_folder = ""
     clean_config.renpy_tl_folder = ""
     monkeypatch.setattr(Config, "load", lambda self, path=None: clean_config)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", language)
 
     window = QWidget()
     window.resize(width, 760)
@@ -55,6 +66,15 @@ def _create_toolbox(monkeypatch, width: int = 1180) -> tuple[QWidget, RenpyToolb
 
 def test_toolbox_search_shows_empty_state_and_matches_keywords(monkeypatch) -> None:
     window, toolbox = _create_toolbox(monkeypatch)
+
+    assert toolbox.title.text() == "Ren'Py 工具箱"
+    assert toolbox.search_edit.placeholderText() == "搜索工具"
+    assert {
+        group: label.text() for group, label in toolbox._section_titles.items()
+    } == GROUP_TITLES
+    pack_card = toolbox._cards["pack_unpack"]
+    assert pack_card.title_label.text() == "解包/打包"
+    assert pack_card._description == "解包 RPA 文件或打包游戏资源"
 
     toolbox.search_edit.setText("zzz")
     QTest.qWait(10)
@@ -135,6 +155,83 @@ def test_project_requirement_is_checked_before_custom_handler(monkeypatch) -> No
 
     assert handled == []
     assert len(warnings) == 1
+    assert warnings[0][0][:2] == (
+        "未选择游戏目录",
+        "请先在「一键翻译」中选择游戏目录",
+    )
+    window.close()
+
+
+def test_toolbox_english_copy_and_bilingual_search(monkeypatch) -> None:
+    assert all(spec.title_en and spec.description_en for spec in TOOL_SPECS)
+    window, toolbox = _create_toolbox(
+        monkeypatch,
+        language=BaseLanguage.Enum.EN,
+    )
+
+    assert toolbox.title.text() == "Ren'Py Toolbox"
+    assert toolbox.search_edit.placeholderText() == "Search tools"
+    assert {
+        group: label.text() for group, label in toolbox._section_titles.items()
+    } == GROUP_TITLES_EN
+
+    pack_card = toolbox._cards["pack_unpack"]
+    assert pack_card.title_label.text() == "Pack / Unpack"
+    assert pack_card._description == "Unpack RPA archives or package game assets"
+
+    apply_card = toolbox._cards["apply_translation"]
+    assert apply_card.project_requirement_label.text() == "Select a game folder first"
+    assert apply_card.toolTip() == "Select a game folder first"
+    assert apply_card.title_container.toolTip() == "Select a game folder first"
+
+    for query in ("反编译", "archive"):
+        toolbox.search_edit.setText(query)
+        QTest.qWait(10)
+        assert [key for key, card in toolbox._cards.items() if card.isVisible()] == [
+            "pack_unpack"
+        ]
+
+    toolbox.search_edit.setText("zzz")
+    QTest.qWait(10)
+    assert toolbox.empty_state.isVisible()
+    assert toolbox.empty_title.text() == "No matching tools"
+    assert (
+        toolbox.empty_description.text()
+        == "Try another keyword or clear the search box"
+    )
+
+    warnings = []
+    errors = []
+    monkeypatch.setattr(
+        toolbox_page_module.InfoBar,
+        "warning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        toolbox_page_module.InfoBar,
+        "error",
+        lambda *args, **kwargs: errors.append((args, kwargs)),
+    )
+
+    apply_spec = next(spec for spec in TOOL_SPECS if spec.key == "apply_translation")
+    toolbox._open_tool(apply_spec, apply_card)
+    assert warnings[0][0][:2] == (
+        "Game folder not selected",
+        "Select a game folder in One-click Translation first",
+    )
+
+    pack_spec = next(spec for spec in TOOL_SPECS if spec.key == "pack_unpack")
+    monkeypatch.setattr(
+        toolbox,
+        "get_tool_page",
+        lambda key: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    toolbox._open_tool(pack_spec, pack_card)
+    assert errors[0][0][:2] == (
+        "Failed to open",
+        'Could not open "Pack / Unpack": boom',
+    )
+
     window.close()
 
 
