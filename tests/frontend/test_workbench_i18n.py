@@ -82,4 +82,3 @@ def test_workbench_english_static_dynamic_and_feedback_copy(monkeypatch) -> None
     finally:
         page.close()
         window.close()
-
