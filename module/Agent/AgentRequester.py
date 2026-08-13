@@ -21,6 +21,7 @@ from base.Base import Base
 from base.VersionManager import VersionManager
 from module.Agent.types import AgentRequestResult, AgentToolCall, ToolDef, ToolResult
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 
 
 TextDeltaCallback = Callable[[str], None]
@@ -32,7 +33,7 @@ THINKING_LEVELS = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"}
 class AgentRequester:
     """执行一次 Agent 回合，并按需回报文本与思考增量。"""
 
-    CLIENT_REGISTRY: dict[tuple[str, str, str, int], Any] = {}
+    CLIENT_REGISTRY: dict[tuple[str, str, str, int, int], Any] = {}
     CLIENT_LOCK = threading.RLock()
     MAX_RETRY = 2
     RE_O_SERIES = re.compile(r"o\d(?:$|-)", re.IGNORECASE)
@@ -104,12 +105,13 @@ class AgentRequester:
         except (TypeError, ValueError):
             return 120
 
-    def _client_key(self) -> tuple[str, str, str, int]:
+    def _client_key(self) -> tuple[str, str, str, int, int]:
         return (
             str(self.platform.get("api_url") or ""),
             self._api_key(),
             self._api_format(),
             self._timeout(),
+            id(self),
         )
 
     @classmethod
@@ -176,7 +178,11 @@ class AgentRequester:
 
     def cancel(self) -> None:
         self.cancel_event.set()
-        # 只关闭当前 Agent 请求自己的客户端，不触碰翻译或其他 Agent 请求。
+        self.close()
+
+    def close(self) -> None:
+        """释放当前 Agent 请求独占的客户端。"""
+        # 注册键包含 requester 身份，停止时不会关闭其他 Agent 会话。
         key = self._client_key()
         with self.CLIENT_LOCK:
             client = self.CLIENT_REGISTRY.pop(key, None)
@@ -207,7 +213,11 @@ class AgentRequester:
                 name=str(function["name"]),
                 description=str(function.get("description", "")),
                 parameters_schema=schema,
-                handler=lambda **_: ToolResult(False, "仅用于请求 schema。", code="SCHEMA_ONLY"),
+                handler=lambda **_: ToolResult(
+                    False,
+                    Localizer.get().agent_request_schema_only,
+                    code="SCHEMA_ONLY",
+                ),
             ))
         return result
 
@@ -265,23 +275,31 @@ class AgentRequester:
         }:
             return AgentRequestResult.failure(
                 "UNSUPPORTED_AGENT_PLATFORM",
-                "当前接口不支持 Agent 工具调用，请在 Agent 设置中选择 OpenAI、Anthropic 或 Google 接口。",
+                Localizer.get().agent_request_unsupported_platform,
             )
         if api_format not in {
             str(Base.APIFormat.OPENAI).casefold(),
             str(Base.APIFormat.ANTHROPIC).casefold(),
             str(Base.APIFormat.GOOGLE).casefold(),
         }:
-            return AgentRequestResult.failure("UNSUPPORTED_AGENT_PLATFORM", "当前接口格式不支持 Agent 工具调用。")
+            return AgentRequestResult.failure(
+                "UNSUPPORTED_AGENT_PLATFORM",
+                Localizer.get().agent_request_unsupported_format,
+            )
 
         definitions = self._tool_defs(tools)
         if not definitions:
-            return AgentRequestResult.failure("NO_TOOLS", "没有可用的 Agent 工具。")
+            return AgentRequestResult.failure(
+                "NO_TOOLS",
+                Localizer.get().agent_request_no_tools,
+            )
 
-        last_error = "Agent 请求失败。"
         for attempt in range(self.MAX_RETRY):
             if self._cancelled():
-                return AgentRequestResult.failure("CANCELLED", "Agent 请求已取消。")
+                return AgentRequestResult.failure(
+                    "CANCELLED",
+                    Localizer.get().agent_request_cancelled,
+                )
             try:
                 if api_format == str(Base.APIFormat.ANTHROPIC).casefold():
                     return self._request_anthropic(
@@ -305,15 +323,23 @@ class AgentRequester:
                 )
             except openai.BadRequestError as exc:
                 self.last_error_message = str(exc)
-                return AgentRequestResult.failure("BAD_REQUEST", "模型拒绝了 Agent 请求参数。")
+                return AgentRequestResult.failure(
+                    "BAD_REQUEST",
+                    Localizer.get().agent_request_bad_request,
+                )
             except Exception as exc:
-                last_error = str(exc)
-                self.last_error_message = last_error
+                self.last_error_message = str(exc)
                 if self._cancelled():
-                    return AgentRequestResult.failure("CANCELLED", "Agent 请求已取消。")
+                    return AgentRequestResult.failure(
+                        "CANCELLED",
+                        Localizer.get().agent_request_cancelled,
+                    )
                 if attempt + 1 < self.MAX_RETRY:
                     continue
-        return AgentRequestResult.failure("REQUEST_FAILED", "Agent 请求失败，请检查接口配置或网络。")
+        return AgentRequestResult.failure(
+            "REQUEST_FAILED",
+            Localizer.get().agent_request_failed,
+        )
 
     def _apply_openai_thinking(self, payload: dict[str, Any], messages: list[dict[str, Any]]) -> None:
         """按 OpenAI 兼容模型的约定写入思考控制参数。"""
@@ -457,7 +483,10 @@ class AgentRequester:
         try:
             for chunk in raw_stream:
                 if self._cancelled():
-                    return AgentRequestResult.failure("CANCELLED", "Agent 请求已取消。")
+                    return AgentRequestResult.failure(
+                        "CANCELLED",
+                        Localizer.get().agent_request_cancelled,
+                    )
                 usage = self._usage(
                     self._value(chunk, "usage", None),
                     ("prompt_tokens", "input_tokens"),
@@ -578,7 +607,10 @@ class AgentRequester:
             with client.messages.stream(**payload) as stream:
                 for event in stream:
                     if self._cancelled():
-                        return AgentRequestResult.failure("CANCELLED", "Agent 请求已取消。")
+                        return AgentRequestResult.failure(
+                            "CANCELLED",
+                            Localizer.get().agent_request_cancelled,
+                        )
                     if str(self._value(event, "type", "")) != "content_block_delta":
                         continue
                     delta = self._value(event, "delta", {})
@@ -789,7 +821,10 @@ class AgentRequester:
         try:
             for chunk in stream:
                 if self._cancelled():
-                    return AgentRequestResult.failure("CANCELLED", "Agent 请求已取消。")
+                    return AgentRequestResult.failure(
+                        "CANCELLED",
+                        Localizer.get().agent_request_cancelled,
+                    )
                 usage = self._usage(
                     self._value(chunk, "usage_metadata", None),
                     ("prompt_token_count", "input_tokens"),

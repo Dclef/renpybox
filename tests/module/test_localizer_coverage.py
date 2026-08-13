@@ -45,6 +45,19 @@ def _duplicate_class_attributes(path: Path, class_name: str) -> set[str]:
     return {name for name in names if names.count(name) > 1}
 
 
+def _inline_localizer_calls(path: Path) -> list[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "localize"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "Localizer"
+    ]
+
+
 def test_english_resources_explicitly_cover_every_chinese_resource() -> None:
     zh = _direct_string_resources(LocalizerZH)
     en = _direct_string_resources(LocalizerEN)
@@ -71,6 +84,18 @@ def test_localizer_classes_do_not_silently_override_resources() -> None:
     assert _duplicate_class_attributes(
         root / "module" / "Localizer" / "LocalizerZH.py", "LocalizerZH"
     ) == set()
+
+
+def test_agent_business_code_does_not_inline_bilingual_text() -> None:
+    root = Path(__file__).parents[2]
+    violations = {
+        str(path.relative_to(root)): _inline_localizer_calls(path)
+        for folder in (root / "module" / "Agent", root / "frontend" / "Agent")
+        for path in folder.rglob("*.py")
+        if _inline_localizer_calls(path)
+    }
+
+    assert violations == {}
     assert _duplicate_class_attributes(
         root / "module" / "Localizer" / "LocalizerEN.py", "LocalizerEN"
     ) == set()
