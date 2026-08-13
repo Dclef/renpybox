@@ -101,3 +101,27 @@ def test_unsupported_platform_is_explicit_and_cancel_isolated() -> None:
     requester.cancel()
     assert requester.cancel_event.is_set()
     assert not TaskRequester.CANCEL_EVENT.is_set()
+
+
+def test_cancelling_requester_does_not_close_another_agent_client(monkeypatch) -> None:
+    first = _requester()
+    second = _requester()
+    closed = []
+
+    class Client:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            closed.append(self.name)
+
+    monkeypatch.setattr("module.Agent.AgentRequester.openai.OpenAI", lambda **_kwargs: Client("first"))
+    first_client = first._get_client()
+    monkeypatch.setattr("module.Agent.AgentRequester.openai.OpenAI", lambda **_kwargs: Client("second"))
+    second_client = second._get_client()
+
+    assert first_client is not second_client
+    first.cancel()
+    assert closed == ["first"]
+    assert second._get_client() is second_client
+    second.cancel()

@@ -17,7 +17,10 @@ from frontend.Agent.AgentPage import (
     status_color,
 )
 from frontend.Agent.AgentWorker import AgentWorker
+from module.Agent.AgentService import AgentService
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
+from base.BaseLanguage import BaseLanguage
 
 
 APP = QApplication.instance() or QApplication([])
@@ -96,6 +99,31 @@ def test_agent_page_restores_saves_and_sends_thinking_level(monkeypatch) -> None
     window.deleteLater()
 
 
+def test_agent_page_can_select_real_platform_zero(monkeypatch) -> None:
+    config = Config(agent_platform=-1)
+    config.platforms = [{
+        "id": 0,
+        "name": "OpenAI",
+        "api_format": Base.APIFormat.OPENAI,
+        "model": "gpt-test",
+    }]
+    config.save = lambda: config
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    assert page.platform_combo.itemData(0) == -1
+    assert page.platform_combo.itemData(1) == 0
+    page.platform_combo.setCurrentIndex(1)
+    page.input_box.setPlainText("检查项目")
+    assert config.agent_platform == 0
+    assert page.send_button.isEnabled()
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
     config = Config()
     config.agent_platform = 0
@@ -132,6 +160,71 @@ def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
 
     page.deleteLater()
     window.deleteLater()
+
+
+def test_agent_page_keeps_structured_tool_details(monkeypatch) -> None:
+    config = Config(agent_platform=-1)
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    page._on_worker_event("tool_start", {"name": "scan_script_errors"})
+    page._on_worker_event(
+        "tool_done",
+        {
+            "name": "scan_script_errors",
+            "success": True,
+            "message": "发现 1 个错误",
+            "data": {"errors": {"script.rpy": [{"line": 3}]}},
+        },
+    )
+
+    detail = page.history_widgets[0].detail_label.text()
+    assert "script.rpy" in detail
+    assert '"line": 3' in detail
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_worker_cancel_resolves_pending_confirmation() -> None:
+    service = AgentService(confirmation_timeout=1)
+    worker = AgentWorker(service, "解包")
+    worker.confirmation_requested.connect(lambda _name, _payload: worker.cancel())
+
+    approved = worker._request_confirmation("unpack_rpa_files", {})
+
+    assert approved is False
+
+
+def test_agent_worker_cancel_before_confirmation_returns_immediately() -> None:
+    service = AgentService(confirmation_timeout=1)
+    worker = AgentWorker(service, "解包")
+    worker.cancel()
+
+    assert worker._request_confirmation("unpack_rpa_files", {}) is False
+
+
+def test_agent_worker_confirmation_timeout_returns_none() -> None:
+    service = AgentService(confirmation_timeout=0.01)
+    worker = AgentWorker(service, "解包")
+
+    assert worker._request_confirmation("unpack_rpa_files", {}) is None
+
+
+def test_agent_unpack_confirmation_is_bilingual() -> None:
+    original = Localizer.get_app_language()
+    try:
+        Localizer.set_app_language(BaseLanguage.Enum.ZH)
+        zh = Localizer.get().agent_page_unpack_confirmation.format(game_dir="E:/Game/game", count=2)
+        Localizer.set_app_language(BaseLanguage.Enum.EN)
+        en = Localizer.get().agent_page_unpack_confirmation.format(game_dir="E:/Game/game", count=2)
+    finally:
+        Localizer.set_app_language(original)
+
+    assert "覆盖" in zh
+    assert "overwrite" in en
+    assert "E:/Game/game" in zh and "E:/Game/game" in en
 
 
 def test_agent_page_uses_explicit_message_role(monkeypatch) -> None:
@@ -210,11 +303,13 @@ def test_agent_page_new_task_clears_conversation(monkeypatch) -> None:
 
     page._append("第一条", role="user")
     page._append("回复", role="assistant")
+    page._service.messages = [{"role": "user", "content": "旧任务"}]
     assert len(page.history_widgets) == 2
     assert page.conversation_stack.currentWidget() is page.history
 
     page.start_new_task()
     assert page.history_widgets == []
+    assert page._service.messages == []
     assert page.conversation_stack.currentWidget() is page.empty_state
 
     page.deleteLater()

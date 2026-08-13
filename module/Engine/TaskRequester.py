@@ -316,6 +316,12 @@ class TaskRequester(Base):
         if self._agent_requester is not None:
             self._agent_requester.cancel()
 
+    def close_tools(self) -> None:
+        """释放当前 Agent 请求的客户端，不改变取消状态。"""
+        if self._agent_requester is not None:
+            self._agent_requester.close()
+            self._agent_requester = None
+
     @classmethod
     def resolve_thinking_level(cls, thinking: Any) -> ThinkingLevel:
         """兼容旧布尔配置与新思考挡位配置，统一解析为 ThinkingLevel。"""

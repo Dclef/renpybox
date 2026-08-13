@@ -23,9 +23,11 @@ class ToolResult:
     def model_message(self, limit: int = 2000) -> str:
         """返回限制长度的模型摘要，避免把完整扫描结果塞进上下文。"""
         text = str(self.message or "")
+        if self.data:
+            text = f"{text}\n{json.dumps(self.data, ensure_ascii=False, default=str)}"
         if len(text) <= limit:
             return text
-        return text[: max(0, limit - 24)] + "…（结果已截断）"
+        return text[: max(0, limit - 24)] + "... [truncated]"
 
     def as_dict(self) -> dict[str, Any]:
         return {
