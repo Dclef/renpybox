@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from typing import Any
@@ -38,6 +39,7 @@ from qfluentwidgets import (
     ComboBox,
     FluentIcon,
     IconWidget,
+    MessageBox,
     PlainTextEdit,
     PrimaryPushButton,
     PushButton,
@@ -786,6 +788,8 @@ class AgentPage(Base, QWidget):
         self._assistant_turn: AgentMessageWidget | None = None
         self._reply_rendered = False
         self._auto_follow = True
+        self._reset_after_worker = False
+        self._confirmation_dialog: MessageBox | None = None
 
         self._last_message = ""
 
@@ -994,7 +998,7 @@ class AgentPage(Base, QWidget):
     def refresh_platforms(self) -> None:
         config = Config().load()
         self._refresh_project_context(config)
-        current = int(getattr(config, "agent_platform", 0) or 0)
+        current = int(getattr(config, "agent_platform", -1))
         thinking_level = str(
             getattr(config, "agent_thinking_level", "OFF") or "OFF"
         ).upper()
@@ -1011,7 +1015,7 @@ class AgentPage(Base, QWidget):
         self.platform_combo.clear()
         self._platform_ids = []
         localizer = Localizer.get()
-        self.platform_combo.addItem(localizer.agent_page_platform_unset, userData=0)
+        self.platform_combo.addItem(localizer.agent_page_platform_unset, userData=-1)
         for platform in config.platforms or []:
             api_format = str(platform.get("api_format", ""))
             if api_format not in SUPPORTED_FORMATS:
@@ -1026,13 +1030,14 @@ class AgentPage(Base, QWidget):
         self._update_send_button()
 
     def _platform_changed(self, index: int) -> None:
-        platform_id = int(self.platform_combo.itemData(index) or 0)
+        data = self.platform_combo.itemData(index)
+        platform_id = int(data if data is not None else -1)
         config = Config().load()
         config.agent_platform = platform_id
         config.save()
         self.status_label.setText(
             Localizer.get().agent_page_platform_unset
-            if platform_id == 0
+            if platform_id < 0
             else Localizer.get().agent_page_platform_saved
         )
         self._update_send_button()
@@ -1155,7 +1160,19 @@ class AgentPage(Base, QWidget):
     def start_new_task(self) -> None:
         """清空当前会话，回到空态。运行中的回合先请求停止。"""
         if self._worker is not None and self._worker.isRunning():
-            self._service.cancel()
+            self._reset_after_worker = True
+            self._worker.cancel()
+            return
+        self._clear_session()
+
+    def _clear_session(self) -> None:
+        """在 Worker 结束后同时清空服务上下文和界面。"""
+        if self._confirmation_dialog is not None:
+            dialog = self._confirmation_dialog
+            dialog.reject()
+            self._confirmation_dialog = None
+        self._service.reset()
+        self._reset_after_worker = False
         if self._round_header is not None:
             self._round_header.stop()
             self._round_header = None
@@ -1207,7 +1224,13 @@ class AgentPage(Base, QWidget):
         self.activity_widget.label.setText(f"{localizer.agent_page_tool_calling}：{label}")
         return widget
 
-    def _finish_tool(self, name: str, success: bool, message: str) -> None:
+    def _finish_tool(
+        self,
+        name: str,
+        success: bool,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
         widget = next(
             (
                 candidate
@@ -1218,7 +1241,10 @@ class AgentPage(Base, QWidget):
         )
         if widget is None:
             widget = self._append_tool_start(name)
-        widget.complete(success, message)
+        detail = str(message or "")
+        if data:
+            detail = f"{detail}\n{json.dumps(data, ensure_ascii=False, indent=2, default=str)}"
+        widget.complete(success, detail)
         self._running_tool_widgets = [
             candidate
             for candidate in self._running_tool_widgets
@@ -1233,7 +1259,7 @@ class AgentPage(Base, QWidget):
         if not message:
             return
         # 接口未选定时不清空输入框，否则用户刚打的内容会凭空消失。
-        if int(self.platform_combo.currentData() or 0) == 0:
+        if int(self.platform_combo.currentData() if self.platform_combo.currentData() is not None else -1) < 0:
             self.status_label.setText(Localizer.get().agent_page_platform_unset)
             return
         self.input_box.clear()
@@ -1260,14 +1286,49 @@ class AgentPage(Base, QWidget):
             str(self.thinking_combo.currentData() or "OFF"),
         )
         self._worker.event.connect(self._on_worker_event)
+        self._worker.confirmation_requested.connect(self._on_confirmation_requested)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     def stop_request(self) -> None:
         if self._worker is not None and self._worker.isRunning():
-            self._service.cancel()
+            self._worker.cancel()
             self.status_label.setText(Localizer.get().agent_page_cancelled)
+
+    def _on_confirmation_requested(self, name: str, payload: dict[str, Any]) -> None:
+        worker = self._worker
+        if worker is None:
+            return
+        localizer = Localizer.get()
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        if name == "unpack_rpa_files":
+            message = localizer.agent_page_unpack_confirmation.format(
+                game_dir=data.get("game_dir", ""),
+                count=data.get("count", 0),
+            )
+        else:
+            message = localizer.agent_page_confirmation_generic.format(tool=name)
+        dialog = MessageBox(localizer.agent_page_confirmation_title, message, self)
+        dialog.yesButton.setText(localizer.confirm)
+        dialog.cancelButton.setText(localizer.cancel)
+        self._confirmation_dialog = dialog
+
+        def resolve(approved: bool) -> None:
+            if self._confirmation_dialog is not dialog:
+                return
+            self._confirmation_dialog = None
+            worker.resolve_confirmation(approved)
+
+        dialog.accepted.connect(lambda: resolve(True))
+        dialog.rejected.connect(lambda: resolve(False))
+        QTimer.singleShot(
+            int(self._service.confirmation_timeout * 1000),
+            lambda: dialog.reject() if self._confirmation_dialog is dialog else None,
+        )
+        self.status_label.setText(localizer.agent_page_waiting_confirmation)
+        self.activity_widget.set_running(False)
+        dialog.open()
 
     def _on_worker_event(self, event_name: str, payload: dict[str, Any]) -> None:
         localizer = Localizer.get()
@@ -1298,13 +1359,22 @@ class AgentPage(Base, QWidget):
                 str(payload.get("name", "")),
                 bool(payload.get("success", False)),
                 str(payload.get("message", "")),
+                payload.get("data") if isinstance(payload.get("data"), dict) else None,
             )
         elif event_name == "error":
             self.status_label.setText(localizer.agent_page_failed)
 
     def _on_worker_finished(self, result: Any) -> None:
         localizer = Localizer.get()
+        if self._confirmation_dialog is not None:
+            dialog = self._confirmation_dialog
+            self._confirmation_dialog = None
+            dialog.reject()
+        reset_after_worker = self._reset_after_worker
         self._worker = None
+        if reset_after_worker:
+            self._clear_session()
+            return
         self.activity_widget.set_running(False)
         self.send_button.setEnabled(True)
         self.stop_button.setEnabled(False)
@@ -1325,7 +1395,8 @@ class AgentPage(Base, QWidget):
 
     def _update_send_button(self) -> None:
         running = self._worker is not None and self._worker.isRunning()
-        platform_ready = int(self.platform_combo.currentData() or 0) != 0
+        current_platform = self.platform_combo.currentData()
+        platform_ready = current_platform is not None and int(current_platform) >= 0
         self.send_button.setEnabled(
             bool(self.input_box.toPlainText().strip())
             and platform_ready

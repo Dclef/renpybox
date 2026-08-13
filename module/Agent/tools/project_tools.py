@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     apply_to_config,
@@ -28,7 +29,7 @@ def _not_set() -> "ToolResult":
     return ToolResult(
         success=False,
         code="PROJECT_NOT_SET",
-        message="尚未设定项目目录，请先询问用户游戏所在目录，再调用 set_project。",
+        message=Localizer.get().agent_project_not_set_ask,
     )
 
 
@@ -58,11 +59,15 @@ def set_project(
 
     raw_path = str(path or "").strip()
     if not raw_path:
-        return ToolResult(False, "项目路径不能为空。", code="INVALID_PROJECT_PATH")
+        return ToolResult(
+            False,
+            Localizer.get().agent_project_path_empty,
+            code="INVALID_PROJECT_PATH",
+        )
     if not looks_like_renpy_path(raw_path):
         return ToolResult(
             False,
-            "路径不像有效的 Ren'Py 项目（需要 game 或 tl 目录）。",
+            Localizer.get().agent_project_path_invalid,
             code="INVALID_PROJECT_PATH",
         )
 
@@ -71,7 +76,7 @@ def set_project(
     if paths is None or not paths.game_dir.is_dir():
         return ToolResult(
             False,
-            "无法定位存在的 game 目录，项目目录未写入配置。",
+            Localizer.get().agent_project_game_not_found,
             code="INVALID_PROJECT_PATH",
         )
 
@@ -80,7 +85,7 @@ def set_project(
     data = _path_data(paths)
     return ToolResult(
         True,
-        f"已设定项目：{data['project_root']}（语言：{data['language']}）",
+        Localizer.get().agent_project_set.format(**data),
         data=data,
     )
 
@@ -97,7 +102,11 @@ def get_project_info(
     if paths is None:
         return _not_set()
     data = _path_data(paths)
-    return ToolResult(True, f"当前项目：{data['project_root']}（语言：{data['language']}）", data=data)
+    return ToolResult(
+        True,
+        Localizer.get().agent_project_current.format(**data),
+        data=data,
+    )
 
 
 def list_rpa_files(
@@ -114,10 +123,17 @@ def list_rpa_files(
     files = sorted(paths.game_dir.glob("*.rpa"), key=lambda item: item.name.casefold())
     names = [item.name for item in files]
     if not names:
-        return ToolResult(True, "当前项目没有找到 RPA 文件。", data={"files": [], "count": 0})
+        return ToolResult(
+            True,
+            Localizer.get().agent_rpa_not_found,
+            data={"files": [], "count": 0},
+        )
     return ToolResult(
         True,
-        f"当前项目找到 {len(names)} 个 RPA 文件：" + ", ".join(names[:50]),
+        Localizer.get().agent_rpa_found.format(
+            count=len(names),
+            files=", ".join(names[:50]),
+        ),
         data={
             "files": names[:100],
             "count": len(names),
@@ -148,9 +164,13 @@ def scan_script_errors(
         limited[file_path] = selected
         remaining -= len(selected)
     if total == 0:
-        message = "脚本扫描完成，未发现错误。"
+        message = Localizer.get().agent_scan_no_errors
     else:
-        message = f"脚本扫描完成，发现 {total} 个问题，已返回前 {sum(len(v) for v in limited.values())} 个。"
+        returned = sum(len(v) for v in limited.values())
+        message = Localizer.get().agent_scan_errors.format(
+            total=total,
+            returned=returned,
+        )
     return ToolResult(
         True,
         message,

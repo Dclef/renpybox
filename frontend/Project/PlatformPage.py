@@ -257,6 +257,11 @@ class PlatformPage(QWidget, Base):
         elif config.activate_platform > id:
             config.activate_platform -= 1
 
+        if config.agent_platform == id:
+            config.agent_platform = -1
+        elif config.agent_platform > id:
+            config.agent_platform -= 1
+
         # 修正条目 id
         for i, platform in enumerate(sorted(config.platforms, key=lambda x: x.get("id"))):
             platform["id"] = i

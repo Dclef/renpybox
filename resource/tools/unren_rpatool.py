@@ -8,6 +8,25 @@ import os
 import sys
 
 
+def _safe_output_path(output, filename):
+    """只允许归档条目写入指定输出目录。"""
+    name = filename.replace("\\", "/")
+    drive, _tail = os.path.splitdrive(name)
+    if drive or name.startswith("/"):
+        raise ValueError("unsafe absolute archive path: {0}".format(filename))
+
+    output_root = os.path.realpath(output)
+    target = os.path.realpath(os.path.join(output_root, name))
+    try:
+        inside = os.path.commonpath([output_root, target]) == output_root
+    except (AttributeError, ValueError):
+        prefix = output_root.rstrip(os.sep) + os.sep
+        inside = target == output_root or target.startswith(prefix)
+    if not inside or target == output_root:
+        raise ValueError("unsafe archive path: {0}".format(filename))
+    return target
+
+
 def _detect_archive_extensions(renpy_loader):
     archive_extensions = []
 
@@ -136,6 +155,12 @@ def main(argv):
         help="Only extract .rpy/.rpyc files.",
     )
     parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        dest="validate_only",
+        help="Validate archive paths without extracting files.",
+    )
+    parser.add_argument(
         "dir",
         type=str,
         help="The Ren'Py game directory to operate on (usually ./game/).",
@@ -174,15 +199,18 @@ def main(argv):
     archive_extensions = _detect_archive_extensions(renpy_loader)
 
     archives = []
-    for file in os.listdir(directory):
-        if not os.path.isfile(os.path.join(directory, file)):
-            continue
-        try:
-            base, ext = file.rsplit(".", 1)
-            if "." + ext in archive_extensions:
-                archives.append(file)
-        except Exception:
-            pass
+    roots = [(directory, [], os.listdir(directory))]
+    for root, _dirs, files in roots:
+        for file in files:
+            path = os.path.join(root, file)
+            if not os.path.isfile(path):
+                continue
+            try:
+                _base, ext = file.rsplit(".", 1)
+                if "." + ext in archive_extensions:
+                    archives.append(path if args.validate_only else file)
+            except Exception:
+                pass
 
     if not archives:
         print("  There are no archives in the game folder.")
@@ -193,6 +221,12 @@ def main(argv):
         print('  Unpacking "{0}" archive.'.format(arch))
         archive = RenPyArchive(arch, archives.index(arch), renpy_config, renpy_loader)
         files = archive.list()
+
+        for filename in files:
+            _safe_output_path(output, filename)
+
+        if args.validate_only:
+            continue
 
         if not os.path.exists(output):
             os.makedirs(output)
@@ -206,7 +240,7 @@ def main(argv):
             if contents is None:
                 continue
 
-            out_path = os.path.join(output, outfile)
+            out_path = _safe_output_path(output, outfile)
             out_dir = os.path.dirname(out_path)
             if out_dir and not os.path.exists(out_dir):
                 os.makedirs(out_dir)

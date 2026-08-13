@@ -485,10 +485,95 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_get_project_info: str = "Read project details"
     agent_page_tool_list_rpa_files: str = "Find RPA files"
     agent_page_tool_scan_script_errors: str = "Scan script errors"
+    agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
+    agent_page_confirmation_title: str = "Confirm RPA Unpacking"
+    agent_page_confirmation_generic: str = "The Agent is about to run {tool}. Continue?"
+    agent_page_waiting_confirmation: str = "Waiting for confirmation"
+    agent_page_unpack_confirmation: str = (
+        "The Agent is about to unpack {count} RPA file(s) in the current project:\n{game_dir}\n\n"
+        "Files will be written directly into the game folder and may overwrite files with the same name. "
+        "The original RPA files will be kept. Continue?"
+    )
     agent_page_new_task: str = "New task"
     agent_page_retry: str = "Retry"
     agent_page_user_avatar: str = "You"
     agent_page_send_hint: str = "Ctrl + Enter to send"
+
+    # Agent tools
+    agent_tool_set_project_description: str = (
+        "Set the Ren'Py project path explicitly provided by the user and return "
+        "the normalized root, game folder, and language."
+    )
+    agent_tool_project_path_description: str = (
+        "A project path explicitly provided by the user in the conversation."
+    )
+    agent_tool_get_project_info_description: str = (
+        "Read the current project paths and language; return PROJECT_NOT_SET "
+        "when no project is configured."
+    )
+    agent_tool_list_rpa_files_description: str = (
+        "List RPA files in the current project game folder. The server injects the path."
+    )
+    agent_tool_scan_script_errors_description: str = (
+        "Scan Ren'Py script errors in the current project game folder without modifying files."
+    )
+    agent_tool_unpack_rpa_files_description: str = (
+        "Unpack all RPA files in the current project game folder. The server injects the path, "
+        "the user must confirm overwrite risk, and original archives are kept."
+    )
+    agent_system_prompt: str = (
+        "You are the RenpyBox project assistant. Use only the tools currently provided.\n"
+        "Only call set_project(path) when the user explicitly provides a path. Other tools have no path "
+        "arguments and must use the current project injected by the server. Never guess or construct paths.\n"
+        "When a tool returns PROJECT_NOT_SET, explain that no project is set and ask for the game path. "
+        "After the user provides it, call set_project and continue the original task.\n"
+        "unpack_rpa_files writes into the current game folder and may run only after the user confirms the "
+        "overwrite risk in the UI. Do not claim that you can delete RPA files, choose an output path, or stop "
+        "an external unpack process after it starts. Summarize key results; full details are shown in the UI."
+    )
+
+    # Agent runtime
+    agent_request_schema_only: str = "Schema only."
+    agent_request_unsupported_platform: str = "This API does not support Agent tools. Select an OpenAI, Anthropic, or Google API."
+    agent_request_unsupported_format: str = "This API format does not support Agent tools."
+    agent_request_no_tools: str = "No Agent tools are available."
+    agent_request_cancelled: str = "The Agent request was cancelled."
+    agent_request_bad_request: str = "The model rejected the Agent request parameters."
+    agent_request_failed: str = "The Agent request failed. Check the API settings or network connection."
+    agent_tool_arguments_must_be_object: str = "Tool arguments must be a JSON object."
+    agent_tool_undeclared_arguments: str = "Undeclared arguments: {names}."
+    agent_tool_missing_arguments: str = "Missing required arguments: {names}."
+    agent_tool_argument_must_be_string: str = "Argument {name} must be a string."
+    agent_tool_argument_must_be_object: str = "Argument {name} must be an object."
+    agent_tool_unknown: str = "Unknown tool: {name}"
+    agent_tool_confirmation_required: str = "This operation requires user confirmation."
+    agent_tool_confirmation_stale: str = "The confirmation context expired. Review the operation and confirm it again."
+    agent_tool_engine_busy: str = "The engine is busy, so this operation cannot run now."
+    agent_tool_invalid_result: str = "The tool returned an invalid result."
+    agent_tool_failed_logged: str = "The tool failed. Details were written to the log."
+    agent_tool_cancelled: str = "Cancelled. The tool was not run."
+    agent_api_unset: str = "No Agent API is selected. Choose an OpenAI, Anthropic, or Google API on the Agent page."
+    agent_api_missing: str = "The selected Agent API no longer exists. Select it again."
+    agent_task_empty: str = "Enter a task to run."
+    agent_api_not_set: str = "The Agent API is not set."
+    agent_reply_empty: str = "The Agent did not return any displayable content."
+    agent_confirmation_timeout: str = "Confirmation timed out. The tool was not run."
+    agent_project_changed: str = "The project changed. Review the operation and confirm it again."
+    agent_max_iterations: str = "The Agent reached the maximum number of tool rounds and stopped."
+    agent_project_not_set_ask: str = "No project is set. Ask the user for the game folder, then call set_project."
+    agent_project_not_set: str = "No project is set. Set a project first."
+    agent_project_path_empty: str = "The project path cannot be empty."
+    agent_project_path_invalid: str = "The path does not look like a valid Ren'Py project (a game or tl folder is required)."
+    agent_project_game_not_found: str = "An existing game folder could not be found. The project setting was not changed."
+    agent_project_set: str = "Project set: {project_root} (language: {language})"
+    agent_project_current: str = "Current project: {project_root} (language: {language})"
+    agent_rpa_not_found: str = "No RPA files were found in the current project."
+    agent_rpa_found: str = "Found {count} RPA file(s) in the current project: {files}"
+    agent_scan_no_errors: str = "Script scan completed with no errors found."
+    agent_scan_errors: str = "Script scan completed with {total} issue(s); the first {returned} are included."
+    agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
+    agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."
+    agent_unpack_failed: str = "RPA unpacking failed. Check the log for details."
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
