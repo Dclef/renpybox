@@ -74,6 +74,12 @@ def test_invalid_or_missing_budgets_use_finite_positive_defaults():
     assert migrated["asset_prompt_max_items"] == Config.DEFAULT_ASSET_PROMPT_MAX_ITEMS
 
 
+def test_agent_platform_uses_negative_sentinel_without_hiding_platform_zero():
+    assert Config().agent_platform == -1
+    assert Config.migrate_dict({})["agent_platform"] == -1
+    assert Config.migrate_dict({"agent_platform": 0})["agent_platform"] == 0
+
+
 def test_invalid_pipeline_enums_are_normalized_at_migration_boundary():
     migrated = Config.migrate_dict(
         {
