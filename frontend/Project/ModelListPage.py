@@ -7,18 +7,17 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QVBoxLayout
-from qfluentwidgets import PushButton
-from qfluentwidgets import FluentIcon
+from qfluentwidgets import CaptionLabel
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import PillPushButton
+from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from widget.FlowCard import FlowCard
-from widget.LineEditMessageBox import LineEditMessageBox
 
 class ModelListPage(MessageBoxBase, Base):
 
@@ -29,6 +28,8 @@ class ModelListPage(MessageBoxBase, Base):
         self.id: int = id
         self.filter: str = ""
         self.models: list[str] = None
+        self.model_buttons: list[PillPushButton] = []
+        self.no_match_label: CaptionLabel | None = None
 
         # 载入并保存默认配置
         config = Config().load().save()
@@ -72,30 +73,10 @@ class ModelListPage(MessageBoxBase, Base):
         # 关闭窗口
         self.close()
 
-    # 过滤按钮点击事件
-    def filter_button_clicked(self, widget: PushButton, window: FluentWindow) -> None:
-        if self.filter != "":
-            self.filter = ""
-            self.filter_button.setText(Localizer.get().filter)
-
-            # 更新子控件
-            self.update_sub_widgets(self.flow_card)
-        else:
-            message_box = LineEditMessageBox(
-                window,
-                Localizer.get().platform_edit_page_model,
-                message_box_close = self.filter_message_box_close
-            )
-            message_box.get_line_edit().setText(self.filter)
-            message_box.exec()
-
-    # 过滤输入框关闭事件
-    def filter_message_box_close(self, widget: LineEditMessageBox, text: str) -> None:
+    # 过滤输入变化事件
+    def filter_text_changed(self, text: str) -> None:
         self.filter = text.strip()
-        self.filter_button.setText(f"{Localizer.get().filter} - {self.filter}")
-
-        # 更新子控件
-        self.update_sub_widgets(self.flow_card)
+        self._apply_filter()
 
     # 获取模型
     def get_models(self, api_url: str, api_key: str, api_format: Base.APIFormat) -> list[str]:
@@ -147,24 +128,43 @@ class ModelListPage(MessageBoxBase, Base):
                 platform.get('api_format'),
             )
 
-        widget.take_all_widgets()
-        for model in [v for v in self.models if self.filter.lower() in v.lower()]:
-            pilled_button = PillPushButton(model)
-            pilled_button.setFixedWidth(432)
-            pilled_button.clicked.connect(partial(self.clicked, pilled_button))
-            widget.add_widget(pilled_button)
+        if not self.model_buttons:
+            widget.flow_layout.isTight = True
+            for model in self.models:
+                pilled_button = PillPushButton(model)
+                pilled_button.setFixedWidth(432)
+                pilled_button.clicked.connect(partial(self.clicked, pilled_button))
+                widget.add_widget(pilled_button)
+                self.model_buttons.append(pilled_button)
+
+            self.no_match_label = CaptionLabel(Localizer.get().alert_no_data, widget.flow_container)
+            widget.add_widget(self.no_match_label)
+
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """只隐藏不匹配项，保留按钮对象和当前选中状态。"""
+        keyword = self.filter.casefold()
+        matched = 0
+        for button in self.model_buttons:
+            visible = keyword in button.text().casefold()
+            button.setVisible(visible)
+            matched += int(visible)
+        if self.no_match_label is not None:
+            self.no_match_label.setVisible(matched == 0)
+        if getattr(self, "flow_card", None) is not None:
+            self.flow_card.flow_layout.invalidate()
+            self.flow_card.flow_container.updateGeometry()
 
     # 模型名称
     def add_widget(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
-
-        self.filter_button: PushButton = None
-
         def init(widget: FlowCard) -> None:
-            self.filter_button = PushButton(Localizer.get().filter)
-            self.filter_button.setIcon(FluentIcon.FILTER)
-            self.filter_button.setContentsMargins(4, 0, 4, 0)
-            self.filter_button.clicked.connect(lambda _: self.filter_button_clicked(self.filter_button, window))
-            widget.add_widget_to_head(self.filter_button)
+            self.flow_card = widget
+            self.filter_edit = SearchLineEdit(widget)
+            self.filter_edit.setPlaceholderText(Localizer.get().filter)
+            self.filter_edit.setFixedWidth(280)
+            self.filter_edit.textChanged.connect(self.filter_text_changed)
+            widget.add_widget_to_head(self.filter_edit)
 
             # 更新子控件
             self.update_sub_widgets(widget)

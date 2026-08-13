@@ -90,6 +90,10 @@ class Config():
 
     # PlatformPage
     activate_platform: int = 0
+    # Agent 使用的独立 LLM 接口；-1 表示尚未设置，0 是有效接口 ID。
+    agent_platform: int = -1
+    # Agent 专用思考等级；不改动平台页面保存的翻译思考设置。
+    agent_thinking_level: str = "OFF"
     platforms: list[dict[str, Any]] = None
 
     # AppSettingsPage
@@ -335,6 +339,7 @@ class Config():
         config.setdefault("translation_output_protocol", cls.OUTPUT_PROTOCOL_STRUCTURED)
         config.setdefault("asset_regex_enable", False)
         config.setdefault("last_seen_version", "")
+        config.setdefault("agent_platform", -1)
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""

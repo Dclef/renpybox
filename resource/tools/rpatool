@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 from __future__ import print_function
 
@@ -8,6 +9,26 @@ import codecs
 import pickle
 import errno
 import random
+
+
+def _safe_output_path(output, filename):
+    """只允许归档条目写入指定输出目录。"""
+    name = filename.replace('\\', '/')
+    drive, _tail = os.path.splitdrive(name)
+    if drive or name.startswith('/'):
+        raise ValueError('unsafe absolute archive path: {0}'.format(filename))
+
+    output_root = os.path.realpath(output)
+    target = os.path.realpath(os.path.join(output_root, name))
+    try:
+        inside = os.path.commonpath([output_root, target]) == output_root
+    except (AttributeError, ValueError):
+        prefix = output_root.rstrip(os.sep) + os.sep
+        inside = target == output_root or target.startswith(prefix)
+    if not inside or target == output_root:
+        raise ValueError('unsafe archive path: {0}'.format(filename))
+    return target
+
 
 if sys.version_info[0] >= 3:
     def _unicode(text):
@@ -428,14 +449,15 @@ if __name__ == "__main__":
             else:
                 outfile = filename
 
+            out_path = _safe_output_path(output, outfile)
             try:
                 contents = archive.read(filename)
 
                 # Create output directory for file if not present.
-                if not os.path.exists(os.path.dirname(os.path.join(output, outfile))):
-                    os.makedirs(os.path.dirname(os.path.join(output, outfile)))
+                if not os.path.exists(os.path.dirname(out_path)):
+                    os.makedirs(os.path.dirname(out_path))
 
-                with open(os.path.join(output, outfile), 'wb') as file:
+                with open(out_path, 'wb') as file:
                     file.write(contents)
             except Exception as e:
                 print('Could not extract file {0} from archive: {1}'.format(filename, e), file=sys.stderr)
@@ -448,4 +470,3 @@ if __name__ == "__main__":
     else:
         print('No operation given :(')
         print('Use {0} --help for usage details.'.format(sys.argv[0]))
-

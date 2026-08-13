@@ -14,6 +14,7 @@ class Engine():
         TESTING = "TESTING"                                                 # 测试中
         TRANSLATING = "TRANSLATING"                                         # 运行中
         QUALITY = "QUALITY"                                                 # 润色/校对中
+        AGENT = "AGENT"                                                       # Agent 独占操作中
         STOPPING = "STOPPING"                                               # 停止中
 
     TASK_PREFIX: str = "ENGINE_"

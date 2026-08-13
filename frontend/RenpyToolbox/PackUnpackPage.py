@@ -123,57 +123,37 @@ class UnpackWorker(QThread):
         try:
             packer = Packer()
 
-            # 1) UnRen 直接解包（不启动游戏）
-            if self.direct:
-                try:
-                    self.progress.emit(Localizer.get().pack_unpack_trying_direct_unpacking)
-                    count, _messages = packer.unpack_all_unren(
-                        self.game_dir,
-                        script_only=self.script_only,
-                    )
-                    if count > 0:
-                        self.finished.emit({
-                            "level": "success",
-                            "title": Localizer.get().local_glossary_completed,
-                            "message": Localizer.get().pack_unpack_directly_unpacked_archive_s.format(count=count),
-                        })
-                        return
-                except Exception as exc:
-                    LogManager.get().error(f"直接解包失败，尝试使用外部工具继续解包…: {exc}")
-                    self.progress.emit(
-                        Localizer.get().pack_unpack_direct_unpacking_failed_trying_external_tools
-                    )
-
-            # 2) 外部工具：unrpa / rpatool
-            self.progress.emit(Localizer.get().pack_unpack_unpacking)
-            count, _messages = packer.unpack_all(
+            progress_messages = {
+                "direct": Localizer.get().pack_unpack_trying_direct_unpacking,
+                "direct_failed": Localizer.get().pack_unpack_direct_unpacking_failed_trying_external_tools,
+                "external": Localizer.get().pack_unpack_unpacking,
+                "unren_bat": Localizer.get().pack_unpack_trying_unren_fallback,
+            }
+            result = packer.unpack_rpa_files(
                 self.game_dir,
+                direct=self.direct,
                 script_only=self.script_only,
-                output_root=self.game_dir,
+                remove_archives=False,
+                progress_callback=lambda stage: self.progress.emit(
+                    progress_messages.get(stage, stage)
+                ),
             )
-
-            if count > 0:
+            method = result.get("method")
+            count = int(result.get("count", 0))
+            if result.get("success"):
+                if method == "direct":
+                    message = Localizer.get().pack_unpack_directly_unpacked_archive_s.format(count=count)
+                elif method == "external":
+                    message = Localizer.get().pack_unpack_unpacked_rpa_file_s.format(count=count)
+                else:
+                    message = Localizer.get().pack_unpack_unpacked_unren_fallback_check_game_folder_output
                 self.finished.emit({
                     "level": "success",
                     "title": Localizer.get().local_glossary_completed,
-                    "message": Localizer.get().pack_unpack_unpacked_rpa_file_s.format(count=count),
+                    "message": message,
                 })
                 return
 
-            self.progress.emit(Localizer.get().pack_unpack_trying_unren_fallback)
-            ok, _lines = packer.unpack_all_unren_bat(
-                self.game_dir,
-                lang="zh",
-                options="1x",
-                timeout_s=60 * 60,
-            )
-            if ok:
-                self.finished.emit({
-                    "level": "success",
-                    "title": Localizer.get().local_glossary_completed,
-                    "message": Localizer.get().pack_unpack_unpacked_unren_fallback_check_game_folder_output,
-                })
-                return
             self.finished.emit({
                 "level": "info",
                 "title": Localizer.get().notice,

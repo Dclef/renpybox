@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import Callable, Iterator, List, Tuple
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
@@ -436,6 +436,171 @@ class Packer:
     def find_rpa_files(self, game_dir: str) -> List[Path]:
         p = Path(game_dir)
         return sorted(p.glob("*.rpa"))
+
+    @staticmethod
+    def _is_safe_archive_name(name: object) -> bool:
+        """归档条目必须是 game 目录内的相对文件路径。"""
+        value = str(name).replace("\\", "/")
+        if not value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
+            return False
+        parts = value.split("/")
+        return all(part not in {"", ".", ".."} for part in parts)
+
+    def _validate_standard_archive(self, archive_path: Path, game_path: Path) -> None:
+        archive = RenPyArchive(str(archive_path))
+        try:
+            unsafe = []
+            game_root = game_path.resolve()
+            for name in archive.list():
+                if not self._is_safe_archive_name(name):
+                    unsafe.append(name)
+                    continue
+                try:
+                    (game_root / str(name).replace("\\", "/")).resolve().relative_to(game_root)
+                except ValueError:
+                    unsafe.append(name)
+        finally:
+            if archive.handle is not None:
+                archive.handle.close()
+                archive.handle = None
+        if unsafe:
+            raise ValueError(f"RPA 包含不安全路径: {unsafe[0]}")
+
+    def _validate_archives_with_game_python(self, game_path: Path) -> None:
+        game_root = game_path.parent
+        python_exe = self._get_game_python(game_root)
+        script_path = Path(get_resource_path("resource", "tools", "unren_rpatool.py"))
+        if not python_exe or not script_path.is_file():
+            raise ValueError("无法安全读取 RPA 索引，已拒绝解包")
+        result = subprocess.run(
+            [str(python_exe), str(script_path), "--validate-only", str(game_path)],
+            cwd=str(game_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            creationflags=self._creationflags_no_window(),
+            timeout=120,
+        )
+        if result.returncode != 0:
+            tail = "\n".join((result.stdout or "").splitlines()[-20:])
+            raise ValueError(tail or "RPA 路径安全校验失败")
+
+    def validate_rpa_paths(self, game_dir: str) -> bool:
+        """拒绝越界条目，并返回是否允许使用 UnRen 批处理兜底。"""
+        game_path = Path(game_dir).resolve()
+        archives = self.find_rpa_files(str(game_path))
+        needs_game_loader = False
+        for archive_path in archives:
+            try:
+                self._validate_standard_archive(archive_path, game_path)
+            except ValueError as exc:
+                if "不安全路径" in str(exc):
+                    raise
+                needs_game_loader = True
+            except Exception:
+                needs_game_loader = True
+
+        if self._get_game_python(game_path.parent):
+            try:
+                self._validate_archives_with_game_python(game_path)
+                return True
+            except ValueError as exc:
+                message = str(exc)
+                if "unsafe archive path" in message or "unsafe absolute archive path" in message:
+                    raise
+                if needs_game_loader:
+                    raise
+                self.logger.warning(f"Ren'Py 归档扩展安全校验不可用，将跳过 UnRen 兜底: {message}")
+        elif needs_game_loader:
+            raise ValueError("无法安全读取非标准 RPA 索引，已拒绝解包")
+        return False
+
+    def unpack_rpa_files(
+        self,
+        game_dir: str,
+        *,
+        direct: bool = True,
+        script_only: bool = False,
+        remove_archives: bool = False,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> dict[str, object]:
+        """按界面既有顺序解包 RPA，并返回可供界面和 Agent 使用的结果。"""
+        archive_count = len(self.find_rpa_files(game_dir))
+        allow_unren_bat = self.validate_rpa_paths(game_dir)
+
+        if direct:
+            if progress_callback:
+                progress_callback("direct")
+            try:
+                count, _messages = self.unpack_all_unren(
+                    game_dir,
+                    script_only=script_only,
+                    remove_archives=remove_archives,
+                )
+                if count > 0:
+                    return {
+                        "success": True,
+                        "method": "direct",
+                        "count": count,
+                        "message": f"直接解包完成，共解包 {count} 个 RPA 文件",
+                    }
+            except Exception as exc:
+                self.logger.error(f"直接解包失败，尝试使用外部工具继续解包: {exc}")
+                if progress_callback:
+                    progress_callback("direct_failed")
+
+        if progress_callback:
+            progress_callback("external")
+        try:
+            count, _messages = self.unpack_all(
+                game_dir,
+                script_only=script_only,
+                output_root=game_dir,
+            )
+        except Exception as exc:
+            self.logger.error(f"外部工具解包失败，尝试使用 UnRen 继续解包: {exc}")
+            count = 0
+        if count > 0:
+            return {
+                "success": True,
+                "method": "external",
+                "count": count,
+                "message": f"外部工具解包完成，共解包 {count} 个 RPA 文件",
+            }
+
+        if not allow_unren_bat:
+            return {
+                "success": False,
+                "method": "none",
+                "count": 0,
+                "message": "前两种解包方式失败，UnRen 兜底因安全校验不可用而跳过",
+            }
+
+        if progress_callback:
+            progress_callback("unren_bat")
+        ok, _lines = self.unpack_all_unren_bat(
+            game_dir,
+            lang="zh",
+            options="1x",
+            timeout_s=60 * 60,
+        )
+        if ok:
+            return {
+                "success": True,
+                "method": "unren_bat",
+                "count": archive_count,
+                "message": "UnRen 兜底解包完成",
+            }
+
+        return {
+            "success": False,
+            "method": "none",
+            "count": 0,
+            "message": "未找到可解包的 RPA 文件，或所有解包方式均失败",
+        }
 
     def unpack_all(
         self,

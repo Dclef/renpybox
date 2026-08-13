@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from frontend.Project.PlatformPage import (
     infer_group,
     resolve_group,
 )
+from module.Config import Config
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -89,6 +91,33 @@ def test_deduplicate_platform_name_uses_incrementing_suffixes() -> None:
     assert deduplicate_platform_name("OpenAI", platforms) == "OpenAI 2"
     platforms.append({"name": "OpenAI 2"})
     assert deduplicate_platform_name("OpenAI", platforms) == "OpenAI 3"
+
+
+@pytest.mark.parametrize(
+    ("agent_platform", "expected_agent_platform"),
+    ((1, -1), (2, 1)),
+)
+def test_delete_platform_keeps_agent_platform_index_in_sync(
+    monkeypatch,
+    agent_platform: int,
+    expected_agent_platform: int,
+) -> None:
+    config = Config(
+        platforms=[{"id": 0}, {"id": 1}, {"id": 2}],
+        activate_platform=2,
+        agent_platform=agent_platform,
+    )
+    rebuilt = []
+    page = SimpleNamespace(rebuild_all=lambda: rebuilt.append(True))
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+
+    PlatformPage.delete_platform(page, 1)
+
+    assert [platform["id"] for platform in config.platforms] == [0, 1]
+    assert config.activate_platform == 1
+    assert config.agent_platform == expected_agent_platform
+    assert rebuilt == [True]
 
 
 def test_all_bilingual_platform_presets_have_matching_valid_groups() -> None:
