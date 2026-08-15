@@ -510,18 +510,28 @@ class ProjectAssetsRepository:
     ) -> dict[str, Any]:
         result = self.normalize_analysis_candidates(candidates)
         if config is not None:
-            if "worldbook_draft" not in result:
-                result["worldbook_draft"] = copy.deepcopy(
-                    getattr(config, "renpy_workbench_generated_worldbook_draft", {})
+            # Ren'Py 工作台数据已按项目保存，新项目不能再次继承旧全局草稿；
+            # 已写入项目缓存的草稿键保持不变。
+            if RenpyProjectPaths.from_config(config) is None:
+                if "worldbook_draft" not in result:
+                    result["worldbook_draft"] = copy.deepcopy(
+                        getattr(config, "renpy_workbench_generated_worldbook_draft", {})
+                    )
+                if "character_drafts" not in result:
+                    result["character_drafts"] = copy.deepcopy(
+                        getattr(config, "renpy_workbench_generated_character_drafts", [])
+                    )
+                result.setdefault(
+                    "last_analysis_scope",
+                    str(
+                        getattr(
+                            config,
+                            "renpy_workbench_last_analysis_scope",
+                            "current",
+                        )
+                        or "current"
+                    ),
                 )
-            if "character_drafts" not in result:
-                result["character_drafts"] = copy.deepcopy(
-                    getattr(config, "renpy_workbench_generated_character_drafts", [])
-                )
-            result.setdefault(
-                "last_analysis_scope",
-                str(getattr(config, "renpy_workbench_last_analysis_scope", "current") or "current"),
-            )
 
             legacy_incomplete: list[dict[str, Any]] = []
             metadata = result.get("glossary_metadata", {})
@@ -556,14 +566,14 @@ class ProjectAssetsRepository:
         return result
 
     def _legacy_assets_from_config(self, config: Any) -> ProjectAssets:
-        """迁移旧资产；Ren'Py 工作台内容保留但需由用户重新启用。"""
+        """迁移旧资产；Ren'Py 新项目不继承旧全局工作台内容。"""
         assets = ProjectAssets.from_config(config)
         if RenpyProjectPaths.from_config(config) is None:
             return assets
 
         data = assets.to_dict()
-        data["worldbook"]["enabled"] = False
-        data["character_cards"]["enabled"] = False
+        data["worldbook"] = {"enabled": False, "data": {}}
+        data["character_cards"] = {"enabled": False, "items": []}
         return ProjectAssets.from_dict(data)
 
     def _update_project(self, updater) -> CacheProject:

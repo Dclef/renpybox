@@ -9,7 +9,7 @@ from typing import Callable
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
-from module.Tool.Packer import Packer
+from module.Tool.Packer import Packer, PackerUnpackError
 
 from ..types import ToolResult
 
@@ -50,12 +50,19 @@ def unpack_rpa_files(
             code="RPA_NOT_FOUND",
         )
 
-    result = packer_factory().unpack_rpa_files(
-        str(game_dir),
-        direct=True,
-        script_only=False,
-        remove_archives=False,
-    )
+    try:
+        result = packer_factory().unpack_rpa_files(
+            str(game_dir),
+            direct=True,
+            script_only=False,
+            remove_archives=False,
+        )
+    except PackerUnpackError as exc:
+        return ToolResult(
+            False,
+            Localizer.get().pack_unpack_error(exc.code),
+            code="RPA_UNPACK_FAILED",
+        )
     success = bool(result.get("success"))
     count = int(result.get("count", 0))
     method = str(result.get("method", "none"))
@@ -71,7 +78,7 @@ def unpack_rpa_files(
         return ToolResult(True, message, data=data)
     return ToolResult(
         False,
-        Localizer.get().agent_unpack_failed,
+        Localizer.get().pack_unpack_error(str(result.get("code") or "")),
         data=data,
         code="RPA_UNPACK_FAILED",
     )

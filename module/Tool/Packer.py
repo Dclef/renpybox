@@ -22,6 +22,14 @@ from base.PathHelper import get_resource_path
 from module.Tool.rpatool_core import RenPyArchive
 
 
+class PackerUnpackError(ValueError):
+    """带稳定 code 的解包异常；界面层按 code 从 Localizer 取当前语言文案。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = str(code or "")
+
+
 class Packer:
     # 记录当前会话内各游戏目录最稳定的 UnRen 版本，避免同一项目重复先撞错脚本。
     UNREN_COMPAT_CACHE: dict[str, str] = {}
@@ -345,18 +353,21 @@ class Packer:
         """
         game_path = Path(game_dir).resolve()
         if not game_path.exists():
-            raise FileNotFoundError(f"目录不存在: {game_path}")
+            raise PackerUnpackError("INVALID_DIR", f"目录不存在: {game_path}")
         if not game_path.is_dir():
-            raise NotADirectoryError(f"不是目录: {game_path}")
+            raise PackerUnpackError("INVALID_DIR", f"不是目录: {game_path}")
 
         game_root = game_path.parent
         python_exe = self._get_game_python(game_root)
         if not python_exe:
-            raise FileNotFoundError("无法定位游戏自带 python.exe（请确认选择的是 game 目录，且上级目录存在 lib/.../python.exe）")
+            raise PackerUnpackError(
+                "NO_GAME_PYTHON",
+                "无法定位游戏自带 python.exe（请确认选择的是 game 目录，且上级目录存在 lib/.../python.exe）",
+            )
 
         script_path = Path(get_resource_path("resource", "tools", "unren_rpatool.py"))
         if not script_path.exists():
-            raise FileNotFoundError(f"缺少资源: {script_path}")
+            raise PackerUnpackError("MISSING_RESOURCE", f"缺少资源: {script_path}")
 
         cmd = [str(python_exe), str(script_path)]
         if remove_archives:
@@ -423,7 +434,10 @@ class Packer:
         if not result or result.returncode != 0:
             tail = "\n".join(lines[-50:]) if lines else ""
             code = getattr(result, "returncode", None)
-            raise RuntimeError(tail or f"unren_rpatool exited with code {code}")
+            raise PackerUnpackError(
+                "EXTRACTOR_FAILED",
+                tail or f"unren_rpatool exited with code {code}",
+            )
 
         if total_archives:
             bar = self._format_progress_bar(unpacked, total_archives)
@@ -464,14 +478,14 @@ class Packer:
                 archive.handle.close()
                 archive.handle = None
         if unsafe:
-            raise ValueError(f"RPA 包含不安全路径: {unsafe[0]}")
+            raise PackerUnpackError("UNSAFE_PATH", f"RPA 包含不安全路径: {unsafe[0]}")
 
     def _validate_archives_with_game_python(self, game_path: Path) -> None:
         game_root = game_path.parent
         python_exe = self._get_game_python(game_root)
         script_path = Path(get_resource_path("resource", "tools", "unren_rpatool.py"))
         if not python_exe or not script_path.is_file():
-            raise ValueError("无法安全读取 RPA 索引，已拒绝解包")
+            raise PackerUnpackError("UNSAFE_INDEX", "无法安全读取 RPA 索引，已拒绝解包")
         result = subprocess.run(
             [str(python_exe), str(script_path), "--validate-only", str(game_path)],
             cwd=str(game_path),
@@ -486,7 +500,10 @@ class Packer:
         )
         if result.returncode != 0:
             tail = "\n".join((result.stdout or "").splitlines()[-20:])
-            raise ValueError(tail or "RPA 路径安全校验失败")
+            lowered = (tail or "").lower()
+            if "unsafe archive path" in lowered or "unsafe absolute archive path" in lowered:
+                raise PackerUnpackError("UNSAFE_PATH", tail)
+            raise PackerUnpackError("VALIDATION_FAILED", tail or "RPA 路径安全校验失败")
 
     def validate_rpa_paths(self, game_dir: str) -> bool:
         """拒绝越界条目，并返回是否允许使用 UnRen 批处理兜底。"""
@@ -496,8 +513,8 @@ class Packer:
         for archive_path in archives:
             try:
                 self._validate_standard_archive(archive_path, game_path)
-            except ValueError as exc:
-                if "不安全路径" in str(exc):
+            except PackerUnpackError as exc:
+                if exc.code == "UNSAFE_PATH":
                     raise
                 needs_game_loader = True
             except Exception:
@@ -507,15 +524,14 @@ class Packer:
             try:
                 self._validate_archives_with_game_python(game_path)
                 return True
-            except ValueError as exc:
-                message = str(exc)
-                if "unsafe archive path" in message or "unsafe absolute archive path" in message:
+            except PackerUnpackError as exc:
+                if exc.code == "UNSAFE_PATH":
                     raise
                 if needs_game_loader:
                     raise
-                self.logger.warning(f"Ren'Py 归档扩展安全校验不可用，将跳过 UnRen 兜底: {message}")
+                self.logger.warning(f"Ren'Py 归档扩展安全校验不可用，将跳过 UnRen 兜底: {exc}")
         elif needs_game_loader:
-            raise ValueError("无法安全读取非标准 RPA 索引，已拒绝解包")
+            raise PackerUnpackError("UNSAFE_INDEX", "无法安全读取非标准 RPA 索引，已拒绝解包")
         return False
 
     def unpack_rpa_files(
@@ -576,6 +592,7 @@ class Packer:
                 "success": False,
                 "method": "none",
                 "count": 0,
+                "code": "UNREN_SKIPPED",
                 "message": "前两种解包方式失败，UnRen 兜底因安全校验不可用而跳过",
             }
 
@@ -599,6 +616,7 @@ class Packer:
             "success": False,
             "method": "none",
             "count": 0,
+            "code": "UNAVAILABLE",
             "message": "未找到可解包的 RPA 文件，或所有解包方式均失败",
         }
 

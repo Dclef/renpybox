@@ -342,6 +342,23 @@ class RenpyProjectPaths:
         return None
 
 
+def source_script_counts(paths: RenpyProjectPaths) -> tuple[int, int]:
+    """统计翻译目录之外可处理的 RPY/RPYC 源脚本。"""
+
+    def is_source(item: Path) -> bool:
+        try:
+            item.relative_to(paths.tl_root)
+            return False
+        except ValueError:
+            return True
+
+    rpy_count = sum(1 for item in paths.game_dir.rglob("*.rpy") if is_source(item))
+    rpyc_count = sum(
+        1 for item in paths.game_dir.rglob("*.rpyc") if is_source(item)
+    )
+    return rpy_count, rpyc_count
+
+
 def apply_to_config(
     config: Any,
     paths: RenpyProjectPaths,

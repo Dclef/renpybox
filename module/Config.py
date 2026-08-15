@@ -94,6 +94,9 @@ class Config():
     agent_platform: int = -1
     # Agent 专用思考等级；不改动平台页面保存的翻译思考设置。
     agent_thinking_level: str = "OFF"
+    # 用户在解包确认框勾选「不再询问」后，Agent 解包跳过确认对话框。
+    # 服务端仍会核对确认上下文快照，项目变化时照样拒绝执行。
+    agent_unpack_auto_confirm: bool = False
     platforms: list[dict[str, Any]] = None
 
     # AppSettingsPage

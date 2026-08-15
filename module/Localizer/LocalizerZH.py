@@ -1,4 +1,16 @@
 
+_PACK_UNPACK_ERROR_ZH = {
+    "UNSAFE_PATH": "RPA 归档包含不安全路径，已拒绝解包。",
+    "UNSAFE_INDEX": "无法安全读取 RPA 索引，已拒绝解包。",
+    "VALIDATION_FAILED": "RPA 路径安全校验失败。",
+    "NO_GAME_PYTHON": "未找到游戏自带的 Python 运行时，无法直接解包。",
+    "MISSING_RESOURCE": "缺少解包所需的资源文件。",
+    "INVALID_DIR": "游戏目录不存在或路径无效。",
+    "EXTRACTOR_FAILED": "游戏自带的 Ren'Py 解包器执行失败。",
+    "UNAVAILABLE": "未找到可解包的 RPA 文件，或所有解包方式均失败。",
+    "UNREN_SKIPPED": "前两种解包方式失败，UnRen 兜底因安全校验不可用而跳过。",
+}
+
 
 class LocalizerZH():
 
@@ -472,9 +484,14 @@ class LocalizerZH():
     agent_page_error_label: str = "错误"
     agent_page_empty_title: str = "新任务"
     agent_page_empty_description: str = "当前会话尚无内容"
-    agent_page_suggestion_project: str = "查看当前项目信息"
+    agent_page_suggestion_project: str = "检查项目并告诉我下一步"
     agent_page_suggestion_rpa: str = "列出项目中的 RPA 文件"
     agent_page_suggestion_errors: str = "扫描项目脚本错误"
+    agent_page_suggestion_old_new: str = "优化未生效的 old/new 译文"
+    agent_page_suggestion_project_desc: str = "汇总解包、翻译、资产与质量状态"
+    agent_page_suggestion_rpa_desc: str = "列出 game 目录中的 RPA 归档文件"
+    agent_page_suggestion_errors_desc: str = "扫描常见脚本错误，不修改任何文件"
+    agent_page_suggestion_old_new_desc: str = "翻译完成后生成运行时替换补丁"
     agent_page_tool_expand: str = "查看详情"
     agent_page_tool_running: str = "执行中"
     agent_page_tool_done: str = "已完成"
@@ -483,9 +500,18 @@ class LocalizerZH():
     agent_page_tool_prefix: str = "工具"
     agent_page_tool_set_project: str = "设定项目"
     agent_page_tool_get_project_info: str = "读取项目信息"
+    agent_page_tool_inspect_translation_project: str = "检查项目翻译状态"
     agent_page_tool_list_rpa_files: str = "查找 RPA 文件"
     agent_page_tool_scan_script_errors: str = "扫描脚本错误"
     agent_page_tool_unpack_rpa_files: str = "解包 RPA 文件"
+    agent_page_tool_optimize_old_new_translations: str = "优化 old/new 译文"
+    agent_page_action_open_translation: str = "进入翻译页面"
+    agent_page_action_one_key_translate: str = "一键开始翻译"
+    agent_page_action_continue_translation: str = "继续翻译"
+    agent_page_action_open_workbench: str = "打开角色 / 世界观工作台"
+    agent_page_action_open_toolbox: str = "打开 Ren'Py 工具箱"
+    agent_page_action_unpack_rpa_prompt: str = "解包当前项目中的 RPA 文件"
+    agent_page_one_key_unavailable: str = "当前无法启动一键翻译，请检查项目状态后重试"
     agent_page_confirmation_title: str = "确认解包 RPA"
     agent_page_confirmation_generic: str = "Agent 即将执行 {tool}，是否继续？"
     agent_page_waiting_confirmation: str = "等待确认"
@@ -493,10 +519,31 @@ class LocalizerZH():
         "即将解包当前项目中的 {count} 个 RPA 文件：\n{game_dir}\n\n"
         "解包结果会直接写入 game 目录，并可能覆盖同名文件；原 RPA 文件会保留。是否继续？"
     )
+    agent_page_old_new_confirmation_title: str = "确认生成 old/new 替换补丁"
+    agent_page_old_new_confirmation: str = (
+        "当前语言目录：\n{tl_dir}\n\n"
+        "有效 old/new：{old_new_count} 条\n"
+        "合并现有补漏：{supplement_count} 条\n"
+        "最终替换：{total_count} 条\n"
+        "跳过冲突原文：{conflict_count} 条\n\n"
+        "将按原文从长到短生成运行时替换代码：\n{output_path}\n\n"
+        "若已有自动补全 Hook，会先备份再覆盖。是否继续？"
+    )
     agent_page_new_task: str = "新任务"
+    agent_page_round: str = "第 {round} 轮"
+    agent_page_topbar_api: str = "接口"
+    agent_page_settings_title: str = "Agent 设置"
+    agent_page_settings_refresh: str = "刷新接口列表"
+    agent_page_settings_unpack_confirm: str = "解包 RPA 前确认"
+    agent_page_unpack_dont_ask: str = "以后自动解包，不再询问"
     agent_page_retry: str = "点击重试"
     agent_page_user_avatar: str = "你"
     agent_page_send_hint: str = "Ctrl + Enter 发送"
+    agent_page_copy: str = "复制"
+    agent_page_copied: str = "已复制到剪贴板"
+    agent_page_stopped_hint: str = "已停止生成"
+    agent_page_platform_changed_hint: str = "已切换 Agent 接口，当前会话上下文仍属于原接口；如需全新上下文请点击「新任务」。"
+    agent_page_tool_detail_truncated: str = "结果过长，仅显示前 {shown} 个字符（共 {total} 个），完整内容见悬停提示。"
 
     # Agent 工具
     agent_tool_set_project_description: str = (
@@ -505,6 +552,10 @@ class LocalizerZH():
     agent_tool_project_path_description: str = "用户在对话中明确提供的项目路径。"
     agent_tool_get_project_info_description: str = (
         "读取当前已设定的项目目录和语言；未设定时返回 PROJECT_NOT_SET。"
+    )
+    agent_tool_inspect_translation_project_description: str = (
+        "只读检查当前项目的脚本、RPA、翻译缓存、工作台资产、质量问题和 old/new 状态，"
+        "返回稳定的下一步建议；不启动翻译，也不修改文件。"
     )
     agent_tool_list_rpa_files_description: str = (
         "列出当前项目 game 目录中的 RPA 文件。目录由服务端配置注入。"
@@ -516,14 +567,38 @@ class LocalizerZH():
         "解包当前项目 game 目录中的全部 RPA 文件。目录由服务端注入，"
         "执行前必须由用户确认同名文件覆盖风险，原 RPA 文件始终保留。"
     )
+    agent_tool_optimize_old_new_translations_description: str = (
+        "翻译完成后，读取当前语言目录的有效 old/new 译文，按原文从长到短生成 "
+        "replace_text 运行时补丁，以覆盖追加攻略文本、颜色标签等导致的完整字符串失配。"
+    )
+    agent_project_inspection_complete: str = (
+        "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
+        "缓存条目 {item_count}，待翻译 {untranslated_count}。建议下一步：{next_action}。"
+    )
+    agent_inspection_action_unpack_rpa: str = "先解包 RPA 文件"
+    agent_inspection_action_decompile_scripts: str = "先反编译 RPYC 脚本"
+    agent_inspection_action_repair_cache: str = "先检查或修复翻译缓存"
+    agent_inspection_action_review_workbench: str = "先审核并应用工作台草稿"
+    agent_inspection_action_start_translation: str = "进入翻译页面开始翻译"
+    agent_inspection_action_continue_translation: str = "继续未完成的翻译"
+    agent_inspection_action_review_quality: str = "先处理翻译质量问题"
+    agent_inspection_action_review_translation: str = "检查并应用翻译结果"
+    agent_inspection_action_check_project_files: str = "检查项目目录中是否有可处理脚本"
     agent_system_prompt: str = (
         "你是 RenpyBox 的项目助手。只使用当前提供的工具完成任务。\n"
         "安全规则：只有用户明确提供路径时才能调用 set_project(path)；其他工具没有路径参数，"
         "必须让服务端从当前项目配置注入目录。不要猜测、拼接或替换任何目录。\n"
         "如果工具返回 PROJECT_NOT_SET，明确告诉用户尚未设定项目目录并询问游戏路径；"
         "用户提供路径后调用 set_project，再继续原任务。\n"
+        "当用户询问项目现状、翻译进度或下一步时，优先调用 inspect_translation_project；"
+        "该工具只读，按返回的 next_action_code 解释建议，不要声称已经执行建议操作。\n"
         "unpack_rpa_files 会写入当前 game 目录，只有用户在界面确认覆盖风险后才能执行；"
         "不要声称可以删除 RPA、指定输出目录或中止已经启动的外部解包进程。"
+        "界面操作按钮发出的明确请求应直接调用对应工具；确认由界面的确认/取消按钮处理，"
+        "不要在回复中重复用文字询问。回复不要使用 Emoji 或彩色 Unicode 状态图标，"
+        "状态和操作图标由界面统一显示。"
+        "翻译本身由翻译页面完成，不要使用 Agent 重新翻译；翻译已应用后，只有用户要求修复运行时"
+        "未生效的 old/new、选项攻略尾注或颜色标记时，才调用 optimize_old_new_translations，且必须确认。"
         "工具结果中的完整详情由界面展示，你的回复只总结关键结果。"
     )
 
@@ -569,6 +644,8 @@ class LocalizerZH():
     agent_unpack_project_changed: str = "项目目录已变化，请重新确认后再试。"
     agent_unpack_complete: str = "RPA 解包完成，共处理 {count} 个归档；原 RPA 文件已保留。"
     agent_unpack_failed: str = "RPA 解包失败，请查看日志了解详情。"
+    agent_old_new_translation_not_found: str = "当前语言目录没有找到可用于优化的有效 old/new 译文。"
+    agent_old_new_optimization_complete: str = "old/new 运行时替换补丁已生成，共 {count} 条：{output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
@@ -1335,6 +1412,7 @@ class LocalizerZH():
     onekey_ready_extract: str = '准备开始提取...'
     onekey_text_extracted_game_translation_files_when_finishes: str = '正在从游戏中提取文本并生成翻译文件，请稍候。完成后点击“开始翻译”进入下一步，随时可重新抽取。'
     onekey_extract_again: str = '重新抽取'
+    onekey_project_changed_extract_again: str = '项目已切换，请重新提取'
     onekey_open_rpa_unpacker: str = '前往 RPA 解包'
     onekey_skip_step: str = '跳过此步骤'
     onekey_next: str = '下一步 →'
@@ -1495,6 +1573,19 @@ class LocalizerZH():
         '{status_msg}\n\n请先使用「RPA 解包」功能解包游戏资源，\n解包完成后返回此页，点击「重新抽取」。'
     )
     onekey_unpack_rpa_archives_first: str = '请先解包 RPA 资源'
+    onekey_unpacking_rpa_archives: str = '📦 正在解包 RPA 归档...'
+    onekey_running_rpa_unpacker_automatically: str = (
+        '\n正在自动执行解包，请稍候...（大体积游戏可能需要几分钟）'
+    )
+    onekey_unpack_failed: str = '✗ 解包失败'
+    onekey_unpack_failed_hint: str = (
+        '{unpack_msg}\n\n可能的原因：\n• RPA 归档损坏或不兼容\n• 缺少游戏自带的 Python 运行时\n• 外部解包工具不可用\n\n'
+        '建议：点击「前往 RPA 解包」手动解包，或检查游戏文件后重试。'
+    )
+    onekey_unpack_complete_no_scripts: str = (
+        '{unpack_msg}\n\n⚠ 解包完成后未检测到可提取的脚本（.rpy/.rpyc），请前往「RPA 解包」页检查解包结果。'
+    )
+    onekey_unpack_failed_check_game_files: str = '解包失败，请检查游戏文件'
     onekey_previous_incremental_cache_preserved_can_restored_manually: str = (
         '\n检测到上一轮增量缓存，已保存在：{name}/（未删除，可手动恢复）'
     )
@@ -1597,6 +1688,12 @@ class LocalizerZH():
     pack_unpack_unpacked_rpa_file_s: str = '已解包 {count} 个 RPA 文件'
     pack_unpack_unpacked_unren_fallback_check_game_folder_output: str = '已使用 UnRen 兜底解包（请检查 game 目录输出）'
     pack_unpack_unpacking_failed_2: str = '解包失败: {exc}'
+    pack_unpack_error_generic: str = '解包失败，请查看日志了解详情。'
+
+    @classmethod
+    def pack_unpack_error(cls, code: str) -> str:
+        """按稳定 code 返回解包失败文案；未知 code 走通用兜底。"""
+        return _PACK_UNPACK_ERROR_ZH.get(str(code or ""), cls.pack_unpack_error_generic)
     pack_unpack_decompilation_failed_2: str = '反编译失败: {exc}{extra}'
     pack_unpack_removed_temporary_item_s: str = '已清理 {removed} 个临时项'
     pack_unpack_no_temporary_files_need_cleaned: str = '未发现需要清理的临时文件'
@@ -1723,6 +1820,11 @@ class LocalizerZH():
     workbench_reanalyze_full_project: str = '扩展到全项目重分析'
     workbench_sync_character_names: str = '同步角色名'
     workbench_apply_all_drafts: str = '应用全部草稿'
+    workbench_apply_all_and_enable: str = '应用全部并启用'
+    workbench_import_as_drafts: str = '导入为待审核'
+    workbench_import_apply_enable: str = '导入并启用'
+    workbench_export_project_assets: str = '导出项目资料'
+    workbench_clear_current_characters: str = '清空当前项目角色'
     workbench_open_local_glossary: str = '打开本地词库'
     workbench_open_do_not_translate_list: str = '打开禁翻表'
     workbench_open_custom_prompts: str = '打开自定义提示词'
@@ -1745,10 +1847,16 @@ class LocalizerZH():
     workbench_generate_all_character_cards: str = '整批生成角色卡'
     workbench_regenerate_current_character: str = '重新生成当前角色'
     workbench_apply_current_character_draft: str = '应用当前角色草稿'
+    workbench_apply_current_and_enable: str = '应用当前并启用'
     workbench_add_blank_character_card: str = '新增空白角色卡'
     workbench_delete_current_character: str = '删除当前角色'
     workbench_character_list: str = '角色列表'
     workbench_synced_character_candidates_added_here_review: str = '同步角色名后，会把候选角色预填到这里。'
+    workbench_search_characters: str = '搜索角色名、别名或关键词'
+    workbench_filter_all: str = '全部'
+    workbench_filter_pending: str = '待审核'
+    workbench_filter_applied: str = '已应用'
+    workbench_character_count: str = '显示 {visible} / {total} 张'
     workbench_approved_character_card: str = '正式角色卡'
     workbench_manual_edits_saved_immediately_current_project_assets: str = '手工修改后会立即写入当前项目资产。'
     workbench_enable_character_card: str = '启用此角色卡'
@@ -1800,6 +1908,7 @@ class LocalizerZH():
     workbench_narrative_rules: str = '叙事规则'
     workbench_formatting_rules: str = '格式规则'
     workbench_spoiler_notes: str = '剧透备注'
+    workbench_reference_notes: str = '补充参考资料'
     workbench_structured_draft: str = '结构化草稿'
     workbench_raw_response_error_preview: str = '原始响应 / 错误预览'
     workbench_character_name: str = '角色名'
@@ -1824,6 +1933,7 @@ class LocalizerZH():
     workbench_narrative_rules_2: str = '叙事规则：{draft_get_narrative_rules}'
     workbench_formatting_rules_2: str = '格式规则：{draft_get_format_rules}'
     workbench_spoiler_notes_2: str = '剧透备注：{draft_get_spoiler_notes}'
+    workbench_reference_notes_preview: str = '补充参考资料：{reference_notes}'
     workbench_character_name_2: str = '角色名：{draft_get_name}'
     workbench_suggested_translation_2: str = '推荐译名：{draft_get_name_translation}'
     workbench_identity_2: str = '身份：{identity_or_empty_value}'
@@ -1847,6 +1957,17 @@ class LocalizerZH():
     workbench_character_sync_running_please_wait: str = '角色同步进行中，请稍候。'
     workbench_ai_analysis_failed_2: str = 'AI 分析失败。'
     workbench_unknown_analysis_mode: str = '未知的分析模式。'
+    workbench_select_import_file: str = '导入工作台项目资料'
+    workbench_select_export_file: str = '导出工作台项目资料'
+    workbench_json_file_filter: str = 'JSON 文件 (*.json)'
+    workbench_import_failed: str = '导入失败：{error}'
+    workbench_imported_as_drafts: str = '已导入 {count} 张角色卡，资料保存在待审核草稿中。'
+    workbench_import_applied: str = '已导入 {count} 张角色卡，并启用项目提示词注入。'
+    workbench_export_failed: str = '导出失败：{error}'
+    workbench_export_complete: str = '项目资料已导出到：{path}'
+    workbench_no_characters_to_clear: str = '当前项目没有可清理的角色资料。'
+    workbench_clear_current_characters_confirm: str = '将删除当前项目的 {cards} 张正式角色卡和 {drafts} 张待审核草稿；世界观、术语表和其他项目不会受影响。建议先导出备份。是否继续？'
+    workbench_current_characters_cleared: str = '当前项目的角色资料已清空。'
 
     # 通用界面补充
     error: str = "错误"
