@@ -196,6 +196,7 @@ def test_system_asset_layers_are_matched_and_in_fixed_order():
             "narrative_rules": "First person",
             "format_rules": "Keep punctuation",
             "spoiler_notes": "Alice is the culprit",
+            "reference_notes": "The silver key belongs to Alice",
             "custom_lore": {"faction": "Night Watch"},
         },
         renpy_workbench_character_cards_enable = True,
@@ -233,6 +234,7 @@ def test_system_asset_layers_are_matched_and_in_fixed_order():
 
     assert "Project Full" in system
     assert "Alice is the culprit" in system
+    assert "补充参考资料：The silver key belongs to Alice" in system
     assert '扩展设定 custom_lore：{"faction": "Night Watch"}' in system
     assert "HeroToken -> 英雄令" in system
     assert "Unused ->" not in system

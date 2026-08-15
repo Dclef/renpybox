@@ -22,7 +22,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
-from module.Tool.Packer import Packer
+from module.Tool.Packer import Packer, PackerUnpackError
 from module.Tool.RenpyDecompiler import RenpyDecompiler
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -157,14 +157,21 @@ class UnpackWorker(QThread):
             self.finished.emit({
                 "level": "info",
                 "title": Localizer.get().notice,
-                "message": Localizer.get().pack_unpack_no_rpa_files_found_external_tools_unren,
+                "message": Localizer.get().pack_unpack_error(str(result.get("code") or "")),
+            })
+        except PackerUnpackError as exc:
+            LogManager.get().error(f"解包失败: {exc}")
+            self.finished.emit({
+                "level": "error",
+                "title": Localizer.get().error,
+                "message": Localizer.get().pack_unpack_error(exc.code),
             })
         except Exception as exc:
             LogManager.get().error(f"解包失败: {exc}")
             self.finished.emit({
                 "level": "error",
                 "title": Localizer.get().error,
-                "message": Localizer.get().pack_unpack_unpacking_failed_2.format(exc=exc),
+                "message": Localizer.get().pack_unpack_error(""),
             })
 
 

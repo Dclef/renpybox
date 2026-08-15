@@ -57,6 +57,10 @@ def test_workbench_english_static_dynamic_and_feedback_copy(monkeypatch) -> None
         ]
         assert page.btn_generate_current.text() == "Generate Current-Scope Drafts"
         assert page.btn_open_glossary.text() == "Open Local Glossary"
+        assert page.btn_apply_all.text() == "Apply All & Enable"
+        assert page.character_search_edit.placeholderText() == (
+            "Search names, aliases, or keywords"
+        )
         assert page.worldbook_enable.text() == "Inject Worldbuilding Context"
         assert page.character_cards_enable.text() == "Inject Character Card Context"
         assert page.preview_input_edit.placeholderText() == (
@@ -79,6 +83,56 @@ def test_workbench_english_static_dynamic_and_feedback_copy(monkeypatch) -> None
             "Notice",
             "There is no worldbuilding draft to apply.",
         )
+    finally:
+        page.close()
+        window.close()
+
+
+def test_character_filter_and_selection_reuse_single_config_load(monkeypatch) -> None:
+    """完整刷新只加载一次，搜索、筛选和切换角色都不再读盘。"""
+    config = Config()
+    config.get_platform = lambda _platform_id: None
+    config.input_folder = ""
+    config.output_folder = ""
+    config.renpy_game_folder = ""
+    config.renpy_tl_folder = ""
+    config.renpy_workbench_worldbook_enable = False
+    config.renpy_workbench_worldbook_data = {}
+    config.renpy_workbench_generated_worldbook_draft = {}
+    alice = create_default_character_card("Alice")
+    bob = create_default_character_card("Bob")
+    bob["aliases"] = ["Doctor"]
+    carol = create_default_character_card("Carol")
+    config.renpy_workbench_character_cards_enable = False
+    config.renpy_workbench_character_cards = [alice, bob]
+    config.renpy_workbench_generated_character_drafts = [carol]
+
+    loads = []
+    monkeypatch.setattr(
+        RenpyWorkbenchPage,
+        "_load_config",
+        lambda self: loads.append(True) or config,
+    )
+    monkeypatch.setattr(RenpyWorkbenchPage, "_save_config", lambda self, current: None)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
+
+    window = QWidget()
+    page = RenpyWorkbenchPage("renpy_workbench_page", window)
+    try:
+        assert len(loads) == 1
+        assert page.character_list.item(0).text() == "Carol [Draft]"
+
+        page.character_list.setCurrentRow(1)
+        page.character_search_edit.setText("doctor")
+        assert len(loads) == 1
+        assert page.character_count_label.text() == "Showing 1 of 3"
+        assert page.character_list.item(2).isHidden() is False
+
+        page.character_search_edit.clear()
+        page._set_character_filter("pending")
+        assert page.character_count_label.text() == "Showing 1 of 3"
+        assert page.character_list.currentItem().text() == "Carol [Draft]"
+        assert len(loads) == 1
     finally:
         page.close()
         window.close()

@@ -129,3 +129,28 @@ def test_application_language_round_trips_through_config(tmp_path: Path) -> None
         assert Localizer.get() is LocalizerEN
     finally:
         Localizer.set_app_language(original)
+
+
+def test_pack_unpack_error_codes_are_covered_in_both_languages() -> None:
+    """解包失败文案按稳定 code 存放于 Localizer，中英文 code 集合一致且英文无中文。"""
+    import module.Localizer.LocalizerZH as zh_module
+    import module.Localizer.LocalizerEN as en_module
+
+    zh = zh_module._PACK_UNPACK_ERROR_ZH
+    en = en_module._PACK_UNPACK_ERROR_EN
+
+    assert set(zh) == set(en)
+    assert zh
+    for code in zh:
+        assert LocalizerZH().pack_unpack_error(code) == zh[code]
+        assert LocalizerEN().pack_unpack_error(code) == en[code]
+        assert en[code]
+    assert not any("\u4e00" <= ch <= "\u9fff" for text in en.values() for ch in text)
+
+    # 未知 code 与空 code 走通用兜底。
+    assert LocalizerZH().pack_unpack_error("NOPE") == LocalizerZH().pack_unpack_error_generic
+    assert LocalizerEN().pack_unpack_error("") == LocalizerEN().pack_unpack_error_generic
+    assert not any(
+        "\u4e00" <= ch <= "\u9fff"
+        for ch in LocalizerEN().pack_unpack_error_generic
+    )

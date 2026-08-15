@@ -1,5 +1,18 @@
 from module.Localizer.LocalizerZH import LocalizerZH
 
+_PACK_UNPACK_ERROR_EN = {
+    "UNSAFE_PATH": "The RPA archive contains unsafe paths. Unpacking was refused.",
+    "UNSAFE_INDEX": "The RPA archive index could not be read safely; unpacking was refused.",
+    "VALIDATION_FAILED": "RPA archive path validation failed.",
+    "NO_GAME_PYTHON": "The game's bundled Python runtime was not found.",
+    "MISSING_RESOURCE": "A required unpacking resource is missing.",
+    "INVALID_DIR": "The game folder does not exist or is invalid.",
+    "EXTRACTOR_FAILED": "The game's Ren'Py unpacker exited with an error.",
+    "UNAVAILABLE": "No unpackable RPA files were found, or every unpacking method failed.",
+    "UNREN_SKIPPED": "Direct and external unpacking both failed, and the UnRen fallback is disabled because the archives could not be validated safely.",
+}
+
+
 class LocalizerEN(LocalizerZH):
 
     # 保留
@@ -472,9 +485,14 @@ class LocalizerEN(LocalizerZH):
     agent_page_error_label: str = "Error"
     agent_page_empty_title: str = "New task"
     agent_page_empty_description: str = "This conversation is empty"
-    agent_page_suggestion_project: str = "Show current project details"
+    agent_page_suggestion_project: str = "Inspect the project and suggest the next step"
     agent_page_suggestion_rpa: str = "List RPA files in the project"
     agent_page_suggestion_errors: str = "Scan project script errors"
+    agent_page_suggestion_old_new: str = "Fix old/new translations not taking effect"
+    agent_page_suggestion_project_desc: str = "Summarize unpacking, translation, assets, and quality"
+    agent_page_suggestion_rpa_desc: str = "List RPA archives in the game folder"
+    agent_page_suggestion_errors_desc: str = "Scan for common script errors without modifying files"
+    agent_page_suggestion_old_new_desc: str = "Generate a runtime replacement patch after translation"
     agent_page_tool_expand: str = "Show details"
     agent_page_tool_running: str = "Running"
     agent_page_tool_done: str = "Done"
@@ -483,9 +501,18 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_prefix: str = "Tool"
     agent_page_tool_set_project: str = "Set project"
     agent_page_tool_get_project_info: str = "Read project details"
+    agent_page_tool_inspect_translation_project: str = "Inspect translation status"
     agent_page_tool_list_rpa_files: str = "Find RPA files"
     agent_page_tool_scan_script_errors: str = "Scan script errors"
     agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
+    agent_page_tool_optimize_old_new_translations: str = "Optimize old/new translations"
+    agent_page_action_open_translation: str = "Open Translation"
+    agent_page_action_one_key_translate: str = "Start One-click Translation"
+    agent_page_action_continue_translation: str = "Continue Translation"
+    agent_page_action_open_workbench: str = "Open Character / Worldbook Workbench"
+    agent_page_action_open_toolbox: str = "Open Ren'Py Toolbox"
+    agent_page_action_unpack_rpa_prompt: str = "Unpack the RPA files in the current project"
+    agent_page_one_key_unavailable: str = "One-click translation cannot start right now. Check the project and try again."
     agent_page_confirmation_title: str = "Confirm RPA Unpacking"
     agent_page_confirmation_generic: str = "The Agent is about to run {tool}. Continue?"
     agent_page_waiting_confirmation: str = "Waiting for confirmation"
@@ -494,10 +521,37 @@ class LocalizerEN(LocalizerZH):
         "Files will be written directly into the game folder and may overwrite files with the same name. "
         "The original RPA files will be kept. Continue?"
     )
+    agent_page_old_new_confirmation_title: str = "Confirm old/new replacement patch"
+    agent_page_old_new_confirmation: str = (
+        "Current language folder:\n{tl_dir}\n\n"
+        "Effective old/new entries: {old_new_count}\n"
+        "Existing supplements merged: {supplement_count}\n"
+        "Final replacements: {total_count}\n"
+        "Conflicting sources skipped: {conflict_count}\n\n"
+        "A runtime replacement script will be generated from longest source text to shortest:\n"
+        "{output_path}\n\n"
+        "If an automatic supplement hook already exists, it will be backed up before replacement. Continue?"
+    )
     agent_page_new_task: str = "New task"
+    agent_page_round: str = "Round {round}"
+    agent_page_topbar_api: str = "API"
+    agent_page_settings_title: str = "Agent Settings"
+    agent_page_settings_refresh: str = "Refresh API list"
+    agent_page_settings_unpack_confirm: str = "Confirm before unpacking RPA"
+    agent_page_unpack_dont_ask: str = "Always unpack automatically without asking"
     agent_page_retry: str = "Retry"
     agent_page_user_avatar: str = "You"
     agent_page_send_hint: str = "Ctrl + Enter to send"
+    agent_page_copy: str = "Copy"
+    agent_page_copied: str = "Copied to clipboard"
+    agent_page_stopped_hint: str = "Generation stopped"
+    agent_page_platform_changed_hint: str = (
+        "Agent API switched. This conversation still uses the previous API context; "
+        "click \"New task\" for a fresh context."
+    )
+    agent_page_tool_detail_truncated: str = (
+        "Detail truncated: showing first {shown} of {total} characters. Hover for the full text."
+    )
 
     # Agent tools
     agent_tool_set_project_description: str = (
@@ -511,6 +565,11 @@ class LocalizerEN(LocalizerZH):
         "Read the current project paths and language; return PROJECT_NOT_SET "
         "when no project is configured."
     )
+    agent_tool_inspect_translation_project_description: str = (
+        "Read-only inspection of scripts, RPA files, translation cache, workbench assets, "
+        "quality issues, and old/new status. Return a stable next-step recommendation "
+        "without starting translation or modifying files."
+    )
     agent_tool_list_rpa_files_description: str = (
         "List RPA files in the current project game folder. The server injects the path."
     )
@@ -521,15 +580,43 @@ class LocalizerEN(LocalizerZH):
         "Unpack all RPA files in the current project game folder. The server injects the path, "
         "the user must confirm overwrite risk, and original archives are kept."
     )
+    agent_tool_optimize_old_new_translations_description: str = (
+        "After translation, read effective old/new translations from the current language folder and "
+        "generate a longest-first replace_text runtime patch for full-string mismatches caused by "
+        "appended walkthrough text, color tags, or similar processing."
+    )
+    agent_project_inspection_complete: str = (
+        "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
+        "{item_count} cached entries with {untranslated_count} untranslated. "
+        "Recommended next step: {next_action}."
+    )
+    agent_inspection_action_unpack_rpa: str = "unpack the RPA files first"
+    agent_inspection_action_decompile_scripts: str = "decompile the RPYC scripts first"
+    agent_inspection_action_repair_cache: str = "inspect or repair the translation cache first"
+    agent_inspection_action_review_workbench: str = "review and apply the workbench drafts first"
+    agent_inspection_action_start_translation: str = "start translation on the translation page"
+    agent_inspection_action_continue_translation: str = "continue the unfinished translation"
+    agent_inspection_action_review_quality: str = "resolve the translation quality issues first"
+    agent_inspection_action_review_translation: str = "review and apply the translation results"
+    agent_inspection_action_check_project_files: str = "check the project for processable scripts"
     agent_system_prompt: str = (
         "You are the RenpyBox project assistant. Use only the tools currently provided.\n"
         "Only call set_project(path) when the user explicitly provides a path. Other tools have no path "
         "arguments and must use the current project injected by the server. Never guess or construct paths.\n"
         "When a tool returns PROJECT_NOT_SET, explain that no project is set and ask for the game path. "
         "After the user provides it, call set_project and continue the original task.\n"
+        "When the user asks about project state, translation progress, or what to do next, call "
+        "inspect_translation_project first. It is read-only; explain its next_action_code without "
+        "claiming that the recommended action has already run.\n"
         "unpack_rpa_files writes into the current game folder and may run only after the user confirms the "
         "overwrite risk in the UI. Do not claim that you can delete RPA files, choose an output path, or stop "
-        "an external unpack process after it starts. Summarize key results; full details are shown in the UI."
+        "an external unpack process after it starts. A clear request sent by a UI action button should call the "
+        "corresponding tool directly; confirmation is handled by the UI Confirm and Cancel buttons, so do not "
+        "ask for it again in text. Do not use Emoji or colored Unicode status icons in replies; the UI renders "
+        "status and action icons. Translation itself belongs to the translation page; do not "
+        "retranslate through the Agent. Only call optimize_old_new_translations after translations are applied "
+        "and the user asks to fix runtime old/new, walkthrough suffix, or color-tag mismatches, and require "
+        "confirmation. Summarize key results; full details are shown in the UI."
     )
 
     # Agent runtime
@@ -574,6 +661,8 @@ class LocalizerEN(LocalizerZH):
     agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
     agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."
     agent_unpack_failed: str = "RPA unpacking failed. Check the log for details."
+    agent_old_new_translation_not_found: str = "No effective old/new translations were found in the current language folder."
+    agent_old_new_optimization_complete: str = "Generated the old/new runtime replacement patch with {count} entries: {output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
@@ -1391,6 +1480,7 @@ class LocalizerEN(LocalizerZH):
         'nslation or extract again.'
     )
     onekey_extract_again: str = 'Extract Again'
+    onekey_project_changed_extract_again: str = 'The project changed. Extract it again.'
     onekey_open_rpa_unpacker: str = 'Open RPA Unpacker'
     onekey_skip_step: str = 'Skip This Step'
     onekey_next: str = 'Next →'
@@ -1570,6 +1660,19 @@ class LocalizerEN(LocalizerZH):
         'ct Again.'
     )
     onekey_unpack_rpa_archives_first: str = 'Unpack the RPA archives first'
+    onekey_unpacking_rpa_archives: str = '📦 Unpacking RPA archives...'
+    onekey_running_rpa_unpacker_automatically: str = (
+        '\nRunning the RPA unpacker automatically, please wait... (large games may take a few minutes)'
+    )
+    onekey_unpack_failed: str = '✗ Unpacking Failed'
+    onekey_unpack_failed_hint: str = (
+        '{unpack_msg}\n\nPossible causes:\n• The RPA archive is corrupted or incompatible\n• The game\'s bundled Python runtime is missing\n• No external unpacking tool is available\n\n'
+        'Tip: click "Open RPA Unpacker" to unpack manually, or check the game files and try again.'
+    )
+    onekey_unpack_complete_no_scripts: str = (
+        '{unpack_msg}\n\n⚠ No extractable scripts (.rpy/.rpyc) were found after unpacking. Check the output on the RPA Unpacker page.'
+    )
+    onekey_unpack_failed_check_game_files: str = 'Unpacking failed. Check the game files.'
     onekey_previous_incremental_cache_preserved_can_restored_manually: str = (
         '\nThe previous incremental cache was preserved at {name}/ and can be restored manually.'
     )
@@ -1672,6 +1775,12 @@ class LocalizerEN(LocalizerZH):
     pack_unpack_unpacked_rpa_file_s: str = 'Unpacked {count} RPA file(s)'
     pack_unpack_unpacked_unren_fallback_check_game_folder_output: str = 'Unpacked with the UnRen fallback. Check the game folder for output'
     pack_unpack_unpacking_failed_2: str = 'Unpacking failed: {exc}'
+    pack_unpack_error_generic: str = 'Unpacking failed. Check the logs for details.'
+
+    @classmethod
+    def pack_unpack_error(cls, code: str) -> str:
+        """Return the unpack failure text for a stable code; unknown codes fall back."""
+        return _PACK_UNPACK_ERROR_EN.get(str(code or ""), cls.pack_unpack_error_generic)
     pack_unpack_decompilation_failed_2: str = 'Decompilation failed: {exc}{extra}'
     pack_unpack_removed_temporary_item_s: str = 'Removed {removed} temporary item(s)'
     pack_unpack_no_temporary_files_need_cleaned: str = 'No temporary files need to be cleaned'
@@ -1809,6 +1918,11 @@ class LocalizerEN(LocalizerZH):
     workbench_reanalyze_full_project: str = 'Reanalyze Full Project'
     workbench_sync_character_names: str = 'Sync Character Names'
     workbench_apply_all_drafts: str = 'Apply All Drafts'
+    workbench_apply_all_and_enable: str = 'Apply All & Enable'
+    workbench_import_as_drafts: str = 'Import for Review'
+    workbench_import_apply_enable: str = 'Import & Enable'
+    workbench_export_project_assets: str = 'Export Project Assets'
+    workbench_clear_current_characters: str = 'Clear Current Characters'
     workbench_open_local_glossary: str = 'Open Local Glossary'
     workbench_open_do_not_translate_list: str = 'Open Do-Not-Translate List'
     workbench_open_custom_prompts: str = 'Open Custom Prompts'
@@ -1831,10 +1945,16 @@ class LocalizerEN(LocalizerZH):
     workbench_generate_all_character_cards: str = 'Generate All Character Cards'
     workbench_regenerate_current_character: str = 'Regenerate Current Character'
     workbench_apply_current_character_draft: str = 'Apply Current Character Draft'
+    workbench_apply_current_and_enable: str = 'Apply Current & Enable'
     workbench_add_blank_character_card: str = 'Add Blank Character Card'
     workbench_delete_current_character: str = 'Delete Current Character'
     workbench_character_list: str = 'Character List'
     workbench_synced_character_candidates_added_here_review: str = 'Synced character candidates are added here for review.'
+    workbench_search_characters: str = 'Search names, aliases, or keywords'
+    workbench_filter_all: str = 'All'
+    workbench_filter_pending: str = 'Pending'
+    workbench_filter_applied: str = 'Applied'
+    workbench_character_count: str = 'Showing {visible} of {total}'
     workbench_approved_character_card: str = 'Approved Character Card'
     workbench_manual_edits_saved_immediately_current_project_assets: str = 'Manual edits are saved immediately to the current project assets.'
     workbench_enable_character_card: str = 'Enable This Character Card'
@@ -1886,6 +2006,7 @@ class LocalizerEN(LocalizerZH):
     workbench_narrative_rules: str = 'Narrative Rules'
     workbench_formatting_rules: str = 'Formatting Rules'
     workbench_spoiler_notes: str = 'Spoiler Notes'
+    workbench_reference_notes: str = 'Additional Reference Notes'
     workbench_structured_draft: str = 'Structured Draft'
     workbench_raw_response_error_preview: str = 'Raw Response / Error Preview'
     workbench_character_name: str = 'Character Name'
@@ -1910,6 +2031,7 @@ class LocalizerEN(LocalizerZH):
     workbench_narrative_rules_2: str = 'Narrative rules: {draft_get_narrative_rules}'
     workbench_formatting_rules_2: str = 'Formatting rules: {draft_get_format_rules}'
     workbench_spoiler_notes_2: str = 'Spoiler notes: {draft_get_spoiler_notes}'
+    workbench_reference_notes_preview: str = 'Additional reference notes: {reference_notes}'
     workbench_character_name_2: str = 'Character name: {draft_get_name}'
     workbench_suggested_translation_2: str = 'Suggested translation: {draft_get_name_translation}'
     workbench_identity_2: str = 'Identity: {identity_or_empty_value}'
@@ -1936,6 +2058,17 @@ class LocalizerEN(LocalizerZH):
     workbench_character_sync_running_please_wait: str = 'Character sync is running. Please wait.'
     workbench_ai_analysis_failed_2: str = 'AI analysis failed.'
     workbench_unknown_analysis_mode: str = 'Unknown analysis mode.'
+    workbench_select_import_file: str = 'Import Workbench Project Assets'
+    workbench_select_export_file: str = 'Export Workbench Project Assets'
+    workbench_json_file_filter: str = 'JSON Files (*.json)'
+    workbench_import_failed: str = 'Import failed: {error}'
+    workbench_imported_as_drafts: str = 'Imported {count} character cards for review.'
+    workbench_import_applied: str = 'Imported {count} character cards and enabled prompt injection.'
+    workbench_export_failed: str = 'Export failed: {error}'
+    workbench_export_complete: str = 'Project assets exported to: {path}'
+    workbench_no_characters_to_clear: str = 'The current project has no character data to clear.'
+    workbench_clear_current_characters_confirm: str = 'Delete {cards} applied character cards and {drafts} pending drafts from the current project? Worldbuilding, terminology, and other projects are not affected. Export a backup first if needed.'
+    workbench_current_characters_cleared: str = 'Character data for the current project has been cleared.'
 
     # 通用界面补充
     error: str = "Error"

@@ -1,6 +1,6 @@
 """Agent 助手页面。
 
-布局取自 LinguaGacha 的 agent 页：顶部集中展示助手、接口与项目状态，
+布局取自 LinguaGacha 的 Agent 页：顶部集中展示助手、接口与项目状态，
 主体只保留对话区和输入区，让垂直空间尽量留给对话。
 """
 
@@ -11,7 +11,7 @@ import math
 import time
 from typing import Any
 
-from PyQt5.QtCore import QTimer, Qt, QSize, pyqtSignal
+from PyQt5.QtCore import QPoint, QTimer, Qt, QSize, pyqtSignal
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -30,24 +30,28 @@ from PyQt5.QtWidgets import (
     QLabel,
     QSizePolicy,
     QStackedWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
+    CheckBox,
     ComboBox,
+    FlowLayout,
     FluentIcon,
     IconWidget,
+    InfoBar,
     MessageBox,
     PlainTextEdit,
     PrimaryPushButton,
     PushButton,
+    RoundMenu,
     SingleDirectionScrollArea,
     StrongBodyLabel,
     SubtitleLabel,
     TextBrowser,
-    TitleLabel,
     ThemeColor,
     TransparentPushButton,
     TransparentToolButton,
@@ -56,7 +60,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
-from frontend.Agent.AgentWorker import AgentWorker
+from frontend.Agent.AgentWorker import AgentToolWorker, AgentWorker
 from module.Agent.AgentService import AgentService
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
@@ -72,7 +76,7 @@ SUPPORTED_FORMATS = {
 }
 
 # 对话区最大宽度。宽屏下保持可读行长，窄屏时随窗口收缩。
-CONVERSATION_MAX_WIDTH = 1120
+CONVERSATION_MAX_WIDTH = 960
 
 # 顶栏思考等级只作用于 Agent 请求；OFF 保持平台默认关闭行为。
 THINKING_LEVELS = ("OFF", "LOW", "MEDIUM", "HIGH", "MAX")
@@ -83,18 +87,60 @@ MESSAGE_MIN_HEIGHT = 48
 # 用户主动上滚超过该距离后，新消息不再抢回滚动位置。
 AUTO_FOLLOW_THRESHOLD = 80
 
+# 项目体检快捷操作使用稳定代码，不从模型回复文案反推意图。
+ACTION_OPEN_TRANSLATION = "open_translation"
+ACTION_ONE_KEY_TRANSLATE = "one_key_translate"
+ACTION_OPEN_WORKBENCH = "open_workbench"
+ACTION_OPEN_TOOLBOX = "open_toolbox"
+ACTION_LIST_RPA = "list_rpa"
+ACTION_UNPACK_RPA = "unpack_rpa"
+ACTION_SCAN_ERRORS = "scan_errors"
+
+# 彩色 Emoji 无法跟随 Fluent 主题，模型回复只保留文字语义。
+DECORATIVE_STATUS_SYMBOLS = (
+    "✅",
+    "☑️",
+    "☑",
+    "✔️",
+    "✔",
+    "❌",
+    "⚠️",
+    "⚠",
+    "📊",
+    "🔮",
+    "💡",
+    "📦",
+    "➡️",
+    "➡",
+    "🟢",
+    "🟡",
+    "🔴",
+)
+
+
+def clean_agent_display_text(text: str) -> str:
+    """移除模型用于装饰的彩色状态符号，保留原有正文和 Markdown。"""
+    cleaned = str(text or "")
+    for symbol in DECORATIVE_STATUS_SYMBOLS:
+        cleaned = cleaned.replace(symbol, "")
+    return cleaned
+
 
 def status_color(state: str) -> QColor:
     """工具状态色。
 
-    成功/失败使用 Qt 的语义色（绿/红）；运行中状态使用 qfluentwidgets 主色。
+    运行与完成使用主题色系，失败保留红色语义色。
     """
     if state == "done":
-        # Qt 的语义色会随平台主题和高对比度设置变化，不在页面里复制一套色值。
-        return QColor(Qt.green)
+        return ThemeColor.DARK_1.color()
     if state == "failed":
-        return QColor(Qt.red)
+        return QColor("#D96868" if isDarkTheme() else "#C0392B")
     return ThemeColor.PRIMARY.color()
+
+
+def _qss_rgba(color: QColor, alpha: int) -> str:
+    """把当前主题色转换成 Qt 样式表可用的透明色。"""
+    return f"rgba({color.red()},{color.green()},{color.blue()},{alpha})"
 
 
 def format_elapsed(seconds: float) -> str:
@@ -128,14 +174,60 @@ class AgentInputEdit(PlainTextEdit):
 class AgentMarkdownView(TextBrowser):
     """让 Markdown 正文按文档尺寸参与布局，避免被 QTextBrowser 默认高度截断。"""
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._apply_document_style()
+
+    def _apply_document_style(self) -> None:
+        """给文档套主题感知的默认样式：正文加大、标题分级、代码块/引用块有型。
+
+        颜色必须显式给出：应用不随主题切换系统调色板，暗色下 QPalette.Text
+        仍是黑色，直接取调色板会让正文变成黑字黑底。
+        """
+        accent = ThemeColor.PRIMARY.color().name()
+        if isDarkTheme():
+            text = "#e6e6e6"
+            muted = "#9a9a9a"
+            code_bg = "rgb(26, 26, 26)"
+            code_border = "rgb(58, 58, 58)"
+        else:
+            text = "#1a1a1a"
+            muted = "#6f6f6f"
+            code_bg = "rgb(246, 246, 246)"
+            code_border = "rgb(226, 226, 226)"
+        self.document().setDefaultStyleSheet(
+            "body { font-size: 11pt; color: %s; }"
+            "h1 { font-size: 16pt; font-weight: bold; margin-top: 14px; margin-bottom: 6px; }"
+            "h2 { font-size: 14pt; font-weight: bold; margin-top: 12px; margin-bottom: 6px; }"
+            "h3 { font-size: 12.5pt; font-weight: bold; margin-top: 10px; margin-bottom: 4px; }"
+            "h4 { font-size: 11.5pt; font-weight: bold; margin-top: 8px; margin-bottom: 4px; }"
+            "p { margin: 6px 0; }"
+            "pre { font-family: Consolas, 'Courier New', monospace; font-size: 10pt; "
+            "background-color: %s; border: 1px solid %s; border-radius: 6px; "
+            "padding: 10px; margin: 8px 0; }"
+            "code { font-family: Consolas, 'Courier New', monospace; background-color: %s; }"
+            "blockquote { border-left: 3px solid %s; margin-left: 4px; padding-left: 10px; "
+            "color: %s; }"
+            "a { color: %s; }"
+            "li { margin: 2px 0; }"
+            "hr { border: 0; border-top: 1px solid %s; margin: 10px 0; }"
+            % (text, code_bg, code_border, code_bg, accent, muted, accent, code_border)
+        )
+
     def setMarkdown(self, markdown: str) -> None:
         super().setMarkdown(markdown)
         self._format_tables()
 
     def _format_tables(self) -> None:
         """覆盖 Qt 默认的紧缩表格样式，使表格与正文列对齐。"""
-        border_color = QColor("#666666" if isDarkTheme() else "#d0d0d0")
-        header_color = QColor("#444444" if isDarkTheme() else "#f3f3f3")
+        if isDarkTheme():
+            border_color = QColor("#666666")
+            header_color = QColor("#444444")
+        else:
+            border_color = QColor(ThemeColor.PRIMARY.color())
+            border_color.setAlpha(64)
+            header_color = QColor(ThemeColor.PRIMARY.color())
+            header_color.setAlpha(24)
         for frame in self.document().rootFrame().childFrames():
             if not isinstance(frame, QTextTable):
                 continue
@@ -156,6 +248,7 @@ class AgentMarkdownView(TextBrowser):
                 cell.setFormat(cell_format)
 
     def refresh_theme(self) -> None:
+        self._apply_document_style()
         self._format_tables()
 
     def sizeHint(self) -> QSize:
@@ -195,20 +288,29 @@ class AgentStatusDot(QFrame):
 
 
 class AgentAvatar(QFrame):
-    """圆形头像：主色圆底 + 居中图标，用于区分用户与助手。"""
+    """圆形头像：明暗反相圆底 + 居中图标，用于区分用户与助手。"""
 
     SIZE = 28
 
-    def __init__(self, role: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        role: str,
+        parent: QWidget | None = None,
+        size: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self.role = role
-        self.setFixedSize(self.SIZE, self.SIZE)
+        size = int(size or self.SIZE)
+        self.setFixedSize(size, size)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignCenter)
-        self._icon = IconWidget(self._icon_source(), self)
-        self._icon.setFixedSize(15, 15)
+        self._icon = IconWidget(
+            self._icon_source().icon(color=self._icon_color()),
+            self,
+        )
+        self._icon.setFixedSize(max(14, round(size * 0.54)), max(14, round(size * 0.54)))
         layout.addWidget(self._icon)
 
     def _icon_source(self):
@@ -222,9 +324,15 @@ class AgentAvatar(QFrame):
         if self.role == "error":
             return status_color("failed")
         if self.role == "user":
-            # 使用系统调色板的中性色，避免与助手的强调色抢视觉重心。
-            return QApplication.palette().color(QPalette.Mid)
-        return ThemeColor.PRIMARY.color()
+            # 中性灰，避免与助手的强调色抢视觉重心；不依赖调色板。
+            return QColor("#6f6f6f" if isDarkTheme() else "#8a8a8a")
+        return QColor("#ffffff" if isDarkTheme() else "#000000")
+
+    def _icon_color(self) -> QColor:
+        """助手图标与圆底反相，不跟随绿色等强调色。"""
+        if self.role == "assistant":
+            return QColor("#000000" if isDarkTheme() else "#ffffff")
+        return QColor("#ffffff" if isDarkTheme() else "#000000")
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -234,6 +342,8 @@ class AgentAvatar(QFrame):
         painter.drawEllipse(self.rect())
 
     def refresh_theme(self) -> None:
+        self._icon.setIcon(self._icon_source().icon(color=self._icon_color()))
+        self._icon.update()
         self.update()
 
 
@@ -282,99 +392,180 @@ class AgentErrorWidget(CardWidget):
         self.text_view.setTextColor(color, color)
 
 
+class AgentBubble(QFrame):
+    """用户消息的圆角气泡：主色系半透明底，随明暗主题变化。"""
+
+    RADIUS = 12
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        primary = ThemeColor.PRIMARY.color()
+        if isDarkTheme():
+            background = QColor(primary)
+            background.setAlpha(46)
+        else:
+            # 亮色主题下把主色大幅兑白，保持文字可读。
+            background = QColor(
+                round(primary.red() + (255 - primary.red()) * 0.88),
+                round(primary.green() + (255 - primary.green()) * 0.88),
+                round(primary.blue() + (255 - primary.blue()) * 0.88),
+            )
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(background)
+        painter.drawRoundedRect(self.rect(), self.RADIUS, self.RADIUS)
+
+    def refresh_theme(self) -> None:
+        self.update()
+
+
 class AgentMessageWidget(QWidget):
-    """一轮公开消息；中间过程折叠在同一个 Agent 身份下。"""
+    """一轮公开消息；用户为右侧气泡，助手为左侧头像 + 文档式正文。"""
+
+    action_requested = pyqtSignal(str)
 
     def __init__(self, text: str, role: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.role = role
-        self._text = str(text or "")
+        raw_text = str(text or "")
+        self._text = clean_agent_display_text(raw_text) if role == "assistant" else raw_text
         self._thinking_widgets: list[AgentThinkingWidget] = []
         self._tool_widgets: list[AgentToolWidget] = []
         self._active_thinking: AgentThinkingWidget | None = None
+        self.action_container: QWidget | None = None
+        self.action_buttons: dict[str, PushButton] = {}
         self.setProperty("role", role)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
-        root = QVBoxLayout(self)
+        root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
+        root.setSpacing(8)
 
         localizer = Localizer.get()
-        head = QWidget(self)
-        head_layout = QHBoxLayout(head)
-        head_layout.setContentsMargins(0, 0, 0, 0)
-        head_layout.setSpacing(8)
-        self.avatar = AgentAvatar(role, head)
-        head_layout.addWidget(self.avatar, 0, Qt.AlignVCenter)
-        self.role_label = StrongBodyLabel(
-            localizer.agent_page_user_avatar
-            if role == "user"
-            else localizer.agent_page_assistant_label,
-            head,
-        )
-        head_layout.addWidget(self.role_label, 0, Qt.AlignVCenter)
-        head_layout.addStretch(1)
-        root.addWidget(head)
-
-        body = QWidget(self)
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        body_layout = QVBoxLayout(body)
-        # 正文缩进与头像宽度对齐，让同一说话人的内容形成视觉列。
-        body_layout.setContentsMargins(AgentAvatar.SIZE + 8, 0, 0, 0)
-        body_layout.setSpacing(8)
 
         if role == "user":
-            # 用户消息是纯文本，用 QLabel 就够，不必承担 TextBrowser 的视口高度。
-            label = QLabel(str(text or ""), body)
+            # 用户：右侧气泡 + 左侧复制按钮，不再重复头像与名字。
+            self.avatar = None
+            root.addStretch(1)
+            self.copy_button = TransparentToolButton(self)
+            self.copy_button.setIcon(FluentIcon.COPY)
+            self.copy_button.setFixedSize(20, 20)
+            self.copy_button.setToolTip(localizer.agent_page_copy)
+            self.copy_button.clicked.connect(self._copy_text)
+            root.addWidget(self.copy_button, 0, Qt.AlignVCenter)
+
+            self.bubble = AgentBubble(self)
+            self.bubble.setMaximumWidth(int(CONVERSATION_MAX_WIDTH * 0.72))
+            bubble_layout = QVBoxLayout(self.bubble)
+            bubble_layout.setContentsMargins(14, 10, 14, 10)
+            bubble_layout.setSpacing(0)
+
+            label = QLabel(self._text, self.bubble)
             label.setTextFormat(Qt.PlainText)
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
             label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            body_layout.addWidget(label, 1)
+            bubble_layout.addWidget(label)
             self.text_view = label
-        else:
-            text_view = AgentMarkdownView(body)
-            text_view.setReadOnly(True)
-            text_view.setOpenLinks(False)
-            text_view.setOpenExternalLinks(False)
-            text_view.setFrameShape(QFrame.NoFrame)
-            text_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            # 长回复由外层对话区滚动，消息内部不再套第二个滚动条。
-            text_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            text_view.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-            text_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            text_view.setTextInteractionFlags(
-                Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
-            )
-            text_view.document().setDocumentMargin(0)
-            text_view.setAutoFillBackground(False)
-            text_view.viewport().setAutoFillBackground(False)
-            # 正文直接贴在对话流上；带背景框会让它看起来像可编辑输入框。
-            text_view.setAttribute(Qt.WA_TranslucentBackground, True)
-            text_view.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
-            text_view.setMinimumHeight(MESSAGE_MIN_HEIGHT)
-            text_view.setMarkdown(self._text)
-            text_view.setVisible(bool(self._text.strip()))
-            body_layout.addWidget(text_view, 1)
-            self.text_view = text_view
-        root.addWidget(body)
-        self.body = body
-        self.body_layout = body_layout
-        self.detail_container = QWidget(body)
+
+            root.addWidget(self.bubble, 0, Qt.AlignVCenter)
+            self.body = self.bubble
+            self.body_layout = bubble_layout
+            self.detail_container = QWidget(self.bubble)
+            self.detail_layout = QVBoxLayout(self.detail_container)
+            self.detail_layout.setContentsMargins(0, 0, 0, 0)
+            self.detail_layout.setSpacing(6)
+            self.detail_container.hide()
+            bubble_layout.addWidget(self.detail_container)
+            return
+
+        # 助手：左侧头像 + 正文；复制按钮放在正文右上角，弱化存在感。
+        self.avatar = AgentAvatar(role, self)
+        root.addWidget(self.avatar, 0, Qt.AlignTop)
+
+        column = QWidget(self)
+        column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        column_layout = QVBoxLayout(column)
+        column_layout.setContentsMargins(0, 0, 0, 0)
+        column_layout.setSpacing(8)
+
+        self.detail_container = QWidget(column)
         self.detail_layout = QVBoxLayout(self.detail_container)
         self.detail_layout.setContentsMargins(0, 0, 0, 0)
         self.detail_layout.setSpacing(6)
         self.detail_container.hide()
-        body_layout.insertWidget(0, self.detail_container)
+        column_layout.addWidget(self.detail_container)
+
+        text_row = QWidget(column)
+        text_row_layout = QHBoxLayout(text_row)
+        text_row_layout.setContentsMargins(0, 0, 0, 0)
+        text_row_layout.setSpacing(6)
+
+        text_view = AgentMarkdownView(text_row)
+        text_view.setReadOnly(True)
+        text_view.setOpenLinks(False)
+        text_view.setOpenExternalLinks(False)
+        text_view.setFrameShape(QFrame.NoFrame)
+        text_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 长回复由外层对话区滚动，消息内部不再套第二个滚动条。
+        text_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        text_view.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        text_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        text_view.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        )
+        text_view.document().setDocumentMargin(0)
+        text_view.setAutoFillBackground(False)
+        text_view.viewport().setAutoFillBackground(False)
+        # 正文直接贴在对话流上；带背景框会让它看起来像可编辑输入框。
+        text_view.setAttribute(Qt.WA_TranslucentBackground, True)
+        text_view.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        text_view.setMinimumHeight(MESSAGE_MIN_HEIGHT)
+        text_view.setMarkdown(self._text)
+        text_view.setVisible(bool(self._text.strip()))
+        text_row_layout.addWidget(text_view, 1)
+        self.text_view = text_view
+
+        self.copy_button = TransparentToolButton(text_row)
+        self.copy_button.setIcon(FluentIcon.COPY)
+        self.copy_button.setFixedSize(20, 20)
+        self.copy_button.setToolTip(localizer.agent_page_copy)
+        self.copy_button.clicked.connect(self._copy_text)
+        text_row_layout.addWidget(self.copy_button, 0, Qt.AlignTop)
+
+        column_layout.addWidget(text_row)
+        root.addWidget(column, 1)
+        self.body = column
+        self.body_layout = column_layout
 
     @property
     def text(self) -> str:
         """返回当前消息的完整原文，流式渲染和测试共用。"""
         return self._text
 
+    def _copy_text(self) -> None:
+        """复制消息全文到剪贴板。"""
+        QApplication.clipboard().setText(self.text)
+        InfoBar.success(
+            Localizer.get().agent_page_copy,
+            Localizer.get().agent_page_copied,
+            parent=self,
+        )
+
     def set_text(self, text: str) -> None:
         """替换消息正文，保留同一个控件以避免滚动区跳动。"""
-        self._text = str(text or "")
+        raw_text = str(text or "")
+        self._text = (
+            clean_agent_display_text(raw_text)
+            if self.role == "assistant"
+            else raw_text
+        )
         if self.role == "user":
             self.text_view.setText(self._text)
         else:
@@ -387,6 +578,37 @@ class AgentMessageWidget(QWidget):
         """追加一段模型增量。"""
         if text:
             self.set_text(self._text + str(text))
+
+    def set_actions(self, actions: list[tuple[str, str, Any]]) -> None:
+        """在助手正文下方显示结构化快捷操作。"""
+        if self.role != "assistant":
+            return
+        if self.action_container is not None:
+            self.body_layout.removeWidget(self.action_container)
+            self.action_container.setParent(None)
+            self.action_container.deleteLater()
+            self.action_container = None
+        self.action_buttons.clear()
+        if not actions:
+            return
+
+        container = QWidget(self.body)
+        layout = FlowLayout(container, needAni=False, isTight=False)
+        layout.setContentsMargins(0, 2, 26, 0)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+        for index, (code, label, icon) in enumerate(actions):
+            button_class = PrimaryPushButton if index == 0 else PushButton
+            button = button_class(label, icon=icon, parent=container)
+            button.setFixedHeight(32)
+            button.clicked.connect(
+                lambda _checked=False, value=code: self.action_requested.emit(value)
+            )
+            self.action_buttons[code] = button
+            layout.addWidget(button)
+        self.action_container = container
+        self.body_layout.addWidget(container)
+        self.updateGeometry()
 
     def append_thinking_text(self, text: str) -> "AgentThinkingWidget":
         """把本轮尚未确认的模型文本放进折叠过程行。"""
@@ -446,7 +668,11 @@ class AgentMessageWidget(QWidget):
         return list(self._tool_widgets)
 
     def refresh_theme(self) -> None:
-        self.avatar.refresh_theme()
+        if self.avatar is not None:
+            self.avatar.refresh_theme()
+        bubble = getattr(self, "bubble", None)
+        if bubble is not None:
+            bubble.refresh_theme()
         if isinstance(self.text_view, AgentMarkdownView):
             self.text_view.refresh_theme()
         for widget in (*self._thinking_widgets, *self._tool_widgets):
@@ -456,30 +682,83 @@ class AgentMessageWidget(QWidget):
 
 
 class AgentRoundHeader(QWidget):
-    """轮次分隔：一条细线加右侧耗时，运行中每秒刷新。"""
+    """轮次分隔：居中的轮次与耗时胶囊，运行中每秒刷新。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, round_number: int = 0) -> None:
         super().__init__(parent)
         self._started_at = time.monotonic()
         self._running = True
+        self._round_number = int(round_number or 0)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 6, 0, 0)
+        row.setContentsMargins(0, 10, 0, 2)
         row.setSpacing(10)
 
-        line = QFrame(self)
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Plain)
-        line.setFixedHeight(1)
-        row.addWidget(line, 1)
+        # 两侧发丝线托住居中胶囊，替代单调的整条横线。
+        self.line_left = QFrame(self)
+        self.line_left.setFixedHeight(1)
+        row.addWidget(self.line_left, 1)
 
-        self.elapsed_label = CaptionLabel(format_elapsed(0), self)
-        row.addWidget(self.elapsed_label, 0)
+        self.pill = QFrame(self)
+        self.pill.setObjectName("agentRoundPill")
+        pill_layout = QHBoxLayout(self.pill)
+        pill_layout.setContentsMargins(14, 4, 14, 4)
+        pill_layout.setSpacing(8)
 
+        self.round_label = CaptionLabel(
+            (
+                Localizer.get().agent_page_round.format(round=self._round_number)
+                if self._round_number > 0
+                else ""
+            ),
+            self.pill,
+        )
+        pill_layout.addWidget(self.round_label, 0)
+
+        self.pill_separator = QFrame(self.pill)
+        self.pill_separator.setFixedSize(1, 12)
+        pill_layout.addWidget(self.pill_separator, 0, Qt.AlignVCenter)
+
+        self.elapsed_label = CaptionLabel(format_elapsed(0), self.pill)
+        pill_layout.addWidget(self.elapsed_label, 0)
+
+        row.addWidget(self.pill, 0)
+
+        self.line_right = QFrame(self)
+        self.line_right.setFixedHeight(1)
+        row.addWidget(self.line_right, 1)
+
+        self._apply_theme()
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+
+    def _apply_theme(self) -> None:
+        accent = ThemeColor.PRIMARY.color()
+        if isDarkTheme():
+            self.pill.setStyleSheet(
+                "QFrame#agentRoundPill {"
+                f" background-color: {_qss_rgba(accent, 13)};"
+                f" border: 1px solid {_qss_rgba(accent, 25)};"
+                " border-radius: 12px; }"
+            )
+            line_style = (
+                f"background-color: {_qss_rgba(accent, 38)}; border: none;"
+            )
+        else:
+            self.pill.setStyleSheet(
+                "QFrame#agentRoundPill {"
+                f" background-color: {_qss_rgba(accent, 18)};"
+                f" border: 1px solid {_qss_rgba(accent, 42)};"
+                " border-radius: 12px; }"
+            )
+            line_style = (
+                f"background-color: {_qss_rgba(accent, 54)}; border: none;"
+            )
+        self.line_left.setStyleSheet(line_style)
+        self.line_right.setStyleSheet(line_style)
+        self.pill_separator.setStyleSheet(line_style)
 
     def _tick(self) -> None:
         if not self._running:
@@ -494,9 +773,43 @@ class AgentRoundHeader(QWidget):
         self._timer.stop()
         self.elapsed_label.setText(format_elapsed(time.monotonic() - self._started_at))
 
+    def refresh_theme(self) -> None:
+        self._apply_theme()
 
-class AgentToolWidget(CardWidget):
+
+class AgentInsetCard(CardWidget):
+    """轻量内嵌面板：暗色保持中性，亮色使用低透明主题色。"""
+
+    def _normalBackgroundColor(self) -> QColor:
+        if isDarkTheme():
+            return QColor(0, 0, 0, 30)
+        color = QColor(ThemeColor.PRIMARY.color())
+        color.setAlpha(20)
+        return color
+
+    def _hoverBackgroundColor(self) -> QColor:
+        if isDarkTheme():
+            return QColor(0, 0, 0, 42)
+        color = QColor(ThemeColor.PRIMARY.color())
+        color.setAlpha(32)
+        return color
+
+    def _pressedBackgroundColor(self) -> QColor:
+        if isDarkTheme():
+            return self._normalBackgroundColor()
+        color = QColor(ThemeColor.PRIMARY.color())
+        color.setAlpha(26)
+        return color
+
+    def refresh_theme(self) -> None:
+        self._updateBackgroundColor()
+
+
+class AgentToolWidget(AgentInsetCard):
     """单行高度的工具执行条目，整行可点击展开结果。"""
+
+    MAX_DETAIL_CHARS = 2000
+    MAX_TOOLTIP_CHARS = 20000
 
     def __init__(
         self,
@@ -518,7 +831,7 @@ class AgentToolWidget(CardWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 0, 8, 0)
+        root.setContentsMargins(10, 0, 8, 0)
         root.setSpacing(0)
 
         header = QWidget(self)
@@ -531,12 +844,24 @@ class AgentToolWidget(CardWidget):
         self.status_dot.setProperty("state", self._state)
         header_layout.addWidget(self.status_dot, 0, Qt.AlignVCenter)
 
+        # 工具图标放进小圆角底片，形成稳定的视觉锚点。
+        self.icon_chip = QFrame(header)
+        self.icon_chip.setObjectName("agentToolIconChip")
+        self.icon_chip.setFixedSize(22, 22)
+        chip_layout = QHBoxLayout(self.icon_chip)
+        chip_layout.setContentsMargins(0, 0, 0, 0)
+        chip_layout.setAlignment(Qt.AlignCenter)
+        self.icon_widget = IconWidget(self._tool_icon(), self.icon_chip)
+        self.icon_widget.setFixedSize(14, 14)
+        chip_layout.addWidget(self.icon_widget)
+        header_layout.addWidget(self.icon_chip, 0, Qt.AlignVCenter)
+
         self.name_label = CaptionLabel(tool_label, header)
-        header_layout.addWidget(self.name_label, 0)
+        header_layout.addWidget(self.name_label, 0, Qt.AlignVCenter)
 
         self.status_label = CaptionLabel(running_text, header)
         self.status_label.setProperty("state", self._state)
-        header_layout.addWidget(self.status_label, 0)
+        header_layout.addWidget(self.status_label, 0, Qt.AlignVCenter)
         header_layout.addStretch(1)
 
         # 折叠指示器保留为按钮，既是可见提示也是测试入口。
@@ -549,16 +874,59 @@ class AgentToolWidget(CardWidget):
         header_layout.addWidget(self.toggle_button, 0, Qt.AlignVCenter)
         root.addWidget(header)
 
-        self.detail_label = QLabel(self)
-        self.detail_label.setWordWrap(True)
-        self.detail_label.setTextFormat(Qt.PlainText)
+        self.detail_label = QTextBrowser(self)
+        self.detail_label.setReadOnly(True)
+        self.detail_label.setOpenLinks(False)
+        self.detail_label.setOpenExternalLinks(False)
+        self.detail_label.setFrameShape(QFrame.NoFrame)
+        self.detail_label.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.detail_label.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.detail_label.setContentsMargins(16, 0, 0, 8)
-        self.detail_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.detail_label.document().setDocumentMargin(8)
+        self.detail_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.detail_label.setMaximumHeight(360)
         self.detail_label.hide()
         root.addWidget(self.detail_label)
+        self._apply_detail_style()
         self._refresh_state_colors()
+
+    def _tool_icon(self):
+        """按工具名映射图标；未知工具退回信息图标。"""
+        icons = {
+            "unpack_rpa_files": FluentIcon.ZIP_FOLDER,
+            "list_rpa_files": FluentIcon.ZIP_FOLDER,
+            "scan_script_errors": FluentIcon.SEARCH,
+            "get_project_info": FluentIcon.INFO,
+            "inspect_translation_project": FluentIcon.SEARCH,
+            "set_project": FluentIcon.FOLDER,
+            "optimize_old_new_translations": FluentIcon.CODE,
+        }
+        return icons.get(self.tool_name, FluentIcon.INFO)
+
+    def _apply_detail_style(self) -> None:
+        """详情区做等宽字体的内嵌面板，图标底片随主题刷新。"""
+        if isDarkTheme():
+            self.icon_chip.setStyleSheet(
+                "QFrame#agentToolIconChip { background-color: rgba(255,255,255,0.07);"
+                " border-radius: 6px; }"
+            )
+            self.detail_label.setStyleSheet(
+                "color: #e6e6e6; background-color: rgba(0,0,0,0.28);"
+                "border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;"
+                "font-family: Consolas, 'Courier New', monospace;"
+            )
+        else:
+            accent = ThemeColor.PRIMARY.color()
+            self.icon_chip.setStyleSheet(
+                "QFrame#agentToolIconChip {"
+                f" background-color: {_qss_rgba(accent, 28)};"
+                " border-radius: 6px; }"
+            )
+            self.detail_label.setStyleSheet(
+                "color: #1a1a1a; background-color: rgba(255,255,255,0.82);"
+                f"border: 1px solid {_qss_rgba(accent, 46)}; border-radius: 6px;"
+                "font-family: Consolas, 'Courier New', monospace;"
+            )
 
     def sizeHint(self) -> QSize:
         """展开详情时把正文高度明确交给父布局，避免卡片裁切 QLabel。"""
@@ -576,9 +944,21 @@ class AgentToolWidget(CardWidget):
         self._state = "done" if success else "failed"
         elapsed = format_elapsed(time.monotonic() - self._started_at)
         status_text = self._done_text if success else self._failed_text
-        self.status_label.setText(f"{status_text} · {elapsed}")
-        self.detail_label.setText(str(message or ""))
-        has_detail = bool(str(message or "").strip())
+        self.status_label.setText(f"{status_text}  {elapsed}")
+        full_detail = str(message or "")
+        if len(full_detail) > self.MAX_DETAIL_CHARS:
+            self.detail_label.setPlainText(
+                f"{full_detail[:self.MAX_DETAIL_CHARS]}\n…\n"
+                + Localizer.get().agent_page_tool_detail_truncated.format(
+                    shown=self.MAX_DETAIL_CHARS,
+                    total=len(full_detail),
+                )
+            )
+            self.detail_label.setToolTip(full_detail[:self.MAX_TOOLTIP_CHARS])
+        else:
+            self.detail_label.setPlainText(full_detail)
+            self.detail_label.setToolTip("")
+        has_detail = bool(full_detail.strip())
         self.toggle_button.setEnabled(has_detail)
         self._set_expanded(has_detail and not success)
         self.setProperty("state", self._state)
@@ -599,12 +979,18 @@ class AgentToolWidget(CardWidget):
     def _set_expanded(self, expanded: bool) -> None:
         self.detail_label.setVisible(expanded)
         if expanded:
-            # QLabel 首次显示时可能还没有按当前宽度重算换行高度，先把 sizeHint
-            # 提升为布局下限，避免内容被卡片边框截断。
-            self.detail_label.setMinimumHeight(
-                min(360, max(0, self.detail_label.sizeHint().height()))
+            # 按卡片当前宽度计算换行高度，避免使用隐藏状态下的窄宽度锁出大片空白。
+            margins = self.layout().contentsMargins()
+            available_width = max(
+                1,
+                self.width() - margins.left() - margins.right(),
             )
-            self.adjustSize()
+            document = self.detail_label.document().clone()
+            document.setTextWidth(max(1, available_width - 16))
+            detail_height = math.ceil(document.size().height()) + 2
+            self.detail_label.setMinimumHeight(
+                min(360, max(0, detail_height))
+            )
             container = self.parentWidget()
             if container is not None:
                 required = self.sizeHint().height()
@@ -638,6 +1024,8 @@ class AgentToolWidget(CardWidget):
         self.status_label.setTextColor(color, color)
 
     def refresh_theme(self) -> None:
+        super().refresh_theme()
+        self._apply_detail_style()
         self._refresh_state_colors()
 
 
@@ -655,14 +1043,35 @@ class AgentThinkingWidget(AgentToolWidget):
             parent,
         )
         self._text = ""
+        self.status_dot.hide()
         self.name_label.setText(localizer.agent_page_thinking_process)
         self.toggle_button.setToolTip(localizer.agent_page_tool_expand)
+        # 思考过程与工具调用视觉区分：思考图标 + 弱化的名称色。
+        self.icon_widget.setIcon(FluentIcon.HELP)
+        self._apply_thinking_muted()
+
+    def _apply_thinking_muted(self) -> None:
+        """思考条用中性灰，不与工具的成功/失败语义色混淆。"""
+        muted = QColor("#8f8f8f" if isDarkTheme() else "#6f6f6f")
+        self.name_label.setTextColor(muted, muted)
+
+    def _refresh_state_colors(self) -> None:
+        if self._state == "done":
+            muted = QColor("#8f8f8f" if isDarkTheme() else "#6f6f6f")
+            self.status_dot.set_color(muted)
+            self.status_label.setTextColor(muted, muted)
+            return
+        super()._refresh_state_colors()
+
+    def refresh_theme(self) -> None:
+        self._apply_thinking_muted()
+        super().refresh_theme()
 
     def append_text(self, text: str) -> None:
         if not text:
             return
         self._text += str(text)
-        self.detail_label.setText(self._text)
+        self.detail_label.setPlainText(self._text)
         self.toggle_button.setEnabled(bool(self._text.strip()))
         self.updateGeometry()
 
@@ -679,30 +1088,108 @@ class AgentThinkingWidget(AgentToolWidget):
 
 
 class AgentActivityWidget(QWidget):
-    """当前回合正在等待模型响应时的轻量状态行。"""
+    """当前回合等待模型响应时的轻量状态胶囊。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(8)
-        self.dot = AgentStatusDot(self)
-        layout.addWidget(self.dot, 0, Qt.AlignVCenter)
-        self.label = CaptionLabel("", self)
-        layout.addWidget(self.label)
+        layout.setContentsMargins(0, 6, 0, 8)
+        layout.setSpacing(0)
+
+        self.pill = QFrame(self)
+        self.pill.setObjectName("agentActivityPill")
+        pill_layout = QHBoxLayout(self.pill)
+        pill_layout.setContentsMargins(12, 5, 12, 5)
+        pill_layout.setSpacing(8)
+        self.dot = AgentStatusDot(self.pill)
+        pill_layout.addWidget(self.dot, 0, Qt.AlignVCenter)
+        self.label = CaptionLabel("", self.pill)
+        pill_layout.addWidget(self.label)
+
+        layout.addWidget(self.pill, 0)
         layout.addStretch(1)
+        self._apply_theme()
         self.hide()
+
+    def _apply_theme(self) -> None:
+        if isDarkTheme():
+            self.pill.setStyleSheet(
+                "QFrame#agentActivityPill { background-color: rgba(255,255,255,0.05);"
+                " border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; }"
+            )
+        else:
+            self.pill.setStyleSheet(
+                "QFrame#agentActivityPill { background-color: rgba(0,0,0,0.04);"
+                " border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; }"
+            )
 
     def set_running(self, running: bool, text: str = "") -> None:
         self.label.setText(text)
         self.setVisible(running)
 
     def refresh_theme(self) -> None:
+        self._apply_theme()
         self.dot.set_color(status_color("running"))
 
 
+class AgentSuggestionCard(CardWidget):
+    """空态的块状建议卡：图标 + 标题 + 描述，整卡可点击。"""
+
+    clicked = pyqtSignal()
+
+    def __init__(
+        self,
+        title: str,
+        description: str,
+        icon_value,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._title = str(title or "")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(72)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 10, 12, 10)
+        row.setSpacing(12)
+
+        icon = IconWidget(icon_value, self)
+        icon.setFixedSize(18, 18)
+        row.addWidget(icon, 0, Qt.AlignVCenter)
+
+        text_column = QWidget(self)
+        text_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        text_layout = QVBoxLayout(text_column)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+        self.title_label = StrongBodyLabel(self._title, text_column)
+        self.title_label.setMinimumHeight(20)
+        self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.description_label = CaptionLabel(str(description or ""), text_column)
+        self.description_label.setMinimumHeight(18)
+        self.description_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.description_label.setWordWrap(True)
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.description_label)
+        row.addWidget(text_column, 1, Qt.AlignVCenter)
+
+        chevron = IconWidget(FluentIcon.CHEVRON_RIGHT, self)
+        chevron.setFixedSize(14, 14)
+        row.addWidget(chevron, 0, Qt.AlignVCenter)
+
+    def text(self) -> str:
+        """兼容旧测试对按钮文案的读取。"""
+        return self._title
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+
+
 class AgentEmptyState(QWidget):
-    """空会话的起始视图，提供几个可直接编辑的常用请求。"""
+    """空会话的起始视图：圆底徽章 + 引导文案 + 块状建议卡。"""
 
     suggestion_requested = pyqtSignal(str)
 
@@ -721,9 +1208,8 @@ class AgentEmptyState(QWidget):
         intro_layout.setSpacing(8)
         intro_layout.setAlignment(Qt.AlignCenter)
 
-        icon = IconWidget(FluentIcon.ROBOT, intro)
-        icon.setFixedSize(28, 28)
-        intro_layout.addWidget(icon, 0, Qt.AlignHCenter)
+        self.brand_badge = AgentAvatar("assistant", intro, size=48)
+        intro_layout.addWidget(self.brand_badge, 0, Qt.AlignHCenter)
 
         self.title_label = SubtitleLabel(localizer.agent_page_empty_title, intro)
         intro_layout.addWidget(self.title_label, 0, Qt.AlignHCenter)
@@ -731,42 +1217,53 @@ class AgentEmptyState(QWidget):
         self.description_label = CaptionLabel(localizer.agent_page_empty_description, intro)
         self.description_label.setWordWrap(True)
         self.description_label.setMaximumWidth(560)
-        self.description_label.setAlignment(Qt.AlignHCenter)
+        self.description_label.setMinimumHeight(20)
+        self.description_label.setAlignment(Qt.AlignCenter)
         intro_layout.addWidget(self.description_label, 0, Qt.AlignHCenter)
         outer.addWidget(intro, 0, Qt.AlignHCenter)
 
-        # 建议卡改用两列网格；三个横排按钮在窄窗口下会被压成一条。
         suggestions = QWidget(self)
-        suggestions.setMaximumWidth(608)
+        suggestions.setFixedWidth(560)
+        self.suggestions = suggestions
         grid = QVBoxLayout(suggestions)
         grid.setContentsMargins(0, 20, 0, 0)
         grid.setSpacing(8)
 
-        self.suggestion_buttons: list[PushButton] = []
+        self.suggestion_buttons: list[AgentSuggestionCard] = []
         entries = (
-            (localizer.agent_page_suggestion_project, FluentIcon.INFO),
-            (localizer.agent_page_suggestion_rpa, FluentIcon.ZIP_FOLDER),
-            (localizer.agent_page_suggestion_errors, FluentIcon.SEARCH),
+            (
+                localizer.agent_page_suggestion_project,
+                localizer.agent_page_suggestion_project_desc,
+                FluentIcon.SEARCH,
+            ),
+            (
+                localizer.agent_page_suggestion_rpa,
+                localizer.agent_page_suggestion_rpa_desc,
+                FluentIcon.ZIP_FOLDER,
+            ),
+            (
+                localizer.agent_page_suggestion_errors,
+                localizer.agent_page_suggestion_errors_desc,
+                FluentIcon.SEARCH,
+            ),
+            (
+                localizer.agent_page_suggestion_old_new,
+                localizer.agent_page_suggestion_old_new_desc,
+                FluentIcon.CODE,
+            ),
         )
-        for index in range(0, len(entries), 2):
-            row_widget = QWidget(suggestions)
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
-            for text, icon_value in entries[index:index + 2]:
-                button = PushButton(text, icon=icon_value, parent=row_widget)
-                button.setMinimumHeight(44)
-                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                button.clicked.connect(
-                    lambda _checked=False, value=text: self.suggestion_requested.emit(value)
-                )
-                row.addWidget(button, 1)
-                self.suggestion_buttons.append(button)
-            if len(entries[index:index + 2]) == 1:
-                row.addStretch(1)
-            grid.addWidget(row_widget)
+        for text, description, icon_value in entries:
+            card = AgentSuggestionCard(text, description, icon_value, suggestions)
+            card.clicked.connect(
+                lambda value=text: self.suggestion_requested.emit(value)
+            )
+            self.suggestion_buttons.append(card)
+            grid.addWidget(card)
         outer.addWidget(suggestions, 0, Qt.AlignHCenter)
         outer.addStretch(2)
+
+    def refresh_theme(self) -> None:
+        self.brand_badge.refresh_theme()
 
 
 class AgentPage(Base, QWidget):
@@ -780,18 +1277,30 @@ class AgentPage(Base, QWidget):
 
         self._window = parent
         self._service = AgentService()
-        self._worker: AgentWorker | None = None
+        self._worker: AgentWorker | AgentToolWorker | None = None
         self._platform_ids: list[int] = []
         self._running_tool_widgets: list[AgentToolWidget] = []
         self._round_header: AgentRoundHeader | None = None
         self._stream_message: AgentMessageWidget | None = None
         self._assistant_turn: AgentMessageWidget | None = None
         self._reply_rendered = False
+        self._pending_reply_actions: list[tuple[str, str, Any]] = []
+        self._project_actions: list[tuple[str, str, Any]] = []
+        self._project_actions_key = ""
         self._auto_follow = True
         self._reset_after_worker = False
         self._confirmation_dialog: MessageBox | None = None
 
         self._last_message = ""
+        self._round_count = 0
+
+        # 流式增量渲染节流：合并高频 delta，限制 Markdown 全量重排次数。
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(50)
+        self._render_timer.timeout.connect(self._flush_pending_deltas)
+        self._pending_reply_text = ""
+        self._pending_thinking_text = ""
 
         self.root = QVBoxLayout(self)
         # 收窄页面边距，把主要空间留给对话。
@@ -802,45 +1311,88 @@ class AgentPage(Base, QWidget):
         self._build_composer()
 
         qconfig.themeChanged.connect(self._on_theme_changed)
+        qconfig.themeColorChanged.connect(self._on_theme_changed)
         self.refresh_platforms()
 
     def _build_topbar(self) -> None:
-        """顶栏集中展示助手身份、模型选择与项目上下文。"""
+        """顶栏：身份组 | 接口选择 | 项目胶囊 | 设置弹层 | 新任务。"""
         localizer = Localizer.get()
         bar = CardWidget(self)
         self.topbar = bar
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(14, 7, 10, 7)
         layout.setSpacing(8)
 
         self.brand_avatar = AgentAvatar("assistant", bar)
         layout.addWidget(self.brand_avatar, 0, Qt.AlignVCenter)
 
-        self.title_label = TitleLabel(localizer.agent_page_title, bar)
+        self.title_label = SubtitleLabel(localizer.agent_page_title, bar)
         layout.addWidget(self.title_label, 0, Qt.AlignVCenter)
 
+        self.topbar_divider = QFrame(bar)
+        self.topbar_divider.setFixedSize(1, 22)
+        layout.addWidget(self.topbar_divider, 0, Qt.AlignVCenter)
+
         self.platform_combo = ComboBox(bar)
-        self.platform_combo.setMinimumWidth(200)
-        self.platform_combo.setMaximumWidth(300)
+        self.platform_combo.setMinimumWidth(140)
+        self.platform_combo.setMaximumWidth(240)
         self.platform_combo.setFixedHeight(30)
         self.platform_combo.currentIndexChanged.connect(self._platform_changed)
         layout.addWidget(self.platform_combo, 0)
 
-        self.refresh_button = TransparentToolButton(bar)
-        self.refresh_button.setIcon(FluentIcon.SYNC)
-        self.refresh_button.setFixedSize(28, 28)
-        self.refresh_button.setToolTip(localizer.agent_page_refresh)
-        self.refresh_button.clicked.connect(self.refresh_platforms)
-        layout.addWidget(self.refresh_button, 0)
+        layout.addStretch(1)
 
-        self.thinking_label = CaptionLabel(
-            localizer.platform_edit_page_thinking_title,
+        self.project_label = QLabel("", bar)
+        self.project_label.setMaximumWidth(220)
+        self.project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.project_label, 0, Qt.AlignVCenter)
+
+        self.settings_button = TransparentToolButton(bar)
+        self.settings_button.setIcon(FluentIcon.SETTING)
+        self.settings_button.setFixedSize(30, 30)
+        self.settings_button.setToolTip(localizer.agent_page_settings_title)
+        self.settings_button.clicked.connect(self._open_settings_menu)
+        layout.addWidget(self.settings_button, 0)
+
+        self.new_task_button = TransparentPushButton(
+            localizer.agent_page_new_task,
             bar,
+            FluentIcon.ADD,
         )
-        layout.addWidget(self.thinking_label, 0, Qt.AlignVCenter)
+        self.new_task_button.setFixedHeight(30)
+        self.new_task_button.clicked.connect(self.start_new_task)
+        layout.addWidget(self.new_task_button, 0)
+        self.root.addWidget(bar)
 
-        self.thinking_combo = ComboBox(bar)
-        self.thinking_combo.setFixedWidth(96)
+        self._build_settings_menu()
+        self._apply_project_pill_style()
+
+        # 兼容旧引用：description_label 曾是页头描述，现由项目标签承担。
+        self.description_label = self.project_label
+
+    def _build_settings_menu(self) -> None:
+        """次要设置收进弹层：思考等级与接口刷新。"""
+        localizer = Localizer.get()
+        self.settings_menu = RoundMenu(parent=self)
+
+        panel = QWidget()
+        # 固定表单宽度，长文案与下拉框纵向排列，避免中英文互相挤压。
+        panel.setFixedWidth(280)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(16, 14, 16, 14)
+        panel_layout.setSpacing(10)
+
+        title_caption = StrongBodyLabel(localizer.agent_page_settings_title, panel)
+        panel_layout.addWidget(title_caption)
+
+        thinking_caption = CaptionLabel(
+            localizer.platform_edit_page_thinking_title,
+            panel,
+        )
+        panel_layout.addWidget(thinking_caption)
+
+        self.thinking_combo = ComboBox(panel)
+        self.thinking_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.thinking_combo.setFixedHeight(30)
         self.thinking_combo.setToolTip(localizer.platform_edit_page_thinking_content)
         for level, label in zip(
@@ -855,24 +1407,70 @@ class AgentPage(Base, QWidget):
         ):
             self.thinking_combo.addItem(label, userData=level)
         self.thinking_combo.currentIndexChanged.connect(self._thinking_changed)
-        layout.addWidget(self.thinking_combo, 0)
+        panel_layout.addWidget(self.thinking_combo)
 
-        self.project_label = CaptionLabel("", bar)
-        layout.addWidget(self.project_label, 0)
-        layout.addStretch(1)
-
-        self.new_task_button = TransparentPushButton(
-            localizer.agent_page_new_task,
-            bar,
-            FluentIcon.ADD,
+        self.refresh_button = PushButton(
+            localizer.agent_page_settings_refresh,
+            panel,
+            FluentIcon.SYNC,
         )
-        self.new_task_button.setFixedHeight(28)
-        self.new_task_button.clicked.connect(self.start_new_task)
-        layout.addWidget(self.new_task_button, 0)
-        self.root.addWidget(bar)
+        self.refresh_button.clicked.connect(self.refresh_platforms)
+        panel_layout.addWidget(self.refresh_button)
 
-        # 兼容旧引用：description_label 曾是页头描述，现由项目标签承担。
-        self.description_label = self.project_label
+        # 解包确认开关：勾选「不再询问」后在这里重新打开确认。
+        self.unpack_confirm_check = CheckBox(
+            localizer.agent_page_settings_unpack_confirm,
+            panel,
+        )
+        self.unpack_confirm_check.setChecked(
+            not bool(getattr(Config().load(), "agent_unpack_auto_confirm", False))
+        )
+        self.unpack_confirm_check.stateChanged.connect(self._unpack_confirm_changed)
+        panel_layout.addWidget(self.unpack_confirm_check)
+
+        panel.adjustSize()
+        self.settings_panel = panel
+        self.settings_menu.addWidget(panel, selectable=False)
+        # 菜单内边距 + 面板固定宽度，避免内容被裁。
+        self.settings_menu.setMinimumWidth(panel.width() + 16)
+
+    def _unpack_confirm_changed(self, state: int) -> None:
+        """解包前确认开关：写入 agent_unpack_auto_confirm（取反）。"""
+        config = Config().load()
+        config.agent_unpack_auto_confirm = not bool(state)
+        config.save()
+
+    def _open_settings_menu(self) -> None:
+        """在设置按钮下方弹出设置菜单。"""
+        if self.settings_menu is None:
+            return
+        position = self.settings_button.mapToGlobal(
+            QPoint(0, self.settings_button.height() + 6)
+        )
+        self.settings_menu.exec(position)
+
+    def _apply_project_pill_style(self) -> None:
+        """项目上下文胶囊：显式主题色，不依赖系统调色板（高分屏/暗色下会返回黑色）。"""
+        if isDarkTheme():
+            self.topbar_divider.setStyleSheet(
+                "background-color: rgba(255,255,255,0.14); border: none;"
+            )
+            self.project_label.setStyleSheet(
+                "background-color: rgba(255,255,255,0.08);"
+                "border: 1px solid rgba(255,255,255,0.14);"
+                "border-radius: 11px; padding: 2px 10px;"
+                "color: #b6b6b6;"
+            )
+        else:
+            self.topbar_divider.setStyleSheet(
+                "background-color: rgba(0,0,0,0.12); border: none;"
+            )
+            self.project_label.setStyleSheet(
+                "background-color: rgba(0,0,0,0.05);"
+                "border: 1px solid rgba(0,0,0,0.10);"
+                "border-radius: 11px; padding: 2px 10px;"
+                "color: #555555;"
+            )
 
     def _build_conversation(self) -> None:
         localizer = Localizer.get()
@@ -902,7 +1500,7 @@ class AgentPage(Base, QWidget):
         self.history_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         mark_toolbox_widget(self.history_content, "toolboxScroll")
         self.history_layout = QVBoxLayout(self.history_content)
-        self.history_layout.setContentsMargins(20, 18, 20, 24)
+        self.history_layout.setContentsMargins(18, 18, 18, 22)
         self.history_layout.setSpacing(14)
         self.history_layout.addStretch(1)
         self.history.setWidget(self.history_content)
@@ -928,6 +1526,7 @@ class AgentPage(Base, QWidget):
         composer_layout.setSpacing(6)
 
         self.input_box = AgentInputEdit(composer)
+        self.input_box.setObjectName("agentInput")
         self.input_box.setPlaceholderText(localizer.agent_page_input_placeholder)
         self.input_box.setFrameShape(QFrame.NoFrame)
         # 输入区默认三行高；粘长文时自行增高到上限。
@@ -942,7 +1541,7 @@ class AgentPage(Base, QWidget):
         footer = QWidget(composer)
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
-        footer_layout.setSpacing(6)
+        footer_layout.setSpacing(8)
 
         self.hint_label = CaptionLabel(localizer.agent_page_send_hint, footer)
         footer_layout.addWidget(self.hint_label, 0)
@@ -951,10 +1550,15 @@ class AgentPage(Base, QWidget):
         self.status_label = CaptionLabel("", footer)
         footer_layout.addWidget(self.status_label, 0)
 
-        self.stop_button = PushButton(localizer.agent_page_stop, parent=footer)
-        self.stop_button.setFixedHeight(28)
+        self.stop_button = PushButton(
+            localizer.agent_page_stop,
+            icon=FluentIcon.CANCEL,
+            parent=footer,
+        )
+        self.stop_button.setFixedHeight(32)
         self.stop_button.clicked.connect(self.stop_request)
         self.stop_button.setEnabled(False)
+        self.stop_button.hide()
         footer_layout.addWidget(self.stop_button, 0)
 
         self.send_button = PrimaryPushButton(
@@ -962,11 +1566,13 @@ class AgentPage(Base, QWidget):
             icon=FluentIcon.SEND,
             parent=footer,
         )
-        self.send_button.setFixedHeight(28)
+        self.send_button.setFixedHeight(32)
         self.send_button.clicked.connect(self.send_message)
         footer_layout.addWidget(self.send_button, 0)
         composer_layout.addWidget(footer)
         self.root.addWidget(composer, 0)
+
+        self._apply_composer_style()
 
         # 活动指示器排在对话流末尾，跟随消息一起滚动。
         self.activity_widget = AgentActivityWidget(self.history_content)
@@ -974,6 +1580,36 @@ class AgentPage(Base, QWidget):
             self.history_layout.count() - 1,
             self.activity_widget,
         )
+
+    def _apply_composer_style(self) -> None:
+        """输入框融入输入面板，聚焦时再用主色描边。"""
+        accent = ThemeColor.PRIMARY.color().name()
+        palette = self.input_box.palette()
+        if isDarkTheme():
+            palette.setColor(QPalette.Text, QColor("#f2f2f2"))
+            palette.setColor(QPalette.PlaceholderText, QColor("#9a9a9a"))
+            self.input_box.setStyleSheet(
+                "QPlainTextEdit#agentInput {"
+                " background: transparent;"
+                " border: 1px solid transparent;"
+                " border-radius: 10px; padding: 8px 10px;"
+                f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
+            )
+            self.hint_label.setStyleSheet("color: #8f8f8f;")
+            self.status_label.setStyleSheet("color: #b8b8b8;")
+        else:
+            palette.setColor(QPalette.Text, QColor("#1a1a1a"))
+            palette.setColor(QPalette.PlaceholderText, QColor("#737373"))
+            self.input_box.setStyleSheet(
+                "QPlainTextEdit#agentInput {"
+                " background: transparent;"
+                " border: 1px solid transparent;"
+                " border-radius: 10px; padding: 8px 10px;"
+                f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
+            )
+            self.hint_label.setStyleSheet("color: #6f6f6f;")
+            self.status_label.setStyleSheet("color: #555555;")
+        self.input_box.setPalette(palette)
 
     def _autosize_input(self) -> None:
         """输入框随内容增高，上限 180px 后转为内部滚动。"""
@@ -983,10 +1619,14 @@ class AgentPage(Base, QWidget):
             self.input_box.setFixedHeight(target)
 
     def _on_theme_changed(self, _theme=None) -> None:
-        """主题变化时刷新自绘的语义状态色，其余交给 qfluentwidgets。"""
+        """主题变化时刷新自绘元素与主题相关样式，其余交给 qfluentwidgets。"""
         self.brand_avatar.refresh_theme()
         self.activity_widget.refresh_theme()
-        for widget in self.history_widgets:
+        self.empty_state.refresh_theme()
+        self._apply_project_pill_style()
+        self._apply_composer_style()
+        for index in range(self.history_layout.count()):
+            widget = self.history_layout.itemAt(index).widget()
             refresh = getattr(widget, "refresh_theme", None)
             if callable(refresh):
                 refresh()
@@ -1010,6 +1650,14 @@ class AgentPage(Base, QWidget):
             self.thinking_combo.findData(thinking_level)
         )
         self.thinking_combo.blockSignals(False)
+
+        confirm_check = getattr(self, "unpack_confirm_check", None)
+        if confirm_check is not None:
+            confirm_check.blockSignals(True)
+            confirm_check.setChecked(
+                not bool(getattr(config, "agent_unpack_auto_confirm", False))
+            )
+            confirm_check.blockSignals(False)
 
         self.platform_combo.blockSignals(True)
         self.platform_combo.clear()
@@ -1040,6 +1688,12 @@ class AgentPage(Base, QWidget):
             if platform_id < 0
             else Localizer.get().agent_page_platform_saved
         )
+        if self.history_widgets:
+            InfoBar.info(
+                Localizer.get().agent_page_platform,
+                Localizer.get().agent_page_platform_changed_hint,
+                parent=self,
+            )
         self._update_send_button()
 
     def _thinking_changed(self, index: int) -> None:
@@ -1052,9 +1706,14 @@ class AgentPage(Base, QWidget):
         current = config or Config().load()
         paths = RenpyProjectPaths.from_config(current)
         if paths is None or not paths.game_dir.is_dir():
+            self._project_actions = []
+            self._project_actions_key = ""
             self.project_label.setText(Localizer.get().agent_page_project_unset)
             self.project_label.setToolTip("")
             return
+        if self._project_actions_key and self._project_actions_key != paths.project_key:
+            self._project_actions = []
+            self._project_actions_key = ""
         self.project_label.setText(
             Localizer.get().agent_page_project_context.format(
                 name=paths.project_root.name,
@@ -1109,6 +1768,8 @@ class AgentPage(Base, QWidget):
             widget.retry_requested.connect(self.retry_last_message)
         else:
             widget = AgentMessageWidget(str(text or ""), role, self.history_content)
+            if role == "assistant":
+                widget.action_requested.connect(self._handle_reply_action)
         self._add_history_widget(widget)
         return widget
 
@@ -1120,37 +1781,58 @@ class AgentPage(Base, QWidget):
                 "assistant",
                 self.history_content,
             )
+            self._assistant_turn.action_requested.connect(self._handle_reply_action)
             self._stream_message = self._assistant_turn
             self._add_history_widget(self._assistant_turn)
         return self._assistant_turn
 
     def _append_reply_delta(self, text: str) -> None:
-        """实时显示模型增量；若后续调用工具，再由事件处理器折叠。"""
+        """累积模型增量，由节流定时器合并渲染，避免逐 delta 重排全文。"""
         delta = str(text or "")
         if not delta:
             return
-        turn = self._ensure_assistant_turn()
-        turn.finish_thinking()
-        turn.append_text(delta)
+        self._ensure_assistant_turn()
+        self._pending_reply_text += delta
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
-        self._history_scroll_timer.start(0)
+        self._render_timer.start()
 
     def _append_thinking_delta(self, text: str) -> None:
-        """把后端明确标记的思考增量放进折叠过程条。"""
+        """累积思考增量，与正文共用节流定时器。"""
         delta = str(text or "")
         if not delta:
             return
-        turn = self._ensure_assistant_turn()
-        turn.append_thinking_text(delta)
+        self._ensure_assistant_turn()
+        self._pending_thinking_text += delta
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
-        self._history_scroll_timer.start(0)
+        self._render_timer.start()
+
+    def _flush_pending_deltas(self) -> None:
+        """把累积的增量一次性渲染；正文与思考各只触发一次重排。"""
+        flushed = False
+        if self._pending_reply_text:
+            reply_text = self._pending_reply_text
+            self._pending_reply_text = ""
+            turn = self._ensure_assistant_turn()
+            turn.finish_thinking()
+            turn.append_text(reply_text)
+            flushed = True
+        if self._pending_thinking_text:
+            thinking_text = self._pending_thinking_text
+            self._pending_thinking_text = ""
+            turn = self._ensure_assistant_turn()
+            turn.append_thinking_text(thinking_text)
+            flushed = True
+        if flushed:
+            self._history_scroll_timer.start(0)
 
     def _complete_reply(self, text: str) -> None:
         """用最终响应校正流式消息；无增量时退回一次性追加。"""
         final_text = str(text or "")
         turn = self._assistant_turn
         if turn is None:
-            self._append(final_text, role="assistant")
+            turn = self._append(final_text, role="assistant")
+            if isinstance(turn, AgentMessageWidget):
+                self._assistant_turn = turn
         else:
             turn.finish_thinking()
             turn.set_text(final_text)
@@ -1173,6 +1855,12 @@ class AgentPage(Base, QWidget):
             self._confirmation_dialog = None
         self._service.reset()
         self._reset_after_worker = False
+        self._render_timer.stop()
+        self._pending_reply_text = ""
+        self._pending_thinking_text = ""
+        self._pending_reply_actions = []
+        self._project_actions = []
+        self._project_actions_key = ""
         if self._round_header is not None:
             self._round_header.stop()
             self._round_header = None
@@ -1190,7 +1878,10 @@ class AgentPage(Base, QWidget):
             widget.deleteLater()
         self.activity_widget.set_running(False)
         self.status_label.setText("")
+        self.stop_button.setEnabled(False)
+        self.stop_button.hide()
         self._last_message = ""
+        self._round_count = 0
         self._auto_follow = True
         self.conversation_stack.setCurrentWidget(self.empty_state)
         self._update_send_button()
@@ -1269,30 +1960,42 @@ class AgentPage(Base, QWidget):
         self._stream_message = None
         self._assistant_turn = None
         self._reply_rendered = False
+        self._pending_reply_actions = []
         # 新回合从底部开始，无论用户此前滚到哪里。
         self._auto_follow = True
+        self._round_count += 1
         if self._round_header is not None:
             self._round_header.stop()
-        self._round_header = AgentRoundHeader(self.history_content)
+        self._round_header = AgentRoundHeader(self.history_content, self._round_count)
         self._add_history_widget(self._round_header)
         self._append(message, role="user")
         self.status_label.setText(localizer.agent_page_running)
         self.activity_widget.set_running(True, localizer.agent_page_running)
         self.send_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.stop_button.show()
         self._worker = AgentWorker(
             self._service,
             message,
             str(self.thinking_combo.currentData() or "OFF"),
+            auto_confirm_unpack=bool(
+                getattr(Config().load(), "agent_unpack_auto_confirm", False)
+            ),
         )
-        self._worker.event.connect(self._on_worker_event)
+        self._worker.agent_event.connect(self._on_worker_event)
         self._worker.confirmation_requested.connect(self._on_confirmation_requested)
-        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.completed.connect(self._on_worker_finished)
+        # 销毁挂在 QThread 原生 finished 上：它在线程真正退出后才发出，
+        # 保证 deleteLater 不会销毁一个仍在运行的线程。
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     def stop_request(self) -> None:
         if self._worker is not None and self._worker.isRunning():
+            self._flush_pending_deltas()
+            turn = self._assistant_turn
+            if turn is not None and turn.text.strip():
+                turn.append_text(f"\n\n*{Localizer.get().agent_page_stopped_hint}*")
             self._worker.cancel()
             self.status_label.setText(Localizer.get().agent_page_cancelled)
 
@@ -1303,21 +2006,44 @@ class AgentPage(Base, QWidget):
         localizer = Localizer.get()
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         if name == "unpack_rpa_files":
+            title = localizer.agent_page_confirmation_title
             message = localizer.agent_page_unpack_confirmation.format(
                 game_dir=data.get("game_dir", ""),
                 count=data.get("count", 0),
             )
+        elif name == "optimize_old_new_translations":
+            title = localizer.agent_page_old_new_confirmation_title
+            message = localizer.agent_page_old_new_confirmation.format(
+                old_new_count=data.get("old_new_count", 0),
+                supplement_count=data.get("supplement_count", 0),
+                total_count=data.get("total_count", 0),
+                conflict_count=data.get("conflict_count", 0),
+                tl_dir=data.get("tl_dir", ""),
+                output_path=data.get("output_path", ""),
+            )
         else:
+            title = localizer.agent_page_confirmation_title
             message = localizer.agent_page_confirmation_generic.format(tool=name)
-        dialog = MessageBox(localizer.agent_page_confirmation_title, message, self)
+        dialog = MessageBox(title, message, self)
         dialog.yesButton.setText(localizer.confirm)
         dialog.cancelButton.setText(localizer.cancel)
         self._confirmation_dialog = dialog
+
+        # 解包确认支持「不再询问」：勾选后下一次同类操作直接放行，
+        # 可在顶栏设置弹层里重新打开确认。
+        dont_ask = None
+        if name == "unpack_rpa_files":
+            dont_ask = CheckBox(localizer.agent_page_unpack_dont_ask, dialog.widget)
+            dialog.textLayout.addWidget(dont_ask)
 
         def resolve(approved: bool) -> None:
             if self._confirmation_dialog is not dialog:
                 return
             self._confirmation_dialog = None
+            if approved and dont_ask is not None and dont_ask.isChecked():
+                config = Config().load()
+                config.agent_unpack_auto_confirm = True
+                config.save()
             worker.resolve_confirmation(approved)
 
         dialog.accepted.connect(lambda: resolve(True))
@@ -1346,20 +2072,43 @@ class AgentPage(Base, QWidget):
         elif event_name in {"thinking_delta", "reasoning_delta"}:
             self._append_thinking_delta(str(payload.get("text", "")))
         elif event_name == "reply":
+            # 最终文本覆盖流式正文，未渲染的正文增量直接丢弃；思考增量先落进折叠条。
+            self._pending_reply_text = ""
+            self._flush_pending_deltas()
             self._complete_reply(str(payload.get("message", "")))
         elif event_name == "tool_start":
+            self._flush_pending_deltas()
             if self._assistant_turn is not None:
                 self._assistant_turn.move_answer_to_thinking()
                 self._assistant_turn.finish_thinking()
             self._append_tool_start(str(payload.get("name", "")))
         elif event_name == "tool_done":
-            if str(payload.get("name", "")) == "set_project" and bool(payload.get("success", False)):
+            tool_name = str(payload.get("name", ""))
+            tool_success = bool(payload.get("success", False))
+            tool_data = (
+                payload.get("data")
+                if isinstance(payload.get("data"), dict)
+                else None
+            )
+            if tool_name == "set_project" and tool_success:
+                self._project_actions = []
+                self._project_actions_key = ""
                 self._refresh_project_context()
+            if tool_name == "inspect_translation_project" and tool_success and tool_data:
+                self._project_actions = self._inspection_actions(tool_data)
+                paths = RenpyProjectPaths.from_config(Config().load())
+                self._project_actions_key = paths.project_key if paths is not None else ""
+                self._pending_reply_actions = list(self._project_actions)
+            elif tool_success:
+                self._pending_reply_actions = self._followup_actions(
+                    tool_name,
+                    tool_data or {},
+                )
             self._finish_tool(
-                str(payload.get("name", "")),
-                bool(payload.get("success", False)),
+                tool_name,
+                tool_success,
                 str(payload.get("message", "")),
-                payload.get("data") if isinstance(payload.get("data"), dict) else None,
+                tool_data,
             )
         elif event_name == "error":
             self.status_label.setText(localizer.agent_page_failed)
@@ -1375,9 +2124,11 @@ class AgentPage(Base, QWidget):
         if reset_after_worker:
             self._clear_session()
             return
+        self._flush_pending_deltas()
         self.activity_widget.set_running(False)
         self.send_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.stop_button.hide()
         for widget in self._running_tool_widgets:
             widget.complete(False, str(getattr(result, "message", "")))
         self._running_tool_widgets.clear()
@@ -1386,12 +2137,315 @@ class AgentPage(Base, QWidget):
         if getattr(result, "success", False):
             if not self._reply_rendered:
                 self._complete_reply(str(result.message))
+            if self._assistant_turn is not None and self._pending_reply_actions:
+                self._assistant_turn.set_actions(self._pending_reply_actions)
+                self._pending_reply_actions = []
+                self._history_scroll_timer.start(0)
             self.status_label.setText(localizer.agent_page_done)
         else:
+            self._pending_reply_actions = []
             self._stream_message = None
             self._append(str(result.message), role="error")
             self.status_label.setText(localizer.agent_page_failed)
         self._update_send_button()
+
+    def _inspection_actions(
+        self,
+        data: dict[str, Any],
+    ) -> list[tuple[str, str, Any]]:
+        """把体检代码映射为受控界面动作，并补充当前项目可用的常用工具。"""
+        localizer = Localizer.get()
+        action_code = str(data.get("next_action_code", "")).upper()
+        primary = {
+            "START_TRANSLATION": (
+                ACTION_ONE_KEY_TRANSLATE,
+                localizer.agent_page_action_one_key_translate,
+                FluentIcon.PLAY,
+            ),
+            "CONTINUE_TRANSLATION": (
+                ACTION_OPEN_TRANSLATION,
+                localizer.agent_page_action_continue_translation,
+                FluentIcon.PLAY,
+            ),
+            "REVIEW_TRANSLATION": (
+                ACTION_OPEN_TRANSLATION,
+                localizer.agent_page_action_open_translation,
+                FluentIcon.PLAY,
+            ),
+            "REVIEW_QUALITY": (
+                ACTION_OPEN_TRANSLATION,
+                localizer.agent_page_action_open_translation,
+                FluentIcon.PLAY,
+            ),
+            "REVIEW_WORKBENCH": (
+                ACTION_OPEN_WORKBENCH,
+                localizer.agent_page_action_open_workbench,
+                FluentIcon.PEOPLE,
+            ),
+            "UNPACK_RPA": (
+                ACTION_UNPACK_RPA,
+                localizer.agent_page_tool_unpack_rpa_files,
+                FluentIcon.FOLDER_ADD,
+            ),
+            "DECOMPILE_SCRIPTS": (
+                ACTION_OPEN_TOOLBOX,
+                localizer.agent_page_action_open_toolbox,
+                FluentIcon.GAME,
+            ),
+            "REPAIR_CACHE": (
+                ACTION_OPEN_TRANSLATION,
+                localizer.agent_page_action_open_translation,
+                FluentIcon.PLAY,
+            ),
+            "CHECK_PROJECT_FILES": (
+                ACTION_SCAN_ERRORS,
+                localizer.agent_page_tool_scan_script_errors,
+                FluentIcon.SEARCH,
+            ),
+        }.get(action_code)
+
+        actions: list[tuple[str, str, Any]] = []
+        used: set[str] = set()
+
+        def add(action: tuple[str, str, Any] | None) -> None:
+            if action is not None and action[0] not in used:
+                actions.append(action)
+                used.add(action[0])
+
+        add(primary)
+        files = data.get("files") if isinstance(data.get("files"), dict) else {}
+        unpack_required = bool(
+            files.get("unpack_required", action_code == "UNPACK_RPA")
+        )
+        if int(files.get("rpa_count", 0) or 0) > 0:
+            add(
+                (
+                    ACTION_LIST_RPA,
+                    localizer.agent_page_tool_list_rpa_files,
+                    FluentIcon.ZIP_FOLDER,
+                )
+            )
+            if unpack_required:
+                add(
+                    (
+                        ACTION_UNPACK_RPA,
+                        localizer.agent_page_tool_unpack_rpa_files,
+                        FluentIcon.FOLDER_ADD,
+                    )
+                )
+        if int(files.get("rpy_count", 0) or 0) > 0 or int(
+            files.get("rpyc_count", 0) or 0
+        ) > 0:
+            add(
+                (
+                    ACTION_SCAN_ERRORS,
+                    localizer.agent_page_tool_scan_script_errors,
+                    FluentIcon.SEARCH,
+                )
+            )
+        return actions
+
+    def _followup_actions(
+        self,
+        tool_name: str,
+        data: dict[str, Any],
+    ) -> list[tuple[str, str, Any]]:
+        """让只读工具回复延续可执行按钮，避免点一次后操作入口消失。"""
+        consumed = {
+            "list_rpa_files": {ACTION_LIST_RPA},
+            "scan_script_errors": {ACTION_SCAN_ERRORS},
+            "unpack_rpa_files": {ACTION_LIST_RPA, ACTION_UNPACK_RPA},
+        }.get(tool_name, set())
+        actions = [
+            action
+            for action in self._project_actions
+            if action[0] not in consumed
+        ]
+        if actions:
+            return actions
+
+        localizer = Localizer.get()
+        if tool_name == "list_rpa_files":
+            if data.get("unpack_required") is True:
+                actions.append(
+                    (
+                        ACTION_UNPACK_RPA,
+                        localizer.agent_page_tool_unpack_rpa_files,
+                        FluentIcon.FOLDER_ADD,
+                    )
+                )
+            if (
+                int(data.get("rpy_count", 0) or 0) > 0
+                or int(data.get("rpyc_count", 0) or 0) > 0
+                or "unpack_required" not in data
+            ):
+                actions.append(
+                    (
+                        ACTION_SCAN_ERRORS,
+                        localizer.agent_page_tool_scan_script_errors,
+                        FluentIcon.SEARCH,
+                    )
+                )
+        elif tool_name == "scan_script_errors":
+            actions.append(
+                (
+                    ACTION_LIST_RPA,
+                    localizer.agent_page_tool_list_rpa_files,
+                    FluentIcon.ZIP_FOLDER,
+                )
+            )
+        elif tool_name == "unpack_rpa_files":
+            actions.extend(
+                (
+                    (
+                        ACTION_ONE_KEY_TRANSLATE,
+                        localizer.agent_page_action_one_key_translate,
+                        FluentIcon.PLAY,
+                    ),
+                    (
+                        ACTION_SCAN_ERRORS,
+                        localizer.agent_page_tool_scan_script_errors,
+                        FluentIcon.SEARCH,
+                    ),
+                )
+            )
+        return actions
+
+    def _start_confirmed_tool(
+        self,
+        tool_name: str,
+        trusted_context: dict[str, Any],
+    ) -> None:
+        """启动一次已确认工具；直接走服务端，不再让模型决定是否调用。"""
+        if self._worker is not None and self._worker.isRunning():
+            return
+        localizer = Localizer.get()
+        label = getattr(localizer, f"agent_page_tool_{tool_name}", tool_name)
+        self._last_message = ""
+        self._stream_message = None
+        self._assistant_turn = None
+        self._reply_rendered = False
+        self._pending_reply_actions = []
+        self._auto_follow = True
+        self._round_count += 1
+        if self._round_header is not None:
+            self._round_header.stop()
+        self._round_header = AgentRoundHeader(self.history_content, self._round_count)
+        self._add_history_widget(self._round_header)
+        self._append(label, role="user")
+        self._ensure_assistant_turn()
+        self.status_label.setText(localizer.agent_page_running)
+        self.activity_widget.set_running(True, localizer.agent_page_running)
+        self.send_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.stop_button.show()
+
+        self._worker = AgentToolWorker(
+            self._service,
+            tool_name,
+            trusted_context,
+        )
+        self._worker.agent_event.connect(self._on_worker_event)
+        self._worker.completed.connect(self._on_worker_finished)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.start()
+
+    def _confirm_unpack_action(self) -> None:
+        """点击解包操作后立即展示真实确认按钮，不让模型用文字代替确认。"""
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._confirmation_dialog is not None:
+            return
+
+        localizer = Localizer.get()
+        data = self._service.confirmation_context("unpack_rpa_files")
+        message = localizer.agent_page_unpack_confirmation.format(
+            game_dir=data.get("game_dir", ""),
+            count=data.get("count", 0),
+        )
+        dialog = MessageBox(localizer.agent_page_confirmation_title, message, self)
+        dialog.yesButton.setText(localizer.confirm)
+        dialog.cancelButton.setText(localizer.cancel)
+        self._confirmation_dialog = dialog
+
+        def resolve(approved: bool) -> None:
+            if self._confirmation_dialog is not dialog:
+                return
+            self._confirmation_dialog = None
+            if not approved:
+                self.status_label.setText("")
+                return
+            self._start_confirmed_tool("unpack_rpa_files", data)
+
+        dialog.accepted.connect(lambda: resolve(True))
+        dialog.rejected.connect(lambda: resolve(False))
+        self.status_label.setText(localizer.agent_page_waiting_confirmation)
+        dialog.open()
+
+    def _start_one_key_translation(self) -> None:
+        """复用一键向导启动当前项目，免去重复选择项目和手动点下一步。"""
+        localizer = Localizer.get()
+        paths = RenpyProjectPaths.from_config(Config().load())
+        toolbox = getattr(self._window, "renpy_toolbox_page", None)
+        get_tool_page = getattr(toolbox, "get_tool_page", None)
+        navigate = getattr(self._window, "navigate_to_page", None)
+        if paths is None or not callable(get_tool_page) or not callable(navigate):
+            InfoBar.warning(
+                localizer.notice,
+                localizer.agent_page_one_key_unavailable,
+                parent=self,
+            )
+            return
+
+        try:
+            page = get_tool_page("one_key_translate")
+            start = getattr(page, "start_current_project", None)
+            if not callable(start):
+                raise AttributeError("一键翻译页面未提供 Agent 启动入口")
+            navigate(page)
+            started = bool(start(str(paths.project_root), paths.language))
+        except Exception:
+            started = False
+        if not started:
+            InfoBar.warning(
+                localizer.notice,
+                localizer.agent_page_one_key_unavailable,
+                parent=self,
+            )
+
+    def _handle_reply_action(self, action: str) -> None:
+        """执行回复快捷操作；跳页不请求模型，工具操作复用现有对话链路。"""
+        page_attributes = {
+            ACTION_OPEN_TRANSLATION: "translation_page",
+            ACTION_OPEN_WORKBENCH: "renpy_workbench_page",
+            ACTION_OPEN_TOOLBOX: "renpy_toolbox_page",
+        }
+        page_attribute = page_attributes.get(action)
+        if page_attribute is not None:
+            window = self._window
+            page = getattr(window, page_attribute, None)
+            navigate = getattr(window, "navigate_to_page", None)
+            if page is not None and callable(navigate):
+                navigate(page)
+            return
+
+        if action == ACTION_UNPACK_RPA:
+            self._confirm_unpack_action()
+            return
+
+        if action == ACTION_ONE_KEY_TRANSLATE:
+            self._start_one_key_translation()
+            return
+
+        prompts = {
+            ACTION_LIST_RPA: Localizer.get().agent_page_suggestion_rpa,
+            ACTION_SCAN_ERRORS: Localizer.get().agent_page_suggestion_errors,
+        }
+        prompt = prompts.get(action)
+        if prompt is None or (self._worker is not None and self._worker.isRunning()):
+            return
+        self.input_box.setPlainText(prompt)
+        self.send_message()
 
     def _update_send_button(self) -> None:
         running = self._worker is not None and self._worker.isRunning()

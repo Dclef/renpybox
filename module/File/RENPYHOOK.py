@@ -10,9 +10,9 @@ from module.Config import Config
 from module.Extract.ReplaceGenerator import (
     HOOK_MANIFEST,
     MISS_DIR,
+    build_old_new_replace_plan,
     build_replace_pairs_from_entries,
     collect_hook_translation_entries,
-    filter_replace_pairs_covered_by_tl,
     write_replace_script,
 )
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
@@ -126,8 +126,13 @@ class RENPYHOOK(Base):
         manifest_path = self._resolve_manifest_path(target_path)
         tl_name = output_path.parent.name or "chinese"
 
-        pairs = build_replace_pairs_from_entries(target_items)
-        pairs = filter_replace_pairs_covered_by_tl(pairs, target_path, tl_name)
+        supplement_pairs = build_replace_pairs_from_entries(target_items)
+        plan = build_old_new_replace_plan(
+            target_path,
+            tl_name,
+            supplement_pairs=supplement_pairs,
+        )
+        pairs = list(plan.pairs)
         if pairs:
             write_replace_script(
                 output_path,
