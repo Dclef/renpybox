@@ -13,6 +13,7 @@ from module.Renpy.ProjectPaths import RenpyProjectPaths
 
 from .AgentPromptBuilder import AgentPromptBuilder
 from .ToolDispatcher import ToolDispatcher
+from .tools import old_new_replace_confirmation_context
 from .types import AgentRunResult, ToolResult
 
 
@@ -94,6 +95,8 @@ class AgentService:
 
     def confirmation_context(self, name: str) -> dict[str, Any]:
         """返回页面确认框所需的服务端可信上下文。"""
+        if name == "optimize_old_new_translations":
+            return old_new_replace_confirmation_context(config_loader=self.config_loader)
         if name != "unpack_rpa_files":
             return {}
         paths = RenpyProjectPaths.from_config(self.config_loader())
@@ -104,6 +107,76 @@ class AgentService:
             "game_dir": str(game_dir),
             "count": len(list(game_dir.glob("*.rpa"))),
         }
+
+    def run_confirmed_tool(
+        self,
+        name: str,
+        *,
+        trusted_context: dict[str, Any],
+        callback: EventCallback | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> AgentRunResult:
+        """执行一次已由界面确认的工具，并在执行前复核项目快照。"""
+        with self._run_state_lock:
+            self._cancel_event.clear()
+
+        tool_name = str(name or "")
+        tool = self.dispatcher.tools.get(tool_name)
+        localizer = Localizer.get()
+        if tool is None:
+            tool_result = ToolResult(
+                False,
+                localizer.agent_tool_unknown.format(name=tool_name),
+                code="UNKNOWN_TOOL",
+            )
+        elif not tool.requires_confirmation:
+            tool_result = ToolResult(
+                False,
+                localizer.agent_tool_confirmation_required,
+                code="CONFIRMATION_REQUIRED",
+            )
+        elif self._is_cancelled(cancel_event):
+            tool_result = ToolResult(
+                False,
+                self._cancelled_message(),
+                code="USER_CANCELLED",
+            )
+        elif self.confirmation_context(tool_name) != dict(trusted_context or {}):
+            tool_result = ToolResult(
+                False,
+                localizer.agent_project_changed,
+                code="CONFIRMATION_STALE",
+            )
+        else:
+            self._emit(callback, "tool_start", {"name": tool_name, "arguments": {}})
+            if not self._begin_tool_execution(cancel_event):
+                tool_result = ToolResult(
+                    False,
+                    self._cancelled_message(),
+                    code="USER_CANCELLED",
+                )
+            else:
+                tool_result = self.dispatcher.execute(
+                    tool_name,
+                    {},
+                    confirmed=True,
+                    trusted_context=dict(trusted_context),
+                )
+
+        detail = {
+            "name": tool_name,
+            "success": tool_result.success,
+            "code": tool_result.code,
+            "message": tool_result.message,
+            "data": tool_result.data,
+        }
+        self._emit(callback, "tool_done", detail)
+        return AgentRunResult(
+            tool_result.success,
+            tool_result.message,
+            data={"events": [detail]},
+            code=tool_result.code,
+        )
 
     def _emit(self, callback: EventCallback | None, event: str, payload: dict[str, Any]) -> None:
         if callback is not None:

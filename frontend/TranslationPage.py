@@ -745,13 +745,29 @@ class TranslationPage(QWidget, Base):
         self,
         status: Base.TranslationStatus,
         window: FluentWindow,
+        request_id: str = "",
     ) -> bool:
+        engine = Engine.get()
+        if (
+            engine.get_status() != Engine.Status.IDLE
+            or engine.has_stop_barrier()
+            or engine.has_single_tasks()
+        ):
+            InfoBar.warning(
+                Localizer.get().alert,
+                Localizer.get().translator_running,
+                parent=window,
+            )
+            return False
+
         # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
         # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
         config = Config().load()
         if status in Base.PROJECT_RESUMABLE_STATUSES:
             config = restore_resumable_translation_paths(config)
         payload = {"status": status}
+        if request_id:
+            payload["request_id"] = str(request_id)
         # 旧的轻量事件调用方可能提供 SimpleNamespace 配置；真实页面
         # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。
         if isinstance(config, Config):

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
+    QFileDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
@@ -20,13 +23,16 @@ from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
     CheckBox,
+    FluentIcon as FIF,
     InfoBar,
     LineEdit,
     ListWidget,
+    MessageBox,
     PillPushButton,
     PlainTextEdit,
     PrimaryPushButton,
     PushButton,
+    SearchLineEdit,
     SingleDirectionScrollArea,
     StrongBodyLabel,
     TitleLabel,
@@ -45,12 +51,15 @@ from module.Workbench.WorkbenchData import (
     ANALYSIS_SCOPE_FULL,
     create_default_character_card,
     merge_character_card,
+    merge_imported_character_cards,
+    merge_imported_worldbook,
     normalize_analysis_scope,
     normalize_character_card,
     normalize_character_cards,
     normalize_text,
     normalize_text_list,
     normalize_worldbook,
+    parse_workbench_exchange,
 )
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 
@@ -91,11 +100,26 @@ class RenpyWorkbenchPage(Base, QWidget):
         self._analysis_source_summary = ""
         self._last_worldbook_raw = ""
         self._last_character_raw = ""
+        self._config_snapshot: Config | None = None
+        self._skip_next_show_refresh = True
+        self._character_filter_mode = "all"
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(280)
         self._preview_timer.timeout.connect(self._refresh_prompt_preview)
+
+        # 编辑保存去抖：字段变化合并后统一落盘，避免每次按键全量重建列表/预览。
+        self._edit_save_timer = QTimer(self)
+        self._edit_save_timer.setSingleShot(True)
+        self._edit_save_timer.setInterval(300)
+        self._edit_save_timer.timeout.connect(self._flush_pending_edits)
+        self._pending_worldbook_fields: set[str] = set()
+        self._pending_character_fields: set[str] = set()
+        self._draft_ids: set[str] = set()
+        self._visible_cards_by_id: dict[str, dict[str, Any]] = {}
+        self._formal_cards_by_id: dict[str, dict[str, Any]] = {}
+        self._draft_cards_by_id: dict[str, dict[str, Any]] = {}
 
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_START, self._on_engine_state_changed)
@@ -247,13 +271,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         )
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self.btn_generate_current = PrimaryPushButton(Localizer.get().workbench_generate_current_scope_drafts)
+        self.btn_generate_current = PushButton(Localizer.get().workbench_generate_current_scope_drafts)
         self.btn_generate_current.clicked.connect(lambda: self._start_analysis("all", ANALYSIS_SCOPE_CURRENT))
         self.btn_generate_full = PushButton(Localizer.get().workbench_reanalyze_full_project)
         self.btn_generate_full.clicked.connect(lambda: self._start_analysis("all", ANALYSIS_SCOPE_FULL))
         self.btn_sync_characters = PushButton(Localizer.get().workbench_sync_character_names)
         self.btn_sync_characters.clicked.connect(self._start_sync_characters)
-        self.btn_apply_all = PushButton(Localizer.get().workbench_apply_all_drafts)
+        self.btn_apply_all = PrimaryPushButton(Localizer.get().workbench_apply_all_and_enable)
         self.btn_apply_all.clicked.connect(self._apply_all_drafts)
         action_row.addWidget(self.btn_generate_current)
         action_row.addWidget(self.btn_generate_full)
@@ -275,6 +299,35 @@ class RenpyWorkbenchPage(Base, QWidget):
         shortcut_row.addWidget(self.btn_open_prompt)
         shortcut_row.addStretch(1)
         action_layout.addLayout(shortcut_row)
+
+        exchange_row = QHBoxLayout()
+        exchange_row.setSpacing(10)
+        self.btn_import_drafts = PushButton(
+            Localizer.get().workbench_import_as_drafts,
+            icon = FIF.DOWNLOAD,
+        )
+        self.btn_import_drafts.clicked.connect(lambda: self._import_project_assets(False))
+        self.btn_import_apply = PushButton(
+            Localizer.get().workbench_import_apply_enable,
+            icon = FIF.DOWNLOAD,
+        )
+        self.btn_import_apply.clicked.connect(lambda: self._import_project_assets(True))
+        self.btn_export_assets = PushButton(
+            Localizer.get().workbench_export_project_assets,
+            icon = FIF.SAVE,
+        )
+        self.btn_export_assets.clicked.connect(self._export_project_assets)
+        self.btn_clear_characters = PushButton(
+            Localizer.get().workbench_clear_current_characters,
+            icon = FIF.DELETE,
+        )
+        self.btn_clear_characters.clicked.connect(self._clear_current_project_characters)
+        exchange_row.addWidget(self.btn_import_drafts)
+        exchange_row.addWidget(self.btn_import_apply)
+        exchange_row.addWidget(self.btn_export_assets)
+        exchange_row.addWidget(self.btn_clear_characters)
+        exchange_row.addStretch(1)
+        action_layout.addLayout(exchange_row)
 
         self.overview_status_label = BodyLabel(Localizer.get().workbench_ready)
         self.overview_status_label.setWordWrap(True)
@@ -323,6 +376,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             ("narrative_rules", Localizer.get().workbench_narrative_rules, True),
             ("format_rules", Localizer.get().workbench_formatting_rules, True),
             ("spoiler_notes", Localizer.get().workbench_spoiler_notes, True),
+            ("reference_notes", Localizer.get().workbench_reference_notes, True),
         ]
         for field, label, multiline in worldbook_specs:
             if multiline:
@@ -384,11 +438,11 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
-        self.btn_character_batch = PrimaryPushButton(Localizer.get().workbench_generate_all_character_cards)
+        self.btn_character_batch = PushButton(Localizer.get().workbench_generate_all_character_cards)
         self.btn_character_batch.clicked.connect(lambda: self._start_analysis("characters", ANALYSIS_SCOPE_CURRENT))
         self.btn_character_current = PushButton(Localizer.get().workbench_regenerate_current_character)
         self.btn_character_current.clicked.connect(self._regenerate_current_character)
-        self.btn_character_apply = PushButton(Localizer.get().workbench_apply_current_character_draft)
+        self.btn_character_apply = PrimaryPushButton(Localizer.get().workbench_apply_current_and_enable)
         self.btn_character_apply.clicked.connect(self._apply_current_character_draft)
         self.btn_character_add = PushButton(Localizer.get().workbench_add_blank_character_card)
         self.btn_character_add.clicked.connect(self._add_character_card)
@@ -409,6 +463,35 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_character_list,
             Localizer.get().workbench_synced_character_candidates_added_here_review,
         )
+        self.character_search_edit = SearchLineEdit(self)
+        self.character_search_edit.setPlaceholderText(Localizer.get().workbench_search_characters)
+        self.character_search_edit.textChanged.connect(self._apply_character_filters)
+        roster_layout.addWidget(self.character_search_edit)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        self.character_filter_group = QButtonGroup(self)
+        self.character_filter_group.setExclusive(True)
+        self.character_filter_buttons: dict[str, PillPushButton] = {}
+        for key, text in (
+            ("all", Localizer.get().workbench_filter_all),
+            ("pending", Localizer.get().workbench_filter_pending),
+            ("applied", Localizer.get().workbench_filter_applied),
+        ):
+            button = PillPushButton(text, self)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked = False, value = key: self._set_character_filter(value)
+            )
+            self.character_filter_group.addButton(button)
+            self.character_filter_buttons[key] = button
+            filter_row.addWidget(button)
+        self.character_filter_buttons["all"].setChecked(True)
+        filter_row.addStretch(1)
+        roster_layout.addLayout(filter_row)
+
+        self.character_count_label = CaptionLabel("")
+        roster_layout.addWidget(self.character_count_label)
         self.character_list = ListWidget(self)
         self.character_list.currentItemChanged.connect(self._on_character_item_changed)
         roster_layout.addWidget(self.character_list, 1)
@@ -564,10 +647,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         """保存工作台拥有的正式资产和分析草稿。"""
         self._normalize_workbench_config(config)
         ProjectAssetsRepository.from_config(config).save_workbench_view(config)
+        self._config_snapshot = config
 
-    def refresh_from_config(self) -> None:
+    def _get_config_snapshot(self) -> Config:
+        """返回页面当前项目快照，缺失时才读取磁盘。"""
+        if self._config_snapshot is None:
+            self._config_snapshot = self._load_config()
+        return self._config_snapshot
+
+    def refresh_from_config(self, config: Config | None = None) -> None:
         """从配置刷新整个页面。"""
-        config = self._load_config()
+        config = config or self._load_config()
+        self._config_snapshot = config
         self._loading_ui = True
         try:
             self.worldbook_enable.setChecked(bool(getattr(config, "renpy_workbench_worldbook_enable", False)))
@@ -583,17 +674,18 @@ class RenpyWorkbenchPage(Base, QWidget):
 
             cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
             drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
-            select_id = self._selected_character_id or (cards[0]["id"] if cards else "")
-            if select_id == "" and drafts:
-                select_id = drafts[0]["id"]
+            select_id = self._selected_character_id or (
+                drafts[0]["id"] if drafts else (cards[0]["id"] if cards else "")
+            )
             self._refresh_character_list(cards, drafts, select_id)
+            self._refresh_character_editor(config)
             self._refresh_worldbook_draft_view(config)
             self._refresh_character_draft_view(config)
             self._refresh_summary(config)
-            self._refresh_prompt_preview()
+            self._refresh_prompt_preview(config)
         finally:
             self._loading_ui = False
-        self._refresh_action_state()
+        self._refresh_action_state(config)
 
     def _refresh_summary(self, config: Config) -> None:
         """刷新摘要。"""
@@ -662,11 +754,118 @@ class RenpyWorkbenchPage(Base, QWidget):
                 Localizer.get().workbench_narrative_rules_2.format(draft_get_narrative_rules=draft.get('narrative_rules', '')),
                 Localizer.get().workbench_formatting_rules_2.format(draft_get_format_rules=draft.get('format_rules', '')),
                 Localizer.get().workbench_spoiler_notes_2.format(draft_get_spoiler_notes=draft.get('spoiler_notes', '')),
+                Localizer.get().workbench_reference_notes_preview.format(
+                    reference_notes=draft.get("reference_notes", "")
+                ),
             ]
             self.worldbook_draft_preview.setPlainText("\n\n".join(lines))
         else:
             self.worldbook_draft_preview.setPlainText("")
         self.worldbook_raw_preview.setPlainText(self._last_worldbook_raw)
+
+    def _character_item_text(self, card: dict[str, Any], draft_ids: set[str]) -> str:
+        """构建角色列表项显示文本。"""
+        unnamed = Localizer.get().workbench_unnamed_character
+        name = card.get("name", unnamed)
+        suffix = []
+        if card.get("is_primary", False):
+            suffix.append(Localizer.get().workbench_main)
+        if card.get("enabled", True) is False:
+            suffix.append(Localizer.get().workbench_off)
+        if card.get("id") in draft_ids:
+            suffix.append(Localizer.get().workbench_draft)
+        if suffix:
+            return f"{name} [{' / '.join(suffix)}]"
+        return name
+
+    def _update_current_character_list_item(self) -> None:
+        """增量刷新选中角色所在列表项的文本。"""
+        card = self._visible_cards_by_id.get(self._selected_character_id)
+        if card is None:
+            return
+        text = self._character_item_text(card, self._draft_ids)
+        for row in range(self.character_list.count()):
+            item = self.character_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == self._selected_character_id:
+                if item.text() != text:
+                    item.setText(text)
+                break
+
+    def _set_character_filter(self, mode: str) -> None:
+        """切换角色列表筛选。"""
+        if mode not in self.character_filter_buttons:
+            mode = "all"
+        self._character_filter_mode = mode
+        button = self.character_filter_buttons.get(mode)
+        if button is not None:
+            button.setChecked(True)
+        self._apply_character_filters()
+
+    def _prepare_character_view(
+        self,
+        mode: str,
+        selected_id: str = "",
+        *,
+        clear_search: bool = False,
+    ) -> None:
+        """在列表重建前预设筛选和选中项，不触发旧列表信号。"""
+        if mode not in self.character_filter_buttons:
+            mode = "all"
+        self._character_filter_mode = mode
+        self.character_filter_buttons[mode].setChecked(True)
+        self._selected_character_id = normalize_text(selected_id)
+        if clear_search:
+            self.character_search_edit.blockSignals(True)
+            try:
+                self.character_search_edit.clear()
+            finally:
+                self.character_search_edit.blockSignals(False)
+
+    def _apply_character_filters(self) -> None:
+        """按搜索词和审核状态过滤角色，不重建列表。"""
+        query = normalize_text(self.character_search_edit.text()).casefold()
+        visible_items: list[QListWidgetItem] = []
+        for row in range(self.character_list.count()):
+            item = self.character_list.item(row)
+            card_id = normalize_text(item.data(Qt.ItemDataRole.UserRole))
+            card = self._visible_cards_by_id.get(card_id, {})
+            search_text = "\n".join(
+                [
+                    normalize_text(card.get("name", "")),
+                    normalize_text(card.get("name_translation", "")),
+                    *normalize_text_list(card.get("aliases", [])),
+                    *normalize_text_list(card.get("match_keywords", [])),
+                ]
+            ).casefold()
+            matches_mode = (
+                self._character_filter_mode == "all"
+                or (
+                    self._character_filter_mode == "pending"
+                    and card_id in self._draft_ids
+                )
+                or (
+                    self._character_filter_mode == "applied"
+                    and card_id not in self._draft_ids
+                )
+            )
+            visible = matches_mode and (query == "" or query in search_text)
+            item.setHidden(not visible)
+            if visible:
+                visible_items.append(item)
+
+        self.character_count_label.setText(
+            Localizer.get().workbench_character_count.format(
+                visible=len(visible_items),
+                total=self.character_list.count(),
+            )
+        )
+        current = self.character_list.currentItem()
+        if current is not None and current.isHidden() is False:
+            return
+        if visible_items:
+            self.character_list.setCurrentItem(visible_items[0])
+        else:
+            self.character_list.setCurrentItem(None)
 
     def _refresh_character_list(
         self,
@@ -675,64 +874,82 @@ class RenpyWorkbenchPage(Base, QWidget):
         select_id: str,
     ) -> None:
         """刷新角色列表。"""
-        self.character_list.clear()
-        draft_ids = {draft.get("id") for draft in drafts}
-        visible_cards = list(cards)
-        formal_ids = {card.get("id") for card in cards}
-        visible_cards.extend(draft for draft in drafts if draft.get("id") not in formal_ids)
-        for card in visible_cards:
-            unnamed = Localizer.get().workbench_unnamed_character
-            item = QListWidgetItem(card.get("name", unnamed))
-            item.setData(Qt.ItemDataRole.UserRole, card.get("id", ""))
-            suffix = []
-            if card.get("is_primary", False):
-                suffix.append(Localizer.get().workbench_main)
-            if card.get("enabled", True) is False:
-                suffix.append(Localizer.get().workbench_off)
-            if card.get("id") in draft_ids:
-                suffix.append(Localizer.get().workbench_draft)
-            if suffix:
-                item.setText(f"{card.get('name', unnamed)} [{' / '.join(suffix)}]")
-            self.character_list.addItem(item)
-
-        self._selected_character_id = (
-            select_id
-            if any(card.get("id") == select_id for card in visible_cards)
-            else ""
+        self._draft_ids = {draft.get("id") for draft in drafts}
+        self._formal_cards_by_id = {card.get("id"): card for card in cards}
+        self._draft_cards_by_id = {draft.get("id"): draft for draft in drafts}
+        formal_by_id = {card.get("id"): card for card in cards}
+        visible_cards = [
+            formal_by_id.get(draft.get("id"), draft)
+            for draft in drafts
+        ]
+        visible_cards.extend(
+            card for card in cards if card.get("id") not in self._draft_ids
         )
-        if self.character_list.count() == 0:
-            self._clear_character_editor()
-            return
+        self._visible_cards_by_id = {card.get("id"): card for card in visible_cards}
 
-        target_row = 0
-        for row in range(self.character_list.count()):
-            item = self.character_list.item(row)
-            if item.data(Qt.ItemDataRole.UserRole) == self._selected_character_id:
-                target_row = row
-                break
-        self.character_list.setCurrentRow(target_row)
+        list_widget = self.character_list
+        # 重建期间屏蔽选中信号，编辑器与按钮状态由 refresh_from_config 统一刷新。
+        list_widget.blockSignals(True)
+        try:
+            list_widget.clear()
+            for card in visible_cards:
+                item = QListWidgetItem(self._character_item_text(card, self._draft_ids))
+                item.setData(Qt.ItemDataRole.UserRole, card.get("id", ""))
+                list_widget.addItem(item)
+
+            self._apply_character_filters()
+            visible_ids = {
+                normalize_text(list_widget.item(row).data(Qt.ItemDataRole.UserRole))
+                for row in range(list_widget.count())
+                if list_widget.item(row).isHidden() is False
+            }
+            self._selected_character_id = select_id if select_id in visible_ids else ""
+            if visible_ids == set():
+                list_widget.setCurrentItem(None)
+                return
+
+            target_row = 0
+            for row in range(list_widget.count()):
+                item = list_widget.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == self._selected_character_id:
+                    target_row = row
+                    break
+                if self._selected_character_id == "" and item.isHidden() is False:
+                    target_row = row
+                    break
+            list_widget.setCurrentRow(target_row)
+            self._selected_character_id = normalize_text(
+                list_widget.item(target_row).data(Qt.ItemDataRole.UserRole)
+            )
+        finally:
+            list_widget.blockSignals(False)
 
     def _clear_character_editor(self) -> None:
         """清空角色编辑区。"""
-        for widget in self.character_widgets.values():
-            if isinstance(widget, PlainTextEdit):
-                widget.setPlainText("")
-            else:
-                widget.setText("")
-        self.character_enabled_checkbox.setChecked(False)
-        self.character_primary_checkbox.setChecked(False)
-        self.character_draft_preview.setPlainText("")
-        self.character_raw_preview.setPlainText(self._last_character_raw)
+        was_loading = self._loading_ui
+        self._loading_ui = True
+        try:
+            for widget in self.character_widgets.values():
+                if isinstance(widget, PlainTextEdit):
+                    widget.setPlainText("")
+                else:
+                    widget.setText("")
+            self.character_enabled_checkbox.setChecked(False)
+            self.character_primary_checkbox.setChecked(False)
+            self.character_draft_preview.setPlainText("")
+            self.character_raw_preview.setPlainText(self._last_character_raw)
+        finally:
+            self._loading_ui = was_loading
 
     def _refresh_character_editor(self, config: Config) -> None:
         """根据当前选中角色刷新编辑器。"""
-        cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
-        current = next((card for card in cards if card.get("id") == self._selected_character_id), None)
+        current = self._formal_cards_by_id.get(self._selected_character_id)
         if current is None:
             self._clear_character_editor()
             self._refresh_character_draft_view(config)
             return
 
+        was_loading = self._loading_ui
         self._loading_ui = True
         try:
             self.character_widgets["name"].setText(current.get("name", ""))
@@ -748,13 +965,12 @@ class RenpyWorkbenchPage(Base, QWidget):
             self.character_enabled_checkbox.setChecked(bool(current.get("enabled", True)))
             self.character_primary_checkbox.setChecked(bool(current.get("is_primary", False)))
         finally:
-            self._loading_ui = False
+            self._loading_ui = was_loading
         self._refresh_character_draft_view(config)
 
     def _refresh_character_draft_view(self, config: Config) -> None:
         """刷新角色草稿预览。"""
-        drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
-        draft = next((card for card in drafts if card.get("id") == self._selected_character_id), None)
+        draft = self._draft_cards_by_id.get(self._selected_character_id)
         if draft is None:
             self.character_draft_preview.setPlainText("")
         else:
@@ -781,20 +997,17 @@ class RenpyWorkbenchPage(Base, QWidget):
             self.character_draft_preview.setPlainText("\n".join(lines))
         self.character_raw_preview.setPlainText(self._last_character_raw)
 
-    def _refresh_action_state(self) -> None:
+    def _refresh_action_state(self, config: Config | None = None) -> None:
         """刷新按钮状态。"""
-        config = self._load_config()
+        config = config or self._get_config_snapshot()
         platform = config.get_platform(config.activate_platform)
         api_format = platform.get("api_format") if isinstance(platform, dict) else None
         engine_busy = Engine.get().get_status() != Engine.Status.IDLE
         supported = api_format in WorkbenchAnalysisService.SUPPORTED_FORMATS
         analysis_ready = supported and not engine_busy and not self._analysis_running and not self._sync_running
         has_worldbook_draft = any(normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {})).values())
-        has_character_draft = any(
-            card.get("id") == self._selected_character_id
-            for card in normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
-        )
-        has_any_draft = has_worldbook_draft or bool(getattr(config, "renpy_workbench_generated_character_drafts", []))
+        has_character_draft = self._selected_character_id in self._draft_ids
+        has_any_draft = has_worldbook_draft or bool(self._draft_ids)
 
         for button in (
             self.btn_generate_current,
@@ -816,6 +1029,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         )
         self.btn_character_add.setEnabled(not self._analysis_running and not self._sync_running)
         self.btn_character_delete.setEnabled(not self._analysis_running and not self._sync_running and self._selected_character_id != "")
+        for button in (
+            self.btn_import_drafts,
+            self.btn_import_apply,
+            self.btn_export_assets,
+            self.btn_clear_characters,
+        ):
+            button.setEnabled(not self._analysis_running and not self._sync_running)
 
         if engine_busy:
             self.overview_status_label.setText(Localizer.get().workbench_translation_task_running_ai_generation_character_sync)
@@ -830,85 +1050,139 @@ class RenpyWorkbenchPage(Base, QWidget):
         """世界观开关变化。"""
         if self._loading_ui:
             return
-        config = self._load_config()
+        config = self._get_config_snapshot()
         config.renpy_workbench_worldbook_enable = bool(state)
         self._save_config(config)
-        self._refresh_prompt_preview()
+        self._refresh_prompt_preview(config)
         self._refresh_summary(config)
 
     def _on_character_cards_toggle_changed(self, state: int) -> None:
         """角色卡开关变化。"""
         if self._loading_ui:
             return
-        config = self._load_config()
+        config = self._get_config_snapshot()
         config.renpy_workbench_character_cards_enable = bool(state)
         self._save_config(config)
-        self._refresh_prompt_preview()
+        self._refresh_prompt_preview(config)
         self._refresh_summary(config)
 
     def _on_worldbook_field_changed(self, field: str) -> None:
-        """世界观字段变化。"""
+        """世界观字段变化，去抖批量保存。"""
         if self._loading_ui:
             return
-        config = self._load_config()
-        worldbook = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
-        widget = self.worldbook_widgets.get(field)
-        if widget is None:
-            return
-        if isinstance(widget, PlainTextEdit):
-            worldbook[field] = widget.toPlainText().strip()
-        else:
-            worldbook[field] = widget.text().strip()
-        config.renpy_workbench_worldbook_data = worldbook
-        self._save_config(config)
-        self._refresh_summary(config)
-        self._refresh_prompt_preview()
+        self._pending_worldbook_fields.add(field)
+        self._edit_save_timer.start()
 
     def _on_character_item_changed(self, current: QListWidgetItem, previous: QListWidgetItem) -> None:
         """角色列表选中变化。"""
         del previous
+        if self._loading_ui:
+            return
+        if self._pending_character_fields:
+            self._flush_pending_edits()
         if current is None:
             self._selected_character_id = ""
             self._clear_character_editor()
-            self._refresh_action_state()
+            self._refresh_action_state(self._get_config_snapshot())
             return
         self._selected_character_id = normalize_text(current.data(Qt.ItemDataRole.UserRole))
-        config = self._load_config()
+        config = self._get_config_snapshot()
         self._refresh_character_editor(config)
-        self._refresh_action_state()
+        self._refresh_action_state(config)
+
+    def _flush_pending_edits(self) -> None:
+        """把待保存的世界观/角色字段批量落盘，并刷新摘要与提示词预览。"""
+        if self._loading_ui:
+            return
+        self._edit_save_timer.stop()
+        worldbook_fields = self._pending_worldbook_fields
+        character_fields = self._pending_character_fields
+        self._pending_worldbook_fields = set()
+        self._pending_character_fields = set()
+        if not worldbook_fields and not character_fields:
+            return
+
+        config = self._get_config_snapshot()
+        if worldbook_fields:
+            worldbook = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
+            for field in worldbook_fields:
+                widget = self.worldbook_widgets.get(field)
+                if widget is None:
+                    continue
+                if isinstance(widget, PlainTextEdit):
+                    worldbook[field] = widget.toPlainText().strip()
+                else:
+                    worldbook[field] = widget.text().strip()
+            config.renpy_workbench_worldbook_data = worldbook
+
+        if character_fields and self._selected_character_id != "":
+            cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
+            current_card: dict[str, Any] | None = None
+            updated_cards: list[dict[str, Any]] = []
+            for card in cards:
+                if card.get("id") == self._selected_character_id:
+                    for field in character_fields:
+                        widget = self.character_widgets.get(field)
+                        if widget is None:
+                            continue
+                        if field in ("aliases", "match_keywords", "sample_lines"):
+                            card[field] = normalize_text_list(widget.toPlainText().splitlines())
+                        elif isinstance(widget, PlainTextEdit):
+                            card[field] = widget.toPlainText().strip()
+                        else:
+                            card[field] = widget.text().strip()
+                    current_card = normalize_character_card(card)
+                    updated_cards.append(current_card)
+                else:
+                    updated_cards.append(card)
+            if current_card is not None:
+                config.renpy_workbench_character_cards = updated_cards
+                self._visible_cards_by_id[self._selected_character_id] = current_card
+                self._formal_cards_by_id[self._selected_character_id] = current_card
+
+        self._save_config(config)
+        self._refresh_summary(config)
+        self._update_current_character_list_item()
+        self._refresh_prompt_preview(config)
 
     def _update_current_character_card(self, updater) -> None:
-        """更新当前角色卡。"""
+        """立即更新当前角色卡（用于开关类低频操作）。"""
         if self._loading_ui or self._selected_character_id == "":
             return
-        config = self._load_config()
+        config = self._get_config_snapshot()
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
+        current_card: dict[str, Any] | None = None
         updated_cards: list[dict[str, Any]] = []
         for card in cards:
             if card.get("id") == self._selected_character_id:
                 updater(card)
-                updated_cards.append(normalize_character_card(card))
+                current_card = normalize_character_card(card)
+                updated_cards.append(current_card)
             else:
                 updated_cards.append(card)
+        if current_card is None:
+            return
         config.renpy_workbench_character_cards = updated_cards
         self._save_config(config)
+        self._visible_cards_by_id[self._selected_character_id] = current_card
+        self._formal_cards_by_id[self._selected_character_id] = current_card
+        self._update_current_character_list_item()
         self._refresh_summary(config)
-        self._refresh_prompt_preview()
-        self._refresh_character_list(updated_cards, normalize_character_cards(config.renpy_workbench_generated_character_drafts), self._selected_character_id)
-        self._refresh_character_editor(config)
+        self._refresh_prompt_preview(config)
 
     def _on_character_field_changed(self, field: str) -> None:
-        """角色字段变化。"""
-        def updater(card: dict[str, Any]) -> None:
-            widget = self.character_widgets[field]
-            if field in ("aliases", "match_keywords", "sample_lines"):
-                card[field] = normalize_text_list(widget.toPlainText().splitlines())
-            elif isinstance(widget, PlainTextEdit):
-                card[field] = widget.toPlainText().strip()
-            else:
-                card[field] = widget.text().strip()
-
-        self._update_current_character_card(updater)
+        """角色字段变化，去抖批量保存；名称变化时立即更新列表项文本。"""
+        if self._loading_ui or self._selected_character_id == "":
+            return
+        self._pending_character_fields.add(field)
+        self._edit_save_timer.start()
+        if field == "name":
+            overlay = dict(self._visible_cards_by_id.get(self._selected_character_id, {}))
+            widget = self.character_widgets.get("name")
+            if widget is not None:
+                overlay["name"] = widget.text().strip()
+                self._visible_cards_by_id[self._selected_character_id] = overlay
+                self._update_current_character_list_item()
 
     def _on_character_flag_changed(self, field: str, state: int) -> None:
         """角色布尔开关变化。"""
@@ -919,20 +1193,20 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _add_character_card(self) -> None:
         """新增空白角色卡。"""
-        config = self._load_config()
+        config = self._get_config_snapshot()
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
         card = create_default_character_card(Localizer.get().workbench_character.format(len_cards=len(cards) + 1))
         cards.append(card)
         config.renpy_workbench_character_cards = cards
         self._save_config(config)
-        self._selected_character_id = card["id"]
-        self.refresh_from_config()
+        self._prepare_character_view("applied", card["id"])
+        self.refresh_from_config(config)
 
     def _delete_current_character(self) -> None:
         """删除当前角色卡。"""
         if self._selected_character_id == "":
             return
-        config = self._load_config()
+        config = self._get_config_snapshot()
         cards = [
             card
             for card in normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
@@ -947,15 +1221,15 @@ class RenpyWorkbenchPage(Base, QWidget):
         config.renpy_workbench_generated_character_drafts = drafts
         self._save_config(config)
         self._selected_character_id = cards[0]["id"] if cards else ""
-        self.refresh_from_config()
+        self.refresh_from_config(config)
 
     def _schedule_prompt_preview(self) -> None:
         """延迟刷新提示词预览。"""
         self._preview_timer.start()
 
-    def _refresh_prompt_preview(self) -> None:
+    def _refresh_prompt_preview(self, config: Config | None = None) -> None:
         """刷新提示词预览。"""
-        config = self._load_config()
+        config = config or self._get_config_snapshot()
         prompt_builder = PromptBuilder(config)
         sample_text = self.preview_input_edit.toPlainText().strip()
         srcs = [line.strip() for line in sample_text.splitlines() if line.strip()]
@@ -1087,12 +1361,12 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._last_worldbook_raw = result.worldbook_raw
 
         if result.character_drafts:
+            incoming = normalize_character_cards(result.character_drafts)
             if mode in ("all", "characters"):
-                config.renpy_workbench_generated_character_drafts = normalize_character_cards(result.character_drafts)
+                config.renpy_workbench_generated_character_drafts = incoming
             else:
                 drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
                 merged: list[dict[str, Any]] = []
-                incoming = normalize_character_cards(result.character_drafts)
                 incoming_map = {card.get("id"): card for card in incoming}
                 consumed: set[str] = set()
                 for draft in drafts:
@@ -1109,9 +1383,15 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._last_character_raw = "\n\n-----\n\n".join(result.character_raw)
 
         self._save_config(config)
-        if card_id:
+        if result.character_drafts:
+            self._prepare_character_view(
+                "pending",
+                card_id or incoming[0]["id"],
+                clear_search = True,
+            )
+        elif card_id:
             self._selected_character_id = card_id
-        self.refresh_from_config()
+        self.refresh_from_config(config)
         self.overview_status_label.setText(Localizer.get().workbench_ai_drafts_ready_review_them_right_before)
         InfoBar.success(
             Localizer.get().complete,
@@ -1129,7 +1409,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._last_worldbook_raw = raw_response
         else:
             self._last_character_raw = raw_response
-        self.refresh_from_config()
+        self.refresh_from_config(self._get_config_snapshot())
         self.overview_status_label.setText(message)
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
@@ -1208,9 +1488,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         config.renpy_workbench_generated_character_drafts = merged_drafts
         self._save_config(config)
         self._analysis_source_summary = Localizer.get().workbench_character_sync_source.format(payload_get_source_summary=payload.get('source_summary', ''))
-        if self._selected_character_id == "" and payload["drafts"]:
-            self._selected_character_id = payload["drafts"][0]["id"]
-        self.refresh_from_config()
+        if payload["drafts"]:
+            self._prepare_character_view(
+                "pending",
+                payload["drafts"][0]["id"],
+                clear_search = True,
+            )
+        self.refresh_from_config(config)
         added = payload.get("added", 0)
         sync_result = Localizer.get().workbench_character_sync_complete_new_drafts_ready_review.format(added=added)
         self.overview_status_label.setText(sync_result)
@@ -1225,7 +1509,7 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _apply_worldbook_draft(self) -> None:
         """应用世界观草稿。"""
-        config = self._load_config()
+        config = self._get_config_snapshot()
         draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
         if any(draft.values()) is False:
             InfoBar.warning(
@@ -1234,11 +1518,15 @@ class RenpyWorkbenchPage(Base, QWidget):
                 parent = self,
             )
             return
-        config.renpy_workbench_worldbook_data = draft
+        current = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
+        config.renpy_workbench_worldbook_data = {
+            field: value or current.get(field, "")
+            for field, value in draft.items()
+        }
         config.renpy_workbench_worldbook_enable = True
         config.renpy_workbench_generated_worldbook_draft = {}
         self._save_config(config)
-        self.refresh_from_config()
+        self.refresh_from_config(config)
         InfoBar.success(
             Localizer.get().complete,
             Localizer.get().workbench_worldbuilding_draft_has_been_applied,
@@ -1254,7 +1542,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 parent = self,
             )
             return
-        config = self._load_config()
+        config = self._get_config_snapshot()
         drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
         draft = next((card for card in drafts if card.get("id") == self._selected_character_id), None)
         if draft is None:
@@ -1283,8 +1571,13 @@ class RenpyWorkbenchPage(Base, QWidget):
             for card in drafts
             if card.get("id") != self._selected_character_id
         ]
+        remaining_drafts = list(config.renpy_workbench_generated_character_drafts)
         self._save_config(config)
-        self.refresh_from_config()
+        if remaining_drafts:
+            self._prepare_character_view("pending", remaining_drafts[0]["id"])
+        else:
+            self._prepare_character_view("applied", self._selected_character_id)
+        self.refresh_from_config(config)
         InfoBar.success(
             Localizer.get().complete,
             Localizer.get().workbench_character_draft_has_been_applied,
@@ -1293,19 +1586,36 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _apply_all_drafts(self) -> None:
         """应用全部草稿。"""
-        config = self._load_config()
-        world_draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
-        char_drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
-        if any(world_draft.values()) is False and char_drafts == []:
+        config = self._get_config_snapshot()
+        if self._apply_drafts_to_config(config) is False:
             InfoBar.warning(
                 Localizer.get().notice,
                 Localizer.get().workbench_there_no_drafts_apply,
                 parent = self,
             )
             return
+        self._save_config(config)
+        self._prepare_character_view("applied", self._selected_character_id)
+        self.refresh_from_config(config)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_all_drafts_have_been_applied,
+            parent = self,
+        )
+
+    def _apply_drafts_to_config(self, config: Config) -> bool:
+        """把配置中的全部草稿晋升为正式资产并启用。"""
+        world_draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
+        char_drafts = normalize_character_cards(getattr(config, "renpy_workbench_generated_character_drafts", []))
+        if any(world_draft.values()) is False and char_drafts == []:
+            return False
 
         if any(world_draft.values()):
-            config.renpy_workbench_worldbook_data = world_draft
+            current = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
+            config.renpy_workbench_worldbook_data = {
+                field: value or current.get(field, "")
+                for field, value in world_draft.items()
+            }
             config.renpy_workbench_worldbook_enable = True
 
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
@@ -1320,18 +1630,195 @@ class RenpyWorkbenchPage(Base, QWidget):
         config.renpy_workbench_character_cards_enable = True
         config.renpy_workbench_generated_worldbook_draft = {}
         config.renpy_workbench_generated_character_drafts = []
-        self._save_config(config)
-        self.refresh_from_config()
+        return True
+
+    def _merge_imported_cards_as_drafts(
+        self,
+        config: Config,
+        incoming_cards: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """导入角色卡先进入草稿；部分字段基于已有正式卡补全。"""
+        drafts = normalize_character_cards(
+            getattr(config, "renpy_workbench_generated_character_drafts", [])
+        )
+        formal_cards = normalize_character_cards(
+            getattr(config, "renpy_workbench_character_cards", [])
+        )
+        draft_ids = {card["id"] for card in drafts}
+        draft_names = {card["name"].casefold() for card in drafts}
+        formal_by_id = {card["id"]: card for card in formal_cards}
+        formal_by_name = {card["name"].casefold(): card for card in formal_cards}
+
+        for raw in incoming_cards:
+            incoming = normalize_character_card(raw)
+            if incoming["id"] in draft_ids or incoming["name"].casefold() in draft_names:
+                continue
+            base = formal_by_id.get(incoming["id"]) or formal_by_name.get(
+                incoming["name"].casefold()
+            )
+            if base is not None:
+                drafts.append(base)
+                draft_ids.add(base["id"])
+                draft_names.add(base["name"].casefold())
+
+        return merge_imported_character_cards(drafts, incoming_cards)
+
+    def _import_project_assets(self, apply_now: bool) -> None:
+        """从 JSON 批量导入世界观和角色卡。"""
+        self._flush_pending_edits()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            Localizer.get().workbench_select_import_file,
+            "",
+            Localizer.get().workbench_json_file_filter,
+        )
+        if path == "":
+            return
+
+        try:
+            payload = json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+            worldbook, incoming_cards = parse_workbench_exchange(payload)
+            config = self._get_config_snapshot()
+            if worldbook:
+                current_draft = getattr(
+                    config,
+                    "renpy_workbench_generated_worldbook_draft",
+                    {},
+                )
+                config.renpy_workbench_generated_worldbook_draft = (
+                    merge_imported_worldbook(current_draft, worldbook)
+                )
+            if incoming_cards:
+                config.renpy_workbench_generated_character_drafts = (
+                    self._merge_imported_cards_as_drafts(config, incoming_cards)
+                )
+
+            first_id = (
+                normalize_character_card(incoming_cards[0])["id"]
+                if incoming_cards
+                else self._selected_character_id
+            )
+            if apply_now:
+                self._apply_drafts_to_config(config)
+                self._prepare_character_view("applied", first_id, clear_search = True)
+            elif incoming_cards:
+                self._prepare_character_view("pending", first_id, clear_search = True)
+
+            self._save_config(config)
+            self.refresh_from_config(config)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().workbench_import_failed.format(error=exc),
+                parent = self,
+                duration = 5000,
+            )
+            return
+
+        message = (
+            Localizer.get().workbench_import_applied
+            if apply_now
+            else Localizer.get().workbench_imported_as_drafts
+        ).format(count=len(incoming_cards))
+        InfoBar.success(Localizer.get().complete, message, parent = self)
+
+    def _export_project_assets(self) -> None:
+        """将当前项目工作台资料导出为 UTF-8 JSON。"""
+        self._flush_pending_edits()
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            Localizer.get().workbench_select_export_file,
+            "RenpyBox_Workbench.json",
+            Localizer.get().workbench_json_file_filter,
+        )
+        if path == "":
+            return
+        if Path(path).suffix.casefold() != ".json":
+            path = f"{path}.json"
+
+        config = self._get_config_snapshot()
+        payload = {
+            "schema_version": 1,
+            "worldbook": normalize_worldbook(
+                getattr(config, "renpy_workbench_worldbook_data", {})
+            ),
+            "character_cards": normalize_character_cards(
+                getattr(config, "renpy_workbench_character_cards", [])
+            ),
+            "worldbook_draft": normalize_worldbook(
+                getattr(config, "renpy_workbench_generated_worldbook_draft", {})
+            ),
+            "character_drafts": normalize_character_cards(
+                getattr(config, "renpy_workbench_generated_character_drafts", [])
+            ),
+        }
+        try:
+            Path(path).write_text(
+                json.dumps(payload, ensure_ascii = False, indent = 2) + "\n",
+                encoding = "utf-8",
+            )
+        except OSError as exc:
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().workbench_export_failed.format(error=exc),
+                parent = self,
+                duration = 5000,
+            )
+            return
+
         InfoBar.success(
             Localizer.get().complete,
-            Localizer.get().workbench_all_drafts_have_been_applied,
+            Localizer.get().workbench_export_complete.format(path=path),
+            parent = self,
+        )
+
+    def _clear_current_project_characters(self) -> None:
+        """清空当前项目的正式角色卡和待审核草稿。"""
+        self._flush_pending_edits()
+        config = self._get_config_snapshot()
+        cards = normalize_character_cards(
+            getattr(config, "renpy_workbench_character_cards", [])
+        )
+        drafts = normalize_character_cards(
+            getattr(config, "renpy_workbench_generated_character_drafts", [])
+        )
+        if cards == [] and drafts == []:
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().workbench_no_characters_to_clear,
+                parent = self,
+            )
+            return
+
+        dialog = MessageBox(
+            Localizer.get().confirm,
+            Localizer.get().workbench_clear_current_characters_confirm.format(
+                cards=len(cards),
+                drafts=len(drafts),
+            ),
+            self,
+        )
+        dialog.yesButton.setText(Localizer.get().confirm)
+        dialog.cancelButton.setText(Localizer.get().cancel)
+        if not dialog.exec():
+            return
+
+        config.renpy_workbench_character_cards = []
+        config.renpy_workbench_generated_character_drafts = []
+        config.renpy_workbench_character_cards_enable = False
+        self._save_config(config)
+        self._prepare_character_view("all", "", clear_search = True)
+        self.refresh_from_config(config)
+        InfoBar.success(
+            Localizer.get().complete,
+            Localizer.get().workbench_current_characters_cleared,
             parent = self,
         )
 
     def _regenerate_current_character(self) -> None:
         """重生当前角色。"""
         scope = ANALYSIS_SCOPE_CURRENT
-        config = self._load_config()
+        config = self._get_config_snapshot()
         scope = normalize_analysis_scope(getattr(config, "renpy_workbench_last_analysis_scope", ANALYSIS_SCOPE_CURRENT))
         self._start_analysis("character_single", scope)
 
@@ -1378,4 +1865,9 @@ class RenpyWorkbenchPage(Base, QWidget):
     def showEvent(self, event: QEvent) -> None:
         """页面显示时刷新状态。"""
         super().showEvent(event)
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            self._refresh_action_state(self._get_config_snapshot())
+            return
+        self._flush_pending_edits()
         self.refresh_from_config()

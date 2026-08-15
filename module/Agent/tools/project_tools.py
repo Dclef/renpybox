@@ -10,6 +10,7 @@ from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     apply_to_config,
     looks_like_renpy_path,
+    source_script_counts,
 )
 from module.Tool.ErrorRepairer import ErrorRepairer
 
@@ -122,11 +123,29 @@ def list_rpa_files(
         return _not_set()
     files = sorted(paths.game_dir.glob("*.rpa"), key=lambda item: item.name.casefold())
     names = [item.name for item in files]
+    rpy_count, rpyc_count = source_script_counts(paths)
+    unpack_required = bool(names) and rpy_count == 0 and rpyc_count == 0
+    rpa_state = (
+        "required"
+        if unpack_required
+        else "scripts_present"
+        if names
+        else "not_applicable"
+    )
+    data = {
+        "files": names[:100],
+        "count": len(names),
+        "truncated": len(names) > 100,
+        "rpy_count": rpy_count,
+        "rpyc_count": rpyc_count,
+        "unpack_required": unpack_required,
+        "rpa_state": rpa_state,
+    }
     if not names:
         return ToolResult(
             True,
             Localizer.get().agent_rpa_not_found,
-            data={"files": [], "count": 0},
+            data=data,
         )
     return ToolResult(
         True,
@@ -134,11 +153,7 @@ def list_rpa_files(
             count=len(names),
             files=", ".join(names[:50]),
         ),
-        data={
-            "files": names[:100],
-            "count": len(names),
-            "truncated": len(names) > 100,
-        },
+        data=data,
     )
 
 

@@ -12,7 +12,9 @@ from module.Localizer.Localizer import Localizer
 
 from .tools import (
     get_project_info,
+    inspect_translation_project,
     list_rpa_files,
+    optimize_old_new_translations,
     scan_script_errors,
     set_project,
     unpack_rpa_files,
@@ -69,6 +71,14 @@ class ToolDispatcher:
                 parameters_schema=deepcopy(empty_schema),
                 handler=lambda: get_project_info(config_loader=self.config_loader),
             ),
+            "inspect_translation_project": ToolDef(
+                name="inspect_translation_project",
+                description=localizer.agent_tool_inspect_translation_project_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=lambda: inspect_translation_project(
+                    config_loader=self.config_loader
+                ),
+            ),
             "list_rpa_files": ToolDef(
                 name="list_rpa_files",
                 description=localizer.agent_tool_list_rpa_files_description,
@@ -88,6 +98,17 @@ class ToolDispatcher:
                 handler=lambda _confirmed_game_dir: unpack_rpa_files(
                     config_loader=self.config_loader,
                     confirmed_game_dir=_confirmed_game_dir,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=True,
+            ),
+            "optimize_old_new_translations": ToolDef(
+                name="optimize_old_new_translations",
+                description=localizer.agent_tool_optimize_old_new_translations_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=lambda _confirmed_context: optimize_old_new_translations(
+                    config_loader=self.config_loader,
+                    confirmed_context=_confirmed_context,
                 ),
                 requires_confirmation=True,
                 requires_idle_engine=True,
@@ -176,6 +197,14 @@ class ToolDispatcher:
                     code="CONFIRMATION_STALE",
                 )
             handler_arguments["_confirmed_game_dir"] = confirmed_game_dir
+        elif tool.name == "optimize_old_new_translations":
+            if not trusted_context:
+                return ToolResult(
+                    False,
+                    localizer.agent_tool_confirmation_stale,
+                    code="CONFIRMATION_STALE",
+                )
+            handler_arguments["_confirmed_context"] = dict(trusted_context)
 
         acquired = False
         if tool.requires_idle_engine:

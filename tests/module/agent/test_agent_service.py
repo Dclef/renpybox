@@ -140,6 +140,53 @@ def test_service_confirmation_timeout_does_not_execute_tool(monkeypatch) -> None
     assert result.data["events"][0]["code"] == "CONFIRMATION_TIMEOUT"
 
 
+def test_service_runs_ui_confirmed_tool_once_without_model_request(monkeypatch) -> None:
+    """界面确认的快捷工具直接执行一次，不再请求模型决定是否调用。"""
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("快捷工具不应请求模型")
+        ),
+    )
+    dispatcher = _ConfirmDispatcher()
+    service = AgentService(config_loader=_agent_config, dispatcher=dispatcher)
+    snapshot = {"game_dir": "E:/game/game", "count": 1}
+    monkeypatch.setattr(service, "confirmation_context", lambda _name: dict(snapshot))
+    events = []
+
+    result = service.run_confirmed_tool(
+        "unpack_rpa_files",
+        trusted_context=snapshot,
+        callback=lambda name, payload: events.append((name, payload)),
+    )
+
+    assert result.success is True
+    assert dispatcher.calls == [
+        ("unpack_rpa_files", {}, True, snapshot)
+    ]
+    assert [name for name, _payload in events] == ["tool_start", "tool_done"]
+
+
+def test_service_rejects_stale_ui_confirmation_snapshot() -> None:
+    """确认后项目发生变化时不得在新项目上执行解包。"""
+    dispatcher = _ConfirmDispatcher()
+    service = AgentService(config_loader=_agent_config, dispatcher=dispatcher)
+    service.confirmation_context = lambda _name: {
+        "game_dir": "E:/other/game",
+        "count": 2,
+    }
+
+    result = service.run_confirmed_tool(
+        "unpack_rpa_files",
+        trusted_context={"game_dir": "E:/game/game", "count": 1},
+    )
+
+    assert result.success is False
+    assert result.code == "CONFIRMATION_STALE"
+    assert dispatcher.calls == []
+
+
 def test_service_cancel_before_run_does_not_send_request(monkeypatch) -> None:
     cancel_event = threading.Event()
     cancel_event.set()

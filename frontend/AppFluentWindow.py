@@ -49,6 +49,22 @@ class AppFluentWindow(FluentWindow, Base):
     APP_THEME_COLOR: str = "#BCA483"
     HOMEPAGE: str = " RenpyBox"
 
+    @classmethod
+    def _resolve_window_size(cls) -> tuple[int, int]:
+        """按主屏可用区域收缩窗口尺寸。
+
+        高分屏（125%/150% 缩放）下逻辑分辨率变小，固定 1280x800 会超出屏幕，
+        导致窗口盖住任务栏、右侧控件被裁掉。
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return cls.APP_WIDTH, cls.APP_HEIGHT
+        available = screen.availableGeometry()
+        return (
+            min(cls.APP_WIDTH, available.width()),
+            min(cls.APP_HEIGHT, available.height()),
+        )
+
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
@@ -56,15 +72,20 @@ class AppFluentWindow(FluentWindow, Base):
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
 
-        # 设置窗口属性
-        self.resize(AppFluentWindow.APP_WIDTH, AppFluentWindow.APP_HEIGHT)
-        self.setMinimumSize(AppFluentWindow.APP_WIDTH, AppFluentWindow.APP_HEIGHT)
+        # 设置窗口属性（在可用区域内居中，不压住任务栏）
+        target_width, target_height = self._resolve_window_size()
+        self.resize(target_width, target_height)
+        self.setMinimumSize(target_width, target_height)
         self.setWindowTitle(f"RenpyBox {VersionManager.get().get_version()}")
         self.titleBar.iconLabel.hide()
 
-        # 设置启动位置
-        desktop = QApplication.desktop().availableGeometry()
-        self.move(desktop.width()//2 - self.width()//2, desktop.height()//2 - self.height()//2)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.move(
+                available.left() + max(0, (available.width() - self.width()) // 2),
+                available.top() + max(0, (available.height() - self.height()) // 2),
+            )
 
         # 设置侧边栏宽度
         self.navigationInterface.setExpandWidth(256)
