@@ -78,6 +78,7 @@ class Translator(Base):
         self._cancel_cleanup_thread: threading.Thread | None = None
         self._translation_run_initialized: bool = False
         self._translation_run_id: int = 0
+        self._active_request_id: str = ""
         self._active_run_cancel_event: threading.Event | None = None
         self._run_context = threading.local()
 
@@ -117,6 +118,9 @@ class Translator(Base):
             # 已设置的事件，不会因下一轮清理全局事件而复活。
             active_thread = getattr(self, "_translation_thread", None)
             active_run_id = getattr(self, "_translation_run_id", None)
+            active_request_id = str(
+                getattr(self, "_active_request_id", "") or ""
+            )
             run_cancel_event = getattr(self, "_active_run_cancel_event", None)
             if run_cancel_event is not None:
                 run_cancel_event.set()
@@ -220,6 +224,7 @@ class Translator(Base):
                     "success": False,
                     "stopped": True,
                     "run_id": active_run_id,
+                    "request_id": active_request_id,
                 })
                 with self._stop_watcher_lock:
                     self._stop_watcher = None
@@ -286,6 +291,11 @@ class Translator(Base):
         with self.data_lock:
             return getattr(self, "_translation_run_id", 0) == run_id
 
+    def _request_id_for_run(self, run_id: int | None) -> str:
+        if run_id is None or run_id != getattr(self, "_translation_run_id", 0):
+            return ""
+        return str(getattr(self, "_active_request_id", "") or "")
+
     def _bind_run_context(
         self,
         run_id: int | None,
@@ -332,6 +342,8 @@ class Translator(Base):
 
     # 翻译开始事件
     def translation_start(self, event: str, data: dict) -> None:
+        data = data if isinstance(data, dict) else {}
+        request_id = str(data.get("request_id", "") or "")
         with self._stop_watcher_lock:
             stop_watcher = self._stop_watcher
             cancel_cleanup = getattr(self, "_cancel_cleanup_thread", None)
@@ -344,6 +356,12 @@ class Translator(Base):
                 "type": Base.ToastType.WARNING,
                 "message": "上一次翻译仍在停止收尾，请稍候再开始。",
             })
+            if request_id:
+                self.emit(Base.Event.TRANSLATION_START_RESULT, {
+                    "accepted": False,
+                    "request_id": request_id,
+                    "reason": "STOPPING",
+                })
             return
 
         start_failed = False
@@ -356,6 +374,7 @@ class Translator(Base):
                 # 一旦看到 TRANSLATING，就一定能取得已登记且已启动的 MAIN。
                 self._translation_run_id = self._translation_run_id + 1
                 run_id = self._translation_run_id
+                self._active_request_id = request_id
                 run_cancel_event = threading.Event()
                 self._active_run_cancel_event = run_cancel_event
                 self._translation_run_initialized = False
@@ -368,12 +387,28 @@ class Translator(Base):
                 self._translation_thread = thread
                 try:
                     thread.start()
-                except Exception:
+                except Exception as exc:
                     run_cancel_event.set()
                     if self._translation_thread is thread:
                         self._translation_thread = None
+                    self._active_run_cancel_event = None
+                    self._active_request_id = ""
+                    self._translation_run_initialized = False
                     Engine.get().release_status(Engine.Status.TRANSLATING)
-                    raise
+                    if request_id:
+                        self.emit(Base.Event.TRANSLATION_START_RESULT, {
+                            "accepted": False,
+                            "request_id": request_id,
+                            "reason": "THREAD_START_FAILED",
+                        })
+                    self.error(f"翻译线程启动失败: {exc}")
+                    return
+                if request_id:
+                    self.emit(Base.Event.TRANSLATION_START_RESULT, {
+                        "accepted": True,
+                        "request_id": request_id,
+                        "run_id": run_id,
+                    })
                 return
             else:
                 start_failed = True
@@ -383,6 +418,12 @@ class Translator(Base):
                 "type": Base.ToastType.WARNING,
                 "message": Localizer.get().translator_running,
             })
+            if request_id:
+                self.emit(Base.Event.TRANSLATION_START_RESULT, {
+                    "accepted": False,
+                    "request_id": request_id,
+                    "reason": "ENGINE_BUSY",
+                })
 
     # 翻译结果手动导出事件
     def translation_manual_export(self, event: str, data: dict) -> None:
@@ -986,6 +1027,7 @@ class Translator(Base):
 
     def _finish_no_items_run(self, run_id: int | None) -> None:
         """以明确的空数据结果结束任务，避免误走“用户停止”流程。"""
+        request_id = self._request_id_for_run(run_id)
         progress = dict(self.cache_manager.get_project().get_progress() or {})
         progress["time"] = float(progress.get("time", 0) or 0)
         self.cache_manager.get_project().set_progress(progress)
@@ -999,6 +1041,7 @@ class Translator(Base):
             self.emit(Base.Event.TRANSLATION_DONE, {
                 "success": False,
                 "run_id": run_id,
+                "request_id": request_id,
                 "error": "NO_ITEMS",
                 "no_items": True,
             })
@@ -1043,6 +1086,7 @@ class Translator(Base):
         run_id: int | None = None,
         cancel_event: threading.Event | None = None,
     ) -> None:
+        run_request_id = self._request_id_for_run(run_id)
         self._bind_run_context(run_id, cancel_event)
         try:
             data = data if isinstance(data, dict) else {}
@@ -1101,6 +1145,7 @@ class Translator(Base):
                         self.emit(Base.Event.TRANSLATION_DONE, {
                             "success": False,
                             "run_id": run_id,
+                            "request_id": run_request_id,
                             "error": "INVALID_SOURCE_LAYOUT",
                         })
                     return None
@@ -1133,6 +1178,7 @@ class Translator(Base):
                     self.emit(Base.Event.TRANSLATION_DONE, {
                         "success": False,
                         "run_id": run_id,
+                        "request_id": run_request_id,
                         "error": type(e).__name__,
                     })
                 return None
@@ -1469,6 +1515,7 @@ class Translator(Base):
                 self.emit(Base.Event.TRANSLATION_DONE, {
                     "success": True,
                     "run_id": run_id,
+                    "request_id": run_request_id,
                     "output_folder": self.config.output_folder,
                 })
         except Exception as e:
@@ -1486,6 +1533,7 @@ class Translator(Base):
                 self.emit(Base.Event.TRANSLATION_DONE, {
                     "success": False,
                     "run_id": run_id,
+                    "request_id": run_request_id,
                     "error": type(e).__name__,
                 })
         finally:

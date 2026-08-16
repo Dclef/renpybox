@@ -37,6 +37,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
+from module.Localizer.Localizer import Localizer
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Extract.GlossaryCandidateService import extract_glossary_candidates
 from module.Text.SkipRules import should_skip_text
@@ -74,10 +75,17 @@ class GlossaryTranslateWorker(QThread):
             from module.Engine.FastTranslator import FastTranslator
 
             if not self.tasks:
-                self.finished.emit(True, "No tasks", [])
+                self.finished.emit(
+                    True,
+                    Localizer.get().local_glossary_no_entries_translate,
+                    [],
+                )
                 return
 
-            self.progress.emit("正在翻译术语库...", 0)
+            self.progress.emit(
+                Localizer.get().local_glossary_translating_glossary,
+                0,
+            )
             translator = FastTranslator(engine=self.engine)
             srcs = [src for _, src in self.tasks]
             translated = translator.translate_batch(srcs, target_lang=self.target_lang, source_lang=self.source_lang)
@@ -87,8 +95,12 @@ class GlossaryTranslateWorker(QThread):
                 dst = translated[idx] if idx < len(translated) else ""
                 results.append((row, dst))
 
-            self.progress.emit("术语库翻译完成", 100)
-            self.finished.emit(True, f"Translated {len(results)} items", results)
+            self.progress.emit(Localizer.get().local_glossary_glossary_translation_completed, 100)
+            self.finished.emit(
+                True,
+                Localizer.get().local_glossary_translated_entries.format(results_count=len(results)),
+                results,
+            )
 
         except BaseException as exc:
             self._logger.error(f"术语库翻译失败: {exc}")
@@ -167,11 +179,19 @@ class GlossaryLLMTranslateWorker(QThread):
     def run(self):
         try:
             if not self.tasks:
-                self.finished.emit(True, "No tasks", [])
+                self.finished.emit(
+                    True,
+                    Localizer.get().local_glossary_no_entries_translate,
+                    [],
+                )
                 return
 
             if not self.platform:
-                self.finished.emit(False, "未选择翻译引擎，请先在“翻译引擎”里设置并启用一个平台。", [])
+                self.finished.emit(
+                    False,
+                    Localizer.get().local_glossary_no_translation_engine_selected_configure_enable_platform,
+                    [],
+                )
                 return
 
             from module.Engine.TaskRequester import TaskRequester
@@ -193,10 +213,10 @@ class GlossaryLLMTranslateWorker(QThread):
                 start = batch_index * self.batch_size
                 batch = self.tasks[start:start + self.batch_size]
                 srcs = [src for _, src in batch]
-                batch_label = f"第 {batch_index + 1}/{total_batches} 批，{len(srcs)} 条"
+                batch_label = Localizer.get().local_glossary_batch_entries.format(batch_index=batch_index + 1, total_batches=total_batches, srcs_count=len(srcs))
 
                 self.progress.emit(
-                    f"正在使用 LLM 翻译术语库… ({batch_label})",
+                    Localizer.get().local_glossary_translating_glossary_llm.format(batch_label=batch_label),
                     int(batch_index / max(1, total_batches) * 100),
                 )
 
@@ -206,7 +226,7 @@ class GlossaryLLMTranslateWorker(QThread):
                     messages, _ = prompt_builder.generate_prompt_sakura(srcs)
 
                 self.progress.emit(
-                    f"正在等待模型返回… ({batch_label})",
+                    Localizer.get().local_glossary_waiting_model.format(batch_label=batch_label),
                     min(95, int((batch_index + 0.5) / max(1, total_batches) * 100)),
                 )
 
@@ -238,12 +258,16 @@ class GlossaryLLMTranslateWorker(QThread):
                     all_results.append((row, dst))
 
                 self.progress.emit(
-                    f"已完成术语翻译 {min(start + len(batch), total)}/{total}",
+                    Localizer.get().local_glossary_translated_glossary_entries.format(len_batch_total=min(start + len(batch), total), total=total),
                     min(99, int((batch_index + 1) / max(1, total_batches) * 100)),
                 )
 
-            self.progress.emit("术语库翻译完成", 100)
-            self.finished.emit(True, f"Translated {len(all_results)} items", all_results)
+            self.progress.emit(Localizer.get().local_glossary_glossary_translation_completed, 100)
+            self.finished.emit(
+                True,
+                Localizer.get().local_glossary_translated_entries_2.format(all_results_count=len(all_results)),
+                all_results,
+            )
 
         except BaseException as exc:
             self._logger.error(f"术语库 LLM 翻译失败: {exc}")
@@ -287,11 +311,15 @@ class GlossaryCandidateWorker(QThread):
             if isinstance(entries, list) == False or len(entries) == 0:
                 warnings = payload.get("warnings", []) if isinstance(payload, dict) else []
                 warning_text = "；".join(str(item) for item in warnings if str(item).strip())
-                message = warning_text or "未生成可用的术语候选"
+                message = warning_text or Localizer.get().local_glossary_no_usable_term_candidates_generated
                 self.finished.emit(False, message, payload)
                 return
 
-            self.finished.emit(True, "术语候选扫描完成", payload)
+            self.finished.emit(
+                True,
+                Localizer.get().local_glossary_term_candidate_scan_completed,
+                payload,
+            )
         except BaseException as exc:
             self._logger.error(f"术语候选扫描失败: {exc}")
             try:
@@ -309,6 +337,16 @@ class LocalGlossaryPage(Base, QWidget):
     HEADERS = ("原文", "译文", "类别", "备注", "命中数")  # 类别示例：角色/地名/物品/术语
     STATS_COLUMN = 4
     STATS_COLUMN_WIDTH = 88
+
+    @staticmethod
+    def _display_headers() -> tuple[str, str, str, str, str]:
+        return (
+            Localizer.get().proofreading_page_col_src,
+            Localizer.get().proofreading_page_col_dst,
+            Localizer.get().local_glossary_category,
+            Localizer.get().local_glossary_notes,
+            Localizer.get().local_glossary_hits,
+        )
     # 过滤器关键字（参考 AiNiee NER 过滤规则），命中则跳过
     FILTER_KEYWORDS = (
         '-', '…', '一', '―', '？', '©', '章　', 'ー', 'http', '！', '=', '"', '＋', '：', '『', 'ぃ', '～',
@@ -351,12 +389,10 @@ class LocalGlossaryPage(Base, QWidget):
         layout.setSpacing(16)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        title = TitleLabel("📚 本地词库管理")
+        title = TitleLabel(Localizer.get().local_glossary_project_glossary)
         layout.addWidget(title)
 
-        desc = CaptionLabel(
-            "支持从 Excel 导入术语表，确认后保存到当前项目资产，并可导出为 Excel 共享给团队。"
-        )
+        desc = CaptionLabel(Localizer.get().local_glossary_import_glossary_entries_excel_confirm_save_them)
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -370,99 +406,147 @@ class LocalGlossaryPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 12)
         v_layout.setSpacing(12)
 
-        group1, flow1 = self._create_toolbar_group("配置与同步")
+        group1, flow1 = self._create_toolbar_group(
+            Localizer.get().local_glossary_project_data
+        )
 
-        import_btn = PrimaryPushButton("导入 Excel", icon=FluentIcon.DOWNLOAD)
+        import_btn = PrimaryPushButton(
+            Localizer.get().local_glossary_import_excel,
+            icon=FluentIcon.DOWNLOAD,
+        )
         import_btn.clicked.connect(self._on_import_excel)
         flow1.addWidget(import_btn)
 
-        export_btn = PushButton("导出 Excel", icon=FluentIcon.SHARE)
+        export_btn = PushButton(
+            Localizer.get().local_glossary_export_excel,
+            icon=FluentIcon.SHARE,
+        )
         export_btn.clicked.connect(self._on_export_excel)
         flow1.addWidget(export_btn)
 
-        save_btn = PrimaryPushButton("保存到项目", icon=FluentIcon.SAVE)
+        save_btn = PrimaryPushButton(
+            Localizer.get().local_glossary_save_project,
+            icon=FluentIcon.SAVE,
+        )
         save_btn.clicked.connect(self._save_to_config)
         flow1.addWidget(save_btn)
 
-        load_btn = PushButton("从项目加载", icon=FluentIcon.HISTORY)
+        load_btn = PushButton(
+            Localizer.get().local_glossary_load_project,
+            icon=FluentIcon.HISTORY,
+        )
         load_btn.clicked.connect(self._load_from_config)
         flow1.addWidget(load_btn)
 
-        statistics_btn = PushButton("统计命中", icon=FluentIcon.SEARCH)
-        statistics_btn.setToolTip("基于当前 output/cache 中的缓存条目统计每条术语命中的文本数量")
+        statistics_btn = PushButton(
+            Localizer.get().local_glossary_count_hits,
+            icon=FluentIcon.SEARCH,
+        )
+        statistics_btn.setToolTip(Localizer.get().local_glossary_count_how_many_cached_output_entries_contain)
         statistics_btn.clicked.connect(self._on_statistics_clicked)
         flow1.addWidget(statistics_btn)
         self._statistics_button = statistics_btn
 
         v_layout.addWidget(group1)
 
-        group2, flow2 = self._create_toolbar_group("表格维护")
+        group2, flow2 = self._create_toolbar_group(
+            Localizer.get().local_glossary_table_actions
+        )
 
-        dedup_btn = PushButton("去重重复", icon=FluentIcon.FILTER)
-        dedup_btn.setToolTip("按原文去重，优先保留已有译文/类别/备注")
+        dedup_btn = PushButton(
+            Localizer.get().local_glossary_deduplicate,
+            icon=FluentIcon.FILTER,
+        )
+        dedup_btn.setToolTip(Localizer.get().local_glossary_deduplicate_source_text_while_preserving_existing_translations)
         dedup_btn.clicked.connect(self._deduplicate_rows)
         flow2.addWidget(dedup_btn)
 
-        add_btn = PushButton("新增条目", icon=FluentIcon.ADD)
+        add_btn = PushButton(Localizer.get().local_glossary_add_entry, icon=FluentIcon.ADD)
         add_btn.clicked.connect(self._add_row)
         flow2.addWidget(add_btn)
 
-        confirm_btn = PushButton("确认选中候选", icon=FluentIcon.ACCEPT)
-        confirm_btn.setToolTip("将选中的候选标记为已确认；保存时仅已确认且有译文的候选会转为正式术语")
+        confirm_btn = PushButton(
+            Localizer.get().local_glossary_confirm_selected,
+            icon=FluentIcon.ACCEPT,
+        )
+        confirm_btn.setToolTip(Localizer.get().local_glossary_mark_selected_candidates_confirmed_only_confirmed_candidates)
         confirm_btn.clicked.connect(self._confirm_selected_candidates)
         flow2.addWidget(confirm_btn)
 
-        delete_btn = PushButton("删除选中", icon=FluentIcon.DELETE)
+        delete_btn = PushButton(
+            Localizer.get().local_glossary_delete_selected,
+            icon=FluentIcon.DELETE,
+        )
         delete_btn.clicked.connect(self._remove_selected_rows)
         flow2.addWidget(delete_btn)
 
-        clear_btn = PushButton("清空全部", icon=FluentIcon.CLOSE)
-        clear_btn.setToolTip("删除当前项目中的所有正式术语和已载入候选")
+        clear_btn = PushButton(Localizer.get().local_glossary_clear_all, icon=FluentIcon.CLOSE)
+        clear_btn.setToolTip(Localizer.get().local_glossary_delete_all_glossary_entries_loaded_candidates_current)
         clear_btn.clicked.connect(self._clear_all)
         flow2.addWidget(clear_btn)
 
-        auto_type_btn = PushButton("自动分类", icon=FluentIcon.TAG)
-        auto_type_btn.setToolTip("先尝试 NER（需模型），再用关键词规则填充空白类别")
+        auto_type_btn = PushButton(
+            Localizer.get().local_glossary_auto_categorize,
+            icon=FluentIcon.TAG,
+        )
+        auto_type_btn.setToolTip(Localizer.get().local_glossary_use_ner_first_when_available_then_fill)
         auto_type_btn.clicked.connect(self._auto_classify_entries)
         flow2.addWidget(auto_type_btn)
 
         v_layout.addWidget(group2)
 
-        group3, flow3 = self._create_toolbar_group("扫描与翻译")
+        group3, flow3 = self._create_toolbar_group(
+            Localizer.get().local_glossary_scan_translate
+        )
 
-        scan_terms_btn = PrimaryPushButton("扫描术语候选", icon=FluentIcon.SEARCH)
-        scan_terms_btn.setToolTip("扫描游戏源码中的专有名词候选；配置了 LLM 时会进一步提升召回率")
+        scan_terms_btn = PrimaryPushButton(
+            Localizer.get().local_glossary_scan_term_candidates,
+            icon=FluentIcon.SEARCH,
+        )
+        scan_terms_btn.setToolTip(Localizer.get().local_glossary_scan_game_scripts_proper_noun_candidates_configured)
         scan_terms_btn.clicked.connect(self._on_scan_glossary_candidates)
         flow3.addWidget(scan_terms_btn)
         self._candidate_button = scan_terms_btn
 
-        stop_scan_btn = PushButton("停止扫描", icon=FluentIcon.CANCEL)
-        stop_scan_btn.setToolTip("请求停止当前术语候选扫描；若正在等待某个 LLM 分块响应，将在该分块结束后停止")
+        stop_scan_btn = PushButton(
+            Localizer.get().local_glossary_stop_scan,
+            icon=FluentIcon.CANCEL,
+        )
+        stop_scan_btn.setToolTip(Localizer.get().local_glossary_request_current_candidate_scan_stop_after_any)
         stop_scan_btn.clicked.connect(self._on_stop_glossary_candidates)
         stop_scan_btn.setEnabled(False)
         flow3.addWidget(stop_scan_btn)
         self._candidate_stop_button = stop_scan_btn
 
-        scan_btn = PushButton("扫描角色名", icon=FluentIcon.SYNC)
-        scan_btn.setToolTip("扫描游戏目录，自动提取角色名到术语表（清空旧的自动提取数据）")
+        scan_btn = PushButton(
+            Localizer.get().local_glossary_scan_character_names,
+            icon=FluentIcon.SYNC,
+        )
+        scan_btn.setToolTip(Localizer.get().local_glossary_scan_game_folder_character_names_replace_previous)
         scan_btn.clicked.connect(self._on_rescan_characters)
         flow3.addWidget(scan_btn)
 
-        translate_llm_btn = PrimaryPushButton("LLM 批量翻译", icon=FluentIcon.SEND)
-        translate_llm_btn.setToolTip("使用已配置的翻译引擎（LLM/API）批量翻译空译文/占位译文，不会覆盖已有译文")
+        translate_llm_btn = PrimaryPushButton(
+            Localizer.get().local_glossary_translate_llm,
+            icon=FluentIcon.SEND,
+        )
+        translate_llm_btn.setToolTip(Localizer.get().local_glossary_use_configured_llm_api_fill_blank_placeholder)
         translate_llm_btn.clicked.connect(self._on_translate_glossary_llm)
         flow3.addWidget(translate_llm_btn)
         self._translate_llm_button = translate_llm_btn
 
-        translate_fast_btn = PushButton("极速批量翻译", icon=FluentIcon.GLOBE)
-        translate_fast_btn.setToolTip("使用 Google/Bing 进行批量翻译（更快），不覆盖已有译文")
+        translate_fast_btn = PushButton(
+            Localizer.get().local_glossary_fast_translation,
+            icon=FluentIcon.GLOBE,
+        )
+        translate_fast_btn.setToolTip(Localizer.get().local_glossary_use_google_bing_faster_batch_translation_without)
         translate_fast_btn.clicked.connect(self._on_translate_glossary_fast)
         flow3.addWidget(translate_fast_btn)
         self._translate_fast_button = translate_fast_btn
 
         v_layout.addWidget(group3)
 
-        self._candidate_progress_label = CaptionLabel("术语候选扫描未开始")
+        self._candidate_progress_label = CaptionLabel(Localizer.get().local_glossary_candidate_scan_has_not_started)
         self._candidate_progress_label.setWordWrap(True)
         v_layout.addWidget(self._candidate_progress_label)
 
@@ -498,11 +582,11 @@ class LocalGlossaryPage(Base, QWidget):
         v_layout.setContentsMargins(16, 12, 16, 16)
         v_layout.setSpacing(12)
 
-        table_label = StrongBodyLabel("术语表（可直接编辑单元格）")
+        table_label = StrongBodyLabel(Localizer.get().local_glossary_glossary_entries_cells_editable)
         v_layout.addWidget(table_label)
 
         self.table = QTableWidget(0, len(self.HEADERS), self)
-        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setHorizontalHeaderLabels(self._display_headers())
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -643,7 +727,11 @@ class LocalGlossaryPage(Base, QWidget):
     def _remove_selected_rows(self):
         row = self.table.currentRow()
         if row < 0:
-            InfoBar.warning("提示", "请选择需要删除的条目", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_select_entry_delete,
+                parent=self,
+            )
             return
         self.table.removeRow(row)
         self._invalidate_statistics()
@@ -670,18 +758,26 @@ class LocalGlossaryPage(Base, QWidget):
     def _confirm_selected_candidates(self) -> None:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         if not rows:
-            InfoBar.warning("提示", "请选择需要确认的候选条目", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_select_one_more_candidates_confirm,
+                parent=self,
+            )
             return
 
         confirmed = sum(
             1 for row in rows if self._set_candidate_confirmation(row, True)
         )
         if confirmed == 0:
-            InfoBar.info("提示", "选中条目不是待确认候选，或已经确认", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_selected_entries_not_pending_candidates_already_confirmed,
+                parent=self,
+            )
             return
         InfoBar.success(
-            "已确认",
-            f"已标记 {confirmed} 条候选；补全译文后点击“保存到项目”即可转为正式术语",
+            Localizer.get().local_glossary_confirmed,
+            Localizer.get().local_glossary_confirmed_candidates_add_translations_then_save_them.format(confirmed=confirmed),
             parent=self,
         )
 
@@ -689,7 +785,11 @@ class LocalGlossaryPage(Base, QWidget):
         """按原文去重，尽量保留已有译文/类别/备注"""
         entries = self._collect_table_data()
         if not entries:
-            InfoBar.info("提示", "表格为空，暂无可去重的数据", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_table_empty,
+                parent=self,
+            )
             return
 
         key_index: Dict[str, int] = {}
@@ -709,9 +809,17 @@ class LocalGlossaryPage(Base, QWidget):
         removed = len(entries) - len(deduped)
         if removed > 0:
             self._set_table_data(deduped)
-            InfoBar.success("完成", f"已去除重复 {removed} 条，保留 {len(deduped)} 条", parent=self)
+            InfoBar.success(
+                Localizer.get().local_glossary_completed,
+                Localizer.get().local_glossary_removed_duplicate_entries_kept.format(removed=removed, deduped_count=len(deduped)),
+                parent=self,
+            )
         else:
-            InfoBar.info("提示", "未发现重复条目", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_no_duplicate_entries_found,
+                parent=self,
+            )
 
     def _clear_all(self):
         """清空表格并写回当前项目资产。"""
@@ -728,7 +836,11 @@ class LocalGlossaryPage(Base, QWidget):
             if str(item.get("record_id", ""))
         }
         self._invalidate_statistics()
-        InfoBar.success("已清空", "已删除当前项目中的正式术语和已载入候选", parent=self)
+        InfoBar.success(
+            Localizer.get().local_glossary_cleared,
+            Localizer.get().local_glossary_deleted_all_glossary_entries_loaded_candidates_current,
+            parent=self,
+        )
 
     @staticmethod
     def _map_language_to_fasttranslator_code(
@@ -807,12 +919,20 @@ class LocalGlossaryPage(Base, QWidget):
     def _on_translate_glossary_llm(self):
         """批量翻译术语库（LLM/API）：仅填充译文为空/等于原文的行，不覆盖已有译文。"""
         if self._translate_worker and self._translate_worker.isRunning():
-            InfoBar.info("提示", "术语库翻译正在进行中，请稍候…", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_glossary_translation_already_running,
+                parent=self,
+            )
             return
 
         tasks = self._collect_glossary_translate_tasks()
         if not tasks:
-            InfoBar.info("提示", "没有需要翻译的条目（译文列已填充）", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_there_no_entries_translate_translation_column_already,
+                parent=self,
+            )
             return
 
         config = Config().load()
@@ -821,7 +941,11 @@ class LocalGlossaryPage(Base, QWidget):
         except Exception:
             platform = None
         if not platform:
-            InfoBar.error("错误", "未找到可用的翻译引擎，请先在“翻译引擎”里配置并启用一个平台。", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().local_glossary_no_translation_engine_available_configure_enable_platform,
+                parent=self,
+            )
             return
 
         self._set_translate_buttons_enabled(False)
@@ -837,18 +961,30 @@ class LocalGlossaryPage(Base, QWidget):
         worker.finished.connect(self._on_translate_glossary_finished)
         self._translate_worker = worker
 
-        InfoBar.info("开始翻译", f"正在使用 LLM 翻译 {len(tasks)} 条术语…", parent=self)
+        InfoBar.info(
+            Localizer.get().local_glossary_translation_started,
+            Localizer.get().local_glossary_translating_glossary_entries_llm.format(tasks_count=len(tasks)),
+            parent=self,
+        )
         worker.start()
 
     def _on_translate_glossary_fast(self):
         """批量翻译术语库：仅填充译文为空/等于原文的行，不覆盖已有译文。"""
         if self._translate_worker and self._translate_worker.isRunning():
-            InfoBar.info("提示", "术语库翻译正在进行中，请稍候…", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_glossary_translation_already_running,
+                parent=self,
+            )
             return
 
         tasks = self._collect_glossary_translate_tasks()
         if not tasks:
-            InfoBar.info("提示", "没有需要翻译的条目（译文列已填充）", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_there_no_entries_translate_translation_column_already,
+                parent=self,
+            )
             return
 
         config = Config().load()
@@ -876,7 +1012,11 @@ class LocalGlossaryPage(Base, QWidget):
         worker.finished.connect(self._on_translate_glossary_finished)
         self._translate_worker = worker
 
-        InfoBar.info("开始翻译", f"正在翻译 {len(tasks)} 条术语…", parent=self)
+        InfoBar.info(
+            Localizer.get().local_glossary_translation_started,
+            Localizer.get().local_glossary_translating_glossary_entries.format(tasks_count=len(tasks)),
+            parent=self,
+        )
         worker.start()
 
     def _on_translate_glossary_progress(self, message: str, percent: int):
@@ -891,7 +1031,11 @@ class LocalGlossaryPage(Base, QWidget):
             worker.deleteLater()
 
         if not success:
-            InfoBar.error("翻译失败", message, parent=self)
+            InfoBar.error(
+                Localizer.get().local_glossary_translation_failed,
+                Localizer.get().local_glossary_translation_failed_check_engine_logs,
+                parent=self,
+            )
             return
 
         applied = 0
@@ -918,9 +1062,17 @@ class LocalGlossaryPage(Base, QWidget):
             applied += 1
 
         if applied:
-            InfoBar.success("翻译完成", f"已填充 {applied} 条译文（别忘了点击“确认并保存到项目”）", parent=self)
+            InfoBar.success(
+                Localizer.get().local_glossary_translation_completed,
+                Localizer.get().local_glossary_filled_translations_confirm_candidates_save_them_project.format(applied=applied),
+                parent=self,
+            )
         else:
-            InfoBar.info("翻译完成", "翻译已结束，但没有产生可用译文（可能接口返回原文）", parent=self)
+            InfoBar.info(
+                Localizer.get().local_glossary_translation_completed,
+                Localizer.get().local_glossary_translation_finished_without_usable_results_service_may,
+                parent=self,
+            )
 
     def _set_candidate_button_enabled(self, enabled: bool) -> None:
         if self._candidate_button is not None:
@@ -1116,19 +1268,34 @@ class LocalGlossaryPage(Base, QWidget):
         self.config = Config().load()
         source_root, tl_root = self._resolve_current_renpy_paths()
         if source_root is None:
-            folder = QFileDialog.getExistingDirectory(self, "选择游戏目录（包含 game 子目录）")
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                Localizer.get().local_glossary_select_game_folder_containing_game_subfolder,
+            )
             if folder:
                 source_root = Path(folder)
                 tl_root = None
                 self._sync_resolved_renpy_paths_to_config(source_root, tl_root)
-                InfoBar.info("提示", f"已设置游戏目录为: {source_root}", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().local_glossary_game_folder_set.format(source_root=source_root),
+                    parent=self,
+                )
             else:
-                InfoBar.warning("警告", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().warning,
+                    Localizer.get().local_glossary_select_game_folder_first,
+                    parent=self,
+                )
                 return None
 
         target_path = source_root
         if target_path.exists() == False:
-            InfoBar.error("错误", f"游戏目录不存在: {target_path}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().local_glossary_game_folder_does_not_exist.format(target_path=target_path),
+                parent=self,
+            )
             return None
 
         self._sync_resolved_renpy_paths_to_config(target_path, tl_root)
@@ -1144,7 +1311,11 @@ class LocalGlossaryPage(Base, QWidget):
 
     def _on_scan_glossary_candidates(self) -> None:
         if self._candidate_worker and self._candidate_worker.isRunning():
-            InfoBar.info("提示", "术语候选扫描正在进行中，请稍候…", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_term_candidate_scan_already_running,
+                parent=self,
+            )
             return
 
         target_path = self._resolve_game_target_path()
@@ -1164,14 +1335,26 @@ class LocalGlossaryPage(Base, QWidget):
             Base.APIFormat.SAKURALLM,
         }
         if not platform:
-            InfoBar.warning("提示", "未找到可用 LLM，将仅使用规则候选扫描。", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_no_compatible_llm_available_scan_use_rules,
+                parent=self,
+            )
         elif platform.get("api_format") not in supported_formats:
-            InfoBar.warning("提示", "当前平台不支持术语抽取，将仅使用规则候选扫描。", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_active_platform_does_not_support_term_extraction,
+                parent=self,
+            )
             platform = None
 
         self._candidate_scan_cancelled = False
         self._set_candidate_button_enabled(False)
-        self._update_candidate_progress("正在准备术语候选扫描…", 0, running=True)
+        self._update_candidate_progress(
+            Localizer.get().local_glossary_preparing_term_candidate_scan,
+            0,
+            running=True,
+        )
 
         worker = GlossaryCandidateWorker(
             config = config,
@@ -1184,21 +1367,43 @@ class LocalGlossaryPage(Base, QWidget):
         worker.finished.connect(self._on_scan_glossary_candidates_finished)
         self._candidate_worker = worker
 
-        InfoBar.info("开始扫描", "正在扫描游戏源码中的术语候选…", parent=self)
+        InfoBar.info(
+            Localizer.get().local_glossary_scan_started,
+            Localizer.get().local_glossary_scanning_game_scripts_term_candidates,
+            parent=self,
+        )
         worker.start()
 
     def _on_stop_glossary_candidates(self) -> None:
         if self._candidate_worker is None or self._candidate_worker.isRunning() is False:
-            InfoBar.info("提示", "当前没有正在运行的术语候选扫描", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_no_term_candidate_scan_running,
+                parent=self,
+            )
             return
 
         self._candidate_scan_cancelled = True
-        self._update_candidate_progress("正在请求停止术语候选扫描…", 0, running=True)
-        InfoBar.info("提示", "已请求停止术语候选扫描，当前分块结束后会停止", parent=self)
+        self._update_candidate_progress(
+            Localizer.get().local_glossary_stopping_term_candidate_scan,
+            0,
+            running=True,
+        )
+        InfoBar.info(
+            Localizer.get().notice,
+            Localizer.get().local_glossary_scan_stop_after_current_batch_finishes,
+            parent=self,
+        )
 
     def _on_scan_glossary_candidates_progress(self, message: str, percent: int) -> None:
         self.logger.info(f"[GlossaryCandidate] {percent}% {message}")
-        self._update_candidate_progress(message, percent, running=True)
+        self._update_candidate_progress(
+            Localizer.get().local_glossary_scanning_term_candidates_percent.format(
+                percent=percent
+            ),
+            percent,
+            running=True,
+        )
 
     def _on_scan_glossary_candidates_finished(self, success: bool, message: str, payload: Any) -> None:
         self._set_candidate_button_enabled(True)
@@ -1212,18 +1417,35 @@ class LocalGlossaryPage(Base, QWidget):
         self._candidate_scan_cancelled = False
 
         if was_cancelled and success == False and "已停止" in str(message):
-            self._update_candidate_progress("术语候选扫描已停止", 0, running=False)
-            InfoBar.info("已停止", "术语候选扫描已停止", parent=self)
+            stopped = Localizer.get().local_glossary_term_candidate_scan_stopped
+            self._update_candidate_progress(stopped, 0, running=False)
+            InfoBar.info(Localizer.get().direct_rpy_stopped, stopped, parent=self)
             return
 
         if success == False:
-            self._update_candidate_progress("术语候选扫描失败", 0, running=False)
-            InfoBar.warning("扫描失败", message, parent=self)
+            self._update_candidate_progress(
+                Localizer.get().local_glossary_term_candidate_scan_failed,
+                0,
+                running=False,
+            )
+            InfoBar.warning(
+                Localizer.get().local_glossary_scan_failed,
+                Localizer.get().local_glossary_candidate_scan_failed_check_folder_logs,
+                parent=self,
+            )
             return
 
         if not isinstance(payload, dict):
-            self._update_candidate_progress("术语候选扫描失败", 0, running=False)
-            InfoBar.warning("扫描失败", "扫描结果格式无效", parent=self)
+            self._update_candidate_progress(
+                Localizer.get().local_glossary_term_candidate_scan_failed,
+                0,
+                running=False,
+            )
+            InfoBar.warning(
+                Localizer.get().local_glossary_scan_failed,
+                Localizer.get().local_glossary_scan_result_has_invalid_format,
+                parent=self,
+            )
             return
 
         entries = payload.get("entries", [])
@@ -1231,8 +1453,16 @@ class LocalGlossaryPage(Base, QWidget):
             warning_text = "；".join(
                 str(item) for item in payload.get("warnings", []) if str(item).strip()
             )
-            self._update_candidate_progress("术语候选扫描完成，但没有生成可用条目", 100, running=False)
-            InfoBar.info("扫描完成", warning_text or "未生成可用的术语候选", parent=self)
+            self._update_candidate_progress(
+                Localizer.get().local_glossary_scan_completed_without_usable_term_candidates,
+                100,
+                running=False,
+            )
+            InfoBar.info(
+                Localizer.get().local_glossary_scan_completed,
+                Localizer.get().local_glossary_no_usable_term_candidates_generated,
+                parent=self,
+            )
             return
 
         added_count, updated_count = self._merge_candidate_entries(entries)
@@ -1253,8 +1483,16 @@ class LocalGlossaryPage(Base, QWidget):
             )
         except Exception as exc:
             self.logger.error(f"术语候选写入项目缓存失败: {exc}")
-            self._update_candidate_progress("术语候选扫描完成，但保存项目候选失败", 100, running=False)
-            InfoBar.warning("保存失败", f"候选已显示但未能写入项目缓存：{exc}", parent=self)
+            self._update_candidate_progress(
+                Localizer.get().local_glossary_scan_completed_but_candidates_could_not_saved,
+                100,
+                running=False,
+            )
+            InfoBar.warning(
+                Localizer.get().local_glossary_save_failed,
+                Localizer.get().local_glossary_candidates_displayed_but_could_not_saved_project.format(exc=exc),
+                parent=self,
+            )
             return
         llm_chunks_total = int(payload.get("llm_chunks_total", 0) or 0)
         llm_chunks_success = int(payload.get("llm_chunks_success", 0) or 0)
@@ -1263,20 +1501,22 @@ class LocalGlossaryPage(Base, QWidget):
             str(item) for item in payload.get("warnings", []) if str(item).strip()
         )
 
-        summary = (
-            f"已合并 {added_count} 条新候选，补全 {updated_count} 条现有条目，"
-            f"候选文本 {int(payload.get('corpus_count', 0) or 0)} 条。"
-        )
+        corpus_count = int(payload.get("corpus_count", 0) or 0)
+        summary = Localizer.get().local_glossary_added_candidates_updated_existing_entries_scanned_text.format(added_count=added_count, updated_count=updated_count, corpus_count=corpus_count)
         if used_llm:
-            summary += f" LLM 分块成功 {llm_chunks_success}/{max(llm_chunks_total, llm_chunks_success)}。"
+            summary += Localizer.get().local_glossary_successful_llm_batches.format(llm_chunks_success=llm_chunks_success, max_llm_chunks_total_llm_chunks_success=max(llm_chunks_total, llm_chunks_success))
         if warning_text:
-            summary += f"\n{warning_text}"
+            summary += Localizer.get().local_glossary_scan_steps_reported_warnings
 
-        self._update_candidate_progress("术语候选扫描完成", 100, running=False)
+        self._update_candidate_progress(
+            Localizer.get().local_glossary_term_candidate_scan_completed,
+            100,
+            running=False,
+        )
         if warning_text:
-            InfoBar.warning("扫描完成", summary, parent=self)
+            InfoBar.warning(Localizer.get().local_glossary_scan_completed, summary, parent=self)
         else:
-            InfoBar.success("扫描完成", summary, parent=self)
+            InfoBar.success(Localizer.get().local_glossary_scan_completed, summary, parent=self)
 
     def _merge_candidate_entries(self, entries: List[Dict[str, Any]]) -> tuple[int, int]:
         current_entries = self._collect_table_data()
@@ -1373,12 +1613,20 @@ class LocalGlossaryPage(Base, QWidget):
 
     def _on_statistics_clicked(self) -> None:
         if self._statistics_worker and self._statistics_worker.isRunning():
-            InfoBar.info("提示", "命中统计正在进行中，请稍候…", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_hit_statistics_already_running,
+                parent=self,
+            )
             return
 
         entries = self._collect_table_data()
         if not entries:
-            InfoBar.info("提示", "当前术语表为空，暂无可统计的数据", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_there_no_glossary_entries_analyze,
+                parent=self,
+            )
             return
 
         config = Config().load()
@@ -1407,23 +1655,44 @@ class LocalGlossaryPage(Base, QWidget):
             worker.deleteLater()
 
         if success == False:
-            InfoBar.warning("统计失败", message, parent=self)
+            error_message = (
+                Localizer.get().rule_statistics_no_cached_entries
+                if isinstance(payload, dict) and "cache_dir" in payload
+                else Localizer.get().rule_statistics_unavailable
+            )
+            InfoBar.warning(
+                Localizer.get().local_glossary_statistics_failed,
+                error_message,
+                parent=self,
+            )
             return
 
         if not isinstance(payload, dict):
-            InfoBar.warning("统计失败", "统计结果格式无效", parent=self)
+            InfoBar.warning(
+                Localizer.get().local_glossary_statistics_failed,
+                Localizer.get().local_glossary_statistics_result_has_invalid_format,
+                parent=self,
+            )
             return
 
         counts = payload.get("counts", [])
         if not isinstance(counts, list):
-            InfoBar.warning("统计失败", "统计结果缺少命中数", parent=self)
+            InfoBar.warning(
+                Localizer.get().local_glossary_statistics_failed,
+                Localizer.get().local_glossary_statistics_result_does_not_contain_hit_counts,
+                parent=self,
+            )
             return
 
         current_entries = self._collect_table_data()
         current_keys = [self._build_statistics_entry_key(entry) for entry in current_entries]
         if current_keys != self._statistics_snapshot_keys:
             self._invalidate_statistics()
-            InfoBar.warning("提示", "术语表内容已变化，请重新执行一次统计", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_glossary_changed_run_statistics_again,
+                parent=self,
+            )
             return
 
         self.table.blockSignals(True)
@@ -1442,8 +1711,8 @@ class LocalGlossaryPage(Base, QWidget):
 
         counted_item_total = int(payload.get("counted_item_total", 0))
         InfoBar.success(
-            "统计完成",
-            f"已统计 {len(counts)} 条术语，样本条目 {counted_item_total} 条",
+            Localizer.get().local_glossary_statistics_completed,
+            Localizer.get().local_glossary_analyzed_glossary_entries_across_cached_entries.format(counts_count=len(counts), counted_item_total=counted_item_total),
             parent=self,
         )
 
@@ -1503,8 +1772,8 @@ class LocalGlossaryPage(Base, QWidget):
         self._set_table_data(converted)
         candidate_count = len(self._loaded_candidate_record_ids)
         InfoBar.success(
-            "完成",
-            f"已从当前项目加载 {len(converted)} 条术语，其中 {candidate_count} 条待确认",
+            Localizer.get().local_glossary_completed,
+            Localizer.get().local_glossary_loaded_glossary_entries_current_project_candidates_need.format(converted_count=len(converted), candidate_count=candidate_count),
             parent=self,
         )
 
@@ -1524,21 +1793,25 @@ class LocalGlossaryPage(Base, QWidget):
         formal_count = len(state.assets.glossary)
         candidate_count = len(state.analysis_candidates.get("items", []))
         InfoBar.success(
-            "保存成功",
-            f"已确认 {formal_count} 条正式术语，保留 {candidate_count} 条待补全候选",
+            Localizer.get().local_glossary_saved,
+            Localizer.get().local_glossary_saved_confirmed_glossary_entries_kept_incomplete_candidates.format(formal_count=formal_count, candidate_count=candidate_count),
             parent=self,
         )
 
     def _on_import_excel(self):
         if load_workbook is None:
-            InfoBar.error("错误", "未安装 openpyxl，无法导入 Excel", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().local_glossary_openpyxl_not_installed_so_excel_files_cannot,
+                parent=self,
+            )
             return
 
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择术语 Excel 文件",
+            Localizer.get().local_glossary_select_glossary_excel_file,
             "",
-            "Excel 文件 (*.xlsx)"
+            Localizer.get().local_glossary_excel_files_xlsx
         )
         if not path:
             return
@@ -1548,7 +1821,7 @@ class LocalGlossaryPage(Base, QWidget):
             headers = [str(cell.value).strip() if cell.value is not None else "" for cell in sheet[1]]
             header_map = self._build_header_map(headers)
             if "src" not in header_map or "dst" not in header_map:
-                raise ValueError("未找到“原文/译文”列，请确认模板。")
+                raise ValueError(Localizer.get().local_glossary_source_translation_column_not_found_check_template)
 
             items: List[Dict[str, str]] = []
             for row in sheet.iter_rows(min_row=2, values_only=True):
@@ -1565,21 +1838,33 @@ class LocalGlossaryPage(Base, QWidget):
             # and confirms or deletes them.
             self._loaded_candidate_record_ids = set()
             self._set_table_data(items)
-            InfoBar.success("导入成功", f"已导入 {len(items)} 条术语", parent=self)
+            InfoBar.success(
+                Localizer.get().local_glossary_imported,
+                Localizer.get().local_glossary_imported_glossary_entries.format(items_count=len(items)),
+                parent=self,
+            )
         except Exception as e:
             self.logger.error(f"导入术语失败: {e}")
-            InfoBar.error("错误", f"导入失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_import_failed.format(e=e),
+                parent=self,
+            )
 
     def _on_export_excel(self):
         if Workbook is None:
-            InfoBar.error("错误", "未安装 openpyxl，无法导出 Excel", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().local_glossary_openpyxl_not_installed_so_excel_files_cannot_2,
+                parent=self,
+            )
             return
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "保存术语 Excel",
+            Localizer.get().local_glossary_save_glossary_excel_file,
             "",
-            "Excel 文件 (*.xlsx)"
+            Localizer.get().local_glossary_excel_files_xlsx
         )
         if not path:
             return
@@ -1588,7 +1873,11 @@ class LocalGlossaryPage(Base, QWidget):
 
         entries = self._collect_table_data()
         if not entries:
-            InfoBar.warning("提示", "当前表格为空，未导出文件", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_table_empty_no_file_exported,
+                parent=self,
+            )
             return
 
         try:
@@ -1599,10 +1888,18 @@ class LocalGlossaryPage(Base, QWidget):
             for item in entries:
                 sheet.append([item.get("src", ""), item.get("dst", ""), item.get("type", ""), item.get("comment", "")])
             workbook.save(path)
-            InfoBar.success("导出成功", f"已保存到 {path}", parent=self)
+            InfoBar.success(
+                Localizer.get().local_glossary_exported,
+                Localizer.get().local_glossary_saved_2.format(path=path),
+                parent=self,
+            )
         except Exception as e:
             self.logger.error(f"导出术语失败: {e}")
-            InfoBar.error("错误", f"导出失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_export_failed.format(e=e),
+                parent=self,
+            )
 
     # --- 工具方法 ---
     def _set_table_data(self, items: List[Dict[str, str]]):
@@ -1775,19 +2072,34 @@ class LocalGlossaryPage(Base, QWidget):
         
         source_root, tl_root = self._resolve_current_renpy_paths()
         if source_root is None:
-            folder = QFileDialog.getExistingDirectory(self, "选择游戏目录（包含 game 子目录）")
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                Localizer.get().local_glossary_select_game_folder_containing_game_subfolder,
+            )
             if folder:
                 source_root = Path(folder)
                 tl_root = None
                 self._sync_resolved_renpy_paths_to_config(source_root, tl_root)
-                InfoBar.info("提示", f"已设置游戏目录为: {source_root}", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().local_glossary_game_folder_set.format(source_root=source_root),
+                    parent=self,
+                )
             else:
-                InfoBar.warning("警告", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().warning,
+                    Localizer.get().local_glossary_select_game_folder_first,
+                    parent=self,
+                )
                 return
 
         game_path = source_root
         if game_path.exists() is False:
-            InfoBar.error("错误", f"游戏目录不存在: {game_path}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().local_glossary_game_folder_does_not_exist_2.format(game_path=game_path),
+                parent=self,
+            )
             return
 
         self._sync_resolved_renpy_paths_to_config(game_path, tl_root)
@@ -1816,7 +2128,11 @@ class LocalGlossaryPage(Base, QWidget):
 
         # 如果仍未找到，则提示
         if not found_names:
-            InfoBar.info("提示", "未找到角色名，请确认游戏目录正确", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_no_character_names_found_check_selected_game,
+                parent=self,
+            )
             return
         
         # 保留当前表格中的手工修改，清除旧的自动提取候选。
@@ -1874,7 +2190,11 @@ class LocalGlossaryPage(Base, QWidget):
         self.config.glossary_auto_scan_cache = auto_cache
         self.config.save()
         self._set_table_data(manual_entries + new_entries)
-        InfoBar.success("完成", f"已扫描到 {len(new_entries)} 个待确认角色名，已清除旧的自动提取候选", parent=self)
+        InfoBar.success(
+            Localizer.get().local_glossary_completed,
+            Localizer.get().local_glossary_found_character_names_confirmation_removed_previous_auto.format(new_entries_count=len(new_entries)),
+            parent=self,
+        )
 
     def _is_probable_name(self, text: str) -> bool:
         """更严格的人名判定：短、无句号、少量单词、首字母大写或全大写、允许少量连接词"""
@@ -1931,9 +2251,17 @@ class LocalGlossaryPage(Base, QWidget):
                 changed += 1
         if not silent:
             if changed:
-                InfoBar.success("完成", f"已为 {changed} 条填充类别", parent=self)
+                InfoBar.success(
+                    Localizer.get().local_glossary_completed,
+                    Localizer.get().local_glossary_categorized_entries.format(changed=changed),
+                    parent=self,
+                )
             else:
-                InfoBar.info("提示", "没有需要填充的类别或未找到匹配", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().local_glossary_no_blank_categories_could_matched,
+                    parent=self,
+                )
         return changed
 
     @staticmethod
@@ -1975,20 +2303,32 @@ class LocalGlossaryPage(Base, QWidget):
             import spacy
         except Exception as e:
             if not silent:
-                InfoBar.error("错误", f"未安装 spaCy：{e}", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().local_glossary_spacy_not_installed.format(e=e),
+                    parent=self,
+                )
             return 0
 
         model_path = self._find_ner_model_path()
         if not model_path:
             if not silent:
-                InfoBar.warning("提示", "未找到 NER 模型（Resource/Models/ner/*），已跳过", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().local_glossary_no_ner_model_found_under_resource_models,
+                    parent=self,
+                )
             return 0
 
         try:
             nlp = spacy.load(str(model_path), exclude=["parser", "tagger", "lemmatizer", "attribute_ruler", "tok2vec"])
         except Exception as e:
             if not silent:
-                InfoBar.error("错误", f"加载 NER 模型失败: {e}", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().local_glossary_failed_load_ner_model.format(e=e),
+                    parent=self,
+                )
             return 0
 
         label_map = {
@@ -2040,10 +2380,18 @@ class LocalGlossaryPage(Base, QWidget):
 
         if changed:
             if not silent:
-                InfoBar.success("完成", f"NER 填充了 {changed} 条类别", parent=self)
+                InfoBar.success(
+                    Localizer.get().local_glossary_completed,
+                    Localizer.get().local_glossary_ner_categorized_entries.format(changed=changed),
+                    parent=self,
+                )
         else:
             if not silent:
-                InfoBar.info("提示", "未找到可填充的类别", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().local_glossary_no_entries_could_categorized,
+                    parent=self,
+                )
         return changed
 
     def _find_ner_model_path(self) -> Path | None:
@@ -2240,9 +2588,17 @@ class LocalGlossaryPage(Base, QWidget):
         ner_count = self._ner_categorize_entries(silent=True)
         kw_count = self._auto_categorize_entries(silent=True)
         if ner_count or kw_count:
-            InfoBar.success("完成", f"NER 填充 {ner_count} 条，关键词填充 {kw_count} 条", parent=self)
+            InfoBar.success(
+                Localizer.get().local_glossary_completed,
+                Localizer.get().local_glossary_ner_categorized_entries_keyword_rules_categorized.format(ner_count=ner_count, kw_count=kw_count),
+                parent=self,
+            )
         else:
-            InfoBar.info("提示", "未找到可填充的类别（可检查模型或文本内容）", parent=self)
+            InfoBar.info(
+                Localizer.get().notice,
+                Localizer.get().local_glossary_no_entries_could_categorized_check_model_source,
+                parent=self,
+            )
 
     # ---- 文本清洗 ----
     @staticmethod

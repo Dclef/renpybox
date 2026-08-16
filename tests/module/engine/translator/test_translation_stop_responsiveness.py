@@ -1,5 +1,6 @@
 import threading
 import time
+from types import SimpleNamespace
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -41,6 +42,7 @@ def _translator_stub() -> Translator:
     translator._active_executor = None
     translator._translation_thread = None
     translator._translation_run_id = 0
+    translator._active_request_id = ""
     translator._active_run_cancel_event = None
     translator._run_context = threading.local()
     translator._stop_watcher = None
@@ -79,17 +81,131 @@ def test_translation_start_registers_thread_before_start(monkeypatch) -> None:
         "module.Engine.Translator.Translator.threading.Thread",
         FakeThread,
     )
+    emitted = []
+    translator.emit = lambda event, payload: emitted.append((event, payload))
     engine.set_status(Engine.Status.IDLE)
     try:
-        translator.translation_start(Base.Event.TRANSLATION_START, {})
+        translator.translation_start(
+            Base.Event.TRANSLATION_START,
+            {"request_id": "request-current"},
+        )
 
         assert observed == {
             "registered": True,
             "status": Engine.Status.TRANSLATING,
         }
+        assert emitted == [(
+            Base.Event.TRANSLATION_START_RESULT,
+            {
+                "accepted": True,
+                "request_id": "request-current",
+                "run_id": 1,
+            },
+        )]
     finally:
         translator._translation_thread = None
         engine.set_status(previous_status)
+
+
+def test_translation_start_rejects_correlated_request_when_engine_busy() -> None:
+    translator = _translator_stub()
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    emitted = []
+    translator.emit = lambda event, payload: emitted.append((event, payload))
+    engine.set_status(Engine.Status.TRANSLATING)
+    try:
+        translator.translation_start(
+            Base.Event.TRANSLATION_START,
+            {"request_id": "request-current"},
+        )
+
+        assert translator._translation_thread is None
+        assert emitted[-1] == (
+            Base.Event.TRANSLATION_START_RESULT,
+            {
+                "accepted": False,
+                "request_id": "request-current",
+                "reason": "ENGINE_BUSY",
+            },
+        )
+    finally:
+        engine.set_status(previous_status)
+
+
+def test_translation_start_cleans_state_when_thread_start_fails(monkeypatch) -> None:
+    translator = _translator_stub()
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    emitted = []
+    errors = []
+    translator.emit = lambda event, payload: emitted.append((event, payload))
+    translator.error = lambda message: errors.append(message)
+
+    class FailingThread:
+        def __init__(self, *, target, args, name):
+            del target, args, name
+
+        def is_alive(self) -> bool:
+            return False
+
+        def start(self) -> None:
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(
+        "module.Engine.Translator.Translator.threading.Thread",
+        FailingThread,
+    )
+    engine.set_status(Engine.Status.IDLE)
+    try:
+        translator.translation_start(
+            Base.Event.TRANSLATION_START,
+            {"request_id": "request-current"},
+        )
+
+        assert engine.get_status() == Engine.Status.IDLE
+        assert translator._translation_thread is None
+        assert translator._active_run_cancel_event is None
+        assert translator._active_request_id == ""
+        assert emitted == [(
+            Base.Event.TRANSLATION_START_RESULT,
+            {
+                "accepted": False,
+                "request_id": "request-current",
+                "reason": "THREAD_START_FAILED",
+            },
+        )]
+        assert errors == ["翻译线程启动失败: thread unavailable"]
+    finally:
+        engine.set_status(previous_status)
+
+
+def test_no_items_done_keeps_request_id_after_status_release(monkeypatch) -> None:
+    translator = _translator_stub()
+    translator._translation_run_id = 1
+    translator._active_request_id = "request-current"
+    progress = {}
+    project = SimpleNamespace(
+        get_progress=lambda: progress,
+        set_progress=lambda value: progress.update(value),
+    )
+    translator.cache_manager = SimpleNamespace(get_project=lambda: project)
+    translator.extras = {}
+    emitted = []
+    translator.emit = lambda event, payload: emitted.append((event, payload))
+    engine = Engine.get()
+
+    def release_status(_status):
+        translator._translation_run_id = 2
+        translator._active_request_id = "request-next"
+        return True
+
+    monkeypatch.setattr(engine, "release_status", release_status)
+
+    translator._finish_no_items_run(1)
+
+    assert emitted[-1][0] == Base.Event.TRANSLATION_DONE
+    assert emitted[-1][1]["request_id"] == "request-current"
 
 
 def test_stale_translation_run_cannot_clear_new_thread_or_status() -> None:

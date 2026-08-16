@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
-from typing import Any
+from typing import Any, Mapping
 
 
 WORLD_FIELDS: tuple[str, ...] = (
@@ -14,6 +14,7 @@ WORLD_FIELDS: tuple[str, ...] = (
     "narrative_rules",
     "format_rules",
     "spoiler_notes",
+    "reference_notes",
 )
 
 CHARACTER_FIELDS: tuple[str, ...] = (
@@ -190,6 +191,109 @@ def merge_character_card(base: dict[str, Any], overlay: dict[str, Any]) -> dict[
     current["is_primary"] = bool(incoming.get("is_primary", current.get("is_primary", False)))
     current["id"] = incoming.get("id") or current["id"] or build_character_id(current["name"])
     return current
+
+
+def merge_imported_worldbook(base: Any, incoming: Any) -> dict[str, str]:
+    """合并导入的世界观，仅覆盖文件中明确提供的字段。"""
+    current = normalize_worldbook(base)
+    if not isinstance(incoming, Mapping):
+        return current
+
+    for field in WORLD_FIELDS:
+        if field in incoming:
+            current[field] = normalize_text(incoming.get(field))
+    return current
+
+
+def merge_imported_character_cards(
+    base_cards: Any,
+    incoming_cards: Any,
+) -> list[dict[str, Any]]:
+    """合并批量导入角色卡，缺失字段不会清空已有内容。"""
+    result = normalize_character_cards(base_cards)
+    if not isinstance(incoming_cards, list):
+        return result
+
+    id_to_index = {card["id"]: index for index, card in enumerate(result)}
+    name_to_index = {
+        normalize_text(card.get("name", "")).casefold(): index
+        for index, card in enumerate(result)
+        if normalize_text(card.get("name", ""))
+    }
+    list_fields = {"aliases", "match_keywords", "sample_lines"}
+
+    for raw in incoming_cards:
+        if not isinstance(raw, Mapping):
+            continue
+        incoming = normalize_character_card(dict(raw))
+        if incoming["name"] == "":
+            continue
+
+        index = id_to_index.get(incoming["id"])
+        if index is None:
+            index = name_to_index.get(incoming["name"].casefold())
+        if index is None:
+            result.append(incoming)
+            index = len(result) - 1
+        else:
+            merged = dict(result[index])
+            for field in CHARACTER_FIELDS:
+                if field not in raw or field == "id":
+                    continue
+                if field in list_fields:
+                    merged[field] = normalize_text_list(
+                        merged.get(field, []) + incoming.get(field, [])
+                    )
+                else:
+                    merged[field] = incoming[field]
+            result[index] = normalize_character_card(merged)
+
+        card = result[index]
+        id_to_index[card["id"]] = index
+        name_to_index[card["name"].casefold()] = index
+
+    return result
+
+
+def parse_workbench_exchange(data: Any) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """解析工作台 JSON；支持完整导出对象或直接的角色卡数组。"""
+    if isinstance(data, list):
+        cards = [
+            dict(card)
+            for card in data
+            if isinstance(card, Mapping) and normalize_character_card(dict(card))["name"]
+        ]
+        if cards == []:
+            raise ValueError("JSON 中没有有效角色卡")
+        return {}, cards
+    if not isinstance(data, Mapping):
+        raise ValueError("JSON 顶层必须是对象或角色卡数组")
+
+    worldbook: dict[str, str] = {}
+    for key in ("worldbook", "worldbook_draft"):
+        section = data.get(key)
+        if isinstance(section, Mapping) and isinstance(section.get("data"), Mapping):
+            section = section.get("data")
+        if isinstance(section, Mapping):
+            for field in WORLD_FIELDS:
+                if field in section:
+                    worldbook[field] = normalize_text(section.get(field))
+
+    cards: list[dict[str, Any]] = []
+    for key in ("character_cards", "character_drafts"):
+        section = data.get(key)
+        if isinstance(section, Mapping):
+            section = section.get("items")
+        if isinstance(section, list):
+            cards.extend(
+                dict(card)
+                for card in section
+                if isinstance(card, Mapping) and normalize_character_card(dict(card))["name"]
+            )
+
+    if not any(worldbook.values()) and cards == []:
+        raise ValueError("JSON 中没有可导入的世界观或角色卡")
+    return worldbook, cards
 
 
 def normalize_analysis_scope(scope: str) -> str:

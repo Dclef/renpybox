@@ -12,6 +12,7 @@ class Base():
         PLATFORM_TEST_DONE = "PLATFORM_TEST_DONE"                          # API 测试完成
         PLATFORM_TEST_START = "PLATFORM_TEST_START"                        # API 测试开始
         TRANSLATION_START = "TRANSLATION_START"                            # 翻译开始
+        TRANSLATION_START_RESULT = "TRANSLATION_START_RESULT"              # 翻译启动受理结果
         TRANSLATION_STOP = "TRANSLATION_STOP"                              # 翻译停止
         TRANSLATION_DONE = "TRANSLATION_DONE"                              # 翻译完成
         TRANSLATION_UPDATE = "TRANSLATION_UPDATE"                          # 翻译状态更新

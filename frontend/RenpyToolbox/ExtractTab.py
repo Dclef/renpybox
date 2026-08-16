@@ -25,10 +25,13 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Text.SkipRules import should_skip_text
 from module.Renpy.json_handler import JsonExporter, JsonImporter
 from module.Renpy import renpy_extract as rx
 from module.Extract.RenpyExtractor import RenpyExtractor
+
+
 
 
 class ExtractTab(Base, QWidget):
@@ -43,11 +46,11 @@ class ExtractTab(Base, QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
-        title = TitleLabel("文本提取 JSON", self)
+        title = TitleLabel(Localizer.get().extract_json_text_extraction_json, self)
         layout.addWidget(title)
 
         description = BodyLabel(
-            "完整的 JSON 翻译工作流：提取 → 导出 JSON → 人工翻译 → 导入 → 应用到 tl",
+            Localizer.get().extract_json_complete_json_workflow_extract_export_json_translate,
             self,
         )
         description.setWordWrap(True)
@@ -65,18 +68,18 @@ class ExtractTab(Base, QWidget):
         layout = QVBoxLayout(card)
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("游戏文件:"))
+        row1.addWidget(QLabel(Localizer.get().extract_json_game_file))
         self.game_file_edit = LineEdit()
-        self.game_file_edit.setPlaceholderText("选择游戏可执行文件 (.exe)")
-        btn_browse = PushButton("浏览", icon=FluentIcon.FOLDER)
+        self.game_file_edit.setPlaceholderText(Localizer.get().extract_json_select_game_executable_exe)
+        btn_browse = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_game_file)
         row1.addWidget(self.game_file_edit, 1)
         row1.addWidget(btn_browse)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        self.btn_preview = PushButton("预览文件数", icon=FluentIcon.SEARCH)
-        self.btn_export = PrimaryPushButton("提取并导出 JSON", icon=FluentIcon.DOWNLOAD)
+        self.btn_preview = PushButton(Localizer.get().extract_json_preview_file_count, icon=FluentIcon.SEARCH)
+        self.btn_export = PrimaryPushButton(Localizer.get().extract_json_extract_export_json, icon=FluentIcon.DOWNLOAD)
         self.btn_preview.clicked.connect(self._preview)
         self.btn_export.clicked.connect(self._export)
         row2.addWidget(self.btn_preview)
@@ -84,7 +87,7 @@ class ExtractTab(Base, QWidget):
         row2.addStretch()
         layout.addLayout(row2)
 
-        tip = QLabel("说明：导出的 JSON 会将所有 .rpy 文本写入单个文件，按文件路径分组条目")
+        tip = QLabel(Localizer.get().extract_json_exported_json_stores_all_rpy_text_one)
         tip.setStyleSheet("color: gray; font-size: 11px;")
         tip.setWordWrap(True)
         layout.addWidget(tip)
@@ -100,7 +103,7 @@ class ExtractTab(Base, QWidget):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
-        self.status_label = QLabel("等待操作…")
+        self.status_label = QLabel(Localizer.get().ready)
         self.status_label.setStyleSheet("color: gray;")
         layout.addWidget(self.status_label)
 
@@ -112,17 +115,17 @@ class ExtractTab(Base, QWidget):
         card = CardWidget(self)
         layout = QVBoxLayout(card)
 
-        title_label = StrongBodyLabel("JSON 导入/导出", self)
+        title_label = StrongBodyLabel(Localizer.get().extract_json_json_import_export, self)
         layout.addWidget(title_label)
 
         row = QHBoxLayout()
-        btn_import = PushButton("从 JSON 导入并应用到 tl", icon=FluentIcon.SAVE)
+        btn_import = PushButton(Localizer.get().extract_json_import_json_apply_tl, icon=FluentIcon.SAVE)
         btn_import.clicked.connect(self._import_from_json)
         row.addWidget(btn_import)
         row.addStretch()
         layout.addLayout(row)
 
-        tip = QLabel("说明：导出后在 JSON 中完成翻译，然后导入并应用到 tl 目录。结构为 {\"translations\": {file: [...]}}。")
+        tip = QLabel(Localizer.get().extract_json_translate_exported_json_then_import_tl_folder)
         tip.setStyleSheet("color: gray; font-size: 11px;")
         tip.setWordWrap(True)
         layout.addWidget(tip)
@@ -134,7 +137,7 @@ class ExtractTab(Base, QWidget):
         layout = QVBoxLayout(card)
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("tl 语言:"))
+        row1.addWidget(QLabel(Localizer.get().extract_json_tl_language))
         self.tl_combo = ComboBox()
         self.tl_combo.addItems(["chinese", "schinese", "tchinese", "japanese", "korean", "english"])
         self.tl_combo.setCurrentText("chinese")
@@ -143,8 +146,8 @@ class ExtractTab(Base, QWidget):
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        btn_clean = PushButton("清理 tl 重复与空行")
-        btn_export_tl = PushButton("提取 tl→JSON")
+        btn_clean = PushButton(Localizer.get().extract_json_clean_tl_duplicates_empty_lines)
+        btn_export_tl = PushButton(Localizer.get().extract_json_export_tl_json)
         btn_clean.clicked.connect(self._clean_tl)
         btn_export_tl.clicked.connect(self._export_tl_to_json)
         row2.addWidget(btn_clean)
@@ -156,7 +159,12 @@ class ExtractTab(Base, QWidget):
 
     # ===== 逻辑 =====
     def _browse_game_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择 Ren'Py 游戏可执行文件", "", "可执行文件 (*.exe)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            Localizer.get().extract_json_select_ren_py_game_executable,
+            "",
+            Localizer.get().extract_json_executable_files_exe,
+        )
         if path:
             self.game_file_edit.setText(path)
             if hasattr(self, "exe_edit"):
@@ -165,15 +173,15 @@ class ExtractTab(Base, QWidget):
     def _preview(self):
         game_file = self.game_file_edit.text().strip()
         if not game_file:
-            InfoBar.warning("提示", "请选择游戏文件", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.get().extract_json_select_game_file, parent=self)
             return
         if not Path(game_file).exists():
-            InfoBar.error("错误", "游戏文件不存在", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.get().extract_json_game_file_does_not_exist, parent=self)
             return
 
         tl_name = self.tl_combo.currentText().strip()
 
-        self._begin("正在统计文件和文本数量…")
+        self._begin(Localizer.get().extract_json_counting_files_text_entries)
         logger = LogManager.get()
         try:
             extractor = RenpyExtractor()
@@ -190,44 +198,63 @@ class ExtractTab(Base, QWidget):
             
             logger.info(f"Extract preview: {total_entries} entries in {total_files} files")
             InfoBar.info(
-                "预览结果", 
-                f"发现 {total_files} 个文件，共 {total_entries} 条文本 (tl/{tl_name})\n所有条目将写入单个 JSON，使用文件名作为键区分来源", 
+                Localizer.get().extract_json_preview_results,
+                Localizer.get().extract_json_found_text_entries_files_tl_all_entries.format(total_files=total_files, total_entries=total_entries, tl_name=tl_name),
                 parent=self
             )
         except Exception as e:
             logger.error(f"Extract preview failed: {e}")
-            InfoBar.error("错误", f"统计失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_failed_count_entries.format(e=e),
+                parent=self,
+            )
         finally:
             self._end()
 
     def _export(self):
         game_file = self.game_file_edit.text().strip()
         if not game_file:
-            InfoBar.warning("提示", "请选择游戏文件", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.get().extract_json_select_game_file, parent=self)
             return
         if not Path(game_file).exists():
-            InfoBar.error("错误", "游戏文件不存在", parent=self)
+            InfoBar.error(Localizer.get().error, Localizer.get().extract_json_game_file_does_not_exist, parent=self)
             return
 
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "导出 JSON 文件", str(Path(game_file).with_suffix(".json")), "JSON 文件 (*.json)"
+            self,
+            Localizer.get().extract_json_export_json_file,
+            str(Path(game_file).with_suffix(".json")),
+            Localizer.get().extract_json_json_files_json,
         )
         if not save_path:
             return
 
-        self._begin("正在提取文本并生成 JSON…")
+        self._begin(Localizer.get().extract_json_extracting_text_generating_json)
         logger = LogManager.get()
         try:
             extractor = RenpyExtractor()
             tl_name = self.tl_combo.currentText().strip()
             if extractor.export_to_json(game_file, tl_name, save_path, include_metadata=True, force_extract=True):
                 logger.info(f"JSON exported: {save_path}")
-                InfoBar.success("成功", f"JSON 导出成功 (tl/{tl_name})\n所有条目写入同一个文件，按文件名分组", parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_json_success,
+                    Localizer.get().extract_json_json_export_completed_tl_all_entries_written.format(tl_name=tl_name),
+                    parent=self,
+                )
             else:
-                InfoBar.warning("提示", "未提取到任何文本或导出被跳过", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().extract_json_no_text_extracted_export_skipped,
+                    parent=self,
+                )
         except Exception as e:
             logger.error(f"Export failed: {e}")
-            InfoBar.error("错误", f"导出失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_export_failed.format(e=e),
+                parent=self,
+            )
         finally:
             self._end()
 
@@ -238,7 +265,7 @@ class ExtractTab(Base, QWidget):
 
     def _end(self):
         self.progress_bar.setValue(100)
-        self.status_label.setText("完成")
+        self.status_label.setText(Localizer.get().complete)
         self.status_label.setStyleSheet("color: green;")
 
     # UI 不再承载日志
@@ -249,28 +276,39 @@ class ExtractTab(Base, QWidget):
         """从 JSON 导入并应用翻译"""
         game_file = self.game_file_edit.text().strip()
         if not game_file:
-            InfoBar.warning("提示", "请选择游戏文件", parent=self)
+            InfoBar.warning(Localizer.get().notice, Localizer.get().extract_json_select_game_file, parent=self)
             return
 
         project = Path(game_file).parent
         game_folder = project / "game"
         if not game_folder.exists():
-            InfoBar.error("错误", "未找到 game/ 目录，请选择正确的项目", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_game_directory_not_found_select_correct_project,
+                parent=self,
+            )
             return
 
         json_path, _ = QFileDialog.getOpenFileName(
-            self, "选择 JSON 文件", str(project), "JSON 文件 (*.json)"
+            self,
+            Localizer.get().extract_json_select_json_file,
+            str(project),
+            Localizer.get().extract_json_json_files_json,
         )
         if not json_path:
             return
 
         try:
-            self._begin("正在从 JSON 导入并应用翻译…")
+            self._begin(Localizer.get().extract_json_importing_translations_json)
 
             importer = JsonImporter()
             translations = importer.import_translations(json_path)
             if not translations:
-                InfoBar.warning("提示", "JSON 中未找到可用的翻译条目", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().extract_json_no_usable_translation_entries_found_json_file,
+                    parent=self,
+                )
                 return
 
             target_lang = self.tl_combo.currentText().strip()
@@ -279,13 +317,21 @@ class ExtractTab(Base, QWidget):
                 total_files = len(translations)
                 total_entries = sum(len(items) for items in translations.values())
                 LogManager.get().info(f"已从 JSON 应用翻译: {total_files} 个文件, {total_entries} 条翻译")
-                InfoBar.success("成功", f"已应用到 tl/{target_lang}\n处理了 {total_files} 个文件，{total_entries} 条翻译", parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_json_success,
+                    Localizer.get().extract_json_applied_tl_processed_translations_files.format(target_lang=target_lang, total_files=total_files, total_entries=total_entries),
+                    parent=self,
+                )
             else:
-                InfoBar.error("错误", "应用翻译失败", parent=self)
+                InfoBar.error(Localizer.get().error, Localizer.get().extract_json_failed_apply_translations, parent=self)
 
         except Exception as e:
             LogManager.get().error(f"导入失败: {e}")
-            InfoBar.error("错误", f"导入失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_import_failed.format(e=e),
+                parent=self,
+            )
         finally:
             self._end()
 
@@ -294,12 +340,16 @@ class ExtractTab(Base, QWidget):
         try:
             game_file = self.game_file_edit.text().strip()
             if not game_file:
-                InfoBar.warning("提示", "请选择游戏文件", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.get().extract_json_select_game_file, parent=self)
                 return
             project = Path(game_file).parent
             tl_dir = project / "game" / "tl" / self.tl_combo.currentText()
             if not tl_dir.exists():
-                InfoBar.warning("提示", f"未找到 tl 目录: {tl_dir}", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().extract_json_tl_folder_not_found.format(tl_dir=tl_dir),
+                    parent=self,
+                )
                 return
             config = Config().load()
             rx.remove_repeat_extracted_from_tl(
@@ -308,21 +358,29 @@ class ExtractTab(Base, QWidget):
                 duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
             )
             LogManager.get().info(f"Cleaned TL duplicates in: {tl_dir}")
-            InfoBar.success("完成", "tl 清理完成", parent=self)
+            InfoBar.success(Localizer.get().complete, Localizer.get().extract_json_tl_cleanup_complete, parent=self)
         except Exception as e:
             LogManager.get().error(f"TL 清理失败: {e}")
-            InfoBar.error("错误", f"TL 清理失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_tl_cleanup_failed.format(e=e),
+                parent=self,
+            )
 
     def _export_tl_to_json(self):
         try:
             game_file = self.game_file_edit.text().strip()
             if not game_file:
-                InfoBar.warning("提示", "请选择游戏文件", parent=self)
+                InfoBar.warning(Localizer.get().notice, Localizer.get().extract_json_select_game_file, parent=self)
                 return
             project = Path(game_file).parent
             tl_dir = project / "game" / "tl" / self.tl_combo.currentText()
             if not tl_dir.exists():
-                InfoBar.warning("提示", f"未找到 tl 目录: {tl_dir}", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().extract_json_tl_folder_not_found.format(tl_dir=tl_dir),
+                    parent=self,
+                )
                 return
             data: Dict[str, List[Dict]] = {}
             skipped = 0
@@ -356,7 +414,10 @@ class ExtractTab(Base, QWidget):
                         i += 1
                 data[str(rpy.relative_to(tl_dir))] = items
             save_path, _ = QFileDialog.getSaveFileName(
-                self, "选择导出路径", str(project / f"tl_{self.tl_combo.currentText()}.json"), "JSON 文件 (*.json)"
+                self,
+                Localizer.get().extract_json_select_export_path,
+                str(project / f"tl_{self.tl_combo.currentText()}.json"),
+                Localizer.get().extract_json_json_files_json,
             )
             if not save_path:
                 return
@@ -365,9 +426,17 @@ class ExtractTab(Base, QWidget):
                 total_files = len(data)
                 total_entries = sum(len(items) for items in data.values())
                 LogManager.get().info(f"TL JSON exported: {save_path} ({total_files} files, {total_entries} entries, skipped {skipped})")
-                InfoBar.success("成功", f"TL 导出成功\n{total_files} 个文件，{total_entries} 条翻译，均写入同一个 JSON\n跳过 {skipped} 条资源/占位符", parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_json_success,
+                    Localizer.get().extract_json_tl_export_completed_translations_files_written_one.format(total_files=total_files, total_entries=total_entries, skipped=skipped),
+                    parent=self,
+                )
             else:
-                InfoBar.error("错误", "TL 导出失败", parent=self)
+                InfoBar.error(Localizer.get().error, Localizer.get().extract_json_tl_export_failed, parent=self)
         except Exception as e:
             LogManager.get().error(f"TL 导出失败: {e}")
-            InfoBar.error("错误", f"TL 导出失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().extract_json_tl_export_failed_2.format(e=e),
+                parent=self,
+            )

@@ -622,6 +622,8 @@ def test_onekey_defers_auto_hook_while_incremental_output_is_unmerged(
     page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
     page._auto_hook_running = False
     page._onekey_translation_started = True
+    page._onekey_request_id = ""
+    page._onekey_run_id = None
     page._auto_hook_pending = True
     page._incremental_output_dir = tmp_path / "translated-delta"
     page._start_auto_hook_supplement = lambda: None
@@ -646,6 +648,8 @@ def test_onekey_defers_auto_hook_until_full_output_is_applied(
     page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
     page._auto_hook_running = False
     page._onekey_translation_started = True
+    page._onekey_request_id = ""
+    page._onekey_run_id = None
     page._auto_hook_pending = True
     page._incremental_output_dir = None
     page._start_auto_hook_supplement = lambda: None
