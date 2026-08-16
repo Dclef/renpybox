@@ -25,6 +25,7 @@ from base.PathHelper import get_resource_path
 from base.Version import Version
 from base.VersionManager import VersionManager
 from frontend.AppSettingsPage import AppSettingsPage
+from frontend.Agent.AgentPage import AgentPage
 from frontend.Project.PlatformPage import PlatformPage
 from frontend.Project.ProjectPage import ProjectPage
 from frontend.Setting.BasicSettingsPage import BasicSettingsPage
@@ -48,6 +49,22 @@ class AppFluentWindow(FluentWindow, Base):
     APP_THEME_COLOR: str = "#BCA483"
     HOMEPAGE: str = " RenpyBox"
 
+    @classmethod
+    def _resolve_window_size(cls) -> tuple[int, int]:
+        """按主屏可用区域收缩窗口尺寸。
+
+        高分屏（125%/150% 缩放）下逻辑分辨率变小，固定 1280x800 会超出屏幕，
+        导致窗口盖住任务栏、右侧控件被裁掉。
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return cls.APP_WIDTH, cls.APP_HEIGHT
+        available = screen.availableGeometry()
+        return (
+            min(cls.APP_WIDTH, available.width()),
+            min(cls.APP_HEIGHT, available.height()),
+        )
+
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
@@ -55,15 +72,20 @@ class AppFluentWindow(FluentWindow, Base):
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
 
-        # 设置窗口属性
-        self.resize(AppFluentWindow.APP_WIDTH, AppFluentWindow.APP_HEIGHT)
-        self.setMinimumSize(AppFluentWindow.APP_WIDTH, AppFluentWindow.APP_HEIGHT)
+        # 设置窗口属性（在可用区域内居中，不压住任务栏）
+        target_width, target_height = self._resolve_window_size()
+        self.resize(target_width, target_height)
+        self.setMinimumSize(target_width, target_height)
         self.setWindowTitle(f"RenpyBox {VersionManager.get().get_version()}")
         self.titleBar.iconLabel.hide()
 
-        # 设置启动位置
-        desktop = QApplication.desktop().availableGeometry()
-        self.move(desktop.width()//2 - self.width()//2, desktop.height()//2 - self.height()//2)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.move(
+                available.left() + max(0, (available.width() - self.width()) // 2),
+                available.top() + max(0, (available.height() - self.height()) // 2),
+            )
 
         # 设置侧边栏宽度
         self.navigationInterface.setExpandWidth(256)
@@ -129,9 +151,10 @@ class AppFluentWindow(FluentWindow, Base):
     # 重写窗口关闭函数
     def closeEvent(self, event: QEvent) -> None:
         self._is_closing = True
-        message_box = MessageBox("警告", "确定要关闭应用吗？", self)
-        message_box.yesButton.setText("确认")
-        message_box.cancelButton.setText("取消")
+        strings = Localizer.get()
+        message_box = MessageBox(strings.warning, strings.app_close_message_box, self)
+        message_box.yesButton.setText(strings.confirm)
+        message_box.cancelButton.setText(strings.cancel)
 
         if not message_box.exec():
             self._is_closing = False
@@ -238,8 +261,6 @@ class AppFluentWindow(FluentWindow, Base):
         # 更新全局样式
         QApplication.instance().setStyleSheet(get_current_stylesheet())
 
-    # 切换语言
-
     def open_app_settings_page(self) -> None:
         self.switchTo(self.app_settings_page)
 
@@ -338,11 +359,23 @@ class AppFluentWindow(FluentWindow, Base):
             routeKey = "theme_navigation_button",
             widget = NavigationPushButton(
                 FluentIcon.CONSTRACT,
-                "切换主题",
+                Localizer.get().app_theme_btn,
                 False
             ),
             onClick = self.switch_theme,
             position = NavigationItemPosition.BOTTOM
+        )
+
+        # 语言设置按钮
+        self.navigationInterface.addWidget(
+            routeKey = "language_navigation_button",
+            widget = NavigationPushButton(
+                FluentIcon.LANGUAGE,
+                Localizer.get().app_language_btn,
+                False,
+            ),
+            onClick = self.open_app_settings_page,
+            position = NavigationItemPosition.BOTTOM,
         )
 
         # 应用设置按钮
@@ -350,7 +383,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.app_settings_page,
             FluentIcon.SETTING,
-            "应用设置",
+            Localizer.get().app_settings_page,
             NavigationItemPosition.BOTTOM,
         )
 
@@ -373,7 +406,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             PlatformPage("platform_page", self),
             FluentIcon.IOT,
-            "接口管理",
+            Localizer.get().app_platform_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -381,7 +414,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             ProjectPage("project_page", self),
             FluentIcon.FOLDER,
-            "项目设置",
+            Localizer.get().app_project_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -392,7 +425,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.renpy_toolbox_page,
             FluentIcon.GAME,
-            "Ren'Py 百宝箱",
+            Localizer.get().app_renpy_toolbox_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -402,12 +435,21 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             self.renpy_workbench_page,
             FluentIcon.PEOPLE,
-            "角色/世界观工作台",
+            Localizer.get().app_workbench_page,
             NavigationItemPosition.SCROLL,
         )
 
     # 添加任务类页面
     def add_task_pages(self) -> None:
+        # Agent 助手
+        self.agent_page = AgentPage("agent_page", self)
+        self.addSubInterface(
+            self.agent_page,
+            FluentIcon.ROBOT,
+            Localizer.get().app_agent_page,
+            NavigationItemPosition.SCROLL,
+        )
+
         # 开始翻译
         self.translation_page = TranslationPage("translation_page", self)
         self.addSubInterface(
@@ -423,7 +465,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.addSubInterface(
             BasicSettingsPage("basic_settings_page", self),
             FluentIcon.ZOOM,
-            "基础设置",
+            Localizer.get().app_basic_settings_page,
             NavigationItemPosition.SCROLL,
         )
 
@@ -433,7 +475,7 @@ class AppFluentWindow(FluentWindow, Base):
             self.addSubInterface(
                 ExpertSettingsPage("expert_settings_page", self),
                 FluentIcon.EDUCATION,
-                "专家设置",
+                Localizer.get().app_expert_settings_page,
                 NavigationItemPosition.SCROLL
             )
 

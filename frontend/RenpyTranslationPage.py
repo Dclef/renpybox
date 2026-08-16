@@ -1,4 +1,4 @@
-﻿"""
+"""
 翻译抽取到 TL 页面
 简化版：一个主功能 + 可折叠的高级选项
 """
@@ -31,7 +31,10 @@ from qfluentwidgets import (
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.UnifiedExtractor import UnifiedExtractor
+from module.Localizer.Localizer import Localizer
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+
+
 
 
 class RenpyTranslationPage(QWidget):
@@ -55,11 +58,11 @@ class RenpyTranslationPage(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        title = SubtitleLabel("翻译抽取")
+        title = SubtitleLabel(Localizer.get().extract_tl_translation_extraction)
         layout.addWidget(title)
 
         # 简单说明
-        intro = CaptionLabel("从 Ren'Py 游戏中提取可翻译文本到 tl 目录")
+        intro = CaptionLabel(Localizer.get().extract_tl_extract_translatable_text_ren_py_game_tl)
         intro.setStyleSheet("color: gray;")
         layout.addWidget(intro)
 
@@ -96,12 +99,12 @@ class RenpyTranslationPage(QWidget):
 
         # 游戏目录（最重要的输入）
         row1 = QHBoxLayout()
-        row1.addWidget(BodyLabel("游戏目录:"))
+        row1.addWidget(BodyLabel(Localizer.get().extract_tl_game_folder))
         self.game_dir_edit = LineEdit()
-        self.game_dir_edit.setPlaceholderText("选择游戏文件夹（包含 game 目录的那个）")
+        self.game_dir_edit.setPlaceholderText(Localizer.get().extract_tl_select_game_project_folder_contains_game_directory)
         if self.config.renpy_game_folder:
             self.game_dir_edit.setText(self.config.renpy_game_folder)
-        btn_browse = PushButton(FluentIcon.FOLDER, "浏览")
+        btn_browse = PushButton(FluentIcon.FOLDER, Localizer.get().browse)
         btn_browse.clicked.connect(self._browse_game_dir)
         row1.addWidget(self.game_dir_edit, 1)
         row1.addWidget(btn_browse)
@@ -109,22 +112,22 @@ class RenpyTranslationPage(QWidget):
 
         # 语言名称（简化）
         row2 = QHBoxLayout()
-        row2.addWidget(BodyLabel("语言名称:"))
+        row2.addWidget(BodyLabel(Localizer.get().extract_tl_language_name))
         self.tl_name_edit = LineEdit()
         self.tl_name_edit.setText("chinese")
         self.tl_name_edit.setFixedWidth(120)
-        self.tl_name_edit.setToolTip("翻译文件夹名称，如 chinese、schinese 等")
+        self.tl_name_edit.setToolTip(Localizer.get().extract_tl_translation_folder_name_such_chinese_schinese)
         row2.addWidget(self.tl_name_edit)
         row2.addStretch(1)
         
         # 主按钮
-        self.extract_btn = PrimaryPushButton(FluentIcon.PLAY, "开始抽取")
+        self.extract_btn = PrimaryPushButton(FluentIcon.PLAY, Localizer.get().extract_tl_start_extraction)
         self.extract_btn.clicked.connect(self._do_extract)
         row2.addWidget(self.extract_btn)
         layout.addLayout(row2)
 
         # 快速提示
-        tip = CaptionLabel("默认保留已有翻译（增量），未找到 exe 也能用补充抽取；官方抽取失败可仅用补充抽取。")
+        tip = CaptionLabel(Localizer.get().extract_tl_existing_translations_preserved_default_supplemental_extraction_works)
         tip.setStyleSheet("color: #888;")
         layout.addWidget(tip)
 
@@ -139,7 +142,7 @@ class RenpyTranslationPage(QWidget):
 
         # 标题行（可点击展开）
         header = QHBoxLayout()
-        self.advanced_toggle = PushButton("▶ 高级选项")
+        self.advanced_toggle = PushButton(Localizer.get().extract_tl_advanced_options)
         self.advanced_toggle.setFlat(True)
         self.advanced_toggle.clicked.connect(self._toggle_advanced)
         header.addWidget(self.advanced_toggle)
@@ -154,17 +157,17 @@ class RenpyTranslationPage(QWidget):
 
         # === 抽取方式选择 ===
         extract_row = QHBoxLayout()
-        extract_row.addWidget(CaptionLabel("抽取方式:"))
+        extract_row.addWidget(CaptionLabel(Localizer.get().extract_tl_extraction_method))
         
-        self.chk_official = CheckBox("官方抽取")
+        self.chk_official = CheckBox(Localizer.get().extract_tl_official_extraction)
         self.chk_official.setChecked(self.config.extract_use_official)
-        self.chk_official.setToolTip("调用游戏引擎的官方翻译抽取（需要 exe）")
+        self.chk_official.setToolTip(Localizer.get().extract_tl_use_game_engine_s_official_translation_extraction)
         self.chk_official.stateChanged.connect(self._refresh_option_state)
         extract_row.addWidget(self.chk_official)
         
-        self.chk_custom = CheckBox("补充抽取")
+        self.chk_custom = CheckBox(Localizer.get().extract_tl_supplemental_extraction)
         self.chk_custom.setChecked(self.config.extract_use_custom)
-        self.chk_custom.setToolTip("自定义 AST 解析，覆盖官方遗漏的文本")
+        self.chk_custom.setToolTip(Localizer.get().extract_tl_use_custom_ast_parsing_extract_text_missed)
         self.chk_custom.stateChanged.connect(self._refresh_option_state)
         extract_row.addWidget(self.chk_custom)
         
@@ -173,10 +176,10 @@ class RenpyTranslationPage(QWidget):
 
         # === 可选 exe ===
         exe_row = QHBoxLayout()
-        exe_row.addWidget(CaptionLabel("游戏 exe (可选):"))
+        exe_row.addWidget(CaptionLabel(Localizer.get().extract_tl_game_exe_optional))
         self.exe_edit = LineEdit()
-        self.exe_edit.setPlaceholderText("仅勾选官方抽取时需要，留空自动查找 .exe")
-        btn_exe = PushButton(FluentIcon.FOLDER, "选择")
+        self.exe_edit.setPlaceholderText(Localizer.get().extract_tl_only_required_official_extraction_leave_blank_find)
+        btn_exe = PushButton(FluentIcon.FOLDER, Localizer.get().select)
         btn_exe.clicked.connect(lambda: self._browse_exe(self.exe_edit))
         exe_row.addWidget(self.exe_edit, 1)
         exe_row.addWidget(btn_exe)
@@ -184,27 +187,27 @@ class RenpyTranslationPage(QWidget):
 
         # === 其他选项 ===
         opt_row = QHBoxLayout()
-        self.chk_skip_hooks = CheckBox("跳过 Hook 文件")
+        self.chk_skip_hooks = CheckBox(Localizer.get().extract_tl_skip_hook_files)
         self.chk_skip_hooks.setChecked(self.config.extract_skip_hook_files)
         opt_row.addWidget(self.chk_skip_hooks)
-        self.chk_filter_bool_expr = CheckBox("过滤疑似代码条目")
+        self.chk_filter_bool_expr = CheckBox(Localizer.get().extract_tl_filter_suspected_code_entries)
         self.chk_filter_bool_expr.setChecked(
             getattr(self.config, "renpy_filter_suspicious_bool_expr", True)
         )
-        self.chk_filter_bool_expr.setToolTip("会备份到 _filtered_suspicious，可手动勾选恢复")
+        self.chk_filter_bool_expr.setToolTip(Localizer.get().extract_tl_back_up_filtered_entries_filtered_suspicious_so)
         opt_row.addWidget(self.chk_filter_bool_expr)
         opt_row.addStretch(1)
         adv_layout.addLayout(opt_row)
 
         # === 增量合并 ===
         merge_row = QHBoxLayout()
-        self.chk_auto_merge_cleanup = CheckBox("抽取后自动合并并清理重复")
+        self.chk_auto_merge_cleanup = CheckBox(Localizer.get().extract_tl_merge_incremental_results_remove_duplicates_automatically)
         self.chk_auto_merge_cleanup.setChecked(
             getattr(self.config, "renpy_incremental_auto_merge_cleanup", True)
         )
         merge_row.addWidget(self.chk_auto_merge_cleanup)
 
-        self.merge_cleanup_btn = PushButton(FluentIcon.SYNC, "合并并清理重复")
+        self.merge_cleanup_btn = PushButton(FluentIcon.SYNC, Localizer.get().extract_tl_merge_remove_duplicates)
         self.merge_cleanup_btn.clicked.connect(self._merge_incremental_now)
         merge_row.addWidget(self.merge_cleanup_btn)
         merge_row.addStretch(1)
@@ -212,20 +215,17 @@ class RenpyTranslationPage(QWidget):
 
         # === 误提取恢复 ===
         restore_row = QHBoxLayout()
-        self.open_filtered_backup_btn = PushButton(FluentIcon.FOLDER, "打开误提取备份")
+        self.open_filtered_backup_btn = PushButton(FluentIcon.FOLDER, Localizer.get().extract_tl_open_filtered_backup)
         self.open_filtered_backup_btn.clicked.connect(self._open_filtered_backup_dir)
         restore_row.addWidget(self.open_filtered_backup_btn)
 
-        self.restore_filtered_btn = PushButton(FluentIcon.SYNC, "恢复误提取勾选项")
+        self.restore_filtered_btn = PushButton(FluentIcon.SYNC, Localizer.get().extract_tl_restore_selected_entries)
         self.restore_filtered_btn.clicked.connect(self._restore_filtered_entries)
         restore_row.addWidget(self.restore_filtered_btn)
         restore_row.addStretch(1)
         adv_layout.addLayout(restore_row)
 
-        restore_tip = CaptionLabel(
-            "抽取后会把疑似代码行移到 tl/<lang>/_filtered_suspicious/<时间戳>/restore_manifest.csv；"
-            "把 restore 列改为 1 后可一键恢复。"
-        )
+        restore_tip = CaptionLabel(Localizer.get().extract_tl_suspected_code_lines_moved_tl_lang_filtered)
         restore_tip.setStyleSheet("color: #666; font-size: 11px;")
         restore_tip.setWordWrap(True)
         adv_layout.addWidget(restore_tip)
@@ -242,7 +242,11 @@ class RenpyTranslationPage(QWidget):
             visible = not self.advanced_widget.isVisible()
             self.advanced_widget.setVisible(visible)
             # 更新按钮文字来表示展开/折叠状态
-            text = "▼ 高级选项" if visible else "▶ 高级选项"
+            text = (
+                Localizer.get().extract_tl_advanced_options_2
+                if visible
+                else Localizer.get().extract_tl_advanced_options
+            )
             self.advanced_toggle.setText(text)
         except Exception as e:
             self.logger.error(f"切换高级选项失败: {e}")
@@ -254,12 +258,20 @@ class RenpyTranslationPage(QWidget):
         try:
             game_dir = self.game_dir_edit.text().strip()
             if not game_dir:
-                InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_select_game_folder_first,
+                    parent=self,
+                )
                 return
 
             root_path = Path(game_dir)
             if not root_path.exists():
-                InfoBar.error("错误", f"目录不存在: {game_dir}", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().extract_tl_folder_does_not_exist.format(game_dir=game_dir),
+                    parent=self,
+                )
                 return
 
             # 处理路径
@@ -275,13 +287,21 @@ class RenpyTranslationPage(QWidget):
 
             game_folder = project_root / "game"
             if not game_folder.exists():
-                InfoBar.error("错误", f"未找到 game 目录", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().extract_tl_game_directory_not_found,
+                    parent=self,
+                )
                 return
 
             tl_name = self.tl_name_edit.text().strip() or "chinese"
             tl_dir = project_root / "game" / "tl" / tl_name
             if not tl_dir.exists():
-                InfoBar.error("错误", f"未找到 tl 子目录: {tl_dir}", parent=self)
+                InfoBar.error(
+                    Localizer.get().error,
+                    Localizer.get().extract_tl_tl_subfolder_not_found.format(tl_dir=tl_dir),
+                    parent=self,
+                )
                 return
 
             def _is_effective_tl_rpy(path: Path) -> bool:
@@ -303,7 +323,11 @@ class RenpyTranslationPage(QWidget):
                     try:
                         sample_file.read_text(encoding=self.config.renpy_default_encoding)
                     except Exception as e:
-                        InfoBar.error("错误", f"默认编码读取失败: {self.config.renpy_default_encoding}\n{e}", parent=self)
+                        InfoBar.error(
+                            Localizer.get().error,
+                            Localizer.get().extract_tl_failed_read_default_encoding.format(renpy_default_encoding=self.config.renpy_default_encoding, e=e),
+                            parent=self,
+                        )
                         return
 
             # 获取选项
@@ -332,7 +356,11 @@ class RenpyTranslationPage(QWidget):
                         except Exception:
                             pass
                 self.logger.info("未找到 exe，跳过官方抽取")
-                InfoBar.info("提示", "未找到 exe，已自动关闭官方抽取，改用补充抽取", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().extract_tl_no_exe_found_official_extraction_disabled_supplemental,
+                    parent=self,
+                )
 
             # 保存配置
             self.config.renpy_game_folder = game_dir
@@ -347,11 +375,15 @@ class RenpyTranslationPage(QWidget):
             self.config.save()
 
             # 执行抽取
-            self._begin("正在抽取翻译文本…")
+            self._begin(Localizer.get().extract_tl_extracting_translatable_text)
 
             if has_existing_tl:
                 self.logger.info("检测到已有翻译，启用增量抽取以保留译文")
-                InfoBar.info("增量模式", "检测到已有 tl，增量抽取会保留已翻译内容", parent=self)
+                InfoBar.info(
+                    Localizer.get().extract_tl_incremental_mode,
+                    Localizer.get().extract_tl_existing_tl_files_found_incremental_extraction_preserve,
+                    parent=self,
+                )
                 result = self.unified_extractor.extract_incremental(
                     project_root,
                     tl_name,
@@ -370,9 +402,17 @@ class RenpyTranslationPage(QWidget):
                         clean_duplicates=True,
                     )
                     if merge_result.success:
-                        InfoBar.success("自动合并完成", merge_result.message, parent=self)
+                        InfoBar.success(
+                            Localizer.get().extract_tl_automatic_merge_complete,
+                            Localizer.get().extract_tl_incremental_results_merged,
+                            parent=self,
+                        )
                     else:
-                        InfoBar.warning("自动合并失败", merge_result.message, parent=self)
+                        InfoBar.warning(
+                            Localizer.get().extract_tl_automatic_merge_failed,
+                            Localizer.get().extract_tl_incremental_results_merge_failed,
+                            parent=self,
+                        )
             else:
                 result = self.unified_extractor.extract_regular(
                     project_root,
@@ -384,13 +424,21 @@ class RenpyTranslationPage(QWidget):
             self._end(result.success)
             
             if result.success:
-                InfoBar.success("抽取完成", result.message, parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_tl_extraction_complete,
+                    Localizer.get().extract_tl_translation_extraction_completed,
+                    parent=self,
+                )
             else:
-                InfoBar.error("抽取失败", result.message, parent=self)
+                InfoBar.error(
+                    Localizer.get().extract_tl_extraction_failed,
+                    Localizer.get().extract_tl_translation_extraction_failed,
+                    parent=self,
+                )
 
         except Exception as e:
             self.logger.error(f"抽取失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
+            InfoBar.error(Localizer.get().error, str(e), parent=self)
             self._end(False)
 
     def _merge_incremental_now(self):
@@ -398,7 +446,7 @@ class RenpyTranslationPage(QWidget):
         try:
             _, tl, project_root = self._resolve_paths()
             incremental_dir = project_root / "game" / "tl" / f"{tl}_new"
-            self._begin("正在合并增量翻译…")
+            self._begin(Localizer.get().extract_tl_merging_incremental_translations)
             result = self.unified_extractor.merge_incremental_folder(
                 project_root,
                 tl,
@@ -407,12 +455,20 @@ class RenpyTranslationPage(QWidget):
             )
             self._end(result.success)
             if result.success:
-                InfoBar.success("合并完成", result.message, parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_tl_merge_complete,
+                    Localizer.get().extract_tl_incremental_results_merged,
+                    parent=self,
+                )
             else:
-                InfoBar.warning("合并失败", result.message, parent=self)
+                InfoBar.warning(
+                    Localizer.get().onekey_merge_failed,
+                    Localizer.get().extract_tl_incremental_results_merge_failed,
+                    parent=self,
+                )
         except Exception as e:
             self.logger.error(f"合并失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
+            InfoBar.error(Localizer.get().error, str(e), parent=self)
             self._end(False)
 
     def _get_filtered_backup_root(self) -> Path:
@@ -457,24 +513,36 @@ class RenpyTranslationPage(QWidget):
                 self._open_path_in_shell(backup_root)
                 return
 
-            InfoBar.warning("提示", "还没有误提取备份记录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().extract_tl_no_filtered_backup_available_yet,
+                parent=self,
+            )
         except Exception as e:
             self.logger.error(f"打开误提取备份失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
+            InfoBar.error(Localizer.get().error, str(e), parent=self)
 
     def _restore_filtered_entries(self):
         try:
             _, tl, project_root = self._resolve_paths()
-            self._begin("正在恢复误提取条目…")
+            self._begin(Localizer.get().extract_tl_restoring_filtered_entries)
             result = self.unified_extractor.restore_flagged_suspicious_entries(project_root, tl)
             self._end(result.success)
             if result.success:
-                InfoBar.success("恢复完成", result.message, parent=self)
+                InfoBar.success(
+                    Localizer.get().extract_tl_restore_complete,
+                    Localizer.get().extract_tl_entries_restored,
+                    parent=self,
+                )
             else:
-                InfoBar.warning("未恢复", result.message, parent=self)
+                InfoBar.warning(
+                    Localizer.get().extract_tl_nothing_restored,
+                    Localizer.get().extract_tl_no_entries_restored,
+                    parent=self,
+                )
         except Exception as e:
             self.logger.error(f"恢复误提取条目失败: {e}")
-            InfoBar.error("错误", str(e), parent=self)
+            InfoBar.error(Localizer.get().error, str(e), parent=self)
             self._end(False)
 
     # ==================== 工具方法 ====================
@@ -483,7 +551,7 @@ class RenpyTranslationPage(QWidget):
         """解析路径"""
         game_dir = self.game_dir_edit.text().strip()
         if not game_dir:
-            raise RuntimeError("请先选择游戏目录")
+            raise RuntimeError(Localizer.get().onekey_select_game_folder_first)
 
         path = Path(game_dir).resolve()
         if path.is_file():
@@ -507,7 +575,7 @@ class RenpyTranslationPage(QWidget):
         return None
 
     def _browse_game_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "选择游戏目录")
+        path = QFileDialog.getExistingDirectory(self, Localizer.get().onekey_select_game_folder)
         if path:
             self.game_dir_edit.setText(path)
             self.config.renpy_game_folder = path
@@ -515,7 +583,10 @@ class RenpyTranslationPage(QWidget):
 
     def _browse_exe(self, edit: LineEdit):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择游戏可执行文件", "", "可执行文件 (*.exe *.py)"
+            self,
+            Localizer.get().extract_tl_select_game_executable,
+            "",
+            Localizer.get().extract_tl_executable_files_exe_py,
         )
         if path:
             edit.setText(path)
@@ -540,13 +611,12 @@ class RenpyTranslationPage(QWidget):
             if hasattr(self, 'exe_edit'):
                 self.exe_edit.setEnabled(use_official)
                 if not use_official:
-                    self.exe_edit.setPlaceholderText("仅勾选官方抽取时需要，留空自动查找 .exe")
+                    self.exe_edit.setPlaceholderText(Localizer.get().extract_tl_only_required_official_extraction_leave_blank_find)
                 else:
-                    self.exe_edit.setPlaceholderText("留空自动查找 .exe")
+                    self.exe_edit.setPlaceholderText(Localizer.get().extract_tl_leave_blank_find_exe_automatically)
 
             # 至少保证有一种抽取方式
             if not use_official and not use_custom:
                 self.chk_custom.setChecked(True)
         except Exception as e:
             self.logger.warning(f"刷新选项状态失败: {e}")
-

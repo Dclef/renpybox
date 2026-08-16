@@ -14,7 +14,11 @@ from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    apply_to_config,
+    looks_like_renpy_path,
+)
 from widget.ComboBoxCard import ComboBoxCard
 from widget.PushButtonCard import PushButtonCard
 from widget.SwitchButtonCard import SwitchButtonCard
@@ -83,25 +87,7 @@ class ProjectPage(QWidget, Base):
 
     def _looks_like_renpy_path(self, raw_path: str) -> bool:
         """判断路径是否明显包含 Ren'Py 项目结构。"""
-        if not raw_path:
-            return False
-
-        try:
-            path = Path(raw_path).expanduser().resolve()
-        except Exception:
-            path = Path(raw_path)
-
-        if path.exists() is False:
-            return False
-
-        if path.is_file():
-            path = path.parent
-
-        return (
-            path.name.lower() in {"game", "tl"}
-            or path.parent.name.lower() == "tl"
-            or (path / "game").is_dir()
-        )
+        return looks_like_renpy_path(raw_path)
 
     def _sync_renpy_paths_from_selection(self, config: Config, raw_path: str) -> None:
         """把项目页选择的路径同步到 Ren'Py 专用配置，避免工具页继续读取旧项目。"""

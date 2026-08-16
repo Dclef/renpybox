@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
@@ -43,6 +44,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
 from widget.Separator import Separator
@@ -54,15 +56,21 @@ from module.Renpy import renpy_extract as rx
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     apply_to_config,
+    source_script_counts,
     write_run_manifest,
 )
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+from module.Engine.Engine import Engine
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Workbench.CharacterScanner import CharacterCandidate, CharacterScanner
+from frontend.RenpyToolbox.PackUnpackPage import DecompileWorker, UnpackWorker
 from frontend.TranslationPage import TranslationPage
+
+
 
 
 def configure_tl_translation_mode(config):
@@ -636,6 +644,73 @@ def apply_translation_files_transactionally(
         if not rollback_failed:
             shutil.rmtree(backup_root, ignore_errors=True)
 
+_EXTRACTOR_PROGRESS_EN = {
+    "已备份旧翻译": "Backed up the previous translation...",
+    "正在执行官方抽取...": "Running official extraction...",
+    "正在执行补充抽取...": "Running supplemental extraction...",
+    "正在分析已有翻译...": "Analyzing existing translations...",
+    "正在分析已有翻译与增量内容...": "Analyzing existing translations and incremental content...",
+    "正在分离新增/待翻译内容...": "Separating new and untranslated content...",
+    "正在合并新增内容...": "Merging new content...",
+    "正在合并新增翻译...": "Merging incremental translations...",
+    "正在回填已有翻译...": "Restoring existing translations...",
+    "正在回填编号块译文...": "Restoring numbered-block translations...",
+    "合并校验未通过，已保留增量目录": "Merge validation failed; the incremental folder was preserved.",
+    "正在清理重复与空文件...": "Cleaning duplicates and empty files...",
+    "正在校验跨文件唯一性...": "Validating cross-file uniqueness...",
+    "正在按行号整理编号块...": "Sorting numbered blocks by source line...",
+    "正在应用保留库过滤...": "Applying protected-text filters...",
+    "正在应用术语库填充...": "Applying glossary entries...",
+    "正在清理空文件...": "Cleaning empty files...",
+    "抽取完成": "Extraction complete.",
+    "增量抽取完成": "Incremental extraction complete.",
+    "合并完成": "Merge complete.",
+}
+
+
+def _localize_extractor_progress(message: str, fallback: str) -> str:
+    text = str(message)
+    if text.startswith("正在写入合并文件 "):
+        detail = text.removeprefix("正在写入合并文件 ").removesuffix("...")
+        return Localizer.localize(text, f"Writing merged file {detail}...")
+    return Localizer.localize(text, _EXTRACTOR_PROGRESS_EN.get(text, fallback))
+
+
+def _localize_extraction_result(result, incremental: bool) -> str:
+    message = str(getattr(result, "message", "") or "")
+    if Localizer.get_app_language() != BaseLanguage.Enum.EN:
+        return message or (
+            "增量抽取完成" if incremental else "文本提取完成"
+        )
+    if result.success:
+        if incremental:
+            incremental_dir = getattr(result, "incremental_dir", None)
+            if incremental_dir is not None:
+                return f"Incremental extraction completed. New content is in {incremental_dir.name}/."
+            preserved = getattr(result, "preserved_count", 0)
+            return f"Incremental extraction completed. Preserved {preserved} existing translation(s)."
+        total = getattr(result, "total_files", 0)
+        return f"Text extraction completed ({total} file(s))."
+    if "已被禁用" in message:
+        return "Extraction is disabled. Enable official or supplemental extraction and try again."
+    if "已自动恢复原翻译目录" in message:
+        return "Text extraction failed. The original translation folder was restored. Check the logs for details."
+    if "恢复原翻译失败" in message:
+        return "Text extraction failed, and the original translation folder could not be restored. Check the logs and backup folder."
+    return "Text extraction failed. Check the logs for details."
+
+
+def _localize_merge_failure(message: str) -> str:
+    text = str(message or "")
+    if Localizer.get_app_language() != BaseLanguage.Enum.EN:
+        return text or "增量翻译文件合并失败"
+    if "已保留增量目录" in text:
+        return "The incremental merge did not complete. The incremental folder was preserved. Check the logs for details."
+    if text.startswith("未找到增量目录:"):
+        return "The incremental translation folder was not found."
+    return Localizer.get().onekey_incremental_translation_merge_failed
+
+
 # Worker Thread for Extraction
 class ExtractionWorker(QThread):
     progress = pyqtSignal(str, int) # message, percent
@@ -654,7 +729,12 @@ class ExtractionWorker(QThread):
         try:
             # 设置进度回调
             self.unified_extractor.set_progress_callback(
-                lambda msg, pct: self.progress.emit(msg, pct)
+                lambda msg, pct: self.progress.emit(
+                    _localize_extractor_progress(
+                        msg, Localizer.get().onekey_extracting_text
+                    ),
+                    pct,
+                )
             )
             
             if self.incremental:
@@ -675,12 +755,24 @@ class ExtractionWorker(QThread):
                     use_official=bool(self.exe_path)
                 )
             
-            self.finished.emit(result.success, result.message, result)
+            if not result.success and result.message:
+                LogManager.get().error(f"文本提取失败: {result.message}")
+            self.finished.emit(
+                result.success, _localize_extraction_result(result, self.incremental), result
+            )
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.finished.emit(False, str(e), None)
+            LogManager.get().error(f"文本提取失败: {e}")
+            self.finished.emit(
+                False,
+                Localizer.localize(
+                    f"文本提取失败：{e}",
+                    "Text extraction failed. Check the logs for details.",
+                ),
+                None,
+            )
         finally:
             self.unified_extractor.set_progress_callback(None)
 
@@ -729,7 +821,12 @@ class ApplyTranslationWorker(QThread):
     def run(self):
         try:
             self.unified_extractor.set_progress_callback(
-                lambda msg, pct: self.progress.emit(msg, pct)
+                lambda msg, pct: self.progress.emit(
+                    _localize_extractor_progress(
+                        msg, Localizer.get().onekey_applying_translation
+                    ),
+                    pct,
+                )
             )
             if self.incremental_mode:
                 self._run_incremental()
@@ -738,7 +835,15 @@ class ApplyTranslationWorker(QThread):
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            self.finished.emit(False, f"应用翻译失败：{exc}", None)
+            LogManager.get().error(f"应用翻译失败: {exc}")
+            self.finished.emit(
+                False,
+                Localizer.localize(
+                    f"应用翻译失败：{exc}",
+                    "Failed to apply the translation. Check the logs for details.",
+                ),
+                None,
+            )
         finally:
             self.unified_extractor.set_progress_callback(None)
 
@@ -750,9 +855,12 @@ class ApplyTranslationWorker(QThread):
             clean_duplicates=True,
         )
         if not merge_result.success:
+            LogManager.get().error(
+                f"增量翻译文件合并失败: {merge_result.message}"
+            )
             self.finished.emit(
                 False,
-                merge_result.message,
+                _localize_merge_failure(merge_result.message),
                 {"warning": True},
             )
             return
@@ -768,18 +876,24 @@ class ApplyTranslationWorker(QThread):
             # 让校对页仍能载入本轮结果，避免“文件成功、缓存丢失”。
             self.finished.emit(
                 False,
-                f"翻译文件已应用，但缓存仍保留在：{self.output_dir / 'cache'}，请稍后重试应用。",
+                Localizer.get().onekey_translation_files_applied_but_cache_remains_try.format(self_output_dir_cache=self.output_dir / 'cache'),
                 {"warning": True},
             )
             return
-        self.progress.emit("正在清理增量目录...", 92)
+        self.progress.emit(
+            Localizer.get().onekey_cleaning_incremental_folders,
+            92,
+        )
         if self.output_dir.exists():
             shutil.rmtree(str(self.output_dir), ignore_errors=True)
         if self.incremental_dir and self.incremental_dir.exists():
             shutil.rmtree(str(self.incremental_dir), ignore_errors=True)
         # 应用增量后恢复全局主路径，并把运行清单更新到已经
         # 合并的主缓存；不能继续指向刚删除的 <lang>_new。
-        self.progress.emit("正在恢复翻译路径配置...", 96)
+        self.progress.emit(
+            Localizer.get().onekey_restoring_translation_paths,
+            96,
+        )
         configure_main_translation_paths(
             self.config,
             self.game_dir,
@@ -789,7 +903,7 @@ class ApplyTranslationWorker(QThread):
         self.config.save()
         self.finished.emit(
             True,
-            merge_result.message,
+            Localizer.get().onekey_incremental_translation_applied,
             {"main_output": str(self.main_output)},
         )
 
@@ -801,7 +915,10 @@ class ApplyTranslationWorker(QThread):
         )
         # 应用成功后把全局配置恢复为向导项目的主路径，再允许自动
         # hook 接续；这样 hook 扫描到的是真实的最新 TL。
-        self.progress.emit("正在恢复翻译路径配置...", 96)
+        self.progress.emit(
+            Localizer.get().onekey_restoring_translation_paths,
+            96,
+        )
         if self.project_root and self.project_language:
             configure_main_translation_paths(
                 self.config,
@@ -812,8 +929,7 @@ class ApplyTranslationWorker(QThread):
             self.config.save()
         self.finished.emit(
             True,
-            f"已成功应用 {success_count} 个翻译文件到游戏目录！\n"
-            f"现在可以启动游戏查看翻译效果。",
+            Localizer.get().onekey_applied_translation_files_game_folder_you_can.format(success_count=success_count),
             {"count": success_count},
         )
 
@@ -834,6 +950,8 @@ class YiJianFanyiPage(Base, QWidget):
         self.current_step = 1
         self.unified_extractor = UnifiedExtractor()
         self.extraction_worker = None
+        self._extraction_generation = 0
+        self._preprocess_worker = None
         self.has_old_translation = False  # 是否检测到旧翻译
         self.incremental_mode = False     # 是否使用增量抽取
         self._ner_model = None            # 懒加载的 NER 模型
@@ -841,6 +959,8 @@ class YiJianFanyiPage(Base, QWidget):
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
         self._onekey_translation_completed = False
+        self._onekey_request_id = ""
+        self._onekey_run_id = None
         self._auto_hook_pending = False
         self._auto_hook_running = False
         self._incremental_dir = None
@@ -853,6 +973,8 @@ class YiJianFanyiPage(Base, QWidget):
         self._apply_parent = None
         self._apply_project_paths = None
         self._apply_progress_dialog = None
+        self._start_translation_after_extraction = False
+        self._agent_direct_start = False
         # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
         # 最近运行清单指向 hook 缓存，供校对页继续载入。
         self._hook_restore_paths = None
@@ -860,6 +982,10 @@ class YiJianFanyiPage(Base, QWidget):
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
         self.subscribe(Base.Event.TRANSLATION_STOP, self._on_translation_stop)
+        self.subscribe(
+            Base.Event.TRANSLATION_START_RESULT,
+            self._on_translation_start_result,
+        )
     
     def _init_ui(self):
         """初始化界面"""
@@ -898,20 +1024,22 @@ class YiJianFanyiPage(Base, QWidget):
         # 返回按钮
         back_btn = TransparentToolButton(FluentIcon.RETURN)
         if step == 1:
-            back_btn.setToolTip("返回工具箱")
+            back_btn.setToolTip(Localizer.get().onekey_back_toolbox)
             back_btn.clicked.connect(self._exit_wizard)
         else:
-            back_btn.setToolTip("返回上一步")
+            back_btn.setToolTip(Localizer.get().onekey_previous_step)
             # 使用 lambda 捕获当前 step 值
             back_btn.clicked.connect(lambda checked, s=step: self._go_previous_step(s))
         header_layout.addWidget(back_btn)
         
-        title_label = TitleLabel(f"步骤 {step}/5：{title}")
+        title_label = TitleLabel(
+            Localizer.get().onekey_step_5.format(step=step, title=title)
+        )
         header_layout.addWidget(title_label)
         header_layout.addStretch(1)
         
         if step > 1:
-            exit_btn = PushButton("退出向导")
+            exit_btn = PushButton(Localizer.get().onekey_exit_wizard)
             exit_btn.clicked.connect(self._exit_wizard)
             header_layout.addWidget(exit_btn)
         
@@ -981,7 +1109,10 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度一：前期设置 ====================
     def _create_step1_page(self):
         """进度一：前期设置 - 简洁友好的小白UI"""
-        page, layout = self._create_page_container("选择游戏", 1)
+        page, layout = self._create_page_container(
+            Localizer.get().onekey_select_game,
+            1,
+        )
         
         # 提示文字 - 更友好的说明
         tip_card = CardWidget()
@@ -989,14 +1120,13 @@ class YiJianFanyiPage(Base, QWidget):
         tip_layout.setContentsMargins(12, 12, 12, 12)
         tip_layout.setSpacing(6)
         
-        tip_title = StrongBodyLabel("💡 小白指南")
+        tip_title = StrongBodyLabel(
+            Localizer.get().onekey_quick_start
+        )
         tip_layout.addWidget(tip_title)
         
         tip_text = CaptionLabel(
-            "1. 选择游戏目录（包含 game 文件夹的那个）\n"
-            "2. 点击「开始提取文本」自动抽取翻译\n"
-            "3. 完成后点击「开始翻译」即可\n"
-            "💬 如果之前翻译过，会自动保留已有翻译"
+            Localizer.get().onekey_1_select_game_folder_contains_game_subfolder
         )
         tip_text.setStyleSheet("color: #666; line-height: 1.5;")
         tip_text.setWordWrap(True)
@@ -1008,11 +1138,13 @@ class YiJianFanyiPage(Base, QWidget):
         path_row.setSpacing(8)
         
         self.game_path_edit = LineEdit()
-        self.game_path_edit.setPlaceholderText("输入或粘贴游戏目录路径，例如: D:\\Games\\MyGame")
+        self.game_path_edit.setPlaceholderText(
+            Localizer.get().onekey_enter_paste_game_folder_path_example_d
+        )
         self.game_path_edit.textChanged.connect(self._on_path_text_changed)
         path_row.addWidget(self.game_path_edit, 1)
         
-        self.browse_btn = PushButton("浏览...")
+        self.browse_btn = PushButton(Localizer.get().onekey_browse)
         self.browse_btn.clicked.connect(self._select_game_dir)
         path_row.addWidget(self.browse_btn)
         
@@ -1030,36 +1162,54 @@ class YiJianFanyiPage(Base, QWidget):
         old_trans_layout.setContentsMargins(12, 12, 12, 12)
         old_trans_layout.setSpacing(8)
         
-        self.old_trans_title = StrongBodyLabel("🔍 检测到已有翻译")
+        self.old_trans_title = StrongBodyLabel(
+            Localizer.get().onekey_existing_translation_detected
+        )
         old_trans_layout.addWidget(self.old_trans_title)
         
-        self.old_trans_desc = CaptionLabel("该游戏已有翻译文件，请选择处理方式：")
+        self.old_trans_desc = CaptionLabel(
+            Localizer.get().onekey_game_already_has_translation_files_choose_how
+        )
         self.old_trans_desc.setWordWrap(True)
         old_trans_layout.addWidget(self.old_trans_desc)
 
         # 选项文本采用“短标题 + 说明”两行布局，避免窗口较窄时勾选框文本重叠
-        self.incremental_rb = CheckBox("增量抽取（推荐）")
+        self.incremental_rb = CheckBox(
+            Localizer.get().onekey_incremental_extraction_recommended
+        )
         self.incremental_rb.setChecked(True)
         old_trans_layout.addWidget(self.incremental_rb)
-        incremental_desc = CaptionLabel("保留已有翻译，抽取新增内容 + 未翻译占位")
+        incremental_desc = CaptionLabel(
+            Localizer.get().onekey_keep_existing_translations_extract_new_untranslated_entries
+        )
         incremental_desc.setWordWrap(True)
         incremental_desc.setStyleSheet("padding-left: 28px; color: #666;")
         old_trans_layout.addWidget(incremental_desc)
 
-        self.full_extract_rb = CheckBox("完整抽取（重做全量）")
+        self.full_extract_rb = CheckBox(
+            Localizer.get().onekey_full_extraction_start_over
+        )
         self.full_extract_rb.setChecked(False)
-        self.full_extract_rb.setToolTip("会把 tl/<lang> 备份后重新生成，占位会被重置，慎用")
+        self.full_extract_rb.setToolTip(
+            Localizer.get().onekey_backs_up_regenerates_tl_lang_existing_placeholders
+        )
         old_trans_layout.addWidget(self.full_extract_rb)
-        full_extract_desc = CaptionLabel("备份旧翻译后重新抽取全部内容，仅在需要推倒重做时使用")
+        full_extract_desc = CaptionLabel(
+            Localizer.get().onekey_back_up_old_translation_extract_everything_again
+        )
         full_extract_desc.setWordWrap(True)
         full_extract_desc.setStyleSheet("padding-left: 28px; color: #666;")
         old_trans_layout.addWidget(full_extract_desc)
         
-        tip_label = CaptionLabel("小提示：默认选择增量抽取，避免覆盖已有翻译；完整抽取只在重做全量时使用。")
+        tip_label = CaptionLabel(
+            Localizer.get().onekey_tip_incremental_extraction_protects_existing_translations_use
+        )
         tip_label.setWordWrap(True)
         old_trans_layout.addWidget(tip_label)
 
-        self.auto_merge_cleanup_chk = CheckBox("抽取后自动合并并清理重复")
+        self.auto_merge_cleanup_chk = CheckBox(
+            Localizer.get().onekey_merge_automatically_remove_duplicates_after_extraction
+        )
         try:
             from module.Config import Config
             auto_merge_enabled = getattr(Config().load(), "renpy_incremental_auto_merge_cleanup", True)
@@ -1082,37 +1232,36 @@ class YiJianFanyiPage(Base, QWidget):
         options_layout.setContentsMargins(12, 12, 12, 12)
         options_layout.setSpacing(6)
 
-        options_title = StrongBodyLabel("高级选项")
+        options_title = StrongBodyLabel(
+            Localizer.get().onekey_advanced_options
+        )
         options_layout.addWidget(options_title)
 
         from module.Config import Config
         config = Config().load()
 
-        self.inject_base_box_chk = CheckBox("注入 UI 翻译包（base_box）")
+        self.inject_base_box_chk = CheckBox(
+            Localizer.get().onekey_inject_ui_translation_pack_base_box
+        )
         self.inject_base_box_chk.setChecked(getattr(config, "onekey_inject_base_box", False))
         self.inject_base_box_chk.setToolTip(
-            "自动注入预置的 UI 翻译（开始、保存、设置等）。\n"
-            "如果你已有自定义 UI 翻译，请取消勾选。"
+            Localizer.get().onekey_injects_bundled_ui_translations_start_save_settings
         )
         self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
         options_layout.addWidget(self.inject_base_box_chk)
 
         self.extract_compiled_chk = CheckBox(
-            "提取游戏内置隐藏文本并翻译（生成 renpybox_bytecode_strings.rpy）"
+            Localizer.get().onekey_extract_translate_hidden_built_text_creates_renpybox
         )
         self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
         self.extract_compiled_chk.setToolTip(
-            "游戏中部分玩家可见文本写死在程序文件里，"
-            "Ren'Py 官方抽取识别不到。\n"
-            "勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译"
-            "（写入 tl/<语言>/renpybox_bytecode_strings.rpy）。\n"
-            "不勾选则这些文本不纳入标准翻译，翻译时容易漏掉，需要之后靠补全功能兜底。"
+            Localizer.get().onekey_some_player_visible_text_embedded_compiled_files
         )
         self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
         options_layout.addWidget(self.extract_compiled_chk)
 
         self.verify_uppercase_chk = CheckBox(
-            "对未翻译的大写缩写做二次确认（会额外消耗额度）"
+            Localizer.get().onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota
         )
         self.verify_uppercase_chk.setChecked(
             getattr(config, "renpy_verify_uppercase_candidates", True)
@@ -1123,7 +1272,7 @@ class YiJianFanyiPage(Base, QWidget):
         options_layout.addWidget(self.verify_uppercase_chk)
 
         self.clear_declined_btn = PushButton(
-            "清除判定不译清单",
+            Localizer.get().onekey_clear_skipped_candidates,
             icon=FluentIcon.DELETE,
         )
         self.clear_declined_btn.clicked.connect(self._clear_declined_candidates)
@@ -1132,7 +1281,11 @@ class YiJianFanyiPage(Base, QWidget):
         layout.addWidget(options_card)
 
         layout.addSpacing(20)        # 语言设置（简化）
-        layout.addWidget(SubtitleLabel("翻译语言设置"))
+        layout.addWidget(
+            SubtitleLabel(
+                Localizer.get().onekey_translation_languages
+            )
+        )
         
         lang_row = QHBoxLayout()
         lang_row.setSpacing(20)
@@ -1140,9 +1293,19 @@ class YiJianFanyiPage(Base, QWidget):
         # 源语言
         src_layout = QVBoxLayout()
         src_layout.setSpacing(4)
-        src_layout.addWidget(CaptionLabel("游戏原语言"))
+        src_layout.addWidget(
+            CaptionLabel(Localizer.get().onekey_source_language)
+        )
         self.src_lang_combo = ComboBox()
-        self.src_lang_combo.addItems(["英语", "日语", "韩语", "俄语", "其他"])
+        self.src_lang_combo.addItems(
+            [
+                Localizer.get().direct_rpy_english,
+                Localizer.get().direct_rpy_japanese,
+                Localizer.get().direct_rpy_korean,
+                Localizer.get().onekey_russian,
+                Localizer.get().onekey_other,
+            ]
+        )
         self.src_lang_combo.setFixedWidth(150)
         src_layout.addWidget(self.src_lang_combo)
         lang_row.addLayout(src_layout)
@@ -1150,9 +1313,18 @@ class YiJianFanyiPage(Base, QWidget):
         # 目标语言
         tgt_layout = QVBoxLayout()
         tgt_layout.setSpacing(4)
-        tgt_layout.addWidget(CaptionLabel("翻译成"))
+        tgt_layout.addWidget(
+            CaptionLabel(Localizer.get().onekey_target_language)
+        )
         self.tgt_lang_combo = ComboBox()
-        self.tgt_lang_combo.addItems(["简体中文", "繁体中文", "日语", "英语"])
+        self.tgt_lang_combo.addItems(
+            [
+                Localizer.get().direct_rpy_simplified_chinese,
+                Localizer.get().direct_rpy_traditional_chinese,
+                Localizer.get().direct_rpy_japanese,
+                Localizer.get().direct_rpy_english,
+            ]
+        )
         self.tgt_lang_combo.setFixedWidth(150)
         tgt_layout.addWidget(self.tgt_lang_combo)
         lang_row.addLayout(tgt_layout)
@@ -1160,7 +1332,9 @@ class YiJianFanyiPage(Base, QWidget):
         # TL 文件夹名（折叠/隐藏给高级用户）
         tl_layout = QVBoxLayout()
         tl_layout.setSpacing(4)
-        tl_layout.addWidget(CaptionLabel("TL 文件夹名"))
+        tl_layout.addWidget(
+            CaptionLabel(Localizer.get().onekey_tl_folder_name)
+        )
         self.tl_folder_edit = LineEdit()
         self.tl_folder_edit.setText("chinese")
         self.tl_folder_edit.setFixedWidth(120)
@@ -1178,17 +1352,23 @@ class YiJianFanyiPage(Base, QWidget):
         next_row.addStretch(1)
         
         # 轻量说明：一步到位
-        self.quick_tip_label = CaptionLabel("直接点击“开始提取文本”即可，完成后进入翻译。如果已有翻译，默认会保留。")
+        self.quick_tip_label = CaptionLabel(
+            Localizer.get().onekey_click_extract_text_begin_existing_translations_preserved
+        )
         self.quick_tip_label.setWordWrap(True)
         layout.addWidget(self.quick_tip_label)
         
         # 跳过抽取按钮（已有翻译时显示）
-        self.skip_extract_btn = PushButton("跳过抽取，直接翻译 →")
+        self.skip_extract_btn = PushButton(
+            Localizer.get().onekey_skip_extraction_translate
+        )
         self.skip_extract_btn.clicked.connect(self._skip_to_translate)
         self.skip_extract_btn.setVisible(False)  # 默认隐藏，检测到翻译后显示
         next_row.addWidget(self.skip_extract_btn)
         
-        self.step1_next_btn = PrimaryPushButton("开始提取文本 →")
+        self.step1_next_btn = PrimaryPushButton(
+            Localizer.get().onekey_extract_text
+        )
         self.step1_next_btn.clicked.connect(self._go_step2)
         self.step1_next_btn.setEnabled(False)
         next_row.addWidget(self.step1_next_btn)
@@ -1226,13 +1406,17 @@ class YiJianFanyiPage(Base, QWidget):
                 self.game_dir = str(selected_paths.project_root if selected_paths else Path(text))
                 self.game_path = self.game_dir
                 self._sync_game_dir_to_config(self.game_dir)
-                self.path_status_label.setText("✓ 检测到有效的 Ren'Py 游戏目录")
+                self.path_status_label.setText(
+                    Localizer.get().onekey_valid_ren_py_game_folder_detected
+                )
                 self.path_status_label.setStyleSheet("color: #27ae60;")
                 self.step1_next_btn.setEnabled(True)
                 # 检测旧翻译
                 self._check_old_translation(self.game_dir)
             else:
-                self.path_status_label.setText("⚠ 目录中未找到 game 文件夹，可能不是 Ren'Py 游戏")
+                self.path_status_label.setText(
+                    Localizer.get().onekey_no_game_subfolder_found_may_not_ren
+                )
                 self.path_status_label.setStyleSheet("color: #e67e22;")
                 # 仍然允许继续
                 self.game_dir = str(selected_paths.project_root if selected_paths else Path(text))
@@ -1245,13 +1429,17 @@ class YiJianFanyiPage(Base, QWidget):
             self.game_dir = str(selected_paths.project_root if selected_paths else Path(text).parent)
             self.game_path = text
             self._sync_game_dir_to_config(self.game_dir)
-            self.path_status_label.setText("✓ 已选择游戏文件")
+            self.path_status_label.setText(
+                Localizer.get().onekey_game_file_selected
+            )
             self.path_status_label.setStyleSheet("color: #27ae60;")
             self.step1_next_btn.setEnabled(True)
             # 检测旧翻译
             self._check_old_translation(self.game_dir)
         else:
-            self.path_status_label.setText("✗ 路径不存在")
+            self.path_status_label.setText(
+                Localizer.get().onekey_path_does_not_exist
+            )
             self.path_status_label.setStyleSheet("color: #e74c3c;")
             self.step1_next_btn.setEnabled(False)
             self.old_translation_card.setVisible(False)
@@ -1298,8 +1486,12 @@ class YiJianFanyiPage(Base, QWidget):
             # 统计旧翻译文件数量
             rpy_count = len(list(tl_dir.rglob("*.rpy")))
             self.has_old_translation = True
-            self.old_trans_title.setText(f"🔍 检测到已有翻译 ({rpy_count} 个文件)")
-            self.old_trans_desc.setText(f"该游戏在 tl/{tl_name} 中已有翻译文件，请选择处理方式：")
+            self.old_trans_title.setText(
+                Localizer.get().onekey_existing_translation_detected_files.format(rpy_count=rpy_count)
+            )
+            self.old_trans_desc.setText(
+                Localizer.get().onekey_translation_files_already_exist_tl_choose_how.format(tl_name=tl_name)
+            )
             self.old_translation_card.setVisible(True)
             self.incremental_rb.setChecked(True)
             self.full_extract_rb.setChecked(False)
@@ -1321,15 +1513,22 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度二：提取进度 ====================
     def _create_step2_page(self):
         """进度二：提取进度"""
-        page, layout = self._create_page_container("提取文本", 2)
+        page, layout = self._create_page_container(
+            Localizer.get().onekey_extract_text_2,
+            2,
+        )
         
         layout.addStretch(1)
         
-        self.step2_status = TitleLabel("准备开始提取...")
+        self.step2_status = TitleLabel(
+            Localizer.get().onekey_ready_extract
+        )
         self.step2_status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.step2_status)
         
-        self.step2_desc = BodyLabel("正在从游戏中提取文本并生成翻译文件，请稍候。完成后点击“开始翻译”进入下一步，随时可重新抽取。")
+        self.step2_desc = BodyLabel(
+            Localizer.get().onekey_text_extracted_game_translation_files_when_finishes
+        )
         self.step2_desc.setAlignment(Qt.AlignCenter)
         self.step2_desc.setWordWrap(True)
         layout.addWidget(self.step2_desc)
@@ -1341,13 +1540,15 @@ class YiJianFanyiPage(Base, QWidget):
         btn_row.addStretch(1)
         
         # 重试按钮 (默认隐藏，失败后显示)
-        self.step2_retry_btn = PushButton("重新抽取")
+        self.step2_retry_btn = PushButton(
+            Localizer.get().onekey_extract_again
+        )
         self.step2_retry_btn.clicked.connect(self._retry_extraction)
         self.step2_retry_btn.setVisible(False)
         btn_row.addWidget(self.step2_retry_btn)
 
         self.step2_unpack_btn = PrimaryPushButton(
-            "前往 RPA 解包",
+            Localizer.get().onekey_open_rpa_unpacker,
             icon=FluentIcon.ZIP_FOLDER,
         )
         self.step2_unpack_btn.clicked.connect(self._open_rpa_unpack)
@@ -1355,18 +1556,24 @@ class YiJianFanyiPage(Base, QWidget):
         btn_row.addWidget(self.step2_unpack_btn)
         
         # 跳过按钮 (失败时可跳过)
-        self.step2_skip_btn = PushButton("跳过此步骤")
+        self.step2_skip_btn = PushButton(
+            Localizer.get().onekey_skip_step
+        )
         self.step2_skip_btn.clicked.connect(self._go_step3)
         self.step2_skip_btn.setVisible(False)
         btn_row.addWidget(self.step2_skip_btn)
         
         # 下一步按钮 (默认隐藏，完成后显示)
-        self.step2_next_btn = PrimaryPushButton("下一步 →")
+        self.step2_next_btn = PrimaryPushButton(
+            Localizer.get().onekey_next
+        )
         self.step2_next_btn.clicked.connect(self._go_step3)
         self.step2_next_btn.setVisible(False)
         btn_row.addWidget(self.step2_next_btn)
 
-        self.step2_merge_btn = PushButton("合并并清理重复")
+        self.step2_merge_btn = PushButton(
+            Localizer.get().onekey_merge_remove_duplicates
+        )
         self.step2_merge_btn.clicked.connect(self._merge_incremental_dir)
         self.step2_merge_btn.setVisible(False)
         btn_row.addWidget(self.step2_merge_btn)
@@ -1394,13 +1601,21 @@ class YiJianFanyiPage(Base, QWidget):
     def _open_rpa_unpack(self) -> None:
         """打开 RPA 解包页并带入当前项目的 game 目录。"""
         if self.window is None or not self.game_dir:
-            InfoBar.warning("提示", "请先选择有效的游戏目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_select_valid_game_folder_first,
+                parent=self,
+            )
             return
 
         page = self._get_tool_page("pack_unpack")
 
         if not page.set_game_directory(self.game_dir):
-            InfoBar.warning("提示", "无法定位游戏的 game 目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_could_not_locate_game_s_game_folder,
+                parent=self,
+            )
             return
 
         self.window.navigate_to_page(page)
@@ -1439,19 +1654,23 @@ class YiJianFanyiPage(Base, QWidget):
     def _clear_declined_candidates(self):
         """确认后清除当前项目的判定不译清单。"""
         if not self.game_dir:
-            InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_select_game_folder_first,
+                parent=self,
+            )
             return
 
         from qfluentwidgets import MessageBox
         from module.Extract.ReplaceGenerator import clear_declined_candidates
 
         msg_box = MessageBox(
-            "清除判定不译清单",
-            "清除后这些词会在下次翻译时重新尝试翻译。",
+            Localizer.get().onekey_clear_skipped_candidates_2,
+            Localizer.get().onekey_these_terms_translated_again_during_next_run,
             self,
         )
-        msg_box.yesButton.setText("确认清除")
-        msg_box.cancelButton.setText("取消")
+        msg_box.yesButton.setText(Localizer.get().onekey_clear)
+        msg_box.cancelButton.setText(Localizer.get().app_update_cancel)
         if not msg_box.exec():
             return
 
@@ -1459,14 +1678,14 @@ class YiJianFanyiPage(Base, QWidget):
         cleared = clear_declined_candidates(self.game_dir, tl_name)
         if cleared:
             InfoBar.success(
-                "清除完成",
-                f"已清除 {cleared} 条判定不译记录",
+                Localizer.get().onekey_cleared,
+                Localizer.get().onekey_cleared_skipped_candidates.format(cleared=cleared),
                 parent=self,
             )
         else:
             InfoBar.info(
-                "提示",
-                "当前没有判定不译记录",
+                Localizer.get().notice,
+                Localizer.get().onekey_there_no_skipped_candidates,
                 parent=self,
             )
 
@@ -1477,13 +1696,17 @@ class YiJianFanyiPage(Base, QWidget):
             # 禁止旧入口提前合并并删除仍作为翻译输入的 chinese_new。
             if self._incremental_output_dir:
                 InfoBar.warning(
-                    "请先完成翻译",
-                    "当前增量内容尚未应用，请完成翻译后返回工具箱，点击“应用翻译到游戏”。",
+                    Localizer.get().onekey_finish_translation_first,
+                    Localizer.get().onekey_incremental_content_has_not_been_applied_finish,
                     parent=self,
                 )
                 return
             if not self.game_dir:
-                InfoBar.warning("提示", "请先选择游戏目录", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_select_game_folder_first,
+                    parent=self,
+                )
                 return
             tl_name = self.tl_folder_edit.text().strip() or "chinese"
             incremental_dir = Path(self.game_dir) / "game" / "tl" / f"{tl_name}_new"
@@ -1494,51 +1717,90 @@ class YiJianFanyiPage(Base, QWidget):
                 clean_duplicates=True,
             )
             if result.success:
-                InfoBar.success("合并完成", result.message, parent=self)
+                InfoBar.success(
+                    Localizer.get().onekey_merge_completed,
+                    Localizer.get().onekey_incremental_files_merged,
+                    parent=self,
+                )
             else:
-                InfoBar.warning("合并失败", result.message, parent=self)
+                InfoBar.warning(
+                    Localizer.get().onekey_merge_failed,
+                    Localizer.get().onekey_incremental_files_merge_failed,
+                    parent=self,
+                )
         except Exception as exc:
             self.logger.error(f"合并失败: {exc}")
-            InfoBar.error("错误", str(exc), parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                str(exc),
+                parent=self,
+            )
     
     # ==================== 进度三：术语表 ====================
     def _create_step3_page(self):
         """进度三：项目资产与术语表。"""
-        page, layout = self._create_page_container("术语与翻译上下文", 3)
+        page, layout = self._create_page_container(
+            Localizer.get().onekey_terms_translation_context,
+            3,
+        )
         
-        layout.addWidget(SubtitleLabel("术语表与禁翻表"))
-        layout.addWidget(BodyLabel("术语表可以帮助你统一专有名词的翻译，禁翻表可以防止翻译不需要翻译的内容。本地词库页还支持手动扫描术语候选。"))
+        layout.addWidget(
+            SubtitleLabel(
+                Localizer.get().onekey_glossary_do_not_translate_list
+            )
+        )
+        layout.addWidget(
+            BodyLabel(
+                Localizer.get().onekey_glossary_keeps_proper_names_consistent_while_do
+            )
+        )
         
         layout.addSpacing(16)
         
-        self.glossary_info_label = BodyLabel("正在查找项目中的术语表...")
+        self.glossary_info_label = BodyLabel(
+            Localizer.get().onekey_looking_glossary_files_project
+        )
         layout.addWidget(self.glossary_info_label)
         
         layout.addSpacing(16)
         
         btn_row = QHBoxLayout()
-        self.open_glossary_btn = PushButton("📂 打开本地词库管理")
-        self.open_glossary_btn.setToolTip("可在本地词库页手动执行“扫描术语候选”，补齐角色名之外的正文专名")
+        self.open_glossary_btn = PushButton(
+            Localizer.get().onekey_open_local_glossary
+        )
+        self.open_glossary_btn.setToolTip(
+            Localizer.get().onekey_use_scan_term_candidates_local_glossary_find
+        )
         self.open_glossary_btn.clicked.connect(self._open_local_glossary)
         btn_row.addWidget(self.open_glossary_btn)
         
-        self.open_preserve_btn = PushButton("🚫 打开禁翻表管理")
+        self.open_preserve_btn = PushButton(
+            Localizer.get().onekey_open_do_not_translate_list
+        )
         self.open_preserve_btn.clicked.connect(self._open_text_preserve)
         btn_row.addWidget(self.open_preserve_btn)
         
-        self.scan_names_btn = PushButton("🔍 自动提取角色名")
+        self.scan_names_btn = PushButton(
+            Localizer.get().onekey_extract_character_names
+        )
         self.scan_names_btn.clicked.connect(self._scan_character_names)
         btn_row.addWidget(self.scan_names_btn)
 
-        self.open_workbench_btn = PushButton("🎭 打开角色/世界观工作台")
-        self.open_workbench_btn.setToolTip("维护世界观和角色卡；翻译开始时会生成不可变上下文快照")
+        self.open_workbench_btn = PushButton(
+            Localizer.get().onekey_open_character_world_workbench
+        )
+        self.open_workbench_btn.setToolTip(
+            Localizer.get().onekey_manage_worldbook_character_cards_translation_creates_immutable
+        )
         self.open_workbench_btn.clicked.connect(self._open_workbench_from_onekey)
         btn_row.addWidget(self.open_workbench_btn)
         
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
-        self.workbench_asset_status = BodyLabel("正在读取项目资产…")
+        self.workbench_asset_status = BodyLabel(
+            Localizer.get().onekey_loading_project_assets
+        )
         self.workbench_asset_status.setWordWrap(True)
         layout.addWidget(self.workbench_asset_status)
         
@@ -1546,7 +1808,9 @@ class YiJianFanyiPage(Base, QWidget):
         
         next_row = QHBoxLayout()
         next_row.addStretch(1)
-        self.step3_next_btn = PrimaryPushButton("下一步 (开始翻译) →")
+        self.step3_next_btn = PrimaryPushButton(
+            Localizer.get().onekey_next_start_translation
+        )
         self.step3_next_btn.clicked.connect(self._go_step4)
         next_row.addWidget(self.step3_next_btn)
         layout.addLayout(next_row)
@@ -1557,12 +1821,16 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度四：开始翻译 ====================
     def _create_step4_page(self):
         """进度四：开始翻译"""
-        page, layout = self._create_page_container("执行 AI 翻译", 4)
+        page, layout = self._create_page_container(
+            Localizer.get().onekey_run_ai_translation,
+            4,
+        )
         
-        layout.addWidget(SubtitleLabel("准备翻译"))
+        layout.addWidget(
+            SubtitleLabel(Localizer.get().onekey_ready_translate)
+        )
         self.step4_status = BodyLabel(
-            "翻译文件将输出到游戏根目录下的独立文件夹，不会被引擎识别。\n"
-            "完成后可在「后续处理」中应用到游戏。"
+            Localizer.get().onekey_translation_files_written_separate_folder_under_game
         )
         layout.addWidget(self.step4_status)
         
@@ -1570,7 +1838,9 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 翻译按钮
         btn_row = QHBoxLayout()
-        self.start_trans_btn = PrimaryPushButton("🚀 开始翻译")
+        self.start_trans_btn = PrimaryPushButton(
+            Localizer.get().onekey_start_translation
+        )
         self.start_trans_btn.clicked.connect(self._on_start_translate_clicked)
         btn_row.addWidget(self.start_trans_btn)
 
@@ -1579,13 +1849,14 @@ class YiJianFanyiPage(Base, QWidget):
 
         from module.Config import Config
         auto_hook_row = QHBoxLayout()
-        self.auto_hook_supplement_chk = CheckBox("翻译完成后自动补全漏翻（replace_text）")
+        self.auto_hook_supplement_chk = CheckBox(
+            Localizer.get().onekey_recover_missed_text_after_translation_replace_text
+        )
         self.auto_hook_supplement_chk.setChecked(
             getattr(Config().load(), "onekey_auto_hook_supplement", False)
         )
         self.auto_hook_supplement_chk.setToolTip(
-            "默认关闭。\n"
-            "开启后，主翻译完成会自动再跑一轮补全漏翻，生成/翻译 replace_text_auto.rpy。"
+            Localizer.get().onekey_disabled_default_when_enabled_second_pass_generates
         )
         self.auto_hook_supplement_chk.stateChanged.connect(self._on_auto_hook_supplement_changed)
         auto_hook_row.addWidget(self.auto_hook_supplement_chk)
@@ -1598,7 +1869,9 @@ class YiJianFanyiPage(Base, QWidget):
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         
-        self.skip_trans_btn = PushButton("跳过翻译 →")
+        self.skip_trans_btn = PushButton(
+            Localizer.get().onekey_skip_translation
+        )
         self.skip_trans_btn.clicked.connect(self._go_step5)
         action_row.addWidget(self.skip_trans_btn)
         
@@ -1613,12 +1886,25 @@ class YiJianFanyiPage(Base, QWidget):
     # ==================== 进度五：后续处理 ====================
     def _create_step5_page(self):
         """进度五：后续处理"""
-        page, layout = self._create_page_container("检查、导出与后处理", 5)
+        page, layout = self._create_page_container(
+            Localizer.get().onekey_review_export_post_process,
+            5,
+        )
         
-        layout.addWidget(SubtitleLabel("🎉 翻译已完成"))
-        layout.addWidget(BodyLabel("可继续检查、补全或导出翻译结果。"))
         layout.addWidget(
-            CaptionLabel("如果切换到中文后仍有漏翻文本，优先使用“补全漏翻”生成 replace_text_auto.rpy。")
+            SubtitleLabel(
+                Localizer.get().onekey_translation_complete
+            )
+        )
+        layout.addWidget(
+            BodyLabel(
+                Localizer.get().onekey_you_can_now_review_complete_export_translation
+            )
+        )
+        layout.addWidget(
+            CaptionLabel(
+                Localizer.get().onekey_if_text_still_untranslated_game_use_recover
+            )
         )
         
         # 创建滚动区域
@@ -1641,20 +1927,54 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 工具卡片
         tools = [
-            ("检查、润色并导出", "查看质量报告，校对或润色选中译文，然后导出翻译文件", self._tool_open_proofreading),
-            ("补全漏翻", "扫描 tl 未覆盖的文本并生成 replace_text_auto.rpy", self._tool_hook_supplement),
-            ("检测/修复报错", "修复缩进和格式问题", self._tool_fix_errors),
-            ("设置默认语言", "设置游戏启动时的默认语言", self._tool_set_default_lang),
-            ("添加语言切换", "注入语言切换按钮", self._tool_add_lang_switch),
-            ("批量注入字体", "注入预置字体包", self._tool_replace_font),
-            ("打开游戏目录", "查看翻译结果", self._tool_open_game_dir),
-            ("导出语言补丁", "导出 tl 目录为 zip", self._tool_export_patch),
+            (
+                Localizer.get().onekey_review_polish_export,
+                Localizer.get().onekey_review_quality_reports_edit_selected_translations_export,
+                self._tool_open_proofreading,
+            ),
+            (
+                Localizer.get().onekey_recover_missed_text,
+                Localizer.get().onekey_find_text_missing_tl_generate_replace_text,
+                self._tool_hook_supplement,
+            ),
+            (
+                Localizer.get().onekey_detect_repair_errors,
+                Localizer.get().onekey_fix_indentation_formatting_issues,
+                self._tool_fix_errors,
+            ),
+            (
+                Localizer.get().onekey_set_default_language,
+                Localizer.get().onekey_set_language_used_when_game_starts,
+                self._tool_set_default_lang,
+            ),
+            (
+                Localizer.get().onekey_add_language_switch,
+                Localizer.get().onekey_inject_language_switching_button,
+                self._tool_add_lang_switch,
+            ),
+            (
+                Localizer.get().onekey_inject_fonts,
+                Localizer.get().onekey_inject_bundled_font_pack,
+                self._tool_replace_font,
+            ),
+            (
+                Localizer.get().onekey_open_game_folder,
+                Localizer.get().onekey_view_translation_results,
+                self._tool_open_game_dir,
+            ),
+            (
+                Localizer.get().onekey_export_language_patch,
+                Localizer.get().onekey_export_tl_folder_zip_archive,
+                self._tool_export_patch,
+            ),
         ]
         
         for title, desc, func in tools:
-            flow_layout.addWidget(
-                ItemCard(parent=self, title=title, description=desc, clicked=func)
+            card = ItemCard(parent=self, title=title, description=desc, clicked=func)
+            card.title_button.setToolTip(
+                Localizer.get().onekey_open.format(title=title)
             )
+            flow_layout.addWidget(card)
         
         scroll_layout.addWidget(flow_container)
         scroll_layout.addStretch(1)
@@ -1669,7 +1989,11 @@ class YiJianFanyiPage(Base, QWidget):
     
     def _select_game_dir(self):
         """浏览选择游戏目录"""
-        dir_path = QFileDialog.getExistingDirectory(self, "选择游戏目录", "")
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.get().onekey_select_game_folder,
+            "",
+        )
         if dir_path:
             self.game_path_edit.setText(dir_path)
     
@@ -1686,76 +2010,232 @@ class YiJianFanyiPage(Base, QWidget):
         """
         from pathlib import Path
         
-        game_path = Path(game_dir) / "game"
-        if not game_path.exists():
-            return 'empty', '未找到 game 目录'
-        
-        rpy_count = len(list(game_path.rglob("*.rpy")))
-        rpyc_count = len(list(game_path.rglob("*.rpyc")))
-        rpa_count = len(list(game_path.glob("*.rpa")))
+        paths = RenpyProjectPaths.from_path(
+            game_dir,
+            self.tl_folder_edit.text().strip() or "chinese",
+        )
+        if paths is None or not paths.game_dir.exists():
+            return 'empty', Localizer.get().onekey_game_folder_not_found
+
+        rpy_count, rpyc_count = source_script_counts(paths)
+        rpa_count = len(list(paths.game_dir.glob("*.rpa")))
         
         if rpa_count > 0 and rpy_count == 0 and rpyc_count == 0:
-            return 'need_unpack', f'检测到 {rpa_count} 个 RPA 包，需要解包'
+            return 'need_unpack', Localizer.get().onekey_found_rpa_archives_must_unpacked.format(rpa_count=rpa_count)
         
         if rpy_count == 0 and rpyc_count > 0:
-            return 'need_decompile', f'检测到 {rpyc_count} 个 RPYC 文件，需要反编译'
+            return 'need_decompile', Localizer.get().onekey_found_rpyc_files_must_decompiled.format(rpyc_count=rpyc_count)
         
         if rpy_count > 0 and rpyc_count > 0:
-            return 'mixed', f'检测到 {rpy_count} 个 RPY 和 {rpyc_count} 个 RPYC 文件'
+            return 'mixed', Localizer.get().onekey_found_rpy_files_rpyc_files.format(rpy_count=rpy_count, rpyc_count=rpyc_count)
         
         if rpy_count > 0:
-            return 'ready', f'检测到 {rpy_count} 个 RPY 文件，可直接提取'
+            return 'ready', Localizer.get().onekey_found_rpy_files_ready_extraction.format(rpy_count=rpy_count)
         
-        return 'empty', '未检测到可提取的文件'
-    
-    def _auto_decompile(self, game_dir: str) -> tuple:
-        """
-        自动执行反编译
-        
-        Returns:
-            (success, message)
-        """
-        unren_error = None
-        try:
-            from pathlib import Path
-            from module.Tool.Packer import Packer
+        return 'empty', Localizer.get().onekey_no_extractable_files_found
 
-            game_path = Path(game_dir)
-            if game_path.name.lower() != "game":
-                game_path = game_path / "game"
+    def _show_step2_unpack_failure(self, message: str) -> None:
+        """解包失败后的统一界面状态：可重试、可跳过、可转手动解包页。"""
+        self.step2_page.progress_ring.setVisible(False)
+        self.step2_status.setText(
+            Localizer.get().onekey_unpack_failed
+        )
+        self.step2_desc.setText(message)
+        self.step2_unpack_btn.setVisible(True)
+        self.step2_unpack_btn.setEnabled(True)
+        self.step2_retry_btn.setVisible(True)
+        self.step2_skip_btn.setVisible(True)
+        self.step2_retry_btn.setEnabled(True)
+        self.step2_skip_btn.setEnabled(True)
+        InfoBar.warning(
+            Localizer.get().notice,
+            Localizer.get().onekey_unpack_failed_check_game_files,
+            parent=self,
+        )
 
-            ok, _lines = Packer().unpack_all_unren_bat(
-                str(game_path),
-                lang="zh",
-                options="2x",
-                purpose="反编译",
-                timeout_s=60 * 60,
+    def _show_step2_decompile_failure(self, message: str) -> None:
+        """反编译失败后的统一界面状态。"""
+        self.step2_page.progress_ring.setVisible(False)
+        self.step2_status.setText(Localizer.get().onekey_decompilation_failed)
+        self.step2_desc.setText(
+            Localizer.get().onekey_possible_causes_game_uses_encryption_obfuscation_ren.format(
+                decompile_msg=message,
             )
-            if ok:
-                return True, "反编译完成 (UnRen)"
-        except Exception as unren_exc:
-            unren_error = unren_exc
+        )
+        self.step2_retry_btn.setVisible(True)
+        self.step2_skip_btn.setVisible(True)
+        self.step2_retry_btn.setEnabled(True)
+        self.step2_skip_btn.setEnabled(True)
+        InfoBar.warning(
+            Localizer.get().notice,
+            Localizer.get().onekey_decompilation_failed_check_game_files,
+            parent=self,
+        )
 
+    def _step2_context_is_current(self, generation: int, context: dict) -> bool:
+        """确认回调仍属于当前页面、当前配置中的同一项目和语言。"""
+        if generation != self._extraction_generation:
+            return False
+
+        project_key = str(context.get("project_key", "") or "")
+        if not project_key:
+            return False
         try:
-            from module.Tool.RenpyDecompiler import RenpyDecompiler
+            current_paths = RenpyProjectPaths.from_config(Config().load())
+            page_paths = RenpyProjectPaths.from_path(
+                self.game_dir,
+                self.tl_folder_edit.text().strip() or "chinese",
+            )
+        except Exception:
+            return False
+        return bool(
+            current_paths is not None
+            and page_paths is not None
+            and current_paths.project_key == project_key
+            and page_paths.project_key == project_key
+        )
 
-            decompiler = RenpyDecompiler()
-            decompiler.decompile(game_dir, overwrite=False)
-            
-            return True, "反编译完成 (unrpyc v2)"
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            if unren_error:
-                return False, f"反编译失败（UnRen 失败：{unren_error}）：{e}"
-            return False, f"反编译失败（可能版本不兼容/加密/脚本特殊）：{e}"
-        
+    def _on_preprocess_progress(
+        self,
+        message: str,
+        generation: int,
+        context: dict,
+    ) -> None:
+        if self._step2_context_is_current(generation, context):
+            self.step2_status.setText(message or "")
+
+    def _start_unpack_worker(self, generation: int, context: dict) -> None:
+        paths = RenpyProjectPaths.from_path(
+            context["game_dir"],
+            context["language"],
+        )
+        if paths is None:
+            self._show_step2_unpack_failure(Localizer.get().onekey_game_folder_not_found)
+            return
+
+        worker = UnpackWorker(
+            str(paths.game_dir),
+            direct=True,
+            script_only=False,
+        )
+        self._preprocess_worker = worker
+        worker.progress.connect(
+            lambda message, current=generation, snapshot=context: self._on_preprocess_progress(
+                message,
+                current,
+                snapshot,
+            )
+        )
+        worker.finished.connect(
+            lambda result, current=generation, snapshot=context, source=worker: self._on_auto_unpack_finished(
+                result,
+                current,
+                snapshot,
+                source,
+            )
+        )
+        worker.start()
+
+    def _start_decompile_worker(self, generation: int, context: dict) -> None:
+        worker = DecompileWorker(
+            context["game_dir"],
+            overwrite=False,
+            fallback_unren_options="2x",
+            use_unren=True,
+        )
+        self._preprocess_worker = worker
+        worker.progress.connect(
+            lambda message, current=generation, snapshot=context: self._on_preprocess_progress(
+                message,
+                current,
+                snapshot,
+            )
+        )
+        worker.finished.connect(
+            lambda result, current=generation, snapshot=context, source=worker: self._on_auto_decompile_finished(
+                result,
+                current,
+                snapshot,
+                source,
+            )
+        )
+        worker.start()
+
+    def _on_auto_unpack_finished(
+        self,
+        result: dict,
+        generation: int,
+        context: dict,
+        worker,
+    ) -> None:
+        if self._preprocess_worker is worker:
+            self._preprocess_worker = None
+        if not self._step2_context_is_current(generation, context):
+            return
+
+        result = result if isinstance(result, dict) else {}
+        message = str(result.get("message", "") or "")
+        if result.get("level") != "success":
+            self._show_step2_unpack_failure(
+                Localizer.get().onekey_unpack_failed_hint.format(unpack_msg=message)
+            )
+            return
+
+        status, status_message = self._detect_game_status(context["game_dir"])
+        if status in ("need_unpack", "empty"):
+            self._show_step2_unpack_failure(
+                Localizer.get().onekey_unpack_complete_no_scripts.format(
+                    unpack_msg=message,
+                )
+            )
+            return
+
+        self.step2_desc.setText(message)
+        self.step2_page.progress_bar.setValue(20)
+        self._continue_step2(generation, context, status, status_message)
+
+    def _on_auto_decompile_finished(
+        self,
+        result: dict,
+        generation: int,
+        context: dict,
+        worker,
+    ) -> None:
+        if self._preprocess_worker is worker:
+            self._preprocess_worker = None
+        if not self._step2_context_is_current(generation, context):
+            return
+
+        result = result if isinstance(result, dict) else {}
+        message = str(result.get("message", "") or "")
+        if result.get("level") != "success":
+            self._show_step2_decompile_failure(message)
+            return
+
+        status, status_message = self._detect_game_status(context["game_dir"])
+        if status in ("need_decompile", "need_unpack", "empty"):
+            self._show_step2_decompile_failure(status_message or message)
+            return
+
+        self.step2_desc.setText(message)
+        self.step2_page.progress_bar.setValue(20)
+        self._continue_step2(generation, context, status, status_message)
+
     def _go_step2(self):
         """进入步骤2并开始提取"""
-        # 如果正在抽取中，避免重复启动线程
-        if self.extraction_worker and self.extraction_worker.isRunning():
-            InfoBar.warning("提示", "抽取正在进行中，请等待完成后再操作。", parent=self)
+        # 如果正在预处理或抽取，避免重复启动线程。
+        if (
+            self._preprocess_worker
+            and self._preprocess_worker.isRunning()
+        ) or (
+            self.extraction_worker
+            and self.extraction_worker.isRunning()
+        ):
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_extraction_already_running_wait_finish,
+                parent=self,
+            )
             return
 
         # 每次重新抽取都建立全新的路径上下文，不能沿用上一次项目的增量目标。
@@ -1777,7 +2257,9 @@ class YiJianFanyiPage(Base, QWidget):
         self.step2_skip_btn.setEnabled(False)
         self.step2_merge_btn.setVisible(False)
         self.step2_merge_btn.setEnabled(False)
-        self.step2_desc.setText("正在从游戏中提取文本并生成翻译文件，请稍候。")
+        self.step2_desc.setText(
+            Localizer.get().onekey_extracting_text_game_creating_translation_files
+        )
         self.step2_page.progress_bar.setValue(0)
         
         # 启动提取线程
@@ -1789,62 +2271,72 @@ class YiJianFanyiPage(Base, QWidget):
         if self.game_path and os.path.isfile(self.game_path) and self.game_path.endswith(".exe"):
              exe_path = self.game_path
         
-        # ===== 新增：游戏预处理检测 =====
-        self.step2_status.setText("🔍 检测游戏状态...")
+        paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+        self._extraction_generation += 1
+        generation = self._extraction_generation
+        context = {
+            "game_dir": str(game_dir),
+            "language": tl_name,
+            "project_key": paths.project_key if paths is not None else "",
+            "exe_path": exe_path,
+            "incremental": bool(
+                self.has_old_translation and self.incremental_rb.isChecked()
+            ),
+        }
+        self.step2_status.setText(
+            Localizer.get().onekey_checking_game_files
+        )
         self.step2_page.progress_ring.setVisible(True)
         self.step2_page.progress_bar.setValue(5)
-        
-        status, status_msg = self._detect_game_status(game_dir)
-        
-        if status == 'need_decompile':
-            self.step2_status.setText("🔨 正在反编译 RPYC 文件...")
-            self.step2_desc.setText(status_msg + "\n正在自动执行反编译，请稍候...")
-            self.step2_page.progress_bar.setValue(10)
-            
-            # 执行反编译
-            success, decompile_msg = self._auto_decompile(game_dir)
-            
-            if not success:
-                self.step2_page.progress_ring.setVisible(False)
-                self.step2_status.setText("✗ 反编译失败")
-                self.step2_desc.setText(
-                    f"{decompile_msg}\n\n"
-                    "可能的原因：\n"
-                    "• 游戏使用了加密/混淆\n"
-                    "• Ren'Py 版本不兼容\n"
-                    "• 缺少游戏的 Python 运行时\n\n"
-                    "建议：尝试使用其他反编译工具或联系开发者"
-                )
-                self.step2_retry_btn.setVisible(True)
-                self.step2_skip_btn.setVisible(True)
-                self.step2_retry_btn.setEnabled(True)
-                self.step2_skip_btn.setEnabled(True)
-                InfoBar.warning("提示", "反编译失败，请检查游戏文件", parent=self)
-                return
-            
-            self.step2_desc.setText(decompile_msg)
-            self.step2_page.progress_bar.setValue(20)
-        
-        elif status == 'need_unpack':
-            self.step2_page.progress_ring.setVisible(False)
-            self.step2_status.setText("📦 需要解包 RPA")
-            self.step2_desc.setText(
-                f"{status_msg}\n\n"
-                "请先使用「RPA 解包」功能解包游戏资源，\n"
-                "解包完成后返回此页，点击「重新抽取」。"
-            )
-            self.step2_unpack_btn.setVisible(True)
-            self.step2_unpack_btn.setEnabled(True)
-            self.step2_retry_btn.setVisible(True)
-            self.step2_skip_btn.setVisible(True)
-            self.step2_retry_btn.setEnabled(True)
-            self.step2_skip_btn.setEnabled(True)
-            InfoBar.warning("提示", "请先解包 RPA 资源", parent=self)
+
+        self._continue_step2(generation, context)
+
+    def _continue_step2(
+        self,
+        generation: int,
+        context: dict,
+        status: str | None = None,
+        status_msg: str | None = None,
+    ) -> None:
+        """在同一项目快照内依次完成解包、反编译和文本提取。"""
+        if not self._step2_context_is_current(generation, context):
             return
-        
-        elif status == 'empty':
+
+        if status is None:
+            status, status_msg = self._detect_game_status(context["game_dir"])
+        status_msg = str(status_msg or "")
+
+        if status == 'need_unpack':
+            self.step2_status.setText(
+                Localizer.get().onekey_unpacking_rpa_archives
+            )
+            self.step2_desc.setText(
+                status_msg
+                + Localizer.get().onekey_running_rpa_unpacker_automatically
+            )
+            self.step2_page.progress_bar.setValue(10)
+
+            self._start_unpack_worker(generation, context)
+            return
+
+        if status == 'need_decompile':
+            self.step2_status.setText(
+                Localizer.get().onekey_decompiling_rpyc_files
+            )
+            self.step2_desc.setText(
+                status_msg
+                + Localizer.get().onekey_running_decompiler_automatically
+            )
+            self.step2_page.progress_bar.setValue(10)
+
+            self._start_decompile_worker(generation, context)
+            return
+
+        if status == 'empty':
             self.step2_page.progress_ring.setVisible(False)
-            self.step2_status.setText("✗ 未找到游戏文件")
+            self.step2_status.setText(
+                Localizer.get().onekey_game_files_not_found
+            )
             self.step2_desc.setText(status_msg)
             self.step2_retry_btn.setVisible(True)
             self.step2_retry_btn.setEnabled(True)
@@ -1852,45 +2344,105 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setEnabled(False)
             return
         
-        # ===== 继续正常的提取流程 =====
-        # 检测是否使用增量模式
-        incremental = self.has_old_translation and self.incremental_rb.isChecked()
+        incremental = bool(context["incremental"])
         
         if incremental:
-            self.step2_status.setText("🔄 增量抽取中...")
+            self.step2_status.setText(
+                Localizer.get().onekey_running_incremental_extraction
+            )
         else:
-            self.step2_status.setText("正在提取...")
+            self.step2_status.setText(
+                Localizer.get().onekey_extracting
+            )
         self.step2_page.progress_ring.setVisible(True)
         
-        self.extraction_worker = ExtractionWorker(self.unified_extractor, game_dir, tl_name, exe_path, incremental=incremental)
-        self.extraction_worker.progress.connect(self._on_extract_progress)
-        self.extraction_worker.finished.connect(self._on_extract_finished)
+        self.extraction_worker = ExtractionWorker(
+            self.unified_extractor,
+            context["game_dir"],
+            context["language"],
+            context["exe_path"],
+            incremental=incremental,
+        )
+        self.extraction_worker.progress.connect(
+            lambda message, percent, current=generation: self._on_extract_progress(
+                message,
+                percent,
+                current,
+            )
+        )
+        self.extraction_worker.finished.connect(
+            lambda success, message, result, current=generation, snapshot=context: self._on_extract_finished(
+                success,
+                message,
+                result,
+                current,
+                snapshot,
+            )
+        )
         self.extraction_worker.start()
-        
-    def _on_extract_progress(self, msg, percent):
+
+    def _on_extract_progress(self, msg, percent, generation=None):
+        if generation is not None and generation != self._extraction_generation:
+            return
         self.step2_status.setText(msg)
         self.step2_page.progress_bar.setValue(percent)
         
-    def _on_extract_finished(self, success, msg, result=None):
+    def _on_extract_finished(
+        self,
+        success,
+        msg,
+        result=None,
+        generation=None,
+        context=None,
+    ):
+        if generation is not None and generation != self._extraction_generation:
+            return
+
+        game_dir = self.game_dir
+        tl_name = self.tl_folder_edit.text().strip() or "chinese"
+        if isinstance(context, dict):
+            current_paths = RenpyProjectPaths.from_config(Config().load())
+            page_paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+            project_key = str(context.get("project_key", "") or "")
+            if (
+                not project_key
+                or current_paths is None
+                or page_paths is None
+                or current_paths.project_key != project_key
+                or page_paths.project_key != project_key
+            ):
+                self._start_translation_after_extraction = False
+                self._agent_direct_start = False
+                self.extraction_worker = None
+                self.step2_page.progress_ring.setVisible(False)
+                self.step2_status.setText(
+                    Localizer.get().onekey_project_changed_extract_again
+                )
+                self.step2_desc.setText(
+                    Localizer.get().onekey_project_changed_extract_again
+                )
+                self.step2_retry_btn.setVisible(True)
+                self.step2_retry_btn.setEnabled(True)
+                return
+            game_dir = str(context.get("game_dir", game_dir) or game_dir)
+            tl_name = str(context.get("language", tl_name) or tl_name)
+
         self.step2_page.progress_ring.setVisible(False)
         if success:
-            self.step2_status.setText("✓ 提取完成")
-            tl_name = self.tl_folder_edit.text().strip() or "chinese"
-            
+            self.step2_status.setText(
+                Localizer.get().onekey_extraction_complete
+            )
             # 如果是增量抽取并且有单独的增量目录，显示更详细的信息
             if result and result.incremental_dir and result.incremental_dir.exists():
                 detail_msg = (
-                    f"{msg}\n\n"
-                    f"💡 新增内容已输出到单独文件夹：{result.incremental_dir.name}/\n"
-                    f"原有翻译保持不变，可分别处理新增内容。"
+                    Localizer.get().onekey_new_content_written_existing_translations_left_unchanged.format(msg=msg, name=result.incremental_dir.name)
                 )
                 self._incremental_dir = result.incremental_dir
                 # 暂存目录需要保留到翻译完成；提前合并会删除它，
                 # 导致翻译页面回退到完整的主语言目录。
-                from module.Config import Config
                 config = Config().load()
                 apply_target, delta_output = configure_incremental_translation_paths(
-                    config, self.game_dir, tl_name, result.incremental_dir
+                    config, game_dir, tl_name, result.incremental_dir
                 )
                 preserved_output = preserve_incremental_translation_cache(delta_output)
                 delta_output.mkdir(parents=True, exist_ok=True)
@@ -1899,20 +2451,18 @@ class YiJianFanyiPage(Base, QWidget):
                 self._incremental_output_dir = delta_output
                 self._last_onekey_output_dir = delta_output
                 detail_msg += (
-                    f"\n增量翻译输入：{result.incremental_dir.name}/"
-                    f"\n增量翻译输出：{delta_output.name}/"
+                    Localizer.get().onekey_incremental_input_incremental_output.format(name=result.incremental_dir.name, name_2=delta_output.name)
                 )
                 if preserved_output is not None:
                     detail_msg += (
-                        f"\n检测到上一轮增量缓存，已保存在：{preserved_output.name}/"
-                        "（未删除，可手动恢复）"
+                        Localizer.get().onekey_previous_incremental_cache_preserved_can_restored_manually.format(name=preserved_output.name)
                     )
             else:
-                detail_msg = f'{msg}\n已保留占位（new==old），可直接进入翻译。需要更新术语/禁翻后可再次点击"重新抽取"。'
+                detail_msg = Localizer.get().onekey_placeholders_preserved_new_old_you_can_translate.format(msg=msg)
                 self._incremental_dir = None
                 self._incremental_output_dir = None
                 self._apply_target_dir = None
-                paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
+                paths = RenpyProjectPaths.from_path(game_dir, tl_name)
                 self._last_onekey_output_dir = (
                     paths.translation_output_dir if paths is not None else None
                 )
@@ -1925,7 +2475,9 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_retry_btn.setEnabled(True)
             self.step2_skip_btn.setVisible(False)
             self.step2_skip_btn.setEnabled(False)
-            self.step2_next_btn.setText("开始翻译 →")
+            self.step2_next_btn.setText(
+                Localizer.get().onekey_start_translation_2
+            )
             # 增量暂存目录是后续翻译输入，翻译前不能通过旧按钮直接合并或删除。
             self.step2_merge_btn.setVisible(False)
             self.step2_merge_btn.setEnabled(False)
@@ -1933,10 +2485,19 @@ class YiJianFanyiPage(Base, QWidget):
             # 自动执行角色名和禁翻表扫描（仅第一次执行，避免重复卡顿）
             self._extract_character_names()
             
-            InfoBar.success("成功", "提取完成，已自动扫描角色名和变量引用", parent=self)
+            InfoBar.success(
+                Localizer.get().extract_json_success,
+                Localizer.get().onekey_extraction_completed_character_names_variable_references_scanned,
+                parent=self,
+            )
+            self._continue_agent_start_after_extraction()
         else:
-            self.step2_status.setText("✗ 提取遇到问题")
-            self.step2_desc.setText(f'错误信息：{msg}\n\n建议先点"重新抽取"。如仍失败，可跳过直接翻译，或检查路径/权限后再试。')
+            self.step2_status.setText(
+                Localizer.get().onekey_extraction_failed
+            )
+            self.step2_desc.setText(
+                Localizer.get().onekey_error_select_extract_again_if_still_fails.format(msg=msg)
+            )
             self.step2_retry_btn.setVisible(True)
             self.step2_skip_btn.setVisible(True)
             self.step2_retry_btn.setEnabled(True)
@@ -1945,12 +2506,28 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_next_btn.setEnabled(False)
             self.step2_merge_btn.setVisible(False)
             self.step2_merge_btn.setEnabled(False)
-            InfoBar.warning("提示", "提取过程遇到问题，你可以重试或跳过", parent=self)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_extraction_failed_you_can_try_again_skip,
+                parent=self,
+            )
+
+    def _continue_agent_start_after_extraction(self) -> None:
+        """Agent 发起的流程在提取成功后自动进入已有翻译确认。"""
+        if not self._start_translation_after_extraction:
+            return
+        self._start_translation_after_extraction = False
+        self._go_step4()
+        QTimer.singleShot(0, self._on_start_translate_clicked)
 
     def _scan_character_names(self):
         """扫描角色候选并写入工作台，变量引用继续写入禁翻表。"""
         self._extract_character_names(force=True)
-        InfoBar.success("成功", "已扫描角色候选(→角色工作台)和变量引用(→禁翻表)", parent=self)
+        InfoBar.success(
+            Localizer.get().extract_json_success,
+            Localizer.get().onekey_character_candidates_variable_references_scanned,
+            parent=self,
+        )
 
     def _extract_character_names(self, *, force: bool = False):
         """自动扫描角色候选、角色草稿和变量引用。"""
@@ -2286,16 +2863,23 @@ class YiJianFanyiPage(Base, QWidget):
             if not isinstance(character_drafts, list):
                 character_drafts = []
             label.setText(
-                "当前项目资产："
-                f"世界观{'已启用' if assets.worldbook_enabled else '未启用'}，"
-                f"角色卡 {len(assets.character_cards)} 张，"
-                f"术语 {len(assets.glossary)} 项，"
-                f"禁翻 {len(assets.do_not_translate)} 项；"
-                f"待确认术语候选 {len(candidates)} 项，"
-                f"角色草稿 {len(character_drafts)} 张。"
+                Localizer.get().onekey_project_assets_summary.format(
+                    worldbook_status=(
+                        Localizer.get().enabled
+                        if assets.worldbook_enabled
+                        else Localizer.get().disabled
+                    ),
+                    character_count=len(assets.character_cards),
+                    glossary_count=len(assets.glossary),
+                    preserve_count=len(assets.do_not_translate),
+                    candidate_count=len(candidates),
+                    draft_count=len(character_drafts),
+                )
             )
         except Exception as exc:
-            label.setText(f"项目资产暂不可用：{exc}")
+            label.setText(
+                Localizer.get().onekey_project_assets_currently_unavailable.format(exc=exc)
+            )
 
     def _open_workbench_from_onekey(self) -> None:
         """从一键流程打开工作台，并先同步当前项目路径。"""
@@ -2306,14 +2890,22 @@ class YiJianFanyiPage(Base, QWidget):
             if page is None and hasattr(self.window, "findChild"):
                 page = self.window.findChild(QWidget, "renpy_workbench_page")
             if page is None:
-                InfoBar.warning("提示", "未找到角色/世界观工作台页面", parent = self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_character_world_workbench_page_not_found,
+                    parent = self,
+                )
                 return
             if hasattr(page, "refresh_from_config"):
                 page.refresh_from_config()
             self.window.navigate_to_page(page)
         except Exception as exc:
             self.logger.error(f"打开工作台失败：{exc}")
-            InfoBar.error("错误", f"打开工作台失败：{exc}", parent = self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_open_workbench.format(exc=exc),
+                parent = self,
+            )
         
     def _find_glossary_files(self):
         found_files = []
@@ -2326,9 +2918,13 @@ class YiJianFanyiPage(Base, QWidget):
                     found_files.append(f"game/{pattern}")
         
         if found_files:
-            self.glossary_info_label.setText(f"找到文件: {', '.join(found_files)}")
+            self.glossary_info_label.setText(
+                Localizer.get().onekey_found.format(join_found_files=', '.join(found_files))
+            )
         else:
-            self.glossary_info_label.setText("未找到术语表文件，将使用默认配置。")
+            self.glossary_info_label.setText(
+                Localizer.get().onekey_no_glossary_files_found_default_configuration_used
+            )
 
     def _open_local_glossary(self):
         page = self._get_tool_page("local_glossary")
@@ -2343,6 +2939,62 @@ class YiJianFanyiPage(Base, QWidget):
         self.stacked.setCurrentIndex(3)
         self._refresh_step4_state()
 
+    def start_current_project(self, project_root: str, language: str) -> bool:
+        """由 Agent 带入当前项目并启动提取，完成后继续进入翻译确认。"""
+        engine = Engine.get()
+        if (
+            (
+                getattr(self, "_preprocess_worker", None)
+                and self._preprocess_worker.isRunning()
+            )
+            or
+            (self.extraction_worker and self.extraction_worker.isRunning())
+            or engine.get_status() != Engine.Status.IDLE
+            or engine.has_stop_barrier()
+            or engine.has_single_tasks()
+            or bool(getattr(self, "_onekey_translation_started", False))
+            or bool(getattr(self, "_onekey_request_id", ""))
+            or bool(getattr(self, "_auto_hook_running", False))
+            or bool(getattr(self, "_apply_running", False))
+        ):
+            return False
+        root = str(project_root or "").strip()
+        if not root:
+            return False
+
+        self._start_translation_after_extraction = True
+        self._agent_direct_start = True
+        self._onekey_translation_completed = False
+        try:
+            tl_blocked = self.tl_folder_edit.blockSignals(True)
+            self.tl_folder_edit.setText(str(language or "chinese").strip() or "chinese")
+            self.tl_folder_edit.blockSignals(tl_blocked)
+            path_blocked = self.game_path_edit.blockSignals(True)
+            self.game_path_edit.setText(root)
+            self.game_path_edit.blockSignals(path_blocked)
+            self._on_path_text_changed(root)
+            if not self.step1_next_btn.isEnabled():
+                self._start_translation_after_extraction = False
+                self._agent_direct_start = False
+                return False
+            self._go_step2()
+            return True
+        except Exception:
+            self._start_translation_after_extraction = False
+            self._agent_direct_start = False
+            raise
+
+    def _invalidate_step2_run(self) -> None:
+        """让仍在后台运行的旧步骤 2 结果失效。"""
+        self._extraction_generation += 1
+        self._start_translation_after_extraction = False
+        self._agent_direct_start = False
+
+    def hideEvent(self, event):
+        """页面离开后不允许旧预处理结果继续启动后续任务。"""
+        self._invalidate_step2_run()
+        super().hideEvent(event)
+
     def showEvent(self, event):
         """从翻译面板返回本页时刷新第 4 步状态，避免显示“未翻译”的假象。"""
         super().showEvent(event)
@@ -2352,7 +3004,12 @@ class YiJianFanyiPage(Base, QWidget):
     def _on_start_translate_clicked(self):
         """检查配置后再进入翻译面板"""
         if not self._refresh_step4_ready():
-            InfoBar.warning("提示", "请先在接口设置激活翻译平台，并在项目设置填写输入/输出目录。", parent=self)
+            self._agent_direct_start = False
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_activate_translation_provider_configure_input_output_folders,
+                parent=self,
+            )
             return
         
         # 显示友好的目录说明
@@ -2369,24 +3026,23 @@ class YiJianFanyiPage(Base, QWidget):
         hint_color = "#aaa" if isDarkTheme() else "#666"
         
         msg_box = MessageBox(
-            "📁 翻译目录说明",
-            f"<b>输入目录</b>（待翻译文件）：<br>"
-            f"<code style='background:{code_bg};padding:2px 4px;'>{config.input_folder}</code><br><br>"
-            f"<b>输出目录</b>（翻译结果）：<br>"
-            f"<code style='background:{code_bg};padding:2px 4px;'>{config.output_folder}</code><br><br>"
-            f"<p style='color:{hint_color};'><i>💡 输出目录位于游戏根目录下，不会被 Ren'Py 引擎识别。<br>"
-            f"翻译完成后，可在「后续处理」中应用到游戏。</i></p>",
+            Localizer.get().onekey_translation_folders,
+            Localizer.get().onekey_b_input_folder_b_files_translate_br.format(code_bg=code_bg, input_folder=config.input_folder, output_folder=config.output_folder, hint_color=hint_color),
             self
         )
-        msg_box.yesButton.setText("开始翻译")
-        msg_box.cancelButton.setText("取消")
+        msg_box.yesButton.setText(
+            Localizer.get().direct_rpy_start_translation
+        )
+        msg_box.cancelButton.setText(Localizer.get().app_update_cancel)
         
+        direct_start = self._agent_direct_start
+        self._agent_direct_start = False
         if msg_box.exec():
-            self._onekey_translation_started = True
+            self._onekey_translation_started = not direct_start
             self._onekey_translation_completed = False
             self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
             self._auto_hook_running = False
-            self._open_legacy_translation_page()
+            self._open_legacy_translation_page(start_immediately=direct_start)
 
     def _on_auto_hook_supplement_changed(self, state):
         """保存一键翻译后的自动补漏开关。"""
@@ -2399,7 +3055,7 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as e:
             self.logger.warning(f"保存自动补全漏翻配置失败: {e}")
         
-    def _open_legacy_translation_page(self):
+    def _open_legacy_translation_page(self, *, start_immediately: bool = False):
         """打开传统翻译页面，保留续翻译能力"""
         try:
             if not self.window:
@@ -2410,32 +3066,76 @@ class YiJianFanyiPage(Base, QWidget):
                 page = TranslationPage("translation_page", self.window)
                 self.window.translation_page = page
             self.window.navigate_to_page(page)
+            if start_immediately:
+                request_id = uuid.uuid4().hex
+                self._onekey_request_id = request_id
+                self._onekey_run_id = None
+                if not page._request_translation_start(
+                    Base.TranslationStatus.UNTRANSLATED,
+                    self.window,
+                    request_id=request_id,
+                ):
+                    self._reset_auto_hook_state()
         except Exception as e:
+            self._reset_auto_hook_state()
             LogManager.get().error(f"打开传统翻译面板失败: {e}")
-            InfoBar.error("错误", f"打开传统翻译面板失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_open_translation_panel.format(e=e),
+                parent=self,
+            )
         
     def _go_step5(self):
         self.current_step = 5
         self.stacked.setCurrentIndex(4)
         self.step5_page.progress_bar.setValue(100)
 
-    def _start_auto_hook_supplement(self):
+    def _start_auto_hook_supplement(
+        self,
+        project_paths: RenpyProjectPaths | None = None,
+    ):
         """主翻译完成后自动执行补全漏翻。"""
         try:
             from module.Config import Config
 
-            if not self.game_dir:
+            if not self.game_dir and project_paths is None:
                 self._reset_auto_hook_state()
                 return
 
-            tl_name = self.tl_folder_edit.text().strip() or "chinese"
-            paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
+            if project_paths is not None:
+                page_paths = RenpyProjectPaths.from_path(
+                    self.game_dir,
+                    project_paths.language,
+                )
+                config_paths = RenpyProjectPaths.from_config(Config().load())
+                if (
+                    page_paths is None
+                    or config_paths is None
+                    or page_paths.project_key != project_paths.project_key
+                    or config_paths.project_key != project_paths.project_key
+                ):
+                    self._reset_auto_hook_state()
+                    InfoBar.warning(
+                        Localizer.get().notice,
+                        Localizer.get().agent_project_changed,
+                        parent=self,
+                    )
+                    return
+                paths = project_paths
+                tl_name = paths.language
+            else:
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
             if paths is None:
                 raise RuntimeError("无法解析当前 Ren'Py 项目路径")
             project_root = paths.project_root
             tl_dir = paths.tl_language_dir
             if not tl_dir.exists():
-                InfoBar.warning("提示", f"未找到 tl 目录，已跳过自动补全：{tl_dir}", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_tl_folder_not_found_missed_text_recovery.format(tl_dir=tl_dir),
+                    parent=self,
+                )
                 self._reset_auto_hook_state()
                 return
 
@@ -2466,10 +3166,14 @@ class YiJianFanyiPage(Base, QWidget):
             config.renpy_source_translate = False
 
             self._auto_hook_running = True
+            request_id = uuid.uuid4().hex
+            self._onekey_request_id = request_id
+            self._onekey_run_id = None
 
             self.emit(
                 Base.Event.TRANSLATION_START,
                 {
+                    "request_id": request_id,
                     "config": config,
                     "status": Base.TranslationStatus.UNTRANSLATED,
                     "input_folder": str(tl_dir),
@@ -2478,16 +3182,21 @@ class YiJianFanyiPage(Base, QWidget):
                     "target_language": config.target_language,
                 },
             )
-            InfoBar.success("已开始", "主翻译完成，正在自动补全漏翻…", parent=self)
         except Exception as e:
             self.logger.error(f"自动补全漏翻启动失败: {e}")
-            InfoBar.error("错误", f"自动补全漏翻启动失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_start_missed_text_recovery.format(e=e),
+                parent=self,
+            )
             self._restore_paths_after_auto_hook()
             self._reset_auto_hook_state()
 
     def _reset_auto_hook_state(self):
         """重置自动补全漏翻相关状态。"""
         self._onekey_translation_started = False
+        self._onekey_request_id = ""
+        self._onekey_run_id = None
         self._auto_hook_pending = False
         self._auto_hook_running = False
         self._hook_restore_paths = None
@@ -2548,18 +3257,83 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as exc:
             self.logger.warning(f"自动补全完成后恢复主路径失败: {exc}")
 
+    def _on_translation_start_result(self, event, data):
+        """只接收本次 Agent 一键启动请求的受理结果。"""
+        del event
+        payload = data if isinstance(data, dict) else {}
+        request_id = str(payload.get("request_id", "") or "")
+        if not self._onekey_request_id or request_id != self._onekey_request_id:
+            return
+
+        self._onekey_request_id = ""
+        if payload.get("accepted") is True:
+            self._onekey_run_id = payload.get("run_id")
+            self._onekey_translation_started = True
+            if getattr(self, "_auto_hook_running", False):
+                InfoBar.success(
+                    Localizer.get().direct_rpy_started,
+                    Localizer.get().onekey_main_translation_complete_recovering_missed_text,
+                    parent=self,
+                )
+            return
+
+        self._onekey_translation_completed = False
+        if getattr(self, "_auto_hook_running", False):
+            self._restore_paths_after_auto_hook()
+        self._reset_auto_hook_state()
+        InfoBar.warning(
+            Localizer.get().notice,
+            Localizer.get().translator_running,
+            parent=self,
+        )
+
     def _on_translation_done(self, event, data):
         """监听翻译完成，按需接续 replace_text 补漏。"""
         payload = data if isinstance(data, dict) else {}
         failed = payload.get("success") is False or payload.get("stopped") is True
 
-        if self._auto_hook_running:
+        if getattr(self, "_auto_hook_running", False):
+            request_id = str(payload.get("request_id", "") or "")
+            pending_request_id = str(
+                getattr(self, "_onekey_request_id", "") or ""
+            )
+            run_id = getattr(self, "_onekey_run_id", None)
+            if pending_request_id:
+                if request_id != pending_request_id:
+                    return
+                self._onekey_request_id = ""
+                self._onekey_run_id = payload.get("run_id")
+            elif run_id is not None and payload.get("run_id") != run_id:
+                return
             self._restore_paths_after_auto_hook()
             self._reset_auto_hook_state()
             if failed:
-                InfoBar.warning("已停止", "自动补全漏翻未完成，已恢复主翻译路径。", parent=self)
+                InfoBar.warning(
+                    Localizer.get().direct_rpy_stopped,
+                    Localizer.get().onekey_missed_text_recovery_did_not_finish_main,
+                    parent=self,
+                )
             else:
-                InfoBar.success("完成", "自动补全漏翻完成", parent=self)
+                InfoBar.success(
+                    Localizer.get().local_glossary_completed,
+                    Localizer.get().onekey_missed_text_recovery_completed,
+                    parent=self,
+                )
+            return
+
+        pending_request_id = str(
+            getattr(self, "_onekey_request_id", "") or ""
+        )
+        if pending_request_id:
+            if str(payload.get("request_id", "") or "") != pending_request_id:
+                return
+            self._onekey_request_id = ""
+            self._onekey_run_id = payload.get("run_id")
+            self._onekey_translation_started = True
+        elif (
+            getattr(self, "_onekey_run_id", None) is not None
+            and payload.get("run_id") != self._onekey_run_id
+        ):
             return
 
         if self._onekey_translation_started and self._auto_hook_pending:
@@ -2577,6 +3351,9 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _on_translation_stop(self, event, data):
         """翻译停止时清理一键翻译的自动补漏状态。"""
+        if self._onekey_request_id or self._onekey_run_id is not None:
+            # 关联运行等待带 run_id 的 TRANSLATION_DONE，不能被其它停止请求清理。
+            return
         if self._onekey_translation_started or self._auto_hook_pending or self._auto_hook_running:
             if self._auto_hook_running:
                 self._restore_paths_after_auto_hook()
@@ -2607,15 +3384,23 @@ class YiJianFanyiPage(Base, QWidget):
         if self._onekey_translation_completed or self._translation_output_completed():
             self._onekey_translation_completed = True
             self.step4_status.setText(
-                "✔ 翻译已完成，可直接进入「后续处理」应用翻译到游戏。"
+                Localizer.get().onekey_translation_complete_continue_post_processing_apply_game
             )
             self.step4_status.setStyleSheet("color: #27ae60;")
-            self.start_trans_btn.setText("重新翻译")
+            self.start_trans_btn.setText(
+                Localizer.get().onekey_translate_again
+            )
             self.start_trans_btn.setEnabled(True)
-            self.skip_trans_btn.setText("进入后续处理 →")
+            self.skip_trans_btn.setText(
+                Localizer.get().onekey_continue_post_processing
+            )
             return
-        self.start_trans_btn.setText("🚀 开始翻译")
-        self.skip_trans_btn.setText("跳过翻译 →")
+        self.start_trans_btn.setText(
+            Localizer.get().onekey_start_translation
+        )
+        self.skip_trans_btn.setText(
+            Localizer.get().onekey_skip_translation
+        )
         self._refresh_step4_ready()
 
     def _refresh_step4_ready(self) -> bool:
@@ -2628,20 +3413,28 @@ class YiJianFanyiPage(Base, QWidget):
         output_dir = Path(cfg.output_folder) if cfg.output_folder else None
 
         if not input_dir or not input_dir.exists():
-            missing.append("输入目录未设置或不存在")
+            missing.append(
+                Localizer.get().onekey_input_folder_missing_does_not_exist
+            )
         if not output_dir:
-            missing.append("输出目录未设置")
+            missing.append(
+                Localizer.get().onekey_output_folder_not_configured
+            )
         elif input_dir and output_dir and input_dir.exists():
             try:
                 if output_dir.resolve() == input_dir.resolve():
-                    missing.append("输入/输出目录不能相同")
+                    missing.append(
+                        Localizer.get().onekey_input_output_folders_must_different
+                    )
             except Exception:
                 pass
         if output_dir and not output_dir.exists():
             try:
                 output_dir.mkdir(parents=True, exist_ok=True)
             except Exception:
-                missing.append("输出目录无法创建")
+                missing.append(
+                    Localizer.get().onekey_output_folder_could_not_created
+                )
 
         platform_ready = False
         if cfg.platforms:
@@ -2650,21 +3443,41 @@ class YiJianFanyiPage(Base, QWidget):
                     platform_ready = True
                     break
         if not platform_ready:
-            missing.append("未激活翻译接口（请在接口设置启用平台）")
+            missing.append(
+                Localizer.get().onekey_no_translation_provider_active
+            )
 
         ready = len(missing) == 0
         if ready:
-            self.step4_status.setText("✔ 已准备好翻译，可直接开始。")
+            self.step4_status.setText(
+                Localizer.get().onekey_ready_translate_2
+            )
             self.step4_status.setStyleSheet("color: #27ae60;")
             self.start_trans_btn.setEnabled(True)
         else:
-            self.step4_status.setText("⚠ 需先完成配置：\n" + "\n".join(missing))
+            self.step4_status.setText(
+                Localizer.get().onekey_complete_following_setup_first
+                + "\n".join(missing)
+            )
             self.step4_status.setStyleSheet("color: #e67e22;")
             self.start_trans_btn.setEnabled(False)
         return ready
     
     def _go_previous_step(self, current_step: int):
         """返回上一步"""
+        if (
+            self._preprocess_worker
+            and self._preprocess_worker.isRunning()
+        ) or (
+            self.extraction_worker
+            and self.extraction_worker.isRunning()
+        ):
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_extraction_already_running_wait_finish,
+                parent=self,
+            )
+            return
         if current_step <= 1:
             # 步骤1返回到工具箱
             self._exit_wizard()
@@ -2675,6 +3488,7 @@ class YiJianFanyiPage(Base, QWidget):
         
     def _exit_wizard(self):
         """退出向导，返回工具箱页面"""
+        self._invalidate_step2_run()
         if self.window:
             self.window.navigate_back_to_toolbox()
         
@@ -2682,6 +3496,8 @@ class YiJianFanyiPage(Base, QWidget):
         self.current_step = 1
         self.stacked.setCurrentIndex(0)
         self._onekey_translation_completed = False
+        self._start_translation_after_extraction = False
+        self._agent_direct_start = False
         self.step1_next_btn.setEnabled(False)
         self.skip_extract_btn.setVisible(False)
         self.game_path = ""
@@ -2729,17 +3545,29 @@ class YiJianFanyiPage(Base, QWidget):
             )
         
         if not output_dir.exists():
-            InfoBar.error("错误", f"输出目录不存在：{output_dir}", parent=ui_parent)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_output_folder_does_not_exist.format(output_dir=output_dir),
+                parent=ui_parent,
+            )
             return
         
         if input_dir is None or not input_dir.exists():
-            InfoBar.error("错误", f"目标目录不存在：{input_dir}", parent=ui_parent)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_target_folder_does_not_exist.format(input_dir=input_dir),
+                parent=ui_parent,
+            )
             return
         
         # 统计文件
         output_files = list(output_dir.rglob("*.rpy"))
         if not output_files:
-            InfoBar.warning("提示", "输出目录中没有翻译文件（.rpy）", parent=ui_parent)
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_output_folder_does_not_contain_translation_files,
+                parent=ui_parent,
+            )
             return
         
         # 确认对话框 - 根据主题选择样式颜色
@@ -2747,17 +3575,14 @@ class YiJianFanyiPage(Base, QWidget):
         warn_color = "#e67e22" if isDarkTheme() else "#d35400"
         
         msg_box = MessageBox(
-            "确认应用翻译",
-            f"<b>即将应用翻译到游戏</b><br><br>"
-            f"<b>源目录：</b><br><code style='background:{code_bg};padding:2px 4px;'>{output_dir}</code><br><br>"
-            f"<b>目标目录：</b><br><code style='background:{code_bg};padding:2px 4px;'>{input_dir}</code><br><br>"
-            f"<b>文件数量：</b>{len(output_files)} 个<br><br>"
-            f"<p style='color:{warn_color};'><i>⚠️ 这将覆盖目标目录中的同名文件！<br>"
-            f"建议先备份原始文件。</i></p>",
+            Localizer.get().onekey_confirm_translation_application,
+            Localizer.get().onekey_b_apply_translation_game_b_br_br.format(code_bg=code_bg, output_dir=output_dir, input_dir=input_dir, output_files_count=len(output_files), warn_color=warn_color),
             ui_parent
         )
-        msg_box.yesButton.setText("应用翻译")
-        msg_box.cancelButton.setText("取消")
+        msg_box.yesButton.setText(
+            Localizer.get().onekey_apply_translation
+        )
+        msg_box.cancelButton.setText(Localizer.get().app_update_cancel)
         
         if not msg_box.exec():
             return
@@ -2765,8 +3590,8 @@ class YiJianFanyiPage(Base, QWidget):
         # 防重入：应用进行中不允许再次触发（乱点会导致重复合并/卡死）。
         if getattr(self, "_apply_running", False):
             InfoBar.warning(
-                "正在应用",
-                "翻译应用正在进行中，请稍候…",
+                Localizer.get().onekey_applying_translation,
+                Localizer.get().onekey_translation_already_being_applied_please_wait,
                 parent=ui_parent,
             )
             return
@@ -2810,13 +3635,15 @@ class YiJianFanyiPage(Base, QWidget):
             )
 
         progress_dialog = QProgressDialog(
-            "正在应用翻译到游戏，请稍候…",
+            Localizer.get().onekey_applying_translation_game,
             None,
             0,
             100,
             ui_parent,
         )
-        progress_dialog.setWindowTitle("应用翻译")
+        progress_dialog.setWindowTitle(
+            Localizer.get().onekey_apply_translation
+        )
         progress_dialog.setWindowModality(Qt.ApplicationModal)
         progress_dialog.setCancelButton(None)
         progress_dialog.setMinimumDuration(0)
@@ -2866,18 +3693,36 @@ class YiJianFanyiPage(Base, QWidget):
                     self._apply_target_dir = None
                 elif payload.get("count") is not None and project_paths is not None:
                     self._last_onekey_output_dir = project_paths.translation_output_dir
-            InfoBar.success("应用成功", msg, duration=5000, parent=ui_parent)
+            InfoBar.success(
+                Localizer.get().onekey_translation_applied,
+                msg,
+                duration=5000,
+                parent=ui_parent,
+            )
             if self._onekey_translation_started and self._auto_hook_pending:
                 self._auto_hook_pending = False
-                QTimer.singleShot(0, self._start_auto_hook_supplement)
+                QTimer.singleShot(
+                    0,
+                    lambda paths=project_paths: self._start_auto_hook_supplement(
+                        paths,
+                    ),
+                )
             elif self._onekey_translation_started:
                 self._reset_auto_hook_state()
             return
 
         if payload and payload.get("warning"):
-            InfoBar.warning("提示", msg, parent=ui_parent)
+            InfoBar.warning(
+                Localizer.get().notice,
+                msg,
+                parent=ui_parent,
+            )
         else:
-            InfoBar.error("错误", msg, parent=ui_parent)
+            InfoBar.error(
+                Localizer.get().error,
+                msg,
+                parent=ui_parent,
+            )
 
     def _tool_hook_supplement(self, card):
         """打开补全漏翻页面，并沿用当前项目上下文。"""
@@ -2887,7 +3732,11 @@ class YiJianFanyiPage(Base, QWidget):
             self.window.navigate_to_page(self._get_tool_page("hook_supplement"))
         except Exception as e:
             self.logger.error(f"打开补全翻译页面失败: {e}")
-            InfoBar.error("错误", f"打开补全翻译页面失败: {e}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_open_missed_text_recovery.format(e=e),
+                parent=self,
+            )
     
     def _tool_fix_errors(self, card):
         """打开错误修复页面，并预填当前项目的 game 目录。"""
@@ -2904,7 +3753,11 @@ class YiJianFanyiPage(Base, QWidget):
             self.window.navigate_to_page(page)
         except Exception as exc:
             self.logger.error(f"打开错误修复页面失败: {exc}")
-            InfoBar.error("错误", f"打开错误修复页面失败：{exc}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_open_error_repair.format(exc=exc),
+                parent=self,
+            )
 
     def _tool_set_default_lang(self, card):
         page = self._get_tool_page("set_default_language")
@@ -2942,22 +3795,34 @@ class YiJianFanyiPage(Base, QWidget):
         """生成当前项目的漏翻补丁。"""
         try:
             if not self.game_dir:
-                InfoBar.warning("提示", "请先选择游戏目录。", parent=self)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_select_game_folder_first_2,
+                    parent=self,
+                )
                 return
             tl_name = self.tl_folder_edit.text().strip() or "chinese"
             patch_path, missing_count = generate_patch(self.game_dir, tl_name)
             if patch_path is None:
-                InfoBar.info("提示", "未发现缺失翻译，无需生成补丁。", parent=self)
+                InfoBar.info(
+                    Localizer.get().notice,
+                    Localizer.get().onekey_no_missing_translations_found_patch_not_needed,
+                    parent=self,
+                )
                 return
             InfoBar.success(
-                "导出完成",
-                f"已生成漏翻补丁：{patch_path}（{missing_count} 条）",
+                Localizer.get().onekey_export_complete,
+                Localizer.get().onekey_created_missing_translation_patch_entries.format(patch_path=patch_path, missing_count=missing_count),
                 parent=self,
                 duration=5000,
             )
         except Exception as exc:
             self.logger.error(f"导出语言补丁失败: {exc}")
-            InfoBar.error("错误", f"导出语言补丁失败：{exc}", parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.get().onekey_could_not_export_language_patch.format(exc=exc),
+                parent=self,
+            )
     
     def _tool_view_glossary(self, card):
         self._open_local_glossary()
