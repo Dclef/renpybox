@@ -58,8 +58,8 @@ def test_legacy_config_is_bootstrapped_once_without_treating_text_preserve_as_dn
     assert persisted.get_project_assets()["revision"] == 1
 
 
-def test_new_renpy_project_preserves_legacy_workbench_assets_disabled(tmp_path) -> None:
-    """旧版工作台数据必须保留，但迁移后不能未经确认直接注入。"""
+def test_new_renpy_project_skips_legacy_workbench_assets_but_keeps_glossary(tmp_path) -> None:
+    """新项目不能继承旧全局工作台内容，但仍迁移旧术语表。"""
     project = tmp_path / "renpy-project"
     tl_dir = project / "game" / "tl" / "chinese"
     tl_dir.mkdir(parents=True)
@@ -72,12 +72,54 @@ def test_new_renpy_project_preserves_legacy_workbench_assets_disabled(tmp_path) 
     state = ProjectAssetsRepository.from_config(config).load(config)
 
     assert state.assets.worldbook_enabled is False
-    assert state.assets.worldbook["setting_summary"] == "A floating city"
+    assert state.assets.worldbook.to_dict() == {}
     assert state.assets.character_cards_enabled is False
-    assert state.assets.character_cards[0]["name"] == "Alice"
+    assert state.assets.character_cards == ()
     assert [item.source for item in state.assets.glossary] == ["Sky"]
-    assert state.analysis_candidates["worldbook_draft"] == {"genre": "Fantasy"}
-    assert state.analysis_candidates["character_drafts"][0]["name"] == "Bob"
+    assert state.analysis_candidates.get("worldbook_draft", {}) == {}
+    assert state.analysis_candidates.get("character_drafts", []) == []
+    assert [item["source"] for item in state.analysis_candidates["items"]] == ["Cloud"]
+
+
+def test_renpy_projects_do_not_inherit_each_others_workbench_assets(tmp_path) -> None:
+    """两个 Ren'Py 项目分别读写自己的工作台缓存。"""
+    first_project = tmp_path / "first-game"
+    first_tl_dir = first_project / "game" / "tl" / "chinese"
+    first_tl_dir.mkdir(parents=True)
+    first_config = _legacy_config(first_project / "RenpyBox_Translation" / "chinese")
+    first_config.renpy_project_path = str(first_project)
+    first_config.renpy_game_folder = str(first_project)
+    first_config.renpy_tl_folder = str(first_tl_dir)
+    first_config.input_folder = str(first_tl_dir)
+    first_repository = ProjectAssetsRepository.from_config(first_config)
+    first_repository.load(first_config)
+
+    first_config.renpy_workbench_worldbook_data = {"setting_summary": "First game"}
+    first_config.renpy_workbench_character_cards = [{"name": "First Hero"}]
+    first_config.renpy_workbench_generated_worldbook_draft = {"genre": "First draft"}
+    first_config.renpy_workbench_generated_character_drafts = [{"name": "First Draft Hero"}]
+    first_repository.save_workbench_view(first_config)
+
+    second_project = tmp_path / "second-game"
+    second_tl_dir = second_project / "game" / "tl" / "chinese"
+    second_tl_dir.mkdir(parents=True)
+    second_config = _legacy_config(second_project / "RenpyBox_Translation" / "chinese")
+    second_config.renpy_project_path = str(second_project)
+    second_config.renpy_game_folder = str(second_project)
+    second_config.renpy_tl_folder = str(second_tl_dir)
+    second_config.input_folder = str(second_tl_dir)
+    second_state = ProjectAssetsRepository.from_config(second_config).load(second_config)
+
+    assert second_state.assets.worldbook.to_dict() == {}
+    assert second_state.assets.character_cards == ()
+    assert second_state.analysis_candidates.get("worldbook_draft", {}) == {}
+    assert second_state.analysis_candidates.get("character_drafts", []) == []
+
+    first_state = first_repository.load(first_config)
+    assert first_state.assets.worldbook["setting_summary"] == "First game"
+    assert first_state.assets.character_cards[0]["name"] == "First Hero"
+    assert first_state.analysis_candidates["worldbook_draft"] == {"genre": "First draft"}
+    assert first_state.analysis_candidates["character_drafts"][0]["name"] == "First Draft Hero"
 
 
 def test_existing_equal_formal_and_draft_worldbook_is_preserved(tmp_path) -> None:

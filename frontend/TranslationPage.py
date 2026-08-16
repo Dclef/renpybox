@@ -184,7 +184,8 @@ class TranslationPage(QWidget, Base):
             Engine.Status.IDLE: Localizer.get().translation_page_status_idle,
             Engine.Status.TESTING: Localizer.get().translation_page_status_testing,
             Engine.Status.TRANSLATING: Localizer.get().translation_page_status_translating,
-            Engine.Status.QUALITY: getattr(Localizer.get(), "translation_page_status_quality", "质量处理中"),
+            Engine.Status.QUALITY: Localizer.get().translation_page_status_quality,
+            Engine.Status.AGENT: Localizer.get().translation_page_status_agent,
             Engine.Status.STOPPING: Localizer.get().translation_page_status_stopping,
         }
 
@@ -744,13 +745,29 @@ class TranslationPage(QWidget, Base):
         self,
         status: Base.TranslationStatus,
         window: FluentWindow,
+        request_id: str = "",
     ) -> bool:
+        engine = Engine.get()
+        if (
+            engine.get_status() != Engine.Status.IDLE
+            or engine.has_stop_barrier()
+            or engine.has_single_tasks()
+        ):
+            InfoBar.warning(
+                Localizer.get().alert,
+                Localizer.get().translator_running,
+                parent=window,
+            )
+            return False
+
         # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
         # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
         config = Config().load()
         if status in Base.PROJECT_RESUMABLE_STATUSES:
             config = restore_resumable_translation_paths(config)
         payload = {"status": status}
+        if request_id:
+            payload["request_id"] = str(request_id)
         # 旧的轻量事件调用方可能提供 SimpleNamespace 配置；真实页面
         # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。
         if isinstance(config, Config):
@@ -891,13 +908,21 @@ class TranslationPage(QWidget, Base):
             current_config = Config().load()
             output_path = resolve_translation_output(current_config)
             if output_path is None:
-                InfoBar.warning("提示", "未找到当前项目缓存", parent = window)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize("未找到当前项目缓存", "The current project cache was not found."),
+                    parent=window,
+                )
                 return
             cache_manager = CacheManager(service = False)
             try:
                 cache_manager.load_from_file(str(output_path), strict = True)
             except Exception as exc:
-                InfoBar.warning("提示", f"缓存载入失败：{exc}", parent = window)
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize("缓存载入失败：{error}", "Failed to load the cache: {error}").format(error=exc),
+                    parent=window,
+                )
                 return
             count = cache_manager.reset_same_translation_items()
             if count > 0:
@@ -909,15 +934,15 @@ class TranslationPage(QWidget, Base):
                 )
                 if saved is not True:
                     InfoBar.error(
-                        title="保存失败",
-                        content="缓存写入失败，未确认重置结果，请检查输出目录权限后重试",
+                        title=Localizer.localize("保存失败", "Save Failed"),
+                        content=Localizer.localize("缓存写入失败，未确认重置结果，请检查输出目录权限后重试", "The cache could not be written, so the reset was not confirmed. Check the output-folder permissions and retry."),
                         parent=window,
                         duration=5000,
                     )
                     return
                 InfoBar.success(
-                    title="重置成功",
-                    content=f"已将 {count} 条原译相同的条目重置为未翻译状态，可点击「继续任务」重新翻译",
+                    title=Localizer.localize("重置成功", "Reset Complete"),
+                    content=Localizer.localize("已将 {count} 条原译相同的条目重置为未翻译状态，可点击「继续任务」重新翻译", "Reset {count} source-equals-translation entries to untranslated. Use Continue Task to translate them again.").format(count=count),
                     parent=window,
                     duration=5000
                 )
@@ -925,14 +950,14 @@ class TranslationPage(QWidget, Base):
                 self.emit(Base.Event.TRANSLATION_UPDATE, cache_manager.get_project().get_extras())
             else:
                 InfoBar.info(
-                    title="无需重置",
-                    content="没有找到原译相同的条目",
+                    title=Localizer.localize("无需重置", "No Reset Needed"),
+                    content=Localizer.localize("没有找到原译相同的条目", "No source-equals-translation entries were found."),
                     parent=window,
                     duration=3000
                 )
 
         self.action_retry_failed = parent.add_action(
-            Action(FluentIcon.SYNC, "重翻失败项", parent, triggered = triggered),
+            Action(FluentIcon.SYNC, Localizer.localize("重翻失败项", "Retry Failed Entries"), parent, triggered = triggered),
         )
         self.action_retry_failed.setEnabled(False)
 
@@ -987,8 +1012,8 @@ class TranslationPage(QWidget, Base):
             platform = current_config.get_platform(current_config.activate_platform)
             if platform is None:
                 InfoBar.warning(
-                    title="估算失败",
-                    content="未找到激活的平台配置",
+                    title=Localizer.localize("估算失败", "Estimate Failed"),
+                    content=Localizer.localize("未找到激活的平台配置", "No active API configuration was found."),
                     parent=window,
                     duration=3000,
                 )
@@ -997,8 +1022,8 @@ class TranslationPage(QWidget, Base):
             self._token_estimate_running = True
             self.action_estimate.setEnabled(False)
             InfoBar.info(
-                title="正在估算",
-                content="正在读取当前项目缓存或输入目录…",
+                title=Localizer.localize("正在估算", "Estimating"),
+                content=Localizer.localize("正在读取当前项目缓存或输入目录…", "Reading the current project cache or input folder..."),
                 parent=window,
                 duration=2000,
             )
@@ -1007,7 +1032,7 @@ class TranslationPage(QWidget, Base):
                 try:
                     items = self._load_items_for_token_estimate(current_config)
                     if not items:
-                        raise ValueError("当前项目没有可估算的翻译条目")
+                        raise ValueError(Localizer.localize("当前项目没有可估算的翻译条目", "The current project has no translation entries to estimate."))
                     result = TokenEstimator(current_config, platform, items).estimate()
                     self.token_estimate_done.emit(result, "")
                 except Exception as exc:
@@ -1016,7 +1041,7 @@ class TranslationPage(QWidget, Base):
             threading.Thread(target = task, daemon = True).start()
 
         self.action_estimate = parent.add_action(
-            Action(FluentIcon.CALORIES, "Token 估算", parent, triggered=triggered),
+            Action(FluentIcon.CALORIES, Localizer.localize("Token 估算", "Token Estimate"), parent, triggered=triggered),
         )
 
     def _load_items_for_token_estimate(self, config: Config) -> list:
@@ -1059,13 +1084,13 @@ class TranslationPage(QWidget, Base):
         if error:
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
-                "message": f"Token 估算失败：{error}",
+                "message": Localizer.localize("Token 估算失败：{error}", "Token estimate failed: {error}").format(error=error),
             })
             return
         if result is None or result.untranslated_count == 0:
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.INFO,
-                "message": "所有条目已翻译完成，或当前没有待翻译内容。",
+                "message": Localizer.localize("所有条目已翻译完成，或当前没有待翻译内容。", "All entries are translated, or there is no untranslated content."),
             })
             return
 
@@ -1077,17 +1102,17 @@ class TranslationPage(QWidget, Base):
             return f"{n / 1_000_000:.2f}M"
 
         lines = [
-            f"待翻译条目: {result.untranslated_count}",
-            f"预估批次数: {result.batch_count}",
-            f"原文 Token: ~{format_tokens(result.total_source_tokens)}",
-            f"预估输入 Token: ~{format_tokens(result.estimated_input_tokens)}",
-            f"预估输出 Token: ~{format_tokens(result.estimated_output_tokens)}",
+            Localizer.localize("待翻译条目: {count}", "Untranslated entries: {count}").format(count=result.untranslated_count),
+            Localizer.localize("预估批次数: {count}", "Estimated batches: {count}").format(count=result.batch_count),
+            Localizer.localize("原文 Token: ~{count}", "Source tokens: ~{count}").format(count=format_tokens(result.total_source_tokens)),
+            Localizer.localize("预估输入 Token: ~{count}", "Estimated input tokens: ~{count}").format(count=format_tokens(result.estimated_input_tokens)),
+            Localizer.localize("预估输出 Token: ~{count}", "Estimated output tokens: ~{count}").format(count=format_tokens(result.estimated_output_tokens)),
         ]
         if result.estimated_cost > 0:
-            lines.append(f"预估费用: ${result.estimated_cost:.4f}")
+            lines.append(Localizer.localize("预估费用: ${cost:.4f}", "Estimated cost: ${cost:.4f}").format(cost=result.estimated_cost))
         # QWidget.window 是方法，不能作为 QDialog 的 parent 传入。
-        message_box = MessageBox("Token 估算", "\n".join(lines), self)
-        message_box.yesButton.setText("确定")
+        message_box = MessageBox(Localizer.localize("Token 估算", "Token Estimate"), "\n".join(lines), self)
+        message_box.yesButton.setText(Localizer.get().confirm)
         message_box.cancelButton.hide()
         message_box.exec()
 

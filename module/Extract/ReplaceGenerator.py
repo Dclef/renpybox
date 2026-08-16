@@ -19,13 +19,19 @@ import ast
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
-from module.Renpy.renpy_tl_core import tl_dir_signature
+from module.Renpy.renpy_tl_core import (
+    TlBlockKind,
+    pair_old_new_lines,
+    parse_tl_document,
+    tl_dir_signature,
+)
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import (
     KEEP_AS_IS_UPPERCASE,
@@ -34,6 +40,19 @@ from module.Text.SkipRules import (
 )
 
 Pair = Tuple[str, str]
+
+
+@dataclass(frozen=True)
+class OldNewReplacePlan:
+    """从标准 old/new 与补漏译文生成的单一 Hook 计划。"""
+
+    output_path: Path
+    language: str
+    pairs: tuple[Pair, ...]
+    old_new_count: int
+    supplement_count: int
+    conflict_count: int
+
 
 # 文件名（缺失补丁）
 MISS_RPY = "miss_ready_replace.rpy"
@@ -49,6 +68,106 @@ COMPILED_CACHE_VERSION = 3
 _TL_COVERED_CACHE: dict = {}
 
 DECLINED_CANDIDATES_SCHEMA_VERSION = 1
+
+
+def collect_translated_old_new_pairs(tl_dir: str | Path) -> tuple[List[Pair], int]:
+    """读取有效 strings 译文；同一原文存在多个译文时保守跳过。"""
+
+    root = Path(tl_dir)
+    if not root.is_dir():
+        return [], 0
+
+    mapping: dict[str, str] = {}
+    conflicts: set[str] = set()
+    logger = LogManager.get()
+    files = sorted(
+        root.rglob("*.rpy"),
+        key=lambda path: path.relative_to(root).as_posix().casefold(),
+    )
+    for path in files:
+        relative = path.relative_to(root)
+        parent_parts = {part.casefold() for part in relative.parts[:-1]}
+        name = path.name.casefold()
+        if MISS_DIR in parent_parts or "_filtered_suspicious" in parent_parts:
+            continue
+        if name.startswith("miss_ready_replace") or name in {
+            "replace_text_auto.rpy",
+            "set_default_language_at_startup.rpy",
+        }:
+            continue
+
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            document = parse_tl_document(lines)
+        except Exception as exc:
+            logger.warning(f"读取 old/new 译文失败 {path}: {exc}")
+            continue
+
+        for block in document.blocks:
+            if block.kind != TlBlockKind.STRINGS:
+                continue
+            statements = {statement.line_no: statement for statement in block.statements}
+            for old_line, new_line in pair_old_new_lines(block).items():
+                old_statement = statements.get(old_line)
+                new_statement = statements.get(new_line)
+                if (
+                    old_statement is None
+                    or new_statement is None
+                    or not old_statement.literals
+                    or not new_statement.literals
+                ):
+                    continue
+                original = old_statement.literals[0].value
+                translation = new_statement.literals[0].value
+                if not original or not translation or original == translation:
+                    continue
+                if original in conflicts:
+                    continue
+                previous = mapping.get(original)
+                if previous is None:
+                    mapping[original] = translation
+                elif previous != translation:
+                    conflicts.add(original)
+                    mapping.pop(original, None)
+
+    pairs = sorted(mapping.items(), key=lambda item: (-len(item[0]), item[0]))
+    return pairs, len(conflicts)
+
+
+def build_old_new_replace_plan(
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    supplement_pairs: Sequence[Pair] | None = None,
+) -> OldNewReplacePlan:
+    """合并标准 old/new 与补漏译文，并保持原文从长到短。"""
+
+    game_dir = _get_game_dir(target_path)
+    language = str(tl_name or "chinese").strip() or "chinese"
+    tl_dir = game_dir / "tl" / language
+    old_new_pairs, conflict_count = collect_translated_old_new_pairs(tl_dir)
+    old_new_map = dict(old_new_pairs)
+    if supplement_pairs is None:
+        supplement_pairs = parse_miss_rpy(game_dir, language)
+    supplement_map = {
+        original: translation
+        for original, translation in supplement_pairs
+        if original and translation and original != translation
+    }
+
+    # 标准 TL 是正式译文来源；与补漏条目重名时以标准 old/new 为准。
+    combined = dict(supplement_map)
+    combined.update(old_new_map)
+    pairs = tuple(sorted(combined.items(), key=lambda item: (-len(item[0]), item[0])))
+    supplement_count = sum(1 for original in supplement_map if original not in old_new_map)
+    return OldNewReplacePlan(
+        output_path=tl_dir / "replace_text_auto.rpy",
+        language=language,
+        pairs=pairs,
+        old_new_count=len(old_new_pairs),
+        supplement_count=supplement_count,
+        conflict_count=conflict_count,
+    )
 
 
 def declined_candidates_path(game_dir, tl_name) -> Path:
@@ -2213,28 +2332,30 @@ def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwarg
 
 
 def generate_replace_from_miss(target_path: str | Path, tl_name: str) -> Tuple[Path | None, int]:
-    """从 miss.rpy 生成 replace 钩子。
+    """从补漏译文和标准 old/new 生成统一的 replace 钩子。
     
-    读取 miss.rpy 中已翻译的条目，生成 replace_text_auto.rpy。
+    读取 miss.rpy 与当前语言目录中已翻译的 old/new，生成 replace_text_auto.rpy。
     
     Returns:
         (输出路径或 None, 条目数量)
     """
     logger = LogManager.get()
-    game_dir = _get_game_dir(target_path)
-    tl_dir = game_dir / "tl" / tl_name
-    
-    pairs = parse_miss_rpy(game_dir, tl_name)
-    
-    if not pairs:
-        logger.info("未找到已翻译的缺失条目，请先翻译 miss.rpy")
+    plan = build_old_new_replace_plan(target_path, tl_name)
+
+    if not plan.pairs:
+        logger.info("未找到可生成 Hook 的 old/new 或补漏译文")
         return None, 0
-    
-    output_path = tl_dir / "replace_text_auto.rpy"
-    write_replace_script(output_path, pairs)
-    
-    logger.info(f"已生成 replace 钩子: {output_path} ({len(pairs)} 条)")
-    return output_path, len(pairs)
+
+    write_replace_script(
+        plan.output_path,
+        plan.pairs,
+        language=plan.language,
+        use_translate_python=True,
+        wrap_existing=True,
+    )
+
+    logger.info(f"已生成 replace 钩子: {plan.output_path} ({len(plan.pairs)} 条)")
+    return plan.output_path, len(plan.pairs)
 
 
 # ===================== 状态检查（给 UI 用）=====================

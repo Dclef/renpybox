@@ -46,6 +46,20 @@ def normalise_path(value: Any) -> Path | None:
         return Path(text)
 
 
+def looks_like_renpy_path(raw_path: Any) -> bool:
+    """判断路径是否明显包含 Ren'Py 项目结构。"""
+    path = normalise_path(raw_path)
+    if path is None or not path.exists():
+        return False
+    if path.is_file():
+        path = path.parent
+    return (
+        path.name.casefold() in {"game", "tl"}
+        or path.parent.name.casefold() == "tl"
+        or (path / "game").is_dir()
+    )
+
+
 def _key(path: Path) -> str:
     return os.path.normcase(os.path.normpath(str(path)))
 
@@ -326,6 +340,23 @@ class RenpyProjectPaths:
             if resolved.game_dir.is_dir() or raw in candidates[:3]:
                 return resolved
         return None
+
+
+def source_script_counts(paths: RenpyProjectPaths) -> tuple[int, int]:
+    """统计翻译目录之外可处理的 RPY/RPYC 源脚本。"""
+
+    def is_source(item: Path) -> bool:
+        try:
+            item.relative_to(paths.tl_root)
+            return False
+        except ValueError:
+            return True
+
+    rpy_count = sum(1 for item in paths.game_dir.rglob("*.rpy") if is_source(item))
+    rpyc_count = sum(
+        1 for item in paths.game_dir.rglob("*.rpyc") if is_source(item)
+    )
+    return rpy_count, rpyc_count
 
 
 def apply_to_config(

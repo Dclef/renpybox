@@ -442,6 +442,9 @@ class PromptBuilder(Base):
             spoiler_notes = worldbook.get("spoiler_notes", "")
             if spoiler_notes:
                 lines.append(f"剧透备注（仅供译者把握身份/关系，不要外显）：{spoiler_notes}")
+            reference_notes = worldbook.get("reference_notes", "")
+            if reference_notes:
+                lines.append(f"补充参考资料：{reference_notes}")
             lines.extend(f"扩展设定 {key}：{value}" for key, value in extra_worldbook)
             return "\n".join(lines)
 
@@ -458,6 +461,9 @@ class PromptBuilder(Base):
         spoiler_notes = worldbook.get("spoiler_notes", "")
         if spoiler_notes:
             lines.append(f"Spoiler Notes (translator-only): {spoiler_notes}")
+        reference_notes = worldbook.get("reference_notes", "")
+        if reference_notes:
+            lines.append(f"Additional Reference Notes: {reference_notes}")
         lines.extend(f"Additional Setting {key}: {value}" for key, value in extra_worldbook)
         return "\n".join(lines)
 

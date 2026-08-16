@@ -82,6 +82,30 @@ def _install_assets(monkeypatch, assets: ProjectAssets) -> None:
     )
 
 
+def test_busy_engine_rejects_start_before_loading_assets(monkeypatch) -> None:
+    warnings = []
+    engine = Engine.get()
+    monkeypatch.setattr(engine, "get_status", lambda: Engine.Status.TRANSLATING)
+    monkeypatch.setattr(engine, "has_stop_barrier", lambda: False)
+    monkeypatch.setattr(engine, "has_single_tasks", lambda: False)
+    monkeypatch.setattr(
+        "frontend.TranslationPage.InfoBar",
+        SimpleNamespace(warning=lambda *args, **kwargs: warnings.append(kwargs)),
+    )
+    page = _PageStub()
+
+    started = TranslationPage._request_translation_start(
+        page,
+        Base.TranslationStatus.UNTRANSLATED,
+        None,
+        request_id="request-current",
+    )
+
+    assert started is False
+    assert page.events == []
+    assert len(warnings) == 1
+
+
 def test_new_start_marks_successful_asset_preflight_as_confirmed(monkeypatch) -> None:
     assets = ProjectAssets.from_dict({
         "glossary": {
@@ -106,6 +130,27 @@ def test_new_start_marks_successful_asset_preflight_as_confirmed(monkeypatch) ->
             "preflight_confirmed": True,
         },
     )]
+
+
+def test_start_payload_preserves_request_id(monkeypatch) -> None:
+    assets = ProjectAssets.from_dict({
+        "glossary": {
+            "enabled": True,
+            "items": [{"source": "Alice", "target": "爱丽丝"}],
+        },
+    })
+    _install_assets(monkeypatch, assets)
+    page = _PageStub()
+
+    started = TranslationPage._request_translation_start(
+        page,
+        Base.TranslationStatus.UNTRANSLATED,
+        None,
+        request_id="request-current",
+    )
+
+    assert started is True
+    assert page.events[0][1]["request_id"] == "request-current"
 
 
 def test_missing_assets_can_open_workbench_without_starting(monkeypatch) -> None:
