@@ -88,8 +88,8 @@ def test_workbench_english_static_dynamic_and_feedback_copy(monkeypatch) -> None
         window.close()
 
 
-def test_character_filter_and_selection_reuse_single_config_load(monkeypatch) -> None:
-    """完整刷新只加载一次，搜索、筛选和切换角色都不再读盘。"""
+def test_character_ui_reuses_snapshot_and_debounces_edits(monkeypatch) -> None:
+    """搜索、筛选、切换和连续编辑都复用快照，并只批量保存一次。"""
     config = Config()
     config.get_platform = lambda _platform_id: None
     config.input_folder = ""
@@ -108,12 +108,17 @@ def test_character_filter_and_selection_reuse_single_config_load(monkeypatch) ->
     config.renpy_workbench_generated_character_drafts = [carol]
 
     loads = []
+    saves = []
     monkeypatch.setattr(
         RenpyWorkbenchPage,
         "_load_config",
         lambda self: loads.append(True) or config,
     )
-    monkeypatch.setattr(RenpyWorkbenchPage, "_save_config", lambda self, current: None)
+    monkeypatch.setattr(
+        RenpyWorkbenchPage,
+        "_save_config",
+        lambda self, current: saves.append(current),
+    )
     monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
 
     window = QWidget()
@@ -133,6 +138,27 @@ def test_character_filter_and_selection_reuse_single_config_load(monkeypatch) ->
         assert page.character_count_label.text() == "Showing 1 of 3"
         assert page.character_list.currentItem().text() == "Carol [Draft]"
         assert len(loads) == 1
+
+        page._set_character_filter("all")
+        page.character_list.setCurrentRow(1)
+        page.character_widgets["name"].setText("A")
+        page.character_widgets["name"].setText("Ali")
+        page.character_widgets["name"].setText("Alice Updated")
+
+        assert len(loads) == 1
+        assert saves == []
+        assert page._pending_character_fields == {"name"}
+        assert page.character_list.currentItem().text() == "Alice Updated"
+
+        page._flush_pending_edits()
+
+        assert len(loads) == 1
+        assert saves == [config]
+        assert next(
+            card
+            for card in config.renpy_workbench_character_cards
+            if card["id"] == alice["id"]
+        )["name"] == "Alice Updated"
     finally:
         page.close()
         window.close()
