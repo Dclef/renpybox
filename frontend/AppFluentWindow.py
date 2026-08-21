@@ -1,5 +1,6 @@
 import os
 import signal
+import time
 
 from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import Qt
@@ -68,6 +69,8 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
+        # Toast 同 key 滑窗去重状态：key -> (上次放行时间 monotonic, 窗口内累计吞掉条数)
+        self._toast_dedupe: dict[tuple, tuple] = {}
 
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
@@ -206,6 +209,25 @@ class AppFluentWindow(FluentWindow, Base):
                 continue
 
     # 响应显示 Toast 事件
+    # Toast 同 key 滑窗去重：窗口内重复的提示不再新建 InfoBar，风暴结束后下一条带聚合计数
+    TOAST_DEDUPE_WINDOW_SEC = 2.5
+
+    def _dedupe_toast(self, toast_type: object, toast_message: str) -> str | None:
+        """返回应展示的文案；窗口内重复时返回 None（吞掉）。"""
+        key = (str(toast_type), toast_message)
+        now = time.monotonic()
+        last_shown, swallowed = self._toast_dedupe.get(key, (0.0, 0))
+
+        if now - last_shown < self.TOAST_DEDUPE_WINDOW_SEC:
+            self._toast_dedupe[key] = (last_shown, swallowed + 1)
+            return None
+
+        message = toast_message
+        if swallowed > 0:
+            message = message + Localizer.get().toast_merged_count.format(swallowed + 1)
+        self._toast_dedupe[key] = (now, 0)
+        return message
+
     def show_toast(self, event: str, data: dict) -> None:
         if self._is_app_closing() or not self._is_qobject_alive(self):
             return
@@ -213,6 +235,10 @@ class AppFluentWindow(FluentWindow, Base):
         toast_type = data.get("type", Base.ToastType.INFO)
         toast_message = data.get("message", "")
         toast_duration = data.get("duration", 2500)
+
+        deduped_message = self._dedupe_toast(toast_type, toast_message)
+        if deduped_message is None:
+            return
 
         if toast_type == Base.ToastType.ERROR:
             toast_func = InfoBar.error
@@ -229,7 +255,7 @@ class AppFluentWindow(FluentWindow, Base):
         try:
             toast_func(
                 title = "",
-                content = toast_message,
+                content = deduped_message,
                 parent = self,
                 duration = toast_duration,
                 orient = Qt.Orientation.Horizontal,
