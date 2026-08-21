@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -136,19 +137,39 @@ class VersionManager(Base):
         return latest
 
     @classmethod
+    def _installed_manifest_version(cls) -> str | None:
+        """读取安装态 manifest 的版本；无 manifest（存量安装/源码运行）返回 None。"""
+        if not getattr(sys, "frozen", False):
+            return None
+        try:
+            manifest_path = Path(sys.executable).resolve().parent / "_update_manifest.json"
+            data = json.loads(manifest_path.read_text(encoding = "utf-8"))
+            version = data.get("version") if isinstance(data, dict) else None
+            return str(version) if version else None
+        except Exception:
+            return None
+
+    @classmethod
     def _select_download_asset(cls, latest: dict) -> dict:
         assets = latest.get("assets", [])
         if not isinstance(assets, list) or not assets:
             raise RuntimeError("No release assets found")
 
-        zip_assets = [
-            asset for asset in assets
-            if isinstance(asset, dict)
-            and (
-                str(asset.get("name", "")).lower().endswith(".zip")
-                or str(asset.get("browser_download_url", "")).lower().endswith(".zip")
-            )
-        ]
+        # 增量优先：本地安装态 manifest 版本与 patch 资产的 base 精确匹配才走增量，
+        # 否则一律全量，避免把 patch 包当全量包应用
+        installed = cls._installed_manifest_version()
+        if installed:
+            suffix = f".from-{installed.lower()}.patch.zip"
+            for asset in assets:
+                if isinstance(asset, dict) and str(asset.get("name", "")).lower().endswith(suffix):
+                    return copy.deepcopy(asset)
+
+        def is_full_zip(asset: dict) -> bool:
+            name = str(asset.get("name", "")).lower()
+            url = str(asset.get("browser_download_url", "")).lower()
+            return (name.endswith(".zip") or url.endswith(".zip")) and not name.endswith(".patch.zip")
+
+        zip_assets = [asset for asset in assets if isinstance(asset, dict) and is_full_zip(asset)]
         target_asset = zip_assets[0] if zip_assets else assets[0]
         if not isinstance(target_asset, dict):
             raise RuntimeError("Invalid release asset")
@@ -498,6 +519,11 @@ class VersionManager(Base):
             browser_download_url = str(target_asset.get("browser_download_url") or "")
             if not browser_download_url:
                 raise RuntimeError("browser_download_url is empty")
+            # digest fail-closed：资产没有可信 sha256 时拒绝自动下载安装，
+            # 引导用户手动下载（GitHub 正常发布会自动生成 sha256 digest）
+            expected_sha256 = __class__._expected_sha256(target_asset.get("digest"))
+            if expected_sha256 is None:
+                raise RuntimeError("Release asset has no sha256 digest, automatic update refused")
             if cancel_event.is_set():
                 raise _DownloadCancelled()
 
@@ -523,7 +549,6 @@ class VersionManager(Base):
                         raise RuntimeError("Content-Length is 0")
 
                     asset_size = __class__._safe_int(target_asset.get("size"))
-                    expected_sha256 = __class__._expected_sha256(target_asset.get("digest"))
                     downloaded_size = 0
                     sha256 = hashlib.sha256()
                     self._emit_download_progress(0, total_size, force = True)

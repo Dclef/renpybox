@@ -1,4 +1,5 @@
 import hashlib
+import json
 import importlib
 import sys
 from pathlib import Path
@@ -248,7 +249,9 @@ def test_download_validates_size_and_sha256_before_completion(
 @pytest.mark.parametrize(
     ("content_length", "digest", "error_text"),
     [
-        (8, "", "Downloaded size mismatch"),
+        # digest fail-closed：资产无 sha256 时拒绝自动下载（下载开始前即失败）
+        (7, "", "no sha256 digest"),
+        (8, "sha256:" + hashlib.sha256(b"payload").hexdigest(), "Downloaded size mismatch"),
         (7, "sha256:" + "0" * 64, "sha256 digest mismatch"),
     ],
 )
@@ -290,7 +293,7 @@ def test_cancel_download_removes_partial_file_and_resets_state(
 ) -> None:
     manager, emitted = _manager_with_events(monkeypatch)
     content = b"first-second"
-    _seed_release(manager, content)
+    _seed_release(manager, content, "sha256:" + hashlib.sha256(content).hexdigest())
     temp_path = tmp_path / "resource" / "update.temp"
     _patch_temp_path(monkeypatch, temp_path)
     cancel_results: list[bool] = []
@@ -395,3 +398,72 @@ def test_source_mode_extract_still_warns_and_opens_release_page(monkeypatch) -> 
         if event == Base.Event.APP_TOAST_SHOW
     )
     assert toast["type"] == Base.ToastType.WARNING
+
+
+def _fake_installed_manifest(monkeypatch, tmp_path, version: str | None) -> None:
+    """把安装态伪装成 frozen 运行，manifest 写在 exe 旁。"""
+    install_dir = tmp_path / "install"
+    install_dir.mkdir(exist_ok=True)
+    exe = install_dir / "RenpyBox.exe"
+    exe.write_bytes(b"EXE")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    if version is not None:
+        (install_dir / "_update_manifest.json").write_text(
+            json.dumps({"version": version, "files": {}}), encoding="utf-8"
+        )
+
+
+def _release_with_assets(*asset_names: str) -> dict:
+    return {
+        "assets": [
+            {
+                "name": name,
+                "size": 10,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": "sha256:" + "0" * 64,
+            }
+            for name in asset_names
+        ]
+    }
+
+
+def test_installed_manifest_version_read_from_exe_dir(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v1.2.3")
+    assert VersionManager._installed_manifest_version() == "v1.2.3"
+
+
+def test_installed_manifest_version_none_without_manifest(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, None)
+    assert VersionManager._installed_manifest_version() is None
+
+
+def test_select_download_asset_prefers_matching_patch(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v1.0.0")
+    latest = _release_with_assets(
+        "RenpyBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
+
+
+def test_select_download_asset_falls_back_to_full_when_base_mismatch(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v0.9.0")
+    latest = _release_with_assets(
+        "RenpyBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.zip"
+
+
+def test_select_download_asset_never_picks_patch_without_manifest(monkeypatch, tmp_path) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    latest = _release_with_assets(
+        "RenpmBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    latest["assets"][0]["name"] = "RenpyBox_v2.0.0.zip"
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.zip"

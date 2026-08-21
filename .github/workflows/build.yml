@@ -53,6 +53,49 @@ jobs:
         shell: cmd
         run: .\resource\7za.exe a -y -bt -mx5 RenpyBox_${{ steps.check_version.outputs.version }}.zip .\dist\RenpyBox\*
 
+      - name: Embed Update Manifest
+        shell: cmd
+        run: python buildtools\update_assets.py manifest --dist dist\RenpyBox --version ${{ steps.check_version.outputs.version }} --zip RenpyBox_${{ steps.check_version.outputs.version }}.zip
+
+      - name: Generate Incremental Patch
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.check_version.outputs.version }}"
+          $tag = "RenpyBox_$version"
+          $releases = gh api /repos/dclef/RenpyBox/releases --paginate --jq `
+            ".[] | select(.draft == false) | select(.tag_name != `"$tag`")" | ConvertFrom-Json
+          $prev = $releases | Select-Object -First 1
+          if ($null -eq $prev) {
+            Write-Host "No previous release found, skip patch generation"
+            exit 0
+          }
+          $prevTag = $prev.tag_name
+          $prevZip = $prev.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*.patch.zip" } | Select-Object -First 1
+          if ($null -eq $prevZip) {
+            Write-Host "Previous release has no full zip, skip patch generation"
+            exit 0
+          }
+          Invoke-WebRequest -Uri $prevZip.browser_download_url -OutFile prev_release.zip
+          python buildtools\update_assets.py patch `
+            --dist dist\RenpyBox `
+            --version $version `
+            --prev-zip prev_release.zip `
+            --prev-version $prevTag `
+            --out "RenpyBox_$version.from-$prevTag.patch.zip"
+
+      - name: Collect Release Files
+        id: release_files
+        shell: pwsh
+        run: |
+          $version = "${{ steps.check_version.outputs.version }}"
+          $files = @("RenpyBox_$version.zip")
+          $patch = Get-ChildItem -Filter "RenpyBox_$version.from-*.patch.zip" -ErrorAction SilentlyContinue
+          if ($patch) { $files += $patch.Name }
+          "files=$($files -join ',')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -60,6 +103,6 @@ jobs:
           name: RenpyBox_${{ steps.check_version.outputs.version }}
           draft: true
           prerelease: false
-          files: RenpyBox_${{ steps.check_version.outputs.version }}.zip
+          files: ${{ steps.release_files.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
