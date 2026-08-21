@@ -9,7 +9,6 @@ from typing import Optional
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
     CardWidget,
     ComboBox,

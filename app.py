@@ -3,7 +3,6 @@ import os
 # 让 PyInstaller 找到 base、module、frontend 等包
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import argparse
 import contextlib
 import ctypes
 import io
@@ -44,7 +43,6 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
     from qfluentwidgets import Theme
     from qfluentwidgets import setTheme
 
-from base.Base import Base
 from base.CLIManager import CLIManager
 from base.LogManager import LogManager
 from base.VersionManager import VersionManager

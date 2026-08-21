@@ -7,7 +7,6 @@ from base.compat import Self
 from rich.console import Console
 from rich.logging import RichHandler
 
-from module.ProgressBar import ProgressBar
 
 class LogManager():
 

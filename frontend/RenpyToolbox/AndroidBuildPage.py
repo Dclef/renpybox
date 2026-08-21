@@ -791,7 +791,6 @@ class AndroidBuildPage(Base, QWidget):
         builder = self._get_builder()
         if not builder:
             return
-        project_dir = Path(builder.project_dir)
 
         package = self.package_name_edit.text().strip()
         app_name = self.app_name_edit.text().strip()
