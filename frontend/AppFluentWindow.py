@@ -185,29 +185,6 @@ class AppFluentWindow(FluentWindow, Base):
             return True
         return self._is_closing or app.closingDown()
 
-    def _cleanup_infobar_stale_refs(self) -> None:
-        """清理 InfoBarManager 中已失效的条目，避免已删除对象参与布局计算。"""
-        try:
-            from qfluentwidgets.components.widgets.info_bar import InfoBarManager
-        except Exception:
-            return
-
-        managers = getattr(InfoBarManager, "managers", {}) or {}
-        for manager_cls in managers.values():
-            try:
-                manager = manager_cls()
-                info_bars = getattr(manager, "infoBars", None)
-                if info_bars is None or self not in info_bars:
-                    continue
-
-                bars = list(info_bars.get(self, []))
-                alive_bars = [bar for bar in bars if self._is_qobject_alive(bar)]
-
-                if len(alive_bars) != len(bars):
-                    info_bars[self] = alive_bars
-            except Exception:
-                continue
-
     # 响应显示 Toast 事件
     # Toast 同 key 滑窗去重：窗口内重复的提示不再新建 InfoBar，风暴结束后下一条带聚合计数
     TOAST_DEDUPE_WINDOW_SEC = 2.5
@@ -249,26 +226,15 @@ class AppFluentWindow(FluentWindow, Base):
         else:
             toast_func = InfoBar.info
 
-        # 创建新 toast 前先清理历史残留，避免 qfluentwidgets 在布局时访问已删除对象。
-        self._cleanup_infobar_stale_refs()
-
-        try:
-            toast_func(
-                title = "",
-                content = deduped_message,
-                parent = self,
-                duration = toast_duration,
-                orient = Qt.Orientation.Horizontal,
-                position = InfoBarPosition.TOP,
-                isClosable = True,
-            )
-        except RuntimeError as exc:
-            # 兼容 qfluentwidgets 已知竞态：InfoBar 在动画/布局阶段对象被释放。
-            if "InfoBar has been deleted" in str(exc):
-                self.warning(f"[UI] 忽略已删除 InfoBar 竞态异常: {exc}", console = False)
-                self._cleanup_infobar_stale_refs()
-                return
-            raise
+        toast_func(
+            title = "",
+            content = deduped_message,
+            parent = self,
+            duration = toast_duration,
+            orient = Qt.Orientation.Horizontal,
+            position = InfoBarPosition.TOP,
+            isClosable = True,
+        )
 
     # 切换主题
     def switch_theme(self) -> None:
