@@ -98,7 +98,6 @@ class FormatterPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        strings = Localizer.get()
         layout.addWidget(StrongBodyLabel(Localizer.localize("⚙️ 格式化选项", "⚙️ Formatting Options")))
 
         self.preserve_comments_check = CheckBox(Localizer.localize("保留注释", "Preserve Comments"))

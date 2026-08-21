@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
@@ -14,6 +14,9 @@ from module.Renpy.ProjectPaths import (
 )
 from module.Tool.ErrorRepairer import ErrorRepairer
 
+
+if TYPE_CHECKING:
+    from module.Agent.types import ToolResult
 
 ConfigLoader = Callable[[], Config]
 

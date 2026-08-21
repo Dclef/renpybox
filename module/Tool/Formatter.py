@@ -4,9 +4,6 @@ Ren'Py 代码格式化工具
 注意：不改变代码结构，只做安全的格式化操作
 """
 
-import os
-import re
-from typing import List
 from pathlib import Path
 
 from base.LogManager import LogManager

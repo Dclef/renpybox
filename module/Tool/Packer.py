@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable, Iterator, List, Tuple
+from typing import Callable, List, Tuple
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
