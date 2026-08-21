@@ -332,6 +332,9 @@ class VersionManager(Base):
         temp_zip_path = __class__.temp_zip_path()
 
         updater_candidates = [
+            # V2 在前：存量安装里新旧两个更新器可能并存，优先用新版
+            install_dir / "_internal" / "RenpyBoxUpdater2.exe",
+            install_dir / "RenpyBoxUpdater2.exe",
             install_dir / "_internal" / "RenpyBoxUpdater.exe",
             install_dir / "RenpyBoxUpdater.exe",
         ]
