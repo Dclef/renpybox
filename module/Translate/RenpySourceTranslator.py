@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set
 
 from base.LogManager import LogManager
 from module.Text.SkipRules import is_path_like, is_resource_name, should_skip_text

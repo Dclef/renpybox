@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import ast
 import subprocess
 import sys
@@ -1347,8 +1346,6 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             continue
         scanned_files.append(rpy_file)
 
-        rel_posix = rpy_file.relative_to(tl_dir).as_posix()
-        under_miss = "/miss/" in f"/{rel_posix}"
 
         i = 0
         while i < len(lines):

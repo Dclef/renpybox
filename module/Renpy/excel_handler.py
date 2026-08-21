@@ -10,7 +10,7 @@ Version: 0.1.0
 import os
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, TYPE_CHECKING
 from datetime import datetime
 
 from base.Version import Version

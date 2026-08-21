@@ -102,7 +102,6 @@ class TranslationReusePage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 16)
         layout.setSpacing(12)
-        strings = Localizer.get()
         layout.addWidget(StrongBodyLabel(Localizer.localize("复用结果", "Reuse Result"), self))
 
         self.summary_label = CaptionLabel(Localizer.localize("尚未预览", "Not previewed"), self)

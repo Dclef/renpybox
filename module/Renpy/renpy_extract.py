@@ -1,10 +1,7 @@
 # -*- coding: utf-8
 import io
-import random
-import sys
 import os
 import threading
-import time
 import re
 import traceback
 import pathlib
@@ -652,7 +649,7 @@ class extractThread(threading.Thread):
                                 remove_repeat_for_file(i)
                                 global_e = global_e | ret_e
 
-        except Exception as e:
+        except Exception:
             msg = traceback.format_exc()
             log.error(msg)
 
@@ -826,7 +823,6 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                     for j in (d2['en_3']):
                         strip_i = strip_i.replace(j, '')
 
-                    diff_len = len(i) - len(strip_i)
                     _strip_i = replace_all_blank(strip_i)
                     cmp_i = i.lower().strip('"')
                     skip = False
@@ -885,7 +881,6 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
                     for j in (d2['en_3']):
                         strip_i = strip_i.replace(j, '')
 
-                    diff_len = len(i) - len(strip_i)
                     _strip_i = replace_all_blank(strip_i)
                     cmp_i = i.lower().strip("'")
                     skip = False
@@ -1317,7 +1312,6 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
 
     is_py2 = is_python2_from_game_dir(str(source_root))
     menu_map = collect_static_menu_strings(game_dir)
-    menu_candidates = set(menu_map)
     for source_file in sorted(source_root.rglob("*.rpy"), key=lambda item: item.as_posix()):
         try:
             relative = source_file.relative_to(source_root)

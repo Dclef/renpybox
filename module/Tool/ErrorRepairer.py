@@ -907,7 +907,6 @@ class ErrorRepairer:
             output_path: 输出路径
         """
         try:
-            import openpyxl
             from openpyxl import Workbook
 
             wb = Workbook()

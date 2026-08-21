@@ -7,7 +7,7 @@ qfluentwidgets 的控件会自动处理主题，不需要在此设置
 """
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QWidget, QTableWidget, QLabel, QAbstractScrollArea
+from PyQt5.QtWidgets import QWidget, QAbstractScrollArea
 from qfluentwidgets import ThemeColor, isDarkTheme
 
 

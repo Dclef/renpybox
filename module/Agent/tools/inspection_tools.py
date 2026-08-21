@@ -6,7 +6,10 @@ import json
 import sqlite3
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from module.Agent.types import ToolResult
 
 from base.Base import Base
 from base.LogManager import LogManager

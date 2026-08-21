@@ -60,7 +60,6 @@ class RENPYTRANSLATIONSJSON(Base):
                     for idx, entry in enumerate(entries):
                         src = entry.get("original", "") or ""
                         dst = entry.get("translation", "") or ""
-                        text_type = entry.get("type", "dialogue")
                         if should_skip_text(src):
                             status = Base.TranslationStatus.EXCLUDED
                         elif dst and dst != src:

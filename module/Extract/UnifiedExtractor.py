@@ -13,7 +13,6 @@ from __future__ import annotations
 import ast
 import csv
 import json
-import os
 import re
 import shutil
 import time
@@ -33,7 +32,6 @@ from module.Renpy.renpy_tl_core import (
     scan_quoted_literals,
     escape_tl_string,
     tl_block_kind_name,
-    tl_statement_ordinal,
     tl_dir_signature,
 )
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
@@ -44,7 +42,6 @@ from module.Text.SkipRules import should_skip_text
 from module.File.AtomicWrite import atomic_write_text
 from module.Response.ResponseChecker import ResponseChecker
 from module.Extract.ReplaceGenerator import (
-    declined_candidates_path,
     load_declined_candidates,
     record_declined_candidates,
 )
@@ -1635,7 +1632,6 @@ class UnifiedExtractor:
                 extracted_block_fingerprints = self._collect_numbered_block_fingerprints(
                     temp_tl_dir
                 )
-                extracted_block_keys = set(extracted_block_fingerprints)
                 if static_added > 0 and not new_extracted_string_originals:
                     raise RuntimeError(
                         "增量抽取产物校验失败：静态条目已写入，但捕获快照中无法读取任何 strings"
@@ -3534,7 +3530,7 @@ class UnifiedExtractor:
                     target_file.parent.mkdir(parents=True, exist_ok=True)
 
                     output_lines = [
-                        f"# 增量抽取 - 新增/待翻译内容",
+                        "# 增量抽取 - 新增/待翻译内容",
                         f"# 来源: {rpy_file.name}",
                         "",
                         f"translate {tl_name} strings:",

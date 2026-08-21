@@ -13,7 +13,11 @@ on:
       - ".github/workflows/build.yml"
 
 jobs:
+  quality:
+    uses: ./.github/workflows/quality.yml
+
   build:
+    needs: quality
     runs-on: windows-latest
     permissions:
       contents: write
@@ -38,7 +42,7 @@ jobs:
         shell: cmd
         run: |
           python -m pip install --upgrade pip setuptools
-          python -m pip install -U -r requirements.txt
+          python -m pip install -r requirements.txt
           python -m pip cache purge
 
       - name: Build EXE (build.bat)
