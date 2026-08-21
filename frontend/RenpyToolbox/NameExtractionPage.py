@@ -3,7 +3,6 @@
 基于 LinguaGacha 的 NameFieldExtractionPage 移植
 """
 import re
-import time
 from pathlib import Path
 
 from PyQt5.QtGui import QDesktopServices
@@ -12,7 +11,6 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFileDialog
 from qfluentwidgets import (
     PushButton,
     InfoBar,
-    MessageBox,
     FluentIcon,
     SingleDirectionScrollArea,
     TransparentPushButton,

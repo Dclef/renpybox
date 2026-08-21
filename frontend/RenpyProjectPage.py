@@ -20,11 +20,8 @@ from qfluentwidgets import (
     InfoBarPosition
 )
 
-from base.EventManager import EventManager
 from base.LogManager import LogManager
-from base.BaseLanguage import BaseLanguage
 from module.Config import Config
-from module.Localizer.Localizer import Localizer
 
 
 class RenpyProjectPage(QWidget):

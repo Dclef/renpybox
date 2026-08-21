@@ -1064,7 +1064,6 @@ class Translator(Base):
         output_path = os.path.abspath(output_folder)
 
         if os.path.isfile(input_path):
-            input_dir = os.path.dirname(input_path)
             target_output_file = os.path.join(output_path, os.path.basename(input_path))
             if os.path.abspath(target_output_file) == input_path:
                 return False, "源码翻译禁止直接覆盖原始 .rpy 文件，请使用独立输出目录。"

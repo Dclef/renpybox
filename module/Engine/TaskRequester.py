@@ -649,7 +649,7 @@ class TaskRequester(Base):
         for attempt in range(1, __class__.MAX_REQUEST_RETRY + 1):
             # If user has requested a stop, abort new requests immediately
             if __class__.is_cancel_requested():
-                self.debug(f"[API-REQUEST] 用户请求停止，中断请求")
+                self.debug("[API-REQUEST] 用户请求停止，中断请求")
                 return True, None, None, None, None
 
             self.debug(f"[API-REQUEST] 尝试 {attempt}/{__class__.MAX_REQUEST_RETRY}")
@@ -663,7 +663,7 @@ class TaskRequester(Base):
             skip = last_result[0]
             if skip is False:
                 self.last_error_message = ""
-                self.debug(f"[API-REQUEST] 请求成功")
+                self.debug("[API-REQUEST] 请求成功")
                 return last_result
 
             # 取消造成的连接关闭不应进入退避重试，也不应把用户主动停止
@@ -680,7 +680,7 @@ class TaskRequester(Base):
                         return True, None, None, None, None
                     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
-        self.warning(f"[API-REQUEST] 请求失败，已达最大重试次数")
+        self.warning("[API-REQUEST] 请求失败，已达最大重试次数")
         return last_result
 
     def _recover_closed_cached_client(
@@ -1253,7 +1253,7 @@ class TaskRequester(Base):
                     is_prohibited = True
 
                 if is_prohibited:
-                    self.warning(f"Content blocked by safety filter (PROHIBITED_CONTENT), marking batch as blocked")
+                    self.warning("Content blocked by safety filter (PROHIBITED_CONTENT), marking batch as blocked")
                     response_result = '{"translations":[],"glossary":[],"blocked":true}'
                     return False, "", response_result, 0, 0
                 else:
