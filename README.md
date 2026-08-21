@@ -22,7 +22,7 @@
 
 
 ## 特别说明 ⚠️
-- 若涉及商业用途，请先联系作者获取授权
+- 本工具仅限合法使用。任何利用本工具实施违法、侵权或违法牟利活动的行为，均不受项目方认可或支持；相关法律责任由行为人依法自行承担
 
 ## 功能优势 📌
 - 一键翻译向导：自动检测 `game/tl/<lang>`，支持增量/全量提取、断点续译、暂停/继续
@@ -82,7 +82,7 @@
 
 
 ## 致谢 🙏
-- UI代码和部分代码取自于[LinguaGacha](https://github.com/neavo/LinguaGacha)和[AiNiee](https://github.com/NEKOparapa/AiNiee)
+- 部分代码与架构参考 [AiNiee](https://github.com/NEKOparapa/AiNiee)和 [LinguaGacha](https://github.com/neavo/LinguaGacha)
 - 模块的设计理念来自于[renpy-translator](https://github.com/anonymousException/renpy-translator)
 - 本工具使用教程请看[RenpyBox使用教程](https://www.bilibili.com/video/BV1KPBoBhEMD)
 - 本工具使用文档请看[Renpy汉化教程](https://docs.dclef.com/)
