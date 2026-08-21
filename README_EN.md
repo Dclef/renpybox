@@ -24,7 +24,7 @@
 
 ## Special Notice ⚠️
 
-- For commercial use, please contact the author for authorization first.
+- This tool is for lawful use only. Any use of this tool for unlawful, infringing, or illegal profit-making activities is neither endorsed nor supported by the project; the person engaging in such conduct bears the relevant legal responsibility under applicable law.
 
 ## Feature Advantages 📌
 
@@ -98,7 +98,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## Acknowledgements 🙏
 
-- UI and some code are adapted from [LinguaGacha](https://github.com/neavo/LinguaGacha) and [AiNiee](https://github.com/NEKOparapa/AiNiee).
+- Early versions referenced the former Python version of [LinguaGacha](https://github.com/neavo/LinguaGacha); the related code has since been reimplemented. Some code and architecture were adapted from [AiNiee](https://github.com/NEKOparapa/AiNiee).
 - The module design was inspired by [renpy-translator](https://github.com/anonymousException/renpy-translator).
 - See the [RenpyBox user tutorial](https://www.bilibili.com/video/BV1KPBoBhEMD) for a walkthrough.
 - See the [Ren'Py translation documentation](https://docs.dclef.com/) for more information.
