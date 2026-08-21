@@ -41,7 +41,6 @@ from module.Cache.CacheManager import CacheManager
 from module.File.FileManager import FileManager
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
-from module.Engine.Translator.Translator import Translator
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
 from module.Renpy.ProjectPaths import (

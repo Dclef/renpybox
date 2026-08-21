@@ -4,7 +4,6 @@
 """
 
 from typing import Dict, List
-import json
 from pathlib import Path
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog

@@ -30,14 +30,12 @@ from qfluentwidgets import (
     PushButton,
     FluentIcon,
     InfoBar,
-    InfoBarPosition,
     ProgressBar,
     ProgressRing,
     TitleLabel,
     ComboBox,
     LineEdit,
     CheckBox,
-    qconfig,
     TransparentToolButton,
     isDarkTheme,
     StrongBodyLabel,
@@ -52,7 +50,6 @@ from widget.ItemCard import ItemCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
-from module.Renpy import renpy_extract as rx
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     apply_to_config,
@@ -2008,7 +2005,6 @@ class YiJianFanyiPage(Base, QWidget):
             - 'mixed': 混合状态
             - 'empty': 无可用文件
         """
-        from pathlib import Path
         
         paths = RenpyProjectPaths.from_path(
             game_dir,
@@ -3511,7 +3507,6 @@ class YiJianFanyiPage(Base, QWidget):
     def _tool_apply_translation(self, card, feedback_parent=None):
         """应用翻译：将输出目录的文件复制到 tl 目录"""
         from module.Config import Config
-        import shutil
         from qfluentwidgets import MessageBox
         from pathlib import Path
         

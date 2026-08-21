@@ -1,0 +1,46 @@
+[project]
+name = "RenpyBox"
+version = "0.7.6"
+description = "Ren'Py 游戏本地化工具箱"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt-Fluent-Widgets[full]==1.11.3",
+    "PyQt5==5.15.11",
+    "opencc>=1.1.5",
+    "translators>=5.9.2",
+    "pygtrans>=1.5.0",
+    "charset-normalizer>=3.0.0",
+    "chardet>=5.0.0",
+    "openpyxl>=3.0.0",
+    "pyyaml>=6.0.0",
+    "lxml>=4.9.0",
+    "beautifulsoup4>=4.12.0",
+    "tiktoken>=0.5.0",
+    "json-repair>=0.20.0",
+    "rich>=13.0.0",
+    "httpx>=0.24.0",
+    "openai>=1.44.0",
+    "anthropic>=0.34.0",
+    "google-genai>=1.0.0",
+    "pyinstaller>=6.0.0",
+    "unrpa>=2.3.0",
+    "pandas>=2.0.0",
+]
+
+[tool.ruff]
+# resource 内是 vendored 第三方（unrpyc 等），test 内是竞品源码副本，都不适用本项目门禁
+exclude = [
+    "resource",
+    "test",
+    "dist",
+    "build",
+    "_update_staging",
+]
+
+[tool.ruff.lint]
+# 只启用错误级（E9 语法/IO + F pyflakes）；风格级（E501 行长等）不进门禁
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# module/Tool/rpatool_core.py 是 vendored 的 rpatool 核心，含 PY2 兼容残留（F821 `unicode`）
+"module/Tool/rpatool_core.py" = ["F821"]

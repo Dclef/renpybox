@@ -2485,7 +2485,6 @@ class LocalGlossaryPage(Base, QWidget):
     def _extract_names_from_source(self, game_path: Path) -> set[str]:
         """直接从游戏源码扫描 Character 定义提取角色名"""
         import re
-        from module.Text.SkipRules import should_skip_text
         
         names = set()
         

@@ -8,9 +8,8 @@ import time
 import traceback
 import webbrowser
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
 
 
 def _message_box(title: str, message: str, *, error: bool = False) -> None:

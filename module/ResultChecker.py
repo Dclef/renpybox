@@ -441,7 +441,6 @@ class ResultChecker(Base):
                 time.sleep(0)
             seen = set()
             current_dst = item.get_dst()
-            fixed = False
             src_repl_clean = self._strip_glossary_ignore_segments(src_repl)
             src_repl_clean_lower = src_repl_clean.lower()
             src_repl_lower = src_repl.lower()
@@ -494,7 +493,6 @@ class ResultChecker(Base):
                         current_dst_clean = self._strip_glossary_ignore_segments(current_dst)
                         current_dst_clean_lower = current_dst_clean.lower()
                         current_dst_lower = current_dst.lower()
-                        fixed = True
                         fixed_count += 1
                     else:
                         seen.add(item.get_src())
