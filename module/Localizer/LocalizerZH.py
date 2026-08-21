@@ -223,6 +223,7 @@ class LocalizerZH():
     app_update_check_latest_toast: str = "当前已是最新版本"
     app_update_check_failure: str = "检查更新失败："
     app_update_cancelled: str = "已取消下载"
+    toast_merged_count: str = "（×{}）"
     app_changelog_title: str = "更新日志"
     app_changelog_empty: str = "暂无更新日志"
     app_changelog_available: str = "可更新到 {VERSION}"
