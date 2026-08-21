@@ -224,6 +224,7 @@ class LocalizerEN(LocalizerZH):
     app_update_check_latest_toast: str = "You're using the latest version"
     app_update_check_failure: str = "Update check failed: "
     app_update_cancelled: str = "Download cancelled"
+    toast_merged_count: str = " (x{})"
     app_changelog_title: str = "Changelog"
     app_changelog_empty: str = "No changelog is available"
     app_changelog_available: str = "Update available: {VERSION}"
