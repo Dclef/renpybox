@@ -26,7 +26,8 @@ from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Localizer.Localizer import Localizer
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from module.Renpy.ProjectPaths import RenpyProjectPaths
+from module.Project.ProjectStore import ProjectStore
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -219,16 +220,18 @@ class DirectRpyTranslatePage(Base, QWidget):
             paths = RenpyProjectPaths.from_path(input_tl_dir, tl_name)
             if paths is None:
                 raise RuntimeError(Localizer.get().direct_rpy_could_not_resolve_ren_py_project_paths)
-            apply_to_config(
+            ProjectStore.get().apply_resolved(
                 config,
                 paths,
                 input_folder = paths.tl_language_dir,
                 output_folder = paths.tl_language_dir,
+                mutate = lambda current: (
+                    setattr(current, "renpy_backup_original", self.backup_switch.isChecked()),
+                    # 直接翻译 tl/.rpy，必须关闭源码翻译模式。
+                    setattr(current, "renpy_source_translate", False),
+                    setattr(current, "renpy_hook_translate", False),
+                ),
             )
-            config.renpy_backup_original = self.backup_switch.isChecked()
-            # 直接翻译 tl/.rpy，必须关闭源码翻译模式，否则 FileManager 会走 RENPYSOURCE 分支
-            config.renpy_source_translate = False
-            config.renpy_hook_translate = False
 
             language_codes = ("ZH", "ZH", "EN", "JA", "KO")
             current_index = self.target_lang_combo.currentIndex()

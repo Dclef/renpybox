@@ -215,8 +215,6 @@ class OneKeyNameService:
         candidates: list[Path] = []
         candidate_roots = [
             Path(get_resource_path("resource", "Models", "ner")),
-            (Path(".") / "resource" / "Models" / "ner").resolve(),
-            (Path(__file__).resolve().parents[2] / "resource" / "Models" / "ner").resolve(),
         ]
         for model_root in candidate_roots:
             if not model_root.exists():
