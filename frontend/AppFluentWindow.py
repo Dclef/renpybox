@@ -21,6 +21,7 @@ from qfluentwidgets import setTheme
 from qfluentwidgets import setThemeColor
 
 from base.Base import Base
+from base.EventTelemetry import HeartbeatMonitor
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
 from base.Version import Version
@@ -71,6 +72,12 @@ class AppFluentWindow(FluentWindow, Base):
         self._is_closing = False
         # Toast 同 key 滑窗去重状态：key -> (上次放行时间 monotonic, 窗口内累计吞掉条数)
         self._toast_dedupe: dict[tuple, tuple] = {}
+        # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
+        self._heartbeat = HeartbeatMonitor(interval_ms = 1000)
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(1000)
+        self._heartbeat_timer.timeout.connect(self._on_heartbeat_tick)
+        self._heartbeat_timer.start()
 
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
@@ -154,6 +161,8 @@ class AppFluentWindow(FluentWindow, Base):
     # 重写窗口关闭函数
     def closeEvent(self, event: QEvent) -> None:
         self._is_closing = True
+        self._heartbeat_timer.stop()
+
         strings = Localizer.get()
         message_box = MessageBox(strings.warning, strings.app_close_message_box, self)
         message_box.yesButton.setText(strings.confirm)
@@ -164,6 +173,12 @@ class AppFluentWindow(FluentWindow, Base):
             event.ignore()
         else:
             os.kill(os.getpid(), signal.SIGTERM)
+
+    def _on_heartbeat_tick(self) -> None:
+        if self._is_app_closing():
+            self._heartbeat_timer.stop()
+            return
+        self._heartbeat.tick()
 
     def _is_qobject_alive(self, obj) -> bool:
         """检查 Qt 对象是否仍可访问，避免访问已释放的 C++ 对象。"""
