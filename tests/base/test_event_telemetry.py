@@ -155,3 +155,95 @@ def test_event_manager_emit_wraps_payload_with_timestamp() -> None:
     data, emitted_at = wrapped
     assert data == payload
     assert before <= emitted_at <= after
+
+
+@pytest.fixture()
+def deepcopy_instrumented():
+    from base.EventTelemetry import (
+        install_deepcopy_instrumentation,
+        restore_deepcopy_instrumentation,
+    )
+
+    install_deepcopy_instrumentation()
+    yield
+    restore_deepcopy_instrumentation()
+
+
+def test_deepcopy_instrumentation_records_caller_module(deepcopy_instrumented) -> None:
+    import copy
+
+    payload = {"list": [1, 2, {"nested": True}]}
+    cloned = copy.deepcopy(payload)
+    cloned["list"][2]["nested"] = False
+    assert payload["list"][2]["nested"] is True  # 行为等价：隔离语义保持
+
+    snapshot = EventTelemetry.get().snapshot()
+    key = f"__deepcopy__:{__name__}"
+    assert key in snapshot
+    assert snapshot[key]["count"] >= 1
+    assert snapshot[key]["max"] >= 0
+
+
+def test_deepcopy_instrumentation_is_idempotent(deepcopy_instrumented) -> None:
+    import copy
+
+    from base.EventTelemetry import install_deepcopy_instrumentation
+
+    first = copy.deepcopy
+    install_deepcopy_instrumentation()
+    assert copy.deepcopy is first  # 二次安装不重复包装
+
+    copy.deepcopy({"a": 1})
+    snapshot = EventTelemetry.get().snapshot()
+    assert snapshot[f"__deepcopy__:{__name__}"]["count"] == 1  # 只记一次
+
+
+def test_deepcopy_instrumentation_propagates_exceptions(deepcopy_instrumented) -> None:
+    import copy
+
+    class UnCopyable:
+        def __deepcopy__(self, memo):
+            raise ValueError("no copy for you")
+
+    with pytest.raises(ValueError, match = "no copy for you"):
+        copy.deepcopy(UnCopyable())
+    # 异常路径也留下记录
+    assert EventTelemetry.get().snapshot()[f"__deepcopy__:{__name__}"]["count"] >= 1
+
+
+
+def test_config_load_records_only_on_main_thread(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    import threading
+
+    from module.Config import Config
+
+    monkeypatch.setattr(Config, "CONFIG_PATH", str(tmp_path / "config.json"))
+
+    recorded: list[str] = []
+
+    def fake_record(event: str, latency_ms: float) -> None:
+        recorded.append(event)
+
+    import base.EventTelemetry as telemetry_module
+
+    monkeypatch.setattr(telemetry_module, "record_latency", fake_record)
+    # Config 模块是函数引用导入，需 patch 其命名空间
+    import module.Config as config_module
+
+    monkeypatch.setattr(config_module, "record_latency", fake_record)
+
+    Config().load()
+    assert "__ui_config_read__" in recorded  # pytest 主线程
+
+    recorded.clear()
+    result: list[str] = []
+
+    def background_load():
+        Config().load()
+        result.append("done")
+
+    thread = threading.Thread(target = background_load)
+    thread.start()
+    thread.join()
+    assert result == ["done"]
+    assert recorded == []  # 后台线程不计入 UI 读盘
