@@ -12,6 +12,7 @@ from buildtools.update_assets import (
     build_patch,
     append_manifest_to_zip,
     file_sha256,
+    validate_patch_zip,
 )
 
 
@@ -81,6 +82,14 @@ def test_build_workflow_normalizes_previous_release_version() -> None:
     assert "from-$prevVersion.patch.zip" in patch_step
     assert "--prev-version $prevTag" not in patch_step
     assert "from-$prevTag.patch.zip" not in patch_step
+    assert '$expectedPrevZip = "RenpyBox_$prevVersion.zip"' in patch_step
+    assert "Where-Object { $_.name -eq $expectedPrevZip }" in patch_step
+
+    collect_step = workflow.split("- name: Collect Release Files", 1)[1].split(
+        "- name: Create Release", 1
+    )[0]
+    assert 'steps.incremental_patch.outcome }}" -eq "success"' in collect_step
+    assert "update_assets.py validate-patch" in collect_step
 
 
 def test_build_manifest_covers_all_files(tmp_path: Path) -> None:
@@ -137,6 +146,36 @@ def test_build_patch_detects_changed_added_deleted(tmp_path: Path) -> None:
         "_internal/data.bin",
         "_internal/new_file.txt",
     }
+    assert validate_patch_zip(patch_zip, expected_version="v2.0.0") == meta
+
+
+def test_build_patch_failure_leaves_no_publishable_zip(monkeypatch, tmp_path: Path) -> None:
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
+    (v2 / "_internal" / "new_file.txt").write_text("new", encoding="utf-8")
+    prev_zip = _make_full_zip(v1, tmp_path / "v1_full.zip", "v1.0.0")
+    prev_payload = _extract_prev(tmp_path, prev_zip)
+    out_zip = tmp_path / "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
+    out_zip.write_bytes(b"stale-partial-zip")
+
+    original_write = zipfile.ZipFile.write
+    calls = 0
+
+    def fail_second_write(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated zip write failure")
+        return original_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", fail_second_write)
+
+    with pytest.raises(OSError, match="simulated zip write failure"):
+        build_patch(v2, "v2.0.0", prev_payload, "v1.0.0", out_zip)
+
+    assert not out_zip.exists()
+    assert not list(tmp_path.glob(f".{out_zip.name}.*.tmp"))
 
 
 def test_patch_zip_far_smaller_than_full_zip(tmp_path: Path) -> None:
