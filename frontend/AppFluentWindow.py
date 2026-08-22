@@ -1,16 +1,12 @@
 import os
 import signal
-import time
 
 from PyQt5.QtCore import QEvent
-from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
-from qfluentwidgets import InfoBar
-from qfluentwidgets import InfoBarPosition
 from qfluentwidgets import MessageBox
 from qfluentwidgets import NavigationAvatarWidget
 from qfluentwidgets import NavigationItemPosition
@@ -22,6 +18,7 @@ from qfluentwidgets import setThemeColor
 
 from base.Base import Base
 from base.EventTelemetry import HeartbeatMonitor
+from frontend.NotificationService import NotificationService
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
 from base.Version import Version
@@ -70,8 +67,8 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
-        # Toast 同 key 滑窗去重状态：key -> (上次放行时间 monotonic, 窗口内累计吞掉条数)
-        self._toast_dedupe: dict[tuple, tuple] = {}
+        # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
+        self.notification = NotificationService(self)
         # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
         self._heartbeat = HeartbeatMonitor(interval_ms = 1000)
         self._heartbeat_timer = QTimer(self)
@@ -201,54 +198,14 @@ class AppFluentWindow(FluentWindow, Base):
         return self._is_closing or app.closingDown()
 
     # 响应显示 Toast 事件
-    # Toast 同 key 滑窗去重：窗口内重复的提示不再新建 InfoBar，风暴结束后下一条带聚合计数
-    TOAST_DEDUPE_WINDOW_SEC = 2.5
-
-    def _dedupe_toast(self, toast_type: object, toast_message: str) -> str | None:
-        """返回应展示的文案；窗口内重复时返回 None（吞掉）。"""
-        key = (str(toast_type), toast_message)
-        now = time.monotonic()
-        last_shown, swallowed = self._toast_dedupe.get(key, (0.0, 0))
-
-        if now - last_shown < self.TOAST_DEDUPE_WINDOW_SEC:
-            self._toast_dedupe[key] = (last_shown, swallowed + 1)
-            return None
-
-        message = toast_message
-        if swallowed > 0:
-            message = message + Localizer.get().toast_merged_count.format(swallowed + 1)
-        self._toast_dedupe[key] = (now, 0)
-        return message
-
     def show_toast(self, event: str, data: dict) -> None:
         if self._is_app_closing() or not self._is_qobject_alive(self):
             return
 
-        toast_type = data.get("type", Base.ToastType.INFO)
-        toast_message = data.get("message", "")
-        toast_duration = data.get("duration", 2500)
-
-        deduped_message = self._dedupe_toast(toast_type, toast_message)
-        if deduped_message is None:
-            return
-
-        if toast_type == Base.ToastType.ERROR:
-            toast_func = InfoBar.error
-        elif toast_type == Base.ToastType.WARNING:
-            toast_func = InfoBar.warning
-        elif toast_type == Base.ToastType.SUCCESS:
-            toast_func = InfoBar.success
-        else:
-            toast_func = InfoBar.info
-
-        toast_func(
-            title = "",
-            content = deduped_message,
-            parent = self,
-            duration = toast_duration,
-            orient = Qt.Orientation.Horizontal,
-            position = InfoBarPosition.TOP,
-            isClosable = True,
+        self.notification.show(
+            data.get("type", Base.ToastType.INFO),
+            data.get("message", ""),
+            data.get("duration", 2500),
         )
 
     # 切换主题
