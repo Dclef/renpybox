@@ -27,6 +27,11 @@ dependencies = [
     "pandas>=2.0.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: 手动性能基准（pytest -m slow 运行，CI 与默认全量跳过）",
+]
+
 [tool.ruff]
 # resource 内是 vendored 第三方（unrpyc 等），test 内是竞品源码副本，都不适用本项目门禁
 exclude = [

@@ -12,6 +12,7 @@ from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from base.PathHelper import get_app_path, get_resource_path
 from module.File.AtomicWrite import atomic_write_text
+from base.EventTelemetry import record_latency
 from module.Localizer.Localizer import Localizer
 
 @dataclasses.dataclass
@@ -512,6 +513,10 @@ class Config():
         )
 
     def load(self, path: str = None) -> Self:
+        # UI 主线程读盘计数（锁外打点；摘要可能触发 LogManager 初始化再进 load，锁外才安全）
+        if threading.current_thread() is threading.main_thread():
+            record_latency("__ui_config_read__", 0.0)
+
         if path is None:
             user_path = __class__.CONFIG_PATH
             path = user_path if os.path.isfile(user_path) else get_resource_path("resource", "config.json")
