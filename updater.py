@@ -13,6 +13,15 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from update_path_policy import (
+    safe_target,
+    safe_target_cached,
+    validate_file_paths,
+    validate_manifest_paths,
+    validate_patch_paths,
+    validate_zip_members,
+)
+
 
 # 与 buildtools/update_assets.py 的协议常量保持一致
 MANIFEST_NAME = "_update_manifest.json"
@@ -109,20 +118,29 @@ def _wait_for_pid_exit(pid: int, *, timeout_sec: int = 120) -> bool:
         return False
 
 
-def _safe_extract(zip_file: zipfile.ZipFile, dest_dir: Path) -> None:
-    dest_dir_resolved = dest_dir.resolve()
-    for member in zip_file.infolist():
-        member_path = dest_dir / member.filename
-        try:
-            member_resolved = member_path.resolve()
-        except Exception:
-            member_resolved = (dest_dir_resolved / member.filename).resolve()
-
-        if (
-            member_resolved != dest_dir_resolved
-            and dest_dir_resolved not in member_resolved.parents
-        ):
-            raise RuntimeError(f"Unsafe path in zip: {member.filename}")
+def _safe_extract(
+    zip_file: zipfile.ZipFile,
+    dest_dir: Path,
+    *,
+    allowed_protocol_paths: tuple[str, ...] = (),
+) -> None:
+    members = zip_file.infolist()
+    dest_root = dest_dir.resolve()
+    validate_zip_members(
+        members,
+        label="update ZIP",
+        allowed_protocol_paths=allowed_protocol_paths,
+    )
+    parent_cache: dict[str, Path] = {}
+    for member in members:
+        rel = member.filename[:-1] if member.is_dir() else member.filename
+        safe_target_cached(
+            dest_dir,
+            rel,
+            label="update ZIP member",
+            parent_cache=parent_cache,
+            root_resolved=dest_root,
+        )
         zip_file.extract(member, dest_dir)
 
 
@@ -187,12 +205,18 @@ def _file_sha256(path: Path, *, chunk_size: int = 524288) -> str:
         return ""
 
 
-def _should_update_file(src: Path, dst: Path) -> bool:
+def _should_update_file(
+    src: Path,
+    dst: Path,
+    *,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
+) -> bool:
     """判断文件是否需要更新。
 
-    只看内容：大小不同即更新，大小相同则全量哈希比较。
     不使用 mtime——copy2 会保留旧构建的时间戳，新构建时间恒更新，
     mtime 快速通道会把内容相同的文件全部判为需复制（已核实的历史缺陷）。
+    新包有 manifest 时只校验安装态目标的 sha256；旧包才回退双边内容哈希。
     """
     if not dst.exists():
         return True
@@ -201,39 +225,60 @@ def _should_update_file(src: Path, dst: Path) -> bool:
         src_stat = src.stat()
         dst_stat = dst.stat()
 
-        # 大小不同，内容必然不同
-        if src_stat.st_size != dst_stat.st_size:
+        if expected_size is not None and src_stat.st_size != expected_size:
+            # manifest 与 staging 不一致时回退完整内容判断，避免错误跳过。
+            expected_size = None
+            expected_sha256 = None
+
+        # manifest 的 size 优先；没有 manifest 时仍以源文件为准。
+        source_size = src_stat.st_size if expected_size is None else expected_size
+        if source_size != dst_stat.st_size:
             return True
+
+        if (
+            isinstance(expected_sha256, str)
+            and len(expected_sha256) == 64
+            and all(char in "0123456789abcdefABCDEF" for char in expected_sha256)
+        ):
+            # 发布包的 manifest 已经计算过源文件哈希，只需验证安装态目标。
+            return _file_sha256(dst).casefold() != expected_sha256.casefold()
 
         return _file_hash(src) != _file_hash(dst)
     except Exception:
         return True
 
 
-def _parallel_extract(zip_path: Path, dest_dir: Path, *, max_workers: int = 4) -> None:
+def _parallel_extract(
+    zip_path: Path,
+    dest_dir: Path,
+    *,
+    max_workers: int = 4,
+    allowed_protocol_paths: tuple[str, ...] = (),
+) -> None:
     """并行解压ZIP文件"""
     with zipfile.ZipFile(zip_path, 'r') as zf:
         members = zf.infolist()
-    
-    dest_root = dest_dir.resolve()
 
-    def _safe_member_path(member_name: str) -> Path | None:
-        member_path = dest_dir / member_name
-        try:
-            resolved = member_path.resolve()
-            if dest_root not in resolved.parents and resolved != dest_root:
-                return None
-        except Exception:
-            return None
-        return member_path
+    # 必须在创建任何目录或解压任何文件前校验整个包，不能静默跳过危险条目。
+    validate_zip_members(
+        members,
+        label="update ZIP",
+        allowed_protocol_paths=allowed_protocol_paths,
+    )
+
+    # 规则校验已确认路径安全；staging 是刚清空的目录，不再对每个条目调用 resolve。
+    member_paths = {
+        member.filename: dest_dir.joinpath(
+            *(member.filename[:-1] if member.is_dir() else member.filename).split("/")
+        )
+        for member in members
+    }
 
     # 先创建所有目录
     dir_paths: set[Path] = set()
     file_members: list[zipfile.ZipInfo] = []
     for m in members:
-        member_path = _safe_member_path(m.filename)
-        if member_path is None:
-            continue
+        member_path = member_paths[m.filename]
         if m.is_dir():
             dir_paths.add(member_path)
         else:
@@ -259,8 +304,6 @@ def _parallel_extract(zip_path: Path, dest_dir: Path, *, max_workers: int = 4) -
         # 每个线程单独打开 ZipFile，避免线程安全问题
         with zipfile.ZipFile(zip_path, 'r') as zf:
             for member in batch:
-                if _safe_member_path(member.filename) is None:
-                    continue
                 extracted = zf.extract(member, dest_dir)
                 epoch = member_epochs.get(member.filename)
                 if epoch is not None:
@@ -308,8 +351,35 @@ def _zip_toplevel_has(zip_path: Path, name: str) -> bool:
         return False
 
 
-def _rel_to_path(install_dir: Path, rel: str) -> Path:
-    return install_dir.joinpath(*rel.split("/"))
+def _rel_to_path(
+    install_dir: Path,
+    rel: str,
+    *,
+    parent_cache: dict[str, Path] | None = None,
+    root_resolved: Path | None = None,
+    resolve_target: bool = True,
+) -> Path:
+    if not resolve_target:
+        return safe_target(
+            install_dir,
+            rel,
+            label="patch path",
+            resolve_target=False,
+        )
+    if parent_cache is None:
+        return safe_target(
+            install_dir,
+            rel,
+            label="patch path",
+            root_resolved=root_resolved,
+        )
+    return safe_target_cached(
+        install_dir,
+        rel,
+        label="patch path",
+        parent_cache=parent_cache,
+        root_resolved=root_resolved,
+    )
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -343,12 +413,58 @@ def _cleanup_old_executables(install_dir: Path) -> None:
 
 def _read_patch_meta(zip_path: Path) -> dict:
     with zipfile.ZipFile(zip_path, "r") as zf:
+        members = zf.infolist()
+        if sum(member.filename == PATCH_META_NAME for member in members) != 1:
+            raise RuntimeError(f"Patch must contain exactly one {PATCH_META_NAME}")
         meta = json.loads(zf.read(PATCH_META_NAME).decode("utf-8"))
     if not isinstance(meta, dict) or meta.get("format") != PATCH_FORMAT:
         raise RuntimeError("Invalid patch meta format")
     if not isinstance(meta.get("files"), dict) or not isinstance(meta.get("manifest"), dict):
         raise RuntimeError("Invalid patch meta content")
+    manifest = meta["manifest"]
+    if (
+        manifest.get("format") != MANIFEST_FORMAT
+        or manifest.get("version") != meta.get("version")
+        or not isinstance(manifest.get("files"), dict)
+    ):
+        raise RuntimeError("Invalid target manifest")
+    validate_patch_paths(
+        meta,
+        members,
+        patch_meta_name=PATCH_META_NAME,
+        manifest_name=MANIFEST_NAME,
+    )
     return meta
+
+
+def _validate_patch_base_manifest(install_dir: Path, meta: dict) -> None:
+    """确认安装态确实是 patch 声明的基线版本。"""
+    base_version = str(meta.get("base_version") or "").strip()
+    if not base_version:
+        raise RuntimeError("Patch is missing base version")
+
+    manifest_path = install_dir / MANIFEST_NAME
+    try:
+        installed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Patch requires an installed manifest; apply the full package first"
+        ) from exc
+
+    if (
+        not isinstance(installed, dict)
+        or installed.get("format") != MANIFEST_FORMAT
+        or installed.get("version") != base_version
+        or not isinstance(installed.get("files"), dict)
+    ):
+        raise RuntimeError(
+            f"Patch base version mismatch: expected installed {base_version!r}"
+        )
+    validate_manifest_paths(
+        installed,
+        label="installed base manifest",
+        reserved_paths=(MANIFEST_NAME, PATCH_META_NAME),
+    )
 
 
 def _apply_patch_update(
@@ -368,6 +484,7 @@ def _apply_patch_update(
     失败时提示用户改走全量包。
     """
     meta = _read_patch_meta(zip_path)
+    _validate_patch_base_manifest(install_dir, meta)
     patch_version = str(meta.get("version") or "")
     patch_files: dict[str, dict] = meta["files"]
     deleted: list[str] = list(meta.get("deleted") or [])
@@ -375,6 +492,8 @@ def _apply_patch_update(
     journal_path = install_dir / JOURNAL_NAME
     manifest_path = install_dir / MANIFEST_NAME
     staging_dir = install_dir / "_update_staging"
+    install_root_resolved = install_dir.resolve()
+    install_parent_cache: dict[str, Path] = {}
 
     journal: dict = {}
     try:
@@ -383,19 +502,45 @@ def _apply_patch_update(
     except Exception:
         journal = {}
 
+    journal_staged: list[str] = []
+    journal_committed: list[str] = []
+    try:
+        if journal:
+            if not isinstance(journal, dict):
+                raise RuntimeError("Invalid update journal")
+            raw_staged = journal.get("staged")
+            raw_committed = journal.get("committed")
+            if not isinstance(raw_staged, list) or not isinstance(raw_committed, list):
+                raise RuntimeError("Invalid update journal path lists")
+            validate_file_paths(raw_staged, label="journal staged path")
+            validate_file_paths(raw_committed, label="journal committed path")
+            journal_staged = list(raw_staged)
+            journal_committed = list(raw_committed)
+    except RuntimeError:
+        # journal 是本地恢复提示，不可信路径不得用于任何清理或续传。
+        journal = {}
+        journal_staged = []
+        journal_committed = []
+
     resumable = (
         isinstance(journal, dict)
         and journal.get("version") == patch_version
-        and isinstance(journal.get("committed"), list)
+        and set(journal_staged) == set(patch_files)
+        and set(journal_committed).issubset(patch_files)
     )
-    committed: list[str] = list(journal.get("committed")) if resumable else []
+    committed: list[str] = journal_committed if resumable else []
 
     if not resumable:
         # 旧 journal 属于别的版本：连同其 .new 残留一并清理后全新开始
-        for rel in (journal.get("staged") or []) if isinstance(journal, dict) else []:
+        for rel in journal_staged:
             try:
-                stale = _rel_to_path(install_dir, str(rel))
-                stale.with_name(stale.name + ".new").unlink()
+                stale = _rel_to_path(
+                    install_dir,
+                    f"{rel}.new",
+                    parent_cache=install_parent_cache,
+                    root_resolved=install_root_resolved,
+                )
+                stale.unlink()
             except Exception:
                 pass
 
@@ -405,22 +550,41 @@ def _apply_patch_update(
         _rmtree_with_retry(staging_dir, retries=5, delay_sec=0.1)
     staging_dir.mkdir(parents = True, exist_ok = True)
 
-    _parallel_extract(zip_path, staging_dir, max_workers=4)
+    _parallel_extract(
+        zip_path,
+        staging_dir,
+        max_workers=4,
+        allowed_protocol_paths=(PATCH_META_NAME,),
+    )
 
     staged: list[str] = sorted(patch_files)
     for rel in staged:
-        staged_file = staging_dir.joinpath(*rel.split("/"))
+        staged_file = _rel_to_path(staging_dir, rel, resolve_target=False)
         if not staged_file.is_file():
             raise RuntimeError(f"Patch file missing in archive: {rel}")
         if _file_sha256(staged_file) != patch_files[rel].get("sha256"):
             raise RuntimeError(f"Patch file checksum mismatch: {rel}")
 
-        new_path = _rel_to_path(install_dir, rel)
-        new_path = new_path.with_name(new_path.name + ".new")
-        if rel in committed and not new_path.exists():
-            # 续传时已提交项的 .new 应已消失；若目标也校验通过则跳过
-            dest = _rel_to_path(install_dir, rel)
+        new_path = _rel_to_path(
+            install_dir,
+            f"{rel}.new",
+            parent_cache=install_parent_cache,
+            root_resolved=install_root_resolved,
+        )
+        if rel in committed:
+            # 续传时已提交项不需要再次复制；异常中断若留下 .new，
+            # 在确认目标内容正确后清掉残留，避免成功重试后污染安装目录。
+            dest = _rel_to_path(
+                install_dir,
+                rel,
+                parent_cache=install_parent_cache,
+                root_resolved=install_root_resolved,
+            )
             if dest.is_file() and _file_sha256(dest) == patch_files[rel].get("sha256"):
+                try:
+                    new_path.unlink(missing_ok=True)
+                except Exception as exc:
+                    raise RuntimeError(f"Cannot clean committed staging file: {rel}") from exc
                 continue
             committed.remove(rel)
 
@@ -437,18 +601,28 @@ def _apply_patch_update(
 
     # ---- Commit：逐文件原子提交，journal 随进度更新 ----
     commit_start = time.perf_counter()
-    running_exe_lower = str(Path(sys.executable).resolve()).lower()
+    running_exe_key = os.path.normcase(str(Path(sys.executable).resolve()))
     committed_set = set(committed)
     for rel in staged:
         if rel in committed_set:
             continue
 
-        dest = _rel_to_path(install_dir, rel)
-        new_path = dest.with_name(dest.name + ".new")
+        dest = _rel_to_path(
+            install_dir,
+            rel,
+            parent_cache=install_parent_cache,
+            root_resolved=install_root_resolved,
+        )
+        new_path = _rel_to_path(
+            install_dir,
+            f"{rel}.new",
+            parent_cache=install_parent_cache,
+            root_resolved=install_root_resolved,
+        )
         if not new_path.is_file():
             raise RuntimeError(f"Staged file lost before commit: {rel}")
 
-        if str(dest.resolve()).lower() == running_exe_lower:
+        if os.path.normcase(str(dest)) == running_exe_key:
             # Windows 上运行中的 exe 可改名不可覆盖：先移走旧文件
             try:
                 os.replace(dest, dest.with_name(dest.name + ".old"))
@@ -474,13 +648,22 @@ def _apply_patch_update(
     # ---- 收尾：删除清单、installed manifest、清理 ----
     deleted_count = 0
     for rel in deleted:
+        target = _rel_to_path(
+            install_dir,
+            rel,
+            parent_cache=install_parent_cache,
+            root_resolved=install_root_resolved,
+        )
+        if not target.exists():
+            continue
         try:
-            target = _rel_to_path(install_dir, rel)
             _ensure_writable(target)
             target.unlink()
             deleted_count += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            # 保留 journal 和 .new，下一次可从提交进度继续，不能把目标
+            # manifest 写成新版本而留下旧文件。
+            raise RuntimeError(f"Delete failed at {rel}: {exc}") from exc
 
     _atomic_write_json(manifest_path, meta["manifest"])
     try:
@@ -543,7 +726,8 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     # 增量包分流：顶层带 _patch_meta.json 走 patch 路径（两阶段原子应用），
     # 其余走下方全量路径
     if _zip_toplevel_has(zip_path, PATCH_META_NAME):
-        _read_patch_meta(zip_path)
+        patch_meta = _read_patch_meta(zip_path)
+        _validate_patch_base_manifest(install_dir.resolve(), patch_meta)
         _cleanup_old_executables(install_dir)
         try:
             log_dir.mkdir(parents = True, exist_ok = True)
@@ -561,6 +745,14 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         )
         return
 
+    # 全量包同样先整体 fail closed，避免危险条目触发 staging 清理或部分解压。
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        validate_zip_members(
+            zf.infolist(),
+            label="full update ZIP",
+            allowed_protocol_paths=(MANIFEST_NAME,),
+        )
+
     config_candidates = [
         install_dir / "config.json",
         install_dir / "resource" / "config.json",
@@ -577,10 +769,36 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     try:
         # 使用并行解压（大幅提速）
         stage_start = time.perf_counter()
-        _parallel_extract(zip_path, staging_dir, max_workers=4)
+        _parallel_extract(
+            zip_path,
+            staging_dir,
+            max_workers=4,
+            allowed_protocol_paths=(MANIFEST_NAME,),
+        )
         extract_sec = time.perf_counter() - stage_start
 
         payload_dir = _find_payload_dir(staging_dir, exe_name = exe_name)
+
+        embedded_manifest_data: dict | None = None
+        embedded_manifest = staging_dir / MANIFEST_NAME
+        try:
+            if embedded_manifest.is_file():
+                candidate_manifest = json.loads(
+                    embedded_manifest.read_text(encoding="utf-8")
+                )
+                if (
+                    isinstance(candidate_manifest, dict)
+                    and candidate_manifest.get("format") == MANIFEST_FORMAT
+                ):
+                    validate_manifest_paths(
+                        candidate_manifest,
+                        label="full update manifest",
+                        reserved_paths=(MANIFEST_NAME, PATCH_META_NAME),
+                    )
+                    embedded_manifest_data = candidate_manifest
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            # 兼容旧全量包：无可读 manifest 时仍按全量更新，但不写安装态。
+            embedded_manifest_data = None
 
         # payload 结构确认后才允许触碰安装态、恢复件与用户配置备份。
         _cleanup_old_executables(install_dir)
@@ -599,12 +817,19 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
                     pass
 
         running_exe_path = Path(sys.executable).resolve()
-        running_exe_path_lower = str(running_exe_path).lower()
+        running_exe_path_key = os.path.normcase(str(running_exe_path))
+        install_root_resolved = install_dir
+        install_parent_cache: dict[str, Path] = {}
         preserve_dirs = {"input", "output", "log"}
+        manifest_files = (
+            embedded_manifest_data.get("files", {})
+            if isinstance(embedded_manifest_data, dict)
+            else {}
+        )
 
         # 收集所有需要处理的文件任务
         stage_start = time.perf_counter()
-        copy_tasks: list[tuple[Path, Path]] = []  # (src, dst)
+        copy_tasks: list[tuple[Path, Path, dict | None]] = []  # (src, dst, manifest entry)
         new_files: set[Path] = set()
         skipped_count = 0
 
@@ -617,22 +842,39 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
                     if not src_file.is_file():
                         continue
 
-                    rel_path = src_file.relative_to(item)
-                    dest_file = (install_dir / item.name / rel_path)
                     rel_to_payload = src_file.relative_to(payload_dir)
+                    rel_text = rel_to_payload.as_posix()
+                    dest_file = _rel_to_path(
+                        install_dir,
+                        rel_text,
+                        parent_cache=install_parent_cache,
+                        root_resolved=install_root_resolved,
+                    )
                     new_files.add(rel_to_payload)
 
-                    copy_tasks.append((src_file, dest_file))
+                    entry = manifest_files.get(rel_text)
+                    copy_tasks.append(
+                        (src_file, dest_file, entry if isinstance(entry, dict) else None)
+                    )
             else:
                 if item.name.lower() == "config.json":
                     continue
                 # 更新协议元数据只供本程序读取，不落入安装目录
                 if item.name in {MANIFEST_NAME, PATCH_META_NAME}:
                     continue
-                dest_file = install_dir / item.name
-                new_files.add(Path(item.name))
+                dest_file = _rel_to_path(
+                    install_dir,
+                    item.name,
+                    parent_cache=install_parent_cache,
+                    root_resolved=install_root_resolved,
+                )
+                rel_text = item.name
+                new_files.add(Path(rel_text))
 
-                copy_tasks.append((item, dest_file))
+                entry = manifest_files.get(rel_text)
+                copy_tasks.append(
+                    (item, dest_file, entry if isinstance(entry, dict) else None)
+                )
         collect_sec = time.perf_counter() - stage_start
         
         # 预先创建所有目标目录（避免并行时的竞争）
@@ -644,12 +886,28 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         updated_count = 0
         bytes_copied = 0
 
-        def _copy_if_needed(task: tuple[Path, Path]) -> tuple[int, int]:
+        def _copy_if_needed(task: tuple[Path, Path, dict | None]) -> tuple[int, int]:
             """返回 (是否更新, 写入字节数)；目标为运行中的 exe 时先 rename-swap 腾位"""
-            src, dst = task
-            if not _should_update_file(src, dst):
+            src, dst, manifest_entry = task
+            expected_size = (
+                manifest_entry.get("size")
+                if isinstance(manifest_entry, dict)
+                and isinstance(manifest_entry.get("size"), int)
+                else None
+            )
+            expected_sha256 = (
+                manifest_entry.get("sha256")
+                if isinstance(manifest_entry, dict)
+                else None
+            )
+            if not _should_update_file(
+                src,
+                dst,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+            ):
                 return (0, 0)
-            if str(dst.resolve()).lower() == running_exe_path_lower:
+            if os.path.normcase(str(dst)) == running_exe_path_key:
                 # Windows 上运行中的 exe 可改名、不可覆盖：先移走旧文件再复制
                 try:
                     os.replace(dst, dst.with_suffix(dst.suffix + ".old"))
@@ -680,13 +938,29 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         # 清理旧文件（新版本中不存在的文件）
         stage_start = time.perf_counter()
         deleted_count = 0
-        internal_dir = install_dir / "_internal"
+        internal_dir = _rel_to_path(
+            install_dir,
+            "_internal",
+            parent_cache=install_parent_cache,
+            root_resolved=install_root_resolved,
+        )
         if internal_dir.exists():
             files_to_delete: list[Path] = []
             protected_suffixes = {".json", ".log", ".bak"}
             
             for old_file in internal_dir.rglob("*"):
                 if not old_file.is_file():
+                    continue
+                try:
+                    rel_to_install = old_file.relative_to(install_dir).as_posix()
+                    old_file = _rel_to_path(
+                        install_dir,
+                        rel_to_install,
+                        parent_cache=install_parent_cache,
+                        root_resolved=install_root_resolved,
+                    )
+                except (RuntimeError, ValueError):
+                    # 既有 junction/symlink 指向安装目录外时绝不跟随删除。
                     continue
                 rel = Path("_internal") / old_file.relative_to(internal_dir)
                 
@@ -729,14 +1003,11 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
 
         # 全量包若内嵌 manifest（新版发布起），把安装态 manifest 落盘，
         # 之后的版本即可走增量更新；旧包没有则跳过（下次仍走全量）
-        embedded_manifest = staging_dir / MANIFEST_NAME
-        try:
-            if embedded_manifest.is_file():
-                manifest_data = json.loads(embedded_manifest.read_text(encoding="utf-8"))
-                if isinstance(manifest_data, dict) and manifest_data.get("format") == MANIFEST_FORMAT:
-                    _atomic_write_json(install_dir / MANIFEST_NAME, manifest_data)
-        except Exception:
-            pass
+        if embedded_manifest_data is not None:
+            try:
+                _atomic_write_json(install_dir / MANIFEST_NAME, embedded_manifest_data)
+            except Exception:
+                pass
 
         for cfg, bak in config_backup_pairs:
             if bak.is_file():
