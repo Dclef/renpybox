@@ -521,6 +521,7 @@ class Config():
             user_path = __class__.CONFIG_PATH
             path = user_path if os.path.isfile(user_path) else get_resource_path("resource", "config.json")
 
+        failure: Exception | None = None
         with __class__.CONFIG_LOCK:
             try:
                 if os.path.isfile(path):
@@ -531,11 +532,18 @@ class Config():
                             if k in field_names:
                                 setattr(self, k, v)
             except Exception as e:
-                LogManager.get().error(f"{Localizer.get().log_read_file_fail}", e)
+                failure = e
+
+        if failure is not None:
+            # 配置读取失败不能把异常对象交回依赖 Config.load() 的日志路径，
+            # 否则 LogManager 初始化专家模式时会递归读取同一个坏文件。
+            LogManager.get().error(
+                f"{Localizer.get().log_read_file_fail}: {failure}"
+            )
 
         return self
 
-    def save(self, path: str = None) -> Self:
+    def save(self, path: str = None, *, strict: bool = False) -> Self:
         if path is None:
             path = __class__.CONFIG_PATH
 
@@ -559,7 +567,11 @@ class Config():
                 failure = e
 
         if failure is not None:
-            LogManager.get().error(f"{Localizer.get().log_write_file_fail}", failure)
+            LogManager.get().error(
+                f"{Localizer.get().log_write_file_fail}: {failure}"
+            )
+            if strict:
+                raise failure
 
         return self
 
