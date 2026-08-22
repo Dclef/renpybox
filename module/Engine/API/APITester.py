@@ -1,3 +1,4 @@
+import copy
 import threading
 
 from base.Base import Base
@@ -8,6 +9,14 @@ from module.Localizer.Localizer import Localizer
 from module.Engine.TaskRequester import TaskRequester
 
 class APITester(Base):
+
+    @staticmethod
+    def _redact_secrets(value: object, keys: list[str]) -> str:
+        """从接口测试的所有可见文本中移除已知密钥。"""
+        text = str(value or "")
+        for key in sorted((key for key in keys if key), key = len, reverse = True):
+            text = text.replace(key, "***")
+        return text
 
     def __init__(self) -> None:
         super().__init__()
@@ -50,9 +59,9 @@ class APITester(Base):
         platform = config.get_platform(data.get('id'))
 
         # 测试结果
-        failure = []
-        failure_details = []
-        success = []
+        failure: list[str] = []
+        failure_details: list[str] = []
+        success: list[str] = []
 
         # 构造提示词
         if platform.get('api_format') == Base.APIFormat.SAKURALLM:
@@ -77,34 +86,77 @@ class APITester(Base):
         # 重置请求器
         TaskRequester.reset()
 
-        # 开始测试
-        requester = TaskRequester(config, platform, 0)
-        for key in SecretStore.get().resolve_keys(platform):
+        # 开始测试。每轮移除稳定身份并只放一把明文 Key，确保请求器不会
+        # 从凭据库轮换到本轮之外的 Key。
+        resolved_keys = SecretStore.get().resolve_keys(platform)
+        test_keys = resolved_keys or ["no_key_required"]
+        for index, key in enumerate(test_keys, start = 1):
+            label = f"#{index}"
+            test_platform = copy.deepcopy(platform)
+            test_platform.pop("id", None)
+            test_platform.pop("credential_id", None)
+            test_platform.pop("legacy_credential_id", None)
+            test_platform["api_key"] = [key]
+            requester = TaskRequester(config, test_platform, 0)
+
+            # TaskRequester 会在捕获 SDK 异常时先写全局日志；测试模式下接管
+            # 该入口，避免上游异常回显 Key 时绕过本页的结果脱敏。
+            def log_request_error(
+                message: object,
+                error: Exception | None = None,
+                *_args,
+                **_kwargs,
+            ) -> None:
+                detail = f"{message}: {error}" if error is not None else message
+                self.error(self._redact_secrets(detail, resolved_keys))
+
+            requester.error = log_request_error
+
             self.print("")
-            self.info(f"{Localizer.get().platofrm_tester_key} - {key}")
+            self.info(f"{Localizer.get().platofrm_tester_key} - {label}")
             self.info(f"{Localizer.get().platofrm_tester_messages}\n{messages}")
-            skip, response_think, response_result, _, _ = requester.request(
-                messages,
-                response_shape = "none",
-            )
+            try:
+                skip, response_think, response_result, _, _ = requester.request(
+                    messages,
+                    response_shape = "none",
+                )
+            except Exception as e:
+                failure.append(label)
+                failure_details.append(self._redact_secrets(e, resolved_keys))
+                self.warning(Localizer.get().log_api_test_fail)
+                continue
 
             # 提取回复内容
             if skip == True:
-                failure.append(key)
+                failure.append(label)
                 if requester.last_error_message:
-                    failure_details.append(requester.last_error_message)
+                    failure_details.append(
+                        self._redact_secrets(
+                            requester.last_error_message,
+                            resolved_keys,
+                        )
+                    )
                 self.warning(Localizer.get().log_api_test_fail)
             elif response_think == "":
-                success.append(key)
-                self.info(f"{Localizer.get().platofrm_tester_response_result}\n{response_result}")
+                success.append(label)
+                response_result = self._redact_secrets(response_result, resolved_keys)
+                self.info(
+                    f"{Localizer.get().platofrm_tester_response_result}\n{response_result}"
+                )
             else:
-                success.append(key)
-                self.info(f"{Localizer.get().platofrm_tester_response_think}\n{response_think}")
-                self.info(f"{Localizer.get().platofrm_tester_response_result}\n{response_result}")
+                success.append(label)
+                response_think = self._redact_secrets(response_think, resolved_keys)
+                response_result = self._redact_secrets(response_result, resolved_keys)
+                self.info(
+                    f"{Localizer.get().platofrm_tester_response_think}\n{response_think}"
+                )
+                self.info(
+                    f"{Localizer.get().platofrm_tester_response_result}\n{response_result}"
+                )
 
         # 测试结果
         result_msg = (
-            Localizer.get().platofrm_tester_result.replace("{COUNT}", f"{len(platform.get('api_key'))}")
+            Localizer.get().platofrm_tester_result.replace("{COUNT}", f"{len(test_keys)}")
                                                   .replace("{SUCCESS}", f"{len(success)}")
                                                   .replace("{FAILURE}", f"{len(failure)}")
         )
