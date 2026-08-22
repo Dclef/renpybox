@@ -21,6 +21,7 @@ class Base():
         CACHE_FILE_AUTO_SAVE = "CACHE_FILE_AUTO_SAVE"                      # 缓存文件自动保存
         PROJECT_STATUS = "PROJECT_STATUS"                                  # 项目状态检查
         PROJECT_STATUS_CHECK_DONE = "PROJECT_STATUS_CHECK_DONE"            # 项目状态检查完成
+        PROJECT_CHANGED = "PROJECT_CHANGED"                                # 项目路径已切换/更新（ProjectStore 发出）
         APP_UPDATE_CHECK_START = "APP_UPDATE_CHECK_START"                  # 更新 - 检查开始
         APP_UPDATE_CHECK_DONE = "APP_UPDATE_CHECK_DONE"                    # 更新 - 检查完成
         APP_UPDATE_DOWNLOAD_START = "APP_UPDATE_DOWNLOAD_START"            # 更新 - 下载开始

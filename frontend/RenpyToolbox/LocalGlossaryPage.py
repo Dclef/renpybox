@@ -35,6 +35,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
+from module.Project.ProjectStore import ProjectStore
 from module.Config import Config
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
@@ -1256,13 +1257,14 @@ class LocalGlossaryPage(Base, QWidget):
 
     def _sync_resolved_renpy_paths_to_config(self, source_root: Path, tl_root: Path | None) -> None:
         """把解析出的当前项目路径回写到配置，避免后续页面继续读取历史目录。"""
-        self.config.renpy_game_folder = str(source_root.parent if source_root.name.lower() == "game" else source_root)
-        self.config.renpy_project_path = self.config.renpy_game_folder
-
-        if tl_root is not None and tl_root.exists():
-            self.config.renpy_tl_folder = str(tl_root)
-
-        self.config.save()
+        game_folder = str(source_root.parent if source_root.name.lower() == "game" else source_root)
+        tl_folder = str(tl_root) if (tl_root is not None and tl_root.exists()) else self.config.renpy_tl_folder
+        ProjectStore.get().save_edited_paths(
+            self.config,
+            project_path = game_folder,
+            game_folder = game_folder,
+            tl_folder = tl_folder,
+        )
 
     def _resolve_game_target_path(self) -> str | None:
         self.config = Config().load()
