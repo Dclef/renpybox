@@ -1,6 +1,7 @@
 import threading
 
 from base.Base import Base
+from module.Secret.SecretStore import SecretStore
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
@@ -78,7 +79,7 @@ class APITester(Base):
 
         # 开始测试
         requester = TaskRequester(config, platform, 0)
-        for key in platform.get('api_key'):
+        for key in SecretStore.get().resolve_keys(platform):
             self.print("")
             self.info(f"{Localizer.get().platofrm_tester_key} - {key}")
             self.info(f"{Localizer.get().platofrm_tester_messages}\n{messages}")
