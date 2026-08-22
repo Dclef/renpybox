@@ -78,6 +78,7 @@ def test_task_context_is_deep_copied_immutable_and_snapshot_safe() -> None:
         "activate_platform": 5,
         "platforms": [{
             "id": 5,
+            "credential_id": "a" * 32,
             "model": "test-model",
             "api_url": "https://old-user:old-pass@example.invalid/v1",
             "api_key": ["top-secret"],
@@ -130,6 +131,7 @@ def test_task_context_is_deep_copied_immutable_and_snapshot_safe() -> None:
     assert snapshot["assets"]["worldbook"]["data"]["secret"] == "The prince is alive"
     assert snapshot["assets"]["worldbook"]["data"]["key"] == "The brass key opens the observatory"
     assert snapshot["request_policy"]["provider"]["api_url"] == "https://example.invalid/v1"
+    assert snapshot["request_policy"]["provider"]["credential_id"] == "a" * 32
 
     restored = TranslationTaskContext.from_snapshot(
         json.loads(serialized),

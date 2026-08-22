@@ -26,6 +26,7 @@ from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TermAsset,
     TranslationTaskContext,
+    find_provider_by_identity,
     merge_provider_credentials,
 )
 from module.Engine.Translator.TranslatorTask import TranslatorTask
@@ -586,13 +587,7 @@ class Translator(Base):
         )
         persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
 
-        current: dict = {}
-        persisted_id = persisted.get("id")
-        if isinstance(config.platforms, list):
-            for platform in config.platforms:
-                if isinstance(platform, dict) and platform.get("id") == persisted_id:
-                    current = platform
-                    break
+        current = find_provider_by_identity(persisted, config.platforms)
         if persisted and not current:
             raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再继续翻译")
         if not current:

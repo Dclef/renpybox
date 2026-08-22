@@ -479,3 +479,46 @@ def test_public_quality_error_message_is_safe(error, expected) -> None:
     message = QualityTaskCoordinator._public_error_message(error)
     assert message == expected
     assert "密钥" not in message
+
+
+def test_quality_resume_provider_uses_stable_identity_not_numeric_id() -> None:
+    snapshot = {
+        "request_policy": {
+            "provider": {
+                "id": 2,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 7,
+        "credential_id": "a" * 32,
+        "api_key": ["current-key"],
+    }])
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["id"] == 2
+    assert provider["model"] == "snapshot-model"
+    assert provider["api_key"] == ["current-key"]
+
+
+def test_quality_resume_provider_rejects_reused_numeric_id() -> None:
+    snapshot = {
+        "request_policy": {
+            "provider": {
+                "id": 2,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 2,
+        "credential_id": "b" * 32,
+        "api_key": ["other-key"],
+    }])
+
+    with pytest.raises(ValueError, match="接口已不存在"):
+        QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)

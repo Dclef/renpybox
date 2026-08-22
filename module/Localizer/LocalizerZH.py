@@ -277,6 +277,8 @@ class LocalizerZH():
     platform_edit_page_api_key: str = "请输入接口密钥 …"
     platform_edit_page_api_key_title: str = "接口密钥"
     platform_edit_page_api_key_content: str = "请输入接口密钥，例如 sk-d0daba12345678fd8eb7b8d31c123456，填入多个密钥可以轮询使用，每行一个"
+    platform_edit_page_api_key_clear_failed: str = "凭据库清理失败，原密钥仍保留"
+    platform_edit_page_api_key_save_failed: str = "接口密钥保存失败，请重试"
     platform_edit_page_thinking_title: str = "思考等级"
     platform_edit_page_thinking_content: str = "设置模型思考等级（OFF/LOW/MEDIUM/HIGH/MAX），仅对支持思考模式的模型生效"
     platform_edit_page_thinking_off: str = "关闭"
