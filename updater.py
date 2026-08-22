@@ -297,7 +297,7 @@ def _find_payload_dir(staging_dir: Path, *, exe_name: str) -> Path:
     except Exception:
         pass
 
-    return staging_dir
+    raise RuntimeError(f"Update payload missing required executable: {exe_name}")
 
 
 def _zip_toplevel_has(zip_path: Path, name: str) -> bool:
@@ -326,6 +326,19 @@ def _ensure_writable(path: Path) -> None:
             os.chmod(path, stat_module.S_IWRITE)
     except Exception:
         pass
+
+
+def _cleanup_old_executables(install_dir: Path) -> None:
+    """清理上一次自升级 rename-swap 留下的 .old 残留。"""
+    for old_dir in (install_dir, install_dir / "_internal"):
+        try:
+            for leftover in old_dir.glob("*.exe.old"):
+                try:
+                    leftover.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def _read_patch_meta(zip_path: Path) -> dict:
@@ -525,26 +538,17 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     install_dir = install_dir.resolve()
     zip_path = zip_path.resolve()
 
-    # 清理上一次自升级 rename-swap 留下的 .old 残留（best-effort）
-    for old_dir in (install_dir, install_dir / "_internal"):
-        try:
-            for leftover in old_dir.glob("*.exe.old"):
-                try:
-                    leftover.unlink()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
     log_dir = install_dir / "log"
-    try:
-        log_dir.mkdir(parents = True, exist_ok = True)
-    except Exception:
-        pass
 
     # 增量包分流：顶层带 _patch_meta.json 走 patch 路径（两阶段原子应用），
     # 其余走下方全量路径
     if _zip_toplevel_has(zip_path, PATCH_META_NAME):
+        _read_patch_meta(zip_path)
+        _cleanup_old_executables(install_dir)
+        try:
+            log_dir.mkdir(parents = True, exist_ok = True)
+        except Exception:
+            pass
         _apply_patch_update(
             zip_path = zip_path,
             install_dir = install_dir,
@@ -565,14 +569,6 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     for cfg in config_candidates:
         config_backup_pairs.append((cfg, cfg.with_suffix(cfg.suffix + ".bak")))
 
-    for cfg, bak in config_backup_pairs:
-        if cfg.is_file():
-            try:
-                bak.parent.mkdir(parents=True, exist_ok=True)
-                _copy2_with_retry(cfg, bak, retries=5, delay_sec=0.05)
-            except Exception:
-                pass
-
     staging_dir = install_dir / "_update_staging"
     if staging_dir.exists():
         _rmtree_with_retry(staging_dir, retries=5, delay_sec=0.1)
@@ -585,6 +581,22 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         extract_sec = time.perf_counter() - stage_start
 
         payload_dir = _find_payload_dir(staging_dir, exe_name = exe_name)
+
+        # payload 结构确认后才允许触碰安装态、恢复件与用户配置备份。
+        _cleanup_old_executables(install_dir)
+
+        try:
+            log_dir.mkdir(parents = True, exist_ok = True)
+        except Exception:
+            pass
+
+        for cfg, bak in config_backup_pairs:
+            if cfg.is_file():
+                try:
+                    bak.parent.mkdir(parents=True, exist_ok=True)
+                    _copy2_with_retry(cfg, bak, retries=5, delay_sec=0.05)
+                except Exception:
+                    pass
 
         running_exe_path = Path(sys.executable).resolve()
         running_exe_path_lower = str(running_exe_path).lower()
