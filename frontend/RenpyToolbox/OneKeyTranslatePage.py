@@ -50,6 +50,7 @@ from module.Renpy.ProjectPaths import (
     apply_to_config,
     source_script_counts,
 )
+from module.Project.ProjectStore import ProjectStore
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Engine import Engine
 from module.Config import Config
@@ -606,12 +607,14 @@ class YiJianFanyiPage(Base, QWidget):
         paths = RenpyProjectPaths.from_path(game_dir, tl_name)
         if paths is None:
             raise ValueError(f"无法解析项目目录：{game_dir}")
-        apply_to_config(config, paths)
-        configure_tl_translation_mode(config)
+        ProjectStore.get().apply_resolved(
+            config,
+            paths,
+            mutate = configure_tl_translation_mode,
+        )
 
         # 确保输出目录存在
         paths.translation_output_dir.mkdir(parents = True, exist_ok = True)
-        config.save()
 
         self.info(f"[配置] 输入目录: {config.input_folder}")
         self.info(f"[配置] 输出目录: {config.output_folder}")

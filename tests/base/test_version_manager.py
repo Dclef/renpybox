@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from base.Base import Base
+from base.AppPaths import get_app_paths
 from base.VersionManager import VersionManager
 
 
@@ -104,12 +105,12 @@ def test_parse_version_accepts_app_and_release_formats() -> None:
     assert VersionManager.parse_version("v0.5.13") == (0, 5, 13, 0)
 
 
-def test_temp_zip_path_uses_cwd_in_source_mode(monkeypatch, tmp_path) -> None:
+def test_temp_zip_path_uses_stable_app_root_in_source_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.delattr(sys, "frozen", raising = False)
     monkeypatch.chdir(tmp_path)
 
-    assert VersionManager.temp_zip_path() == (
-        tmp_path / "resource" / "update.temp"
+    assert VersionManager.temp_zip_path() == get_app_paths().app(
+        "resource", "update.temp"
     ).resolve()
 
 

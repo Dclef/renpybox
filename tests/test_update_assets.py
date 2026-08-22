@@ -121,6 +121,20 @@ def test_manifest_append_is_readbackable_and_unique(tmp_path: Path) -> None:
         append_manifest_to_zip(zip_path, meta)
 
 
+def test_extract_prev_zip_rejects_unsafe_member_before_extracting(tmp_path: Path) -> None:
+    from buildtools.update_assets import extract_prev_zip
+
+    zip_path = tmp_path / "unsafe-prev.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("../victim.txt", "bad")
+
+    with pytest.raises(RuntimeError):
+        extract_prev_zip(zip_path, tmp_path / "prev")
+
+    assert not (tmp_path / "victim.txt").exists()
+    assert not (tmp_path / "prev").exists()
+
+
 def test_build_patch_detects_changed_added_deleted(tmp_path: Path) -> None:
     v1 = _make_version_tree(tmp_path, "v1.0.0", big=True)
     v2 = _make_version_tree(tmp_path, "v2.0.0", big=True)
@@ -232,6 +246,80 @@ def test_updater_applies_patch_end_to_end(tmp_path: Path) -> None:
     assert "Applied: 2 files" in log_text
 
 
+def test_updater_full_patch_patch_sequence(tmp_path: Path) -> None:
+    """首次全量建立基线后，连续两个 patch 都必须按版本链应用。"""
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    v3 = _make_version_tree(tmp_path, "v3.0.0")
+    (v2 / "_internal" / "base.py").write_text("v2", encoding="utf-8")
+    (v3 / "_internal" / "base.py").write_text("v3", encoding="utf-8")
+    (v3 / "_internal" / "third.txt").write_text("third", encoding="utf-8")
+
+    install_dir = tmp_path / "install"
+    full_v1 = _make_full_zip(v1, tmp_path / "v1_full.zip", "v1.0.0")
+    updater.apply_update(
+        pid=0,
+        zip_path=full_v1,
+        install_dir=install_dir,
+        release_url=None,
+        restart=False,
+        exe_name="RenpyBox.exe",
+    )
+
+    patch_v2 = _build_patch_for(tmp_path, v1, v2)
+    updater.apply_update(
+        pid=0,
+        zip_path=patch_v2,
+        install_dir=install_dir,
+        release_url=None,
+        restart=False,
+        exe_name="RenpyBox.exe",
+    )
+
+    prev_v2 = _make_full_zip(v2, tmp_path / "v2_full_for_v3.zip", "v2.0.0")
+    prev_payload = _extract_prev(tmp_path, prev_v2)
+    patch_v3 = tmp_path / "RenpyBox_v3.0.0.from-v2.0.0.patch.zip"
+    build_patch(v3, "v3.0.0", prev_payload, "v2.0.0", patch_v3)
+    updater.apply_update(
+        pid=0,
+        zip_path=patch_v3,
+        install_dir=install_dir,
+        release_url=None,
+        restart=False,
+        exe_name="RenpyBox.exe",
+    )
+
+    assert (install_dir / "_internal" / "base.py").read_text(encoding="utf-8") == "v3"
+    assert (install_dir / "_internal" / "third.txt").read_text(encoding="utf-8") == "third"
+    installed = json.loads((install_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert installed["version"] == "v3.0.0"
+
+
+def test_updater_rejects_patch_without_matching_installed_base_manifest(
+    tmp_path: Path,
+) -> None:
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
+    patch_zip = _build_patch_for(tmp_path, v1, v2)
+    install_dir = tmp_path / "install"
+    _install_from(v1, install_dir)
+
+    with pytest.raises(RuntimeError, match="installed manifest"):
+        updater.apply_update(
+            pid=0,
+            zip_path=patch_zip,
+            install_dir=install_dir,
+            release_url=None,
+            restart=False,
+            exe_name="RenpyBox.exe",
+        )
+
+    assert not (install_dir / updater.JOURNAL_NAME).exists()
+    assert not (install_dir / "_update_staging").exists()
+    assert patch_zip.exists()
+
+
 def test_updater_patch_resumes_interrupted_commit(tmp_path: Path) -> None:
     v1 = _make_version_tree(tmp_path, "v1.0.0")
     v2 = _make_version_tree(tmp_path, "v2.0.0")
@@ -240,7 +328,7 @@ def test_updater_patch_resumes_interrupted_commit(tmp_path: Path) -> None:
     (v2 / "_internal" / "data.bin").write_bytes(b"y" * 256)
 
     install_dir = tmp_path / "install"
-    _install_from(v1, install_dir)
+    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
     patch_zip = _build_patch_for(tmp_path, v1, v2)
 
     meta = updater._read_patch_meta(patch_zip)
@@ -288,7 +376,7 @@ def test_updater_patch_stale_journal_is_discarded(tmp_path: Path) -> None:
     (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
 
     install_dir = tmp_path / "install"
-    _install_from(v1, install_dir)
+    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
     stale_new = install_dir / "_internal" / "base.py.new"
     stale_new.write_bytes(b"stale")
     (install_dir / updater.JOURNAL_NAME).write_text(
@@ -316,6 +404,48 @@ def test_updater_patch_stale_journal_is_discarded(tmp_path: Path) -> None:
     assert not (install_dir / updater.JOURNAL_NAME).exists()
 
 
+def test_updater_rejects_invalid_target_manifest_before_install(
+    tmp_path: Path,
+) -> None:
+    """客户端不能接受发布侧未通过的 patch manifest。"""
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
+    valid_patch = _build_patch_for(tmp_path, v1, v2)
+    invalid_patch = tmp_path / "invalid.patch.zip"
+
+    with zipfile.ZipFile(valid_patch, "r") as source:
+        payload = {
+            info.filename: source.read(info.filename)
+            for info in source.infolist()
+        }
+    meta = json.loads(payload[PATCH_META_NAME].decode("utf-8"))
+    meta["manifest"]["format"] = "invalid-manifest-format"
+    payload[PATCH_META_NAME] = json.dumps(meta).encode("utf-8")
+    with zipfile.ZipFile(invalid_patch, "w", zipfile.ZIP_DEFLATED) as target:
+        for name, data in payload.items():
+            target.writestr(name, data)
+
+    install_dir = tmp_path / "install"
+    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
+    sentinel = install_dir / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid target manifest"):
+        updater.apply_update(
+            pid=0,
+            zip_path=invalid_patch,
+            install_dir=install_dir,
+            release_url=None,
+            restart=False,
+            exe_name="RenpyBox.exe",
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (install_dir / updater.JOURNAL_NAME).exists()
+    assert invalid_patch.is_file()
+
+
 def test_full_update_embeds_installed_manifest(tmp_path: Path) -> None:
     """全量包（内嵌 manifest）应用后写入安装态 manifest，meta 不落入安装目录。"""
     v2 = _make_version_tree(tmp_path, "v2.0.0")
@@ -337,6 +467,29 @@ def test_full_update_embeds_installed_manifest(tmp_path: Path) -> None:
     assert installed["version"] == "v2.0.0"
     # meta 只被读取，不作为普通文件复制进安装目录
     assert not (install_dir / "_internal" / MANIFEST_NAME).exists()
+
+
+def test_full_update_uses_manifest_without_legacy_double_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    full_zip = _make_full_zip(v2, tmp_path / "v2_full.zip", "v2.0.0")
+    install_dir = tmp_path / "install"
+    _install_from(v2, install_dir)
+
+    def fail_legacy_hash(*args, **kwargs):
+        raise AssertionError("manifest-backed update must not use legacy MD5")
+
+    monkeypatch.setattr(updater, "_file_hash", fail_legacy_hash)
+    updater.apply_update(
+        pid=0,
+        zip_path=full_zip,
+        install_dir=install_dir,
+        release_url=None,
+        restart=False,
+        exe_name="RenpyBox.exe",
+    )
 
 
 def test_full_update_without_manifest_skips_install_state(tmp_path: Path) -> None:

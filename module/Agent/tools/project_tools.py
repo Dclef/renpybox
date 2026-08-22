@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Project.ProjectStore import ProjectStore
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    apply_to_config,
     looks_like_renpy_path,
     source_script_counts,
 )
@@ -84,8 +84,7 @@ def set_project(
             code="INVALID_PROJECT_PATH",
         )
 
-    apply_to_config(current, paths)
-    current.save()
+    ProjectStore.get().apply_resolved(current, paths)
     data = _path_data(paths)
     return ToolResult(
         True,

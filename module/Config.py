@@ -10,7 +10,8 @@ from base.compat import Self
 
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
-from base.PathHelper import get_app_path, get_resource_path
+from base.AppPaths import get_app_paths
+from base.PathHelper import get_resource_path
 from module.File.AtomicWrite import atomic_write_text
 from base.EventTelemetry import record_latency
 from module.Localizer.Localizer import Localizer
@@ -146,8 +147,12 @@ class Config():
     # 默认原文语言改为英文，避免误将非日文项目设为日文
     source_language: BaseLanguage.Enum = BaseLanguage.Enum.EN
     target_language: BaseLanguage.Enum = BaseLanguage.Enum.ZH
-    input_folder: str = "./input"
-    output_folder: str = "./output"
+    input_folder: str = dataclasses.field(
+        default_factory = lambda: str(get_app_paths().input_path),
+    )
+    output_folder: str = dataclasses.field(
+        default_factory = lambda: str(get_app_paths().output_path),
+    )
     output_folder_open_on_finish: bool = False
     traditional_chinese_enable: bool = False
 
@@ -268,7 +273,7 @@ class Config():
     # 用户配置（运行时生成，避免写回 resource 打包资源）
     # 用户配置固定到应用目录，避免从快捷方式、终端或其他工作目录启动时
     # 读写到不同的 ``./config.json``。
-    CONFIG_PATH: ClassVar[str] = get_app_path("config.json")
+    CONFIG_PATH: ClassVar[str] = str(get_app_paths().config_path)
     CONFIG_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
@@ -531,6 +536,7 @@ class Config():
                         for k, v in config.items():
                             if k in field_names:
                                 setattr(self, k, v)
+                        self._normalise_runtime_paths()
             except Exception as e:
                 failure = e
 
@@ -542,6 +548,23 @@ class Config():
             )
 
         return self
+
+    def _normalise_runtime_paths(self) -> None:
+        """把旧配置中的相对运行目录固定到应用根目录。"""
+        paths = get_app_paths()
+        for field_name in (
+            "input_folder",
+            "output_folder",
+            "renpy_project_path",
+            "renpy_game_folder",
+            "renpy_tl_folder",
+        ):
+            value = getattr(self, field_name, "")
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = os.path.expanduser(value)
+            if not os.path.isabs(candidate):
+                setattr(self, field_name, str(paths.app(candidate)))
 
     def save(self, path: str = None, *, strict: bool = False) -> Self:
         if path is None:

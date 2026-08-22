@@ -44,6 +44,7 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
     from qfluentwidgets import setTheme
 
 from base.CLIManager import CLIManager
+from base.AppPaths import get_app_paths
 from base.LogManager import LogManager
 from base.VersionManager import VersionManager
 from base.Version import Version
@@ -52,13 +53,6 @@ from frontend.AppFluentWindow import AppFluentWindow
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
-
-# 切换到脚本所在目录
-if getattr(sys, 'frozen', False):
-    script_dir = os.path.dirname(sys.executable)
-else:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-os.chdir(script_dir)
 
 def excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_traceback: TracebackType) -> None:
     LogManager.get().error(Localizer.get().log_crash, exc_value)
@@ -104,12 +98,13 @@ if __name__ == "__main__":
     # 2. 适配非整数倍缩放 (Adapt non-integer scaling)
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
-    # 设置工作目录
+    # 仅添加导入路径，不改变进程工作目录；所有应用文件通过 AppPaths 定位。
     sys.path.append(os.path.dirname(os.path.abspath(sys.argv[0])))
 
     # 创建文件夹
-    os.makedirs("./input", exist_ok = True)
-    os.makedirs("./output", exist_ok = True)
+    paths = get_app_paths()
+    paths.input_path.mkdir(parents = True, exist_ok = True)
+    paths.output_path.mkdir(parents = True, exist_ok = True)
 
     # deepcopy 调用热点遥测（幂等；独立脚本不受影响，见 base/EventTelemetry.py）
     try:
@@ -136,12 +131,7 @@ if __name__ == "__main__":
     
     # 尝试将版本号写入运行目录的 version.txt (可选，仅作展示)
     try:
-        if getattr(sys, 'frozen', False):
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            
-        v_path = os.path.join(base_dir, "version.txt")
+        v_path = paths.app("version.txt")
         with open(v_path, "w", encoding="utf-8") as f:
             f.write(version)
     except Exception:
