@@ -2,6 +2,8 @@ import json
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
@@ -567,3 +569,66 @@ def test_resume_provider_only_overlays_current_credentials() -> None:
     assert provider["headers"]["X-Region"] == "snapshot-region"
     assert provider["headers"]["Authorization"] == "Bearer current-secret"
     assert provider["refresh_token"] == "current-refresh"
+
+
+def test_resume_provider_follows_stable_identity_after_numeric_reorder() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {
+                "id": 3,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 9,
+        "credential_id": "a" * 32,
+        "model": "current-model",
+        "api_key": ["current-key"],
+    }])
+
+    provider = Translator._get_resume_runtime_provider(persisted, config)
+
+    assert provider["id"] == 3
+    assert provider["model"] == "snapshot-model"
+    assert provider["api_key"] == ["current-key"]
+
+
+def test_resume_provider_rejects_reused_numeric_id_with_new_identity() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {
+                "id": 3,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 3,
+        "credential_id": "b" * 32,
+        "api_key": ["other-key"],
+    }])
+
+    with pytest.raises(ValueError, match="接口已不存在"):
+        Translator._get_resume_runtime_provider(persisted, config)
+
+
+def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {"id": 3, "model": "snapshot-model"},
+        },
+    }
+    config = Config(platforms=[{
+        "id": 8,
+        "credential_id": "a" * 32,
+        "legacy_credential_id": "3",
+        "api_key": ["current-key"],
+    }])
+
+    provider = Translator._get_resume_runtime_provider(persisted, config)
+
+    assert provider["model"] == "snapshot-model"
+    assert provider["api_key"] == ["current-key"]

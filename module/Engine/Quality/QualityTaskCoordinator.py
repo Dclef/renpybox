@@ -20,6 +20,7 @@ from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.TranslationTaskContext import (
     TranslationTaskContext,
+    find_provider_by_identity,
     merge_provider_credentials,
 )
 
@@ -563,13 +564,7 @@ class QualityTaskCoordinator(Base):
         )
         persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
 
-        current: dict[str, Any] = {}
-        persisted_id = persisted.get("id")
-        if isinstance(config.platforms, list):
-            for platform in config.platforms:
-                if isinstance(platform, dict) and platform.get("id") == persisted_id:
-                    current = copy.deepcopy(platform)
-                    break
+        current = find_provider_by_identity(persisted, config.platforms)
         if persisted and not current:
             raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再进行校对")
         if not current:
