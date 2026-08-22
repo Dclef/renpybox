@@ -73,6 +73,7 @@ jobs:
             exit 0
           }
           $prevTag = $prev.tag_name
+          $prevVersion = $prevTag -replace '^RenpyBox_', ''
           $prevZip = $prev.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*.patch.zip" } | Select-Object -First 1
           if ($null -eq $prevZip) {
             Write-Host "Previous release has no full zip, skip patch generation"
@@ -83,8 +84,8 @@ jobs:
             --dist dist\RenpyBox `
             --version $version `
             --prev-zip prev_release.zip `
-            --prev-version $prevTag `
-            --out "RenpyBox_$version.from-$prevTag.patch.zip"
+            --prev-version $prevVersion `
+            --out "RenpyBox_$version.from-$prevVersion.patch.zip"
 
       - name: Collect Release Files
         id: release_files
