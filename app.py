@@ -111,6 +111,14 @@ if __name__ == "__main__":
     os.makedirs("./input", exist_ok = True)
     os.makedirs("./output", exist_ok = True)
 
+    # deepcopy 调用热点遥测（幂等；独立脚本不受影响，见 base/EventTelemetry.py）
+    try:
+        from base.EventTelemetry import install_deepcopy_instrumentation
+
+        install_deepcopy_instrumentation()
+    except Exception:
+        pass
+
     # 载入并保存默认配置
     config = Config().load()
 
