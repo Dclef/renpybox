@@ -94,6 +94,59 @@ def record_latency(event: str, latency_ms: float) -> None:
     EventTelemetry.get().record(event, latency_ms)
 
 
+_DEEPCOPY_INSTRUMENTED = False
+_original_deepcopy = None
+
+
+def restore_deepcopy_instrumentation() -> None:
+    """卸载 deepcopy 包装（测试隔离用；app 进程不需要）。"""
+    global _DEEPCOPY_INSTRUMENTED
+    if _original_deepcopy is not None:
+        import copy
+
+        copy.deepcopy = _original_deepcopy
+    _DEEPCOPY_INSTRUMENTED = False
+
+
+def install_deepcopy_instrumentation() -> None:
+    """全局包装 copy.deepcopy，按调用方模块统计次数与耗时。
+
+    只应在 app 进程启动早期调用一次；独立脚本（updater 等）与测试进程不安装。
+    行为完全透传（返回值、异常、memo 语义不变）。
+    """
+    global _DEEPCOPY_INSTRUMENTED, _original_deepcopy
+    if _DEEPCOPY_INSTRUMENTED:
+        return
+    _DEEPCOPY_INSTRUMENTED = True
+
+    import copy
+    import functools
+    import sys
+
+    global _original_deepcopy
+    _original_deepcopy = copy.deepcopy
+    original = copy.deepcopy
+
+    @functools.wraps(original)
+    def instrumented(x, memo = None, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            if memo is None:
+                return original(x)
+            return original(x, memo)
+        finally:
+            try:
+                caller = sys._getframe(1).f_globals.get("__name__", "unknown")
+            except Exception:
+                caller = "unknown"
+            EventTelemetry.get().record(
+                f"__deepcopy__:{caller}",
+                (time.monotonic() - start) * 1000,
+            )
+
+    copy.deepcopy = instrumented
+
+
 class HeartbeatMonitor:
     """主线程心跳漂移测量：实际 tick 间隔与名义间隔之差。"""
 

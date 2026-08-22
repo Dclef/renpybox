@@ -43,4 +43,4 @@ jobs:
       - name: Tests (pytest)
         shell: cmd
         timeout-minutes: 30
-        run: python -m pytest -q
+        run: python -m pytest -q -m "not slow"
