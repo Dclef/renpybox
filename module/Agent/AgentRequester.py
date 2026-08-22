@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from base.Base import Base
+from module.Secret.SecretStore import SecretStore
 from base.VersionManager import VersionManager
 from module.Agent.types import AgentRequestResult, AgentToolCall, ToolDef, ToolResult
 from module.Config import Config
@@ -92,7 +93,7 @@ class AgentRequester:
         return self._format_name(self.platform.get("api_format"))
 
     def _api_key(self) -> str:
-        keys = self.platform.get("api_key", [])
+        keys = SecretStore.get().resolve_keys(self.platform)
         if isinstance(keys, str):
             return keys
         if isinstance(keys, (list, tuple)):
