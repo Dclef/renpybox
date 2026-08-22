@@ -11,6 +11,7 @@ from base.compat import Self
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from base.PathHelper import get_app_path, get_resource_path
+from module.File.AtomicWrite import atomic_write_text
 from module.Localizer.Localizer import Localizer
 
 @dataclasses.dataclass
@@ -533,6 +534,9 @@ class Config():
         if path is None:
             path = __class__.CONFIG_PATH
 
+        # 日志在锁外记录：LogManager 初始化会触发 Config().load()，
+        # 在锁内调用会在 load 请求同一把锁时死锁（threading.Lock 不可重入）
+        failure: Exception | None = None
         with __class__.CONFIG_LOCK:
             try:
                 parent = os.path.dirname(os.path.abspath(path))
@@ -541,10 +545,16 @@ class Config():
                 # 工作台资产由项目缓存持久化，不能写回全局配置后污染下一个项目。
                 for key, value in __class__.PROJECT_SCOPED_WORKBENCH_DEFAULTS.items():
                     payload[key] = copy.deepcopy(value)
-                with open(path, "w", encoding = "utf-8") as writer:
-                    json.dump(payload, writer, indent = 4, ensure_ascii = False)
+                # 原子替换：临时文件 + os.replace，写中断不会留下半个 config.json
+                atomic_write_text(
+                    path,
+                    json.dumps(payload, indent = 4, ensure_ascii = False),
+                )
             except Exception as e:
-                LogManager.get().error(f"{Localizer.get().log_write_file_fail}", e)
+                failure = e
+
+        if failure is not None:
+            LogManager.get().error(f"{Localizer.get().log_write_file_fail}", failure)
 
         return self
 
