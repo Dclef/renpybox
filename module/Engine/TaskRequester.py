@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 
 from base.Base import Base
+from module.Secret.SecretStore import SecretStore
 from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from base.compat import StrEnum
@@ -715,7 +716,7 @@ class TaskRequester(Base):
                     client = client,
                 )
             else:
-                api_keys = self.platform.get('api_key') or []
+                api_keys = SecretStore.get().resolve_keys(self.platform)
                 if isinstance(api_keys, list) and api_keys:
                     for api_key in api_keys:
                         __class__._discard_client(url, api_key, format, timeout)
@@ -751,7 +752,7 @@ class TaskRequester(Base):
         try:
             # 获取客户端
             with __class__.LOCK:
-                client_key = __class__.get_key(self.platform.get('api_key'))
+                client_key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = client_key,
@@ -921,7 +922,7 @@ class TaskRequester(Base):
         try:
             # 获取客户端
             with __class__.LOCK:
-                client_key = __class__.get_key(self.platform.get('api_key'))
+                client_key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = client_key,
@@ -1162,7 +1163,7 @@ class TaskRequester(Base):
         try:
             # 获取客户端
             with __class__.LOCK:
-                client_key = __class__.get_key(self.platform.get('api_key'))
+                client_key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = client_key,
@@ -1325,7 +1326,7 @@ class TaskRequester(Base):
         try:
             # 获取客户端
             with __class__.LOCK:
-                client_key = __class__.get_key(self.platform.get('api_key'))
+                client_key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = client_key,
@@ -1560,7 +1561,7 @@ class TaskRequester(Base):
         key = None
         try:
             with __class__.LOCK:
-                key = __class__.get_key(self.platform.get('api_key'))
+                key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = key,
@@ -1616,7 +1617,7 @@ class TaskRequester(Base):
         key = None
         try:
             with __class__.LOCK:
-                key = __class__.get_key(self.platform.get('api_key'))
+                key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
                 client = __class__.get_client(
                     url = self.platform.get('api_url'),
                     key = key,

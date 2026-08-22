@@ -13,6 +13,7 @@ from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
 from module.Config import Config
+from module.Secret.SecretStore import SecretStore
 from module.Localizer.Localizer import Localizer
 from widget.ComboBoxCard import ComboBoxCard
 from widget.EmptyCard import EmptyCard
@@ -149,16 +150,21 @@ class PlatformEditPage(MessageBoxBase, Base):
 
         def text_changed(widget: PlainTextEdit) -> None:
             config = Config().load()
-            self.platform["api_key"] = [
+            keys = [
                 v.strip() for v in widget.toPlainText().strip().splitlines()
                 if v.strip() != ""
             ]
+            # 密钥优先入系统凭据库；不可持久化时回退 config 明文，保证不丢
+            if SecretStore.get().store_keys(self.platform, keys):
+                self.platform["api_key"] = []
+            else:
+                self.platform["api_key"] = keys
             config.set_platform(self.platform)
             config.save()
 
         def init(widget: GroupCard) -> None:
             plain_text_edit = PlainTextEdit(self)
-            plain_text_edit.setPlainText("\n".join(self.platform.get('api_key')))
+            plain_text_edit.setPlainText("\n".join(SecretStore.get().resolve_keys(self.platform)))
             plain_text_edit.setPlaceholderText(Localizer.get().platform_edit_page_api_key)
             plain_text_edit.textChanged.connect(lambda: text_changed(plain_text_edit))
             widget.add_widget(plain_text_edit)

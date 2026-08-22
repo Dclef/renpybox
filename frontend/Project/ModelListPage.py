@@ -15,6 +15,7 @@ from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
+from module.Secret.SecretStore import SecretStore
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from widget.FlowCard import FlowCard
@@ -124,7 +125,7 @@ class ModelListPage(MessageBoxBase, Base):
             platform: dict = Config().load().get_platform(self.id)
             self.models = self.get_models(
                 platform.get('api_url'),
-                platform.get('api_key')[0],
+                SecretStore.get().resolve_keys(platform)[0],
                 platform.get('api_format'),
             )
 
