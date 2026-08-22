@@ -1,5 +1,8 @@
-from base.compat import StrEnum, Self
+import time
 from typing import Callable
+
+from base.compat import StrEnum, Self
+from base.EventTelemetry import record_latency
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QObject
@@ -25,7 +28,7 @@ class EventManager(QObject):
     def __init__(self) -> None:
         super().__init__()
 
-        self.signal.connect(self.process_event, Qt.ConnectionType.QueuedConnection)
+        self.signal.connect(self._on_signal, Qt.ConnectionType.QueuedConnection)
 
         # 中间态事件 latest-value 合并：窗口内多次发射只分发最新值，
         # 状态全部在主线程（process_event / timer 回调）读写，与后台线程的 emit 无竞争
@@ -72,9 +75,17 @@ class EventManager(QObject):
             for hanlder in self.event_callbacks[event]:
                 hanlder(event, data)
 
+    # 信号槽：解包遥测时间戳，测 emit→实际分发的端到端延迟（含合并窗口停留）
+    def _on_signal(self, event: StrEnum, wrapped: tuple) -> None:
+        data, emitted_at = wrapped
+        record_latency(str(event), (time.monotonic() - emitted_at) * 1000)
+        self.process_event(event, data)
+
     # 触发事件
     def emit(self, event: StrEnum, data: dict) -> None:
-        self.signal.emit(event, data)
+        # payload 包装时间戳随信号走，Qt 签名不变（object 装 tuple）；
+        # 订阅者最终拿到的 data 保持原样
+        self.signal.emit(event, (data, time.monotonic()))
 
     # 订阅事件
     def subscribe(self, event: StrEnum, hanlder: Callable) -> None:
