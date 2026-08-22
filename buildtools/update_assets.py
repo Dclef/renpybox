@@ -14,7 +14,9 @@
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -57,6 +59,34 @@ def append_manifest_to_zip(zip_path: Path, manifest: dict) -> None:
         if MANIFEST_NAME in zf.namelist():
             raise RuntimeError(f"{MANIFEST_NAME} already exists in {zip_path}")
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False))
+
+
+def validate_patch_zip(zip_path: Path, expected_version: str | None = None) -> dict:
+    """校验发布侧 patch 的最小结构契约并返回元数据。"""
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        if names.count(PATCH_META_NAME) != 1:
+            raise RuntimeError(f"patch must contain exactly one {PATCH_META_NAME}")
+        meta = json.loads(zf.read(PATCH_META_NAME).decode("utf-8"))
+
+    if not isinstance(meta, dict) or meta.get("format") != FORMAT_PATCH:
+        raise RuntimeError("invalid patch meta format")
+    if expected_version is not None and meta.get("version") != expected_version:
+        raise RuntimeError("patch version does not match release version")
+    if not isinstance(meta.get("files"), dict) or not isinstance(meta.get("deleted"), list):
+        raise RuntimeError("invalid patch file lists")
+    manifest = meta.get("manifest")
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != FORMAT_MANIFEST
+        or manifest.get("version") != meta.get("version")
+        or not isinstance(manifest.get("files"), dict)
+    ):
+        raise RuntimeError("invalid target manifest")
+    missing = sorted(set(meta["files"]) - set(names))
+    if missing:
+        raise RuntimeError(f"patch archive is missing files: {missing[0]}")
+    return meta
 
 
 def find_payload_dir(extract_root: Path) -> Path:
@@ -118,10 +148,26 @@ def build_patch(
         "manifest": target_manifest,
     }
 
-    with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
-        for rel in changed + added:
-            zf.write(dist_dir / Path(*rel.split("/")), rel)
-        zf.writestr(PATCH_META_NAME, json.dumps(meta, ensure_ascii=False))
+    # 只在 ZIP 完整写入并通过回读校验后发布最终文件；中途异常不能留下
+    # 会被 workflow glob 误收集的半包。
+    out_zip.parent.mkdir(parents=True, exist_ok=True)
+    out_zip.unlink(missing_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{out_zip.name}.",
+        suffix=".tmp",
+        dir=out_zip.parent,
+    )
+    os.close(descriptor)
+    temp_zip = Path(temp_name)
+    try:
+        with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
+            for rel in changed + added:
+                zf.write(dist_dir / Path(*rel.split("/")), rel)
+            zf.writestr(PATCH_META_NAME, json.dumps(meta, ensure_ascii=False))
+        validate_patch_zip(temp_zip, expected_version=version)
+        os.replace(temp_zip, out_zip)
+    finally:
+        temp_zip.unlink(missing_ok=True)
 
     return {
         "changed": len(changed),
@@ -177,6 +223,15 @@ def cmd_patch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate_patch(args: argparse.Namespace) -> int:
+    zip_path = Path(args.zip)
+    if not zip_path.is_file():
+        raise RuntimeError(f"patch zip not found: {zip_path}")
+    meta = validate_patch_zip(zip_path, expected_version=args.version)
+    print(f"patch valid: {zip_path.name} ({len(meta['files'])} files)")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="RenpyBox update asset generator")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -194,6 +249,11 @@ def main(argv: list[str]) -> int:
     p_patch.add_argument("--prev-version", dest="prev_version", required=True)
     p_patch.add_argument("--out", required=True)
     p_patch.set_defaults(func=cmd_patch)
+
+    p_validate = sub.add_parser("validate-patch", help="validate patch zip structure")
+    p_validate.add_argument("--zip", required=True)
+    p_validate.add_argument("--version", required=True)
+    p_validate.set_defaults(func=cmd_validate_patch)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -155,24 +155,40 @@ class VersionManager(Base):
         if not isinstance(assets, list) or not assets:
             raise RuntimeError("No release assets found")
 
+        tag_name = str(latest.get("tag_name") or "").strip()
+        version = (
+            tag_name[len("RenpyBox_"):]
+            if tag_name.casefold().startswith("renpybox_")
+            else tag_name
+        )
+        if not version:
+            raise RuntimeError("Release tag_name is empty")
+
+        assets_by_name = {
+            str(asset.get("name", "")).casefold(): asset
+            for asset in assets
+            if isinstance(asset, dict)
+        }
+
         # 增量优先：本地安装态 manifest 版本与 patch 资产的 base 精确匹配才走增量，
         # 否则一律全量，避免把 patch 包当全量包应用
         installed = cls._installed_manifest_version()
         if installed:
-            suffix = f".from-{installed.lower()}.patch.zip"
-            for asset in assets:
-                if isinstance(asset, dict) and str(asset.get("name", "")).lower().endswith(suffix):
-                    return copy.deepcopy(asset)
+            installed_version = (
+                installed[len("RenpyBox_"):]
+                if installed.casefold().startswith("renpybox_")
+                else installed
+            )
+            patch_name = (
+                f"RenpyBox_{version}.from-{installed_version}.patch.zip".casefold()
+            )
+            if patch_name in assets_by_name:
+                return copy.deepcopy(assets_by_name[patch_name])
 
-        def is_full_zip(asset: dict) -> bool:
-            name = str(asset.get("name", "")).lower()
-            url = str(asset.get("browser_download_url", "")).lower()
-            return (name.endswith(".zip") or url.endswith(".zip")) and not name.endswith(".patch.zip")
-
-        zip_assets = [asset for asset in assets if isinstance(asset, dict) and is_full_zip(asset)]
-        target_asset = zip_assets[0] if zip_assets else assets[0]
-        if not isinstance(target_asset, dict):
-            raise RuntimeError("Invalid release asset")
+        full_name = f"RenpyBox_{version}.zip".casefold()
+        target_asset = assets_by_name.get(full_name)
+        if target_asset is None:
+            raise RuntimeError(f"Expected release asset not found: RenpyBox_{version}.zip")
         return copy.deepcopy(target_asset)
 
     @classmethod

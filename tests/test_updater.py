@@ -111,6 +111,40 @@ def _build_payload_zip(zip_path: Path, *, files: dict[str, bytes]) -> None:
             zf.writestr(info, data)
 
 
+def test_full_update_rejects_payload_without_main_executable(tmp_path: Path) -> None:
+    install_dir = tmp_path / "install"
+    internal = install_dir / "_internal"
+    internal.mkdir(parents=True)
+    existing = internal / "existing.bin"
+    existing.write_bytes(b"KEEP")
+    config = install_dir / "config.json"
+    config.write_text('{"keep":true}', encoding="utf-8")
+    recovery = install_dir / "RenpyBoxUpdater2.exe.old"
+    recovery.write_bytes(b"RECOVERY")
+    manifest = install_dir / updater.MANIFEST_NAME
+    manifest.write_text('{"version":"v1.0.0"}', encoding="utf-8")
+    zip_path = tmp_path / "symbols.zip"
+    _build_payload_zip(zip_path, files={"symbols/debug.pdb": b"DEBUG"})
+
+    with pytest.raises(RuntimeError, match="missing required executable"):
+        updater.apply_update(
+            pid=0,
+            zip_path=zip_path,
+            install_dir=install_dir,
+            release_url=None,
+            restart=False,
+            exe_name="RenpyBox.exe",
+        )
+
+    assert existing.read_bytes() == b"KEEP"
+    assert manifest.read_text(encoding="utf-8") == '{"version":"v1.0.0"}'
+    assert config.read_text(encoding="utf-8") == '{"keep":true}'
+    assert not (install_dir / "config.json.bak").exists()
+    assert recovery.read_bytes() == b"RECOVERY"
+    assert not (install_dir / "log").exists()
+    assert zip_path.is_file()
+
+
 def test_apply_update_end_to_end(tmp_path: Path) -> None:
     install_dir = tmp_path / "install"
     install_dir.mkdir()
