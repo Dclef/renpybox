@@ -31,7 +31,8 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Localizer.Localizer import Localizer
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from module.Renpy.ProjectPaths import RenpyProjectPaths
+from module.Project.ProjectStore import ProjectStore
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 
 
@@ -484,17 +485,18 @@ class HookTranslatePage(Base, QWidget):
             )
             return
         tl_dir = paths.tl_language_dir
-        apply_to_config(
+        ProjectStore.get().apply_resolved(
             config,
             paths,
             input_folder = paths.tl_language_dir,
             output_folder = paths.tl_language_dir,
+            mutate = lambda current: (
+                setattr(current, "renpy_backup_original", self.backup_switch.isChecked()),
+                setattr(current, "renpy_source_translate", False),
+                setattr(current, "renpy_hook_translate", False),
+                setattr(current, "renpy_hook_incremental", self.incremental_switch.isChecked()),
+            ),
         )
-        config.renpy_backup_original = self.backup_switch.isChecked()
-        config.renpy_source_translate = False
-        config.renpy_hook_translate = False
-        config.renpy_hook_incremental = self.incremental_switch.isChecked()
-        config.save()
 
         source_lang = self.source_lang_combo.currentData()
         if source_lang:

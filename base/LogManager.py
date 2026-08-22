@@ -6,11 +6,12 @@ from base.compat import Self
 
 from rich.console import Console
 from rich.logging import RichHandler
+from base.AppPaths import get_app_paths
 
 
 class LogManager():
 
-    PATH: str = "./log"
+    PATH: str = str(get_app_paths().log_path)
 
     def __init__(self) -> None:
         super().__init__()

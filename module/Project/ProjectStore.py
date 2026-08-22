@@ -15,6 +15,7 @@
 from base.Base import Base
 from base.compat import Self
 from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from collections.abc import Callable
 
 
 class ProjectStore(Base):
@@ -39,14 +40,17 @@ class ProjectStore(Base):
         *,
         input_folder = None,
         output_folder = None,
+        mutate: Callable[[object], None] | None = None,
     ):
-        """规范化写入（project/game/tl/input/output 五字段一致）并持久化。"""
+        """规范化写入，并在同一次持久化前应用额外项目字段。"""
         apply_to_config(
             config,
             paths,
             input_folder = input_folder,
             output_folder = output_folder,
         )
+        if mutate is not None:
+            mutate(config)
         config.save()
         self._emit_changed(config)
         return config

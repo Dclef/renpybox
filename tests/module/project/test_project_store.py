@@ -77,6 +77,23 @@ def test_apply_resolved_honors_explicit_run_folders(
     assert config.output_folder == "custom/output"
 
 
+def test_apply_resolved_mutates_extra_fields_before_single_save(
+    store, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instance, _ = store
+    config = _FakeConfig()
+    paths = _fake_paths(tmp_path, monkeypatch)
+
+    instance.apply_resolved(
+        config,
+        paths,
+        mutate = lambda current: setattr(current, "renpy_hook_translate", True),
+    )
+
+    assert config.renpy_hook_translate is True
+    assert config.saved == 1
+
+
 def test_save_edited_paths_only_touches_three_fields(store) -> None:
     instance, emitted = store
     config = _FakeConfig()

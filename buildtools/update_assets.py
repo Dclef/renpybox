@@ -20,6 +20,17 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    # 兼容 CI 继续以脚本路径执行，同时让规则只保留一份权威实现。
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from update_path_policy import (  # noqa: E402
+    safe_target_cached,
+    validate_manifest_paths,
+    validate_patch_paths,
+    validate_zip_members,
+)
+
 
 MANIFEST_NAME = "_update_manifest.json"
 PATCH_META_NAME = "_patch_meta.json"
@@ -46,17 +57,34 @@ def build_manifest(dist_dir: Path, version: str) -> dict:
             continue
         rel = item.relative_to(dist_dir).as_posix()
         files[rel] = {"size": item.stat().st_size, "sha256": file_sha256(item)}
-    return {
+    manifest = {
         "version": version,
         "generator": "renpybox-update-assets/1",
         "format": FORMAT_MANIFEST,
         "files": files,
     }
+    validate_manifest_paths(
+        manifest,
+        label="generated manifest",
+        reserved_paths=(MANIFEST_NAME, PATCH_META_NAME),
+    )
+    return manifest
 
 
 def append_manifest_to_zip(zip_path: Path, manifest: dict) -> None:
+    validate_manifest_paths(
+        manifest,
+        label="full update manifest",
+        reserved_paths=(MANIFEST_NAME, PATCH_META_NAME),
+    )
     with zipfile.ZipFile(zip_path, "a") as zf:
-        if MANIFEST_NAME in zf.namelist():
+        members = zf.infolist()
+        archive_files = validate_zip_members(
+            members,
+            label="full update ZIP",
+            allowed_protocol_paths=(MANIFEST_NAME,),
+        )
+        if MANIFEST_NAME.casefold() in {path.casefold() for path in archive_files}:
             raise RuntimeError(f"{MANIFEST_NAME} already exists in {zip_path}")
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False))
 
@@ -64,8 +92,8 @@ def append_manifest_to_zip(zip_path: Path, manifest: dict) -> None:
 def validate_patch_zip(zip_path: Path, expected_version: str | None = None) -> dict:
     """校验发布侧 patch 的最小结构契约并返回元数据。"""
     with zipfile.ZipFile(zip_path, "r") as zf:
-        names = zf.namelist()
-        if names.count(PATCH_META_NAME) != 1:
+        members = zf.infolist()
+        if sum(member.filename == PATCH_META_NAME for member in members) != 1:
             raise RuntimeError(f"patch must contain exactly one {PATCH_META_NAME}")
         meta = json.loads(zf.read(PATCH_META_NAME).decode("utf-8"))
 
@@ -83,9 +111,12 @@ def validate_patch_zip(zip_path: Path, expected_version: str | None = None) -> d
         or not isinstance(manifest.get("files"), dict)
     ):
         raise RuntimeError("invalid target manifest")
-    missing = sorted(set(meta["files"]) - set(names))
-    if missing:
-        raise RuntimeError(f"patch archive is missing files: {missing[0]}")
+    validate_patch_paths(
+        meta,
+        members,
+        patch_meta_name=PATCH_META_NAME,
+        manifest_name=MANIFEST_NAME,
+    )
     return meta
 
 
@@ -104,6 +135,23 @@ def find_payload_dir(extract_root: Path) -> Path:
 
 def extract_prev_zip(prev_zip: Path, dest: Path) -> Path:
     with zipfile.ZipFile(prev_zip, "r") as zf:
+        members = zf.infolist()
+        validate_zip_members(
+            members,
+            label="previous release ZIP",
+            allowed_protocol_paths=(MANIFEST_NAME,),
+        )
+        dest_root = dest.resolve()
+        parent_cache: dict[str, Path] = {}
+        for member in members:
+            rel = member.filename[:-1] if member.is_dir() else member.filename
+            safe_target_cached(
+                dest,
+                rel,
+                label="previous release ZIP member",
+                parent_cache=parent_cache,
+                root_resolved=dest_root,
+            )
         zf.extractall(dest)
     return find_payload_dir(dest)
 

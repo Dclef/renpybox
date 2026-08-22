@@ -16,6 +16,7 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 
 from base.Base import Base
+from base.AppPaths import get_app_paths
 from base.Version import Version
 from base.compat import Self, StrEnum
 from module.Localizer.Localizer import Localizer
@@ -97,12 +98,7 @@ class VersionManager(Base):
 
     @classmethod
     def temp_zip_path(cls) -> Path:
-        base = (
-            Path(sys.executable).resolve().parent
-            if getattr(sys, "frozen", False)
-            else Path.cwd()
-        )
-        return (base / "resource" / "update.temp").resolve()
+        return get_app_paths().app("resource", "update.temp").resolve()
 
     @staticmethod
     def _safe_int(value: object) -> int:
