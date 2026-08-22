@@ -278,6 +278,8 @@ class LocalizerEN(LocalizerZH):
     platform_edit_page_api_key: str = "Please enter API Key …"
     platform_edit_page_api_key_title: str = "API Key"
     platform_edit_page_api_key_content: str = "Please enter API Key, e.g., sk-d0daba12345678fd8eb7b8d31c123456. Multiple keys can be entered for polling, one key per line"
+    platform_edit_page_api_key_clear_failed: str = "Credential cleanup failed; the existing key was kept"
+    platform_edit_page_api_key_save_failed: str = "Failed to save the API key; please try again"
     platform_edit_page_thinking_title: str = "Thinking Level"
     platform_edit_page_thinking_content: str = "Set model thinking level (OFF/LOW/MEDIUM/HIGH/MAX), only works for models that support thinking mode"
     platform_edit_page_thinking_off: str = "Off"
