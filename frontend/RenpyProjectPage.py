@@ -22,6 +22,7 @@ from qfluentwidgets import (
 
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Project.ProjectStore import ProjectStore
 
 
 class RenpyProjectPage(QWidget):
@@ -326,10 +327,13 @@ class RenpyProjectPage(QWidget):
     def _on_save_config(self):
         """保存配置"""
         try:
-            # 路径
-            self.config.renpy_project_path = self.project_path_edit.text()
-            self.config.renpy_game_folder = self.game_folder_edit.text()
-            self.config.renpy_tl_folder = self.tl_folder_edit.text()
+            # 路径（项目事实经 ProjectStore 写入，切换后发 PROJECT_CHANGED）
+            ProjectStore.get().save_edited_paths(
+                self.config,
+                project_path = self.project_path_edit.text(),
+                game_folder = self.game_folder_edit.text(),
+                tl_folder = self.tl_folder_edit.text(),
+            )
             
             # 语言
             self.config.traditional_chinese_enable = self.traditional_chinese_switch.isChecked()
