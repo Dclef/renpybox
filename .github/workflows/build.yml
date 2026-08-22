@@ -58,6 +58,7 @@ jobs:
         run: python buildtools\update_assets.py manifest --dist dist\RenpyBox --version ${{ steps.check_version.outputs.version }} --zip RenpyBox_${{ steps.check_version.outputs.version }}.zip
 
       - name: Generate Incremental Patch
+        id: incremental_patch
         shell: pwsh
         continue-on-error: true
         env:
@@ -74,9 +75,10 @@ jobs:
           }
           $prevTag = $prev.tag_name
           $prevVersion = $prevTag -replace '^RenpyBox_', ''
-          $prevZip = $prev.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*.patch.zip" } | Select-Object -First 1
+          $expectedPrevZip = "RenpyBox_$prevVersion.zip"
+          $prevZip = $prev.assets | Where-Object { $_.name -eq $expectedPrevZip } | Select-Object -First 1
           if ($null -eq $prevZip) {
-            Write-Host "Previous release has no full zip, skip patch generation"
+            Write-Host "Previous release has no expected full zip ($expectedPrevZip), skip patch generation"
             exit 0
           }
           Invoke-WebRequest -Uri $prevZip.browser_download_url -OutFile prev_release.zip
@@ -93,8 +95,17 @@ jobs:
         run: |
           $version = "${{ steps.check_version.outputs.version }}"
           $files = @("RenpyBox_$version.zip")
-          $patch = Get-ChildItem -Filter "RenpyBox_$version.from-*.patch.zip" -ErrorAction SilentlyContinue
-          if ($patch) { $files += $patch.Name }
+          if ("${{ steps.incremental_patch.outcome }}" -eq "success") {
+            $patches = Get-ChildItem -Filter "RenpyBox_$version.from-*.patch.zip" -ErrorAction SilentlyContinue
+            foreach ($patch in @($patches)) {
+              python buildtools/update_assets.py validate-patch --zip $patch.FullName --version $version
+              if ($LASTEXITCODE -eq 0) {
+                $files += $patch.Name
+              } else {
+                Write-Warning "Invalid incremental patch ignored: $($patch.Name)"
+              }
+            }
+          }
           "files=$($files -join ',')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Create Release
