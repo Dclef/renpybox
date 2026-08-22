@@ -114,6 +114,15 @@ if __name__ == "__main__":
     # 载入并保存默认配置
     config = Config().load()
 
+    # 存量明文 API Key 迁入系统凭据库并清空明文；失败保留明文等下次启动再试
+    try:
+        from module.Secret.SecretStore import SecretStore
+
+        if SecretStore.get().migrate_platforms(config.platforms) > 0:
+            config.save()
+    except Exception as e:
+        LogManager.get().warning(f"[Secret] 密钥迁移失败，保留明文存储: {e}")
+
     # 加载版本号
     # 从 base.Version 获取单一事实来源
     version = Version.CURRENT
