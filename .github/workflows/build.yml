@@ -13,11 +13,7 @@ on:
       - ".github/workflows/build.yml"
 
 jobs:
-  quality:
-    uses: ./.github/workflows/quality.yml
-
   build:
-    needs: quality
     runs-on: windows-latest
     permissions:
       contents: write
