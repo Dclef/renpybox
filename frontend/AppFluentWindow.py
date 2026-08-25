@@ -2,14 +2,11 @@ import os
 import signal
 
 from PyQt5.QtCore import QEvent
-from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import QUrl
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
-from qfluentwidgets import InfoBar
-from qfluentwidgets import InfoBarPosition
 from qfluentwidgets import MessageBox
 from qfluentwidgets import NavigationAvatarWidget
 from qfluentwidgets import NavigationItemPosition
@@ -20,6 +17,8 @@ from qfluentwidgets import setTheme
 from qfluentwidgets import setThemeColor
 
 from base.Base import Base
+from base.EventTelemetry import HeartbeatMonitor
+from frontend.NotificationService import NotificationService
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
 from base.Version import Version
@@ -68,6 +67,14 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
+        # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
+        self.notification = NotificationService(self)
+        # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
+        self._heartbeat = HeartbeatMonitor(interval_ms = 1000)
+        self._heartbeat_timer = QTimer(self)
+        self._heartbeat_timer.setInterval(1000)
+        self._heartbeat_timer.timeout.connect(self._on_heartbeat_tick)
+        self._heartbeat_timer.start()
 
         # 设置主题颜色
         setThemeColor(AppFluentWindow.APP_THEME_COLOR)
@@ -151,6 +158,8 @@ class AppFluentWindow(FluentWindow, Base):
     # 重写窗口关闭函数
     def closeEvent(self, event: QEvent) -> None:
         self._is_closing = True
+        self._heartbeat_timer.stop()
+
         strings = Localizer.get()
         message_box = MessageBox(strings.warning, strings.app_close_message_box, self)
         message_box.yesButton.setText(strings.confirm)
@@ -161,6 +170,12 @@ class AppFluentWindow(FluentWindow, Base):
             event.ignore()
         else:
             os.kill(os.getpid(), signal.SIGTERM)
+
+    def _on_heartbeat_tick(self) -> None:
+        if self._is_app_closing():
+            self._heartbeat_timer.stop()
+            return
+        self._heartbeat.tick()
 
     def _is_qobject_alive(self, obj) -> bool:
         """检查 Qt 对象是否仍可访问，避免访问已释放的 C++ 对象。"""
@@ -182,67 +197,16 @@ class AppFluentWindow(FluentWindow, Base):
             return True
         return self._is_closing or app.closingDown()
 
-    def _cleanup_infobar_stale_refs(self) -> None:
-        """清理 InfoBarManager 中已失效的条目，避免已删除对象参与布局计算。"""
-        try:
-            from qfluentwidgets.components.widgets.info_bar import InfoBarManager
-        except Exception:
-            return
-
-        managers = getattr(InfoBarManager, "managers", {}) or {}
-        for manager_cls in managers.values():
-            try:
-                manager = manager_cls()
-                info_bars = getattr(manager, "infoBars", None)
-                if info_bars is None or self not in info_bars:
-                    continue
-
-                bars = list(info_bars.get(self, []))
-                alive_bars = [bar for bar in bars if self._is_qobject_alive(bar)]
-
-                if len(alive_bars) != len(bars):
-                    info_bars[self] = alive_bars
-            except Exception:
-                continue
-
     # 响应显示 Toast 事件
     def show_toast(self, event: str, data: dict) -> None:
         if self._is_app_closing() or not self._is_qobject_alive(self):
             return
 
-        toast_type = data.get("type", Base.ToastType.INFO)
-        toast_message = data.get("message", "")
-        toast_duration = data.get("duration", 2500)
-
-        if toast_type == Base.ToastType.ERROR:
-            toast_func = InfoBar.error
-        elif toast_type == Base.ToastType.WARNING:
-            toast_func = InfoBar.warning
-        elif toast_type == Base.ToastType.SUCCESS:
-            toast_func = InfoBar.success
-        else:
-            toast_func = InfoBar.info
-
-        # 创建新 toast 前先清理历史残留，避免 qfluentwidgets 在布局时访问已删除对象。
-        self._cleanup_infobar_stale_refs()
-
-        try:
-            toast_func(
-                title = "",
-                content = toast_message,
-                parent = self,
-                duration = toast_duration,
-                orient = Qt.Orientation.Horizontal,
-                position = InfoBarPosition.TOP,
-                isClosable = True,
-            )
-        except RuntimeError as exc:
-            # 兼容 qfluentwidgets 已知竞态：InfoBar 在动画/布局阶段对象被释放。
-            if "InfoBar has been deleted" in str(exc):
-                self.warning(f"[UI] 忽略已删除 InfoBar 竞态异常: {exc}", console = False)
-                self._cleanup_infobar_stale_refs()
-                return
-            raise
+        self.notification.show(
+            data.get("type", Base.ToastType.INFO),
+            data.get("message", ""),
+            data.get("duration", 2500),
+        )
 
     # 切换主题
     def switch_theme(self) -> None:

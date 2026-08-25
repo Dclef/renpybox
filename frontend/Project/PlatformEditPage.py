@@ -13,6 +13,7 @@ from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
 from module.Config import Config
+from module.Secret.SecretStore import SecretStore
 from module.Localizer.Localizer import Localizer
 from widget.ComboBoxCard import ComboBoxCard
 from widget.EmptyCard import EmptyCard
@@ -22,6 +23,36 @@ from widget.LineEditMessageBox import LineEditMessageBox
 from frontend.Project.ModelListPage import ModelListPage
 
 class PlatformEditPage(MessageBoxBase, Base):
+
+    def _save_api_keys(self, keys: list[str]) -> bool:
+        """保存接口密钥；失败时保留编辑态并给出提示。"""
+        config = Config().load()
+        secret_store = SecretStore.get()
+        if secret_store.store_keys(self.platform, keys):
+            self.platform["api_key"] = []
+        elif keys and not secret_store.has_persisted_credentials(self.platform):
+            self.platform["api_key"] = keys
+        else:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.ERROR,
+                "message": (
+                    Localizer.get().platform_edit_page_api_key_save_failed
+                    if keys
+                    else Localizer.get().platform_edit_page_api_key_clear_failed
+                ),
+            })
+            return False
+
+        config.set_platform(self.platform)
+        try:
+            config.save(strict = True)
+        except Exception:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.ERROR,
+                "message": Localizer.get().platform_edit_page_api_key_save_failed,
+            })
+            return False
+        return True
 
     def __init__(self, id: int, window: FluentWindow) -> None:
         super().__init__(window)
@@ -148,17 +179,15 @@ class PlatformEditPage(MessageBoxBase, Base):
     def add_widget_api_key(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
 
         def text_changed(widget: PlainTextEdit) -> None:
-            config = Config().load()
-            self.platform["api_key"] = [
+            keys = [
                 v.strip() for v in widget.toPlainText().strip().splitlines()
                 if v.strip() != ""
             ]
-            config.set_platform(self.platform)
-            config.save()
+            self._save_api_keys(keys)
 
         def init(widget: GroupCard) -> None:
             plain_text_edit = PlainTextEdit(self)
-            plain_text_edit.setPlainText("\n".join(self.platform.get('api_key')))
+            plain_text_edit.setPlainText("\n".join(SecretStore.get().resolve_keys(self.platform)))
             plain_text_edit.setPlaceholderText(Localizer.get().platform_edit_page_api_key)
             plain_text_edit.textChanged.connect(lambda: text_changed(plain_text_edit))
             widget.add_widget(plain_text_edit)

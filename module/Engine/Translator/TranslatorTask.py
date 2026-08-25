@@ -112,7 +112,7 @@ class TranslatorTask(Base):
             raise ValueError(f"[INIT] Platform 缺少必需字段: {missing}")
         
         if not items or len(items) == 0:
-            raise ValueError(f"[INIT] Items 列表不能为空")
+            raise ValueError("[INIT] Items 列表不能为空")
 
         # 每个任务都使用独立运行配置。旧 Config 调用会在边界生成临时上下文，
         # 新管线则直接复用已经持久化的不可变上下文。
@@ -435,7 +435,7 @@ class TranslatorTask(Base):
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
 
-            self.debug(f"[REQUEST] 无有效原文，直接标记完成")
+            self.debug("[REQUEST] 无有效原文，直接标记完成")
             for item, processor in zip(items, processors):
                 item.set_dst(item.get_src())
                 item.set_status(Base.TranslationStatus.TRANSLATED)
@@ -452,7 +452,7 @@ class TranslatorTask(Base):
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
 
-            self.debug(f"[REQUEST] 启用单行翻译模式")
+            self.debug("[REQUEST] 启用单行翻译模式")
             return self.request_single_line(
                 items,
                 processors,
@@ -505,7 +505,7 @@ class TranslatorTask(Base):
             and self.platform.get("api_format")
             not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
         )
-        self.debug(f"[REQUEST] 发起API请求...")
+        self.debug("[REQUEST] 发起API请求...")
         skip, response_think, response_result, input_tokens, output_tokens = requester.request(
             self.messages,
             response_shape = "json_object" if structured_response else "none",
@@ -516,7 +516,7 @@ class TranslatorTask(Base):
 
         # 如果请求结果标记为 skip，即有错误发生，则跳过本次循环
         if skip == True:
-            self.warning(f"[REQUEST] API请求被跳过（发生错误）")
+            self.warning("[REQUEST] API请求被跳过（发生错误）")
             self.record_failed_item_retries(
                 items,
                 processors,

@@ -6,8 +6,7 @@
 import os
 import re
 import concurrent.futures
-import traceback
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Tuple
 
 try:
     from pygtrans import Translate

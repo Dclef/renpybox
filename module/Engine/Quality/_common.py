@@ -4,7 +4,7 @@ import dataclasses
 import json
 import re
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from enum import Enum
 from typing import Any, Protocol
 

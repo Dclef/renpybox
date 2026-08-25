@@ -7,14 +7,13 @@ import os
 import re
 import json
 import shutil
-import threading
 from pathlib import Path
 
 import openpyxl
 import openpyxl.worksheet.worksheet
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLayout, QFileDialog
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFileDialog
 from qfluentwidgets import (
     PushButton,
     InfoBar,
