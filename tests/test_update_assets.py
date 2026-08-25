@@ -69,27 +69,13 @@ def _build_patch_for(tmp_path: Path, v1: Path, v2: Path) -> Path:
     return patch_zip
 
 
-def test_build_workflow_normalizes_previous_release_version() -> None:
+def test_build_workflow_publishes_only_full_package() -> None:
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
     ).read_text(encoding="utf-8")
-    patch_step = workflow.split("- name: Generate Incremental Patch", 1)[1].split(
-        "- name: Collect Release Files", 1
-    )[0]
-
-    assert "$prevVersion = $prevTag -replace '^RenpyBox_', ''" in patch_step
-    assert "--prev-version $prevVersion" in patch_step
-    assert "from-$prevVersion.patch.zip" in patch_step
-    assert "--prev-version $prevTag" not in patch_step
-    assert "from-$prevTag.patch.zip" not in patch_step
-    assert '$expectedPrevZip = "RenpyBox_$prevVersion.zip"' in patch_step
-    assert "Where-Object { $_.name -eq $expectedPrevZip }" in patch_step
-
-    collect_step = workflow.split("- name: Collect Release Files", 1)[1].split(
-        "- name: Create Release", 1
-    )[0]
-    assert 'steps.incremental_patch.outcome }}" -eq "success"' in collect_step
-    assert "update_assets.py validate-patch" in collect_step
+    assert "Generate Incremental Patch" not in workflow
+    assert "Collect Release Files" not in workflow
+    assert "files: RenpyBox_${{ steps.check_version.outputs.version }}.zip" in workflow
 
 
 def test_build_manifest_covers_all_files(tmp_path: Path) -> None:

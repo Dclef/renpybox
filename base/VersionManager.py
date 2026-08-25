@@ -1,6 +1,5 @@
 import copy
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -133,19 +132,6 @@ class VersionManager(Base):
         return latest
 
     @classmethod
-    def _installed_manifest_version(cls) -> str | None:
-        """读取安装态 manifest 的版本；无 manifest（存量安装/源码运行）返回 None。"""
-        if not getattr(sys, "frozen", False):
-            return None
-        try:
-            manifest_path = Path(sys.executable).resolve().parent / "_update_manifest.json"
-            data = json.loads(manifest_path.read_text(encoding = "utf-8"))
-            version = data.get("version") if isinstance(data, dict) else None
-            return str(version) if version else None
-        except Exception:
-            return None
-
-    @classmethod
     def _select_download_asset(cls, latest: dict) -> dict:
         assets = latest.get("assets", [])
         if not isinstance(assets, list) or not assets:
@@ -165,21 +151,6 @@ class VersionManager(Base):
             for asset in assets
             if isinstance(asset, dict)
         }
-
-        # 增量优先：本地安装态 manifest 版本与 patch 资产的 base 精确匹配才走增量，
-        # 否则一律全量，避免把 patch 包当全量包应用
-        installed = cls._installed_manifest_version()
-        if installed:
-            installed_version = (
-                installed[len("RenpyBox_"):]
-                if installed.casefold().startswith("renpybox_")
-                else installed
-            )
-            patch_name = (
-                f"RenpyBox_{version}.from-{installed_version}.patch.zip".casefold()
-            )
-            if patch_name in assets_by_name:
-                return copy.deepcopy(assets_by_name[patch_name])
 
         full_name = f"RenpyBox_{version}.zip".casefold()
         target_asset = assets_by_name.get(full_name)
