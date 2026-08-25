@@ -130,8 +130,8 @@ class LocalizerZH():
     log_crash: str = "出现严重错误，程序即将退出，错误信息已保存至日志文件 …"
     cli_verify_folder: str = "参数发生错误：无效的路径 …"
     cli_verify_language: str = "参数发生错误：无效的语言 …"
-    translator_max_round: str = "最大轮次"
-    translator_current_round: str = "当前轮次"
+    translator_max_round: str = "最大重试轮次"
+    translator_current_round: str = "当前重试轮次"
     translator_api_url: str = "接口地址"
     translator_name: str = "接口名称"
     translator_model: str = "模型名称"
@@ -655,7 +655,7 @@ class LocalizerZH():
     basic_settings_page_max_workers_content: str = (
         "同时执行的任务数量的最大值"
         "<br>"
-        "合理设置可以显著加快任务的完成速度，请参考 API 平台的文档进行设置，0 = 自动"
+        "默认 16；合理设置可以显著加快任务的完成速度，请参考 API 平台的文档进行设置，0 = 自动"
         ""
         ""
     )

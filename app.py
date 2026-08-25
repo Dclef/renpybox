@@ -25,9 +25,12 @@ if str(application_path) not in sys.path:
     sys.path.insert(0, str(application_path))
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QFont
 from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QSplashScreen
 from rich.console import Console
 
 # 屏蔽 requests 在冻结环境中的依赖兼容警告，避免启动时污染控制台。
@@ -49,7 +52,6 @@ from base.LogManager import LogManager
 from base.VersionManager import VersionManager
 from base.Version import Version
 from base.PathHelper import get_resource_path
-from frontend.AppFluentWindow import AppFluentWindow
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
@@ -69,6 +71,27 @@ def _threading_excepthook(args) -> None:
     if args.exc_type is SystemExit:
         return
     LogManager.get().error(f"[Thread-{args.thread and args.thread.name}] 子线程未捕获异常", args.exc_value)
+
+
+def _create_startup_splash(app: QApplication) -> QSplashScreen:
+    """创建轻量启动页，让初始化期间立即有可见反馈。"""
+    pixmap = QPixmap(get_resource_path("resource", "startup", "renpybox-splash.png"))
+    if pixmap.isNull():
+        pixmap = QPixmap(640, 360)
+        pixmap.fill(QColor("#17263D"))
+    else:
+        pixmap = pixmap.scaled(
+            640,
+            360,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint)
+    splash.setWindowIcon(app.windowIcon())
+    splash.show()
+    app.processEvents()
+    return splash
 
 if __name__ == "__main__":
     # 捕获全局异常
@@ -182,16 +205,25 @@ if __name__ == "__main__":
     from widget.ThemeHelper import get_current_stylesheet
     app.setStyleSheet(get_current_stylesheet())
 
-    # 启动任务引擎
-    Engine.get().run()
+    splash = None
+    if "--cli" not in sys.argv:
+        splash = _create_startup_splash(app)
 
     # 创建版本管理器
     VersionManager.get().set_version(version)
 
+    # 启动任务引擎；启动页会覆盖这段初始化等待。
+    Engine.get().run()
+
     # 处理启动参数
     if CLIManager.get().run() == False:
+        # 加载页已经显示，再导入重型窗口页面，避免用户看到空白等待。
+        from frontend.AppFluentWindow import AppFluentWindow
+
         app_fluent_window = AppFluentWindow()
         app_fluent_window.show()
+        if splash is not None:
+            splash.finish(app_fluent_window)
 
     # 进入事件循环，等待用户操作
     sys.exit(app.exec())

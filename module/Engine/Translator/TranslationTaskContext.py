@@ -1030,9 +1030,8 @@ class TranslationTaskContext:
 
         The projection exists only while legacy translator components still read
         Config attributes. Callers may mutate it for adaptive runtime behavior,
-        but must never save it. Snapshot-owned values always override values from
-        ``current_config``; current provider credentials are used only when the
-        context has no runtime provider attached.
+        but must never save it. Snapshot-owned values override ``current_config``;
+        the live concurrency and RPM settings are the only exceptions.
         """
         from base.BaseLanguage import BaseLanguage
         from module.Config import Config
@@ -1059,6 +1058,12 @@ class TranslationTaskContext:
             for key, value in section.items():
                 if key != "provider" and hasattr(runtime, key):
                     setattr(runtime, key, _thaw(value))
+
+        if current_config is not None:
+            # 停止后继续翻译时，并发和 RPM 应使用当前设置，而不是旧快照。
+            for key in ("max_workers", "rpm_threshold"):
+                if key in current_data:
+                    setattr(runtime, key, deepcopy(current_data[key]))
 
         mode = _normalize_text(self.prompt.get("mode", "COMMON")).upper() or "COMMON"
         resolved_base = _normalize_text(self.prompt.get("resolved_base", ""))

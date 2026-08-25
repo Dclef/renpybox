@@ -19,7 +19,7 @@ from module.Localizer.Localizer import Localizer
 @dataclasses.dataclass
 class Config():
 
-    CURRENT_CONFIG_VERSION: ClassVar[int] = 1
+    CURRENT_CONFIG_VERSION: ClassVar[int] = 2
     PROJECT_SCOPED_WORKBENCH_DEFAULTS: ClassVar[dict[str, Any]] = {
         "renpy_workbench_worldbook_enable": False,
         "renpy_workbench_worldbook_data": {},
@@ -111,7 +111,8 @@ class Config():
 
     # BasicSettingsPage
     token_threshold: int = 10
-    max_workers: int = 0
+    # 默认使用固定并发；用户仍可手动设置 0，表示按接口槽位自动探测。
+    max_workers: int = 16
     rpm_threshold: int = 0
     request_timeout: int = 120
     max_round: int = 16
@@ -291,6 +292,8 @@ class Config():
         while version < cls.CURRENT_CONFIG_VERSION:
             if version == 0:
                 cls._migrate_v0_to_v1(config)
+            elif version == 1:
+                cls._migrate_v1_to_v2(config)
             else:
                 raise ValueError(f"Unsupported config migration version: {version}")
 
@@ -339,6 +342,12 @@ class Config():
         )
 
     @classmethod
+    def _migrate_v1_to_v2(cls, config: dict[str, Any]) -> None:
+        """把旧版的默认自动并发迁移为 16；用户以后仍可手动选 0。"""
+        if "max_workers" not in config or config.get("max_workers") == 0:
+            config["max_workers"] = 16
+
+    @classmethod
     def _apply_current_defaults(cls, config: dict[str, Any]) -> None:
         config.setdefault("config_version", cls.CURRENT_CONFIG_VERSION)
         config.setdefault("translation_prompt_mode", cls.PROMPT_MODE_COMMON)
@@ -350,6 +359,7 @@ class Config():
         config.setdefault("asset_regex_enable", False)
         config.setdefault("last_seen_version", "")
         config.setdefault("agent_platform", -1)
+        config.setdefault("max_workers", 16)
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""
