@@ -24,6 +24,11 @@ from frontend.Project.PlatformHeaderCard import PlatformHeaderCard
 from frontend.Project.PlatformItemCard import PlatformItemCard
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Secret.SecretStore import (
+    CREDENTIAL_ID_FIELD,
+    LEGACY_CREDENTIAL_ID_FIELD,
+    SecretStore,
+)
 
 
 PLATFORM_GROUPS = ("local", "machine", "online", "custom")
@@ -82,9 +87,9 @@ class PlatformPage(QWidget, Base):
             config.platforms = self.load_default_platforms()
             # 首次加载默认平台时，顺便做一轮字段归一化，避免旧布尔字段残留。
             self.ensure_default_platforms(config.platforms)
-            config.save()
+            config.save(strict = True)
         elif self.ensure_default_platforms(config.platforms):
-            config.save()
+            config.save(strict = True)
 
         # 设置主容器
         self.root = QVBoxLayout(self)
@@ -144,6 +149,10 @@ class PlatformPage(QWidget, Base):
         for i, platform in enumerate(sorted(platforms, key=lambda x: x.get("id"))):
             platform["id"] = i
 
+        # 默认模板每次加载都生成新身份，不能继承可能属于旧平台的数字凭据别名。
+        for platform in platforms:
+            SecretStore.ensure_platform_identity(platform, preserve_legacy = False)
+
         return sorted(platforms, key=lambda x: x.get("id"))
 
     # 补全默认平台（用于旧配置升级）
@@ -151,7 +160,7 @@ class PlatformPage(QWidget, Base):
         if not isinstance(platforms, list):
             return False
 
-        changed = False
+        changed = SecretStore.ensure_platform_identities(platforms) > 0
         defaults = self.load_default_platforms()
         existing_formats = {str(item.get("api_format", "")) for item in platforms}
 
@@ -207,6 +216,9 @@ class PlatformPage(QWidget, Base):
             existing_formats.add(str(fmt))
             changed = True
 
+        if SecretStore.ensure_platform_identities(platforms) > 0:
+            changed = True
+
         if not changed:
             return False
 
@@ -227,28 +239,35 @@ class PlatformPage(QWidget, Base):
 
         item = copy.deepcopy(item)
         item["id"] = len(config.platforms)
+        item.pop(CREDENTIAL_ID_FIELD, None)
+        item.pop(LEGACY_CREDENTIAL_ID_FIELD, None)
+        SecretStore.ensure_platform_identity(item, preserve_legacy = False)
         item["name"] = deduplicate_platform_name(
             str(item.get("name", "")),
             config.platforms,
         )
         config.platforms.append(item)
-        config.save()
+        config.save(strict = True)
 
         self.rebuild_all()
 
     # 删除接口
     def delete_platform(self, id: int) -> None:
         config = Config().load()
-        removed = False
+        original_platforms = copy.deepcopy(config.platforms)
+        original_activate_platform = config.activate_platform
+        original_agent_platform = config.agent_platform
+        removed_platform = None
 
-        for i, platform in enumerate(config.platforms):
+        for platform in config.platforms:
             if platform.get("id") == id:
-                del config.platforms[i]
-                removed = True
+                removed_platform = platform
                 break
 
-        if not removed:
+        if removed_platform is None:
             return
+
+        config.platforms.remove(removed_platform)
 
         if not config.platforms:
             config.activate_platform = 0
@@ -266,7 +285,20 @@ class PlatformPage(QWidget, Base):
         for i, platform in enumerate(sorted(config.platforms, key=lambda x: x.get("id"))):
             platform["id"] = i
 
-        config.save()
+        # 先严格持久化平台删除，再清理其稳定身份凭据。即使凭据库清理失败，
+        # 也只会留下 UUID 不可达的孤儿项，不会让磁盘中仍存在的平台丢失 Key。
+        try:
+            config.save(strict = True)
+        except Exception:
+            config.platforms = original_platforms
+            config.activate_platform = original_activate_platform
+            config.agent_platform = original_agent_platform
+            raise
+        if not SecretStore.get().clear_keys(removed_platform):
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.ERROR,
+                "message": Localizer.get().platform_edit_page_api_key_clear_failed,
+            })
         self.rebuild_all()
 
     # 激活接口

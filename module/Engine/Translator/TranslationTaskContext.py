@@ -336,6 +336,44 @@ def merge_provider_credentials(
     return _merge_mapping(semantic, credentials)
 
 
+def find_provider_by_identity(
+    persisted_provider: Any,
+    platforms: Any,
+) -> dict[str, Any]:
+    """按稳定身份找当前平台；存在稳定身份时绝不回退可复用数字 id。"""
+    if not isinstance(persisted_provider, Mapping) or not isinstance(platforms, list):
+        return {}
+
+    candidates = [item for item in platforms if isinstance(item, Mapping)]
+    credential_id = str(persisted_provider.get("credential_id", "")).strip().casefold()
+    if credential_id:
+        matches = [
+            item
+            for item in candidates
+            if str(item.get("credential_id", "")).strip().casefold() == credential_id
+        ]
+        return deepcopy(dict(matches[0])) if len(matches) == 1 else {}
+
+    persisted_id = persisted_provider.get("id")
+    legacy_matches = []
+    if persisted_id is not None:
+        legacy_matches = [
+            item
+            for item in candidates
+            if str(item.get("legacy_credential_id", "")).strip()
+            == str(persisted_id).strip()
+        ]
+    if len(legacy_matches) == 1:
+        return deepcopy(dict(legacy_matches[0]))
+
+    # 只有双方都是真正旧格式时才兼容数字 id；只要当前配置已具备稳定身份，
+    # 数字相同也可能是删除后复用，必须失败关闭。
+    if any(str(item.get("credential_id", "")).strip() for item in candidates):
+        return {}
+    numeric_matches = [item for item in candidates if item.get("id") == persisted_id]
+    return deepcopy(dict(numeric_matches[0])) if len(numeric_matches) == 1 else {}
+
+
 def strip_credentials(value: Any) -> Any:
     """Return a deep JSON-compatible copy without credential-bearing fields."""
     value = _thaw(_freeze(value))
@@ -992,9 +1030,8 @@ class TranslationTaskContext:
 
         The projection exists only while legacy translator components still read
         Config attributes. Callers may mutate it for adaptive runtime behavior,
-        but must never save it. Snapshot-owned values always override values from
-        ``current_config``; current provider credentials are used only when the
-        context has no runtime provider attached.
+        but must never save it. Snapshot-owned values override ``current_config``;
+        the live concurrency and RPM settings are the only exceptions.
         """
         from base.BaseLanguage import BaseLanguage
         from module.Config import Config
@@ -1021,6 +1058,12 @@ class TranslationTaskContext:
             for key, value in section.items():
                 if key != "provider" and hasattr(runtime, key):
                     setattr(runtime, key, _thaw(value))
+
+        if current_config is not None:
+            # 停止后继续翻译时，并发和 RPM 应使用当前设置，而不是旧快照。
+            for key in ("max_workers", "rpm_threshold"):
+                if key in current_data:
+                    setattr(runtime, key, deepcopy(current_data[key]))
 
         mode = _normalize_text(self.prompt.get("mode", "COMMON")).upper() or "COMMON"
         resolved_base = _normalize_text(self.prompt.get("resolved_base", ""))

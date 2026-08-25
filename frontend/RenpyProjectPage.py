@@ -20,11 +20,9 @@ from qfluentwidgets import (
     InfoBarPosition
 )
 
-from base.EventManager import EventManager
 from base.LogManager import LogManager
-from base.BaseLanguage import BaseLanguage
 from module.Config import Config
-from module.Localizer.Localizer import Localizer
+from module.Project.ProjectStore import ProjectStore
 
 
 class RenpyProjectPage(QWidget):
@@ -329,23 +327,22 @@ class RenpyProjectPage(QWidget):
     def _on_save_config(self):
         """保存配置"""
         try:
-            # 路径
-            self.config.renpy_project_path = self.project_path_edit.text()
-            self.config.renpy_game_folder = self.game_folder_edit.text()
-            self.config.renpy_tl_folder = self.tl_folder_edit.text()
-            
-            # 语言
-            self.config.traditional_chinese_enable = self.traditional_chinese_switch.isChecked()
-            
-            # 提取选项
-            self.config.renpy_extract_dialogs = self.extract_dialogs_switch.isChecked()
-            self.config.renpy_extract_strings = self.extract_strings_switch.isChecked()
-            self.config.renpy_extract_screens = self.extract_screens_switch.isChecked()
-            self.config.renpy_backup_original = self.backup_original_switch.isChecked()
-            self.config.renpy_auto_detect_encoding = self.auto_detect_encoding_switch.isChecked()
-            self.config.renpy_default_encoding = self.default_encoding_combo.currentText()
-            
-            self.config.save()
+            # 路径、语言和提取选项一次写入，项目事实落盘后再广播切换事件。
+            ProjectStore.get().save_edited_paths(
+                self.config,
+                project_path = self.project_path_edit.text(),
+                game_folder = self.game_folder_edit.text(),
+                tl_folder = self.tl_folder_edit.text(),
+                mutate = lambda current: (
+                    setattr(current, "traditional_chinese_enable", self.traditional_chinese_switch.isChecked()),
+                    setattr(current, "renpy_extract_dialogs", self.extract_dialogs_switch.isChecked()),
+                    setattr(current, "renpy_extract_strings", self.extract_strings_switch.isChecked()),
+                    setattr(current, "renpy_extract_screens", self.extract_screens_switch.isChecked()),
+                    setattr(current, "renpy_backup_original", self.backup_original_switch.isChecked()),
+                    setattr(current, "renpy_auto_detect_encoding", self.auto_detect_encoding_switch.isChecked()),
+                    setattr(current, "renpy_default_encoding", self.default_encoding_combo.currentText()),
+                ),
+            )
             
             self._show_success("保存成功", "配置已保存")
             self.logger.info("配置保存成功")

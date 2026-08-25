@@ -76,3 +76,31 @@ def test_runtime_glossary_is_forwarded_as_candidates_only() -> None:
     }]]
     assert current.glossary_data == [{"src": "Alice", "dst": "爱丽丝"}]
     assert [term.source for term in context.assets.glossary] == ["Alice"]
+
+
+def test_task_keeps_runtime_request_policy_over_snapshot() -> None:
+    snapshot_config = Config(
+        max_workers = 4,
+        rpm_threshold = 30,
+        platforms = [_platform()],
+        activate_platform = 7,
+    )
+    context = TranslationTaskContext.from_config(snapshot_config)
+    runtime_config = Config(
+        max_workers = 16,
+        rpm_threshold = 90,
+        platforms = [_platform()],
+        activate_platform = 7,
+    )
+
+    task = TranslatorTask(
+        context,
+        _platform(),
+        False,
+        [CacheItem(src = "source")],
+        [],
+        runtime_config = runtime_config,
+    )
+
+    assert task.config.max_workers == 16
+    assert task.config.rpm_threshold == 90

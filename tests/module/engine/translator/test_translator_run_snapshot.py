@@ -2,6 +2,8 @@ import json
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
@@ -353,6 +355,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     (input_folder / "story.txt").write_text("Hello", encoding = "utf-8")
 
     initial = _config(input_folder, output_folder, model = "old-model", api_key = "old-key")
+    initial.max_workers = 4
+    initial.rpm_threshold = 30
     first = _translator()
     original_context = first._initialize_translation_run(
         initial,
@@ -361,6 +365,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     )
 
     changed = _config(input_folder, output_folder, model = "new-model", api_key = "new-key")
+    changed.max_workers = 16
+    changed.rpm_threshold = 90
     changed.token_threshold = 99
     changed.translation_prompt_mode = Config.PROMPT_MODE_LOCAL
     changed.translation_style_id = Config.STYLE_R18
@@ -378,6 +384,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     assert resumed_context.prompt["mode"] == Config.PROMPT_MODE_COT
     assert resumed_context.prompt["style_id"] == Config.STYLE_LITERARY
     assert runtime.token_threshold == 24
+    assert runtime.max_workers == 16
+    assert runtime.rpm_threshold == 90
     assert runtime_platform["model"] == "old-model"
     assert runtime_platform["api_url"] == "https://old.invalid/v1"
     assert runtime_platform["api_key"] == ["new-key"]
@@ -567,3 +575,66 @@ def test_resume_provider_only_overlays_current_credentials() -> None:
     assert provider["headers"]["X-Region"] == "snapshot-region"
     assert provider["headers"]["Authorization"] == "Bearer current-secret"
     assert provider["refresh_token"] == "current-refresh"
+
+
+def test_resume_provider_follows_stable_identity_after_numeric_reorder() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {
+                "id": 3,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 9,
+        "credential_id": "a" * 32,
+        "model": "current-model",
+        "api_key": ["current-key"],
+    }])
+
+    provider = Translator._get_resume_runtime_provider(persisted, config)
+
+    assert provider["id"] == 3
+    assert provider["model"] == "snapshot-model"
+    assert provider["api_key"] == ["current-key"]
+
+
+def test_resume_provider_rejects_reused_numeric_id_with_new_identity() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {
+                "id": 3,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(platforms=[{
+        "id": 3,
+        "credential_id": "b" * 32,
+        "api_key": ["other-key"],
+    }])
+
+    with pytest.raises(ValueError, match="接口已不存在"):
+        Translator._get_resume_runtime_provider(persisted, config)
+
+
+def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
+    persisted = {
+        "request_policy": {
+            "provider": {"id": 3, "model": "snapshot-model"},
+        },
+    }
+    config = Config(platforms=[{
+        "id": 8,
+        "credential_id": "a" * 32,
+        "legacy_credential_id": "3",
+        "api_key": ["current-key"],
+    }])
+
+    provider = Translator._get_resume_runtime_provider(persisted, config)
+
+    assert provider["model"] == "snapshot-model"
+    assert provider["api_key"] == ["current-key"]

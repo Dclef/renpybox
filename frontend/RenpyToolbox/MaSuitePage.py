@@ -31,6 +31,7 @@ from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.HakimiSuiteRunner import HakimiSuiteRunner
 from module.Localizer.Localizer import Localizer
+from module.Project.ProjectStore import ProjectStore
 from module.Extract.EmojiReplacer import (
     load_default_mapping,
     apply_replacements_dir,
@@ -306,8 +307,8 @@ class MaSuitePage(Base, QWidget):
             self.status_label.setStyleSheet("color: #107c10;")
 
             # 记住路径
-            self.config.renpy_game_folder = game_path
-            self.config.save()
+            ProjectStore.get().set_game_folder(self.config, game_path)
+            ProjectStore.get().persist(self.config, emit = False)
         except Exception as e:
             self.logger.error(f"翻译套件执行失败: {e}")
             InfoBar.error(Localizer.get().error, str(e), parent=self)

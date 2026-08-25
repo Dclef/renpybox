@@ -1,5 +1,5 @@
-PyQt-Fluent-Widgets[full]>=1.4.0
-PyQt5>=5.15.0
+PyQt-Fluent-Widgets[full]==1.11.3
+PyQt5==5.15.11
 opencc>=1.1.5
 translators>=5.9.2
 pygtrans>=1.5.0

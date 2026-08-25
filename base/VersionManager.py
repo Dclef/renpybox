@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -15,6 +16,7 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 
 from base.Base import Base
+from base.AppPaths import get_app_paths
 from base.Version import Version
 from base.compat import Self, StrEnum
 from module.Localizer.Localizer import Localizer
@@ -96,12 +98,7 @@ class VersionManager(Base):
 
     @classmethod
     def temp_zip_path(cls) -> Path:
-        base = (
-            Path(sys.executable).resolve().parent
-            if getattr(sys, "frozen", False)
-            else Path.cwd()
-        )
-        return (base / "resource" / "update.temp").resolve()
+        return get_app_paths().app("resource", "update.temp").resolve()
 
     @staticmethod
     def _safe_int(value: object) -> int:
@@ -136,22 +133,58 @@ class VersionManager(Base):
         return latest
 
     @classmethod
+    def _installed_manifest_version(cls) -> str | None:
+        """读取安装态 manifest 的版本；无 manifest（存量安装/源码运行）返回 None。"""
+        if not getattr(sys, "frozen", False):
+            return None
+        try:
+            manifest_path = Path(sys.executable).resolve().parent / "_update_manifest.json"
+            data = json.loads(manifest_path.read_text(encoding = "utf-8"))
+            version = data.get("version") if isinstance(data, dict) else None
+            return str(version) if version else None
+        except Exception:
+            return None
+
+    @classmethod
     def _select_download_asset(cls, latest: dict) -> dict:
         assets = latest.get("assets", [])
         if not isinstance(assets, list) or not assets:
             raise RuntimeError("No release assets found")
 
-        zip_assets = [
-            asset for asset in assets
+        tag_name = str(latest.get("tag_name") or "").strip()
+        version = (
+            tag_name[len("RenpyBox_"):]
+            if tag_name.casefold().startswith("renpybox_")
+            else tag_name
+        )
+        if not version:
+            raise RuntimeError("Release tag_name is empty")
+
+        assets_by_name = {
+            str(asset.get("name", "")).casefold(): asset
+            for asset in assets
             if isinstance(asset, dict)
-            and (
-                str(asset.get("name", "")).lower().endswith(".zip")
-                or str(asset.get("browser_download_url", "")).lower().endswith(".zip")
+        }
+
+        # 增量优先：本地安装态 manifest 版本与 patch 资产的 base 精确匹配才走增量，
+        # 否则一律全量，避免把 patch 包当全量包应用
+        installed = cls._installed_manifest_version()
+        if installed:
+            installed_version = (
+                installed[len("RenpyBox_"):]
+                if installed.casefold().startswith("renpybox_")
+                else installed
             )
-        ]
-        target_asset = zip_assets[0] if zip_assets else assets[0]
-        if not isinstance(target_asset, dict):
-            raise RuntimeError("Invalid release asset")
+            patch_name = (
+                f"RenpyBox_{version}.from-{installed_version}.patch.zip".casefold()
+            )
+            if patch_name in assets_by_name:
+                return copy.deepcopy(assets_by_name[patch_name])
+
+        full_name = f"RenpyBox_{version}.zip".casefold()
+        target_asset = assets_by_name.get(full_name)
+        if target_asset is None:
+            raise RuntimeError(f"Expected release asset not found: RenpyBox_{version}.zip")
         return copy.deepcopy(target_asset)
 
     @classmethod
@@ -332,6 +365,9 @@ class VersionManager(Base):
         temp_zip_path = __class__.temp_zip_path()
 
         updater_candidates = [
+            # V2 在前：存量安装里新旧两个更新器可能并存，优先用新版
+            install_dir / "_internal" / "RenpyBoxUpdater2.exe",
+            install_dir / "RenpyBoxUpdater2.exe",
             install_dir / "_internal" / "RenpyBoxUpdater.exe",
             install_dir / "RenpyBoxUpdater.exe",
         ]
@@ -495,6 +531,11 @@ class VersionManager(Base):
             browser_download_url = str(target_asset.get("browser_download_url") or "")
             if not browser_download_url:
                 raise RuntimeError("browser_download_url is empty")
+            # digest fail-closed：资产没有可信 sha256 时拒绝自动下载安装，
+            # 引导用户手动下载（GitHub 正常发布会自动生成 sha256 digest）
+            expected_sha256 = __class__._expected_sha256(target_asset.get("digest"))
+            if expected_sha256 is None:
+                raise RuntimeError("Release asset has no sha256 digest, automatic update refused")
             if cancel_event.is_set():
                 raise _DownloadCancelled()
 
@@ -520,7 +561,6 @@ class VersionManager(Base):
                         raise RuntimeError("Content-Length is 0")
 
                     asset_size = __class__._safe_int(target_asset.get("size"))
-                    expected_sha256 = __class__._expected_sha256(target_asset.get("digest"))
                     downloaded_size = 0
                     sha256 = hashlib.sha256()
                     self._emit_download_progress(0, total_size, force = True)

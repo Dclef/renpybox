@@ -8,12 +8,12 @@ import json
 import os
 import re
 import shutil
-import sys
 import time
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 
 from base.LogManager import LogManager
+from base.PathHelper import get_resource_path
 
 
 class FontReplacer:
@@ -41,10 +41,9 @@ class FontReplacer:
         """获取字体样式模板路径"""
         # 尝试多个可能的位置
         candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "..", "resource", "templates", "font_style_template.txt"),
-            os.path.join(os.path.dirname(__file__), "..", "..", "dist", "font_style_template.txt"),
-            os.path.join(os.getcwd(), "resource", "templates", "font_style_template.txt"),
-            "font_style_template.txt",
+            get_resource_path("resource", "templates", "font_style_template.txt"),
+            get_resource_path("dist", "font_style_template.txt"),
+            get_resource_path("font_style_template.txt"),
         ]
         for path in candidates:
             if os.path.isfile(path):
@@ -741,16 +740,9 @@ class FontReplacer:
 
     def get_builtin_font_path(self) -> Optional[str]:
         """返回内置字体 SourceHanSansLite.ttf 的路径（若存在）"""
-        try:
-            project_root = Path(__file__).resolve().parents[3]
-        except IndexError:
-            project_root = Path(__file__).resolve().parent
-
         candidates = [
-            project_root / "resource" / "SourceHanSansLite.ttf",
-            Path(getattr(sys, "_MEIPASS", "")) / "resource" / "SourceHanSansLite.ttf"
-            if getattr(sys, "_MEIPASS", None) else None,
-            Path(os.getcwd()) / "resource" / "SourceHanSansLite.ttf",
+            Path(get_resource_path("resource", "SourceHanSansLite.ttf")),
+            Path(get_resource_path("dist", "SourceHanSansLite.ttf")),
         ]
 
         for path in candidates:
