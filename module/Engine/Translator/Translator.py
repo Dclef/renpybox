@@ -1586,7 +1586,7 @@ class Translator(Base):
             max_workers = min(8, max(1, rpm_threshold))
 
         # 配置文件可能来自旧版本或手工编辑，给线程池设置最终上限。
-        max_workers = min(max_workers, 64)
+        max_workers = min(max_workers, 1024)
 
         return max_workers, rpm_threshold
 

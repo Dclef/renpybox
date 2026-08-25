@@ -47,7 +47,6 @@ from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    apply_to_config,
     source_script_counts,
 )
 from module.Project.ProjectStore import ProjectStore
@@ -1980,12 +1979,6 @@ class YiJianFanyiPage(Base, QWidget):
             self._sync_game_dir_to_config(str(project_root))
 
             config = Config().load()
-            apply_to_config(
-                config,
-                paths,
-                input_folder = tl_dir,
-                output_folder = tl_dir,
-            )
             previous_output = self._last_onekey_output_dir or paths.translation_output_dir
             previous_output = Path(previous_output)
             self._hook_restore_paths = (
@@ -2000,8 +1993,16 @@ class YiJianFanyiPage(Base, QWidget):
                 application_target_dir = tl_dir,
                 run_kind = "hook",
             )
-            config.renpy_hook_translate = True
-            config.renpy_source_translate = False
+            ProjectStore.get().apply_resolved(
+                config,
+                paths,
+                input_folder = tl_dir,
+                output_folder = tl_dir,
+                mutate = lambda current: (
+                    setattr(current, "renpy_hook_translate", True),
+                    setattr(current, "renpy_source_translate", False),
+                ),
+            )
 
             self._auto_hook_running = True
             request_id = uuid.uuid4().hex

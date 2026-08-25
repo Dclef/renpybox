@@ -16,9 +16,9 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    apply_to_config,
     looks_like_renpy_path,
 )
+from module.Project.ProjectStore import ProjectStore
 from widget.ComboBoxCard import ComboBoxCard
 from widget.PushButtonCard import PushButtonCard
 from widget.SwitchButtonCard import SwitchButtonCard
@@ -89,15 +89,24 @@ class ProjectPage(QWidget, Base):
         """判断路径是否明显包含 Ren'Py 项目结构。"""
         return looks_like_renpy_path(raw_path)
 
-    def _sync_renpy_paths_from_selection(self, config: Config, raw_path: str) -> None:
+    def _sync_renpy_paths_from_selection(self, config: Config, raw_path: str) -> bool:
         """把项目页选择的路径同步到 Ren'Py 专用配置，避免工具页继续读取旧项目。"""
         paths = RenpyProjectPaths.from_path(raw_path)
         if paths is None:
-            return
-        apply_to_config(config, paths)
-        guessed = self._guess_lang_from_path(paths.tl_language_dir)
-        if guessed is not None:
-            config.target_language = guessed
+            return False
+
+        def mutate(current: Config) -> None:
+            guessed = self._guess_lang_from_path(paths.tl_language_dir)
+            if guessed is not None:
+                current.target_language = guessed
+
+        ProjectStore.get().apply_resolved(
+            config,
+            paths,
+            persist = False,
+            mutate = mutate,
+        )
+        return True
 
     def _auto_fill_by_renpy_config(self, config: Config) -> Config:
         """
@@ -129,14 +138,16 @@ class ProjectPage(QWidget, Base):
                 config.renpy_project_path,
                 config.renpy_game_folder,
                 config.renpy_tl_folder,
+                config.target_language,
             )
             # 页面重新显示时不能把一键翻译的 <lang>_new 或 Hook 临时目录
             # 改回规范主目录；项目专用字段仍统一到当前项目。
-            apply_to_config(
+            ProjectStore.get().apply_resolved(
                 config,
                 paths,
                 input_folder = current_input or paths.tl_language_dir,
                 output_folder = current_output or paths.translation_output_dir,
+                persist = False,
             )
             guessed = self._guess_lang_from_path(paths.tl_language_dir)
             if guessed is not None:
@@ -147,11 +158,12 @@ class ProjectPage(QWidget, Base):
                 config.renpy_project_path,
                 config.renpy_game_folder,
                 config.renpy_tl_folder,
+                config.target_language,
             )
             Path(config.output_folder).mkdir(parents = True, exist_ok = True)
 
         if changed:
-            config.save()
+            ProjectStore.get().persist(config)
         return config
 
     # 原文语言
@@ -229,8 +241,8 @@ class ProjectPage(QWidget, Base):
             # 更新并保存配置
             config = Config().load()
             config.input_folder = path.strip()
-            self._sync_renpy_paths_from_selection(config, path.strip())
-            config.save()
+            resolved = self._sync_renpy_paths_from_selection(config, path.strip())
+            ProjectStore.get().persist(config, emit = resolved)
 
         card = PushButtonCard(
                 title = Localizer.get().project_page_input_folder_title,
@@ -270,8 +282,10 @@ class ProjectPage(QWidget, Base):
             config = Config().load()
             config.output_folder = path.strip()
             if self._looks_like_renpy_path(path.strip()):
-                self._sync_renpy_paths_from_selection(config, path.strip())
-            config.save()
+                resolved = self._sync_renpy_paths_from_selection(config, path.strip())
+            else:
+                resolved = False
+            ProjectStore.get().persist(config, emit = resolved)
 
         card = PushButtonCard(
                 title = Localizer.get().project_page_output_folder_title,
