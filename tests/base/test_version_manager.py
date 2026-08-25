@@ -1,5 +1,4 @@
 import hashlib
-import json
 import importlib
 import sys
 from pathlib import Path
@@ -401,20 +400,6 @@ def test_source_mode_extract_still_warns_and_opens_release_page(monkeypatch) -> 
     assert toast["type"] == Base.ToastType.WARNING
 
 
-def _fake_installed_manifest(monkeypatch, tmp_path, version: str | None) -> None:
-    """把安装态伪装成 frozen 运行，manifest 写在 exe 旁。"""
-    install_dir = tmp_path / "install"
-    install_dir.mkdir(exist_ok=True)
-    exe = install_dir / "RenpyBox.exe"
-    exe.write_bytes(b"EXE")
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(exe))
-    if version is not None:
-        (install_dir / "_update_manifest.json").write_text(
-            json.dumps({"version": version, "files": {}}), encoding="utf-8"
-        )
-
-
 def _release_with_assets(*asset_names: str, version: str = "v2.0.0") -> dict:
     return {
         "tag_name": f"RenpyBox_{version}",
@@ -430,29 +415,7 @@ def _release_with_assets(*asset_names: str, version: str = "v2.0.0") -> dict:
     }
 
 
-def test_installed_manifest_version_read_from_exe_dir(monkeypatch, tmp_path) -> None:
-    _fake_installed_manifest(monkeypatch, tmp_path, "v1.2.3")
-    assert VersionManager._installed_manifest_version() == "v1.2.3"
-
-
-def test_installed_manifest_version_none_without_manifest(monkeypatch, tmp_path) -> None:
-    _fake_installed_manifest(monkeypatch, tmp_path, None)
-    assert VersionManager._installed_manifest_version() is None
-
-
-def test_select_download_asset_prefers_matching_patch(monkeypatch, tmp_path) -> None:
-    _fake_installed_manifest(monkeypatch, tmp_path, "v1.0.0")
-    latest = _release_with_assets(
-        "RenpyBox_v1.9.0.from-v1.0.0.patch.zip",
-        "RenpyBox_v2.0.0.zip",
-        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
-    )
-    asset = VersionManager._select_download_asset(latest)
-    assert asset["name"] == "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
-
-
-def test_select_download_asset_falls_back_to_full_when_base_mismatch(monkeypatch, tmp_path) -> None:
-    _fake_installed_manifest(monkeypatch, tmp_path, "v0.9.0")
+def test_select_download_asset_always_uses_full_package(monkeypatch) -> None:
     latest = _release_with_assets(
         "RenpyBox_v2.0.0.zip",
         "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
