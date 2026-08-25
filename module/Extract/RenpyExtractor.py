@@ -19,7 +19,6 @@ from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Renpy.json_handler import JsonExporter
 from module.Text.SkipRules import should_skip_text
 from utils.call_game_python import (
-    get_game_path_from_game_dir,
     get_py_path,
     get_python_path_from_game_path,
 )

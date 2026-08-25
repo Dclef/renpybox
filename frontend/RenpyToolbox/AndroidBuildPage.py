@@ -31,6 +31,7 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Project.ProjectStore import ProjectStore
 from module.Tool.AndroidBuilder import AndroidBuilder
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
@@ -397,7 +398,10 @@ class AndroidBuildPage(Base, QWidget):
 
     def _save_config(self) -> None:
         self.config.renpy_sdk_path = self.sdk_path_edit.text().strip()
-        self.config.renpy_project_path = self.project_path_edit.text().strip()
+        ProjectStore.get().set_project_path(
+            self.config,
+            self.project_path_edit.text().strip(),
+        )
         self.config.android_app_name = self.app_name_edit.text().strip()
         self.config.android_package_name = self.package_name_edit.text().strip()
         self.config.android_version = self.version_edit.text().strip()
@@ -407,7 +411,7 @@ class AndroidBuildPage(Base, QWidget):
         self.config.android_update_always = self.update_always_check.isChecked()
         self.config.android_update_icons = self.update_icons_check.isChecked()
         self.config.android_dname = self.dname_edit.text().strip()
-        self.config.save()
+        ProjectStore.get().persist(self.config)
 
     def _browse_sdk_path(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -791,7 +795,6 @@ class AndroidBuildPage(Base, QWidget):
         builder = self._get_builder()
         if not builder:
             return
-        project_dir = Path(builder.project_dir)
 
         package = self.package_name_edit.text().strip()
         app_name = self.app_name_edit.text().strip()

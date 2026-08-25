@@ -1,4 +1,5 @@
 import hashlib
+import json
 import importlib
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ import httpx
 import pytest
 
 from base.Base import Base
+from base.AppPaths import get_app_paths
 from base.VersionManager import VersionManager
 
 
@@ -79,9 +81,9 @@ def _seed_release(manager: VersionManager, content: bytes, digest: str = "") -> 
         "body": "Release notes",
         "published_at": "2026-07-31T00:00:00Z",
         "assets": [{
-            "name": "RenpyBox.zip",
+            "name": "RenpyBox_v9.9.9.zip",
             "size": len(content),
-            "browser_download_url": "https://example.invalid/RenpyBox.zip",
+            "browser_download_url": "https://example.invalid/RenpyBox_v9.9.9.zip",
             "digest": digest,
         }],
     })
@@ -103,12 +105,12 @@ def test_parse_version_accepts_app_and_release_formats() -> None:
     assert VersionManager.parse_version("v0.5.13") == (0, 5, 13, 0)
 
 
-def test_temp_zip_path_uses_cwd_in_source_mode(monkeypatch, tmp_path) -> None:
+def test_temp_zip_path_uses_stable_app_root_in_source_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.delattr(sys, "frozen", raising = False)
     monkeypatch.chdir(tmp_path)
 
-    assert VersionManager.temp_zip_path() == (
-        tmp_path / "resource" / "update.temp"
+    assert VersionManager.temp_zip_path() == get_app_paths().app(
+        "resource", "update.temp"
     ).resolve()
 
 
@@ -130,9 +132,9 @@ def test_check_caches_release_metadata_and_emits_manual_result(monkeypatch) -> N
         "body": "## Changes\n- Fixed updates",
         "published_at": "2026-07-31T00:00:00Z",
         "assets": [{
-            "name": "RenpyBox.zip",
+            "name": "RenpyBox_v1.1.0.zip",
             "size": 123,
-            "browser_download_url": "https://example.invalid/RenpyBox.zip",
+            "browser_download_url": "https://example.invalid/RenpyBox_v1.1.0.zip",
             "digest": "sha256:" + "a" * 64,
         }],
     }
@@ -152,8 +154,8 @@ def test_check_caches_release_metadata_and_emits_manual_result(monkeypatch) -> N
     assert latest["asset"] == release["assets"][0]
     latest["assets"][0]["name"] = "mutated.zip"
     latest["asset"]["name"] = "also-mutated.zip"
-    assert manager.get_latest()["assets"][0]["name"] == "RenpyBox.zip"
-    assert manager.get_latest()["asset"]["name"] == "RenpyBox.zip"
+    assert manager.get_latest()["assets"][0]["name"] == "RenpyBox_v1.1.0.zip"
+    assert manager.get_latest()["asset"]["name"] == "RenpyBox_v1.1.0.zip"
 
     check_payload = next(
         data for event, data in emitted
@@ -248,7 +250,9 @@ def test_download_validates_size_and_sha256_before_completion(
 @pytest.mark.parametrize(
     ("content_length", "digest", "error_text"),
     [
-        (8, "", "Downloaded size mismatch"),
+        # digest fail-closed：资产无 sha256 时拒绝自动下载（下载开始前即失败）
+        (7, "", "no sha256 digest"),
+        (8, "sha256:" + hashlib.sha256(b"payload").hexdigest(), "Downloaded size mismatch"),
         (7, "sha256:" + "0" * 64, "sha256 digest mismatch"),
     ],
 )
@@ -290,7 +294,7 @@ def test_cancel_download_removes_partial_file_and_resets_state(
 ) -> None:
     manager, emitted = _manager_with_events(monkeypatch)
     content = b"first-second"
-    _seed_release(manager, content)
+    _seed_release(manager, content, "sha256:" + hashlib.sha256(content).hexdigest())
     temp_path = tmp_path / "resource" / "update.temp"
     _patch_temp_path(monkeypatch, temp_path)
     cancel_results: list[bool] = []
@@ -395,3 +399,95 @@ def test_source_mode_extract_still_warns_and_opens_release_page(monkeypatch) -> 
         if event == Base.Event.APP_TOAST_SHOW
     )
     assert toast["type"] == Base.ToastType.WARNING
+
+
+def _fake_installed_manifest(monkeypatch, tmp_path, version: str | None) -> None:
+    """把安装态伪装成 frozen 运行，manifest 写在 exe 旁。"""
+    install_dir = tmp_path / "install"
+    install_dir.mkdir(exist_ok=True)
+    exe = install_dir / "RenpyBox.exe"
+    exe.write_bytes(b"EXE")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    if version is not None:
+        (install_dir / "_update_manifest.json").write_text(
+            json.dumps({"version": version, "files": {}}), encoding="utf-8"
+        )
+
+
+def _release_with_assets(*asset_names: str, version: str = "v2.0.0") -> dict:
+    return {
+        "tag_name": f"RenpyBox_{version}",
+        "assets": [
+            {
+                "name": name,
+                "size": 10,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": "sha256:" + "0" * 64,
+            }
+            for name in asset_names
+        ]
+    }
+
+
+def test_installed_manifest_version_read_from_exe_dir(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v1.2.3")
+    assert VersionManager._installed_manifest_version() == "v1.2.3"
+
+
+def test_installed_manifest_version_none_without_manifest(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, None)
+    assert VersionManager._installed_manifest_version() is None
+
+
+def test_select_download_asset_prefers_matching_patch(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v1.0.0")
+    latest = _release_with_assets(
+        "RenpyBox_v1.9.0.from-v1.0.0.patch.zip",
+        "RenpyBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
+
+
+def test_select_download_asset_falls_back_to_full_when_base_mismatch(monkeypatch, tmp_path) -> None:
+    _fake_installed_manifest(monkeypatch, tmp_path, "v0.9.0")
+    latest = _release_with_assets(
+        "RenpyBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.zip"
+
+
+def test_select_download_asset_never_picks_patch_without_manifest(monkeypatch, tmp_path) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    latest = _release_with_assets(
+        "RenpmBox_v2.0.0.zip",
+        "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    latest["assets"][0]["name"] = "RenpyBox_v2.0.0.zip"
+    asset = VersionManager._select_download_asset(latest)
+    assert asset["name"] == "RenpyBox_v2.0.0.zip"
+
+
+def test_select_download_asset_ignores_unrelated_zip_before_full(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    latest = _release_with_assets(
+        "symbols.zip",
+        "RenpyBox_v1.9.0.zip",
+        "RenpyBox_v2.0.0.zip",
+    )
+
+    asset = VersionManager._select_download_asset(latest)
+
+    assert asset["name"] == "RenpyBox_v2.0.0.zip"
+
+
+def test_select_download_asset_rejects_missing_versioned_full_zip(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    latest = _release_with_assets("symbols.zip", "RenpyBox_v1.9.0.zip")
+
+    with pytest.raises(RuntimeError, match="RenpyBox_v2.0.0.zip"):
+        VersionManager._select_download_asset(latest)

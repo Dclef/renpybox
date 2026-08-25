@@ -26,6 +26,7 @@ from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TermAsset,
     TranslationTaskContext,
+    find_provider_by_identity,
     merge_provider_credentials,
 )
 from module.Engine.Translator.TranslatorTask import TranslatorTask
@@ -586,13 +587,7 @@ class Translator(Base):
         )
         persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
 
-        current: dict = {}
-        persisted_id = persisted.get("id")
-        if isinstance(config.platforms, list):
-            for platform in config.platforms:
-                if isinstance(platform, dict) and platform.get("id") == persisted_id:
-                    current = platform
-                    break
+        current = find_provider_by_identity(persisted, config.platforms)
         if persisted and not current:
             raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再继续翻译")
         if not current:
@@ -1064,7 +1059,6 @@ class Translator(Base):
         output_path = os.path.abspath(output_folder)
 
         if os.path.isfile(input_path):
-            input_dir = os.path.dirname(input_path)
             target_output_file = os.path.join(output_path, os.path.basename(input_path))
             if os.path.abspath(target_output_file) == input_path:
                 return False, "源码翻译禁止直接覆盖原始 .rpy 文件，请使用独立输出目录。"
@@ -1592,7 +1586,7 @@ class Translator(Base):
             max_workers = min(8, max(1, rpm_threshold))
 
         # 配置文件可能来自旧版本或手工编辑，给线程池设置最终上限。
-        max_workers = min(max_workers, 64)
+        max_workers = min(max_workers, 1024)
 
         return max_workers, rpm_threshold
 

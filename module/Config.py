@@ -10,13 +10,16 @@ from base.compat import Self
 
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
-from base.PathHelper import get_app_path, get_resource_path
+from base.AppPaths import get_app_paths
+from base.PathHelper import get_resource_path
+from module.File.AtomicWrite import atomic_write_text
+from base.EventTelemetry import record_latency
 from module.Localizer.Localizer import Localizer
 
 @dataclasses.dataclass
 class Config():
 
-    CURRENT_CONFIG_VERSION: ClassVar[int] = 1
+    CURRENT_CONFIG_VERSION: ClassVar[int] = 2
     PROJECT_SCOPED_WORKBENCH_DEFAULTS: ClassVar[dict[str, Any]] = {
         "renpy_workbench_worldbook_enable": False,
         "renpy_workbench_worldbook_data": {},
@@ -108,7 +111,8 @@ class Config():
 
     # BasicSettingsPage
     token_threshold: int = 10
-    max_workers: int = 0
+    # 默认使用固定并发；用户仍可手动设置 0，表示按接口槽位自动探测。
+    max_workers: int = 16
     rpm_threshold: int = 0
     request_timeout: int = 120
     max_round: int = 16
@@ -144,8 +148,12 @@ class Config():
     # 默认原文语言改为英文，避免误将非日文项目设为日文
     source_language: BaseLanguage.Enum = BaseLanguage.Enum.EN
     target_language: BaseLanguage.Enum = BaseLanguage.Enum.ZH
-    input_folder: str = "./input"
-    output_folder: str = "./output"
+    input_folder: str = dataclasses.field(
+        default_factory = lambda: str(get_app_paths().input_path),
+    )
+    output_folder: str = dataclasses.field(
+        default_factory = lambda: str(get_app_paths().output_path),
+    )
     output_folder_open_on_finish: bool = False
     traditional_chinese_enable: bool = False
 
@@ -266,7 +274,7 @@ class Config():
     # 用户配置（运行时生成，避免写回 resource 打包资源）
     # 用户配置固定到应用目录，避免从快捷方式、终端或其他工作目录启动时
     # 读写到不同的 ``./config.json``。
-    CONFIG_PATH: ClassVar[str] = get_app_path("config.json")
+    CONFIG_PATH: ClassVar[str] = str(get_app_paths().config_path)
     CONFIG_LOCK: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
@@ -284,6 +292,8 @@ class Config():
         while version < cls.CURRENT_CONFIG_VERSION:
             if version == 0:
                 cls._migrate_v0_to_v1(config)
+            elif version == 1:
+                cls._migrate_v1_to_v2(config)
             else:
                 raise ValueError(f"Unsupported config migration version: {version}")
 
@@ -332,6 +342,12 @@ class Config():
         )
 
     @classmethod
+    def _migrate_v1_to_v2(cls, config: dict[str, Any]) -> None:
+        """把旧版的默认自动并发迁移为 16；用户以后仍可手动选 0。"""
+        if "max_workers" not in config or config.get("max_workers") == 0:
+            config["max_workers"] = 16
+
+    @classmethod
     def _apply_current_defaults(cls, config: dict[str, Any]) -> None:
         config.setdefault("config_version", cls.CURRENT_CONFIG_VERSION)
         config.setdefault("translation_prompt_mode", cls.PROMPT_MODE_COMMON)
@@ -343,6 +359,7 @@ class Config():
         config.setdefault("asset_regex_enable", False)
         config.setdefault("last_seen_version", "")
         config.setdefault("agent_platform", -1)
+        config.setdefault("max_workers", 16)
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""
@@ -511,10 +528,15 @@ class Config():
         )
 
     def load(self, path: str = None) -> Self:
+        # UI 主线程读盘计数（锁外打点；摘要可能触发 LogManager 初始化再进 load，锁外才安全）
+        if threading.current_thread() is threading.main_thread():
+            record_latency("__ui_config_read__", 0.0)
+
         if path is None:
             user_path = __class__.CONFIG_PATH
             path = user_path if os.path.isfile(user_path) else get_resource_path("resource", "config.json")
 
+        failure: Exception | None = None
         with __class__.CONFIG_LOCK:
             try:
                 if os.path.isfile(path):
@@ -524,15 +546,43 @@ class Config():
                         for k, v in config.items():
                             if k in field_names:
                                 setattr(self, k, v)
+                        self._normalise_runtime_paths()
             except Exception as e:
-                LogManager.get().error(f"{Localizer.get().log_read_file_fail}", e)
+                failure = e
+
+        if failure is not None:
+            # 配置读取失败不能把异常对象交回依赖 Config.load() 的日志路径，
+            # 否则 LogManager 初始化专家模式时会递归读取同一个坏文件。
+            LogManager.get().error(
+                f"{Localizer.get().log_read_file_fail}: {failure}"
+            )
 
         return self
 
-    def save(self, path: str = None) -> Self:
+    def _normalise_runtime_paths(self) -> None:
+        """把旧配置中的相对运行目录固定到应用根目录。"""
+        paths = get_app_paths()
+        for field_name in (
+            "input_folder",
+            "output_folder",
+            "renpy_project_path",
+            "renpy_game_folder",
+            "renpy_tl_folder",
+        ):
+            value = getattr(self, field_name, "")
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = os.path.expanduser(value)
+            if not os.path.isabs(candidate):
+                setattr(self, field_name, str(paths.app(candidate)))
+
+    def save(self, path: str = None, *, strict: bool = False) -> Self:
         if path is None:
             path = __class__.CONFIG_PATH
 
+        # 日志在锁外记录：LogManager 初始化会触发 Config().load()，
+        # 在锁内调用会在 load 请求同一把锁时死锁（threading.Lock 不可重入）
+        failure: Exception | None = None
         with __class__.CONFIG_LOCK:
             try:
                 parent = os.path.dirname(os.path.abspath(path))
@@ -541,10 +591,20 @@ class Config():
                 # 工作台资产由项目缓存持久化，不能写回全局配置后污染下一个项目。
                 for key, value in __class__.PROJECT_SCOPED_WORKBENCH_DEFAULTS.items():
                     payload[key] = copy.deepcopy(value)
-                with open(path, "w", encoding = "utf-8") as writer:
-                    json.dump(payload, writer, indent = 4, ensure_ascii = False)
+                # 原子替换：临时文件 + os.replace，写中断不会留下半个 config.json
+                atomic_write_text(
+                    path,
+                    json.dumps(payload, indent = 4, ensure_ascii = False),
+                )
             except Exception as e:
-                LogManager.get().error(f"{Localizer.get().log_write_file_fail}", e)
+                failure = e
+
+        if failure is not None:
+            LogManager.get().error(
+                f"{Localizer.get().log_write_file_fail}: {failure}"
+            )
+            if strict:
+                raise failure
 
         return self
 

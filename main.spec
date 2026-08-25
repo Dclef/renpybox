@@ -202,11 +202,14 @@ exe = EXE(
 )
 
 # 更新器 EXE（单文件模式）
+# 注意：文件名不能叫 RenpyBoxUpdater.exe——存量用户机器上的旧版更新器
+# 按该名字跳过自身更新；改名 V2 才能把新更新器铺给旧安装。清理扫掠按
+# "文件名含 updater" 保护，新名字保留了 updater 字样。
 pyz_updater = PYZ(a_updater.pure, a_updater.zipped_data, cipher=block_cipher)
 updater_exe = EXE(
     pyz_updater, a_updater.scripts,
     a_updater.binaries, a_updater.zipfiles, a_updater.datas,
-    name='RenpyBoxUpdater',
+    name='RenpyBoxUpdater2',
     upx=True,
     console=False,
     icon=icon_file,

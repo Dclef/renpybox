@@ -13,6 +13,7 @@ from frontend.Project.PlatformPage import (
     resolve_group,
 )
 from module.Config import Config
+from module.Secret.SecretStore import MemoryBackend, SecretStore
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -110,13 +111,116 @@ def test_delete_platform_keeps_agent_platform_index_in_sync(
     rebuilt = []
     page = SimpleNamespace(rebuild_all=lambda: rebuilt.append(True))
     monkeypatch.setattr(Config, "load", lambda self: config)
-    monkeypatch.setattr(Config, "save", lambda self: self)
+    monkeypatch.setattr(Config, "save", lambda self, **_kwargs: self)
+    monkeypatch.setattr(SecretStore, "get", lambda: SecretStore(MemoryBackend()))
 
     PlatformPage.delete_platform(page, 1)
 
     assert [platform["id"] for platform in config.platforms] == [0, 1]
     assert config.activate_platform == 1
     assert config.agent_platform == expected_agent_platform
+    assert rebuilt == [True]
+
+
+def test_delete_platform_clears_exact_identity_before_reindex(monkeypatch) -> None:
+    store = SecretStore(MemoryBackend())
+    first = {"id": 0}
+    removed = {"id": 1}
+    last = {"id": 2}
+    store.store_keys(removed, ["removed-key"])
+    config = Config(
+        platforms=[first, removed, last],
+        activate_platform=0,
+        agent_platform=-1,
+    )
+    page = SimpleNamespace(rebuild_all=lambda: None, emit=lambda *_args: None)
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    monkeypatch.setattr(Config, "save", lambda self, **_kwargs: self)
+    monkeypatch.setattr(SecretStore, "get", lambda: store)
+
+    PlatformPage.delete_platform(page, 1)
+
+    assert store.resolve_keys(removed) == []
+    assert config.platforms == [first, last]
+    assert [item["id"] for item in config.platforms] == [0, 1]
+
+
+def test_delete_platform_cleanup_failure_only_leaves_unreachable_identity(monkeypatch) -> None:
+    class FailingClearStore:
+        @staticmethod
+        def resolve_keys(platform: dict) -> list[str]:
+            return ["kept-key"]
+
+        @staticmethod
+        def clear_keys(platform: dict) -> bool:
+            return False
+
+    platforms = [{"id": 0}, {"id": 1}]
+    config = Config(platforms=platforms, activate_platform=0, agent_platform=-1)
+    events = []
+    rebuilt = []
+    page = SimpleNamespace(
+        rebuild_all=lambda: rebuilt.append(True),
+        emit=lambda *args: events.append(args),
+    )
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    monkeypatch.setattr(Config, "save", lambda self, **_kwargs: self)
+    monkeypatch.setattr(SecretStore, "get", lambda: FailingClearStore())
+
+    PlatformPage.delete_platform(page, 1)
+
+    assert config.platforms == [{"id": 0}]
+    assert len(events) == 1
+    assert rebuilt == [True]
+
+
+def test_delete_platform_save_failure_never_clears_credentials(monkeypatch) -> None:
+    class TrackingStore:
+        cleared = False
+
+        def clear_keys(self, platform: dict) -> bool:
+            self.cleared = True
+            return True
+
+    store = TrackingStore()
+    config = Config(
+        platforms=[{"id": 0}, {"id": 1}],
+        activate_platform=1,
+        agent_platform=1,
+    )
+    page = SimpleNamespace(rebuild_all=lambda: None, emit=lambda *_args: None)
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    monkeypatch.setattr(
+        Config,
+        "save",
+        lambda self, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(SecretStore, "get", lambda: store)
+
+    with pytest.raises(OSError, match="disk full"):
+        PlatformPage.delete_platform(page, 1)
+
+    assert store.cleared is False
+    assert config.platforms == [{"id": 0}, {"id": 1}]
+    assert config.activate_platform == 1
+    assert config.agent_platform == 1
+
+
+def test_add_platform_assigns_fresh_identity(monkeypatch) -> None:
+    existing = {"id": 0, "name": "OpenAI"}
+    SecretStore.ensure_platform_identity(existing, preserve_legacy = False)
+    config = Config(platforms=[existing])
+    rebuilt = []
+    page = SimpleNamespace(rebuild_all=lambda: rebuilt.append(True))
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    monkeypatch.setattr(Config, "save", lambda self, **_kwargs: self)
+
+    PlatformPage.add_platform(page, existing)
+
+    added = config.platforms[1]
+    assert added["credential_id"] != existing["credential_id"]
+    assert "legacy_credential_id" not in added
+    assert added["id"] == 1
     assert rebuilt == [True]
 
 

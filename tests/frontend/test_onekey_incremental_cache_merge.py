@@ -676,7 +676,7 @@ def test_full_apply_rolls_back_all_files_when_later_copy_fails(tmp_path, monkeyp
         return real_copy2(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(
-        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        "frontend.RenpyToolbox.OneKeyWorkers.shutil.copy2",
         fail_second_source,
     )
 
@@ -766,7 +766,7 @@ def test_transactional_apply_rolls_back_created_symlink_referent(
         return real_copy2(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(
-        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        "frontend.RenpyToolbox.OneKeyWorkers.shutil.copy2",
         fail_second_source,
     )
 
@@ -805,7 +805,7 @@ def test_transactional_apply_rolls_back_symlink_referent(tmp_path, monkeypatch):
         return real_copy2(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(
-        "frontend.RenpyToolbox.OneKeyTranslatePage.shutil.copy2",
+        "frontend.RenpyToolbox.OneKeyWorkers.shutil.copy2",
         fail_second_source,
     )
 

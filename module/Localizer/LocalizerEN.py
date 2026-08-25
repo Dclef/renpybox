@@ -224,6 +224,7 @@ class LocalizerEN(LocalizerZH):
     app_update_check_latest_toast: str = "You're using the latest version"
     app_update_check_failure: str = "Update check failed: "
     app_update_cancelled: str = "Download cancelled"
+    toast_merged_count: str = " (x{})"
     app_changelog_title: str = "Changelog"
     app_changelog_empty: str = "No changelog is available"
     app_changelog_available: str = "Update available: {VERSION}"
@@ -277,6 +278,8 @@ class LocalizerEN(LocalizerZH):
     platform_edit_page_api_key: str = "Please enter API Key …"
     platform_edit_page_api_key_title: str = "API Key"
     platform_edit_page_api_key_content: str = "Please enter API Key, e.g., sk-d0daba12345678fd8eb7b8d31c123456. Multiple keys can be entered for polling, one key per line"
+    platform_edit_page_api_key_clear_failed: str = "Credential cleanup failed; the existing key was kept"
+    platform_edit_page_api_key_save_failed: str = "Failed to save the API key; please try again"
     platform_edit_page_thinking_title: str = "Thinking Level"
     platform_edit_page_thinking_content: str = "Set model thinking level (OFF/LOW/MEDIUM/HIGH/MAX), only works for models that support thinking mode"
     platform_edit_page_thinking_off: str = "Off"
@@ -669,7 +672,7 @@ class LocalizerEN(LocalizerZH):
     basic_settings_page_max_workers_content: str = (
         "Maximum number of tasks executing simultaneously"
         "<br>"
-        "Proper configuration can significantly speed up task completion"
+        "The default is 16; proper configuration can significantly speed up task completion"
         "<br>"
         "Please refer to the API platform's documentation for settings, 0 = Automatic"
     )
