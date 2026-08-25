@@ -672,7 +672,7 @@ class LocalizerEN(LocalizerZH):
     basic_settings_page_max_workers_content: str = (
         "Maximum number of tasks executing simultaneously"
         "<br>"
-        "Proper configuration can significantly speed up task completion"
+        "The default is 16; proper configuration can significantly speed up task completion"
         "<br>"
         "Please refer to the API platform's documentation for settings, 0 = Automatic"
     )

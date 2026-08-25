@@ -32,6 +32,7 @@ from base.LogManager import LogManager
 from module.Config import Config
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Localizer.Localizer import Localizer
+from module.Project.ProjectStore import ProjectStore
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -363,7 +364,7 @@ class RenpyTranslationPage(QWidget):
                 )
 
             # 保存配置
-            self.config.renpy_game_folder = game_dir
+            ProjectStore.get().set_game_folder(self.config, game_dir)
             self.config.extract_use_official = use_official
             self.config.extract_use_custom = use_custom
             if hasattr(self, 'chk_skip_hooks'):
@@ -372,7 +373,7 @@ class RenpyTranslationPage(QWidget):
                 self.config.renpy_filter_suspicious_bool_expr = self.chk_filter_bool_expr.isChecked()
             if hasattr(self, "chk_auto_merge_cleanup"):
                 self.config.renpy_incremental_auto_merge_cleanup = self.chk_auto_merge_cleanup.isChecked()
-            self.config.save()
+            ProjectStore.get().persist(self.config, emit = False)
 
             # 执行抽取
             self._begin(Localizer.get().extract_tl_extracting_translatable_text)
@@ -578,8 +579,8 @@ class RenpyTranslationPage(QWidget):
         path = QFileDialog.getExistingDirectory(self, Localizer.get().onekey_select_game_folder)
         if path:
             self.game_dir_edit.setText(path)
-            self.config.renpy_game_folder = path
-            self.config.save()
+            ProjectStore.get().set_game_folder(self.config, path)
+            ProjectStore.get().persist(self.config, emit = False)
 
     def _browse_exe(self, edit: LineEdit):
         path, _ = QFileDialog.getOpenFileName(

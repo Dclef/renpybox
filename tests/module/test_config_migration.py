@@ -80,6 +80,23 @@ def test_agent_platform_uses_negative_sentinel_without_hiding_platform_zero():
     assert Config.migrate_dict({"agent_platform": 0})["agent_platform"] == 0
 
 
+def test_default_concurrency_is_sixteen_and_old_zero_is_migrated():
+    assert Config().max_workers == 16
+
+    migrated = Config.migrate_dict({"config_version": 1, "max_workers": 0})
+
+    assert migrated["config_version"] == Config.CURRENT_CONFIG_VERSION
+    assert migrated["max_workers"] == 16
+
+
+def test_explicit_auto_concurrency_remains_zero_after_v2():
+    migrated = Config.migrate_dict(
+        {"config_version": Config.CURRENT_CONFIG_VERSION, "max_workers": 0}
+    )
+
+    assert migrated["max_workers"] == 0
+
+
 def test_invalid_pipeline_enums_are_normalized_at_migration_boundary():
     migrated = Config.migrate_dict(
         {

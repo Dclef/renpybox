@@ -355,6 +355,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     (input_folder / "story.txt").write_text("Hello", encoding = "utf-8")
 
     initial = _config(input_folder, output_folder, model = "old-model", api_key = "old-key")
+    initial.max_workers = 4
+    initial.rpm_threshold = 30
     first = _translator()
     original_context = first._initialize_translation_run(
         initial,
@@ -363,6 +365,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     )
 
     changed = _config(input_folder, output_folder, model = "new-model", api_key = "new-key")
+    changed.max_workers = 16
+    changed.rpm_threshold = 90
     changed.token_threshold = 99
     changed.translation_prompt_mode = Config.PROMPT_MODE_LOCAL
     changed.translation_style_id = Config.STYLE_R18
@@ -380,6 +384,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     assert resumed_context.prompt["mode"] == Config.PROMPT_MODE_COT
     assert resumed_context.prompt["style_id"] == Config.STYLE_LITERARY
     assert runtime.token_threshold == 24
+    assert runtime.max_workers == 16
+    assert runtime.rpm_threshold == 90
     assert runtime_platform["model"] == "old-model"
     assert runtime_platform["api_url"] == "https://old.invalid/v1"
     assert runtime_platform["api_key"] == ["new-key"]

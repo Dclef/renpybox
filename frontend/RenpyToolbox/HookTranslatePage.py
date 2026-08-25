@@ -485,6 +485,8 @@ class HookTranslatePage(Base, QWidget):
             )
             return
         tl_dir = paths.tl_language_dir
+        source_lang = self.source_lang_combo.currentData()
+        target_lang = self.target_lang_combo.currentData()
         ProjectStore.get().apply_resolved(
             config,
             paths,
@@ -495,15 +497,10 @@ class HookTranslatePage(Base, QWidget):
                 setattr(current, "renpy_source_translate", False),
                 setattr(current, "renpy_hook_translate", False),
                 setattr(current, "renpy_hook_incremental", self.incremental_switch.isChecked()),
+                setattr(current, "source_language", source_lang) if source_lang else None,
+                setattr(current, "target_language", target_lang) if target_lang else None,
             ),
         )
-
-        source_lang = self.source_lang_combo.currentData()
-        if source_lang:
-            config.source_language = source_lang
-        target_lang = self.target_lang_combo.currentData()
-        if target_lang:
-            config.target_language = target_lang
 
         self._stop_requested.clear()
         self._state = "extracting"

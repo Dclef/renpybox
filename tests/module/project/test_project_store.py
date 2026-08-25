@@ -94,6 +94,23 @@ def test_apply_resolved_mutates_extra_fields_before_single_save(
     assert config.saved == 1
 
 
+def test_apply_resolved_can_defer_persistence_for_runtime_paths(
+    store, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instance, emitted = store
+    config = _FakeConfig()
+    paths = _fake_paths(tmp_path, monkeypatch)
+
+    instance.apply_resolved(config, paths, persist = False)
+
+    assert config.renpy_project_path == str(paths.project_root)
+    assert config.saved == 0
+    assert emitted == []
+
+    instance.persist(config, emit = False)
+    assert config.saved == 1
+
+
 def test_save_edited_paths_only_touches_three_fields(store) -> None:
     instance, emitted = store
     config = _FakeConfig()
@@ -121,4 +138,20 @@ def test_save_edited_paths_keeps_blank_semantics(store) -> None:
     assert config.renpy_project_path == ""
     assert config.renpy_game_folder == ""
     assert config.renpy_tl_folder == ""
+    assert config.saved == 1
+
+
+def test_save_edited_paths_applies_extra_fields_before_single_save(store) -> None:
+    instance, _ = store
+    config = _FakeConfig()
+
+    instance.save_edited_paths(
+        config,
+        "new/root",
+        "new/game",
+        "new/tl",
+        mutate = lambda current: setattr(current, "target_language", "ZH"),
+    )
+
+    assert config.target_language == "ZH"
     assert config.saved == 1

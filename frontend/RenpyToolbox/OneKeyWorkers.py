@@ -14,7 +14,8 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config, write_run_manifest
+from module.Renpy.ProjectPaths import RenpyProjectPaths, write_run_manifest
+from module.Project.ProjectStore import ProjectStore
 from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 
@@ -33,8 +34,13 @@ def configure_main_translation_paths(config, game_dir, tl_name, *, remember_run 
     paths = RenpyProjectPaths.from_path(game_dir, tl_name)
     if paths is None:
         raise ValueError("无法解析 Ren'Py 项目路径")
-    apply_to_config(config, paths)
-    configure_tl_translation_mode(config)
+    # 后台流程只收口字段写入；调用方按既有时机保存，避免在工作线程广播页面事件。
+    ProjectStore.get().apply_resolved(
+        config,
+        paths,
+        mutate = configure_tl_translation_mode,
+        persist = False,
+    )
     if remember_run:
         _remember_translation_run(
             paths,
@@ -52,8 +58,14 @@ def configure_incremental_translation_paths(config, game_dir, tl_name, increment
         raise ValueError("无法解析 Ren'Py 项目路径")
     delta_dir = Path(incremental_dir)
     output_dir = paths.translation_output_dir.parent / f"{paths.language}_new"
-    apply_to_config(config, paths, input_folder = delta_dir, output_folder = output_dir)
-    configure_tl_translation_mode(config)
+    ProjectStore.get().apply_resolved(
+        config,
+        paths,
+        input_folder = delta_dir,
+        output_folder = output_dir,
+        mutate = configure_tl_translation_mode,
+        persist = False,
+    )
     _remember_translation_run(
         paths,
         output_folder = output_dir,

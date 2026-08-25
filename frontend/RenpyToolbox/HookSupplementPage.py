@@ -27,7 +27,8 @@ from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from module.Renpy.ProjectPaths import RenpyProjectPaths
+from module.Project.ProjectStore import ProjectStore
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 
 
@@ -368,21 +369,20 @@ class HookSupplementPage(Base, QWidget):
                 parent = self,
             )
             return
-        apply_to_config(
+        source_lang = self.source_lang_combo.currentData()
+        target_lang = self.target_lang_combo.currentData()
+        ProjectStore.get().apply_resolved(
             config,
             paths,
             input_folder = paths.tl_language_dir,
             output_folder = paths.tl_language_dir,
+            mutate = lambda current: (
+                setattr(current, "renpy_hook_translate", True),
+                setattr(current, "renpy_source_translate", False),
+                setattr(current, "source_language", source_lang) if source_lang else None,
+                setattr(current, "target_language", target_lang) if target_lang else None,
+            ),
         )
-        config.renpy_hook_translate = True
-        config.renpy_source_translate = False
-
-        source_lang = self.source_lang_combo.currentData()
-        if source_lang:
-            config.source_language = source_lang
-        target_lang = self.target_lang_combo.currentData()
-        if target_lang:
-            config.target_language = target_lang
 
         self._active = True
         self.btn_start.setEnabled(False)

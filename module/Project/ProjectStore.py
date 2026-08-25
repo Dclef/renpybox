@@ -1,15 +1,13 @@
-"""项目事实写入口（第一层）。
+"""项目事实写入口。
 
-收口两种写入语义：
+收口项目路径的写入语义：
 - ``apply_resolved``：路径解析后的规范化回写（内部走 Renpy ProjectPaths 的
   ``apply_to_config``，五字段一致）；
-- ``save_edited_paths``：项目设置页的表单编辑保存（仅三字段，保留用户显式值）。
+- ``save_edited_paths``：项目设置页的表单编辑保存（仅三字段，保留用户显式值）；
+- ``persist``：统一的配置持久化出口。
 
-两者都在持久化成功后发 ``PROJECT_CHANGED`` 事件，供页面在项目切换后刷新。
-
-注意：ProjectPage / HookTranslatePage / OneKeyTranslatePage 等现有
-``apply_to_config`` 调用方暂不经本类（各自有精细的保存时机与上下文），
-随页面拆分逐步迁移；AndroidBuildPage 的单字段写入语义存疑，明确不收口。
+所有项目事实写入都先经过本类，再由调用方明确选择是否立即持久化。
+运行期临时目录可以使用 ``persist=False``，但不能绕过字段写入收口。
 """
 
 from base.Base import Base
@@ -33,6 +31,23 @@ class ProjectStore(Base):
             "project_root": str(getattr(config, "renpy_project_path", "") or ""),
         })
 
+    def persist(self, config, *, emit: bool = True):
+        """持久化已修改配置，并按需广播项目变化。"""
+        config.save()
+        if emit:
+            self._emit_changed(config)
+        return config
+
+    def set_project_path(self, config, project_path: str):
+        """只修改项目根路径，供需要和其他设置一起保存的页面使用。"""
+        config.renpy_project_path = str(project_path or "")
+        return config
+
+    def set_game_folder(self, config, game_folder: str):
+        """只修改 game 目录，供抽取/工具页和其他设置一起保存。"""
+        config.renpy_game_folder = str(game_folder or "")
+        return config
+
     def apply_resolved(
         self,
         config,
@@ -41,6 +56,7 @@ class ProjectStore(Base):
         input_folder = None,
         output_folder = None,
         mutate: Callable[[object], None] | None = None,
+        persist: bool = True,
     ):
         """规范化写入，并在同一次持久化前应用额外项目字段。"""
         apply_to_config(
@@ -51,15 +67,23 @@ class ProjectStore(Base):
         )
         if mutate is not None:
             mutate(config)
-        config.save()
-        self._emit_changed(config)
+        if persist:
+            self.persist(config)
         return config
 
-    def save_edited_paths(self, config, project_path: str, game_folder: str, tl_folder: str):
+    def save_edited_paths(
+        self,
+        config,
+        project_path: str,
+        game_folder: str,
+        tl_folder: str,
+        *,
+        mutate: Callable[[object], None] | None = None,
+    ):
         """表单编辑语义：仅三字段，input/output 与其他字段不动。"""
         config.renpy_project_path = str(project_path or "")
         config.renpy_game_folder = str(game_folder or "")
         config.renpy_tl_folder = str(tl_folder or "")
-        config.save()
-        self._emit_changed(config)
-        return config
+        if mutate is not None:
+            mutate(config)
+        return self.persist(config)

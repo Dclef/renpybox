@@ -220,6 +220,10 @@ class DirectRpyTranslatePage(Base, QWidget):
             paths = RenpyProjectPaths.from_path(input_tl_dir, tl_name)
             if paths is None:
                 raise RuntimeError(Localizer.get().direct_rpy_could_not_resolve_ren_py_project_paths)
+
+            language_codes = ("ZH", "ZH", "EN", "JA", "KO")
+            current_index = self.target_lang_combo.currentIndex()
+            tgt = language_codes[current_index] if 0 <= current_index < len(language_codes) else None
             ProjectStore.get().apply_resolved(
                 config,
                 paths,
@@ -230,14 +234,9 @@ class DirectRpyTranslatePage(Base, QWidget):
                     # 直接翻译 tl/.rpy，必须关闭源码翻译模式。
                     setattr(current, "renpy_source_translate", False),
                     setattr(current, "renpy_hook_translate", False),
+                    setattr(current, "target_language", tgt) if tgt else None,
                 ),
             )
-
-            language_codes = ("ZH", "ZH", "EN", "JA", "KO")
-            current_index = self.target_lang_combo.currentIndex()
-            tgt = language_codes[current_index] if 0 <= current_index < len(language_codes) else None
-            if tgt:
-                config.target_language = tgt
 
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
