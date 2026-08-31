@@ -274,3 +274,58 @@ def test_service_reset_clears_conversation() -> None:
 
     assert service.messages == []
     assert service._project_key == ""
+
+
+def test_service_trims_old_history_by_complete_user_round(monkeypatch) -> None:
+    observed_messages = []
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda _self, messages, _tools: (
+            observed_messages.append(list(messages))
+            or AgentRequestResult(True, text="完成")
+        ),
+    )
+    service = AgentService(
+        config_loader=_agent_config,
+        dispatcher=_Dispatcher(),
+        max_context_chars=4096,
+    )
+    service.messages = [
+        {"role": "system", "content": "系统提示"},
+        {"role": "user", "content": "旧问题"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "old-call", "function": {"name": "old"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "old-call",
+            "name": "old",
+            "content": "x" * 5000,
+        },
+        {"role": "user", "content": "最近问题"},
+        {"role": "assistant", "content": "最近回答"},
+    ]
+
+    result = service.run("当前问题")
+
+    assert result.success is True
+    sent = observed_messages[0]
+    assert [item["content"] for item in sent if item["role"] == "user"] == [
+        "最近问题",
+        "当前问题",
+    ]
+    assert all(item.get("tool_call_id") != "old-call" for item in sent)
+
+
+def test_service_invalid_agent_platform_is_treated_as_unset() -> None:
+    config = _agent_config()
+    config.agent_platform = "invalid"
+    service = AgentService(config_loader=lambda: config, dispatcher=_Dispatcher())
+
+    result = service.run("查看项目")
+
+    assert result.success is False
+    assert result.code == "AGENT_PLATFORM_NOT_SET"

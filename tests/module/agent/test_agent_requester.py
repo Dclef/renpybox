@@ -125,3 +125,50 @@ def test_cancelling_requester_does_not_close_another_agent_client(monkeypatch) -
     assert closed == ["first"]
     assert second._get_client() is second_client
     second.cancel()
+
+
+def test_google_cumulative_stream_emits_only_new_text() -> None:
+    requester = _requester()
+    received = []
+
+    def chunk(text: str):
+        return SimpleNamespace(
+            usage_metadata=None,
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[SimpleNamespace(text=text, thought=False)]
+                    )
+                )
+            ],
+        )
+
+    class Stream:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __iter__(self):
+            return iter((chunk("你"), chunk("你好"), chunk("你好")))
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = Stream()
+    client = SimpleNamespace(
+        models=SimpleNamespace(
+            generate_content_stream=lambda **_kwargs: stream,
+        )
+    )
+
+    result = requester._request_google_stream(
+        client,
+        [],
+        {},
+        received.append,
+        None,
+    )
+
+    assert result.success is True
+    assert result.text == "你好"
+    assert received == ["你", "好"]
+    assert stream.closed is True

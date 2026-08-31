@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QAbstractScrollArea,
     QApplication,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -65,7 +66,11 @@ from module.Agent.AgentService import AgentService
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import (
+    get_theme_accent_color,
+    mark_toolbox_scroll_area,
+    mark_toolbox_widget,
+)
 
 
 # AgentRequester 目前没有导出格式白名单；能力约束暂时保留在 UI，后续任务再下移。
@@ -86,6 +91,10 @@ MESSAGE_MIN_HEIGHT = 48
 
 # 用户主动上滚超过该距离后，新消息不再抢回滚动位置。
 AUTO_FOLLOW_THRESHOLD = 80
+
+# 回复越长，Markdown 全量重排越昂贵；逐步放宽刷新间隔以控制主线程开销。
+STREAM_RENDER_MEDIUM_CHARS = 5_000
+STREAM_RENDER_SLOW_CHARS = 20_000
 
 # 项目体检快捷操作使用稳定代码，不从模型回复文案反推意图。
 ACTION_OPEN_TRANSLATION = "open_translation"
@@ -135,7 +144,7 @@ def status_color(state: str) -> QColor:
         return ThemeColor.DARK_1.color()
     if state == "failed":
         return QColor("#D96868" if isDarkTheme() else "#C0392B")
-    return ThemeColor.PRIMARY.color()
+    return get_theme_accent_color()
 
 
 def _qss_rgba(color: QColor, alpha: int) -> str:
@@ -153,6 +162,14 @@ def format_elapsed(seconds: float) -> str:
     if minutes > 0:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """把配置或工具结果中的数字安全转换为整数。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class AgentInputEdit(PlainTextEdit):
@@ -184,7 +201,7 @@ class AgentMarkdownView(TextBrowser):
         颜色必须显式给出：应用不随主题切换系统调色板，暗色下 QPalette.Text
         仍是黑色，直接取调色板会让正文变成黑字黑底。
         """
-        accent = ThemeColor.PRIMARY.color().name()
+        accent = get_theme_accent_color().name()
         if isDarkTheme():
             text = "#e6e6e6"
             muted = "#9a9a9a"
@@ -224,9 +241,9 @@ class AgentMarkdownView(TextBrowser):
             border_color = QColor("#666666")
             header_color = QColor("#444444")
         else:
-            border_color = QColor(ThemeColor.PRIMARY.color())
+            border_color = QColor(get_theme_accent_color())
             border_color.setAlpha(64)
-            header_color = QColor(ThemeColor.PRIMARY.color())
+            header_color = QColor(get_theme_accent_color())
             header_color.setAlpha(24)
         for frame in self.document().rootFrame().childFrames():
             if not isinstance(frame, QTextTable):
@@ -272,7 +289,7 @@ class AgentStatusDot(QFrame):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._color = ThemeColor.PRIMARY.color()
+        self._color = get_theme_accent_color()
         self.setFixedSize(8, 8)
 
     def set_color(self, color: QColor) -> None:
@@ -405,7 +422,7 @@ class AgentBubble(QFrame):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        primary = ThemeColor.PRIMARY.color()
+        primary = get_theme_accent_color()
         if isDarkTheme():
             background = QColor(primary)
             background.setAlpha(46)
@@ -735,7 +752,7 @@ class AgentRoundHeader(QWidget):
         self._timer.start()
 
     def _apply_theme(self) -> None:
-        accent = ThemeColor.PRIMARY.color()
+        accent = get_theme_accent_color()
         if isDarkTheme():
             self.pill.setStyleSheet(
                 "QFrame#agentRoundPill {"
@@ -783,21 +800,21 @@ class AgentInsetCard(CardWidget):
     def _normalBackgroundColor(self) -> QColor:
         if isDarkTheme():
             return QColor(0, 0, 0, 30)
-        color = QColor(ThemeColor.PRIMARY.color())
+        color = QColor(get_theme_accent_color())
         color.setAlpha(20)
         return color
 
     def _hoverBackgroundColor(self) -> QColor:
         if isDarkTheme():
             return QColor(0, 0, 0, 42)
-        color = QColor(ThemeColor.PRIMARY.color())
+        color = QColor(get_theme_accent_color())
         color.setAlpha(32)
         return color
 
     def _pressedBackgroundColor(self) -> QColor:
         if isDarkTheme():
             return self._normalBackgroundColor()
-        color = QColor(ThemeColor.PRIMARY.color())
+        color = QColor(get_theme_accent_color())
         color.setAlpha(26)
         return color
 
@@ -916,7 +933,7 @@ class AgentToolWidget(AgentInsetCard):
                 "font-family: Consolas, 'Courier New', monospace;"
             )
         else:
-            accent = ThemeColor.PRIMARY.color()
+            accent = get_theme_accent_color()
             self.icon_chip.setStyleSheet(
                 "QFrame#agentToolIconChip {"
                 f" background-color: {_qss_rgba(accent, 28)};"
@@ -1475,7 +1492,7 @@ class AgentPage(Base, QWidget):
     def _build_conversation(self) -> None:
         localizer = Localizer.get()
         self.conversation_card = CardWidget(self)
-        conversation_layout = QVBoxLayout(self.conversation_card)
+        conversation_layout = QGridLayout(self.conversation_card)
         conversation_layout.setContentsMargins(0, 0, 0, 0)
         conversation_layout.setSpacing(0)
 
@@ -1507,7 +1524,22 @@ class AgentPage(Base, QWidget):
         self.history.enableTransparentBackground()
         self.conversation_stack.addWidget(self.history)
         self.conversation_stack.setCurrentWidget(self.empty_state)
-        conversation_layout.addWidget(self.conversation_stack)
+        conversation_layout.addWidget(self.conversation_stack, 0, 0)
+
+        # 用户上滚时提供一个固定的回到底部入口，不打断当前阅读位置。
+        self.scroll_latest_button = TransparentToolButton(self.conversation_card)
+        self.scroll_latest_button.setIcon(FluentIcon.CHEVRON_DOWN_MED)
+        self.scroll_latest_button.setFixedSize(32, 32)
+        self.scroll_latest_button.setToolTip(localizer.agent_page_scroll_latest)
+        self.scroll_latest_button.setAccessibleName(localizer.agent_page_scroll_latest)
+        self.scroll_latest_button.clicked.connect(self._scroll_to_latest)
+        self.scroll_latest_button.hide()
+        conversation_layout.addWidget(
+            self.scroll_latest_button,
+            0,
+            0,
+            Qt.AlignRight | Qt.AlignBottom,
+        )
         self.root.addWidget(self.conversation_card, 1)
 
         # 用户主动上滚后不再自动跟随，避免流式增量抢回滚动位置。
@@ -1583,7 +1615,7 @@ class AgentPage(Base, QWidget):
 
     def _apply_composer_style(self) -> None:
         """输入框融入输入面板，聚焦时再用主色描边。"""
-        accent = ThemeColor.PRIMARY.color().name()
+        accent = get_theme_accent_color().name()
         palette = self.input_box.palette()
         if isDarkTheme():
             palette.setColor(QPalette.Text, QColor("#f2f2f2"))
@@ -1638,7 +1670,7 @@ class AgentPage(Base, QWidget):
     def refresh_platforms(self) -> None:
         config = Config().load()
         self._refresh_project_context(config)
-        current = int(getattr(config, "agent_platform", -1))
+        current = _coerce_int(getattr(config, "agent_platform", -1), -1)
         thinking_level = str(
             getattr(config, "agent_thinking_level", "OFF") or "OFF"
         ).upper()
@@ -1668,7 +1700,9 @@ class AgentPage(Base, QWidget):
             api_format = str(platform.get("api_format", ""))
             if api_format not in SUPPORTED_FORMATS:
                 continue
-            platform_id = int(platform.get("id", 0))
+            platform_id = _coerce_int(platform.get("id", -1), -1)
+            if platform_id < 0:
+                continue
             name = str(platform.get("name") or platform.get("model") or api_format)
             self.platform_combo.addItem(f"{name} [{api_format}]", userData=platform_id)
             self._platform_ids.append(platform_id)
@@ -1679,7 +1713,7 @@ class AgentPage(Base, QWidget):
 
     def _platform_changed(self, index: int) -> None:
         data = self.platform_combo.itemData(index)
-        platform_id = int(data if data is not None else -1)
+        platform_id = _coerce_int(data if data is not None else -1, -1)
         config = Config().load()
         config.agent_platform = platform_id
         config.save()
@@ -1730,12 +1764,13 @@ class AgentPage(Base, QWidget):
     @property
     def history_widgets(self) -> list[QWidget]:
         """返回会话中的消息与工具控件，不含轮次头和活动指示器。"""
+        activity_widget = getattr(self, "activity_widget", None)
         widgets: list[QWidget] = []
         for index in range(self.history_layout.count()):
             widget = self.history_layout.itemAt(index).widget()
             if (
                 widget is not None
-                and widget is not self.activity_widget
+                and widget is not activity_widget
                 and not isinstance(widget, AgentRoundHeader)
             ):
                 widgets.append(widget)
@@ -1744,6 +1779,19 @@ class AgentPage(Base, QWidget):
     def _on_history_scrolled(self, _value: int = 0) -> None:
         bar = self.history.verticalScrollBar()
         self._auto_follow = bar.maximum() - bar.value() <= AUTO_FOLLOW_THRESHOLD
+        self._update_scroll_latest_button()
+
+    def _update_scroll_latest_button(self) -> None:
+        button = getattr(self, "scroll_latest_button", None)
+        if button is None:
+            return
+        button.setVisible(bool(self.history_widgets) and not self._auto_follow)
+
+    def _scroll_to_latest(self) -> None:
+        """恢复自动跟随并滚到最新消息。"""
+        self._auto_follow = True
+        self._update_scroll_latest_button()
+        self._history_scroll_timer.start(0)
 
     def _scroll_history_to_bottom(self) -> None:
         if not self._auto_follow:
@@ -1759,6 +1807,7 @@ class AgentPage(Base, QWidget):
         if insert_at < 0:
             insert_at = self.history_layout.count() - 1
         self.history_layout.insertWidget(insert_at, widget)
+        self._update_scroll_latest_button()
         self._history_scroll_timer.start(0)
 
     def _append(self, text: str, *, role: str) -> QWidget:
@@ -1794,7 +1843,7 @@ class AgentPage(Base, QWidget):
         self._ensure_assistant_turn()
         self._pending_reply_text += delta
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
-        self._render_timer.start()
+        self._schedule_render()
 
     def _append_thinking_delta(self, text: str) -> None:
         """累积思考增量，与正文共用节流定时器。"""
@@ -1804,7 +1853,21 @@ class AgentPage(Base, QWidget):
         self._ensure_assistant_turn()
         self._pending_thinking_text += delta
         self.activity_widget.label.setText(Localizer.get().agent_page_running)
-        self._render_timer.start()
+        self._schedule_render()
+
+    def _schedule_render(self) -> None:
+        """按当前消息长度选择节流间隔，短回复仍保持即时打字感。"""
+        rendered_chars = len(self._pending_reply_text) + len(self._pending_thinking_text)
+        if self._assistant_turn is not None:
+            rendered_chars += len(self._assistant_turn.text)
+        interval = (
+            50
+            if rendered_chars < STREAM_RENDER_MEDIUM_CHARS
+            else 80
+            if rendered_chars < STREAM_RENDER_SLOW_CHARS
+            else 120
+        )
+        self._render_timer.start(interval)
 
     def _flush_pending_deltas(self) -> None:
         """把累积的增量一次性渲染；正文与思考各只触发一次重排。"""
@@ -1823,6 +1886,7 @@ class AgentPage(Base, QWidget):
             turn.append_thinking_text(thinking_text)
             flushed = True
         if flushed:
+            self._update_scroll_latest_button()
             self._history_scroll_timer.start(0)
 
     def _complete_reply(self, text: str) -> None:
@@ -1877,6 +1941,7 @@ class AgentPage(Base, QWidget):
             widget.setParent(None)
             widget.deleteLater()
         self.activity_widget.set_running(False)
+        self._update_scroll_latest_button()
         self.status_label.setText("")
         self.stop_button.setEnabled(False)
         self.stop_button.hide()
@@ -1941,6 +2006,8 @@ class AgentPage(Base, QWidget):
             for candidate in self._running_tool_widgets
             if candidate is not widget
         ]
+        # 工具完成后仍可能马上进入下一轮模型请求，活动指示不能停在旧工具名称。
+        self.activity_widget.label.setText(Localizer.get().agent_page_running)
         self._history_scroll_timer.start(0)
 
     def send_message(self) -> None:
@@ -1950,7 +2017,12 @@ class AgentPage(Base, QWidget):
         if not message:
             return
         # 接口未选定时不清空输入框，否则用户刚打的内容会凭空消失。
-        if int(self.platform_combo.currentData() if self.platform_combo.currentData() is not None else -1) < 0:
+        if _coerce_int(
+            self.platform_combo.currentData()
+            if self.platform_combo.currentData() is not None
+            else -1,
+            -1,
+        ) < 0:
             self.status_label.setText(Localizer.get().agent_page_platform_unset)
             return
         self.input_box.clear()
@@ -2063,7 +2135,7 @@ class AgentPage(Base, QWidget):
             if self._assistant_turn is not None:
                 self._assistant_turn.finish_thinking()
             self._stream_message = self._assistant_turn
-            self.activity_widget.label.setText(localizer.agent_page_running)
+            self.activity_widget.set_running(True, localizer.agent_page_running)
         elif event_name == "reply_delta":
             if payload.get("thinking") or payload.get("kind") in {"thinking", "reasoning"}:
                 self._append_thinking_delta(str(payload.get("text", "")))
@@ -2134,6 +2206,7 @@ class AgentPage(Base, QWidget):
         self._running_tool_widgets.clear()
         if self._round_header is not None:
             self._round_header.stop()
+        result_code = str(getattr(result, "code", "") or "")
         if getattr(result, "success", False):
             if not self._reply_rendered:
                 self._complete_reply(str(result.message))
@@ -2142,6 +2215,11 @@ class AgentPage(Base, QWidget):
                 self._pending_reply_actions = []
                 self._history_scroll_timer.start(0)
             self.status_label.setText(localizer.agent_page_done)
+        elif result_code in {"CANCELLED", "USER_CANCELLED"}:
+            # 主动停止或拒绝确认属于正常结束，不再追加一条可重试的错误。
+            self._pending_reply_actions = []
+            self._stream_message = None
+            self.status_label.setText(localizer.agent_page_cancelled)
         else:
             self._pending_reply_actions = []
             self._stream_message = None
@@ -2217,7 +2295,7 @@ class AgentPage(Base, QWidget):
         unpack_required = bool(
             files.get("unpack_required", action_code == "UNPACK_RPA")
         )
-        if int(files.get("rpa_count", 0) or 0) > 0:
+        if _coerce_int(files.get("rpa_count", 0), 0) > 0:
             add(
                 (
                     ACTION_LIST_RPA,
@@ -2233,8 +2311,9 @@ class AgentPage(Base, QWidget):
                         FluentIcon.FOLDER_ADD,
                     )
                 )
-        if int(files.get("rpy_count", 0) or 0) > 0 or int(
-            files.get("rpyc_count", 0) or 0
+        if _coerce_int(files.get("rpy_count", 0), 0) > 0 or _coerce_int(
+            files.get("rpyc_count", 0),
+            0,
         ) > 0:
             add(
                 (
@@ -2275,8 +2354,8 @@ class AgentPage(Base, QWidget):
                     )
                 )
             if (
-                int(data.get("rpy_count", 0) or 0) > 0
-                or int(data.get("rpyc_count", 0) or 0) > 0
+                _coerce_int(data.get("rpy_count", 0), 0) > 0
+                or _coerce_int(data.get("rpyc_count", 0), 0) > 0
                 or "unpack_required" not in data
             ):
                 actions.append(
@@ -2450,7 +2529,7 @@ class AgentPage(Base, QWidget):
     def _update_send_button(self) -> None:
         running = self._worker is not None and self._worker.isRunning()
         current_platform = self.platform_combo.currentData()
-        platform_ready = current_platform is not None and int(current_platform) >= 0
+        platform_ready = _coerce_int(current_platform, -1) >= 0
         self.send_button.setEnabled(
             bool(self.input_box.toPlainText().strip())
             and platform_ready

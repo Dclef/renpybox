@@ -109,7 +109,6 @@ def test_agent_entry_prefills_project_and_starts_extraction(monkeypatch):
     assert validated == ["E:/Games/Test"]
     assert extracted == [True]
     assert page._start_translation_after_extraction is True
-    assert page._agent_direct_start is True
     assert page._onekey_translation_completed is False
 
 
@@ -190,7 +189,7 @@ def test_agent_extraction_success_continues_to_translation_confirmation(
     assert page._start_translation_after_extraction is False
 
 
-def test_agent_direct_start_emits_translation_start_after_navigation():
+def test_onekey_start_emits_translation_start_after_navigation():
     requests = []
     navigated = []
     translation_page = SimpleNamespace(
@@ -208,10 +207,7 @@ def test_agent_direct_start_emits_translation_start_after_navigation():
         _reset_auto_hook_state=lambda: None,
     )
 
-    YiJianFanyiPage._open_legacy_translation_page(
-        page,
-        start_immediately=True,
-    )
+    YiJianFanyiPage._open_legacy_translation_page(page)
 
     assert navigated == [translation_page]
     assert len(requests) == 1
@@ -463,7 +459,6 @@ def test_stale_extraction_restores_retry_ui(monkeypatch):
         game_dir="E:/Games/A",
         tl_folder_edit=SimpleNamespace(text=lambda: "chinese"),
         _start_translation_after_extraction=True,
-        _agent_direct_start=True,
         extraction_worker=object(),
         step2_page=SimpleNamespace(
             progress_ring=SimpleNamespace(setVisible=ring_visibility.append),
@@ -500,7 +495,6 @@ def test_stale_extraction_restores_retry_ui(monkeypatch):
     )
 
     assert page._start_translation_after_extraction is False
-    assert page._agent_direct_start is False
     assert page.extraction_worker is None
     assert ring_visibility == [False]
     assert "项目已切换" in status_texts[-1]

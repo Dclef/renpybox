@@ -29,11 +29,11 @@ dependencies = [
 
 [tool.pytest.ini_options]
 markers = [
-    "slow: 手动性能基准（pytest -m slow 运行，CI 与默认全量跳过）",
+    "slow: 手动性能基准（pytest -m slow 运行，默认测试集跳过）",
 ]
 
 [tool.ruff]
-# resource 内是 vendored 第三方（unrpyc 等），test 内是竞品源码副本，都不适用本项目门禁
+# resource 内是 vendored 第三方（unrpyc 等），test 内是竞品源码副本，都不适用本项目检查
 exclude = [
     "resource",
     "test",
@@ -43,7 +43,7 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-# 只启用错误级（E9 语法/IO + F pyflakes）；风格级（E501 行长等）不进门禁
+# 只启用错误级（E9 语法/IO + F pyflakes）；不检查 E501 等风格项
 select = ["E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
