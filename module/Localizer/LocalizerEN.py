@@ -508,7 +508,7 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_list_rpa_files: str = "Find RPA files"
     agent_page_tool_scan_script_errors: str = "Scan script errors"
     agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
-    agent_page_tool_optimize_old_new_translations: str = "Optimize old/new translations"
+    agent_page_tool_optimize_old_new_translations: str = "Build supplement fallback"
     agent_page_action_open_translation: str = "Open Translation"
     agent_page_action_one_key_translate: str = "Start One-click Translation"
     agent_page_action_continue_translation: str = "Continue Translation"
@@ -524,11 +524,11 @@ class LocalizerEN(LocalizerZH):
         "Files will be written directly into the game folder and may overwrite files with the same name. "
         "The original RPA files will be kept. Continue?"
     )
-    agent_page_old_new_confirmation_title: str = "Confirm old/new replacement patch"
+    agent_page_old_new_confirmation_title: str = "Confirm supplement fallback"
     agent_page_old_new_confirmation: str = (
         "Current language folder:\n{tl_dir}\n\n"
-        "Effective old/new entries: {old_new_count}\n"
-        "Existing supplements merged: {supplement_count}\n"
+        "Supplemental extraction entries: {old_new_count}\n"
+        "Independent supplement entries: {supplement_count}\n"
         "Final replacements: {total_count}\n"
         "Conflicting sources skipped: {conflict_count}\n\n"
         "A runtime replacement script will be generated from longest source text to shortest:\n"
@@ -584,9 +584,9 @@ class LocalizerEN(LocalizerZH):
         "the user must confirm overwrite risk, and original archives are kept."
     )
     agent_tool_optimize_old_new_translations_description: str = (
-        "After translation, read effective old/new translations from the current language folder and "
-        "generate a longest-first replace_text runtime patch for full-string mismatches caused by "
-        "appended walkthrough text, color tags, or similar processing."
+        "After translation, read entries marked as supplemental extraction results from the current "
+        "language folder and generate a longest-first replace_text runtime fallback. Officially "
+        "extracted old/new entries are excluded."
     )
     agent_project_inspection_complete: str = (
         "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
@@ -600,6 +600,7 @@ class LocalizerEN(LocalizerZH):
     agent_inspection_action_start_translation: str = "start translation on the translation page"
     agent_inspection_action_continue_translation: str = "continue the unfinished translation"
     agent_inspection_action_review_quality: str = "resolve the translation quality issues first"
+    agent_inspection_action_refresh_replace_fallback: str = "regenerate the replace_text fallback"
     agent_inspection_action_review_translation: str = "review and apply the translation results"
     agent_inspection_action_check_project_files: str = "check the project for processable scripts"
     agent_system_prompt: str = (
@@ -618,8 +619,9 @@ class LocalizerEN(LocalizerZH):
         "ask for it again in text. Do not use Emoji or colored Unicode status icons in replies; the UI renders "
         "status and action icons. Translation itself belongs to the translation page; do not "
         "retranslate through the Agent. Only call optimize_old_new_translations after translations are applied "
-        "and the user asks to fix runtime old/new, walkthrough suffix, or color-tag mismatches, and require "
-        "confirmation. Summarize key results; full details are shown in the UI."
+        "and the user asks to fix supplemental extraction text, or when inspection "
+        "returns REFRESH_REPLACE_FALLBACK and the user asks to apply that recommendation. Require confirmation. "
+        "Summarize key results; full details are shown in the UI."
     )
 
     # Agent runtime
@@ -664,8 +666,9 @@ class LocalizerEN(LocalizerZH):
     agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
     agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."
     agent_unpack_failed: str = "RPA unpacking failed. Check the log for details."
-    agent_old_new_translation_not_found: str = "No effective old/new translations were found in the current language folder."
-    agent_old_new_optimization_complete: str = "Generated the old/new runtime replacement patch with {count} entries: {output_path}"
+    agent_old_new_translation_not_found: str = "No translated supplemental extraction entries were found in the current language folder."
+    agent_old_new_optimization_complete: str = "Generated the supplemental runtime fallback with {count} entries: {output_path}"
+    agent_old_new_stale_hook_removed: str = "Removed the stale replace_text patch because no supplemental translations remain: {output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
@@ -1464,12 +1467,6 @@ class LocalizerEN(LocalizerZH):
     onekey_injects_bundled_ui_translations_start_save_settings: str = (
         'Injects bundled UI translations for Start, Save, Settings, and more.\nDisable this option'
         ' if the game already has custom UI translations.'
-    )
-    onekey_extract_translate_hidden_built_text_creates_renpybox: str = 'Extract and translate hidden built-in text (creates renpybox_bytecode_strings.rpy)'
-    onekey_some_player_visible_text_embedded_compiled_files: str = (
-        "Some player-visible text is embedded in compiled files and cannot be found by Ren'Py's e"
-        'xtractor.\nThis option adds that text as regular translation entries in tl/<language>/ren'
-        'pybox_bytecode_strings.rpy.\nDisable it only if you plan to recover missed text later.'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = 'Review untranslated uppercase abbreviations (uses additional quota)'
     onekey_clear_skipped_candidates: str = 'Clear skipped candidates'
