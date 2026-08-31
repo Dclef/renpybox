@@ -22,6 +22,37 @@ from utils.call_game_python import (
 from utils.unzipdir import unzip_file, zip_dir
 
 
+def remove_decompiled_rpyc(game_dir: str | Path) -> int:
+    """删除源码区内已有同名 RPY 的 RPYC 文件。"""
+
+    root = Path(game_dir)
+    tl_root = root / "tl"
+
+    def is_source(path: Path) -> bool:
+        try:
+            path.relative_to(tl_root)
+            return False
+        except ValueError:
+            return True
+
+    files = [path for path in root.rglob("*") if path.is_file() and is_source(path)]
+    rpy_keys = {
+        path.relative_to(root).with_suffix("").as_posix().casefold()
+        for path in files
+        if path.suffix.casefold() == ".rpy"
+    }
+    removed = 0
+    for path in files:
+        if path.suffix.casefold() != ".rpyc":
+            continue
+        key = path.relative_to(root).with_suffix("").as_posix().casefold()
+        if key not in rpy_keys:
+            continue
+        path.unlink()
+        removed += 1
+    return removed
+
+
 class RenpyDecompiler:
     RESOURCE_VARIANT = "unrpyc_python_v2"
 

@@ -932,6 +932,7 @@ def test_apply_worker_incremental_merges_off_thread_and_cleans_staging(
     output.mkdir(parents=True)
     entry = (
         'translate chinese strings:\n'
+        '    # renpybox: replace-only\n'
         '    old "BrandNewSmoke"\n'
         '    new "烟雾测试"\n'
     )
@@ -976,7 +977,61 @@ def test_apply_worker_incremental_merges_off_thread_and_cleans_staging(
     assert progress, "progress signals must be emitted during apply"
     assert any(pct >= 100 for _msg, pct in progress)
     merged_text = (tl / "new.rpy").read_text(encoding="utf-8")
+    assert "# renpybox: replace-only" in merged_text
     assert "BrandNewSmoke" in merged_text
     assert "烟雾测试" in merged_text
+    fallback = tl / "replace_text_auto.rpy"
+    assert fallback.exists()
+    fallback_text = fallback.read_text(encoding="utf-8")
+    assert '.replace("AlreadyThere", "已有")' not in fallback_text
+    assert '.replace("BrandNewSmoke", "烟雾测试")' in fallback_text
+    assert result["payload"]["replace_count"] == 1
     assert not staging.exists(), "staging dir must be removed after apply"
     assert not output.exists(), "incremental output dir must be removed after apply"
+
+
+def test_apply_worker_full_generates_replace_fallback(tmp_path) -> None:
+    from frontend.RenpyToolbox.OneKeyTranslatePage import ApplyTranslationWorker
+    from module.Config import Config
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    root = tmp_path / "project"
+    output_dir = root / "RenpyBox_Translation" / "chinese"
+    input_dir = root / "game" / "tl" / "chinese"
+    output_dir.mkdir(parents=True)
+    translated = output_dir / "strings.rpy"
+    translated.write_text(
+        'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
+        '    old "Choice"\n'
+        '    new "选项"\n',
+        encoding="utf-8",
+    )
+    config = Config()
+    config.save = lambda: config
+    result = {}
+    worker = ApplyTranslationWorker(
+        UnifiedExtractor(),
+        incremental_mode=False,
+        output_dir=output_dir,
+        input_dir=input_dir,
+        output_files=[translated],
+        config=config,
+        project_root=root,
+        project_language="chinese",
+    )
+    worker.finished.connect(
+        lambda success, message, payload: result.update(
+            success=success,
+            message=message,
+            payload=payload,
+        )
+    )
+
+    worker._run_full()
+
+    assert result["success"] is True
+    fallback = input_dir / "replace_text_auto.rpy"
+    assert fallback.is_file()
+    assert '.replace("Choice", "选项")' in fallback.read_text(encoding="utf-8")
+    assert result["payload"]["replace_count"] == 1

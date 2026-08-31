@@ -507,7 +507,7 @@ class LocalizerZH():
     agent_page_tool_list_rpa_files: str = "查找 RPA 文件"
     agent_page_tool_scan_script_errors: str = "扫描脚本错误"
     agent_page_tool_unpack_rpa_files: str = "解包 RPA 文件"
-    agent_page_tool_optimize_old_new_translations: str = "优化 old/new 译文"
+    agent_page_tool_optimize_old_new_translations: str = "生成补充兜底补丁"
     agent_page_action_open_translation: str = "进入翻译页面"
     agent_page_action_one_key_translate: str = "一键开始翻译"
     agent_page_action_continue_translation: str = "继续翻译"
@@ -522,11 +522,11 @@ class LocalizerZH():
         "即将解包当前项目中的 {count} 个 RPA 文件：\n{game_dir}\n\n"
         "解包结果会直接写入 game 目录，并可能覆盖同名文件；原 RPA 文件会保留。是否继续？"
     )
-    agent_page_old_new_confirmation_title: str = "确认生成 old/new 替换补丁"
+    agent_page_old_new_confirmation_title: str = "确认生成补充翻译兜底"
     agent_page_old_new_confirmation: str = (
         "当前语言目录：\n{tl_dir}\n\n"
-        "有效 old/new：{old_new_count} 条\n"
-        "合并现有补漏：{supplement_count} 条\n"
+        "补充抽取译文：{old_new_count} 条\n"
+        "独立补漏译文：{supplement_count} 条\n"
         "最终替换：{total_count} 条\n"
         "跳过冲突原文：{conflict_count} 条\n\n"
         "将按原文从长到短生成运行时替换代码：\n{output_path}\n\n"
@@ -571,8 +571,8 @@ class LocalizerZH():
         "执行前必须由用户确认同名文件覆盖风险，原 RPA 文件始终保留。"
     )
     agent_tool_optimize_old_new_translations_description: str = (
-        "翻译完成后，读取当前语言目录的有效 old/new 译文，按原文从长到短生成 "
-        "replace_text 运行时补丁，以覆盖追加攻略文本、颜色标签等导致的完整字符串失配。"
+        "翻译完成后，读取当前语言目录中带补充抽取标记的译文，按原文从长到短生成 "
+        "replace_text 运行时兜底；官方抽取的 old/new 不参与。"
     )
     agent_project_inspection_complete: str = (
         "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
@@ -585,6 +585,7 @@ class LocalizerZH():
     agent_inspection_action_start_translation: str = "进入翻译页面开始翻译"
     agent_inspection_action_continue_translation: str = "继续未完成的翻译"
     agent_inspection_action_review_quality: str = "先处理翻译质量问题"
+    agent_inspection_action_refresh_replace_fallback: str = "重新生成 replace_text 兜底补丁"
     agent_inspection_action_review_translation: str = "检查并应用翻译结果"
     agent_inspection_action_check_project_files: str = "检查项目目录中是否有可处理脚本"
     agent_system_prompt: str = (
@@ -601,7 +602,8 @@ class LocalizerZH():
         "不要在回复中重复用文字询问。回复不要使用 Emoji 或彩色 Unicode 状态图标，"
         "状态和操作图标由界面统一显示。"
         "翻译本身由翻译页面完成，不要使用 Agent 重新翻译；翻译已应用后，只有用户要求修复运行时"
-        "未生效的 old/new、选项攻略尾注或颜色标记时，才调用 optimize_old_new_translations，且必须确认。"
+        "补充抽取文本未生效，或体检返回 REFRESH_REPLACE_FALLBACK 且用户要求执行建议时，"
+        "才调用 optimize_old_new_translations，且必须确认。"
         "工具结果中的完整详情由界面展示，你的回复只总结关键结果。"
     )
 
@@ -647,8 +649,9 @@ class LocalizerZH():
     agent_unpack_project_changed: str = "项目目录已变化，请重新确认后再试。"
     agent_unpack_complete: str = "RPA 解包完成，共处理 {count} 个归档；原 RPA 文件已保留。"
     agent_unpack_failed: str = "RPA 解包失败，请查看日志了解详情。"
-    agent_old_new_translation_not_found: str = "当前语言目录没有找到可用于优化的有效 old/new 译文。"
-    agent_old_new_optimization_complete: str = "old/new 运行时替换补丁已生成，共 {count} 条：{output_path}"
+    agent_old_new_translation_not_found: str = "当前语言目录没有找到已翻译的补充抽取条目。"
+    agent_old_new_optimization_complete: str = "补充翻译运行时兜底已生成，共 {count} 条：{output_path}"
+    agent_old_new_stale_hook_removed: str = "已清理没有补充译文支撑的旧 replace_text 补丁：{output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
@@ -1400,11 +1403,6 @@ class LocalizerZH():
     onekey_inject_ui_translation_pack_base_box: str = '注入 UI 翻译包（base_box）'
     onekey_injects_bundled_ui_translations_start_save_settings: str = (
         '自动注入预置的 UI 翻译（开始、保存、设置等）。\n如果你已有自定义 UI 翻译，请取消勾选。'
-    )
-    onekey_extract_translate_hidden_built_text_creates_renpybox: str = '提取游戏内置隐藏文本并翻译（生成 renpybox_bytecode_strings.rpy）'
-    onekey_some_player_visible_text_embedded_compiled_files: str = (
-        "游戏中部分玩家可见文本写死在程序文件里，Ren'Py 官方抽取识别不到。\n勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译（写入 tl/<语言>/renpybox_byt"
-        'ecode_strings.rpy）。\n不勾选则这些文本不纳入标准翻译，翻译时容易漏掉，需要之后靠补全功能兜底。'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = '对未翻译的大写缩写做二次确认（会额外消耗额度）'
     onekey_clear_skipped_candidates: str = '清除判定不译清单'

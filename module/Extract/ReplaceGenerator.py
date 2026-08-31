@@ -26,6 +26,7 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Renpy.renpy_tl_core import (
+    RENPYBOX_REPLACE_ONLY_MARKER,
     TlBlockKind,
     pair_old_new_lines,
     parse_tl_document,
@@ -43,7 +44,7 @@ Pair = Tuple[str, str]
 
 @dataclass(frozen=True)
 class OldNewReplacePlan:
-    """从标准 old/new 与补漏译文生成的单一 Hook 计划。"""
+    """从标记的源码补充译文与独立补漏译文生成单一 Hook 计划。"""
 
     output_path: Path
     language: str
@@ -69,7 +70,22 @@ _TL_COVERED_CACHE: dict = {}
 DECLINED_CANDIDATES_SCHEMA_VERSION = 1
 
 
-def collect_translated_old_new_pairs(tl_dir: str | Path) -> tuple[List[Pair], int]:
+def _entry_has_replace_only_marker(lines: Sequence[str], old_index: int) -> bool:
+    cursor = old_index - 1
+    while cursor >= 0:
+        stripped = lines[cursor].strip()
+        if not stripped or stripped.startswith("# game/"):
+            cursor -= 1
+            continue
+        return stripped == f"# {RENPYBOX_REPLACE_ONLY_MARKER}"
+    return False
+
+
+def collect_translated_old_new_pairs(
+    tl_dir: str | Path,
+    *,
+    marked_only: bool = False,
+) -> tuple[List[Pair], int]:
     """读取有效 strings 译文；同一原文存在多个译文时保守跳过。"""
 
     root = Path(tl_dir)
@@ -107,6 +123,10 @@ def collect_translated_old_new_pairs(tl_dir: str | Path) -> tuple[List[Pair], in
                 continue
             statements = {statement.line_no: statement for statement in block.statements}
             for old_line, new_line in pair_old_new_lines(block).items():
+                if marked_only and not _entry_has_replace_only_marker(
+                    lines, old_line - 1
+                ):
+                    continue
                 old_statement = statements.get(old_line)
                 new_statement = statements.get(new_line)
                 if (
@@ -138,29 +158,37 @@ def build_old_new_replace_plan(
     tl_name: str,
     *,
     supplement_pairs: Sequence[Pair] | None = None,
+    tl_dir: str | Path | None = None,
 ) -> OldNewReplacePlan:
-    """合并标准 old/new 与补漏译文，并保持原文从长到短。"""
+    """合并标记的源码补充译文与补漏译文，并保持原文从长到短。"""
 
     game_dir = _get_game_dir(target_path)
     language = str(tl_name or "chinese").strip() or "chinese"
-    tl_dir = game_dir / "tl" / language
-    old_new_pairs, conflict_count = collect_translated_old_new_pairs(tl_dir)
+    resolved_tl_dir = Path(tl_dir) if tl_dir is not None else game_dir / "tl" / language
+    old_new_pairs, conflict_count = collect_translated_old_new_pairs(
+        resolved_tl_dir,
+        marked_only=True,
+    )
     old_new_map = dict(old_new_pairs)
     if supplement_pairs is None:
-        supplement_pairs = parse_miss_rpy(game_dir, language)
+        supplement_pairs = parse_miss_rpy(
+            game_dir,
+            language,
+            tl_dir=resolved_tl_dir,
+        )
     supplement_map = {
         original: translation
         for original, translation in supplement_pairs
         if original and translation and original != translation
     }
 
-    # 标准 TL 是正式译文来源；与补漏条目重名时以标准 old/new 为准。
+    # 标记的源码补充条目是正式译文来源；与补漏条目重名时以前者为准。
     combined = dict(supplement_map)
     combined.update(old_new_map)
     pairs = tuple(sorted(combined.items(), key=lambda item: (-len(item[0]), item[0])))
     supplement_count = sum(1 for original in supplement_map if original not in old_new_map)
     return OldNewReplacePlan(
-        output_path=tl_dir / "replace_text_auto.rpy",
+        output_path=resolved_tl_dir / "replace_text_auto.rpy",
         language=language,
         pairs=pairs,
         old_new_count=len(old_new_pairs),
@@ -1235,14 +1263,19 @@ def _collect_glossary_candidate_sets(
     target_path: str | Path,
     *,
     tl_name: str = "chinese",
+    include_compiled: bool = True,
 ) -> tuple[Set[str], Set[str], int]:
     """Collect source and bytecode candidates while retaining provenance."""
     game_dir = _get_game_dir(target_path)
     cache_path = _get_regex_cache_path(game_dir, tl_name)
     regex_all = _extract_all_strings_regex(game_dir, cache_path=cache_path)
-    compiled_all = _extract_compiled_python_strings(
-        game_dir,
-        cache_path=cache_path.with_name(COMPILED_CACHE),
+    compiled_all = (
+        _extract_compiled_python_strings(
+            game_dir,
+            cache_path=cache_path.with_name(COMPILED_CACHE),
+        )
+        if include_compiled
+        else set()
     )
     regex_filtered = _filter_valid_strings(regex_all)
     compiled_prefiltered = _filter_valid_strings(compiled_all)
@@ -1269,24 +1302,6 @@ def collect_glossary_candidate_texts(
         tl_name=tl_name,
     )
     return tuple(sorted(regex_filtered | compiled_filtered))
-
-
-def collect_compiled_candidate_texts(
-    target_path: str | Path,
-    *,
-    tl_name: str = "chinese",
-) -> tuple[str, ...]:
-    """Collect player-visible strings found in game-owned .pyc bytecode.
-
-    These constants are usable with Ren'Py's native ``translate <lang>
-    strings:`` old/new format, so the one-key flow writes them into the
-    standard TL instead of leaving them to the replace_text hook.
-    """
-    _, compiled_filtered, _ = _collect_glossary_candidate_sets(
-        target_path,
-        tl_name=tl_name,
-    )
-    return tuple(sorted(compiled_filtered))
 
 
 _DUPLICATE_OLD_RE = re.compile(
@@ -1334,7 +1349,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
     if not tl_dir.is_dir():
         return 0
 
-    records: dict[str, list[tuple[Path, int, int, bool]]] = {}
+    records: dict[str, list[tuple[Path, int, int, bool, bool]]] = {}
     ordered: list[tuple[Path, int, int, str]] = []
     scanned_files: list[Path] = []
     for rpy_file in sorted(tl_dir.rglob("*.rpy")):
@@ -1373,8 +1388,9 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
                 new_match.group(1), new_match.group("text")
             )
             translated = bool(new_value and new_value != old_value)
+            replace_only = _entry_has_replace_only_marker(lines, i)
             records.setdefault(old_value, []).append(
-                (rpy_file, i, j, translated)
+                (rpy_file, i, j, translated, replace_only)
             )
             ordered.append((rpy_file, i, j, old_value))
             i = j + 1
@@ -1386,13 +1402,14 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
         if len(candidates) < 2:
             continue
         duplicated_olds.add(old_value)
-        # Prefer real TL files over miss/ work files, translated over
-        # placeholders, then the first occurrence in file order.
+        # Prefer real TL files over miss/work files, official or pre-existing
+        # entries over replace-only supplements, then translated entries.
         keeper = min(
             candidates,
             key=lambda entry: (
-                not entry[3],
                 "/miss/" in f"/{entry[0].relative_to(tl_dir).as_posix()}",
+                entry[4],
+                not entry[3],
                 entry[0],
                 entry[1],
             ),
@@ -1607,7 +1624,11 @@ def collect_hook_translation_entries(
 
     logger.info("正在扫描 HOOK 缺失文本...")
     rpy_candidates, compiled_candidates, filtered_technical_count = (
-        _collect_glossary_candidate_sets(target_path, tl_name=tl_name)
+        _collect_glossary_candidate_sets(
+            target_path,
+            tl_name=tl_name,
+            include_compiled=False,
+        )
     )
     regex_filtered = rpy_candidates | compiled_candidates
 
@@ -1712,6 +1733,7 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
     rpy_candidates, compiled_candidates, _ = _collect_glossary_candidate_sets(
         target_path,
         tl_name=tl_name,
+        include_compiled=False,
     )
     regex_filtered = rpy_candidates | compiled_candidates
     
@@ -2068,14 +2090,21 @@ def sync_miss_rpy_with_glossary(game_dir: str | Path, tl_name: str) -> int:
 
 # ===================== Replace 钩子相关 =====================
 
-def parse_miss_rpy(game_dir: str | Path, tl_name: str) -> List[Pair]:
+def parse_miss_rpy(
+    game_dir: str | Path,
+    tl_name: str,
+    *,
+    tl_dir: str | Path | None = None,
+) -> List[Pair]:
     """解析 miss.rpy，提取已翻译的条目（原文 != 译文）。
     
     Returns:
         [(原文, 译文), ...] 列表
     """
-    tl_dir = Path(game_dir) / "tl" / tl_name
-    miss_path = _resolve_miss_path(tl_dir)
+    resolved_tl_dir = (
+        Path(tl_dir) if tl_dir is not None else Path(game_dir) / "tl" / tl_name
+    )
+    miss_path = _resolve_miss_path(resolved_tl_dir)
     
     if not miss_path or not miss_path.exists():
         return []
@@ -2325,13 +2354,15 @@ def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwarg
     output.parent.mkdir(parents=True, exist_ok=True)
     script = render_replace_script(pairs, **kwargs)
     output.write_text(script, encoding="utf-8")
+    output.with_suffix(".rpyc").unlink(missing_ok=True)
     return output
 
 
 def generate_replace_from_miss(target_path: str | Path, tl_name: str) -> Tuple[Path | None, int]:
-    """从补漏译文和标准 old/new 生成统一的 replace 钩子。
+    """从标记的源码补充译文和独立补漏译文生成统一 replace 钩子。
     
-    读取 miss.rpy 与当前语言目录中已翻译的 old/new，生成 replace_text_auto.rpy。
+    读取 miss.rpy 与当前语言目录中带 replace-only 标记的译文，生成
+    replace_text_auto.rpy；官方抽取的未标记 old/new 不参与。
     
     Returns:
         (输出路径或 None, 条目数量)
@@ -2340,7 +2371,9 @@ def generate_replace_from_miss(target_path: str | Path, tl_name: str) -> Tuple[P
     plan = build_old_new_replace_plan(target_path, tl_name)
 
     if not plan.pairs:
-        logger.info("未找到可生成 Hook 的 old/new 或补漏译文")
+        plan.output_path.unlink(missing_ok=True)
+        plan.output_path.with_suffix(".rpyc").unlink(missing_ok=True)
+        logger.info("未找到可生成 Hook 的补充抽取或独立补漏译文")
         return None, 0
 
     write_replace_script(
