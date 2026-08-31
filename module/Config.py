@@ -202,9 +202,6 @@ class Config():
     renpy_tl_folder: str = ""
     extract_use_official: bool = True
     extract_use_custom: bool = True
-    # 一键翻译时，把随包 .pyc 中玩家可见的字符串写成标准 translate strings
-    # old/new，而不是留给 replace_text 补全钩子
-    extract_use_compiled: bool = True
     extract_skip_hook_files: bool = True
     extract_export_excel: bool = False
     extract_split_names: bool = True

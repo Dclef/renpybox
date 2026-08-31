@@ -79,7 +79,6 @@
     "renpy_tl_folder": "",
     "extract_use_official": true,
     "extract_use_custom": true,
-    "extract_use_compiled": true,
     "extract_skip_hook_files": true,
     "extract_export_excel": false,
     "extract_split_names": true,

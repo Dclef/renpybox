@@ -15,8 +15,12 @@ def test_old_new_replace_plan_keeps_runtime_suffix_and_uses_longest_first(tmp_pa
     tl_dir.mkdir(parents=True)
     tl_dir.joinpath("strings.rpy").write_text(
         'translate chinese strings:\n\n'
+        '    old "Native"\n'
+        '    new "原生"\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Open"\n'
         '    new "打开"\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Open Door"\n'
         '    new "打开门"\n',
         encoding="utf-8",
@@ -40,10 +44,14 @@ def test_old_new_replace_plan_keeps_runtime_suffix_and_uses_longest_first(tmp_pa
         rendered = rendered.replace(original, translation)
     assert rendered == "打开门{color=#ff6699}攻略{/color}"
 
+    stale_rpyc = tl_dir / "replace_text_auto.rpyc"
+    stale_rpyc.write_bytes(b"stale")
     output_path, count = generate_replace_from_miss(game, "chinese")
     assert output_path == tl_dir / "replace_text_auto.rpy"
     assert count == 3
+    assert not stale_rpyc.exists()
     script = output_path.read_text(encoding="utf-8")
+    assert '.replace("Native", "原生")' not in script
     assert script.index('.replace("Open Door", "打开门")') < script.index(
         '.replace("Open", "打开")'
     )
@@ -81,12 +89,51 @@ def test_old_new_replace_skips_conflicts_and_non_active_work_files(tmp_path) -> 
     assert conflicts == 1
 
 
-def test_hook_write_combines_standard_old_new_with_supplement_items(tmp_path) -> None:
+def test_replace_only_marker_does_not_leak_past_commented_duplicate(tmp_path) -> None:
+    game = tmp_path / "game"
+    tl_dir = game / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_dir.joinpath("strings.rpy").write_text(
+        'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
+        '    # [renpybox] duplicate; first at strings.rpy:4\n'
+        '    # old "Duplicate"\n'
+        '    # new "重复"\n\n'
+        '    old "Native"\n'
+        '    new "原生"\n',
+        encoding="utf-8",
+    )
+
+    plan = build_old_new_replace_plan(game, "chinese")
+
+    assert plan.pairs == ()
+
+
+def test_generate_replace_removes_stale_hook_when_no_pairs_remain(tmp_path) -> None:
+    game = tmp_path / "game"
+    tl_dir = game / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    hook = tl_dir / "replace_text_auto.rpy"
+    hook.write_text("stale", encoding="utf-8")
+    hook.with_suffix(".rpyc").write_bytes(b"stale")
+
+    output_path, count = generate_replace_from_miss(game, "chinese")
+
+    assert output_path is None
+    assert count == 0
+    assert not hook.exists()
+    assert not hook.with_suffix(".rpyc").exists()
+
+
+def test_hook_write_combines_marked_old_new_with_supplement_items(tmp_path) -> None:
     root = tmp_path / "MyGame"
     tl_dir = root / "game" / "tl" / "chinese"
     tl_dir.mkdir(parents=True)
     tl_dir.joinpath("strings.rpy").write_text(
         'translate chinese strings:\n\n'
+        '    old "Native"\n'
+        '    new "原生"\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Choice"\n'
         '    new "选项"\n',
         encoding="utf-8",
@@ -110,5 +157,6 @@ def test_hook_write_combines_standard_old_new_with_supplement_items(tmp_path) ->
     RENPYHOOK(config).write_to_path([item])
 
     script = (tl_dir / "replace_text_auto.rpy").read_text(encoding="utf-8")
+    assert '.replace("Native", "原生")' not in script
     assert '.replace("Choice", "选项")' in script
     assert '.replace("Guide", "攻略")' in script

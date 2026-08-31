@@ -163,7 +163,7 @@ def test_project_inspection_does_not_repeat_unpack_when_rpy_is_available(
     assert result.data["next_action_code"] == "START_TRANSLATION"
 
 
-def test_project_inspection_does_not_repeat_unpack_for_mixed_scripts(
+def test_project_inspection_decompiles_mixed_scripts(
     tmp_path,
 ) -> None:
     root = tmp_path / "Game"
@@ -177,10 +177,10 @@ def test_project_inspection_does_not_repeat_unpack_for_mixed_scripts(
     result = inspect_translation_project(config_loader=lambda: config)
 
     assert result.success is True
-    assert result.data["files"]["status"] == "mixed"
+    assert result.data["files"]["status"] == "need_decompile"
     assert result.data["files"]["rpa_state"] == "scripts_present"
     assert result.data["files"]["unpack_required"] is False
-    assert result.data["next_action_code"] == "START_TRANSLATION"
+    assert result.data["next_action_code"] == "DECOMPILE_SCRIPTS"
 
 
 def test_project_inspection_prioritizes_unapplied_workbench_drafts(tmp_path) -> None:
@@ -386,6 +386,7 @@ def test_project_inspection_recognizes_applied_old_new_without_cache(tmp_path) -
     tl_dir.mkdir(parents=True)
     tl_dir.joinpath("strings.rpy").write_text(
         'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Choice"\n'
         '    new "选项"\n',
         encoding="utf-8",
@@ -396,7 +397,8 @@ def test_project_inspection_recognizes_applied_old_new_without_cache(tmp_path) -
 
     assert result.success is True
     assert result.data["old_new"]["effective_count"] == 1
-    assert result.data["next_action_code"] == "REVIEW_TRANSLATION"
+    assert result.data["old_new"]["needs_refresh"] is True
+    assert result.data["next_action_code"] == "REFRESH_REPLACE_FALLBACK"
 
 
 def test_project_inspection_reports_corrupt_cache_without_rewriting_it(tmp_path) -> None:
@@ -544,13 +546,19 @@ def test_project_inspection_reads_old_new_from_custom_tl_root(tmp_path) -> None:
     custom_tl.mkdir(parents=True)
     custom_tl.joinpath("strings.rpy").write_text(
         'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Choice"\n'
         '    new "选项"\n',
         encoding="utf-8",
     )
-    custom_tl.joinpath("replace_text_auto.rpy").write_text(
-        "init python:\n    pass\n",
-        encoding="utf-8",
+    from module.Extract.ReplaceGenerator import write_replace_script
+
+    write_replace_script(
+        custom_tl / "replace_text_auto.rpy",
+        [("Choice", "选项")],
+        language="chinese",
+        use_translate_python=True,
+        wrap_existing=True,
     )
     config = _config_for(root)
     config.renpy_tl_folder = str(custom_tl)
@@ -561,7 +569,39 @@ def test_project_inspection_reads_old_new_from_custom_tl_root(tmp_path) -> None:
     assert result.success is True
     assert result.data["old_new"]["effective_count"] == 1
     assert result.data["old_new"]["hook_exists"] is True
+    assert result.data["old_new"]["hook_matches"] is True
+    assert result.data["old_new"]["needs_refresh"] is False
     assert result.data["next_action_code"] == "REVIEW_TRANSLATION"
+
+
+def test_project_inspection_refreshes_stale_replace_compiled_cache(tmp_path) -> None:
+    root = tmp_path / "Game"
+    tl_dir = root / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    tl_dir.joinpath("strings.rpy").write_text(
+        'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
+        '    old "Choice"\n'
+        '    new "选项"\n',
+        encoding="utf-8",
+    )
+    from module.Extract.ReplaceGenerator import write_replace_script
+
+    hook = write_replace_script(
+        tl_dir / "replace_text_auto.rpy",
+        [("Choice", "选项")],
+        language="chinese",
+        use_translate_python=True,
+        wrap_existing=True,
+    )
+    hook.with_suffix(".rpyc").write_bytes(b"stale")
+
+    result = inspect_translation_project(config_loader=lambda: _config_for(root))
+
+    assert result.data["old_new"]["hook_matches"] is True
+    assert result.data["old_new"]["compiled_cache_exists"] is True
+    assert result.data["old_new"]["needs_refresh"] is True
+    assert result.data["next_action_code"] == "REFRESH_REPLACE_FALLBACK"
 
 
 def test_project_inspection_prefers_incremental_cache_over_asset_only_database(tmp_path) -> None:

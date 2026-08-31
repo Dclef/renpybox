@@ -151,6 +151,7 @@ RE_TRANSLATE_HEADER = re.compile(
     r"^translate\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+)\s*:\s*$"
 )
 RE_GAME_LOCATION = re.compile(r"^game/.+?:\d+\s*$")
+RENPYBOX_REPLACE_ONLY_MARKER = "renpybox: replace-only"
 
 
 # ==================== 词法工具 ====================
@@ -322,6 +323,8 @@ def get_block_kind(label: str) -> TlBlockKind:
 
 def is_meta_comment(content: str) -> bool:
     stripped = content.strip()
+    if stripped == RENPYBOX_REPLACE_ONLY_MARKER:
+        return True
     if stripped.startswith("TODO:"):
         return True
     return RE_GAME_LOCATION.match(stripped) is not None

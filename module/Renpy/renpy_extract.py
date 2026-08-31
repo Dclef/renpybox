@@ -8,6 +8,7 @@ import pathlib
 import ast
 
 from module.Text.SkipRules import is_path_like, is_resource_name, should_skip_text
+from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER
 from utils.call_game_python import is_python2_from_game_dir
 from utils.string_tool import remove_upprintable_chars, EncodeBracketContent, EncodeBrackets, replace_all_blank, \
     replace_unescaped_quotes
@@ -1014,9 +1015,15 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
                     if not j.startswith('_p("""') and not j.endswith('""")'):
                         j = '"' + _escape_rpy_string_for_write(j) + '"'
                     if not is_gen_empty:
-                        writeData = '    old ' + j + '\n    new ' + j + '\n'
+                        writeData = (
+                            f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
+                            '    old ' + j + '\n    new ' + j + '\n'
+                        )
                     else:
-                        writeData = '    old ' + j + '\n    new ' + '""' + '\n'
+                        writeData = (
+                            f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
+                            '    old ' + j + '\n    new ' + '""' + '\n'
+                        )
                     f.write(writeData + '\n')
                 f.close()
             extractedSet = e | extractedSet
@@ -1078,9 +1085,15 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
             if not j.startswith('_p("""') and not j.endswith('""")'):
                 j = '"' + _escape_rpy_string_for_write(j) + '"'
             if not is_gen_empty:
-                writeData = '    old ' + j + '\n    new ' + j + '\n'
+                writeData = (
+                    f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
+                    '    old ' + j + '\n    new ' + j + '\n'
+                )
             else:
-                writeData = '    old ' + j + '\n    new ' + '""' + '\n'
+                writeData = (
+                    f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
+                    '    old ' + j + '\n    new ' + '""' + '\n'
+                )
             f.write(writeData + '\n')
         f.close()
     global_e = global_e | e

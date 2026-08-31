@@ -175,6 +175,7 @@ def test_old_new_optimization_uses_confirmed_project_and_writes_hook(tmp_path) -
     tl_dir.mkdir(parents=True)
     tl_dir.joinpath("strings.rpy").write_text(
         'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
         '    old "Choice"\n'
         '    new "选项"\n',
         encoding="utf-8",
@@ -224,6 +225,47 @@ def test_old_new_optimization_rejects_stale_confirmation(tmp_path) -> None:
     assert result.success is False
     assert result.code == "CONFIRMATION_STALE"
     assert not (tl_dir / "replace_text_auto.rpy").exists()
+
+
+def test_old_new_optimization_removes_stale_hook_after_confirmation(tmp_path) -> None:
+    root = tmp_path / "MyGame"
+    tl_dir = root / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    hook = tl_dir / "replace_text_auto.rpy"
+    hook.write_text("stale", encoding="utf-8")
+    hook.with_suffix(".rpyc").write_bytes(b"stale")
+    config = _config_for(root)
+    context = old_new_replace_confirmation_context(config_loader=lambda: config)
+
+    result = optimize_old_new_translations(
+        config_loader=lambda: config,
+        confirmed_context=context,
+    )
+
+    assert result.success is True
+    assert not hook.exists()
+    assert not hook.with_suffix(".rpyc").exists()
+    assert Path(result.data["backup_path"]).is_file()
+
+
+def test_old_new_optimization_rejects_changed_compiled_hook(tmp_path) -> None:
+    root = tmp_path / "MyGame"
+    tl_dir = root / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    compiled = tl_dir / "replace_text_auto.rpyc"
+    compiled.write_bytes(b"old")
+    config = _config_for(root)
+    context = old_new_replace_confirmation_context(config_loader=lambda: config)
+    compiled.write_bytes(b"changed-content")
+
+    result = optimize_old_new_translations(
+        config_loader=lambda: config,
+        confirmed_context=context,
+    )
+
+    assert result.success is False
+    assert result.code == "CONFIRMATION_STALE"
+    assert compiled.exists()
 
 
 def test_unpack_tool_rejects_changed_project_after_confirmation(tmp_path) -> None:

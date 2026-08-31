@@ -911,6 +911,7 @@ def test_incremental_static_supplement_reaches_corresponding_tl_file(tmp_path, m
     assert extractor._append_static_supplement_entries(project, tl_dir, "chinese") == 2
     output = tl_dir / "src" / "plot" / "chapter_beta.rpy"
     content = output.read_text(encoding="utf-8")
+    assert content.count("# renpybox: replace-only") == 2
     assert 'old "I can proceed."' in content
 
     incremental_dir = project / "game" / "tl" / "chinese_new"
@@ -919,7 +920,9 @@ def test_incremental_static_supplement_reaches_corresponding_tl_file(tmp_path, m
     )
     incremental = incremental_dir / "src" / "plot" / "chapter_beta.rpy"
     assert incremental.exists()
-    assert 'old "I can proceed."' in incremental.read_text(encoding="utf-8")
+    incremental_text = incremental.read_text(encoding="utf-8")
+    assert "# renpybox: replace-only" in incremental_text
+    assert 'old "I can proceed."' in incremental_text
 
 
 def test_global_dedup_keeps_menu_string_equal_to_dialogue_comment(tmp_path):
@@ -1439,7 +1442,7 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
     assert stats["missing_count"] == 1
 
 
-def test_hook_name_discovery_ignores_compiled_only_identifiers(tmp_path, monkeypatch):
+def test_hook_name_discovery_uses_only_rpy_candidates(tmp_path, monkeypatch):
     from module.Extract import ReplaceGenerator as generator
 
     game = tmp_path / "game"
@@ -1449,9 +1452,7 @@ def test_hook_name_discovery_ignores_compiled_only_identifiers(tmp_path, monkeyp
         generator,
         "_collect_glossary_candidate_sets",
         lambda *args, **kwargs: (
-            {"Captain Rowan"},
-            {"WidgetEngine", "Crew Roster"},
-            3,
+            {"Captain Rowan"}, set(), 0,
         ),
     )
     monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
@@ -1469,15 +1470,40 @@ def test_hook_name_discovery_ignores_compiled_only_identifiers(tmp_path, monkeyp
         auto_update_glossary=False,
     )
 
-    assert {entry["src"] for entry in entries} == {
-        "Captain Rowan",
-        "WidgetEngine",
-        "Crew Roster",
-    }
+    assert {entry["src"] for entry in entries} == {"Captain Rowan"}
     assert seen == [{"Captain Rowan"}]
     assert stats["rpy_candidate_count"] == 1
-    assert stats["compiled_candidate_count"] == 2
-    assert stats["filtered_technical_count"] == 3
+    assert stats["compiled_candidate_count"] == 0
+    assert stats["filtered_technical_count"] == 0
+
+
+def test_candidate_collection_can_skip_compiled_scan(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        generator,
+        "_extract_all_strings_regex",
+        lambda *args, **kwargs: {"Visible source text"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_extract_compiled_python_strings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("compiled scan must not run")
+        ),
+    )
+    monkeypatch.setattr(generator, "_filter_valid_strings", lambda values: set(values))
+
+    rpy, compiled, filtered = generator._collect_glossary_candidate_sets(
+        game,
+        include_compiled=False,
+    )
+
+    assert rpy == {"Visible source text"}
+    assert compiled == set()
+    assert filtered == 0
 
 
 def test_hook_filter_keeps_readable_text_with_dynamic_placeholders():
@@ -1918,95 +1944,6 @@ def test_incremental_menu_string_uses_real_menu_file_and_line(tmp_path):
     assert "# game/src/plot/chapter_beta.rpy:3" in content
 
 
-def test_compiled_supplement_entries_written_natively_unique(tmp_path):
-    from module.Extract.UnifiedExtractor import UnifiedExtractor
-
-    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    extractor.logger = types.SimpleNamespace(
-        info=lambda *args, **kwargs: None,
-        warning=lambda *args, **kwargs: None,
-        debug=lambda *args, **kwargs: None,
-    )
-    game = tmp_path / "game"
-    game.mkdir()
-    tl_dir = tmp_path / "tl" / "chinese"
-    tl_dir.mkdir(parents=True)
-
-    candidates = {
-        "Virtual (first-time).",
-        "Another virtual notice.",
-        "Dummy label.",
-    }
-    added = extractor._append_compiled_supplement_entries(
-        game, tl_dir, "chinese", candidates=candidates
-    )
-
-    assert added == 3
-    output = tl_dir / "renpybox_bytecode_strings.rpy"
-    content = output.read_text(encoding="utf-8")
-    assert 'old "Virtual (first-time)."' in content
-    assert content.count('old "Virtual (first-time)."') == 1
-
-    # 再次运行只补新增，绝不重复写入已有 old。
-    added2 = extractor._append_compiled_supplement_entries(
-        game,
-        tl_dir,
-        "chinese",
-        candidates=candidates | {"Second run only."},
-    )
-    assert added2 == 1
-    content2 = output.read_text(encoding="utf-8")
-    assert content2.count('old "Virtual (first-time)."') == 1
-    assert 'old "Second run only."' in content2
-
-
-def test_compiled_supplement_flows_into_incremental_folder(tmp_path):
-    from module.Extract.UnifiedExtractor import UnifiedExtractor
-
-    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    extractor.logger = types.SimpleNamespace(
-        info=lambda *args, **kwargs: None,
-        warning=lambda *args, **kwargs: None,
-        debug=lambda *args, **kwargs: None,
-    )
-    game = tmp_path / "game"
-    game.mkdir()
-    tl_dir = tmp_path / "_temp" / "game" / "tl" / "chinese"
-
-    candidates = {"Virtual (first-time)."}
-    extractor._append_compiled_supplement_entries(
-        game, tl_dir, "chinese", candidates=candidates
-    )
-    incremental_dir = tmp_path / "game" / "tl" / "chinese_new"
-    extractor._extract_new_entries_to_folder(
-        tl_dir, incremental_dir, candidates, "chinese"
-    )
-
-    output = incremental_dir / "renpybox_bytecode_strings.rpy"
-    assert output.exists()
-    content = output.read_text(encoding="utf-8")
-    assert 'translate chinese strings:' in content
-    assert 'old "Virtual (first-time)."' in content
-    assert 'new "Virtual (first-time)."' in content
-
-
-def test_incremental_selection_keeps_compiled_candidates(tmp_path):
-    from module.Extract.UnifiedExtractor import UnifiedExtractor
-
-    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    selected = extractor._select_incremental_originals(
-        extracted_originals=set(),
-        existing_string_originals={"Old covered entry."},
-        block_originals=set(),
-        static_candidates={},
-        tl_dir=tmp_path,
-        trusted_originals=set(),
-        compiled_candidates={"Virtual (first-time).", "Old covered entry."},
-    )
-
-    assert selected == {"Virtual (first-time)."}
-
-
 def test_dedupe_string_translations_removes_cross_file_duplicate_old(tmp_path):
     from module.Extract.ReplaceGenerator import dedupe_string_translations
 
@@ -2041,6 +1978,42 @@ def test_dedupe_string_translations_removes_cross_file_duplicate_old(tmp_path):
     assert 'old "Virtual (first-time)."' in first.read_text(encoding="utf-8")
     assert 'old "Virtual (first-time)."' not in second.read_text(encoding="utf-8")
     assert 'old "Virtual (first-time)."' not in work.read_text(encoding="utf-8")
+
+
+def test_dedupe_prefers_official_entry_over_earlier_replace_only_entry(tmp_path):
+    from module.Extract.ReplaceGenerator import (
+        collect_translated_old_new_pairs,
+        dedupe_string_translations,
+    )
+
+    tl = tmp_path / "tl" / "chinese"
+    supplement = tl / "a_supplement.rpy"
+    official = tl / "z_official.rpy"
+    supplement.parent.mkdir(parents=True)
+    supplement.write_text(
+        "translate chinese strings:\n\n"
+        "    # renpybox: replace-only\n"
+        '    old "Shared choice"\n'
+        '    new "补充译文"\n',
+        encoding="utf-8",
+    )
+    official.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Shared choice"\n'
+        '    new "官方译文"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+    replace_pairs, conflicts = collect_translated_old_new_pairs(
+        tl, marked_only=True
+    )
+
+    assert removed == 1
+    assert 'old "Shared choice"' not in supplement.read_text(encoding="utf-8")
+    assert 'old "Shared choice"' in official.read_text(encoding="utf-8")
+    assert replace_pairs == []
+    assert conflicts == 0
 
 
 def test_dedupe_keeps_translated_entry_over_placeholder(tmp_path):
@@ -2232,8 +2205,46 @@ def test_write_extracted_escapes_newlines_in_strings(tmp_path):
     # 可被 Ren'Py 语法解析（换行已转义，不产生未闭合引号）
     doc = parse_tl_document(text.splitlines())
     assert doc is not None
+    assert "# renpybox: replace-only" in text
     assert "\\n\\n" in text
     assert "immediately.\n\nTurn" not in text
+
+
+def test_custom_extraction_marks_only_entries_missing_from_official_tl(tmp_path):
+    from module.Extract.ReplaceGenerator import collect_translated_old_new_pairs
+    from module.Renpy.renpy_extract import ExtractAllFilesInDir
+
+    project = tmp_path / "gameproj"
+    source = project / "game" / "src" / "menu" / "pref.rpy"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'text _("Official Choice")\n'
+        'renpy.notify("Supplement Notice")\n',
+        encoding="utf-8",
+    )
+    tl = project / "game" / "tl" / "chinese"
+    official = tl / "src" / "menu" / "pref.rpy"
+    official.parent.mkdir(parents=True)
+    official.write_text(
+        'translate chinese strings:\n\n'
+        '    old "Official Choice"\n'
+        '    new "官方选项"\n',
+        encoding="utf-8",
+    )
+
+    ExtractAllFilesInDir(str(tl), True, 4, False, True)
+    text = official.read_text(encoding="utf-8")
+    text = text.replace(
+        '    new "Supplement Notice"',
+        '    new "补充通知"',
+    )
+    official.write_text(text, encoding="utf-8")
+
+    all_pairs, _ = collect_translated_old_new_pairs(tl)
+    replace_pairs, _ = collect_translated_old_new_pairs(tl, marked_only=True)
+
+    assert ("Official Choice", "官方选项") in all_pairs
+    assert replace_pairs == [("Supplement Notice", "补充通知")]
 
 
 def test_collect_static_source_strings_merges_adjacent_literals(tmp_path):
@@ -2407,7 +2418,7 @@ def test_hook_skips_compiled_strings_written_natively(tmp_path, monkeypatch):
     monkeypatch.setattr(
         generator,
         "_collect_glossary_candidate_sets",
-        lambda *args, **kwargs: (set(), {"Virtual (first-time)."}, 0),
+        lambda *args, **kwargs: ({"Virtual (first-time)."}, set(), 0),
     )
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
     monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
@@ -2516,7 +2527,7 @@ def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
     monkeypatch.setattr(
         generator,
         "_collect_glossary_candidate_sets",
-        lambda *args, **kwargs: ({"START"}, {"USB"}, 0),
+        lambda *args, **kwargs: ({"START", "USB"}, set(), 0),
     )
     monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
@@ -2532,41 +2543,6 @@ def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
 
     assert {entry["src"] for entry in entries} == {"START"}
     assert stats["preserved_acronym_count"] == 1
-
-
-def test_compiled_supplement_excludes_acronyms_and_records_declined(
-    tmp_path, monkeypatch
-):
-    from module.Extract.UnifiedExtractor import UnifiedExtractor
-
-    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    extractor.logger = types.SimpleNamespace(
-        info=lambda *args, **kwargs: None,
-        warning=lambda *args, **kwargs: None,
-        debug=lambda *args, **kwargs: None,
-    )
-    game = tmp_path / "game"
-    game.mkdir()
-    tl_dir = tmp_path / "tl" / "chinese"
-    tl_dir.mkdir(parents=True)
-    registered = []
-    monkeypatch.setattr(
-        "module.Extract.ReplaceGenerator.record_declined_candidates",
-        lambda *args: registered.append(set(args[2])) or len(args[2]),
-    )
-
-    added = extractor._append_compiled_supplement_entries(
-        game,
-        tl_dir,
-        "chinese",
-        candidates={"USB", "Noon (first-time)."},
-    )
-
-    assert added == 1
-    assert registered == [{"USB"}]
-    content = (tl_dir / "renpybox_bytecode_strings.rpy").read_text(encoding="utf-8")
-    assert 'old "Noon (first-time)."' in content
-    assert 'old "USB"' not in content
 
 
 def test_string_originals_cache_invalidates_on_file_change(tmp_path):

@@ -28,7 +28,11 @@ def _load_plan(
     paths = RenpyProjectPaths.from_config(config)
     if paths is None or not paths.game_dir.is_dir():
         return None, None
-    return paths, build_old_new_replace_plan(paths.game_dir, paths.language)
+    return paths, build_old_new_replace_plan(
+        paths.game_dir,
+        paths.language,
+        tl_dir=paths.tl_language_dir,
+    )
 
 
 def _confirmation_context(
@@ -38,6 +42,12 @@ def _confirmation_context(
     signature = hashlib.sha256(
         repr(tl_dir_signature(paths.tl_language_dir)).encode("utf-8")
     ).hexdigest()
+    compiled_path = plan.output_path.with_suffix(".rpyc")
+    try:
+        compiled_stat = compiled_path.stat()
+        compiled_signature = [compiled_stat.st_mtime_ns, compiled_stat.st_size]
+    except OSError:
+        compiled_signature = []
     return {
         "game_dir": str(paths.game_dir.resolve()),
         "tl_dir": str(paths.tl_language_dir.resolve()),
@@ -47,6 +57,7 @@ def _confirmation_context(
         "total_count": len(plan.pairs),
         "conflict_count": plan.conflict_count,
         "output_exists": plan.output_path.is_file(),
+        "output_compiled_signature": compiled_signature,
         "signature": signature,
     }
 
@@ -84,7 +95,7 @@ def optimize_old_new_translations(
     config_loader: Callable[[], Config] | None = None,
     confirmed_context: dict[str, Any] | None = None,
 ) -> ToolResult:
-    """把当前语言目录的有效 old/new 生成运行时 replace_text 补丁。"""
+    """把补充抽取译文生成运行时 replace_text 补丁。"""
 
     localizer = Localizer.get()
     paths, plan = _load_plan(config_loader)
@@ -98,12 +109,31 @@ def optimize_old_new_translations(
             localizer.agent_tool_confirmation_stale,
             code="CONFIRMATION_STALE",
         )
-    if plan.old_new_count == 0:
+    if not plan.pairs and not (
+        plan.output_path.exists() or plan.output_path.with_suffix(".rpyc").exists()
+    ):
         return ToolResult(
             False,
             localizer.agent_old_new_translation_not_found,
             data=current_context,
             code="OLD_NEW_TRANSLATION_NOT_FOUND",
+        )
+
+    if not plan.pairs:
+        backup_path = _backup_existing_hook(paths, plan.output_path)
+        plan.output_path.unlink(missing_ok=True)
+        plan.output_path.with_suffix(".rpyc").unlink(missing_ok=True)
+        data = dict(current_context)
+        data["backup_path"] = str(backup_path) if backup_path is not None else ""
+        data["signature"] = hashlib.sha256(
+            repr(tl_dir_signature(paths.tl_language_dir)).encode("utf-8")
+        ).hexdigest()
+        return ToolResult(
+            True,
+            localizer.agent_old_new_stale_hook_removed.format(
+                output_path=plan.output_path,
+            ),
+            data=data,
         )
 
     plan.output_path.parent.mkdir(parents=True, exist_ok=True)

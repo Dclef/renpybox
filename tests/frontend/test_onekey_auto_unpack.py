@@ -196,6 +196,20 @@ def test_detect_game_status_uses_only_source_scripts(
     assert status == expected
 
 
+def test_detect_game_status_decompiles_mixed_source_scripts(tmp_path) -> None:
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    (root / "game" / "script.rpy").write_text("label start:\n    pass\n", encoding="utf-8")
+    (root / "game" / "extra.rpyc").write_bytes(b"compiled")
+    page = _make_page(root)
+    try:
+        status, _message = page._detect_game_status(str(root))
+    finally:
+        page.deleteLater()
+
+    assert status == "need_decompile"
+
+
 def test_go_step2_starts_unpack_in_background_then_extracts(monkeypatch, tmp_path) -> None:
     root = tmp_path / "Project"
     (root / "game").mkdir(parents=True)

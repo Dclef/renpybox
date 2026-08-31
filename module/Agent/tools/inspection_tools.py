@@ -22,7 +22,10 @@ from module.Engine.Translator.TranslationPreflightService import (
     TranslationPreflightService,
 )
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
-from module.Extract.ReplaceGenerator import collect_translated_old_new_pairs
+from module.Extract.ReplaceGenerator import (
+    build_old_new_replace_plan,
+    render_replace_script,
+)
 from module.Localizer.Localizer import Localizer
 from module.Renpy.renpy_tl_core import (
     TlBlockKind,
@@ -61,10 +64,8 @@ def _file_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
     unpack_required = rpa_count > 0 and rpy_count == 0 and rpyc_count == 0
     if unpack_required:
         status = "need_unpack"
-    elif rpy_count == 0 and rpyc_count > 0:
+    elif rpyc_count > 0:
         status = "need_decompile"
-    elif rpy_count > 0 and rpyc_count > 0:
-        status = "mixed"
     elif rpy_count > 0:
         status = "ready"
     else:
@@ -454,48 +455,25 @@ def _quality_summary(
     }
 
 
-def _translated_pairs_in_file(path: Path) -> dict[str, str]:
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    document = parse_tl_document(lines)
-    pairs: dict[str, str] = {}
-    for block in document.blocks:
-        if block.kind != TlBlockKind.STRINGS:
-            continue
-        statements = {statement.line_no: statement for statement in block.statements}
-        for old_line, new_line in pair_old_new_lines(block).items():
-            old_statement = statements.get(old_line)
-            new_statement = statements.get(new_line)
-            if (
-                old_statement is None
-                or new_statement is None
-                or not old_statement.literals
-                or not new_statement.literals
-            ):
-                continue
-            original = old_statement.literals[0].value
-            translation = new_statement.literals[0].value
-            if original and translation and original != translation:
-                pairs[original] = translation
-    return pairs
-
-
 def _old_new_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
     try:
-        old_new_pairs, conflict_count = collect_translated_old_new_pairs(
-            paths.tl_language_dir
+        plan = build_old_new_replace_plan(
+            paths.game_dir,
+            paths.language,
+            tl_dir=paths.tl_language_dir,
         )
-        old_new_sources = {source for source, _ in old_new_pairs}
-        supplement_pairs: dict[str, str] = {}
-        miss_candidates = (
-            paths.tl_language_dir / "miss" / "miss_ready_replace.rpy",
-            paths.tl_language_dir / "miss_ready_replace.rpy",
-            paths.tl_language_dir / "miss" / "miss_ready_replace.txt",
-            paths.tl_language_dir / "miss_ready_replace.txt",
+        hook_path = paths.tl_language_dir / "replace_text_auto.rpy"
+        hook_exists = hook_path.is_file()
+        expected = render_replace_script(
+            plan.pairs,
+            language=plan.language,
+            use_translate_python=True,
+            wrap_existing=True,
         )
-        for candidate in miss_candidates:
-            if candidate.is_file():
-                supplement_pairs = _translated_pairs_in_file(candidate)
-                break
+        hook_matches = bool(
+            hook_exists
+            and hook_path.read_text(encoding="utf-8", errors="replace") == expected
+        )
     except Exception as exc:
         LogManager.get().warning(f"Agent 项目体检读取 old/new 状态失败: {exc}")
         return {
@@ -503,15 +481,23 @@ def _old_new_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
             "supplement_count": 0,
             "conflict_count": 0,
             "hook_exists": False,
+            "hook_matches": False,
+            "needs_refresh": False,
+            "compiled_cache_exists": False,
             "readable": False,
         }
+    compiled_cache_exists = hook_path.with_suffix(".rpyc").is_file()
     return {
-        "effective_count": len(old_new_pairs),
-        "supplement_count": sum(
-            1 for source in supplement_pairs if source not in old_new_sources
-        ),
-        "conflict_count": conflict_count,
-        "hook_exists": (paths.tl_language_dir / "replace_text_auto.rpy").is_file(),
+        "effective_count": plan.old_new_count,
+        "supplement_count": plan.supplement_count,
+        "replace_count": len(plan.pairs),
+        "conflict_count": plan.conflict_count,
+        "hook_exists": hook_exists,
+        "hook_matches": hook_matches,
+        "needs_refresh": compiled_cache_exists
+        or hook_exists != bool(plan.pairs)
+        or (bool(plan.pairs) and not hook_matches),
+        "compiled_cache_exists": compiled_cache_exists,
         "readable": True,
     }
 
@@ -542,11 +528,15 @@ def _next_action(
             or bool(quality["error_type_counts"])
         ):
             return "REVIEW_QUALITY"
+        if old_new["needs_refresh"]:
+            return "REFRESH_REPLACE_FALLBACK"
         return "REVIEW_TRANSLATION"
     if files["unpack_required"]:
         return "UNPACK_RPA"
     if files["status"] == "need_decompile":
         return "DECOMPILE_SCRIPTS"
+    if old_new["needs_refresh"]:
+        return "REFRESH_REPLACE_FALLBACK"
     if old_new["effective_count"] > 0:
         return "REVIEW_TRANSLATION"
     if files["status"] == "empty":

@@ -390,16 +390,6 @@ class YiJianFanyiPage(Base, QWidget):
         self.inject_base_box_chk.stateChanged.connect(self._on_inject_base_box_changed)
         options_layout.addWidget(self.inject_base_box_chk)
 
-        self.extract_compiled_chk = CheckBox(
-            Localizer.get().onekey_extract_translate_hidden_built_text_creates_renpybox
-        )
-        self.extract_compiled_chk.setChecked(getattr(config, "extract_use_compiled", True))
-        self.extract_compiled_chk.setToolTip(
-            Localizer.get().onekey_some_player_visible_text_embedded_compiled_files
-        )
-        self.extract_compiled_chk.stateChanged.connect(self._on_extract_compiled_changed)
-        options_layout.addWidget(self.extract_compiled_chk)
-
         self.verify_uppercase_chk = CheckBox(
             Localizer.get().onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota
         )
@@ -771,16 +761,6 @@ class YiJianFanyiPage(Base, QWidget):
             config.save()
         except Exception as exc:
             self.logger.warning(f"保存自动合并配置失败: {exc}")
-
-    def _on_extract_compiled_changed(self, state: int):
-        """同步编译字符串提取开关到配置"""
-        try:
-            from module.Config import Config
-            config = Config().load()
-            config.extract_use_compiled = bool(state)
-            config.save()
-        except Exception as exc:
-            self.logger.warning(f"保存编译字符串提取配置失败: {exc}")
 
     def _on_verify_uppercase_changed(self, state: int):
         """同步大写缩写二次确认开关到配置。"""
@@ -1164,11 +1144,8 @@ class YiJianFanyiPage(Base, QWidget):
         if rpa_count > 0 and rpy_count == 0 and rpyc_count == 0:
             return 'need_unpack', Localizer.get().onekey_found_rpa_archives_must_unpacked.format(rpa_count=rpa_count)
         
-        if rpy_count == 0 and rpyc_count > 0:
+        if rpyc_count > 0:
             return 'need_decompile', Localizer.get().onekey_found_rpyc_files_must_decompiled.format(rpyc_count=rpyc_count)
-        
-        if rpy_count > 0 and rpyc_count > 0:
-            return 'mixed', Localizer.get().onekey_found_rpy_files_rpyc_files.format(rpy_count=rpy_count, rpyc_count=rpyc_count)
         
         if rpy_count > 0:
             return 'ready', Localizer.get().onekey_found_rpy_files_ready_extraction.format(rpy_count=rpy_count)
