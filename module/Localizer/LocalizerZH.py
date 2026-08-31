@@ -545,6 +545,7 @@ class LocalizerZH():
     agent_page_copy: str = "复制"
     agent_page_copied: str = "已复制到剪贴板"
     agent_page_stopped_hint: str = "已停止生成"
+    agent_page_scroll_latest: str = "回到最新消息"
     agent_page_platform_changed_hint: str = "已切换 Agent 接口，当前会话上下文仍属于原接口；如需全新上下文请点击「新任务」。"
     agent_page_tool_detail_truncated: str = "结果过长，仅显示前 {shown} 个字符（共 {total} 个），完整内容见悬停提示。"
 

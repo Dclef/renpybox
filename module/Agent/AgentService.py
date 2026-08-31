@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from module.Config import Config
-from module.Engine.TaskRequester import TaskRequester
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 
 from .AgentPromptBuilder import AgentPromptBuilder
 from .ToolDispatcher import ToolDispatcher
-from .tools import old_new_replace_confirmation_context
 from .types import AgentRunResult, ToolResult
+
+if TYPE_CHECKING:
+    from module.Engine.TaskRequester import TaskRequester
 
 
 EventCallback = Callable[[str, dict[str, Any]], None]
@@ -24,6 +25,9 @@ ConfirmationCallback = Callable[[str, dict[str, Any]], bool | None]
 class AgentService:
     """运行有限轮数、串行工具调用的 Agent 会话。"""
 
+    # 会话历史按字符数设置上限；这是近似 token 预算，避免多轮对话无限增长。
+    DEFAULT_MAX_CONTEXT_CHARS = 64_000
+
     def __init__(
         self,
         *,
@@ -32,15 +36,17 @@ class AgentService:
         max_iterations: int = 8,
         result_limit: int = 2000,
         confirmation_timeout: float = 120.0,
+        max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
         self.dispatcher = dispatcher or ToolDispatcher(config_loader=self.config_loader)
         self.max_iterations = max(1, int(max_iterations))
         self.result_limit = max(256, int(result_limit))
         self.confirmation_timeout = max(0.01, float(confirmation_timeout))
+        self.max_context_chars = max(4096, int(max_context_chars))
         self.messages: list[dict[str, Any]] = []
         self._project_key = ""
-        self._requester: TaskRequester | None = None
+        self._requester: "TaskRequester | None" = None
         self._project_changed_during_run = False
         self._cancel_event = threading.Event()
         self._run_state_lock = threading.Lock()
@@ -96,6 +102,8 @@ class AgentService:
     def confirmation_context(self, name: str) -> dict[str, Any]:
         """返回页面确认框所需的服务端可信上下文。"""
         if name == "optimize_old_new_translations":
+            from .tools.translation_tools import old_new_replace_confirmation_context
+
             return old_new_replace_confirmation_context(config_loader=self.config_loader)
         if name != "unpack_rpa_files":
             return {}
@@ -192,6 +200,25 @@ class AgentService:
             self.messages = []
         self._project_key = key
 
+    def _context_size(self) -> int:
+        """估算当前会话占用的上下文字符数。"""
+        try:
+            return len(json.dumps(self.messages, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            return sum(len(str(message)) for message in self.messages)
+
+    def _trim_history(self) -> None:
+        """按完整用户回合裁掉最旧历史，避免留下孤立的工具调用消息。"""
+        while self._context_size() > self.max_context_chars:
+            user_indices = [
+                index
+                for index, message in enumerate(self.messages)
+                if message.get("role") == "user"
+            ]
+            if len(user_indices) < 2:
+                return
+            del self.messages[user_indices[0]:user_indices[1]]
+
     def _finalize(self, result: AgentRunResult) -> AgentRunResult:
         # 项目在本轮被切换后，下一条用户消息必须从新项目重新建立上下文。
         if self._project_changed_during_run:
@@ -203,7 +230,11 @@ class AgentService:
 
     @staticmethod
     def _platform(config: Config) -> tuple[dict[str, Any] | None, str | None]:
-        platform_id = int(getattr(config, "agent_platform", -1))
+        try:
+            platform_id = int(getattr(config, "agent_platform", -1))
+        except (TypeError, ValueError):
+            # 配置文件可能被手工编辑；非法索引按未设置处理，不能让 Worker 崩溃。
+            platform_id = -1
         if platform_id < 0:
             return None, Localizer.get().agent_api_unset
         platform = config.get_platform(platform_id)
@@ -287,16 +318,22 @@ class AgentService:
                 "content": AgentPromptBuilder.build_system_prompt(config),
             })
         self.messages.append({"role": "user", "content": text})
+        self._trim_history()
         # Agent 的思考等级是本次 Agent 请求的覆盖项，不写回平台配置，
         # 这样平台页面保持 OFF 时，助手也不会悄悄替用户打开思考模式。
         request_platform = dict(platform)
         if thinking_level is not None:
             request_platform["thinking"] = {"level": str(thinking_level).upper().strip()}
+        # 翻译请求器依赖三家 SDK，只在 Agent 真正开始联网时加载。
+        from module.Engine.TaskRequester import TaskRequester
+
         self._requester = TaskRequester(config, request_platform, 0)
         self._project_changed_during_run = False
         details: list[dict[str, Any]] = []
 
         for iteration in range(self.max_iterations):
+            # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
+            self._trim_history()
             if self._is_cancelled(cancel_event):
                 return self._finalize(AgentRunResult(
                     False,
