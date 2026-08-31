@@ -144,6 +144,26 @@ def test_agent_page_can_select_real_platform_zero(monkeypatch) -> None:
     window.deleteLater()
 
 
+def test_agent_page_treats_malformed_platform_ids_as_unset(monkeypatch) -> None:
+    """配置被手工改坏时，页面仍能打开并忽略非法接口编号。"""
+    config = Config(agent_platform="invalid")
+    config.platforms = [
+        {"id": "broken", "name": "坏配置", "api_format": Base.APIFormat.OPENAI},
+        {"id": 3, "name": "OpenAI", "api_format": Base.APIFormat.OPENAI},
+    ]
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    assert page.platform_combo.itemData(0) == -1
+    assert page.platform_combo.count() == 2
+    assert page.platform_combo.itemData(1) == 3
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
     config = Config()
     config.agent_platform = 0
@@ -175,6 +195,7 @@ def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
     assert tool_widget.state == "done"
     assert tool_widget.detail_label.toPlainText() == "已识别当前项目"
     assert tool_widget.toggle_button.isEnabled()
+    assert page.activity_widget.label.text() == Localizer.get().agent_page_running
     tool_widget.toggle_button.click()
     assert not tool_widget.detail_label.isHidden()
 
@@ -607,6 +628,34 @@ def test_agent_page_respects_manual_scroll(monkeypatch) -> None:
     window.deleteLater()
 
 
+def test_agent_page_offers_return_to_latest_after_manual_scroll(monkeypatch) -> None:
+    """用户上滚查看旧消息时，应能一键恢复自动跟随。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page._append("历史消息", role="assistant")
+
+    bar = page.history.verticalScrollBar()
+    bar.setRange(0, 1000)
+    bar.setValue(0)
+    page._on_history_scrolled()
+
+    assert not page._auto_follow
+    assert not page.scroll_latest_button.isHidden()
+
+    page._scroll_to_latest()
+
+    assert page._auto_follow
+    assert page.scroll_latest_button.isHidden()
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_folds_intermediate_text_under_one_assistant_turn(monkeypatch) -> None:
     """工具前的普通说明只进折叠过程，不应和最终答案重复显示。"""
     config = Config()
@@ -747,6 +796,27 @@ def test_agent_page_batches_streaming_deltas_until_flush(monkeypatch) -> None:
     window.deleteLater()
 
 
+def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> None:
+    """长回复降低重排频率，短回复保持 50ms 的即时反馈。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    page._append_reply_delta("x" * 5_000)
+    assert page._render_timer.interval() == 80
+    page._render_timer.stop()
+    page._pending_reply_text = "x" * 20_000
+    page._schedule_render()
+    assert page._render_timer.interval() == 120
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_flushes_thinking_before_final_reply(monkeypatch) -> None:
     """最终回答覆盖前，思考增量必须同步落入折叠条。"""
     config = Config()
@@ -833,6 +903,52 @@ def test_agent_page_stop_request_appends_stopped_mark(monkeypatch) -> None:
     assert page.status_label.text()
 
     page._worker = None
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_request_event_restores_activity_after_confirmation(monkeypatch) -> None:
+    config = Config(agent_platform=0)
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page.activity_widget.set_running(False)
+
+    page._on_worker_event("request", {"iteration": 2})
+
+    assert not page.activity_widget.isHidden()
+    assert page.activity_widget.label.text() == Localizer.get().agent_page_running
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_cancelled_worker_does_not_append_retry_error(monkeypatch) -> None:
+    """主动停止是正常结束，不应再追加一条红色失败记录。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page._append("检查项目", role="user")
+
+    result = type(
+        "Result",
+        (),
+        {"success": False, "message": "Agent 请求已取消。", "code": "CANCELLED"},
+    )()
+    page._on_worker_finished(result)
+
+    assert all(
+        not isinstance(widget, AgentErrorWidget)
+        for widget in page.history_widgets
+    )
+    assert page.status_label.text() == Localizer.get().agent_page_cancelled
+
     page.deleteLater()
     window.deleteLater()
 

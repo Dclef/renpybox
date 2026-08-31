@@ -27,11 +27,6 @@ from module.Extract.ReplaceGenerator import (
     render_replace_script,
 )
 from module.Localizer.Localizer import Localizer
-from module.Renpy.renpy_tl_core import (
-    TlBlockKind,
-    pair_old_new_lines,
-    parse_tl_document,
-)
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     source_script_counts,

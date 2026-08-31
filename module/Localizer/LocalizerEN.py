@@ -548,6 +548,7 @@ class LocalizerEN(LocalizerZH):
     agent_page_copy: str = "Copy"
     agent_page_copied: str = "Copied to clipboard"
     agent_page_stopped_hint: str = "Generation stopped"
+    agent_page_scroll_latest: str = "Back to latest message"
     agent_page_platform_changed_hint: str = (
         "Agent API switched. This conversation still uses the previous API context; "
         "click \"New task\" for a fresh context."
