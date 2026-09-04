@@ -286,6 +286,7 @@ class LocalizerZH():
     platform_page_api_delete: str = "删除接口"
     platform_page_widget_add_title: str = "接口列表"
     platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic、DeepL、DeepLX 的翻译接口"
+    platform_page_header_description: str = "管理翻译接口、模型参数与当前激活通道"
     platform_page_active_hint: str = "当前激活接口：{NAME}"
     platform_page_active_none: str = "尚未设置激活接口"
     platform_page_empty_title: str = "暂无接口"
@@ -399,6 +400,7 @@ class LocalizerZH():
     proofreading_page_export: str = "导出"
     proofreading_page_search: str = "搜索"
     proofreading_page_filter: str = "筛选"
+    proofreading_page_current_view: str = "当前视图"
     proofreading_page_retranslate: str = "重新翻译"
     proofreading_page_confirm_translation: str = "确认译文无误"
     proofreading_page_confirm_selected_translations: str = "确认选中译文无误"
@@ -2067,6 +2069,8 @@ class LocalizerZH():
     toolbox_group_translate: str = "翻译方式"
     toolbox_group_asset: str = "资源与词表"
     toolbox_group_engineer: str = "工程与修复"
+    toolbox_page_header_description: str = "集中管理翻译流程、文本处理、术语资产与工程辅助工具"
+    toolbox_group_count: str = "{COUNT} 款工具"
     toolbox_tool_continue_translation_title: str = '继续翻译'
     toolbox_tool_continue_translation_description: str = '检测到上次未完成的翻译任务'
     toolbox_tool_one_key_translate_title: str = '一键翻译'

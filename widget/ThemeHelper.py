@@ -59,6 +59,17 @@ DARK_STYLESHEET = """
         background-color: #1E273D;
     }
 
+    /* 校对页单层表面和顶部筛选条 */
+    CardWidget#proofreadingSurface {
+        background-color: #141B2A;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+    }
+    QWidget#proofreadingFilterBar {
+        background-color: #141B2A;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
     /* 工具箱入口卡片 */
     ItemCard[toolCard="true"] {
         background-color: #141B2A;
@@ -233,6 +244,17 @@ LIGHT_STYLESHEET = """
     }
     CardWidget:pressed {
         background-color: #F1F5F9;
+    }
+
+    /* 校对页单层表面和顶部筛选条 */
+    CardWidget#proofreadingSurface {
+        background-color: #FFFFFF;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 8px;
+    }
+    QWidget#proofreadingFilterBar {
+        background-color: #FFFFFF;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.08);
     }
 
     /* 工具箱入口卡片 */
