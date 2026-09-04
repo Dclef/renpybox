@@ -4,7 +4,9 @@ import signal
 from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import MessageBox
@@ -36,6 +38,7 @@ from frontend.TranslationPage import TranslationPage
 from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from widget.ThemeHelper import get_navigation_stylesheet
 
 
 class AppFluentWindow(FluentWindow, Base):
@@ -66,6 +69,9 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
+        # 关闭系统 Mica 透明材质，确保原型定义的双主题表面在不同 Windows 设置下稳定。
+        self.setMicaEffectEnabled(False)
+        self.setCustomBackgroundColor("#F1F5F9", "#0F1420")
         # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
         self.notification = NotificationService(self)
         # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
@@ -105,6 +111,7 @@ class AppFluentWindow(FluentWindow, Base):
 
         # 添加页面
         self.add_pages()
+        self._apply_shell_theme()
 
         # 注册事件
         self.subscribe(Base.Event.APP_TOAST_SHOW, self.show_toast)
@@ -220,9 +227,27 @@ class AppFluentWindow(FluentWindow, Base):
             setTheme(Theme.LIGHT)
             config.theme = Config.THEME_LIGHT
         config.save()
+        self._apply_shell_theme()
         
         # 更新全局样式
         QApplication.instance().setStyleSheet(get_current_stylesheet())
+
+    def _apply_shell_theme(self) -> None:
+        """同步窗口表面、导航背景和导航项颜色。"""
+        self.setCustomBackgroundColor("#F1F5F9", "#0F1420")
+        panel = self.navigationInterface.panel
+        panel.setStyleSheet(get_navigation_stylesheet())
+
+        light_text = QColor("#334155")
+        dark_text = QColor("#CBD5E1")
+        light_indicator = QColor("#4F46E5")
+        dark_indicator = QColor("#6366F1")
+        for item in panel.items.values():
+            for widget in (item.widget, *item.widget.findChildren(QWidget)):
+                if hasattr(widget, "setTextColor"):
+                    widget.setTextColor(light_text, dark_text)
+                if hasattr(widget, "setIndicatorColor"):
+                    widget.setIndicatorColor(light_indicator, dark_indicator)
 
     def open_app_settings_page(self) -> None:
         self.switchTo(self.app_settings_page)
