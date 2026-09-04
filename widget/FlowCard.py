@@ -9,15 +9,13 @@ from qfluentwidgets import FlowLayout
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import StrongBodyLabel
 
-from widget.Separator import Separator
-
 class FlowCard(CardWidget):
 
     def __init__(self, parent: QWidget, title: str, description: str, init: Callable = None, clicked: Callable = None) -> None:
         super().__init__(parent)
 
         # 设置容器（紧凑边距，减少分组卡之间的空洞感）
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(16, 10, 16, 10) # 左、上、右、下
         self.root.setSpacing(8)
@@ -45,9 +43,6 @@ class FlowCard(CardWidget):
 
         # 填充
         self.head_hbox.addStretch(1)
-
-        # 添加分割线
-        self.root.addWidget(Separator(self))
 
         # 添加流式布局容器
         self.flow_container = QWidget(self)

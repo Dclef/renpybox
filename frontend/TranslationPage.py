@@ -48,7 +48,6 @@ from module.Renpy.ProjectPaths import (
     read_run_manifest,
     resolve_translation_output,
 )
-from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
 
@@ -82,15 +81,12 @@ class DashboardCard(CardWidget):
         super().__init__(parent)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 
         self.title_label = SubtitleLabel(title, self)
         self.root.addWidget(self.title_label)
-
-        # 添加分割线
-        self.root.addWidget(Separator(self))
 
         # 添加控件
         self.body_hbox_container = QWidget(self)

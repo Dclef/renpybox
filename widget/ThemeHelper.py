@@ -23,7 +23,7 @@ DARK_STYLESHEET = """
     QWidget#toolboxScrollViewport,
     QWidget#toolboxFlow,
     QWidget#RenpyTranslationPage {
-        background-color: rgb(20, 20, 20);
+        background-color: #0B0F17;
     }
 
     QWidget[toolboxPage="true"] QLabel,
@@ -35,42 +35,46 @@ DARK_STYLESHEET = """
     QWidget#toolboxScrollViewport QLabel,
     QWidget#toolboxFlow QLabel,
     QWidget#RenpyTranslationPage QLabel {
-        color: rgb(235, 235, 235);
+        color: #E5E7EB;
         background: transparent;
     }
 
     /* CardWidget 统一背景 */
     CardWidget {
-        background-color: rgb(32, 32, 32);
-        border: 1px solid rgb(55, 55, 55);
+        background-color: #141B2A;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 8px;
     }
     CardWidget:hover {
-        background-color: rgb(38, 38, 38);
+        background-color: #1A2234;
+        border-color: rgba(255, 255, 255, 0.12);
+    }
+    CardWidget:pressed {
+        background-color: #1E273D;
     }
 
     /* 工具箱入口卡片 */
     ItemCard[toolCard="true"] {
-        background-color: rgb(32, 32, 32);
-        border: 1px solid rgb(55, 55, 55);
+        background-color: #141B2A;
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 8px;
     }
     ItemCard[toolCard="true"]:hover {
-        background-color: rgb(38, 38, 38);
-        border-color: rgb(70, 70, 70);
+        background-color: #1A2234;
+        border-color: rgba(255, 255, 255, 0.12);
     }
     ItemCard[toolCard="true"]:pressed,
     ItemCard[toolCard="true"][pressed="true"] {
-        background-color: rgb(45, 45, 45);
+        background-color: #1E273D;
     }
     ItemCard[toolCard="true"][projectReady="false"]:hover,
     ItemCard[toolCard="true"][projectReady="false"]:pressed,
     ItemCard[toolCard="true"][projectReady="false"][pressed="true"] {
-        background-color: rgb(32, 32, 32);
-        border-color: rgb(55, 55, 55);
+        background-color: #141B2A;
+        border-color: rgba(255, 255, 255, 0.08);
     }
     ItemCard[toolCard="true"]:focus {
-        border-color: #BCA483;
+        border-color: #6366F1;
     }
     ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
         color: rgb(160, 160, 160);
@@ -85,77 +89,77 @@ DARK_STYLESHEET = """
         color: rgb(120, 120, 120);
     }
     ItemCard[toolCard="true"] QLabel[toolStep="true"] {
-        color: rgb(235, 225, 211);
-        background-color: rgb(74, 65, 53);
-        border: 1px solid rgb(103, 89, 70);
+        color: #818CF8;
+        background-color: rgba(99, 102, 241, 0.18);
+        border: 1px solid rgba(99, 102, 241, 0.35);
         border-radius: 11px;
     }
 
     /* 原生 QTableWidget 样式 */
     QTableWidget {
-        background-color: rgb(39, 39, 39);
-        alternate-background-color: rgb(45, 45, 45);
-        color: rgb(200, 200, 200);
-        border: 1px solid rgb(55, 55, 55);
-        border-radius: 4px;
-        gridline-color: rgb(55, 55, 55);
-        selection-background-color: rgb(60, 60, 60);
+        background-color: #141B2A;
+        alternate-background-color: #1A2234;
+        color: #E5E7EB;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        gridline-color: rgba(255, 255, 255, 0.08);
+        selection-background-color: #1E273D;
     }
     QTableWidget::item {
         padding: 6px;
         border: none;
     }
     QTableWidget::item:selected {
-        background-color: rgb(70, 70, 70);
+        background-color: #1E273D;
         color: rgb(255, 255, 255);
     }
     QTableWidget::item:hover {
-        background-color: rgb(50, 50, 50);
+        background-color: #1A2234;
     }
     QHeaderView::section {
-        background-color: rgb(50, 50, 50);
-        color: rgb(200, 200, 200);
+        background-color: #1A2234;
+        color: #E5E7EB;
         padding: 8px;
         border: none;
-        border-bottom: 1px solid rgb(65, 65, 65);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         font-weight: bold;
     }
     QTableCornerButton::section {
-        background-color: rgb(50, 50, 50);
+        background-color: #1A2234;
         border: none;
     }
     
     /* 原生 QScrollBar 样式 */
     QScrollBar:vertical {
-        background-color: rgb(39, 39, 39);
+        background-color: #141B2A;
         width: 12px;
         margin: 0px;
     }
     QScrollBar::handle:vertical {
-        background-color: rgb(80, 80, 80);
+        background-color: #374151;
         min-height: 30px;
         border-radius: 6px;
         margin: 2px;
     }
     QScrollBar::handle:vertical:hover {
-        background-color: rgb(100, 100, 100);
+        background-color: #4B5563;
     }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
         height: 0px;
     }
     QScrollBar:horizontal {
-        background-color: rgb(39, 39, 39);
+        background-color: #141B2A;
         height: 12px;
         margin: 0px;
     }
     QScrollBar::handle:horizontal {
-        background-color: rgb(80, 80, 80);
+        background-color: #374151;
         min-width: 30px;
         border-radius: 6px;
         margin: 2px;
     }
     QScrollBar::handle:horizontal:hover {
-        background-color: rgb(100, 100, 100);
+        background-color: #4B5563;
     }
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
         width: 0px;
@@ -163,9 +167,9 @@ DARK_STYLESHEET = """
     
     /* QGroupBox 样式 */
     QGroupBox {
-        color: rgb(200, 200, 200);
-        border: 1px solid rgb(55, 55, 55);
-        border-radius: 4px;
+        color: #E5E7EB;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
         margin-top: 12px;
         padding-top: 8px;
     }
@@ -188,7 +192,7 @@ LIGHT_STYLESHEET = """
     QWidget#toolboxScrollViewport,
     QWidget#toolboxFlow,
     QWidget#RenpyTranslationPage {
-        background-color: rgb(250, 250, 250);
+        background-color: #F8FAFC;
     }
 
     QWidget[toolboxPage="true"] QLabel,
@@ -200,42 +204,47 @@ LIGHT_STYLESHEET = """
     QWidget#toolboxScrollViewport QLabel,
     QWidget#toolboxFlow QLabel,
     QWidget#RenpyTranslationPage QLabel {
-        color: rgb(32, 32, 32);
+        color: #0F172A;
         padding: 0px;
+        background: transparent;
     }
 
     /* CardWidget 统一背景 */
     CardWidget {
-        background-color: rgb(255, 255, 255);
-        border: 1px solid rgb(230, 230, 230);
+        background-color: #FFFFFF;
+        border: 1px solid rgba(0, 0, 0, 0.08);
         border-radius: 8px;
     }
     CardWidget:hover {
-        background-color: rgb(248, 248, 248);
+        background-color: #F8FAFC;
+        border-color: rgba(0, 0, 0, 0.12);
+    }
+    CardWidget:pressed {
+        background-color: #F1F5F9;
     }
 
     /* 工具箱入口卡片 */
     ItemCard[toolCard="true"] {
-        background-color: rgb(255, 255, 255);
-        border: 1px solid rgb(230, 230, 230);
+        background-color: #FFFFFF;
+        border: 1px solid rgba(0, 0, 0, 0.08);
         border-radius: 8px;
     }
     ItemCard[toolCard="true"]:hover {
-        background-color: rgb(248, 248, 248);
-        border-color: rgb(214, 214, 214);
+        background-color: #F8FAFC;
+        border-color: rgba(0, 0, 0, 0.12);
     }
     ItemCard[toolCard="true"]:pressed,
     ItemCard[toolCard="true"][pressed="true"] {
-        background-color: rgb(240, 240, 240);
+        background-color: #F1F5F9;
     }
     ItemCard[toolCard="true"][projectReady="false"]:hover,
     ItemCard[toolCard="true"][projectReady="false"]:pressed,
     ItemCard[toolCard="true"][projectReady="false"][pressed="true"] {
-        background-color: rgb(255, 255, 255);
-        border-color: rgb(230, 230, 230);
+        background-color: #FFFFFF;
+        border-color: rgba(0, 0, 0, 0.08);
     }
     ItemCard[toolCard="true"]:focus {
-        border-color: #BCA483;
+        border-color: #4F46E5;
     }
     ItemCard[toolCard="true"] QLabel[toolCardDescription="true"] {
         color: rgb(96, 96, 96);
@@ -250,77 +259,77 @@ LIGHT_STYLESHEET = """
         color: rgb(150, 150, 150);
     }
     ItemCard[toolCard="true"] QLabel[toolStep="true"] {
-        color: rgb(88, 70, 48);
-        background-color: rgb(239, 232, 221);
-        border: 1px solid rgb(216, 202, 183);
+        color: #4F46E5;
+        background-color: rgba(79, 70, 229, 0.1);
+        border: 1px solid rgba(79, 70, 229, 0.25);
         border-radius: 11px;
     }
 
     /* 原生 QTableWidget 样式 */
     QTableWidget {
-        background-color: rgb(255, 255, 255);
-        alternate-background-color: rgb(248, 248, 248);
-        color: rgb(32, 32, 32);
-        border: 1px solid rgb(220, 220, 220);
-        border-radius: 4px;
-        gridline-color: rgb(230, 230, 230);
-        selection-background-color: rgb(230, 230, 230);
+        background-color: #FFFFFF;
+        alternate-background-color: #F8FAFC;
+        color: #0F172A;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 8px;
+        gridline-color: rgba(0, 0, 0, 0.08);
+        selection-background-color: #E2E8F0;
     }
     QTableWidget::item {
         padding: 6px;
         border: none;
     }
     QTableWidget::item:selected {
-        background-color: rgb(210, 210, 210);
-        color: rgb(0, 0, 0);
+        background-color: #E2E8F0;
+        color: #0F172A;
     }
     QTableWidget::item:hover {
-        background-color: rgb(245, 245, 245);
+        background-color: #F8FAFC;
     }
     QHeaderView::section {
-        background-color: rgb(245, 245, 245);
-        color: rgb(32, 32, 32);
+        background-color: #F8FAFC;
+        color: #0F172A;
         padding: 8px;
         border: none;
-        border-bottom: 1px solid rgb(220, 220, 220);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
         font-weight: bold;
     }
     QTableCornerButton::section {
-        background-color: rgb(245, 245, 245);
+        background-color: #F8FAFC;
         border: none;
     }
     
     /* 原生 QScrollBar 样式 */
     QScrollBar:vertical {
-        background-color: rgb(245, 245, 245);
+        background-color: #F8FAFC;
         width: 12px;
         margin: 0px;
     }
     QScrollBar::handle:vertical {
-        background-color: rgb(200, 200, 200);
+        background-color: #CBD5E1;
         min-height: 30px;
         border-radius: 6px;
         margin: 2px;
     }
     QScrollBar::handle:vertical:hover {
-        background-color: rgb(180, 180, 180);
+        background-color: #94A3B8;
     }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
         height: 0px;
     }
     QScrollBar:horizontal {
-        background-color: rgb(245, 245, 245);
+        background-color: #F8FAFC;
         height: 12px;
         margin: 0px;
     }
     QScrollBar::handle:horizontal {
-        background-color: rgb(200, 200, 200);
+        background-color: #CBD5E1;
         min-width: 30px;
         border-radius: 6px;
         margin: 2px;
     }
     QScrollBar::handle:horizontal:hover {
-        background-color: rgb(180, 180, 180);
+        background-color: #94A3B8;
     }
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
         width: 0px;
@@ -328,9 +337,9 @@ LIGHT_STYLESHEET = """
     
     /* QGroupBox 样式 */
     QGroupBox {
-        color: rgb(32, 32, 32);
-        border: 1px solid rgb(220, 220, 220);
-        border-radius: 4px;
+        color: #0F172A;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        border-radius: 8px;
         margin-top: 12px;
         padding-top: 8px;
     }
@@ -359,7 +368,7 @@ def get_theme_active_card_background_color() -> QColor:
 
 def get_theme_active_card_border_color() -> QColor:
     """获取与主按钮一致的激活卡片边框色。"""
-    return ThemeColor.LIGHT_1.color()
+    return QColor("#6366F1") if isDarkTheme() else QColor("#4F46E5")
 
 
 def get_theme_active_card_indicator_color() -> QColor:
