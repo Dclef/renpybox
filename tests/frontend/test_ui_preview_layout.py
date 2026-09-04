@@ -3,9 +3,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QWidget
 
 from frontend.Agent.AgentPage import AgentEmptyState
 from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
+from frontend.TranslationPage import TranslationPage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 
@@ -60,3 +62,29 @@ def test_agent_suggestions_reflow_without_breaking_fixed_width() -> None:
     narrow_x = [card.geometry().x() for card in state.suggestion_buttons]
     assert len(set(narrow_x)) == 1
     state.deleteLater()
+
+
+def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:
+    """监控页保持 Hero、吞吐、两张指标卡和流水卡的原型层级。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+
+    window = QWidget()
+    window.resize(1024, 740)
+    page = TranslationPage("translation_page", window)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+
+    hero = page.findChild(QWidget, "translationProgressCard")
+    throughput = page.findChild(QWidget, "translationThroughputCard")
+    feed = page.findChild(QWidget, "translationStreamFeedCard")
+    footer = page.findChild(QWidget, "translationFooterBar")
+    assert hero is not None and throughput is not None and feed is not None and footer is not None
+    assert hero.width() < throughput.width()
+    assert feed.height() <= 190
+    assert footer.geometry().bottom() <= page.height()
+
+    page.deleteLater()
+    window.close()
