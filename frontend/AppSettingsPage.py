@@ -18,6 +18,7 @@ from qfluentwidgets import FluentWindow
 from qfluentwidgets import PrimaryPushButton
 from qfluentwidgets import PushButton
 from qfluentwidgets import StrongBodyLabel
+from qfluentwidgets import TitleLabel
 from qfluentwidgets import SwitchButton
 from qfluentwidgets import SingleDirectionScrollArea
 
@@ -34,9 +35,8 @@ from widget.ComboBoxCard import ComboBoxCard
 from widget.DownloadProgressBar import DownloadProgressBar
 from widget.GroupCard import GroupCard
 from widget.LineEditCard import LineEditCard
-from widget.Separator import Separator
 from widget.SwitchButtonCard import SwitchButtonCard
-from widget.ThemeHelper import get_theme_accent_color
+from widget.ThemeHelper import get_theme_accent_color, mark_app_page
 
 
 class AppSettingsPage(QWidget, Base):
@@ -44,6 +44,7 @@ class AppSettingsPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
         self._window = window
         self._checking_update = False
         self._cancelling_update = False
@@ -55,6 +56,16 @@ class AppSettingsPage(QWidget, Base):
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
         self.root.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(TitleLabel(Localizer.get().app_settings_page, header))
+        header_layout.addWidget(
+            CaptionLabel(Localizer.get().app_settings_page_header_description, header)
+        )
+        self.root.addWidget(header)
 
         # 创建滚动区域的内容容器
         scroll_area_vbox_widget = QWidget()
@@ -157,7 +168,6 @@ class AppSettingsPage(QWidget, Base):
         self.update_check_button.clicked.connect(self._check_updates)
         current_layout.addWidget(self.update_check_button)
         group.add_widget(current_row)
-        group.add_widget(Separator(group))
 
         status_row = QWidget(group)
         status_row.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
@@ -209,7 +219,6 @@ class AppSettingsPage(QWidget, Base):
         self.update_install_button.hide()
         status_layout.addWidget(self.update_install_button)
         group.add_widget(status_row)
-        group.add_widget(Separator(group))
 
         changelog_row = QWidget(group)
         changelog_layout = QHBoxLayout(changelog_row)

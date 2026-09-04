@@ -29,6 +29,7 @@ from module.Secret.SecretStore import (
     LEGACY_CREDENTIAL_ID_FIELD,
     SecretStore,
 )
+from widget.ThemeHelper import mark_app_page
 
 
 PLATFORM_GROUPS = ("local", "machine", "online", "custom")
@@ -77,6 +78,7 @@ class PlatformPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
         self.window = window
         self.item_cards: dict[int, PlatformItemCard] = {}
         self.item_groups: dict[int, str] = {}

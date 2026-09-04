@@ -88,6 +88,14 @@ class LocalizerEN(LocalizerZH):
     app_translation_page: str = "Translation Task"
     app_agent_page: str = "Agent Assistant"
     app_proofreading_page: str = "Proofreading"
+    translation_page_header_title: str = "Task Monitor"
+    translation_page_header_description: str = "Track translation progress, throughput, and recovery actions"
+    proofreading_page_header_description: str = "Review, correct, and confirm results in the bilingual table"
+    project_page_header_description: str = "Bind a Ren'Py project and configure translation input and output folders"
+    app_settings_page_header_description: str = "Manage language, updates, sound, and application display options"
+    basic_settings_page_header_description: str = "Adjust concurrency, timeout, and retry thresholds for translation tasks"
+    expert_settings_page_header_description: str = "Control prompts, asset analysis, and result checking behavior"
+    custom_prompt_page_header_description: str = "Configure translation prompt modes, styles, and preview content"
     app_basic_settings_page: str = "Basic Settings"
     app_expert_settings_page: str = "Expert Settings"
     app_glossary_page: str = "Glossary"
@@ -1513,6 +1521,7 @@ class LocalizerEN(LocalizerZH):
     )
     onekey_skip_translation: str = 'Skip Translation →'
     onekey_review_export_post_process: str = 'Review, Export, and Post-process'
+    onekey_apply_translation_5: str = 'Apply Translation'
     onekey_select_game_folder: str = 'Select Game Folder'
     onekey_no_extractable_files_found: str = 'No extractable files were found'
     onekey_extracting_text_game_creating_translation_files: str = 'Extracting text from the game and creating translation files...'
