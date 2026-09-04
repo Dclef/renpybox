@@ -368,6 +368,49 @@ def get_current_stylesheet() -> str:
     return DARK_STYLESHEET if isDarkTheme() else LIGHT_STYLESHEET
 
 
+def get_navigation_stylesheet() -> str:
+    """获取与页面表面一致的导航栏样式，覆盖 QFluent 默认灰色表面。"""
+    if isDarkTheme():
+        return """
+            NavigationPanel[menu="true"] {
+                background-color: #0F1420;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-top-right-radius: 8px;
+                border-bottom-right-radius: 8px;
+            }
+            NavigationPanel[menu="false"] {
+                background-color: transparent;
+                border: 1px solid transparent;
+            }
+            NavigationPanel[transparent="true"] {
+                background-color: transparent;
+            }
+            QScrollArea, #scrollWidget {
+                border: none;
+                background-color: transparent;
+            }
+        """
+    return """
+        NavigationPanel[menu="true"] {
+            background-color: #F1F5F9;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-top-right-radius: 8px;
+            border-bottom-right-radius: 8px;
+        }
+        NavigationPanel[menu="false"] {
+            background-color: transparent;
+            border: 1px solid transparent;
+        }
+        NavigationPanel[transparent="true"] {
+            background-color: transparent;
+        }
+        QScrollArea, #scrollWidget {
+            border: none;
+            background-color: transparent;
+        }
+    """
+
+
 def get_theme_accent_color() -> QColor:
     """获取随明暗主题变化的应用主色。"""
     return ThemeColor.PRIMARY.color()

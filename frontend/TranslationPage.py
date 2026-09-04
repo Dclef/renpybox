@@ -211,6 +211,8 @@ class TranslationPage(QWidget, Base):
         self.runtime_status_updated.connect(self.update_button_status)
         self.token_estimate_done.connect(self._on_token_estimate_done)
         self._token_estimate_running = False
+        self._peak_speed = 0.0
+        self._peak_speed_start_time = 0
 
         # 定时器
         self.ui_update_timer = QTimer(self)
@@ -424,8 +426,18 @@ class TranslationPage(QWidget, Base):
             self.token.set_unit("MToken")
             self.token.set_value(f"{(token / 1000 / 1000):.2f}")
 
-        speed = self.data.get("total_output_tokens", 0) / max(1, time.time() - self.data.get("start_time", 0))
+        start_time = self.data.get("start_time", 0)
+        if start_time != self._peak_speed_start_time:
+            self._peak_speed_start_time = start_time
+            self._peak_speed = 0.0
+        speed = self.data.get("total_output_tokens", 0) / max(1, time.time() - start_time)
+        self._peak_speed = max(self._peak_speed, speed)
         self.waveform.add_value(speed)
+        self.waveform_peak_label.setText(
+            Localizer.get().translation_page_peak_speed.format(
+                SPEED=f"{self._peak_speed:.2f}"
+            )
+        )
         if speed < 1000:
             self.speed.set_unit("T/S")
             self.speed.set_value(f"{speed:.2f}")
@@ -525,16 +537,14 @@ class TranslationPage(QWidget, Base):
         head_shell_layout.addWidget(self.head_hbox_container)
         parent.addWidget(head_shell)
 
-        # 波形图
-        self.waveform = WaveformWidget()
-        self.waveform.set_matrix_size(100, 20)
-
-        waveform_vbox_container = QWidget()
-        waveform_vbox = QVBoxLayout(waveform_vbox_container)
-        waveform_vbox.addStretch(1)
-        waveform_vbox.addWidget(self.waveform)
-
-        # 进度环
+        # 进度环卡片
+        hero_card = CardWidget(self)
+        hero_layout = QVBoxLayout(hero_card)
+        hero_layout.setContentsMargins(16, 12, 16, 12)
+        hero_layout.setSpacing(4)
+        hero_layout.addWidget(
+            CaptionLabel(Localizer.get().translation_page_progress_title, hero_card)
+        )
         self.ring = ProgressRing()
         self.ring.setRange(0, 10000)
         self.ring.setValue(0)
@@ -542,18 +552,41 @@ class TranslationPage(QWidget, Base):
         self.ring.setStrokeWidth(12)
         self.ring.setFixedSize(140, 140)
         self.ring.setFormat(Localizer.get().translation_page_status_idle)
+        ring_container = QWidget(hero_card)
+        ring_layout = QHBoxLayout(ring_container)
+        ring_layout.setContentsMargins(0, 0, 0, 0)
+        ring_layout.addStretch(1)
+        ring_layout.addWidget(self.ring)
+        ring_layout.addStretch(1)
+        hero_layout.addWidget(ring_container)
 
-        ring_vbox_container = QWidget()
-        ring_vbox = QVBoxLayout(ring_vbox_container)
-        ring_vbox.addStretch(1)
-        ring_vbox.addWidget(self.ring)
+        # 吞吐卡片：波形只展示真实运行速率，不填充原型演示数据。
+        throughput_card = CardWidget(self)
+        throughput_layout = QVBoxLayout(throughput_card)
+        throughput_layout.setContentsMargins(16, 12, 16, 12)
+        throughput_layout.setSpacing(4)
+        throughput_header = QHBoxLayout()
+        throughput_header.setContentsMargins(0, 0, 0, 0)
+        throughput_header.addWidget(
+            CaptionLabel(Localizer.get().translation_page_throughput_title, throughput_card)
+        )
+        throughput_header.addStretch(1)
+        self.waveform_peak_label = CaptionLabel(
+            Localizer.get().translation_page_peak_speed.format(SPEED="0.00"),
+            throughput_card,
+        )
+        self.waveform_peak_label.setTextColor(QColor("#4F46E5"), QColor("#818CF8"))
+        throughput_header.addWidget(self.waveform_peak_label)
+        throughput_layout.addLayout(throughput_header)
+
+        self.waveform = WaveformWidget(throughput_card)
+        self.waveform.set_matrix_size(80, 8)
+        throughput_layout.addWidget(self.waveform)
 
         # 添加控件
-        self.head_hbox.addWidget(ring_vbox_container)
+        self.head_hbox.addWidget(hero_card, 1)
         self.head_hbox.addSpacing(8)
-        self.head_hbox.addStretch(1)
-        self.head_hbox.addWidget(waveform_vbox_container)
-        self.head_hbox.addStretch(1)
+        self.head_hbox.addWidget(throughput_card, 3)
 
     # 中部
     def add_widget_body(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
