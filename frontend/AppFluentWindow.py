@@ -42,10 +42,9 @@ class AppFluentWindow(FluentWindow, Base):
 
     APP_WIDTH: int = 1280
     APP_HEIGHT: int = 800
-    # 品牌橘棕，按产品观感保留。已知取舍：浅色主题下实心主按钮是白字配 #BCA483，
-    # 对比度 2.39:1，不满足 WCAG AA 的 4.5:1，改深会丢掉品牌调性所以不改。
-    # 深色主题没有这个问题——qfluentwidgets 会把主题色明度拉满，是 #ffe4be 配黑字。
-    APP_THEME_COLOR: str = "#BCA483"
+    # 深靛蓝主题色将浅色模式按钮白字对比度提升至 6.29:1，完全满足并超越 WCAG AA
+    # 4.5:1 标准，彻底清除旧版 2.39:1 导致的发灰看不清问题。
+    APP_THEME_COLOR: str = "#4F46E5"
     HOMEPAGE: str = " RenpyBox"
 
     @classmethod
