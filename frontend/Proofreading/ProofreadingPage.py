@@ -8,15 +8,19 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QShowEvent
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QLayout
+from PyQt5.QtWidgets import QHBoxLayout
 from PyQt5.QtWidgets import QVBoxLayout
 from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import Action
 from qfluentwidgets import CaptionLabel
+from qfluentwidgets import CardWidget
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import TitleLabel
 from qfluentwidgets import MessageBox
+from qfluentwidgets import PillPushButton
+from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
 
@@ -144,7 +148,49 @@ class ProofreadingPage(QWidget, Base):
         self._indeterminate_hide_timer: QTimer | None = None
 
     def add_widget_body(self, parent: QLayout, window: FluentWindow) -> None:
-        self.table_widget = ProofreadingTableWidget()
+        # 原型使用单层内容面板承载筛选条和双语表格，数据表本身保持现有四列契约。
+        self.table_surface = CardWidget(self)
+        self.table_surface.setObjectName("proofreadingSurface")
+        surface_layout = QVBoxLayout(self.table_surface)
+        surface_layout.setContentsMargins(0, 0, 0, 0)
+        surface_layout.setSpacing(0)
+
+        self.inline_filter_bar = QWidget(self.table_surface)
+        self.inline_filter_bar.setObjectName("proofreadingFilterBar")
+        filter_layout = QHBoxLayout(self.inline_filter_bar)
+        filter_layout.setContentsMargins(12, 8, 12, 8)
+        filter_layout.setSpacing(8)
+        self.inline_scope_label = CaptionLabel(
+            Localizer.get().proofreading_page_current_view,
+            self.inline_filter_bar,
+        )
+        filter_layout.addWidget(self.inline_scope_label)
+
+        self.inline_filter_button = PillPushButton(
+            Localizer.get().proofreading_page_filter,
+            self.inline_filter_bar,
+        )
+        self.inline_filter_button.setIcon(FluentIcon.FILTER)
+        self.inline_filter_button.clicked.connect(self._on_filter_clicked)
+        filter_layout.addWidget(self.inline_filter_button)
+
+        self.inline_search_edit = SearchLineEdit(self.inline_filter_bar)
+        self.inline_search_edit.setPlaceholderText(Localizer.get().placeholder)
+        self.inline_search_edit.setMinimumWidth(120)
+        self.inline_search_edit.setMaximumWidth(280)
+        self.inline_search_edit.returnPressed.connect(self._on_inline_search_submitted)
+        filter_layout.addWidget(self.inline_search_edit, 1)
+
+        self.inline_search_button = PillPushButton(
+            Localizer.get().proofreading_page_search,
+            self.inline_filter_bar,
+        )
+        self.inline_search_button.setIcon(FluentIcon.SEARCH)
+        self.inline_search_button.clicked.connect(self._on_inline_search_submitted)
+        filter_layout.addWidget(self.inline_search_button)
+        surface_layout.addWidget(self.inline_filter_bar)
+
+        self.table_widget = ProofreadingTableWidget(self.table_surface)
         self.table_widget.cell_edited.connect(self._on_cell_edited)
         self.table_widget.retranslate_clicked.connect(self._on_retranslate_clicked)
         self.table_widget.confirm_translations_clicked.connect(self._on_confirm_translations_clicked)
@@ -153,7 +199,8 @@ class ProofreadingPage(QWidget, Base):
         self.table_widget.selected_items_changed.connect(self._on_selected_items_changed)
         self.table_widget.set_items([], {})
 
-        parent.addWidget(self.table_widget, 1)
+        surface_layout.addWidget(self.table_widget, 1)
+        parent.addWidget(self.table_surface, 1)
 
     def add_widget_foot(self, parent: QLayout, window: FluentWindow) -> None:
         self.search_card = SearchCard(self)
@@ -452,6 +499,15 @@ class ProofreadingPage(QWidget, Base):
             and any(Base.is_item_proofreadable(item.get_status()) for item in selected_items)
         )
         self.btn_quality_report.setEnabled(can_operate)
+        self.inline_filter_button.setEnabled(has_items)
+        self.inline_search_button.setEnabled(has_items)
+        self.inline_search_edit.setEnabled(has_items)
+
+    def _on_inline_search_submitted(self) -> None:
+        """将页内搜索词交给现有搜索卡，复用正则、跳转和分页逻辑。"""
+        self.search_card.get_line_edit().setText(self.inline_search_edit.text())
+        self._on_search_clicked()
+        self._do_search()
 
     def _on_filter_clicked(self) -> None:
         if not self.items:

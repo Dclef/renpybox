@@ -356,11 +356,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.addWidget(header_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setObjectName("worldbookSplitter")
+        # 对齐原型 3:2 分栏，避免拖拽时把任一侧收缩为不可用宽度。
+        splitter.setChildrenCollapsible(False)
 
         official_card, official_layout = self._create_card(
             Localizer.get().workbench_approved_worldbuilding,
             Localizer.get().workbench_content_inserted_directly_generated_prompts,
         )
+        # 允许在窗口收缩时继续压缩，避免最小窗口出现横向溢出。
+        official_card.setMinimumWidth(240)
         official_form = QFormLayout()
         official_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         official_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -395,6 +400,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_ai_draft_preview,
             Localizer.get().workbench_generated_content_remains_draft_until_you_apply,
         )
+        draft_card.setMinimumWidth(180)
         draft_action_row = QHBoxLayout()
         draft_action_row.setSpacing(10)
         self.btn_world_current = PrimaryPushButton(Localizer.get().workbench_generate_current_scope)
@@ -418,6 +424,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         splitter.addWidget(draft_card)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
+        # 页面默认内容宽度约为 976px，按 3:2 给出稳定的首屏比例。
+        splitter.setSizes([580, 390])
         layout.addWidget(splitter, 1)
         return panel
 
@@ -458,11 +466,15 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.addWidget(header_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setObjectName("characterSplitter")
+        # 角色花名册和草稿预览需要保持可读宽度，禁止拖拽折叠。
+        splitter.setChildrenCollapsible(False)
 
         roster_card, roster_layout = self._create_card(
             Localizer.get().workbench_character_list,
             Localizer.get().workbench_synced_character_candidates_added_here_review,
         )
+        roster_card.setMinimumWidth(160)
         self.character_search_edit = SearchLineEdit(self)
         self.character_search_edit.setPlaceholderText(Localizer.get().workbench_search_characters)
         self.character_search_edit.textChanged.connect(self._apply_character_filters)
@@ -501,6 +513,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_approved_character_card,
             Localizer.get().workbench_manual_edits_saved_immediately_current_project_assets,
         )
+        editor_card.setMinimumWidth(220)
         editor_form = QFormLayout()
         editor_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         editor_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -550,6 +563,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_character_draft_preview,
             Localizer.get().workbench_ai_generated_character_drafts_appear_here,
         )
+        draft_card.setMinimumWidth(180)
         self.character_draft_preview = self._create_preview_edit(Localizer.get().workbench_select_character_view_draft_details)
         self.character_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears_2)
         draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
@@ -561,6 +575,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 4)
         splitter.setStretchFactor(2, 3)
+        # 对齐原型的 220px / flexible / 270px 三栏首屏布局。
+        splitter.setSizes([220, 480, 270])
         layout.addWidget(splitter, 1)
         return panel
 
