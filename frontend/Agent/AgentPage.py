@@ -1304,9 +1304,10 @@ class AgentEmptyState(QWidget):
         suggestions = QWidget(self)
         suggestions.setFixedWidth(560)
         self.suggestions = suggestions
-        grid = QVBoxLayout(suggestions)
-        grid.setContentsMargins(0, 20, 0, 0)
-        grid.setSpacing(8)
+        self._suggestions_layout = QGridLayout(suggestions)
+        self._suggestions_layout.setContentsMargins(0, 20, 0, 0)
+        self._suggestions_layout.setHorizontalSpacing(8)
+        self._suggestions_layout.setVerticalSpacing(8)
 
         self.suggestion_buttons: list[AgentSuggestionCard] = []
         entries = (
@@ -1337,12 +1338,30 @@ class AgentEmptyState(QWidget):
                 lambda value=text: self.suggestion_requested.emit(value)
             )
             self.suggestion_buttons.append(card)
-            grid.addWidget(card)
+        self._relayout_suggestions()
         outer.addWidget(suggestions, 0, Qt.AlignHCenter)
         outer.addStretch(2)
 
         self._preflight_project_key = None
         self._refresh_preflight()
+
+    def _relayout_suggestions(self) -> None:
+        """按可用宽度切换 2×2 或单列建议卡，容器宽度契约保持不变。"""
+        if not hasattr(self, "_suggestions_layout"):
+            return
+        columns = 2 if self.width() >= 620 else 1
+        while self._suggestions_layout.count():
+            self._suggestions_layout.takeAt(0)
+        for index, card in enumerate(self.suggestion_buttons):
+            self._suggestions_layout.addWidget(
+                card,
+                index // columns,
+                index % columns,
+            )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout_suggestions()
 
     def _fallback_preflight_data(self, paths: RenpyProjectPaths) -> dict[str, Any]:
         """体检工具异常时仅用文件系统信息维持卡片可读性。"""
@@ -1514,6 +1533,9 @@ class AgentEmptyState(QWidget):
 
     def refresh_theme(self) -> None:
         self.brand_badge.refresh_theme()
+        self._preflight_project_key = None
+        self._refresh_preflight()
+        self._relayout_suggestions()
 
 
 class AgentPage(Base, QWidget):

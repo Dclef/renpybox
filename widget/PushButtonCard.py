@@ -14,7 +14,7 @@ class PushButtonCard(CardWidget):
         super().__init__(None)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.root = QHBoxLayout(self)
         self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 

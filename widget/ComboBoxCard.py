@@ -14,7 +14,7 @@ class ComboBoxCard(CardWidget):
         super().__init__(None)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.hbox = QHBoxLayout(self)
         self.hbox.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 

@@ -213,7 +213,7 @@ class FilterDialog(MessageBoxBase):
 
     def _create_section_card(self, title: str, is_flow: bool = True) -> tuple[CardWidget, QLayout, QHBoxLayout]:
         card = CardWidget(self.widget)
-        card.setBorderRadius(4)
+        card.setBorderRadius(8)
 
         root = QVBoxLayout(card)
         root.setContentsMargins(16, 16, 16, 16)

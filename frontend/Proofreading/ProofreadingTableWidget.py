@@ -68,7 +68,7 @@ class ProofreadingTableWidget(TableWidget):
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
         self.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.verticalHeader().setDefaultSectionSize(40)
+        self.verticalHeader().setDefaultSectionSize(42)
 
         header = self.horizontalHeader()
         header.setSectionResizeMode(self.COL_SRC, QHeaderView.Stretch)
@@ -139,7 +139,7 @@ class ProofreadingTableWidget(TableWidget):
 
     def _create_status_widget(self, row: int, item: CacheItem, warnings: list[WarningType]) -> None:
         widget = QWidget()
-        widget.setFixedHeight(40)
+        widget.setFixedHeight(42)
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)

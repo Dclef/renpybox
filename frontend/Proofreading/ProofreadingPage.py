@@ -15,6 +15,7 @@ from qfluentwidgets import CaptionLabel
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import IndeterminateProgressRing
+from qfluentwidgets import TitleLabel
 from qfluentwidgets import MessageBox
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
@@ -45,6 +46,7 @@ from module.Renpy.ProjectPaths import (
 )
 from widget.CommandBarCard import CommandBarCard
 from widget.SearchCard import SearchCard
+from widget.ThemeHelper import mark_app_page
 
 class ProofreadingPage(QWidget, Base):
     """校对任务主页面"""
@@ -76,6 +78,7 @@ class ProofreadingPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         self.window = window
         self.items: list[CacheItem] = []
@@ -103,6 +106,19 @@ class ProofreadingPage(QWidget, Base):
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
         self.root.setContentsMargins(24, 24, 24, 24)
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(TitleLabel(Localizer.get().app_proofreading_page, header))
+        header_description = CaptionLabel(
+            Localizer.get().proofreading_page_header_description,
+            header,
+        )
+        header_description.setWordWrap(True)
+        header_layout.addWidget(header_description)
+        self.root.addWidget(header)
 
         self.add_widget_body(self.root, window)
         self.add_widget_foot(self.root, window)

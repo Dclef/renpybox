@@ -13,6 +13,10 @@ from qfluentwidgets import ThemeColor, isDarkTheme
 
 # 暗色主题的全局样式表 - 仅针对原生 Qt 控件
 DARK_STYLESHEET = """
+    QMainWindow {
+        background-color: #0B0F17;
+    }
+
     /* Renpy Toolbox 背景 */
     QWidget[toolboxPage="true"],
     QWidget[toolboxScroll="true"],
@@ -22,7 +26,8 @@ DARK_STYLESHEET = """
     QWidget#toolboxScrollContent,
     QWidget#toolboxScrollViewport,
     QWidget#toolboxFlow,
-    QWidget#RenpyTranslationPage {
+    QWidget#RenpyTranslationPage,
+    QWidget[appPage="true"] {
         background-color: #0B0F17;
     }
 
@@ -34,7 +39,8 @@ DARK_STYLESHEET = """
     QWidget#toolboxScrollContent QLabel,
     QWidget#toolboxScrollViewport QLabel,
     QWidget#toolboxFlow QLabel,
-    QWidget#RenpyTranslationPage QLabel {
+    QWidget#RenpyTranslationPage QLabel,
+    QWidget[appPage="true"] QLabel {
         color: #E5E7EB;
         background: transparent;
     }
@@ -182,6 +188,10 @@ DARK_STYLESHEET = """
 
 # 亮色主题的全局样式表 - 仅针对原生 Qt 控件
 LIGHT_STYLESHEET = """
+    QMainWindow {
+        background-color: #F8FAFC;
+    }
+
     /* Renpy Toolbox 背景 */
     QWidget[toolboxPage="true"],
     QWidget[toolboxScroll="true"],
@@ -191,7 +201,8 @@ LIGHT_STYLESHEET = """
     QWidget#toolboxScrollContent,
     QWidget#toolboxScrollViewport,
     QWidget#toolboxFlow,
-    QWidget#RenpyTranslationPage {
+    QWidget#RenpyTranslationPage,
+    QWidget[appPage="true"] {
         background-color: #F8FAFC;
     }
 
@@ -203,7 +214,8 @@ LIGHT_STYLESHEET = """
     QWidget#toolboxScrollContent QLabel,
     QWidget#toolboxScrollViewport QLabel,
     QWidget#toolboxFlow QLabel,
-    QWidget#RenpyTranslationPage QLabel {
+    QWidget#RenpyTranslationPage QLabel,
+    QWidget[appPage="true"] QLabel {
         color: #0F172A;
         padding: 0px;
         background: transparent;
@@ -388,6 +400,11 @@ def mark_toolbox_widget(widget: QWidget | None, prop: str = "toolboxPage") -> No
 
     widget.setProperty(prop, True)
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+
+def mark_app_page(widget: QWidget | None) -> None:
+    """为非工具箱主页面启用统一的浅色/深色背景。"""
+    mark_toolbox_widget(widget, "appPage")
 
 
 def mark_toolbox_scroll_area(scroll_area: QAbstractScrollArea | None) -> None:

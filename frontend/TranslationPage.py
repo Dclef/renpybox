@@ -27,6 +27,7 @@ from qfluentwidgets import FluentWindow
 from qfluentwidgets import ProgressRing
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import SubtitleLabel
+from qfluentwidgets import TitleLabel
 from qfluentwidgets import StrongBodyLabel
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import ToolTipFilter
@@ -50,6 +51,7 @@ from module.Renpy.ProjectPaths import (
 )
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
+from widget.ThemeHelper import mark_app_page
 
 
 def restore_resumable_translation_paths(config: Config) -> Config:
@@ -171,6 +173,7 @@ class TranslationPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         # 初始化
         self.data = {}
@@ -499,9 +502,28 @@ class TranslationPage(QWidget, Base):
 
     # 头部
     def add_widget_head(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+        head_shell = QWidget(self)
+        head_shell_layout = QVBoxLayout(head_shell)
+        head_shell_layout.setContentsMargins(0, 0, 0, 4)
+        head_shell_layout.setSpacing(4)
+
+        header = QWidget(head_shell)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(TitleLabel(Localizer.get().translation_page_header_title, header))
+        description = CaptionLabel(
+            Localizer.get().translation_page_header_description,
+            header,
+        )
+        description.setWordWrap(True)
+        header_layout.addWidget(description)
+        head_shell_layout.addWidget(header)
+
         self.head_hbox_container = QWidget(self)
         self.head_hbox = QHBoxLayout(self.head_hbox_container)
-        parent.addWidget(self.head_hbox_container)
+        head_shell_layout.addWidget(self.head_hbox_container)
+        parent.addWidget(head_shell)
 
         # 波形图
         self.waveform = WaveformWidget()

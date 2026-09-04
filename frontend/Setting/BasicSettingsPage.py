@@ -3,8 +3,10 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QVBoxLayout
 from qfluentwidgets import FluentWindow
+from qfluentwidgets import CaptionLabel
 from qfluentwidgets import PlainTextEdit
 from qfluentwidgets import SingleDirectionScrollArea
+from qfluentwidgets import TitleLabel
 
 from base.Base import Base
 from module.Config import Config
@@ -12,12 +14,14 @@ from module.Localizer.Localizer import Localizer
 from widget.SpinCard import SpinCard
 from widget.GroupCard import GroupCard
 from widget.SwitchButtonCard import SwitchButtonCard
+from widget.ThemeHelper import mark_app_page
 
 class BasicSettingsPage(QWidget, Base):
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         # 载入并保存默认配置
         config = Config().load().save()
@@ -26,6 +30,16 @@ class BasicSettingsPage(QWidget, Base):
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
         self.root.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(TitleLabel(Localizer.get().app_basic_settings_page, header))
+        header_layout.addWidget(
+            CaptionLabel(Localizer.get().basic_settings_page_header_description, header)
+        )
+        self.root.addWidget(header)
 
         # 创建滚动区域的内容容器
         scroll_area_vbox_widget = QWidget()

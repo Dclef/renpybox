@@ -87,6 +87,14 @@ class LocalizerZH():
     app_translation_page: str = "翻译任务"
     app_agent_page: str = "Agent 助手"
     app_proofreading_page: str = "校对任务"
+    translation_page_header_title: str = "任务执行监控"
+    translation_page_header_description: str = "实时查看翻译进度、吞吐和可恢复操作"
+    proofreading_page_header_description: str = "在双语表格中检查、修正并确认翻译结果"
+    project_page_header_description: str = "绑定 Ren'Py 项目并设置翻译输入与输出目录"
+    app_settings_page_header_description: str = "管理语言、更新、声音和应用级显示选项"
+    basic_settings_page_header_description: str = "调整翻译任务的并发、超时和重试阈值"
+    expert_settings_page_header_description: str = "控制提示词、资产分析和结果检查等高级行为"
+    custom_prompt_page_header_description: str = "配置翻译提示词模式、风格和预览内容"
     app_basic_settings_page: str = "基础设置"
     app_expert_settings_page: str = "专家设置"
     app_glossary_page: str = "术语表"
@@ -1443,6 +1451,7 @@ class LocalizerZH():
     )
     onekey_skip_translation: str = '跳过翻译 →'
     onekey_review_export_post_process: str = '检查、导出与后处理'
+    onekey_apply_translation_5: str = '应用生效'
     onekey_select_game_folder: str = '选择游戏目录'
     onekey_no_extractable_files_found: str = '未检测到可提取的文件'
     onekey_extracting_text_game_creating_translation_files: str = '正在从游戏中提取文本并生成翻译文件，请稍候。'

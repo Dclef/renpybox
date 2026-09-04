@@ -198,8 +198,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         card = CardWidget(self)
         mark_toolbox_widget(card)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addWidget(StrongBodyLabel(title))
         if description:
             desc = CaptionLabel(description)

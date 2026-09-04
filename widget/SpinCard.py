@@ -14,7 +14,7 @@ class SpinCard(CardWidget):
         super().__init__(None)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.container = QHBoxLayout(self)
         self.container.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 

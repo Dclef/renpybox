@@ -9,6 +9,8 @@ from PyQt5.QtWidgets import QVBoxLayout
 from qfluentwidgets import PushButton
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
+from qfluentwidgets import CaptionLabel
+from qfluentwidgets import TitleLabel
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -22,12 +24,14 @@ from module.Project.ProjectStore import ProjectStore
 from widget.ComboBoxCard import ComboBoxCard
 from widget.PushButtonCard import PushButtonCard
 from widget.SwitchButtonCard import SwitchButtonCard
+from widget.ThemeHelper import mark_app_page
 
 class ProjectPage(QWidget, Base):
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         # 载入并保存默认配置
         config = Config().load()
@@ -44,6 +48,16 @@ class ProjectPage(QWidget, Base):
         self.vbox = QVBoxLayout(self)
         self.vbox.setSpacing(8)
         self.vbox.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(TitleLabel(Localizer.get().app_project_page, header))
+        header_layout.addWidget(
+            CaptionLabel(Localizer.get().project_page_header_description, header)
+        )
+        self.vbox.addWidget(header)
 
         # 添加控件
         self.add_widget_source_language(self.vbox, config, window)
