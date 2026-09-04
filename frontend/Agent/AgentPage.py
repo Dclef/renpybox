@@ -63,9 +63,10 @@ from qfluentwidgets import (
 from base.Base import Base
 from frontend.Agent.AgentWorker import AgentToolWorker, AgentWorker
 from module.Agent.AgentService import AgentService
+from module.Agent.tools.inspection_tools import inspect_translation_project
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
-from module.Renpy.ProjectPaths import RenpyProjectPaths
+from module.Renpy.ProjectPaths import RenpyProjectPaths, source_script_counts
 from widget.ThemeHelper import (
     get_theme_accent_color,
     mark_toolbox_scroll_area,
@@ -1206,7 +1207,7 @@ class AgentSuggestionCard(CardWidget):
 
 
 class AgentEmptyState(QWidget):
-    """空会话的起始视图：圆底徽章 + 引导文案 + 块状建议卡。"""
+    """空会话的起始视图：圆底徽章 + 工程诊断 + 块状建议卡。"""
 
     suggestion_requested = pyqtSignal(str)
 
@@ -1238,6 +1239,67 @@ class AgentEmptyState(QWidget):
         self.description_label.setAlignment(Qt.AlignCenter)
         intro_layout.addWidget(self.description_label, 0, Qt.AlignHCenter)
         outer.addWidget(intro, 0, Qt.AlignHCenter)
+
+        # 工程就绪诊断卡保持轻量，只展示体检工具返回的关键状态。
+        self.preflight_card = CardWidget(self)
+        self.preflight_card.setBorderRadius(8)
+        self.preflight_card.setFixedWidth(560)
+        preflight_layout = QVBoxLayout(self.preflight_card)
+        preflight_layout.setContentsMargins(14, 12, 14, 12)
+        preflight_layout.setSpacing(8)
+
+        preflight_header = QHBoxLayout()
+        preflight_header.setContentsMargins(0, 0, 0, 0)
+        preflight_header.setSpacing(8)
+        self.preflight_title_label = StrongBodyLabel(
+            localizer.agent_page_tool_inspect_translation_project,
+            self.preflight_card,
+        )
+        preflight_header.addWidget(self.preflight_title_label)
+        preflight_header.addStretch(1)
+        self.preflight_project_label = QLabel("", self.preflight_card)
+        self.preflight_project_label.setAlignment(Qt.AlignCenter)
+        self.preflight_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        preflight_header.addWidget(self.preflight_project_label)
+        preflight_layout.addLayout(preflight_header)
+
+        path_row = QHBoxLayout()
+        path_row.setContentsMargins(0, 0, 0, 0)
+        path_row.setSpacing(8)
+        path_caption = CaptionLabel(localizer.workbench_project_folder, self.preflight_card)
+        path_row.addWidget(path_caption, 0)
+        self.preflight_path_label = QLabel("", self.preflight_card)
+        self.preflight_path_label.setWordWrap(True)
+        self.preflight_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        path_row.addWidget(self.preflight_path_label, 1)
+        preflight_layout.addLayout(path_row)
+
+        metrics = QGridLayout()
+        metrics.setContentsMargins(0, 0, 0, 0)
+        metrics.setHorizontalSpacing(16)
+        metrics.setVerticalSpacing(8)
+        self.preflight_value_labels: dict[str, QLabel] = {}
+        for index, (key, caption) in enumerate(
+            (
+                ("rpa", localizer.agent_page_tool_list_rpa_files),
+                ("scripts", localizer.agent_page_tool_scan_script_errors),
+                ("tl", localizer.workbench_tl_folder),
+                ("worldbook", localizer.workbench_worldbuilding),
+            )
+        ):
+            field = QWidget(self.preflight_card)
+            field_layout = QVBoxLayout(field)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(2)
+            field_layout.addWidget(CaptionLabel(caption, field))
+            value_label = QLabel("", field)
+            value_label.setWordWrap(True)
+            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.preflight_value_labels[key] = value_label
+            field_layout.addWidget(value_label)
+            metrics.addWidget(field, index // 2, index % 2)
+        preflight_layout.addLayout(metrics)
+        outer.addWidget(self.preflight_card, 0, Qt.AlignHCenter)
 
         suggestions = QWidget(self)
         suggestions.setFixedWidth(560)
@@ -1278,6 +1340,177 @@ class AgentEmptyState(QWidget):
             grid.addWidget(card)
         outer.addWidget(suggestions, 0, Qt.AlignHCenter)
         outer.addStretch(2)
+
+        self._preflight_project_key = None
+        self._refresh_preflight()
+
+    def _fallback_preflight_data(self, paths: RenpyProjectPaths) -> dict[str, Any]:
+        """体检工具异常时仅用文件系统信息维持卡片可读性。"""
+        tl_language_dir = getattr(paths, "tl_language_dir", paths.game_dir / "tl")
+        output_dir = getattr(
+            paths,
+            "translation_output_dir",
+            paths.project_root / "RenpyBox_Translation",
+        )
+        try:
+            rpa_paths = sorted(
+                paths.game_dir.glob("*.rpa"),
+                key=lambda item: item.name.casefold(),
+            )
+            rpy_count, rpyc_count = source_script_counts(paths)
+            tl_file_count = (
+                sum(1 for _ in tl_language_dir.rglob("*.rpy"))
+                if tl_language_dir.is_dir()
+                else 0
+            )
+            cache_dir = output_dir / "cache"
+            cache_exists = any(
+                (cache_dir / name).is_file()
+                for name in ("cache.db", "project.json", "items.json")
+            )
+        except (AttributeError, OSError, RuntimeError):
+            rpa_paths = []
+            rpy_count = rpyc_count = tl_file_count = 0
+            cache_exists = False
+        return {
+            "files": {
+                "rpa_count": len(rpa_paths),
+                "rpy_count": rpy_count,
+                "rpyc_count": rpyc_count,
+                "tl_file_count": tl_file_count,
+                "unpack_required": bool(rpa_paths) and not (rpy_count or rpyc_count),
+                "rpa_names": [item.name for item in rpa_paths],
+            },
+            "cache": {"exists": cache_exists, "item_count": 0},
+            "assets": {},
+        }
+
+    def _refresh_preflight(self, config: Config | None = None) -> None:
+        """刷新当前工程的诊断指标，不触碰建议卡结构。"""
+        localizer = Localizer.get()
+        current = config or Config().load()
+        paths = RenpyProjectPaths.from_config(current)
+        if paths is None or not paths.game_dir.is_dir():
+            if self._preflight_project_key == "":
+                return
+            self._preflight_project_key = ""
+            self.preflight_project_label.setText(localizer.agent_page_project_unset)
+            self.preflight_path_label.setText(localizer.agent_project_not_set)
+            for value_label in self.preflight_value_labels.values():
+                value_label.setText(localizer.workbench_not_set)
+                value_label.setStyleSheet(
+                    "background: rgba(148, 163, 184, 0.12); color: #64748B; "
+                    "border-radius: 4px; padding: 2px 6px;"
+                )
+            return
+
+        project_key = getattr(paths, "project_key", str(paths.project_root))
+        if self._preflight_project_key == project_key:
+            return
+        self._preflight_project_key = project_key
+
+        try:
+            result = inspect_translation_project(config=current)
+            data = getattr(result, "data", {})
+            if not isinstance(data, dict) or not data:
+                data = self._fallback_preflight_data(paths)
+        except Exception:
+            data = self._fallback_preflight_data(paths)
+
+        files = data.get("files", {})
+        assets = data.get("assets", {})
+        rpa_count = int(files.get("rpa_count", 0) or 0)
+        rpa_names = files.get("rpa_names") or []
+        if not rpa_names:
+            try:
+                rpa_names = sorted(
+                    item.name for item in paths.game_dir.glob("*.rpa")
+                )
+            except (AttributeError, OSError, RuntimeError):
+                rpa_names = []
+        rpa_files = localizer.list_separator.join(rpa_names)
+        if not rpa_files:
+            rpa_files = localizer.workbench_none
+        rpa_text = (
+            (
+                f"{localizer.agent_page_tool_unpack_rpa_files}\n"
+                f"{localizer.agent_rpa_found.format(count=rpa_count, files=rpa_files)}"
+            )
+            if rpa_count
+            else localizer.agent_rpa_not_found
+        )
+        rpy_count = int(files.get("rpy_count", 0) or 0)
+        rpyc_count = int(files.get("rpyc_count", 0) or 0)
+        scripts_text = (
+            localizer.onekey_found_rpy_files_rpyc_files.format(
+                rpy_count=rpy_count,
+                rpyc_count=rpyc_count,
+            )
+            if rpy_count or rpyc_count
+            else localizer.agent_inspection_action_check_project_files
+        )
+        tl_file_count = int(files.get("tl_file_count", 0) or 0)
+        tl_status = (
+            localizer.onekey_existing_translation_detected_files.format(
+                rpy_count=tl_file_count
+            )
+            if tl_file_count
+            else localizer.workbench_not_set
+        )
+        worldbook_status = (
+            localizer.workbench_enabled
+            if assets.get("has_effective_assets") or assets.get("worldbook_draft")
+            else localizer.workbench_not_enabled
+        )
+        worldbook_text = localizer.workbench_draft_summary.format(
+            worldbook_status=worldbook_status,
+            draft_count=int(assets.get("character_draft_count", 0) or 0),
+            scope=localizer.current_scope,
+        )
+
+        self.preflight_project_label.setText(
+            localizer.agent_page_project_context.format(
+                name=paths.project_root.name,
+                language=paths.language,
+            )
+        )
+        self.preflight_path_label.setText(str(paths.project_root))
+        self.preflight_path_label.setToolTip(str(paths.project_root))
+        tl_language_dir = getattr(paths, "tl_language_dir", paths.game_dir / "tl")
+        unpack_required = bool(files.get("unpack_required"))
+        rpa_tone = "warning" if unpack_required else "success" if rpa_count else "neutral"
+        scripts_tone = "success" if rpy_count else "warning" if rpyc_count else "neutral"
+        tl_tone = "success" if tl_file_count else "neutral"
+        worldbook_tone = (
+            "success"
+            if assets.get("has_effective_assets") or assets.get("worldbook_draft")
+            else "neutral"
+        )
+        values = {
+            "rpa": (rpa_text, rpa_tone),
+            "scripts": (scripts_text, scripts_tone),
+            "tl": (f"{tl_language_dir}\n{tl_status}", tl_tone),
+            "worldbook": (worldbook_text, worldbook_tone),
+        }
+        for key, (text, tone) in values.items():
+            value_label = self.preflight_value_labels[key]
+            value_label.setText(text)
+            if tone == "warning":
+                style = (
+                    "background: rgba(245, 158, 11, 0.12); color: #B45309; "
+                    "border-radius: 4px; padding: 2px 6px;"
+                )
+            elif tone == "success":
+                style = (
+                    "background: rgba(16, 185, 129, 0.12); color: #047857; "
+                    "border-radius: 4px; padding: 2px 6px;"
+                )
+            else:
+                style = (
+                    "background: rgba(148, 163, 184, 0.12); color: #64748B; "
+                    "border-radius: 4px; padding: 2px 6px;"
+                )
+            value_label.setStyleSheet(style)
 
     def refresh_theme(self) -> None:
         self.brand_badge.refresh_theme()
@@ -1744,6 +1977,9 @@ class AgentPage(Base, QWidget):
             self._project_actions_key = ""
             self.project_label.setText(Localizer.get().agent_page_project_unset)
             self.project_label.setToolTip("")
+            empty_state = getattr(self, "empty_state", None)
+            if empty_state is not None:
+                empty_state._refresh_preflight(current)
             return
         if self._project_actions_key and self._project_actions_key != paths.project_key:
             self._project_actions = []
@@ -1755,6 +1991,9 @@ class AgentPage(Base, QWidget):
             )
         )
         self.project_label.setToolTip(str(paths.project_root))
+        empty_state = getattr(self, "empty_state", None)
+        if empty_state is not None:
+            empty_state._refresh_preflight(current)
 
     def _fill_suggestion(self, text: str) -> None:
         self.input_box.setPlainText(text)

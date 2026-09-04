@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QLabel,
     QFileDialog,
     QStackedWidget,
     QSizePolicy,
@@ -40,7 +41,6 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
-from widget.Separator import Separator
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 from module.Extract.PatchGenerator import generate_patch
@@ -183,9 +183,44 @@ class YiJianFanyiPage(Base, QWidget):
             header_layout.addWidget(exit_btn)
         
         page_layout.addWidget(header)
-        
-        # 分割线
-        page_layout.addWidget(Separator(page))
+
+        # 顶部五步流程指示器
+        step_names = [
+            Localizer.get().onekey_select_game,
+            Localizer.get().onekey_extract_text_2,
+            Localizer.get().onekey_terms_translation_context,
+            Localizer.get().onekey_run_ai_translation,
+            Localizer.get().onekey_apply_translation_5,
+        ]
+        step_bar = QWidget(page)
+        step_bar.setStyleSheet("background: transparent;")
+        step_layout = QHBoxLayout(step_bar)
+        step_layout.setContentsMargins(0, 4, 0, 8)
+        step_layout.setSpacing(8)
+
+        for idx, name in enumerate(step_names, 1):
+            badge = QLabel(f"{idx}. {name}", step_bar)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setFixedHeight(26)
+            if idx < step:
+                badge.setStyleSheet(
+                    "background: rgba(79, 70, 229, 0.12); color: #4F46E5; "
+                    "border: 1px solid rgba(79, 70, 229, 0.25); border-radius: 13px; "
+                    "padding: 0 10px; font-size: 11px; font-weight: 500;"
+                )
+            elif idx == step:
+                badge.setStyleSheet(
+                    "background: #4F46E5; color: #FFFFFF; font-weight: bold; "
+                    "border-radius: 13px; padding: 0 12px; font-size: 11.5px;"
+                )
+            else:
+                badge.setStyleSheet(
+                    "background: transparent; color: #94A3B8; "
+                    "border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 13px; "
+                    "padding: 0 10px; font-size: 11px;"
+                )
+            step_layout.addWidget(badge)
+        page_layout.addWidget(step_bar)
         
         # 内容区域（滚动容器，避免非全屏时控件挤压重叠）
         content_scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -203,8 +238,6 @@ class YiJianFanyiPage(Base, QWidget):
         page_layout.addWidget(content_scroll, 1)
         
         # 底部：进度条
-        page_layout.addWidget(Separator(page))
-        
         bottom = QWidget()
         bottom.setStyleSheet("background: transparent;")
         bottom_layout = QVBoxLayout(bottom)
