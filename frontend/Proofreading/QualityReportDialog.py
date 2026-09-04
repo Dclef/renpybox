@@ -14,7 +14,6 @@ from qfluentwidgets import StrongBodyLabel
 
 from module.Engine.Quality.TranslationQualityReport import TranslationQualityReport
 from module.Localizer.Localizer import Localizer
-from widget.Separator import Separator
 
 
 class QualityReportDialog(MessageBoxBase):
@@ -46,7 +45,6 @@ class QualityReportDialog(MessageBoxBase):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
         layout.addWidget(StrongBodyLabel(Localizer.get().proofreading_page_quality_report_title, card))
-        layout.addWidget(Separator(card))
 
         summary = QGridLayout()
         summary.setHorizontalSpacing(24)
@@ -90,7 +88,6 @@ class QualityReportDialog(MessageBoxBase):
             Localizer.get().proofreading_page_quality_report_items,
             card,
         ))
-        layout.addWidget(Separator(card))
 
         item_list = ListWidget(card)
         item_list.setFixedHeight(300)
