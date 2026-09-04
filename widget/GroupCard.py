@@ -7,15 +7,13 @@ from qfluentwidgets import CardWidget
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import StrongBodyLabel
 
-from widget.Separator import Separator
-
 class GroupCard(CardWidget):
 
     def __init__(self, parent: QWidget, title: str, description: str, init: Callable = None, clicked: Callable = None) -> None:
         super().__init__(parent)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 
@@ -25,9 +23,6 @@ class GroupCard(CardWidget):
         self.description_label = CaptionLabel(description, self)
         self.description_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
         self.root.addWidget(self.description_label)
-
-        # 添加分割线
-        self.root.addWidget(Separator(self))
 
         # 添加流式布局容器
         self.vbox_container = QWidget(self)
