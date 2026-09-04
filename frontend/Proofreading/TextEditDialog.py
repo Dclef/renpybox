@@ -6,7 +6,6 @@ from qfluentwidgets import PlainTextEdit
 from qfluentwidgets import StrongBodyLabel
 
 from module.Localizer.Localizer import Localizer
-from widget.Separator import Separator
 
 class TextEditDialog(MessageBoxBase):
     """多行文本编辑对话框"""
@@ -56,7 +55,6 @@ class TextEditDialog(MessageBoxBase):
         layout.setSpacing(12)
 
         layout.addWidget(StrongBodyLabel(title, card))
-        layout.addWidget(Separator(card))
 
         return card
 

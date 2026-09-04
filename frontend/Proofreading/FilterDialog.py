@@ -26,7 +26,6 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.ResultChecker import ResultChecker
 from module.ResultChecker import WarningType
-from widget.Separator import Separator
 
 class FilterDialog(MessageBoxBase):
     """筛选对话框"""
@@ -217,6 +216,7 @@ class FilterDialog(MessageBoxBase):
 
         root = QVBoxLayout(card)
         root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
 
         head_container = QWidget(card)
         head_layout = QHBoxLayout(head_container)
@@ -235,7 +235,6 @@ class FilterDialog(MessageBoxBase):
         head_layout.addStretch(1)
 
         root.addWidget(head_container)
-        root.addWidget(Separator(card))
 
         content_container = QWidget(card)
         if is_flow:

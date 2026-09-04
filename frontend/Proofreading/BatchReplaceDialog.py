@@ -10,7 +10,6 @@ from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import StrongBodyLabel
 
 from module.Localizer.Localizer import Localizer
-from widget.Separator import Separator
 
 
 class BatchReplaceDialog(MessageBoxBase):
@@ -50,7 +49,6 @@ class BatchReplaceDialog(MessageBoxBase):
         layout.setSpacing(12)
 
         layout.addWidget(StrongBodyLabel(Localizer.get().proofreading_page_batch_replace_action))
-        layout.addWidget(Separator(card))
 
         find_title = CaptionLabel(Localizer.get().proofreading_page_batch_replace_find, card)
         layout.addWidget(find_title)
@@ -74,7 +72,6 @@ class BatchReplaceDialog(MessageBoxBase):
         layout.setSpacing(12)
 
         layout.addWidget(StrongBodyLabel(Localizer.get().proofreading_page_batch_replace_options))
-        layout.addWidget(Separator(card))
 
         option_row = QHBoxLayout()
         option_row.setContentsMargins(0, 0, 0, 0)
