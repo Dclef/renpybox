@@ -73,7 +73,7 @@ class RenpyToolboxPage(Base, QWidget):
 
     def _init_ui(self) -> None:
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setSpacing(14)
+        self.main_layout.setSpacing(16)
         self.main_layout.setContentsMargins(24, 24, 24, 24)
 
         header_layout = QHBoxLayout()
@@ -102,7 +102,7 @@ class RenpyToolboxPage(Base, QWidget):
         mark_toolbox_widget(scroll_widget, "toolboxScroll")
         self.scroll_layout = QVBoxLayout(scroll_widget)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout.setSpacing(18)
+        self.scroll_layout.setSpacing(20)
 
         for group in GROUP_TITLES:
             self._create_flow_section(group, get_group_title(group))

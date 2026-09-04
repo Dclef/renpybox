@@ -7,11 +7,12 @@ import os
 import uuid
 from pathlib import Path
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QLabel,
+    QToolButton,
     QFileDialog,
     QStackedWidget,
     QSizePolicy,
@@ -42,7 +43,11 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from widget.ItemCard import ItemCard
-from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+from widget.ThemeHelper import (
+    get_theme_accent_color,
+    mark_toolbox_widget,
+    mark_toolbox_scroll_area,
+)
 from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy.ProjectPaths import (
@@ -90,6 +95,8 @@ class YiJianFanyiPage(Base, QWidget):
         self.game_dir = ""
         self.renpy_version = ""
         self.current_step = 1
+        self._max_reached_step = 1
+        self._step_indicator_buttons: list[tuple[QToolButton, int]] = []
         self.unified_extractor = UnifiedExtractor()
         self.extraction_worker = None
         self._extraction_generation = 0
@@ -184,7 +191,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         page_layout.addWidget(header)
 
-        # 顶部五步流程指示器
+        # 顶部五步流程指示器：外观参考 HTML，实际流程仍由原有按钮和 Worker 驱动。
         step_names = [
             Localizer.get().onekey_select_game,
             Localizer.get().onekey_extract_text_2,
@@ -195,31 +202,23 @@ class YiJianFanyiPage(Base, QWidget):
         step_bar = QWidget(page)
         step_bar.setStyleSheet("background: transparent;")
         step_layout = QHBoxLayout(step_bar)
-        step_layout.setContentsMargins(0, 4, 0, 8)
-        step_layout.setSpacing(8)
+        step_layout.setContentsMargins(0, 4, 0, 12)
+        step_layout.setSpacing(6)
 
         for idx, name in enumerate(step_names, 1):
-            badge = QLabel(f"{idx}. {name}", step_bar)
-            badge.setAlignment(Qt.AlignCenter)
-            badge.setFixedHeight(26)
-            if idx < step:
-                badge.setStyleSheet(
-                    "background: rgba(79, 70, 229, 0.12); color: #4F46E5; "
-                    "border: 1px solid rgba(79, 70, 229, 0.25); border-radius: 13px; "
-                    "padding: 0 10px; font-size: 11px; font-weight: 500;"
-                )
-            elif idx == step:
-                badge.setStyleSheet(
-                    "background: #4F46E5; color: #FFFFFF; font-weight: bold; "
-                    "border-radius: 13px; padding: 0 12px; font-size: 11.5px;"
-                )
-            else:
-                badge.setStyleSheet(
-                    "background: transparent; color: #94A3B8; "
-                    "border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 13px; "
-                    "padding: 0 10px; font-size: 11px;"
-                )
-            step_layout.addWidget(badge)
+            indicator = QToolButton(step_bar)
+            indicator.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            indicator.setAutoRaise(True)
+            indicator.setFixedHeight(42)
+            indicator.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            indicator.setText(f"{idx}. {name}")
+            indicator.setCursor(Qt.PointingHandCursor)
+            indicator.clicked.connect(
+                lambda checked=False, target=idx: self._on_step_indicator_clicked(target)
+            )
+            self._step_indicator_buttons.append((indicator, idx))
+            step_layout.addWidget(indicator, 1)
+        self._refresh_step_indicators()
         page_layout.addWidget(step_bar)
         
         # 内容区域（滚动容器，避免非全屏时控件挤压重叠）
@@ -277,6 +276,87 @@ class YiJianFanyiPage(Base, QWidget):
         page.content_scroll = content_scroll
 
         return page, content_layout
+
+    def _step_indicator_style(self, state: str) -> str:
+        """返回随主题变化的 HTML 风格步骤头样式。"""
+        accent = get_theme_accent_color().name()
+        if isDarkTheme():
+            muted = "#94A3B8"
+            border = "rgba(148, 163, 184, 0.24)"
+            done_background = "rgba(99, 102, 241, 0.16)"
+            done_border = "rgba(99, 102, 241, 0.36)"
+            active_border = "#818CF8"
+        else:
+            muted = "#64748B"
+            border = "rgba(148, 163, 184, 0.30)"
+            done_background = "rgba(79, 70, 229, 0.10)"
+            done_border = "rgba(79, 70, 229, 0.28)"
+            active_border = "#4338CA"
+
+        if state == "active":
+            return (
+                f"QToolButton {{ background: {accent}; color: #FFFFFF; "
+                f"border: 1px solid {accent}; border-bottom: 3px solid {active_border}; "
+                "border-radius: 7px; padding: 0 12px; font-size: 11px; font-weight: 600; }"
+            )
+        if state == "done":
+            return (
+                f"QToolButton {{ background: {done_background}; color: {accent}; "
+                f"border: 1px solid {done_border}; border-bottom: 2px solid {done_border}; "
+                "border-radius: 7px; padding: 0 10px; font-size: 11px; font-weight: 500; }"
+                f"QToolButton:hover {{ border-color: {accent}; }}"
+            )
+        return (
+            f"QToolButton {{ background: transparent; color: {muted}; "
+            f"border: 1px solid {border}; border-bottom: 2px solid transparent; "
+            "border-radius: 7px; padding: 0 10px; font-size: 11px; }"
+            "QToolButton:disabled { color: #94A3B8; background: transparent; "
+            "border-color: rgba(148, 163, 184, 0.16); }"
+        )
+
+    def _refresh_step_indicators(self) -> None:
+        """同步所有页面步骤头的完成、当前和待处理状态。"""
+        for indicator, target in self._step_indicator_buttons:
+            if target == self.current_step:
+                state = "active"
+            elif target <= self._max_reached_step:
+                state = "done"
+            else:
+                state = "pending"
+            indicator.setProperty("stepState", state)
+            indicator.setEnabled(target <= self._max_reached_step)
+            if state == "done":
+                indicator.setIcon(FluentIcon.ACCEPT.icon(color=get_theme_accent_color()))
+            else:
+                indicator.setIcon(QIcon())
+            indicator.setStyleSheet(self._step_indicator_style(state))
+
+    def _on_step_indicator_clicked(self, target: int) -> None:
+        """仅回看已到达步骤，不绕过流程按钮或后台任务。"""
+        if target > self._max_reached_step or target == self.current_step:
+            return
+        if (
+            self._preprocess_worker and self._preprocess_worker.isRunning()
+        ) or (
+            self.extraction_worker and self.extraction_worker.isRunning()
+        ):
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_extraction_already_running_wait_finish,
+                parent=self,
+            )
+            return
+
+        self.current_step = target
+        self.stacked.setCurrentIndex(target - 1)
+        if target == 3:
+            self._find_glossary_files()
+            self._refresh_workbench_asset_status()
+        elif target == 4:
+            self._refresh_step4_state()
+        elif target == 5:
+            self.step5_page.progress_bar.setValue(100)
+        self._refresh_step_indicators()
     
     # ==================== 进度一：前期设置 ====================
     def _create_step1_page(self):
@@ -543,9 +623,11 @@ class YiJianFanyiPage(Base, QWidget):
         """跳过抽取，直接进入翻译步骤"""
         # 直接跳到步骤4（翻译）
         self.current_step = 4
+        self._max_reached_step = max(self._max_reached_step, 4)
         self.stacked.setCurrentIndex(3)
         self._refresh_step4_ready()
         self.step4_page.progress_bar.setValue(60)  # 60% 进度
+        self._refresh_step_indicators()
     
     def _on_path_text_changed(self, text):
         """路径输入框文本变化时验证"""
@@ -1394,7 +1476,9 @@ class YiJianFanyiPage(Base, QWidget):
         self._apply_target_dir = None
 
         self.current_step = 2
+        self._max_reached_step = max(self._max_reached_step, 2)
         self.stacked.setCurrentIndex(1)
+        self._refresh_step_indicators()
 
         # 抽取开始时，禁用“开始翻译/下一步”等按钮，避免在抽取过程中误点
         self.step2_next_btn.setVisible(False)
@@ -1688,9 +1772,11 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _go_step3(self):
         self.current_step = 3
+        self._max_reached_step = max(self._max_reached_step, 3)
         self.stacked.setCurrentIndex(2)
         self._find_glossary_files()
         self._refresh_workbench_asset_status()
+        self._refresh_step_indicators()
 
     def _refresh_workbench_asset_status(self) -> None:
         """显示与当前一键翻译项目绑定的工作台资产数量。"""
@@ -1781,8 +1867,10 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _go_step4(self):
         self.current_step = 4
+        self._max_reached_step = max(self._max_reached_step, 4)
         self.stacked.setCurrentIndex(3)
         self._refresh_step4_state()
+        self._refresh_step_indicators()
 
     def start_current_project(self, project_root: str, language: str) -> bool:
         """由 Agent 带入当前项目并启动提取，完成后继续进入翻译确认。"""
@@ -1926,8 +2014,10 @@ class YiJianFanyiPage(Base, QWidget):
         
     def _go_step5(self):
         self.current_step = 5
+        self._max_reached_step = max(self._max_reached_step, 5)
         self.stacked.setCurrentIndex(4)
         self.step5_page.progress_bar.setValue(100)
+        self._refresh_step_indicators()
 
     def _start_auto_hook_supplement(
         self,
@@ -2326,6 +2416,7 @@ class YiJianFanyiPage(Base, QWidget):
             # 返回上一步
             self.current_step = current_step - 1
             self.stacked.setCurrentIndex(current_step - 2)  # index 从 0 开始
+            self._refresh_step_indicators()
         
     def _exit_wizard(self):
         """退出向导，返回工具箱页面"""
@@ -2335,6 +2426,7 @@ class YiJianFanyiPage(Base, QWidget):
         
         # 重置状态（为下次使用做准备）
         self.current_step = 1
+        self._max_reached_step = 1
         self.stacked.setCurrentIndex(0)
         self._onekey_translation_completed = False
         self._start_translation_after_extraction = False
@@ -2346,6 +2438,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.path_status_label.setText("")
         self.old_translation_card.setVisible(False)
         self.has_old_translation = False
+        self._refresh_step_indicators()
         
     # 工具函数
     def _tool_apply_translation(self, card, feedback_parent=None):

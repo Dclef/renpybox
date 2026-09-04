@@ -40,7 +40,7 @@ class QualityReportDialog(MessageBoxBase):
 
     def _build_summary_card(self) -> CardWidget:
         card = CardWidget(self.widget)
-        card.setBorderRadius(4)
+        card.setBorderRadius(8)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -81,7 +81,7 @@ class QualityReportDialog(MessageBoxBase):
 
     def _build_item_card(self) -> CardWidget:
         card = CardWidget(self.widget)
-        card.setBorderRadius(4)
+        card.setBorderRadius(8)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)

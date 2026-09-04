@@ -43,7 +43,7 @@ class BatchReplaceDialog(MessageBoxBase):
 
     def _build_find_replace_card(self) -> CardWidget:
         card = CardWidget(self.widget)
-        card.setBorderRadius(4)
+        card.setBorderRadius(8)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -67,7 +67,7 @@ class BatchReplaceDialog(MessageBoxBase):
 
     def _build_option_card(self) -> CardWidget:
         card = CardWidget(self.widget)
-        card.setBorderRadius(4)
+        card.setBorderRadius(8)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 16, 16, 16)

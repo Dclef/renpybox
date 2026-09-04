@@ -27,7 +27,8 @@ class GroupCard(CardWidget):
         # 添加流式布局容器
         self.vbox_container = QWidget(self)
         self.vbox = QVBoxLayout(self.vbox_container)
-        self.vbox.setSpacing(0)
+        # 组内用留白分层，避免再用实体分割线切断卡片。
+        self.vbox.setSpacing(8)
         self.vbox.setContentsMargins(0, 0, 0, 0)
         self.root.addWidget(self.vbox_container)
 

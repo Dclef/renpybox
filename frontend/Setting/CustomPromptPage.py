@@ -12,6 +12,7 @@ from qfluentwidgets import PlainTextEdit
 from qfluentwidgets import SegmentedWidget
 from qfluentwidgets import SingleDirectionScrollArea
 from qfluentwidgets import StrongBodyLabel
+from qfluentwidgets import TitleLabel
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -28,6 +29,7 @@ from module.PromptBuilder import PromptBuilder
 from widget.ComboBoxCard import ComboBoxCard
 from widget.GroupCard import GroupCard
 from widget.PushButtonCard import PushButtonCard
+from widget.ThemeHelper import mark_app_page
 
 
 class PromptPreviewDialog(MessageBoxBase):
@@ -85,6 +87,7 @@ class CustomPromptPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
         self.custom_prompt_groups: list[GroupCard] = []
         self.custom_style_group: GroupCard | None = None
 
@@ -93,6 +96,18 @@ class CustomPromptPage(QWidget, Base):
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
         self.root.setContentsMargins(24, 24, 24, 24)
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        header_layout.addWidget(
+            TitleLabel(Localizer.get().app_custom_prompt_navigation_item, header)
+        )
+        header_layout.addWidget(
+            CaptionLabel(Localizer.get().custom_prompt_page_header_description, header)
+        )
+        self.root.addWidget(header)
 
         scroll_area_vbox_widget = QWidget()
         scroll_area_vbox = QVBoxLayout(scroll_area_vbox_widget)
