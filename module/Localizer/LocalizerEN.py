@@ -287,6 +287,7 @@ class LocalizerEN(LocalizerZH):
     platform_page_api_delete: str = "Delete API"
     platform_page_widget_add_title: str = "API List"
     platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI, Anthropic, DeepL and DeepLX here"
+    platform_page_header_description: str = "Manage translation APIs, model parameters, and the active channel"
     platform_page_active_hint: str = "Active API: {NAME}"
     platform_page_active_none: str = "No active API selected"
     platform_page_empty_title: str = "No APIs yet"
@@ -400,6 +401,7 @@ class LocalizerEN(LocalizerZH):
     proofreading_page_export: str = "Export"
     proofreading_page_search: str = "Search"
     proofreading_page_filter: str = "Filter"
+    proofreading_page_current_view: str = "Current view"
     proofreading_page_retranslate: str = "Retranslate"
     proofreading_page_confirm_translation: str = "Mark Translation as Correct"
     proofreading_page_confirm_selected_translations: str = "Mark Selected Translations as Correct"
@@ -2168,6 +2170,8 @@ class LocalizerEN(LocalizerZH):
     toolbox_group_translate: str = "Translation Methods"
     toolbox_group_asset: str = "Resources & Glossaries"
     toolbox_group_engineer: str = "Engineering & Repair"
+    toolbox_page_header_description: str = "Manage translation workflows, text processing, terminology assets, and engineering tools"
+    toolbox_group_count: str = "{COUNT} tools"
     toolbox_tool_continue_translation_title: str = 'Continue Translation'
     toolbox_tool_continue_translation_description: str = 'Resume the unfinished translation task'
     toolbox_tool_one_key_translate_title: str = 'One-click Translation'

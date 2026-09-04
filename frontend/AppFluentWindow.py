@@ -7,7 +7,6 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtWidgets import QLabel
 from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
@@ -15,7 +14,6 @@ from qfluentwidgets import MessageBox
 from qfluentwidgets import NavigationAvatarWidget
 from qfluentwidgets import NavigationItemPosition
 from qfluentwidgets import NavigationPushButton
-from qfluentwidgets import PushButton
 from qfluentwidgets import Theme
 from qfluentwidgets import isDarkTheme
 from qfluentwidgets import setTheme
@@ -238,49 +236,12 @@ class AppFluentWindow(FluentWindow, Base):
         self._apply_shell_theme()
 
     def _configure_title_bar(self) -> None:
-        """将 QFluent 默认 48px 标题栏收敛为原型的 38px 壳层。"""
+        """将标题栏收敛为原型的 38px 简洁壳层。"""
         self.titleBar.setFixedHeight(38)
         self.widgetLayout.setContentsMargins(0, 38, 0, 0)
         self.titleBar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-
-        icon = self.titleBar.iconLabel
-        icon.show()
-        icon.setText(Localizer.get().app_brand_short)
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet(
-            "background: #4F46E5; color: #FFFFFF; border-radius: 4px; "
-            "font-size: 10px; font-weight: 700;"
-        )
-        self.titleBar.titleLabel.setText(Localizer.get().app_brand_name)
-
-        version = QLabel(VersionManager.get().get_version(), self.titleBar)
-        version.setObjectName("titleBarVersion")
-        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version.setFixedHeight(20)
-        self.titleBar.hBoxLayout.insertWidget(2, version, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        config = Config().load()
-        project_path = str(getattr(config, "renpy_project_path", "") or "").strip()
-        project_name = os.path.basename(os.path.normpath(project_path)) if project_path else ""
-        project = QLabel(self.titleBar)
-        project.setObjectName("titleBarProject")
-        project.setText(
-            Localizer.get().app_titlebar_project.format(NAME=project_name)
-            if project_name
-            else Localizer.get().app_titlebar_project_unset
-        )
-        project.setToolTip(project_path)
-        project.setMaximumWidth(260)
-        self.titleBar.hBoxLayout.insertWidget(3, project, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        theme_button = PushButton(
-            Localizer.get().app_theme_btn,
-            self.titleBar,
-        )
-        theme_button.setObjectName("titleBarThemeButton")
-        theme_button.setFixedHeight(28)
-        theme_button.clicked.connect(self.switch_theme)
-        self.titleBar.hBoxLayout.insertWidget(4, theme_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        # 主题、语言和应用设置入口统一留在左下角导航，不在顶栏重复添加。
+        self.titleBar.iconLabel.hide()
 
     def resizeEvent(self, event: QEvent) -> None:
         """保留原生控制按钮，同时让标题栏覆盖完整窗口宽度。"""
@@ -297,26 +258,14 @@ class AppFluentWindow(FluentWindow, Base):
         if isDarkTheme():
             title_bg = "#0F1420"
             title_fg = "#F1F5F9"
-            muted = "#94A3B8"
             border = "rgba(255, 255, 255, 0.08)"
-            button_bg = "#141B2A"
         else:
             title_bg = "#F1F5F9"
             title_fg = "#0F172A"
-            muted = "#64748B"
             border = "rgba(15, 23, 42, 0.08)"
-            button_bg = "#FFFFFF"
         self.titleBar.setStyleSheet(
             f"FluentTitleBar {{ background-color: {title_bg}; border-bottom: 1px solid {border}; }}"
             f"QLabel#titleLabel {{ color: {title_fg}; font-size: 12px; font-weight: 700; }}"
-            f"QLabel#titleBarVersion {{ color: #6366F1; background: rgba(99, 102, 241, 0.12); "
-            f"border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 4px; padding: 0 6px; "
-            f"font-size: 10px; font-weight: 600; }}"
-            f"QLabel#titleBarProject {{ color: {muted}; background: {button_bg}; border: 1px solid {border}; "
-            f"border-radius: 10px; padding: 0 9px; font-size: 11px; }}"
-            f"QPushButton#titleBarThemeButton {{ color: {title_fg}; background: {button_bg}; border: 1px solid {border}; "
-            f"border-radius: 4px; padding: 0 9px; font-size: 11px; }}"
-            f"QPushButton#titleBarThemeButton:hover {{ background: {title_bg}; }}"
         )
 
         light_text = QColor("#334155")
