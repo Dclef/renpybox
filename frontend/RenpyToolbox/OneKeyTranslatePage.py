@@ -114,7 +114,6 @@ class YiJianFanyiPage(Base, QWidget):
         self._apply_project_paths = None
         self._apply_progress_dialog = None
         self._start_translation_after_extraction = False
-        self._agent_direct_start = False
         # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
         # 最近运行清单指向 hook 缓存，供校对页继续载入。
         self._hook_restore_paths = None
@@ -1530,7 +1529,6 @@ class YiJianFanyiPage(Base, QWidget):
                 or page_paths.project_key != project_key
             ):
                 self._start_translation_after_extraction = False
-                self._agent_direct_start = False
                 self.extraction_worker = None
                 self.step2_page.progress_ring.setVisible(False)
                 self.step2_status.setText(
@@ -1777,7 +1775,6 @@ class YiJianFanyiPage(Base, QWidget):
             return False
 
         self._start_translation_after_extraction = True
-        self._agent_direct_start = True
         self._onekey_translation_completed = False
         try:
             tl_blocked = self.tl_folder_edit.blockSignals(True)
@@ -1789,20 +1786,17 @@ class YiJianFanyiPage(Base, QWidget):
             self._on_path_text_changed(root)
             if not self.step1_next_btn.isEnabled():
                 self._start_translation_after_extraction = False
-                self._agent_direct_start = False
                 return False
             self._go_step2()
             return True
         except Exception:
             self._start_translation_after_extraction = False
-            self._agent_direct_start = False
             raise
 
     def _invalidate_step2_run(self) -> None:
         """让仍在后台运行的旧步骤 2 结果失效。"""
         self._extraction_generation += 1
         self._start_translation_after_extraction = False
-        self._agent_direct_start = False
 
     def hideEvent(self, event):
         """页面离开后不允许旧预处理结果继续启动后续任务。"""
@@ -1818,7 +1812,6 @@ class YiJianFanyiPage(Base, QWidget):
     def _on_start_translate_clicked(self):
         """检查配置后再进入翻译面板"""
         if not self._refresh_step4_ready():
-            self._agent_direct_start = False
             InfoBar.warning(
                 Localizer.get().notice,
                 Localizer.get().onekey_activate_translation_provider_configure_input_output_folders,
@@ -1849,14 +1842,14 @@ class YiJianFanyiPage(Base, QWidget):
         )
         msg_box.cancelButton.setText(Localizer.get().app_update_cancel)
         
-        direct_start = self._agent_direct_start
-        self._agent_direct_start = False
         if msg_box.exec():
-            self._onekey_translation_started = not direct_start
+            # 只有收到带 request_id 的受理结果后才标记为已启动，避免把其他
+            # 翻译任务的完成事件误认为本次一键流程。
+            self._onekey_translation_started = False
             self._onekey_translation_completed = False
             self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
             self._auto_hook_running = False
-            self._open_legacy_translation_page(start_immediately=direct_start)
+            self._open_legacy_translation_page()
 
     def _on_auto_hook_supplement_changed(self, state):
         """保存一键翻译后的自动补漏开关。"""
@@ -1869,8 +1862,8 @@ class YiJianFanyiPage(Base, QWidget):
         except Exception as e:
             self.logger.warning(f"保存自动补全漏翻配置失败: {e}")
         
-    def _open_legacy_translation_page(self, *, start_immediately: bool = False):
-        """打开传统翻译页面，保留续翻译能力"""
+    def _open_legacy_translation_page(self):
+        """打开传统翻译页面并直接启动本次一键任务。"""
         try:
             if not self.window:
                 raise RuntimeError("未找到主窗口，无法打开翻译面板")
@@ -1880,16 +1873,15 @@ class YiJianFanyiPage(Base, QWidget):
                 page = TranslationPage("translation_page", self.window)
                 self.window.translation_page = page
             self.window.navigate_to_page(page)
-            if start_immediately:
-                request_id = uuid.uuid4().hex
-                self._onekey_request_id = request_id
-                self._onekey_run_id = None
-                if not page._request_translation_start(
-                    Base.TranslationStatus.UNTRANSLATED,
-                    self.window,
-                    request_id=request_id,
-                ):
-                    self._reset_auto_hook_state()
+            request_id = uuid.uuid4().hex
+            self._onekey_request_id = request_id
+            self._onekey_run_id = None
+            if not page._request_translation_start(
+                Base.TranslationStatus.UNTRANSLATED,
+                self.window,
+                request_id=request_id,
+            ):
+                self._reset_auto_hook_state()
         except Exception as e:
             self._reset_auto_hook_state()
             LogManager.get().error(f"打开传统翻译面板失败: {e}")
@@ -2313,7 +2305,6 @@ class YiJianFanyiPage(Base, QWidget):
         self.stacked.setCurrentIndex(0)
         self._onekey_translation_completed = False
         self._start_translation_after_extraction = False
-        self._agent_direct_start = False
         self.step1_next_btn.setEnabled(False)
         self.skip_extract_btn.setVisible(False)
         self.game_path = ""
