@@ -12,6 +12,7 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QHBoxLayout
+from PyQt5.QtWidgets import QSizePolicy
 from PyQt5.QtWidgets import QVBoxLayout
 
 from qfluentwidgets import Action
@@ -27,7 +28,6 @@ from qfluentwidgets import ProgressRing
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import SubtitleLabel
 from qfluentwidgets import StrongBodyLabel
-from qfluentwidgets import LargeTitleLabel
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
@@ -80,39 +80,38 @@ class DashboardCard(CardWidget):
     def __init__(self, parent: QWidget, title: str, value: str, unit: str, init: Callable = None, clicked: Callable = None) -> None:
         super().__init__(parent)
 
-        # 设置容器
+        # 紧凑指标卡：保留原有数据接口，只收敛视觉密度与自适应尺寸。
         self.setBorderRadius(8)
-        self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(130)
+        self.setFixedHeight(88)
 
-        self.title_label = SubtitleLabel(title, self)
+        self.root = QVBoxLayout(self)
+        self.root.setContentsMargins(14, 12, 14, 12) # 左、上、右、下
+        self.root.setSpacing(4)
+
+        self.title_label = CaptionLabel(title, self)
+        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         self.root.addWidget(self.title_label)
 
-        # 添加控件
+        # 数值与单位在同一基线区域排列，避免旧版大字号造成的垂直浪费。
         self.body_hbox_container = QWidget(self)
         self.body_hbox = QHBoxLayout(self.body_hbox_container)
-        self.body_hbox.setSpacing(0)
+        self.body_hbox.setSpacing(4)
         self.body_hbox.setContentsMargins(0, 0, 0, 0)
 
-        self.unit_vbox_container = QWidget(self)
-        self.unit_vbox = QVBoxLayout(self.unit_vbox_container)
-        self.unit_vbox.setSpacing(0)
-        self.unit_vbox.setContentsMargins(0, 0, 0, 0)
+        self.value_label = SubtitleLabel(value, self)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
-        self.unit_label = StrongBodyLabel(unit, self)
-        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        self.unit_vbox.addSpacing(20)
-        self.unit_vbox.addWidget(self.unit_label)
+        self.unit_label = CaptionLabel(unit, self)
+        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
 
-        self.value_label = LargeTitleLabel(value, self)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
-
+        self.body_hbox.addWidget(self.value_label)
+        self.body_hbox.addWidget(self.unit_label)
         self.body_hbox.addStretch(1)
-        self.body_hbox.addWidget(self.value_label, 1)
-        self.body_hbox.addSpacing(6)
-        self.body_hbox.addWidget(self.unit_vbox_container)
-        self.body_hbox.addStretch(1)
-        self.root.addWidget(self.body_hbox_container, 1)
+        self.root.addStretch(1)
+        self.root.addWidget(self.body_hbox_container)
 
         if callable(init):
             init(self)
@@ -539,6 +538,8 @@ class TranslationPage(QWidget, Base):
         self.flow_container = QWidget(self)
         self.flow_layout = FlowLayout(self.flow_container, needAni = False)
         self.flow_layout.setSpacing(8)
+        self.flow_layout.setHorizontalSpacing(8)
+        self.flow_layout.setVerticalSpacing(8)
         self.flow_layout.setContentsMargins(0, 0, 0, 0)
 
         self.add_time_card(self.flow_layout, config, window)
@@ -556,7 +557,7 @@ class TranslationPage(QWidget, Base):
         self.command_bar_card = CommandBarCard()
         parent.addWidget(self.command_bar_card)
 
-        # 第一行：主控制命令
+        # 单层操作栏：按核心控制、异常恢复、产物工具分组。
         self.command_bar_card.set_minimum_width(640)
         self.add_command_bar_action_start(self.command_bar_card, config, window)
         self.add_command_bar_action_stop(self.command_bar_card, config, window)
@@ -565,6 +566,9 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_retry_failed(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_export(self.command_bar_card, config, window)
+        self.add_command_bar_action_reinject_cache(self.command_bar_card, config, window)
+        self.add_command_bar_action_estimate(self.command_bar_card, config, window)
+        self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
         # 添加信息条
         self.indeterminate = IndeterminateProgressRing()
@@ -580,15 +584,6 @@ class TranslationPage(QWidget, Base):
         self.command_bar_card.add_spacing(4)
         self.command_bar_card.add_widget(self.indeterminate)
 
-        # 第二行：工具命令（直接展开，不折叠入 ...）
-        self.command_bar_card2 = CommandBarCard()
-        parent.addWidget(self.command_bar_card2)
-        self.command_bar_card2.set_minimum_width(640)
-        self.add_command_bar_action_reinject_cache(self.command_bar_card2, config, window)
-        self.command_bar_card2.add_separator()
-        self.add_command_bar_action_estimate(self.command_bar_card2, config, window)
-        self.add_command_bar_action_timer(self.command_bar_card2, config, window)
-
     # 累计时间
     def add_time_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
         self.time = DashboardCard(
@@ -597,7 +592,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.time.setFixedSize(204, 204)
         parent.addWidget(self.time)
 
     # 剩余时间
@@ -608,7 +602,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.remaining_time.setFixedSize(204, 204)
         parent.addWidget(self.remaining_time)
 
     # 翻译行数
@@ -619,7 +612,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.line_card.setFixedSize(204, 204)
         parent.addWidget(self.line_card)
 
     # 剩余行数
@@ -630,7 +622,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.remaining_line.setFixedSize(204, 204)
         parent.addWidget(self.remaining_line)
 
     # 平均速度
@@ -641,7 +632,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.speed.setFixedSize(204, 204)
         parent.addWidget(self.speed)
 
     # 累计消耗
@@ -665,7 +655,6 @@ class TranslationPage(QWidget, Base):
             unit = "",
             clicked = on_token_card_clicked,
         )
-        self.token.setFixedSize(204, 204)
         self.token.setCursor(Qt.CursorShape.PointingHandCursor)
         self.token.installEventFilter(ToolTipFilter(self.token, 300, ToolTipPosition.TOP))
         self.token.setToolTip(Localizer.get().translation_page_card_token_tooltip)
@@ -733,7 +722,6 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
         )
-        self.task.setFixedSize(204, 204)
         parent.addWidget(self.task)
 
     def _request_translation_start(
