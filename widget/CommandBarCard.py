@@ -14,9 +14,9 @@ class CommandBarCard(CardWidget):
         mark_toolbox_widget(self)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.hbox = QHBoxLayout(self)
-        self.hbox.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
+        self.hbox.setContentsMargins(14, 10, 14, 10) # 左、上、右、下
 
         # 文本控件
         self.command_bar = CommandBar()
