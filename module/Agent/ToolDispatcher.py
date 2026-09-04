@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -10,19 +11,25 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 
-from .tools import (
-    get_project_info,
-    inspect_translation_project,
-    list_rpa_files,
-    optimize_old_new_translations,
-    scan_script_errors,
-    set_project,
-    unpack_rpa_files,
-)
 from .types import ToolDef, ToolResult
 
 
 ConfigLoader = Callable[[], Config]
+
+
+def _lazy_tool_handler(
+    module_name: str,
+    function_name: str,
+    config_loader: ConfigLoader,
+) -> Callable[..., ToolResult]:
+    """延迟加载工具实现，避免打开 Agent 页面时初始化整套翻译依赖。"""
+
+    def handler(**arguments: Any) -> ToolResult:
+        module = importlib.import_module(f"module.Agent.tools.{module_name}")
+        function = getattr(module, function_name)
+        return function(config_loader=config_loader, **arguments)
+
+    return handler
 
 
 class ToolDispatcher:
@@ -62,42 +69,61 @@ class ToolDispatcher:
                     "required": ["path"],
                     "additionalProperties": False,
                 },
-                handler=lambda path: set_project(path, config_loader=self.config_loader),
+                handler=_lazy_tool_handler(
+                    "project_tools",
+                    "set_project",
+                    self.config_loader,
+                ),
                 requires_idle_engine=True,
             ),
             "get_project_info": ToolDef(
                 name="get_project_info",
                 description=localizer.agent_tool_get_project_info_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda: get_project_info(config_loader=self.config_loader),
+                handler=_lazy_tool_handler(
+                    "project_tools",
+                    "get_project_info",
+                    self.config_loader,
+                ),
             ),
             "inspect_translation_project": ToolDef(
                 name="inspect_translation_project",
                 description=localizer.agent_tool_inspect_translation_project_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda: inspect_translation_project(
-                    config_loader=self.config_loader
+                handler=_lazy_tool_handler(
+                    "inspection_tools",
+                    "inspect_translation_project",
+                    self.config_loader,
                 ),
             ),
             "list_rpa_files": ToolDef(
                 name="list_rpa_files",
                 description=localizer.agent_tool_list_rpa_files_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda: list_rpa_files(config_loader=self.config_loader),
+                handler=_lazy_tool_handler(
+                    "project_tools",
+                    "list_rpa_files",
+                    self.config_loader,
+                ),
             ),
             "scan_script_errors": ToolDef(
                 name="scan_script_errors",
                 description=localizer.agent_tool_scan_script_errors_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda: scan_script_errors(config_loader=self.config_loader),
+                handler=_lazy_tool_handler(
+                    "project_tools",
+                    "scan_script_errors",
+                    self.config_loader,
+                ),
             ),
             "unpack_rpa_files": ToolDef(
                 name="unpack_rpa_files",
                 description=localizer.agent_tool_unpack_rpa_files_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda _confirmed_game_dir: unpack_rpa_files(
-                    config_loader=self.config_loader,
-                    confirmed_game_dir=_confirmed_game_dir,
+                handler=_lazy_tool_handler(
+                    "archive_tools",
+                    "unpack_rpa_files",
+                    self.config_loader,
                 ),
                 requires_confirmation=True,
                 requires_idle_engine=True,
@@ -106,9 +132,10 @@ class ToolDispatcher:
                 name="optimize_old_new_translations",
                 description=localizer.agent_tool_optimize_old_new_translations_description,
                 parameters_schema=deepcopy(empty_schema),
-                handler=lambda _confirmed_context: optimize_old_new_translations(
-                    config_loader=self.config_loader,
-                    confirmed_context=_confirmed_context,
+                handler=_lazy_tool_handler(
+                    "translation_tools",
+                    "optimize_old_new_translations",
+                    self.config_loader,
                 ),
                 requires_confirmation=True,
                 requires_idle_engine=True,
