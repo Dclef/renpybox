@@ -115,7 +115,11 @@ class ProofreadingPage(QWidget, Base):
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 4)
         header_layout.setSpacing(2)
-        header_layout.addWidget(TitleLabel(Localizer.get().app_proofreading_page, header))
+        title = TitleLabel(Localizer.get().app_proofreading_page, header)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
         header_description = CaptionLabel(
             Localizer.get().proofreading_page_header_description,
             header,
@@ -506,7 +510,6 @@ class ProofreadingPage(QWidget, Base):
     def _on_inline_search_submitted(self) -> None:
         """将页内搜索词交给现有搜索卡，复用正则、跳转和分页逻辑。"""
         self.search_card.get_line_edit().setText(self.inline_search_edit.text())
-        self._on_search_clicked()
         self._do_search()
 
     def _on_filter_clicked(self) -> None:
