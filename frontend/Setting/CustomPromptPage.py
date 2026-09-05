@@ -101,9 +101,11 @@ class CustomPromptPage(QWidget, Base):
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 4)
         header_layout.setSpacing(2)
-        header_layout.addWidget(
-            TitleLabel(Localizer.get().app_custom_prompt_navigation_item, header)
-        )
+        title = TitleLabel(Localizer.get().app_custom_prompt_navigation_item, header)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
         header_layout.addWidget(
             CaptionLabel(Localizer.get().custom_prompt_page_header_description, header)
         )

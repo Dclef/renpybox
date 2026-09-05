@@ -6,8 +6,8 @@ YiJianFanyiPage - 一键翻译向导页面
 import os
 import uuid
 from pathlib import Path
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QSize, Qt, QTimer
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -37,6 +37,7 @@ from qfluentwidgets import (
     CheckBox,
     TransparentToolButton,
     isDarkTheme,
+    qconfig,
     StrongBodyLabel,
 )
 
@@ -44,7 +45,6 @@ from base.Base import Base
 from base.LogManager import LogManager
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import (
-    get_theme_accent_color,
     mark_toolbox_widget,
     mark_toolbox_scroll_area,
 )
@@ -97,6 +97,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.current_step = 1
         self._max_reached_step = 1
         self._step_indicator_buttons: list[tuple[QToolButton, int]] = []
+        self._step_indicator_bars: list[QWidget] = []
         self.unified_extractor = UnifiedExtractor()
         self.extraction_worker = None
         self._extraction_generation = 0
@@ -132,6 +133,7 @@ class YiJianFanyiPage(Base, QWidget):
             Base.Event.TRANSLATION_START_RESULT,
             self._on_translation_start_result,
         )
+        qconfig.themeChanged.connect(self._on_step_indicator_theme_changed)
     
     def _init_ui(self):
         """初始化界面"""
@@ -181,6 +183,9 @@ class YiJianFanyiPage(Base, QWidget):
         title_label = TitleLabel(
             Localizer.get().onekey_step_5.format(step=step, title=title)
         )
+        title_font = title_label.font()
+        title_font.setPixelSize(18)
+        title_label.setFont(title_font)
         header_layout.addWidget(title_label)
         header_layout.addStretch(1)
         
@@ -200,18 +205,27 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_apply_translation_5,
         ]
         step_bar = QWidget(page)
-        step_bar.setStyleSheet("background: transparent;")
+        step_bar.setObjectName("onekeyStepBar")
+        step_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        step_bar.setFixedHeight(48)
+        self._step_indicator_bars.append(step_bar)
         step_layout = QHBoxLayout(step_bar)
-        step_layout.setContentsMargins(0, 4, 0, 12)
-        step_layout.setSpacing(6)
+        step_layout.setContentsMargins(1, 1, 1, 1)
+        step_layout.setSpacing(0)
 
         for idx, name in enumerate(step_names, 1):
             indicator = QToolButton(step_bar)
             indicator.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             indicator.setAutoRaise(True)
-            indicator.setFixedHeight(42)
-            indicator.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            indicator.setText(f"{idx}. {name}")
+            indicator.setFixedHeight(46)
+            indicator.setIconSize(QSize(20, 20))
+            indicator.setMinimumWidth(0)
+            indicator_font = indicator.font()
+            indicator_font.setPixelSize(11)
+            indicator.setFont(indicator_font)
+            indicator.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            indicator.setText(name)
+            indicator.setToolTip(f"{idx}. {name}")
             indicator.setCursor(Qt.PointingHandCursor)
             indicator.clicked.connect(
                 lambda checked=False, target=idx: self._on_step_indicator_clicked(target)
@@ -277,45 +291,104 @@ class YiJianFanyiPage(Base, QWidget):
 
         return page, content_layout
 
-    def _step_indicator_style(self, state: str) -> str:
-        """返回随主题变化的 HTML 风格步骤头样式。"""
-        accent = get_theme_accent_color().name()
+    def _step_bar_style(self) -> str:
+        """返回步骤页签容器的主题表面样式。"""
         if isDarkTheme():
-            muted = "#94A3B8"
-            border = "rgba(148, 163, 184, 0.24)"
-            done_background = "rgba(99, 102, 241, 0.16)"
-            done_border = "rgba(99, 102, 241, 0.36)"
-            active_border = "#818CF8"
+            background = "#141B2A"
+            border = "rgba(255, 255, 255, 0.08)"
         else:
-            muted = "#64748B"
-            border = "rgba(148, 163, 184, 0.30)"
-            done_background = "rgba(79, 70, 229, 0.10)"
-            done_border = "rgba(79, 70, 229, 0.28)"
-            active_border = "#4338CA"
+            background = "#FFFFFF"
+            border = "rgba(15, 23, 42, 0.10)"
+        return (
+            f"QWidget#onekeyStepBar {{ background-color: {background}; "
+            f"border: 1px solid {border}; border-radius: 8px; }}"
+        )
+
+    def _step_indicator_style(self, state: str) -> str:
+        """返回平铺页签的主题三态样式。"""
+        if isDarkTheme():
+            accent = "#818CF8"
+            active_background = "rgba(99, 102, 241, 0.16)"
+            text = "#E5E7EB"
+            muted = "#94A3B8"
+            hover = "rgba(255, 255, 255, 0.05)"
+        else:
+            accent = "#4F46E5"
+            active_background = "rgba(79, 70, 229, 0.10)"
+            text = "#0F172A"
+            muted = "#94A3B8"
+            hover = "rgba(15, 23, 42, 0.04)"
 
         if state == "active":
             return (
-                f"QToolButton {{ background: {accent}; color: #FFFFFF; "
-                f"border: 1px solid {accent}; border-bottom: 3px solid {active_border}; "
-                "border-radius: 7px; padding: 0 12px; font-size: 11px; font-weight: 600; }"
+                f"QToolButton {{ background-color: {active_background}; color: {accent}; "
+                f"border: none; border-bottom: 3px solid {accent}; border-radius: 6px; "
+                "padding: 0 8px; font-size: 11px; font-weight: 600; }"
             )
         if state == "done":
             return (
-                f"QToolButton {{ background: {done_background}; color: {accent}; "
-                f"border: 1px solid {done_border}; border-bottom: 2px solid {done_border}; "
-                "border-radius: 7px; padding: 0 10px; font-size: 11px; font-weight: 500; }"
-                f"QToolButton:hover {{ border-color: {accent}; }}"
+                f"QToolButton {{ background: transparent; color: {text}; border: none; "
+                "border-bottom: 3px solid transparent; border-radius: 6px; padding: 0 8px; "
+                "font-size: 11px; font-weight: 500; }"
+                f"QToolButton:hover {{ background-color: {hover}; }}"
             )
         return (
-            f"QToolButton {{ background: transparent; color: {muted}; "
-            f"border: 1px solid {border}; border-bottom: 2px solid transparent; "
-            "border-radius: 7px; padding: 0 10px; font-size: 11px; }"
-            "QToolButton:disabled { color: #94A3B8; background: transparent; "
-            "border-color: rgba(148, 163, 184, 0.16); }"
+            f"QToolButton {{ background: transparent; color: {muted}; border: none; "
+            "border-bottom: 3px solid transparent; border-radius: 6px; padding: 0 8px; "
+            "font-size: 11px; font-weight: 500; }"
+            f"QToolButton:disabled {{ color: {muted}; background: transparent; }}"
         )
+
+    def _step_indicator_icon(self, index: int, state: str) -> QIcon:
+        """绘制 20px 步骤圆点，避免图标字体在不同系统下产生偏差。"""
+        dark = isDarkTheme()
+        accent = QColor("#6366F1" if dark else "#4F46E5")
+        muted = QColor("#64748B" if dark else "#94A3B8")
+        outline = QColor("#475569" if dark else "#CBD5E1")
+
+        pixmap = QPixmap(20, 20)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if state == "done":
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#10B981"))
+            painter.drawEllipse(1, 1, 18, 18)
+            pen = QPen(QColor("#FFFFFF"))
+            pen.setWidthF(1.8)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.drawLine(5, 10, 8, 13)
+            painter.drawLine(8, 13, 15, 6)
+        else:
+            if state == "active":
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(accent)
+                number_color = QColor("#FFFFFF")
+            else:
+                pen = QPen(outline)
+                pen.setWidthF(1.2)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                number_color = muted
+            painter.drawEllipse(1, 1, 18, 18)
+            font = painter.font()
+            font.setPixelSize(10)
+            font.setBold(state == "active")
+            painter.setFont(font)
+            painter.setPen(number_color)
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, str(index))
+
+        painter.end()
+        return QIcon(pixmap)
 
     def _refresh_step_indicators(self) -> None:
         """同步所有页面步骤头的完成、当前和待处理状态。"""
+        for step_bar in self._step_indicator_bars:
+            step_bar.setStyleSheet(self._step_bar_style())
+
         for indicator, target in self._step_indicator_buttons:
             if target == self.current_step:
                 state = "active"
@@ -324,12 +397,19 @@ class YiJianFanyiPage(Base, QWidget):
             else:
                 state = "pending"
             indicator.setProperty("stepState", state)
-            indicator.setEnabled(target <= self._max_reached_step)
-            if state == "done":
-                indicator.setIcon(FluentIcon.ACCEPT.icon(color=get_theme_accent_color()))
-            else:
-                indicator.setIcon(QIcon())
+            enabled = target <= self._max_reached_step
+            indicator.setEnabled(enabled)
+            indicator.setCursor(
+                Qt.CursorShape.PointingHandCursor
+                if enabled
+                else Qt.CursorShape.ArrowCursor
+            )
+            indicator.setIcon(self._step_indicator_icon(target, state))
             indicator.setStyleSheet(self._step_indicator_style(state))
+
+    def _on_step_indicator_theme_changed(self, _theme=None) -> None:
+        """主题切换后同步步骤条表面、文字与圆点。"""
+        self._refresh_step_indicators()
 
     def _on_step_indicator_clicked(self, target: int) -> None:
         """仅回看已到达步骤，不绕过流程按钮或后台任务。"""
