@@ -439,23 +439,31 @@ def get_theme_accent_color() -> QColor:
 
 
 def get_theme_active_card_background_color() -> QColor:
-    """获取与主按钮一致的激活卡片背景色。"""
-    return get_theme_accent_color()
+    """获取激活卡片的低对比度主题色表面。"""
+    return (
+        QColor(99, 102, 241, 31)
+        if isDarkTheme()
+        else QColor(79, 70, 229, 20)
+    )
 
 
 def get_theme_active_card_border_color() -> QColor:
-    """获取与主按钮一致的激活卡片边框色。"""
-    return QColor("#6366F1") if isDarkTheme() else QColor("#4F46E5")
+    """获取激活卡片的弱主题色边框。"""
+    return (
+        QColor(99, 102, 241, 92)
+        if isDarkTheme()
+        else QColor(79, 70, 229, 64)
+    )
 
 
 def get_theme_active_card_indicator_color() -> QColor:
     """获取激活卡片左侧强调线颜色。"""
-    return ThemeColor.DARK_1.color()
+    return QColor("#6366F1") if isDarkTheme() else QColor("#4F46E5")
 
 
 def get_theme_active_card_foreground_color() -> QColor:
-    """获取与主按钮一致的激活卡片前景色。"""
-    return QColor(0, 0, 0) if isDarkTheme() else QColor(255, 255, 255)
+    """获取激活卡片的高对比度标题色。"""
+    return QColor("#F8FAFC") if isDarkTheme() else QColor("#0F172A")
 
 
 def mark_toolbox_widget(widget: QWidget | None, prop: str = "toolboxPage") -> None:

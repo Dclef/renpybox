@@ -86,7 +86,7 @@ class RenpyToolboxPage(Base, QWidget):
         header_text_layout.setSpacing(2)
         self.title = TitleLabel(Localizer.get().app_renpy_toolbox_page, header_text)
         title_font = self.title.font()
-        title_font.setPointSize(18)
+        title_font.setPixelSize(18)
         title_font.setBold(True)
         self.title.setFont(title_font)
         header_text_layout.addWidget(self.title)

@@ -104,7 +104,7 @@ class PlatformPage(QWidget, Base):
         header_layout.setSpacing(2)
         title = TitleLabel(Localizer.get().app_platform_page, header)
         title_font = title.font()
-        title_font.setPointSize(18)
+        title_font.setPixelSize(18)
         title_font.setBold(True)
         title.setFont(title_font)
         header_layout.addWidget(title)

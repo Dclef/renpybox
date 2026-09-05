@@ -689,7 +689,7 @@ class TranslationPage(QWidget, Base):
         header_layout.setSpacing(2)
         title = StrongBodyLabel(Localizer.get().translation_page_header_title, header_text)
         title_font = title.font()
-        title_font.setPointSize(18)
+        title_font.setPixelSize(18)
         title_font.setBold(True)
         title.setFont(title_font)
         header_layout.addWidget(title)
