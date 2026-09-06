@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QRect
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 APP = QApplication.instance() or QApplication(sys.argv)
 
@@ -36,3 +36,26 @@ def test_window_size_without_screen(monkeypatch) -> None:
 
     monkeypatch.setattr(QApplication, "primaryScreen", lambda: None)
     assert AppFluentWindow._resolve_window_size() == (1280, 800)
+
+
+def test_navigation_content_starts_below_title_bar() -> None:
+    from frontend.AppFluentWindow import AppFluentWindow
+
+    title_bar = QWidget()
+    title_bar.iconLabel = QLabel(title_bar)
+    content = QWidget()
+    widget_layout = QHBoxLayout(content)
+    navigation = QWidget()
+    navigation_layout = QVBoxLayout(navigation)
+    window = SimpleNamespace(
+        titleBar=title_bar,
+        widgetLayout=widget_layout,
+        navigationInterface=SimpleNamespace(
+            panel=SimpleNamespace(vBoxLayout=navigation_layout),
+        ),
+    )
+    AppFluentWindow._configure_title_bar(window)
+
+    assert window.titleBar.height() == 38
+    assert window.widgetLayout.contentsMargins().top() == 38
+    assert window.navigationInterface.panel.vBoxLayout.contentsMargins().top() == 38

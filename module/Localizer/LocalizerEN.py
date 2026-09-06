@@ -99,6 +99,21 @@ class LocalizerEN(LocalizerZH):
     translation_page_progress_empty: str = "0.0%\n0 / 0"
     translation_page_throughput_title: str = "Real-time Token Throughput"
     translation_page_peak_speed: str = "Peak {SPEED} T/s"
+    translation_page_kpi_progress: str = "Translation Progress"
+    translation_page_kpi_throughput: str = "Live Throughput"
+    translation_page_lines_detail: str = "{LINE:,} / {TOTAL:,} lines"
+    translation_page_trend_live: str = "Live"
+    translation_page_trend_idle: str = "Idle"
+    translation_page_trend_total: str = "Total"
+    translation_page_trend_healthy: str = "Healthy"
+    translation_page_translated_percent: str = "Translated {PERCENT:.1f}%"
+    translation_page_pending_percent: str = "Pending {PERCENT:.1f}%"
+    translation_page_cache_percent: str = "Cached {PERCENT:.1f}%"
+    translation_page_cache_unavailable: str = "Cached —"
+    translation_page_stat_average: str = "Average"
+    translation_page_stat_batches: str = "Batches"
+    translation_page_stat_cache_hit: str = "Cache hit"
+    translation_page_stat_latency: str = "Latency"
     translation_page_open_proofreading: str = "Open Parallel Proofreading"
     translation_page_export_snapshot: str = "Export Snapshot"
     translation_page_elapsed: str = "Elapsed: {TIME}"
@@ -1946,10 +1961,10 @@ class LocalizerEN(LocalizerZH):
         'Manage worldbuilding, character profiles, and prompt context for the current output proj'
         'ect, and generate AI drafts on demand.'
     )
-    workbench_current_project_summary: str = 'Current Project Summary'
-    workbench_single_view_current_api_paths_workbench_state: str = 'A single view of the current API, paths, workbench state, and draft status.'
-    workbench_analysis_shortcuts: str = 'Analysis & Shortcuts'
-    workbench_generate_ai_drafts_demand_current_scope_then: str = 'Generate AI drafts on demand for the current scope, then expand to the full project when needed.'
+    workbench_current_project_summary: str = 'Current Project Asset Summary'
+    workbench_single_view_current_api_paths_workbench_state: str = 'Review the current API, model, language pair, and workbench asset state in one place.'
+    workbench_analysis_shortcuts: str = 'AI Extraction and Analysis Actions'
+    workbench_generate_ai_drafts_demand_current_scope_then: str = 'Generate character drafts for the current scope or the full project, with linked shortcuts.'
     workbench_generate_current_scope_drafts: str = 'Generate Current-Scope Drafts'
     workbench_reanalyze_full_project: str = 'Reanalyze Full Project'
     workbench_sync_character_names: str = 'Sync Character Names'
@@ -2034,6 +2049,10 @@ class LocalizerEN(LocalizerZH):
     workbench_project_folder: str = 'Project Folder'
     workbench_tl_folder: str = 'TL Folder'
     workbench_draft_status: str = 'Draft Status'
+    workbench_cache_status: str = 'Cache Status'
+    workbench_cache_sqlite: str = 'SQLite cache · {item_count} entries'
+    workbench_cache_json: str = 'JSON cache · {item_count} entries'
+    workbench_cache_unreadable: str = 'Cache read failed'
     workbench_project_name: str = 'Project Name'
     workbench_genre: str = 'Genre'
     workbench_setting_summary: str = 'Setting Summary'

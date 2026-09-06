@@ -390,6 +390,8 @@ class AgentErrorWidget(CardWidget):
         row.addWidget(icon, 0, Qt.AlignVCenter)
 
         self.text_view = CaptionLabel(self._summary(), self)
+        self.text_view.setMinimumWidth(0)
+        self.text_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.text_view.setTextFormat(Qt.PlainText)
         self.text_view.setToolTip(self._full_text)
         self.text_view.setTextColor(status_color("failed"), status_color("failed"))
@@ -503,7 +505,7 @@ class AgentMessageWidget(QWidget):
             bubble_layout.addWidget(self.detail_container)
             return
 
-        # 助手：左侧头像 + 正文；复制按钮放在正文右上角，弱化存在感。
+        # 助手：左侧头像 + 文档面板；复制按钮放在正文右上角，弱化存在感。
         self.avatar = AgentAvatar(role, self)
         root.addWidget(self.avatar, 0, Qt.AlignTop)
 
@@ -511,16 +513,25 @@ class AgentMessageWidget(QWidget):
         column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         column_layout = QVBoxLayout(column)
         column_layout.setContentsMargins(0, 0, 0, 0)
-        column_layout.setSpacing(8)
+        column_layout.setSpacing(0)
 
-        self.detail_container = QWidget(column)
+        document_surface = QFrame(column)
+        document_surface.setObjectName("agentAssistantDocument")
+        document_surface.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        surface_layout = QVBoxLayout(document_surface)
+        surface_layout.setContentsMargins(14, 12, 14, 12)
+        surface_layout.setSpacing(8)
+        self.document_surface = document_surface
+        self._apply_document_surface_style()
+
+        self.detail_container = QWidget(document_surface)
         self.detail_layout = QVBoxLayout(self.detail_container)
         self.detail_layout.setContentsMargins(0, 0, 0, 0)
         self.detail_layout.setSpacing(6)
         self.detail_container.hide()
-        column_layout.addWidget(self.detail_container)
+        surface_layout.addWidget(self.detail_container)
 
-        text_row = QWidget(column)
+        text_row = QWidget(document_surface)
         text_row_layout = QHBoxLayout(text_row)
         text_row_layout.setContentsMargins(0, 0, 0, 0)
         text_row_layout.setSpacing(6)
@@ -557,10 +568,25 @@ class AgentMessageWidget(QWidget):
         self.copy_button.clicked.connect(self._copy_text)
         text_row_layout.addWidget(self.copy_button, 0, Qt.AlignTop)
 
-        column_layout.addWidget(text_row)
+        surface_layout.addWidget(text_row)
+        column_layout.addWidget(document_surface)
         root.addWidget(column, 1)
         self.body = column
-        self.body_layout = column_layout
+        self.body_layout = surface_layout
+
+    def _apply_document_surface_style(self) -> None:
+        """助手文档面板使用 HTML 同级的内嵌表面，随主题切换。"""
+        if isDarkTheme():
+            background = "#0B0F17"
+            border = "rgba(255,255,255,0.10)"
+        else:
+            background = "#F8FAFC"
+            border = "rgba(0,0,0,0.10)"
+        self.document_surface.setStyleSheet(
+            "QFrame#agentAssistantDocument {"
+            f"background-color: {background}; border: 1px solid {border}; "
+            "border-radius: 8px; }"
+        )
 
     @property
     def text(self) -> str:
@@ -693,6 +719,7 @@ class AgentMessageWidget(QWidget):
             bubble.refresh_theme()
         if isinstance(self.text_view, AgentMarkdownView):
             self.text_view.refresh_theme()
+        self._apply_document_surface_style()
         for widget in (*self._thinking_widgets, *self._tool_widgets):
             refresh = getattr(widget, "refresh_theme", None)
             if callable(refresh):
@@ -875,12 +902,14 @@ class AgentToolWidget(AgentInsetCard):
         header_layout.addWidget(self.icon_chip, 0, Qt.AlignVCenter)
 
         self.name_label = CaptionLabel(tool_label, header)
-        header_layout.addWidget(self.name_label, 0, Qt.AlignVCenter)
+        self.name_label.setMinimumWidth(0)
+        self.name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.name_label.setToolTip(tool_label)
+        header_layout.addWidget(self.name_label, 1, Qt.AlignVCenter)
 
         self.status_label = CaptionLabel(running_text, header)
         self.status_label.setProperty("state", self._state)
         header_layout.addWidget(self.status_label, 0, Qt.AlignVCenter)
-        header_layout.addStretch(1)
 
         # 折叠指示器保留为按钮，既是可见提示也是测试入口。
         self.toggle_button = TransparentToolButton(header)
@@ -1151,7 +1180,7 @@ class AgentActivityWidget(QWidget):
 
 
 class AgentSuggestionCard(CardWidget):
-    """空态的块状建议卡：图标 + 标题 + 描述，整卡可点击。"""
+    """空态的紧凑建议卡：图标 + 标题 + 描述，整卡可点击。"""
 
     clicked = pyqtSignal()
 
@@ -1164,13 +1193,14 @@ class AgentSuggestionCard(CardWidget):
     ) -> None:
         super().__init__(parent)
         self._title = str(title or "")
+        self.setBorderRadius(6)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumHeight(72)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(14, 10, 12, 10)
-        row.setSpacing(12)
+        row.setContentsMargins(12, 9, 10, 9)
+        row.setSpacing(10)
 
         icon = IconWidget(icon_value, self)
         icon.setFixedSize(18, 18)
@@ -1182,6 +1212,8 @@ class AgentSuggestionCard(CardWidget):
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
         self.title_label = StrongBodyLabel(self._title, text_column)
+        self.title_label.setWordWrap(True)
+        self.title_label.setToolTip(self._title)
         self.title_label.setMinimumHeight(20)
         self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.description_label = CaptionLabel(str(description or ""), text_column)
@@ -1207,7 +1239,7 @@ class AgentSuggestionCard(CardWidget):
 
 
 class AgentEmptyState(QWidget):
-    """空会话的起始视图：圆底徽章 + 工程诊断 + 块状建议卡。"""
+    """空会话的起始视图：欢迎区 + 工程诊断 + 建议操作。"""
 
     suggestion_requested = pyqtSignal(str)
 
@@ -1215,15 +1247,28 @@ class AgentEmptyState(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.setSpacing(0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.content_scroll = SingleDirectionScrollArea(orient=Qt.Vertical, parent=self)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        mark_toolbox_scroll_area(self.content_scroll)
+        self.content_scroll.enableTransparentBackground()
+        content = QWidget(self.content_scroll)
+        mark_toolbox_widget(content, "toolboxScroll")
+        self.content_scroll.setWidget(content)
+        root.addWidget(self.content_scroll)
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(10)
         outer.addStretch(1)
 
         intro = QWidget(self)
+        intro.setMaximumWidth(560)
+        intro.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         intro_layout = QVBoxLayout(intro)
         intro_layout.setContentsMargins(0, 0, 0, 0)
-        intro_layout.setSpacing(8)
+        intro_layout.setSpacing(4)
         intro_layout.setAlignment(Qt.AlignCenter)
 
         self.brand_badge = AgentAvatar("assistant", intro, size=48)
@@ -1245,8 +1290,8 @@ class AgentEmptyState(QWidget):
         self.preflight_card.setBorderRadius(8)
         self.preflight_card.setFixedWidth(560)
         preflight_layout = QVBoxLayout(self.preflight_card)
-        preflight_layout.setContentsMargins(14, 12, 14, 12)
-        preflight_layout.setSpacing(8)
+        preflight_layout.setContentsMargins(12, 10, 12, 10)
+        preflight_layout.setSpacing(6)
 
         preflight_header = QHBoxLayout()
         preflight_header.setContentsMargins(0, 0, 0, 0)
@@ -1259,6 +1304,8 @@ class AgentEmptyState(QWidget):
         preflight_header.addStretch(1)
         self.preflight_project_label = QLabel("", self.preflight_card)
         self.preflight_project_label.setAlignment(Qt.AlignCenter)
+        self.preflight_project_label.setMaximumWidth(220)
+        self.preflight_project_label.setFixedHeight(22)
         self.preflight_project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         preflight_header.addWidget(self.preflight_project_label)
         preflight_layout.addLayout(preflight_header)
@@ -1269,15 +1316,22 @@ class AgentEmptyState(QWidget):
         path_caption = CaptionLabel(localizer.workbench_project_folder, self.preflight_card)
         path_row.addWidget(path_caption, 0)
         self.preflight_path_label = QLabel("", self.preflight_card)
-        self.preflight_path_label.setWordWrap(True)
+        self.preflight_path_label.setWordWrap(False)
+        self.preflight_path_label.setMinimumWidth(0)
+        self.preflight_path_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.preflight_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         path_row.addWidget(self.preflight_path_label, 1)
         preflight_layout.addLayout(path_row)
 
         metrics = QGridLayout()
         metrics.setContentsMargins(0, 0, 0, 0)
-        metrics.setHorizontalSpacing(16)
-        metrics.setVerticalSpacing(8)
+        metrics.setHorizontalSpacing(12)
+        metrics.setVerticalSpacing(6)
+        metrics.setColumnStretch(0, 1)
+        metrics.setColumnStretch(1, 1)
         self.preflight_value_labels: dict[str, QLabel] = {}
         for index, (key, caption) in enumerate(
             (
@@ -1288,15 +1342,21 @@ class AgentEmptyState(QWidget):
             )
         ):
             field = QWidget(self.preflight_card)
-            field_layout = QVBoxLayout(field)
+            field_layout = QHBoxLayout(field)
             field_layout.setContentsMargins(0, 0, 0, 0)
-            field_layout.setSpacing(2)
-            field_layout.addWidget(CaptionLabel(caption, field))
+            field_layout.setSpacing(6)
+            caption_label = CaptionLabel(caption, field)
+            caption_label.setMaximumWidth(104)
+            caption_label.setToolTip(caption)
+            field_layout.addWidget(caption_label, 0)
             value_label = QLabel("", field)
-            value_label.setWordWrap(True)
+            value_label.setWordWrap(False)
+            value_label.setMinimumHeight(22)
+            value_label.setMaximumSize(150, 22)
             value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.preflight_value_labels[key] = value_label
-            field_layout.addWidget(value_label)
+            field_layout.addWidget(value_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+            field_layout.addStretch(1)
             metrics.addWidget(field, index // 2, index % 2)
         preflight_layout.addLayout(metrics)
         outer.addWidget(self.preflight_card, 0, Qt.AlignHCenter)
@@ -1305,7 +1365,7 @@ class AgentEmptyState(QWidget):
         suggestions.setFixedWidth(560)
         self.suggestions = suggestions
         self._suggestions_layout = QGridLayout(suggestions)
-        self._suggestions_layout.setContentsMargins(0, 20, 0, 0)
+        self._suggestions_layout.setContentsMargins(0, 2, 0, 0)
         self._suggestions_layout.setHorizontalSpacing(8)
         self._suggestions_layout.setVerticalSpacing(8)
 
@@ -1340,7 +1400,7 @@ class AgentEmptyState(QWidget):
             self.suggestion_buttons.append(card)
         self._relayout_suggestions()
         outer.addWidget(suggestions, 0, Qt.AlignHCenter)
-        outer.addStretch(2)
+        outer.addStretch(1)
 
         self._preflight_project_key = None
         self._refresh_preflight()
@@ -1349,14 +1409,18 @@ class AgentEmptyState(QWidget):
         """按可用宽度切换 2×2 或单列建议卡，容器宽度契约保持不变。"""
         if not hasattr(self, "_suggestions_layout"):
             return
-        columns = 2 if self.width() >= 620 else 1
+        wide = self.width() >= 620
+        columns = 2 if wide else 1
         while self._suggestions_layout.count():
             self._suggestions_layout.takeAt(0)
+        card_width = 276 if wide else max(280, min(528, self.width() - 32))
         for index, card in enumerate(self.suggestion_buttons):
+            card.setFixedWidth(card_width)
             self._suggestions_layout.addWidget(
                 card,
                 index // columns,
                 index % columns,
+                Qt.Alignment() if wide else Qt.AlignHCenter,
             )
 
     def resizeEvent(self, event) -> None:
@@ -1415,12 +1479,13 @@ class AgentEmptyState(QWidget):
             self._preflight_project_key = ""
             self.preflight_project_label.setText(localizer.agent_page_project_unset)
             self.preflight_path_label.setText(localizer.agent_project_not_set)
+            self.preflight_project_label.setToolTip(localizer.agent_page_project_unset)
+            self.preflight_path_label.setToolTip(localizer.agent_project_not_set)
             for value_label in self.preflight_value_labels.values():
                 value_label.setText(localizer.workbench_not_set)
-                value_label.setStyleSheet(
-                    "background: rgba(148, 163, 184, 0.12); color: #64748B; "
-                    "border-radius: 4px; padding: 2px 6px;"
-                )
+                value_label.setToolTip(localizer.workbench_not_set)
+                value_label.setProperty("tone", "neutral")
+            self._apply_preflight_theme()
             return
 
         project_key = getattr(paths, "project_key", str(paths.project_root))
@@ -1451,10 +1516,7 @@ class AgentEmptyState(QWidget):
         if not rpa_files:
             rpa_files = localizer.workbench_none
         rpa_text = (
-            (
-                f"{localizer.agent_page_tool_unpack_rpa_files}\n"
-                f"{localizer.agent_rpa_found.format(count=rpa_count, files=rpa_files)}"
-            )
+            localizer.agent_rpa_found.format(count=rpa_count, files=rpa_files)
             if rpa_count
             else localizer.agent_rpa_not_found
         )
@@ -1494,6 +1556,7 @@ class AgentEmptyState(QWidget):
             )
         )
         self.preflight_path_label.setText(str(paths.project_root))
+        self.preflight_project_label.setToolTip(str(paths.project_root))
         self.preflight_path_label.setToolTip(str(paths.project_root))
         tl_language_dir = getattr(paths, "tl_language_dir", paths.game_dir / "tl")
         unpack_required = bool(files.get("unpack_required"))
@@ -1506,30 +1569,53 @@ class AgentEmptyState(QWidget):
             else "neutral"
         )
         values = {
-            "rpa": (rpa_text, rpa_tone),
-            "scripts": (scripts_text, scripts_tone),
-            "tl": (f"{tl_language_dir}\n{tl_status}", tl_tone),
-            "worldbook": (worldbook_text, worldbook_tone),
+            "rpa": (rpa_text, rpa_tone, rpa_text),
+            "scripts": (scripts_text, scripts_tone, scripts_text),
+            "tl": (tl_status, tl_tone, f"{tl_language_dir}\n{tl_status}"),
+            "worldbook": (worldbook_status, worldbook_tone, worldbook_text),
         }
-        for key, (text, tone) in values.items():
+        for key, (text, tone, tooltip) in values.items():
             value_label = self.preflight_value_labels[key]
             value_label.setText(text)
-            if tone == "warning":
-                style = (
-                    "background: rgba(245, 158, 11, 0.12); color: #B45309; "
-                    "border-radius: 4px; padding: 2px 6px;"
-                )
-            elif tone == "success":
-                style = (
-                    "background: rgba(16, 185, 129, 0.12); color: #047857; "
-                    "border-radius: 4px; padding: 2px 6px;"
-                )
-            else:
-                style = (
-                    "background: rgba(148, 163, 184, 0.12); color: #64748B; "
-                    "border-radius: 4px; padding: 2px 6px;"
-                )
-            value_label.setStyleSheet(style)
+            value_label.setToolTip(tooltip)
+            value_label.setProperty("tone", tone)
+        self._apply_preflight_theme()
+
+    def _apply_preflight_theme(self) -> None:
+        """让项目与诊断状态在明暗主题下保持克制且可读。"""
+        if isDarkTheme():
+            self.preflight_project_label.setStyleSheet(
+                "background: rgba(99, 102, 241, 0.14); color: #A5B4FC; "
+                "border: 1px solid rgba(99, 102, 241, 0.24); "
+                "border-radius: 4px; padding: 1px 6px;"
+            )
+            self.preflight_path_label.setStyleSheet("color: #94A3B8;")
+            colors = {
+                "warning": ("rgba(245, 158, 11, 0.12)", "#FBBF24"),
+                "success": ("rgba(16, 185, 129, 0.12)", "#34D399"),
+                "neutral": ("rgba(148, 163, 184, 0.10)", "#94A3B8"),
+            }
+        else:
+            self.preflight_project_label.setStyleSheet(
+                "background: rgba(79, 70, 229, 0.08); color: #4F46E5; "
+                "border: 1px solid rgba(79, 70, 229, 0.18); "
+                "border-radius: 4px; padding: 1px 6px;"
+            )
+            self.preflight_path_label.setStyleSheet("color: #64748B;")
+            colors = {
+                "warning": ("rgba(245, 158, 11, 0.12)", "#B45309"),
+                "success": ("rgba(16, 185, 129, 0.12)", "#047857"),
+                "neutral": ("rgba(148, 163, 184, 0.12)", "#64748B"),
+            }
+        for value_label in self.preflight_value_labels.values():
+            background, foreground = colors.get(
+                str(value_label.property("tone") or "neutral"),
+                colors["neutral"],
+            )
+            value_label.setStyleSheet(
+                f"background: {background}; color: {foreground}; "
+                "border-radius: 4px; padding: 1px 6px;"
+            )
 
     def refresh_theme(self) -> None:
         self.brand_badge.refresh_theme()
@@ -1574,7 +1660,17 @@ class AgentPage(Base, QWidget):
         self._pending_reply_text = ""
         self._pending_thinking_text = ""
 
-        self.root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setObjectName("agentWorkspace")
+        self.workspace.setMaximumWidth(CONVERSATION_MAX_WIDTH + 32)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+
+        self.root = QVBoxLayout(self.workspace)
         # 收窄页面边距，把主要空间留给对话。
         self.root.setContentsMargins(16, 12, 16, 12)
         self.root.setSpacing(8)
@@ -1587,84 +1683,46 @@ class AgentPage(Base, QWidget):
         self.refresh_platforms()
 
     def _build_topbar(self) -> None:
-        """顶栏：身份组 | 接口选择 | 项目胶囊 | 设置弹层 | 新任务。"""
+        """顶栏：身份组 | 接口选择 | 思考等级 | 项目胶囊 | 设置 | 新任务。"""
         localizer = Localizer.get()
         bar = CardWidget(self)
         self.topbar = bar
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(14, 7, 10, 7)
+        bar.setBorderRadius(6)
+        layout = QGridLayout(bar)
+        self.topbar_layout = layout
+        self._topbar_compact = None
+        layout.setContentsMargins(12, 5, 8, 5)
         layout.setSpacing(8)
 
         self.brand_avatar = AgentAvatar("assistant", bar)
-        layout.addWidget(self.brand_avatar, 0, Qt.AlignVCenter)
 
         self.title_label = SubtitleLabel(localizer.agent_page_title, bar)
-        layout.addWidget(self.title_label, 0, Qt.AlignVCenter)
+        title_font = self.title_label.font()
+        title_font.setPixelSize(16)
+        self.title_label.setFont(title_font)
 
         self.topbar_divider = QFrame(bar)
         self.topbar_divider.setFixedSize(1, 22)
-        layout.addWidget(self.topbar_divider, 0, Qt.AlignVCenter)
+
+        api_caption = CaptionLabel(f"{localizer.agent_page_topbar_api}：", bar)
+        api_caption.setObjectName("agentApiCaption")
 
         self.platform_combo = ComboBox(bar)
-        self.platform_combo.setMinimumWidth(140)
-        self.platform_combo.setMaximumWidth(240)
+        self.platform_combo.setMinimumWidth(150)
+        self.platform_combo.setMaximumWidth(220)
         self.platform_combo.setFixedHeight(30)
         self.platform_combo.currentIndexChanged.connect(self._platform_changed)
-        layout.addWidget(self.platform_combo, 0)
-
-        layout.addStretch(1)
-
-        self.project_label = QLabel("", bar)
-        self.project_label.setMaximumWidth(220)
-        self.project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.project_label, 0, Qt.AlignVCenter)
-
-        self.settings_button = TransparentToolButton(bar)
-        self.settings_button.setIcon(FluentIcon.SETTING)
-        self.settings_button.setFixedSize(30, 30)
-        self.settings_button.setToolTip(localizer.agent_page_settings_title)
-        self.settings_button.clicked.connect(self._open_settings_menu)
-        layout.addWidget(self.settings_button, 0)
-
-        self.new_task_button = TransparentPushButton(
-            localizer.agent_page_new_task,
-            bar,
-            FluentIcon.ADD,
-        )
-        self.new_task_button.setFixedHeight(30)
-        self.new_task_button.clicked.connect(self.start_new_task)
-        layout.addWidget(self.new_task_button, 0)
-        self.root.addWidget(bar)
-
-        self._build_settings_menu()
-        self._apply_project_pill_style()
-
-        # 兼容旧引用：description_label 曾是页头描述，现由项目标签承担。
-        self.description_label = self.project_label
-
-    def _build_settings_menu(self) -> None:
-        """次要设置收进弹层：思考等级与接口刷新。"""
-        localizer = Localizer.get()
-        self.settings_menu = RoundMenu(parent=self)
-
-        panel = QWidget()
-        # 固定表单宽度，长文案与下拉框纵向排列，避免中英文互相挤压。
-        panel.setFixedWidth(280)
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(16, 14, 16, 14)
-        panel_layout.setSpacing(10)
-
-        title_caption = StrongBodyLabel(localizer.agent_page_settings_title, panel)
-        panel_layout.addWidget(title_caption)
 
         thinking_caption = CaptionLabel(
-            localizer.platform_edit_page_thinking_title,
-            panel,
+            f"{localizer.platform_edit_page_thinking_title}：",
+            bar,
         )
-        panel_layout.addWidget(thinking_caption)
+        thinking_caption.setObjectName("agentThinkingCaption")
 
-        self.thinking_combo = ComboBox(panel)
+        self.thinking_combo = ComboBox(bar)
         self.thinking_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.thinking_combo.setMinimumWidth(112)
+        self.thinking_combo.setMaximumWidth(150)
         self.thinking_combo.setFixedHeight(30)
         self.thinking_combo.setToolTip(localizer.platform_edit_page_thinking_content)
         for level, label in zip(
@@ -1679,7 +1737,87 @@ class AgentPage(Base, QWidget):
         ):
             self.thinking_combo.addItem(label, userData=level)
         self.thinking_combo.currentIndexChanged.connect(self._thinking_changed)
-        panel_layout.addWidget(self.thinking_combo)
+
+        self.project_pill = QFrame(bar)
+        self.project_pill.setObjectName("agentProjectPill")
+        self.project_pill.setMaximumWidth(230)
+        project_layout = QHBoxLayout(self.project_pill)
+        project_layout.setContentsMargins(9, 2, 9, 2)
+        project_layout.setSpacing(6)
+        self.project_status_dot = AgentStatusDot(self.project_pill)
+        project_layout.addWidget(self.project_status_dot, 0, Qt.AlignVCenter)
+        self.project_label = QLabel("", self.project_pill)
+        self.project_label.setMinimumWidth(0)
+        self.project_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.project_label.setMaximumWidth(196)
+        self.project_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        project_layout.addWidget(self.project_label, 1, Qt.AlignVCenter)
+
+        self.settings_button = TransparentToolButton(bar)
+        self.settings_button.setIcon(FluentIcon.SETTING)
+        self.settings_button.setFixedSize(30, 30)
+        self.settings_button.setToolTip(localizer.agent_page_settings_title)
+        self.settings_button.clicked.connect(self._open_settings_menu)
+
+        self.new_task_button = PrimaryPushButton(
+            localizer.agent_page_new_task,
+            bar,
+            FluentIcon.ADD,
+        )
+        self.new_task_button.setFixedHeight(30)
+        self.new_task_button.clicked.connect(self.start_new_task)
+        self._topbar_widgets = (
+            self.brand_avatar, self.title_label, self.topbar_divider,
+            api_caption, self.platform_combo, thinking_caption, self.thinking_combo,
+            self.project_pill, self.settings_button, self.new_task_button,
+        )
+        self._relayout_topbar()
+        self.root.addWidget(bar)
+
+        self._build_settings_menu()
+        self._apply_project_pill_style()
+
+        # 兼容旧引用：description_label 曾是页头描述，现由项目标签承担。
+        self.description_label = self.project_label
+
+    def _relayout_topbar(self) -> None:
+        compact = self.width() < 940
+        if self._topbar_compact == compact:
+            return
+        self._topbar_compact = compact
+        self.topbar.setFixedHeight(78 if compact else 40)
+        for column, widget in enumerate(self._topbar_widgets):
+            self.topbar_layout.removeWidget(widget)
+            self.topbar_layout.setColumnStretch(column, 0)
+        self.topbar_divider.setVisible(not compact)
+        positions = (
+            ((0, 0, 1), (0, 1, 3), (0, 3, 1), (1, 0, 1), (1, 1, 3),
+             (1, 4, 1), (1, 5, 5), (0, 4, 3), (0, 7, 1), (0, 8, 2))
+            if compact else tuple((0, column, 1) for column in range(10))
+        )
+        for widget, (row, column, span) in zip(self._topbar_widgets, positions):
+            self.topbar_layout.addWidget(widget, row, column, 1, span, Qt.AlignVCenter)
+        self.topbar_layout.setColumnStretch(4 if compact else 7, 1)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_topbar_widgets"):
+            self._relayout_topbar()
+
+    def _build_settings_menu(self) -> None:
+        """次要设置收进弹层：接口刷新与解包确认。"""
+        localizer = Localizer.get()
+        self.settings_menu = RoundMenu(parent=self)
+
+        panel = QWidget()
+        # 固定表单宽度，长文案与下拉框纵向排列，避免中英文互相挤压。
+        panel.setFixedWidth(280)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(16, 14, 16, 14)
+        panel_layout.setSpacing(10)
+
+        title_caption = StrongBodyLabel(localizer.agent_page_settings_title, panel)
+        panel_layout.addWidget(title_caption)
 
         self.refresh_button = PushButton(
             localizer.agent_page_settings_refresh,
@@ -1723,30 +1861,41 @@ class AgentPage(Base, QWidget):
 
     def _apply_project_pill_style(self) -> None:
         """项目上下文胶囊：显式主题色，不依赖系统调色板（高分屏/暗色下会返回黑色）。"""
+        accent = get_theme_accent_color()
+        self.project_status_dot.set_color(accent)
         if isDarkTheme():
             self.topbar_divider.setStyleSheet(
                 "background-color: rgba(255,255,255,0.14); border: none;"
             )
+            self.project_pill.setStyleSheet(
+                "QFrame#agentProjectPill {"
+                "background-color: rgba(255,255,255,0.06);"
+                "border: 1px solid rgba(255,255,255,0.10);"
+                "border-radius: 12px; }"
+            )
             self.project_label.setStyleSheet(
-                "background-color: rgba(255,255,255,0.08);"
-                "border: 1px solid rgba(255,255,255,0.14);"
-                "border-radius: 11px; padding: 2px 10px;"
+                "background: transparent; border: none; padding: 0;"
                 "color: #b6b6b6;"
             )
         else:
             self.topbar_divider.setStyleSheet(
                 "background-color: rgba(0,0,0,0.12); border: none;"
             )
-            self.project_label.setStyleSheet(
-                "background-color: rgba(0,0,0,0.05);"
+            self.project_pill.setStyleSheet(
+                "QFrame#agentProjectPill {"
+                "background-color: rgba(0,0,0,0.04);"
                 "border: 1px solid rgba(0,0,0,0.10);"
-                "border-radius: 11px; padding: 2px 10px;"
+                "border-radius: 12px; }"
+            )
+            self.project_label.setStyleSheet(
+                "background: transparent; border: none; padding: 0;"
                 "color: #555555;"
             )
 
     def _build_conversation(self) -> None:
         localizer = Localizer.get()
         self.conversation_card = CardWidget(self)
+        self.conversation_card.setBorderRadius(8)
         conversation_layout = QGridLayout(self.conversation_card)
         conversation_layout.setContentsMargins(0, 0, 0, 0)
         conversation_layout.setSpacing(0)
@@ -1807,19 +1956,23 @@ class AgentPage(Base, QWidget):
         localizer = Localizer.get()
         composer = CardWidget(self)
         self.composer = composer
+        composer.setBorderRadius(8)
         composer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         composer_layout = QVBoxLayout(composer)
-        composer_layout.setContentsMargins(14, 8, 12, 8)
+        composer_layout.setContentsMargins(12, 6, 10, 6)
         composer_layout.setSpacing(6)
 
         self.input_box = AgentInputEdit(composer)
         self.input_box.setObjectName("agentInput")
         self.input_box.setPlaceholderText(localizer.agent_page_input_placeholder)
         self.input_box.setFrameShape(QFrame.NoFrame)
-        # 输入区默认三行高；粘长文时自行增高到上限。
-        self.input_box.setFixedHeight(78)
+        # 输入区默认约两行半高；粘长文时自行增高到上限。
+        self.input_box.setFixedHeight(64)
         self.input_box.setLineWrapMode(PlainTextEdit.WidgetWidth)
         self.input_box.textChanged.connect(self._autosize_input)
+        self.input_box.document().documentLayout().documentSizeChanged.connect(
+            self._autosize_input
+        )
         self.input_box.textChanged.connect(self._update_send_button)
         self.input_box.send_requested.connect(self.send_message)
         composer_layout.addWidget(self.input_box)
@@ -1879,6 +2032,7 @@ class AgentPage(Base, QWidget):
                 "QPlainTextEdit#agentInput {"
                 " background: transparent;"
                 " border: 1px solid transparent;"
+                " color: #f2f2f2;"
                 " border-radius: 10px; padding: 8px 10px;"
                 f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
             )
@@ -1891,6 +2045,7 @@ class AgentPage(Base, QWidget):
                 "QPlainTextEdit#agentInput {"
                 " background: transparent;"
                 " border: 1px solid transparent;"
+                " color: #1a1a1a;"
                 " border-radius: 10px; padding: 8px 10px;"
                 f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
             )
@@ -1899,9 +2054,11 @@ class AgentPage(Base, QWidget):
         self.input_box.setPalette(palette)
 
     def _autosize_input(self) -> None:
-        """输入框随内容增高，上限 180px 后转为内部滚动。"""
-        document_height = math.ceil(self.input_box.document().size().height())
-        target = min(180, max(78, document_height + 20))
+        """输入框随内容增高，上限 160px 后转为内部滚动。"""
+        document_height = math.ceil(
+            self.input_box.document().lineCount() * self.input_box.fontMetrics().lineSpacing()
+        )
+        target = min(160, max(64, document_height + 20))
         if self.input_box.height() != target:
             self.input_box.setFixedHeight(target)
 
@@ -1920,6 +2077,7 @@ class AgentPage(Base, QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._apply_composer_style()
         self.refresh_platforms()
 
     def refresh_platforms(self) -> None:
