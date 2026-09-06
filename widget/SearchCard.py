@@ -6,7 +6,6 @@ from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import CardWidget
 from qfluentwidgets import FluentIcon
-from qfluentwidgets import PillPushButton
 from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
@@ -15,6 +14,7 @@ from qfluentwidgets import TransparentToolButton
 from qfluentwidgets import VerticalSeparator
 
 from module.Localizer.Localizer import Localizer
+from widget.QuietPillButton import QuietPillButton
 
 class SearchCard(CardWidget):
     """搜索卡片组件，支持普通/正则搜索模式及上下跳转"""
@@ -32,7 +32,7 @@ class SearchCard(CardWidget):
         self.root.setSpacing(12)
 
         # 正则模式切换按钮
-        self.regex_btn = PillPushButton(Localizer.get().search_regex_btn, self)
+        self.regex_btn = QuietPillButton(Localizer.get().search_regex_btn, self)
         self.regex_btn.setCheckable(True)
         self.regex_btn.clicked.connect(self._on_regex_toggle)
         self.regex_btn.installEventFilter(ToolTipFilter(self.regex_btn, 300, ToolTipPosition.TOP))
@@ -44,21 +44,6 @@ class SearchCard(CardWidget):
         # 搜索输入框
         self.line_edit = SearchLineEdit(self)
         self.line_edit.setMinimumWidth(256)
-        self.line_edit.setStyleSheet("""
-            SearchLineEdit {
-                border: none;
-                background: transparent;
-                border-radius: 4px;
-                padding: 4px 8px;
-            }
-            SearchLineEdit:hover {
-                background: rgba(0, 0, 0, 0.05);
-            }
-            SearchLineEdit[has-focus=true] {
-                background: rgba(255, 255, 255, 0.7);
-                border-bottom: 2px solid #005fb8;
-            }
-        """)
         self.line_edit.setPlaceholderText(Localizer.get().placeholder)
         self.line_edit.setClearButtonEnabled(True)
         self.root.addWidget(self.line_edit, 1)
