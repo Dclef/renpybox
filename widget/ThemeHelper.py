@@ -13,6 +13,16 @@ from qfluentwidgets import ThemeColor, isDarkTheme
 
 # 暗色主题的全局样式表 - 仅针对原生 Qt 控件
 DARK_STYLESHEET = """
+    QWidget#onekeySurface {
+        background-color: #141B2A;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+    }
+    QWidget#onekeySection {
+        background-color: #0B0F17;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 8px;
+    }
     QMainWindow {
         background-color: #0B0F17;
     }
@@ -59,11 +69,34 @@ DARK_STYLESHEET = """
         background-color: #1E273D;
     }
 
+    /* 任务监控看板的速览与流水层级 */
+    CardWidget#translationKpiCard,
+    CardWidget#translationMetricCard {
+        background-color: #141B2A;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    QFrame#translationThroughputStat,
+    QFrame#translationFeedItem {
+        background-color: rgba(11, 15, 23, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 6px;
+    }
+
     /* 校对页单层表面和顶部筛选条 */
     CardWidget#proofreadingSurface {
         background-color: #141B2A;
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 8px;
+    }
+    QWidget#workbenchSummarySurface,
+    QWidget#workbenchStatusSurface {
+        background-color: #0B0F17;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 6px;
+    }
+    QFrame#workbenchSummaryRow {
+        background: transparent;
+        border-bottom: 1px dashed rgba(255, 255, 255, 0.10);
     }
     QWidget#proofreadingFilterBar {
         background-color: #141B2A;
@@ -199,6 +232,16 @@ DARK_STYLESHEET = """
 
 # 亮色主题的全局样式表 - 仅针对原生 Qt 控件
 LIGHT_STYLESHEET = """
+    QWidget#onekeySurface {
+        background-color: #FFFFFF;
+        border: 1px solid rgba(15, 23, 42, 0.10);
+        border-radius: 8px;
+    }
+    QWidget#onekeySection {
+        background-color: #F8FAFC;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        border-radius: 8px;
+    }
     QMainWindow {
         background-color: #F8FAFC;
     }
@@ -246,11 +289,34 @@ LIGHT_STYLESHEET = """
         background-color: #F1F5F9;
     }
 
+    /* 任务监控看板的速览与流水层级 */
+    CardWidget#translationKpiCard,
+    CardWidget#translationMetricCard {
+        background-color: #FFFFFF;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+    }
+    QFrame#translationThroughputStat,
+    QFrame#translationFeedItem {
+        background-color: #F8FAFC;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        border-radius: 6px;
+    }
+
     /* 校对页单层表面和顶部筛选条 */
     CardWidget#proofreadingSurface {
         background-color: #FFFFFF;
         border: 1px solid rgba(15, 23, 42, 0.08);
         border-radius: 8px;
+    }
+    QWidget#workbenchSummarySurface,
+    QWidget#workbenchStatusSurface {
+        background-color: #F8FAFC;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        border-radius: 6px;
+    }
+    QFrame#workbenchSummaryRow {
+        background: transparent;
+        border-bottom: 1px dashed rgba(15, 23, 42, 0.14);
     }
     QWidget#proofreadingFilterBar {
         background-color: #FFFFFF;
