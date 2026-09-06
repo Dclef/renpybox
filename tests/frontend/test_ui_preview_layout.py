@@ -293,7 +293,7 @@ def test_agent_empty_scroll_surface_matches_theme(monkeypatch, theme) -> None:
         state.show()
         APP.processEvents()
         surface = state.content_scroll.viewport().grab().toImage()
-        expected = "#0b0f17" if theme == Theme.DARK else "#f8fafc"
+        expected = "#12161d" if theme == Theme.DARK else "#f5f6f8"
         assert surface.pixelColor(2, 2).name() == expected
     finally:
         if state is not None:
@@ -506,10 +506,10 @@ def test_platform_active_surface_uses_subtle_accent(monkeypatch) -> None:
     dark_background = ThemeHelper.get_theme_active_card_background_color()
     dark_foreground = ThemeHelper.get_theme_active_card_foreground_color()
     assert 0 < dark_background.alpha() < 64
-    assert dark_foreground.name().upper() == "#F8FAFC"
+    assert dark_foreground.name().upper() == "#E8ECF0"
 
     monkeypatch.setattr(ThemeHelper, "isDarkTheme", lambda: False)
     light_background = ThemeHelper.get_theme_active_card_background_color()
     light_foreground = ThemeHelper.get_theme_active_card_foreground_color()
     assert 0 < light_background.alpha() < 64
-    assert light_foreground.name().upper() == "#0F172A"
+    assert light_foreground.name().upper() == "#20262E"

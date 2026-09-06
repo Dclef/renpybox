@@ -577,10 +577,10 @@ class AgentMessageWidget(QWidget):
     def _apply_document_surface_style(self) -> None:
         """助手文档面板使用 HTML 同级的内嵌表面，随主题切换。"""
         if isDarkTheme():
-            background = "#0B0F17"
+            background = "#12161D"
             border = "rgba(255,255,255,0.10)"
         else:
-            background = "#F8FAFC"
+            background = "#F5F6F8"
             border = "rgba(0,0,0,0.10)"
         self.document_surface.setStyleSheet(
             "QFrame#agentAssistantDocument {"
@@ -1585,27 +1585,27 @@ class AgentEmptyState(QWidget):
         """让项目与诊断状态在明暗主题下保持克制且可读。"""
         if isDarkTheme():
             self.preflight_project_label.setStyleSheet(
-                "background: rgba(99, 102, 241, 0.14); color: #A5B4FC; "
-                "border: 1px solid rgba(99, 102, 241, 0.24); "
+                "background: rgba(157, 175, 190, 0.14); color: #C2CFDC; "
+                "border: 1px solid rgba(157, 175, 190, 0.24); "
                 "border-radius: 4px; padding: 1px 6px;"
             )
-            self.preflight_path_label.setStyleSheet("color: #94A3B8;")
+            self.preflight_path_label.setStyleSheet("color: #A8B4C1;")
             colors = {
                 "warning": ("rgba(245, 158, 11, 0.12)", "#FBBF24"),
                 "success": ("rgba(16, 185, 129, 0.12)", "#34D399"),
-                "neutral": ("rgba(148, 163, 184, 0.10)", "#94A3B8"),
+                "neutral": ("rgba(148, 163, 184, 0.10)", "#A8B4C1"),
             }
         else:
             self.preflight_project_label.setStyleSheet(
-                "background: rgba(79, 70, 229, 0.08); color: #4F46E5; "
-                "border: 1px solid rgba(79, 70, 229, 0.18); "
+                "background: rgba(83, 105, 127, 0.08); color: #53697F; "
+                "border: 1px solid rgba(83, 105, 127, 0.18); "
                 "border-radius: 4px; padding: 1px 6px;"
             )
-            self.preflight_path_label.setStyleSheet("color: #64748B;")
+            self.preflight_path_label.setStyleSheet("color: #586574;")
             colors = {
                 "warning": ("rgba(245, 158, 11, 0.12)", "#B45309"),
                 "success": ("rgba(16, 185, 129, 0.12)", "#047857"),
-                "neutral": ("rgba(148, 163, 184, 0.12)", "#64748B"),
+                "neutral": ("rgba(148, 163, 184, 0.12)", "#586574"),
             }
         for value_label in self.preflight_value_labels.values():
             background, foreground = colors.get(

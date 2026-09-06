@@ -316,11 +316,11 @@ class YiJianFanyiPage(Base, QWidget):
     def _step_bar_style(self) -> str:
         """返回步骤页签容器的主题表面样式。"""
         if isDarkTheme():
-            background = "#141B2A"
+            background = "#1B212A"
             border = "rgba(255, 255, 255, 0.08)"
         else:
             background = "#FFFFFF"
-            border = "rgba(15, 23, 42, 0.10)"
+            border = "rgba(32, 38, 46, 0.10)"
         return (
             f"QWidget#onekeyStepBar {{ background-color: {background}; "
             f"border: none; border-bottom: 1px solid {border}; "
@@ -330,17 +330,17 @@ class YiJianFanyiPage(Base, QWidget):
     def _step_indicator_style(self, state: str) -> str:
         """返回平铺页签的主题三态样式。"""
         if isDarkTheme():
-            accent = "#818CF8"
-            active_background = "rgba(99, 102, 241, 0.16)"
-            text = "#E5E7EB"
-            muted = "#94A3B8"
+            accent = "#B9C7D4"
+            active_background = "rgba(157, 175, 190, 0.16)"
+            text = "#E8ECF0"
+            muted = "#A8B4C1"
             hover = "rgba(255, 255, 255, 0.05)"
         else:
-            accent = "#4F46E5"
-            active_background = "rgba(79, 70, 229, 0.10)"
-            text = "#0F172A"
-            muted = "#94A3B8"
-            hover = "rgba(15, 23, 42, 0.04)"
+            accent = "#53697F"
+            active_background = "rgba(83, 105, 127, 0.10)"
+            text = "#20262E"
+            muted = "#586574"
+            hover = "rgba(32, 38, 46, 0.04)"
 
         if state == "active":
             return (
@@ -365,8 +365,8 @@ class YiJianFanyiPage(Base, QWidget):
     def _step_indicator_icon(self, index: int, state: str) -> QIcon:
         """绘制 20px 步骤圆点，避免图标字体在不同系统下产生偏差。"""
         dark = isDarkTheme()
-        accent = QColor("#6366F1" if dark else "#4F46E5")
-        muted = QColor("#64748B" if dark else "#94A3B8")
+        accent = QColor("#9DAFBE" if dark else "#53697F")
+        muted = QColor("#A8B4C1" if dark else "#586574")
         outline = QColor("#475569" if dark else "#CBD5E1")
 
         pixmap = QPixmap(20, 20)
@@ -376,7 +376,7 @@ class YiJianFanyiPage(Base, QWidget):
 
         if state == "done":
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#10B981"))
+            painter.setBrush(QColor("#3D6454"))
             painter.drawEllipse(1, 1, 18, 18)
             pen = QPen(QColor("#FFFFFF"))
             pen.setWidthF(1.8)
@@ -389,7 +389,7 @@ class YiJianFanyiPage(Base, QWidget):
             if state == "active":
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(accent)
-                number_color = QColor("#FFFFFF")
+                number_color = QColor("#12161D" if dark else "#FFFFFF")
             else:
                 pen = QPen(outline)
                 pen.setWidthF(1.2)
@@ -490,7 +490,7 @@ class YiJianFanyiPage(Base, QWidget):
         tip_text = CaptionLabel(
             Localizer.get().onekey_1_select_game_folder_contains_game_subfolder
         )
-        tip_text.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        tip_text.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         tip_text.setWordWrap(True)
         
         # 游戏路径输入框（支持直接粘贴）
@@ -548,7 +548,7 @@ class YiJianFanyiPage(Base, QWidget):
         )
         incremental_desc.setWordWrap(True)
         incremental_desc.setContentsMargins(28, 0, 0, 0)
-        incremental_desc.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        incremental_desc.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         old_trans_layout.addWidget(incremental_desc)
 
         self.full_extract_rb = CheckBox(
@@ -564,7 +564,7 @@ class YiJianFanyiPage(Base, QWidget):
         )
         full_extract_desc.setWordWrap(True)
         full_extract_desc.setContentsMargins(28, 0, 0, 0)
-        full_extract_desc.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        full_extract_desc.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         old_trans_layout.addWidget(full_extract_desc)
         
         tip_label = CaptionLabel(
@@ -706,7 +706,7 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_click_extract_text_begin_existing_translations_preserved
         )
         self.quick_tip_label.setWordWrap(True)
-        self.quick_tip_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.quick_tip_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         page.footer_layout.insertWidget(0, self.quick_tip_label)
         
         # 跳过抽取按钮（已有翻译时显示）
