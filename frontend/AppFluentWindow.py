@@ -239,6 +239,7 @@ class AppFluentWindow(FluentWindow, Base):
         """将标题栏收敛为原型的 38px 简洁壳层。"""
         self.titleBar.setFixedHeight(38)
         self.widgetLayout.setContentsMargins(0, 38, 0, 0)
+        self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 38, 0, 5)
         self.titleBar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # 主题、语言和应用设置入口统一留在左下角导航，不在顶栏重复添加。
         self.titleBar.iconLabel.hide()

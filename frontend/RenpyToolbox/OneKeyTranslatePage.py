@@ -10,6 +10,8 @@ from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QWidget,
+    QBoxLayout,
+    QGridLayout,
     QVBoxLayout,
     QHBoxLayout,
     QToolButton,
@@ -137,7 +139,15 @@ class YiJianFanyiPage(Base, QWidget):
     
     def _init_ui(self):
         """初始化界面"""
-        self.main_layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setMaximumWidth(1024)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+        self.main_layout = QVBoxLayout(self.workspace)
         self.main_layout.setSpacing(0)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -186,8 +196,10 @@ class YiJianFanyiPage(Base, QWidget):
         title_font = title_label.font()
         title_font.setPixelSize(18)
         title_label.setFont(title_font)
-        header_layout.addWidget(title_label)
-        header_layout.addStretch(1)
+        title_label.setMinimumWidth(0)
+        title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        title_label.setToolTip(title_label.text())
+        header_layout.addWidget(title_label, 1)
         
         if step > 1:
             exit_btn = PushButton(Localizer.get().onekey_exit_wizard)
@@ -195,6 +207,14 @@ class YiJianFanyiPage(Base, QWidget):
             header_layout.addWidget(exit_btn)
         
         page_layout.addWidget(header)
+
+        surface = QWidget(page)
+        surface.setObjectName("onekeySurface")
+        surface.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        surface_layout = QVBoxLayout(surface)
+        surface_layout.setContentsMargins(1, 1, 1, 1)
+        surface_layout.setSpacing(0)
+        page_layout.addWidget(surface, 1)
 
         # 顶部五步流程指示器：外观参考 HTML，实际流程仍由原有按钮和 Worker 驱动。
         step_names = [
@@ -233,7 +253,7 @@ class YiJianFanyiPage(Base, QWidget):
             self._step_indicator_buttons.append((indicator, idx))
             step_layout.addWidget(indicator, 1)
         self._refresh_step_indicators()
-        page_layout.addWidget(step_bar)
+        surface_layout.addWidget(step_bar)
         
         # 内容区域（滚动容器，避免非全屏时控件挤压重叠）
         content_scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -243,18 +263,19 @@ class YiJianFanyiPage(Base, QWidget):
 
         content = QWidget()
         mark_toolbox_widget(content, "toolboxScroll")
-        content.setStyleSheet("background: transparent;")
+        content.setObjectName("onekeyContent")
+        content.setStyleSheet("QWidget#onekeyContent { background: transparent; }")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(16)
+        content_layout.setContentsMargins(16, 16, 16, 16)
+        content_layout.setSpacing(12)
         content_scroll.setWidget(content)
-        page_layout.addWidget(content_scroll, 1)
+        surface_layout.addWidget(content_scroll, 1)
         
         # 底部：进度条
         bottom = QWidget()
         bottom.setStyleSheet("background: transparent;")
         bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 8, 0, 0)
+        bottom_layout.setContentsMargins(16, 8, 16, 12)
         bottom_layout.setSpacing(4)
         
         status_row = QWidget()
@@ -281,13 +302,14 @@ class YiJianFanyiPage(Base, QWidget):
         progress_bar.setValue(int((step - 1) / 5 * 100))
         bottom_layout.addWidget(progress_bar)
         
-        page_layout.addWidget(bottom)
+        surface_layout.addWidget(bottom)
         
         # 保存引用
         page.progress_ring = progress_ring
         page.status_label = status_label
         page.progress_bar = progress_bar
         page.content_scroll = content_scroll
+        page.footer_layout = bottom_layout
 
         return page, content_layout
 
@@ -301,7 +323,8 @@ class YiJianFanyiPage(Base, QWidget):
             border = "rgba(15, 23, 42, 0.10)"
         return (
             f"QWidget#onekeyStepBar {{ background-color: {background}; "
-            f"border: 1px solid {border}; border-radius: 8px; }}"
+            f"border: none; border-bottom: 1px solid {border}; "
+            "border-top-left-radius: 8px; border-top-right-radius: 8px; }"
         )
 
     def _step_indicator_style(self, state: str) -> str:
@@ -447,29 +470,35 @@ class YiJianFanyiPage(Base, QWidget):
         )
         
         # 提示文字 - 更友好的说明
-        tip_card = CardWidget()
-        tip_layout = QVBoxLayout(tip_card)
-        tip_layout.setContentsMargins(12, 12, 12, 12)
-        tip_layout.setSpacing(6)
+        self.step1_columns = QBoxLayout(QBoxLayout.LeftToRight)
+        self.step1_columns.setSpacing(16)
+        layout.addLayout(self.step1_columns)
+        self.project_card = QWidget(page)
+        self.project_card.setObjectName("onekeySection")
+        self.project_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.project_card.setMinimumWidth(0)
+        tip_layout = QVBoxLayout(self.project_card)
+        tip_layout.setContentsMargins(16, 16, 16, 16)
+        tip_layout.setSpacing(10)
+        self.step1_columns.addWidget(self.project_card, 1)
         
         tip_title = StrongBodyLabel(
-            Localizer.get().onekey_quick_start
+            Localizer.get().onekey_select_game_folder
         )
         tip_layout.addWidget(tip_title)
         
         tip_text = CaptionLabel(
             Localizer.get().onekey_1_select_game_folder_contains_game_subfolder
         )
-        tip_text.setStyleSheet("color: #666; line-height: 1.5;")
+        tip_text.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         tip_text.setWordWrap(True)
-        tip_layout.addWidget(tip_text)
-        layout.addWidget(tip_card)
         
         # 游戏路径输入框（支持直接粘贴）
         path_row = QHBoxLayout()
         path_row.setSpacing(8)
         
         self.game_path_edit = LineEdit()
+        self.game_path_edit.setMinimumWidth(0)
         self.game_path_edit.setPlaceholderText(
             Localizer.get().onekey_enter_paste_game_folder_path_example_d
         )
@@ -480,11 +509,14 @@ class YiJianFanyiPage(Base, QWidget):
         self.browse_btn.clicked.connect(self._select_game_dir)
         path_row.addWidget(self.browse_btn)
         
-        layout.addLayout(path_row)
+        tip_layout.addLayout(path_row)
         
         # 状态提示
         self.path_status_label = CaptionLabel("")
-        layout.addWidget(self.path_status_label)
+        self.path_status_label.setWordWrap(True)
+        tip_layout.addWidget(self.path_status_label)
+        tip_layout.addWidget(tip_text)
+        tip_layout.addStretch(1)
         
         # 旧翻译检测提示卡片（默认隐藏）
         self.old_translation_card = CardWidget()
@@ -515,7 +547,8 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_keep_existing_translations_extract_new_untranslated_entries
         )
         incremental_desc.setWordWrap(True)
-        incremental_desc.setStyleSheet("padding-left: 28px; color: #666;")
+        incremental_desc.setContentsMargins(28, 0, 0, 0)
+        incremental_desc.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         old_trans_layout.addWidget(incremental_desc)
 
         self.full_extract_rb = CheckBox(
@@ -530,7 +563,8 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_back_up_old_translation_extract_everything_again
         )
         full_extract_desc.setWordWrap(True)
-        full_extract_desc.setStyleSheet("padding-left: 28px; color: #666;")
+        full_extract_desc.setContentsMargins(28, 0, 0, 0)
+        full_extract_desc.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         old_trans_layout.addWidget(full_extract_desc)
         
         tip_label = CaptionLabel(
@@ -602,21 +636,25 @@ class YiJianFanyiPage(Base, QWidget):
 
         layout.addWidget(options_card)
 
-        layout.addSpacing(20)        # 语言设置（简化）
-        layout.addWidget(
-            SubtitleLabel(
-                Localizer.get().onekey_translation_languages
-            )
-        )
-        
-        lang_row = QHBoxLayout()
-        lang_row.setSpacing(20)
+        self.language_card = QWidget(page)
+        self.language_card.setObjectName("onekeySection")
+        self.language_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.language_card.setMinimumWidth(0)
+        language_layout = QVBoxLayout(self.language_card)
+        language_layout.setContentsMargins(16, 16, 16, 16)
+        language_layout.setSpacing(10)
+        language_layout.addWidget(StrongBodyLabel(Localizer.get().onekey_translation_languages))
+        lang_row = QGridLayout()
+        lang_row.setHorizontalSpacing(12)
+        lang_row.setVerticalSpacing(10)
+        lang_row.setColumnStretch(1, 1)
+        language_layout.addLayout(lang_row)
+        language_layout.addStretch(1)
+        self.step1_columns.addWidget(self.language_card, 1)
         
         # 源语言
-        src_layout = QVBoxLayout()
-        src_layout.setSpacing(4)
-        src_layout.addWidget(
-            CaptionLabel(Localizer.get().onekey_source_language)
+        lang_row.addWidget(
+            CaptionLabel(Localizer.get().onekey_source_language), 0, 0
         )
         self.src_lang_combo = ComboBox()
         self.src_lang_combo.addItems(
@@ -628,15 +666,12 @@ class YiJianFanyiPage(Base, QWidget):
                 Localizer.get().onekey_other,
             ]
         )
-        self.src_lang_combo.setFixedWidth(150)
-        src_layout.addWidget(self.src_lang_combo)
-        lang_row.addLayout(src_layout)
+        self.src_lang_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lang_row.addWidget(self.src_lang_combo, 0, 1)
         
         # 目标语言
-        tgt_layout = QVBoxLayout()
-        tgt_layout.setSpacing(4)
-        tgt_layout.addWidget(
-            CaptionLabel(Localizer.get().onekey_target_language)
+        lang_row.addWidget(
+            CaptionLabel(Localizer.get().onekey_target_language), 1, 0
         )
         self.tgt_lang_combo = ComboBox()
         self.tgt_lang_combo.addItems(
@@ -647,25 +682,18 @@ class YiJianFanyiPage(Base, QWidget):
                 Localizer.get().direct_rpy_english,
             ]
         )
-        self.tgt_lang_combo.setFixedWidth(150)
-        tgt_layout.addWidget(self.tgt_lang_combo)
-        lang_row.addLayout(tgt_layout)
+        self.tgt_lang_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lang_row.addWidget(self.tgt_lang_combo, 1, 1)
         
         # TL 文件夹名（折叠/隐藏给高级用户）
-        tl_layout = QVBoxLayout()
-        tl_layout.setSpacing(4)
-        tl_layout.addWidget(
-            CaptionLabel(Localizer.get().onekey_tl_folder_name)
+        lang_row.addWidget(
+            CaptionLabel(Localizer.get().onekey_tl_folder_name), 2, 0
         )
         self.tl_folder_edit = LineEdit()
         self.tl_folder_edit.setText("chinese")
-        self.tl_folder_edit.setFixedWidth(120)
+        self.tl_folder_edit.setMinimumWidth(0)
         self.tl_folder_edit.textChanged.connect(self._on_tl_name_changed)
-        tl_layout.addWidget(self.tl_folder_edit)
-        lang_row.addLayout(tl_layout)
-        
-        lang_row.addStretch(1)
-        layout.addLayout(lang_row)
+        lang_row.addWidget(self.tl_folder_edit, 2, 1)
         
         layout.addStretch(1)
 
@@ -678,7 +706,8 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_click_extract_text_begin_existing_translations_preserved
         )
         self.quick_tip_label.setWordWrap(True)
-        layout.addWidget(self.quick_tip_label)
+        self.quick_tip_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        page.footer_layout.insertWidget(0, self.quick_tip_label)
         
         # 跳过抽取按钮（已有翻译时显示）
         self.skip_extract_btn = PushButton(
@@ -694,10 +723,17 @@ class YiJianFanyiPage(Base, QWidget):
         self.step1_next_btn.clicked.connect(self._go_step2)
         self.step1_next_btn.setEnabled(False)
         next_row.addWidget(self.step1_next_btn)
-        layout.addLayout(next_row)
+        page.footer_layout.insertLayout(1, next_row)
         
         self.step1_page = page
         self.stacked.addWidget(page)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "step1_columns"):
+            self.step1_columns.setDirection(
+                QBoxLayout.LeftToRight if self.width() >= 860 else QBoxLayout.TopToBottom
+            )
     
     def _skip_to_translate(self):
         """跳过抽取，直接进入翻译步骤"""
@@ -1065,22 +1101,26 @@ class YiJianFanyiPage(Base, QWidget):
                 Localizer.get().onekey_glossary_do_not_translate_list
             )
         )
-        layout.addWidget(
-            BodyLabel(
-                Localizer.get().onekey_glossary_keeps_proper_names_consistent_while_do
-            )
+        description = BodyLabel(
+            Localizer.get().onekey_glossary_keeps_proper_names_consistent_while_do
         )
+        description.setWordWrap(True)
+        layout.addWidget(description)
         
         layout.addSpacing(16)
         
         self.glossary_info_label = BodyLabel(
             Localizer.get().onekey_looking_glossary_files_project
         )
+        self.glossary_info_label.setWordWrap(True)
         layout.addWidget(self.glossary_info_label)
         
         layout.addSpacing(16)
         
-        btn_row = QHBoxLayout()
+        btn_row = QGridLayout()
+        btn_row.setColumnStretch(0, 1)
+        btn_row.setColumnStretch(1, 1)
+        btn_row.setSpacing(12)
         self.open_glossary_btn = PushButton(
             Localizer.get().onekey_open_local_glossary
         )
@@ -1088,19 +1128,19 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_use_scan_term_candidates_local_glossary_find
         )
         self.open_glossary_btn.clicked.connect(self._open_local_glossary)
-        btn_row.addWidget(self.open_glossary_btn)
+        btn_row.addWidget(self.open_glossary_btn, 0, 0)
         
         self.open_preserve_btn = PushButton(
             Localizer.get().onekey_open_do_not_translate_list
         )
         self.open_preserve_btn.clicked.connect(self._open_text_preserve)
-        btn_row.addWidget(self.open_preserve_btn)
+        btn_row.addWidget(self.open_preserve_btn, 0, 1)
         
         self.scan_names_btn = PushButton(
             Localizer.get().onekey_extract_character_names
         )
         self.scan_names_btn.clicked.connect(self._scan_character_names)
-        btn_row.addWidget(self.scan_names_btn)
+        btn_row.addWidget(self.scan_names_btn, 1, 0)
 
         self.open_workbench_btn = PushButton(
             Localizer.get().onekey_open_character_world_workbench
@@ -1109,9 +1149,7 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_manage_worldbook_character_cards_translation_creates_immutable
         )
         self.open_workbench_btn.clicked.connect(self._open_workbench_from_onekey)
-        btn_row.addWidget(self.open_workbench_btn)
-        
-        btn_row.addStretch(1)
+        btn_row.addWidget(self.open_workbench_btn, 1, 1)
         layout.addLayout(btn_row)
 
         self.workbench_asset_status = BodyLabel(
@@ -1129,7 +1167,7 @@ class YiJianFanyiPage(Base, QWidget):
         )
         self.step3_next_btn.clicked.connect(self._go_step4)
         next_row.addWidget(self.step3_next_btn)
-        layout.addLayout(next_row)
+        page.footer_layout.insertLayout(0, next_row)
         
         self.step3_page = page
         self.stacked.addWidget(page)

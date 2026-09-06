@@ -5,6 +5,7 @@ import copy
 from typing import Callable
 
 from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTime
 from PyQt5.QtCore import QTimer
@@ -13,8 +14,11 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QHBoxLayout
 from PyQt5.QtWidgets import QGridLayout
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QFrame
 from PyQt5.QtWidgets import QSizePolicy
 from PyQt5.QtWidgets import QVBoxLayout
+from PyQt5.QtWidgets import QProgressBar
 
 from qfluentwidgets import Action
 from qfluentwidgets import InfoBar
@@ -25,6 +29,7 @@ from qfluentwidgets import MessageBox
 from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import ProgressRing
+from qfluentwidgets import IconWidget
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import SubtitleLabel
 from qfluentwidgets import StrongBodyLabel
@@ -32,6 +37,7 @@ from qfluentwidgets import PushButton
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
+from qfluentwidgets import isDarkTheme
 
 from base.Base import Base
 from base.compat import StrEnum
@@ -79,52 +85,180 @@ def restore_resumable_translation_paths(config: Config) -> Config:
 
 class DashboardCard(CardWidget):
 
-    def __init__(self, parent: QWidget, title: str, value: str, unit: str, init: Callable = None, clicked: Callable = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget,
+        title: str,
+        value: str,
+        unit: str,
+        init: Callable = None,
+        clicked: Callable = None,
+        icon=None,
+        accent: str = "primary",
+        trend: str = "",
+    ) -> None:
         super().__init__(parent)
 
-        # 指标卡保留原有 set_value/set_unit 接口，同时适配原型的紧凑信息层级。
+        # 保留旧卡片的公开字段，同时允许监控看板使用 HTML 原型的速览卡结构。
         self.setBorderRadius(8)
+        self.setObjectName("translationKpiCard" if icon is not None else "translationMetricCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumWidth(0)
-        self.setFixedHeight(96)
+        self._is_kpi = icon is not None
+        self._accent = accent
+        self.setFixedHeight(88 if self._is_kpi else 96)
 
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(14, 12, 14, 10) # 左、上、右、下
-        self.root.setSpacing(4)
+        self.root.setContentsMargins(14, 11, 14, 10)
+        self.root.setSpacing(3)
 
-        self.title_label = CaptionLabel(title, self)
-        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
-        self.root.addWidget(self.title_label)
-
-        # 数值与单位在同一基线区域排列，避免旧版大字号造成的垂直浪费。
-        self.body_hbox_container = QWidget(self)
-        self.body_hbox = QHBoxLayout(self.body_hbox_container)
-        self.body_hbox.setSpacing(4)
-        self.body_hbox.setContentsMargins(0, 0, 0, 0)
-
-        self.value_label = SubtitleLabel(value, self)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-
-        self.unit_label = CaptionLabel(unit, self)
-        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
-        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
-
-        self.body_hbox.addWidget(self.value_label)
-        self.body_hbox.addWidget(self.unit_label)
-        self.body_hbox.addStretch(1)
-        self.root.addStretch(1)
-        self.root.addWidget(self.body_hbox_container)
-
-        self.detail_label = CaptionLabel("", self)
-        self.detail_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
-        self.detail_label.setVisible(False)
-        self.root.addWidget(self.detail_label)
+        if self._is_kpi:
+            self._build_kpi(icon, title, value, unit, trend)
+        else:
+            self._build_legacy(title, value, unit)
 
         if callable(init):
             init(self)
 
         if callable(clicked):
-            self.clicked.connect(lambda : clicked(self))
+            self.clicked.connect(lambda: clicked(self))
+
+    def _build_legacy(self, title: str, value: str, unit: str) -> None:
+        """构建旧指标卡，供历史调用方继续使用。"""
+        self.title_label = CaptionLabel(title, self)
+        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.root.addWidget(self.title_label)
+
+        self.body_hbox_container = QWidget(self)
+        self.body_hbox = QHBoxLayout(self.body_hbox_container)
+        self.body_hbox.setSpacing(4)
+        self.body_hbox.setContentsMargins(0, 0, 0, 0)
+        self.value_label = SubtitleLabel(value, self)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.unit_label = CaptionLabel(unit, self)
+        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
+        self.body_hbox.addWidget(self.value_label)
+        self.body_hbox.addWidget(self.unit_label)
+        self.body_hbox.addStretch(1)
+        self.root.addStretch(1)
+        self.root.addWidget(self.body_hbox_container)
+        self.detail_label = CaptionLabel("", self)
+        self.detail_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.detail_label.setVisible(False)
+        self.root.addWidget(self.detail_label)
+
+    def _build_kpi(self, icon, title: str, value: str, unit: str, trend: str) -> None:
+        body = QWidget(self)
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+        self.icon_box = QFrame(body)
+        self.icon_box.setObjectName(f"translationKpiIcon_{self._accent}")
+        self.icon_box.setFixedSize(38, 38)
+        icon_layout = QHBoxLayout(self.icon_box)
+        icon_layout.setContentsMargins(9, 9, 9, 9)
+        self.icon_widget = IconWidget(self.icon_box)
+        self.icon_widget.setIcon(icon)
+        icon_layout.addWidget(self.icon_widget)
+        body_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        content = QWidget(body)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(1)
+        label_row = QHBoxLayout()
+        label_row.setContentsMargins(0, 0, 0, 0)
+        label_row.setSpacing(5)
+        self.title_label = CaptionLabel(title, content)
+        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        label_row.addWidget(self.title_label)
+        self.trend_label = QLabel(trend, content)
+        self.trend_label.setObjectName(f"translationKpiTrend_{self._accent}")
+        self.trend_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trend_label.setVisible(bool(trend))
+        label_row.addWidget(self.trend_label, 0, Qt.AlignmentFlag.AlignRight)
+        content_layout.addLayout(label_row)
+
+        self.body_hbox_container = QWidget(content)
+        self.body_hbox = QHBoxLayout(self.body_hbox_container)
+        self.body_hbox.setContentsMargins(0, 0, 0, 0)
+        self.body_hbox.setSpacing(4)
+        self.value_label = SubtitleLabel(value, self.body_hbox_container)
+        value_font = self.value_label.font()
+        value_font.setPixelSize(20)
+        value_font.setBold(True)
+        self.value_label.setFont(value_font)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.unit_label = CaptionLabel(unit, self.body_hbox_container)
+        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
+        self.body_hbox.addWidget(self.value_label)
+        self.body_hbox.addWidget(self.unit_label)
+        self.body_hbox.addStretch(1)
+        content_layout.addWidget(self.body_hbox_container)
+        self.detail_label = CaptionLabel("", content)
+        self.detail_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.detail_label.setVisible(False)
+        content_layout.addWidget(self.detail_label)
+        self.progress_bar = QProgressBar(content)
+        self.progress_bar.setObjectName(f"translationKpiProgress_{self._accent}")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(3)
+        self.progress_bar.setVisible(False)
+        content_layout.addWidget(self.progress_bar)
+        body_layout.addWidget(content, 1)
+        self.root.addWidget(body)
+        self._apply_kpi_fallback_style()
+
+    def _apply_kpi_fallback_style(self) -> None:
+        """在未加载全局 QSS 的测试或嵌入场景下保持卡片可读。"""
+        dark = isDarkTheme()
+        palette = {
+            "primary": ("#EEF2FF", "#6366F1", "#4F46E5"),
+            "success": ("#ECFDF5", "#10B981", "#059669"),
+            "warning": ("#FFFBEB", "#F59E0B", "#D97706"),
+            "cyan": ("#ECFEFF", "#06B6D4", "#0891B2"),
+        }
+        box, color, border = palette.get(self._accent, palette["primary"])
+        if dark:
+            box = {
+                "primary": "rgba(99,102,241,0.16)",
+                "success": "rgba(16,185,129,0.14)",
+                "warning": "rgba(245,158,11,0.14)",
+                "cyan": "rgba(6,182,212,0.14)",
+            }.get(self._accent, box)
+        self.icon_box.setStyleSheet(
+            f"background-color: {box}; border: 1px solid {border}; border-radius: 6px;"
+        )
+        self.trend_label.setStyleSheet(
+            f"color: {color}; background-color: {box}; border: 1px solid {border};"
+            " border-radius: 4px; padding: 1px 5px; font-size: 10px;"
+        )
+        self.progress_bar.setStyleSheet(
+            f"QProgressBar {{ border: none; background: rgba(148,163,184,0.18); border-radius: 2px; }}"
+            f"QProgressBar::chunk {{ background: {color}; border-radius: 2px; }}"
+        )
+
+    def set_progress(self, percent: float) -> None:
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.setValue(max(0, min(100, int(round(percent * 100)))))
+            self.progress_bar.setVisible(True)
+
+    def set_trend(self, trend: str) -> None:
+        if hasattr(self, "trend_label"):
+            self.trend_label.setText(trend)
+            self.trend_label.setVisible(bool(trend))
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if self._is_kpi and event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.StyleChange,
+        ):
+            self._apply_kpi_fallback_style()
 
     def set_unit(self, unit: str) -> None:
         self.unit_label.setText(unit)
@@ -199,8 +333,18 @@ class TranslationPage(QWidget, Base):
         config = Config().load().save()
         self._config_snapshot = config
 
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setObjectName("translationWorkspace")
+        self.workspace.setMaximumWidth(1024)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+
         # 设置主容器
-        self.container = QVBoxLayout(self)
+        self.container = QVBoxLayout(self.workspace)
         self.container.setSpacing(12)
         self.container.setContentsMargins(24, 18, 24, 18) # 左、上、右、下
 
@@ -518,6 +662,7 @@ class TranslationPage(QWidget, Base):
         line = max(0, int(self.data.get("line", 0) or 0))
         total_line = max(0, int(self.data.get("total_line", 0) or 0))
         remaining = max(0, total_line - line)
+        percent = line / max(1, total_line) if total_line else 0.0
         remaining_time = max(0, int(total_time / max(1, line) * remaining))
         strings = Localizer.get()
         self.elapsed_label.setText(
@@ -527,13 +672,37 @@ class TranslationPage(QWidget, Base):
             strings.translation_page_remaining.format(TIME=self._format_duration(remaining_time))
         )
 
+        self.progress_kpi_card.set_value(f"{percent * 100:.1f}%")
+        self.progress_kpi_card.set_trend(f"{percent * 100:.1f}%")
+        self.progress_kpi_card.set_detail(
+            strings.translation_page_lines_detail.format(
+                LINE=line,
+                TOTAL=total_line,
+            )
+        )
+        self.progress_kpi_card.set_progress(percent)
+
         output_tokens = max(0, int(self.data.get("total_output_tokens", 0) or 0))
+        speed = output_tokens / max(1, total_time)
+        self.speed_kpi_card.set_value(f"{speed:.2f}")
+        self.speed_kpi_card.set_trend(
+            strings.translation_page_trend_live if speed > 0 else strings.translation_page_trend_idle
+        )
+        self.speed_kpi_card.set_detail(
+            strings.translation_page_peak_speed.format(
+                SPEED=f"{getattr(self, '_peak_speed', 0.0):.2f}",
+            )
+        )
+
         input_tokens = max(0, int(self.data.get("total_input_tokens", 0) or 0))
         self.token.set_detail(
             strings.translation_page_token_detail.format(
                 OUTPUT=self._format_token_count(output_tokens),
                 INPUT=self._format_token_count(input_tokens),
             )
+        )
+        self.token.set_trend(
+            strings.translation_page_trend_total if output_tokens else strings.translation_page_trend_idle
         )
         running = Engine.get().get_running_task_count()
         maximum = max(0, int(getattr(getattr(self, "_config_snapshot", None), "max_workers", 0) or 0))
@@ -548,7 +717,65 @@ class TranslationPage(QWidget, Base):
                 FAILED=failed,
             )
         )
+        self.task.set_trend(
+            strings.translation_page_trend_healthy if failed == 0 else str(failed)
+        )
+        self._update_progress_pills(percent, line, total_line)
+        self._update_throughput_stats(speed, total_time)
         self._refresh_stream_feed()
+
+    def _update_progress_pills(self, percent: float, line: int, total_line: int) -> None:
+        """刷新进度环下方的语义状态标签。"""
+        strings = Localizer.get()
+        pending_percent = max(0.0, 1.0 - percent) if total_line else 0.0
+        self.hero_translated_pill.setText(
+            strings.translation_page_translated_percent.format(
+                PERCENT=percent * 100,
+            )
+        )
+        self.hero_pending_pill.setText(
+            strings.translation_page_pending_percent.format(
+                PERCENT=pending_percent * 100,
+            )
+        )
+        cache_count = max(
+            0,
+            int(
+                self.data.get(
+                    "cached_line_count",
+                    self.data.get("cache_line_count", self.data.get("cache_count", 0)),
+                )
+                or 0
+            ),
+        )
+        if cache_count and total_line:
+            self.hero_cache_pill.setText(
+                strings.translation_page_cache_percent.format(
+                    PERCENT=cache_count / total_line * 100,
+                )
+            )
+        else:
+            self.hero_cache_pill.setText(strings.translation_page_cache_unavailable)
+
+    def _update_throughput_stats(self, speed: float, total_time: int) -> None:
+        """刷新吞吐卡下方的统计值，未知字段保持占位符。"""
+        if not getattr(self, "throughput_stat_values", None):
+            return
+        batch_count = self.data.get("batch_count", self.data.get("processed_batches"))
+        cache_hit = self.data.get("cache_hit_rate")
+        latency = self.data.get("latency_ms", self.data.get("average_latency_ms"))
+        try:
+            cache_hit_text = f"{float(cache_hit) * 100:.1f}%" if cache_hit is not None else "—"
+        except (TypeError, ValueError):
+            cache_hit_text = "—"
+        values = [
+            f"{speed:.2f} T/s" if total_time or speed else "—",
+            str(batch_count) if batch_count is not None else "—",
+            cache_hit_text,
+            f"{latency} ms" if latency is not None else "—",
+        ]
+        for label, value in zip(self.throughput_stat_values, values):
+            label.setText(value)
 
     def _refresh_stream_feed(self) -> None:
         """展示引擎明确提供的最近流水；没有数据时保持真实空态。"""
@@ -571,16 +798,69 @@ class TranslationPage(QWidget, Base):
             return
         self.feed_empty_label.setVisible(False)
         for item in items[-3:][::-1]:
-            row = QWidget(self.feed_items_container)
+            row = QFrame(self.feed_items_container)
+            row.setObjectName("translationFeedItem")
+            row.setFixedHeight(34)
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(8, 5, 8, 5)
-            row_layout.setSpacing(12)
-            row.setStyleSheet(
-                "background: rgba(100, 116, 139, 0.08); border-radius: 4px;"
-            )
-            row_layout.addWidget(CaptionLabel(str(item.get("id", "")), row), 0)
-            row_layout.addWidget(CaptionLabel(str(item.get("source", "")), row), 1)
-            row_layout.addWidget(CaptionLabel(str(item.get("target", "")), row), 1)
+            row_layout.setContentsMargins(8, 4, 8, 4)
+            row_layout.setSpacing(10)
+
+            head = QWidget(row)
+            head_layout = QHBoxLayout(head)
+            head_layout.setContentsMargins(0, 0, 0, 0)
+            head_layout.setSpacing(6)
+            item_id = CaptionLabel(str(item.get("id", "")), head)
+            item_id.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            head_layout.addWidget(item_id)
+            speaker = str(item.get("speaker", item.get("character", "")) or "")
+            if speaker:
+                speaker_label = CaptionLabel(speaker, head)
+                speaker_label.setStyleSheet(
+                    "color: #C084FC; background: rgba(168,85,247,0.14);"
+                    " border: 1px solid rgba(168,85,247,0.25); border-radius: 4px; padding: 1px 5px;"
+                )
+                head_layout.addWidget(speaker_label)
+            file_name = str(item.get("file", item.get("file_path", "")) or "")
+            if file_name:
+                file_label = CaptionLabel(file_name, head)
+                file_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+                file_label.setToolTip(file_name)
+                head_layout.addWidget(file_label, 1)
+            else:
+                head_layout.addStretch(1)
+            row_layout.addWidget(head, 1)
+
+            text_col = QWidget(row)
+            text_layout = QVBoxLayout(text_col)
+            text_layout.setContentsMargins(0, 0, 0, 0)
+            text_layout.setSpacing(0)
+            source_label = CaptionLabel(str(item.get("source", "")), text_col)
+            source_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            target_label = CaptionLabel(str(item.get("target", "")), text_col)
+            text_layout.addWidget(source_label)
+            text_layout.addWidget(target_label)
+            row_layout.addWidget(text_col, 2)
+
+            meta = QWidget(row)
+            meta_layout = QVBoxLayout(meta)
+            meta_layout.setContentsMargins(0, 0, 0, 0)
+            meta_layout.setSpacing(0)
+            latency = item.get("latency_ms", item.get("latency"))
+            if latency is not None:
+                latency_label = CaptionLabel(f"{latency} ms", meta)
+                latency_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+                latency_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+                meta_layout.addWidget(latency_label)
+            status = str(item.get("status", "") or "")
+            if status:
+                status_label = CaptionLabel(status, meta)
+                status_label.setStyleSheet(
+                    "color: #10B981; background: rgba(16,185,129,0.12);"
+                    " border: 1px solid rgba(16,185,129,0.25); border-radius: 8px; padding: 1px 5px;"
+                )
+                status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+                meta_layout.addWidget(status_label)
+            row_layout.addWidget(meta, 0)
             self.feed_items_layout.addWidget(row)
 
     def _trigger_snapshot_export(self) -> None:
@@ -727,17 +1007,44 @@ class TranslationPage(QWidget, Base):
     # 中部
     def add_widget_body(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
         del config, window
+        strings = Localizer.get()
+
+        self.kpi_strip = QWidget(self)
+        self.kpi_strip.setObjectName("translationKpiStrip")
+        kpi_layout = QHBoxLayout(self.kpi_strip)
+        kpi_layout.setContentsMargins(0, 0, 0, 0)
+        kpi_layout.setSpacing(12)
+
+        self.progress_kpi_card = DashboardCard(
+            self.kpi_strip,
+            strings.translation_page_kpi_progress,
+            "0.0%",
+            "",
+            icon=FluentIcon.COMPLETED,
+            accent="primary",
+        )
+        self.speed_kpi_card = DashboardCard(
+            self.kpi_strip,
+            strings.translation_page_kpi_throughput,
+            "0.00",
+            "T/s",
+            icon=FluentIcon.SPEED_HIGH,
+            accent="success",
+        )
+        for card in (self.progress_kpi_card, self.speed_kpi_card):
+            kpi_layout.addWidget(card, 1)
+
         self.flow_container = QWidget(self)
         self.flow_container.setObjectName("translationDashboardGrid")
+        self.flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.flow_layout = QGridLayout(self.flow_container)
         self.flow_layout.setHorizontalSpacing(14)
         self.flow_layout.setVerticalSpacing(14)
         self.flow_layout.setContentsMargins(0, 0, 0, 0)
-        self.flow_layout.setColumnStretch(0, 2)
-        self.flow_layout.setColumnStretch(1, 3)
-        self.flow_layout.setColumnStretch(2, 3)
+        self.flow_layout.setColumnMinimumWidth(0, 280)
+        self.flow_layout.setColumnStretch(1, 1)
+        self.flow_layout.setColumnStretch(2, 1)
 
-        # 左侧完成度 Hero 卡片。
         hero_card = CardWidget(self.flow_container)
         hero_card.setObjectName("translationProgressCard")
         hero_card.setFixedHeight(248)
@@ -748,6 +1055,7 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_progress_title,
             hero_card,
         )
+        hero_title.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         hero_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hero_layout.addWidget(hero_title)
         self.ring = ProgressRing(hero_card)
@@ -755,7 +1063,7 @@ class TranslationPage(QWidget, Base):
         self.ring.setValue(0)
         self.ring.setTextVisible(True)
         self.ring.setStrokeWidth(8)
-        self.ring.setFixedSize(140, 140)
+        self.ring.setFixedSize(122, 122)
         self.ring.setFormat(Localizer.get().translation_page_progress_empty)
         ring_container = QWidget(hero_card)
         ring_layout = QHBoxLayout(ring_container)
@@ -764,8 +1072,26 @@ class TranslationPage(QWidget, Base):
         ring_layout.addWidget(self.ring)
         ring_layout.addStretch(1)
         hero_layout.addWidget(ring_container, 1)
+
+        breakdown = QHBoxLayout()
+        breakdown.setContentsMargins(0, 0, 0, 0)
+        breakdown.setSpacing(5)
+        self.hero_translated_pill = self._make_status_pill(
+            strings.translation_page_translated_percent.format(PERCENT=0), "primary"
+        )
+        self.hero_cache_pill = self._make_status_pill(
+            strings.translation_page_cache_unavailable, "cyan"
+        )
+        self.hero_pending_pill = self._make_status_pill(
+            strings.translation_page_pending_percent.format(PERCENT=0), "muted"
+        )
+        breakdown.addWidget(self.hero_translated_pill, 1)
+        breakdown.addWidget(self.hero_cache_pill, 1)
+        breakdown.addWidget(self.hero_pending_pill, 1)
+        hero_layout.addLayout(breakdown)
+
         hero_meta = QHBoxLayout()
-        hero_meta.setContentsMargins(0, 8, 0, 0)
+        hero_meta.setContentsMargins(0, 6, 0, 0)
         self.elapsed_label = CaptionLabel("", hero_card)
         self.elapsed_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         self.remaining_label = CaptionLabel("", hero_card)
@@ -776,18 +1102,21 @@ class TranslationPage(QWidget, Base):
         hero_meta.addWidget(self.remaining_label)
         hero_layout.addLayout(hero_meta)
 
-        # 右侧吞吐卡片，波形只绘制真实运行速率。
+        # 右侧吞吐卡只绘制真实运行速率，并补充可用的运行统计。
         throughput_card = CardWidget(self.flow_container)
         throughput_card.setObjectName("translationThroughputCard")
-        throughput_card.setFixedHeight(136)
+        throughput_card.setFixedHeight(248)
         throughput_layout = QVBoxLayout(throughput_card)
         throughput_layout.setContentsMargins(16, 14, 16, 14)
-        throughput_layout.setSpacing(8)
+        throughput_layout.setSpacing(6)
         throughput_header = QHBoxLayout()
         throughput_header.setContentsMargins(0, 0, 0, 0)
-        throughput_header.addWidget(
-            CaptionLabel(Localizer.get().translation_page_throughput_title, throughput_card)
+        throughput_title = CaptionLabel(
+            Localizer.get().translation_page_throughput_title,
+            throughput_card,
         )
+        throughput_title.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        throughput_header.addWidget(throughput_title)
         throughput_header.addStretch(1)
         self.waveform_peak_label = CaptionLabel(
             Localizer.get().translation_page_peak_speed.format(SPEED="0.00"),
@@ -797,11 +1126,37 @@ class TranslationPage(QWidget, Base):
         throughput_header.addWidget(self.waveform_peak_label)
         throughput_layout.addLayout(throughput_header)
         self.waveform = WaveformWidget(throughput_card)
-        self.waveform.set_matrix_size(80, 7)
-        throughput_layout.addWidget(self.waveform, 1)
+        self.waveform.set_matrix_size(80, 8)
+        throughput_layout.addWidget(self.waveform)
 
-        # 旧的七个字段仍然由同一套更新逻辑维护；只有原型中对应的两张
-        # 指标卡放入可见网格，其余卡片保留为兼容对象但不再占用版面。
+        stats_layout = QHBoxLayout()
+        stats_layout.setContentsMargins(0, 4, 0, 0)
+        stats_layout.setSpacing(6)
+        self.throughput_stat_values = []
+        for label in (
+            strings.translation_page_stat_average,
+            strings.translation_page_stat_batches,
+            strings.translation_page_stat_cache_hit,
+            strings.translation_page_stat_latency,
+        ):
+            stat = QFrame(throughput_card)
+            stat.setObjectName("translationThroughputStat")
+            stat_layout = QVBoxLayout(stat)
+            stat_layout.setContentsMargins(8, 5, 8, 5)
+            stat_layout.setSpacing(1)
+            stat_label = CaptionLabel(label, stat)
+            stat_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            stat_value = StrongBodyLabel("—", stat)
+            value_font = stat_value.font()
+            value_font.setPixelSize(13)
+            stat_value.setFont(value_font)
+            stat_layout.addWidget(stat_label)
+            stat_layout.addWidget(stat_value)
+            stats_layout.addWidget(stat, 1)
+            self.throughput_stat_values.append(stat_value)
+        throughput_layout.addLayout(stats_layout)
+
+        # 旧的七个字段仍由同一套更新逻辑维护，但只把原型四张 KPI 卡放入版面。
         self.add_time_card(None, None, None)
         self.add_remaining_time_card(None, None, None)
         self.add_line_card(None, None, None)
@@ -818,18 +1173,17 @@ class TranslationPage(QWidget, Base):
         ):
             card.hide()
 
-        # 实际数据指标与原型的两列 metric-box 对齐。
-        self.flow_layout.addWidget(hero_card, 0, 0, 2, 1, Qt.AlignmentFlag.AlignTop)
+        kpi_layout.addWidget(self.token, 1)
+        kpi_layout.addWidget(self.task, 1)
+
+        # 实际数据指标与原型的两列主网格对齐。
+        self.flow_layout.addWidget(hero_card, 0, 0, 1, 1, Qt.AlignmentFlag.AlignTop)
         self.flow_layout.addWidget(throughput_card, 0, 1, 1, 2, Qt.AlignmentFlag.AlignTop)
-        self.flow_layout.addWidget(self.token, 1, 1, Qt.AlignmentFlag.AlignTop)
-        self.flow_layout.addWidget(self.task, 1, 2, Qt.AlignmentFlag.AlignTop)
-        self.token.set_detail("")
-        self.task.set_detail("")
 
         self.stream_feed_card = CardWidget(self.flow_container)
         self.stream_feed_card.setObjectName("translationStreamFeedCard")
-        self.stream_feed_card.setMinimumHeight(132)
-        self.stream_feed_card.setMaximumHeight(190)
+        self.stream_feed_card.setMinimumHeight(168)
+        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         feed_layout = QVBoxLayout(self.stream_feed_card)
         feed_layout.setContentsMargins(14, 12, 14, 12)
         feed_layout.setSpacing(8)
@@ -855,13 +1209,32 @@ class TranslationPage(QWidget, Base):
             self.feed_items_container,
         )
         self.feed_empty_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.feed_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.feed_items_layout.addWidget(self.feed_empty_label)
         feed_layout.addWidget(self.feed_items_container, 1)
-        self.flow_layout.addWidget(self.stream_feed_card, 2, 0, 1, 3, Qt.AlignmentFlag.AlignTop)
-        self.flow_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.flow_layout.addWidget(self.stream_feed_card, 2, 0, 1, 3)
+        self.flow_layout.setRowStretch(2, 1)
 
+        parent.addWidget(self.kpi_strip)
         self.container.addWidget(self.flow_container, 1)
         self._update_dashboard_details()
+
+    @staticmethod
+    def _make_status_pill(text: str, variant: str) -> CaptionLabel:
+        """创建进度环下方的紧凑状态标签。"""
+        label = CaptionLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        colors = {
+            "primary": ("#4F46E5", "rgba(99,102,241,0.12)"),
+            "cyan": ("#0891B2", "rgba(6,182,212,0.12)"),
+            "muted": ("#64748B", "rgba(148,163,184,0.10)"),
+        }
+        color, background = colors.get(variant, colors["muted"])
+        label.setStyleSheet(
+            f"color: {color}; background-color: {background}; border: 1px solid {background};"
+            " border-radius: 4px; padding: 2px 3px; font-size: 10px;"
+        )
+        return label
 
     # 底部
     def add_widget_foot(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
@@ -979,6 +1352,8 @@ class TranslationPage(QWidget, Base):
             value = Localizer.get().none,
             unit = "",
             clicked = on_token_card_clicked,
+            icon = FluentIcon.CALORIES,
+            accent = "warning",
         )
         self.token.setCursor(Qt.CursorShape.PointingHandCursor)
         self.token.installEventFilter(ToolTipFilter(self.token, 300, ToolTipPosition.TOP))
@@ -1047,6 +1422,8 @@ class TranslationPage(QWidget, Base):
             title = Localizer.get().translation_page_card_task,
             value = Localizer.get().none,
             unit = "",
+            icon = FluentIcon.PEOPLE,
+            accent = "cyan",
         )
         if parent is not None:
             parent.addWidget(self.task)

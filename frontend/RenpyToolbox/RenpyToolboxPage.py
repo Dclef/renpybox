@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QGraphicsOpacityEffect,
+    QBoxLayout,
     QHBoxLayout,
     QSizePolicy,
     QVBoxLayout,
@@ -74,11 +76,20 @@ class RenpyToolboxPage(Base, QWidget):
         self._init_ui()
 
     def _init_ui(self) -> None:
-        self.main_layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setMaximumWidth(1024)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+        self.main_layout = QVBoxLayout(self.workspace)
         self.main_layout.setSpacing(16)
         self.main_layout.setContentsMargins(24, 24, 24, 24)
 
-        header_layout = QHBoxLayout()
+        header_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.header_layout = header_layout
         header_layout.setSpacing(16)
         header_text = QWidget(self)
         header_text_layout = QVBoxLayout(header_text)
@@ -95,9 +106,9 @@ class RenpyToolboxPage(Base, QWidget):
             header_text,
         )
         self.header_description.setWordWrap(True)
+        self.header_description.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
         header_text_layout.addWidget(self.header_description)
         header_layout.addWidget(header_text, 1)
-        header_layout.addStretch(1)
 
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText(Localizer.get().toolbox_search_tools)
@@ -221,6 +232,11 @@ class RenpyToolboxPage(Base, QWidget):
                 clicked=lambda widget, current=spec: self._open_tool(current, widget),
             )
             card._open_tooltip = Localizer.get().onekey_open.format(title=title)
+            title_font = card.title_label.font()
+            title_font.setPixelSize(14)
+            title_font.setBold(True)
+            card.title_label.setFont(title_font)
+            card.title_label.setWordWrap(True)
             card._project_requirement = Localizer.get().toolbox_select_game_folder_first
             card.project_requirement_label.setText(card._project_requirement)
             card.set_project_ready(project_ready or not spec.requires_project)
@@ -286,6 +302,11 @@ class RenpyToolboxPage(Base, QWidget):
 
     def resizeEvent(self, event: QEvent) -> None:
         super().resizeEvent(event)
+        narrow = self.width() < 720
+        self.header_layout.setDirection(
+            QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight
+        )
+        self.search_edit.setMaximumWidth(16777215 if narrow else 320)
         self._resize_timer.start()
 
     def _update_card_widths(self) -> None:
