@@ -1,8 +1,6 @@
 import os
 import re
 
-import pytest
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QCoreApplication, QEvent
@@ -163,21 +161,20 @@ def _contrast(fg: QColor, bg: QColor) -> float:
 
 
 def test_primary_button_accent_contrast_is_tracked() -> None:
-    """记录主按钮配色的实际对比度，防止主题色回退为低对比度。
-
-    qfluentwidgets 给主按钮的文字色是固定的：浅色主题白字、深色主题黑字，能不能过
-    AA 完全取决于主色明度。浅色主题已升级为深靛蓝 #4F46E5，白字对比度为 6.29:1，
-    满足 WCAG AA 不低于 4.5:1 的标准；以后主色再动会失败，要求重新确认可访问性。
-    """
+    """明暗主题下的主按钮文字与常态、悬停底色均保持可读反差。"""
     previous_theme = qconfig.theme
+    previous_color = QColor(qconfig.get(qconfig.themeColor))
     setThemeColor(AppFluentWindow.APP_THEME_COLOR)
     try:
         setTheme(Theme.DARK)
         assert _contrast(ThemeColor.PRIMARY.color(), QColor("black")) >= 4.5
+        assert _contrast(ThemeColor.DARK_1.color(), QColor("black")) >= 4.5
 
         setTheme(Theme.LIGHT)
         light_contrast = _contrast(ThemeColor.PRIMARY.color(), QColor("white"))
         assert light_contrast >= 4.5
-        assert light_contrast == pytest.approx(6.29, abs=0.05)
+        assert _contrast(ThemeColor.LIGHT_1.color(), QColor("white")) >= 4.5
+        assert QColor(AppFluentWindow.APP_THEME_COLOR).saturationF() < 0.4
     finally:
+        setThemeColor(previous_color)
         setTheme(previous_theme)

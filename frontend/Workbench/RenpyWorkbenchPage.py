@@ -34,7 +34,6 @@ from qfluentwidgets import (
     LineEdit,
     ListWidget,
     MessageBox,
-    PillPushButton,
     PlainTextEdit,
     PrimaryPushButton,
     PushButton,
@@ -69,6 +68,7 @@ from module.Workbench.WorkbenchData import (
     parse_workbench_exchange,
 )
 from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.QuietPillButton import QuietPillButton
 
 
 
@@ -168,7 +168,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         header_text_layout.addWidget(title)
         sub = CaptionLabel(Localizer.get().workbench_manage_worldbuilding_character_profiles_prompt_context_current)
         sub.setWordWrap(True)
-        sub.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        sub.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         header_text_layout.addWidget(sub)
         header_layout.addWidget(header_text, 1)
         self.header_actions = QHBoxLayout()
@@ -184,7 +184,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         tab_layout.setContentsMargins(24, 0, 24, 12)
         tab_layout.setSpacing(8)
 
-        self.tab_buttons: dict[str, PillPushButton] = {}
+        self.tab_buttons: dict[str, QuietPillButton] = {}
         self.panel_order = [
             ("overview", Localizer.get().workbench_overview),
             ("worldbook", Localizer.get().workbench_worldbuilding_2),
@@ -192,7 +192,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             ("preview", Localizer.get().workbench_prompt_preview),
         ]
         for idx, (key, text) in enumerate(self.panel_order):
-            button = PillPushButton(text, self)
+            button = QuietPillButton(text, self)
             button.setCheckable(True)
             button.clicked.connect(lambda checked = False, value = key: self.switch_panel(value))
             self.tab_group.addButton(button)
@@ -594,13 +594,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         filter_row.setSpacing(6)
         self.character_filter_group = QButtonGroup(self)
         self.character_filter_group.setExclusive(True)
-        self.character_filter_buttons: dict[str, PillPushButton] = {}
+        self.character_filter_buttons: dict[str, QuietPillButton] = {}
         for key, text in (
             ("all", Localizer.get().workbench_filter_all),
             ("pending", Localizer.get().workbench_filter_pending),
             ("applied", Localizer.get().workbench_filter_applied),
         ):
-            button = PillPushButton(text, self)
+            button = QuietPillButton(text, self)
             button.setCheckable(True)
             button.clicked.connect(
                 lambda checked = False, value = key: self._set_character_filter(value)

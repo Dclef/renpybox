@@ -126,7 +126,7 @@ class DashboardCard(CardWidget):
     def _build_legacy(self, title: str, value: str, unit: str) -> None:
         """构建旧指标卡，供历史调用方继续使用。"""
         self.title_label = CaptionLabel(title, self)
-        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.title_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.root.addWidget(self.title_label)
 
         self.body_hbox_container = QWidget(self)
@@ -136,7 +136,7 @@ class DashboardCard(CardWidget):
         self.value_label = SubtitleLabel(value, self)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self.unit_label = CaptionLabel(unit, self)
-        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.unit_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
         self.body_hbox.addWidget(self.value_label)
         self.body_hbox.addWidget(self.unit_label)
@@ -144,7 +144,7 @@ class DashboardCard(CardWidget):
         self.root.addStretch(1)
         self.root.addWidget(self.body_hbox_container)
         self.detail_label = CaptionLabel("", self)
-        self.detail_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.detail_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.detail_label.setVisible(False)
         self.root.addWidget(self.detail_label)
 
@@ -171,7 +171,7 @@ class DashboardCard(CardWidget):
         label_row.setContentsMargins(0, 0, 0, 0)
         label_row.setSpacing(5)
         self.title_label = CaptionLabel(title, content)
-        self.title_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.title_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         label_row.addWidget(self.title_label)
         self.trend_label = QLabel(trend, content)
         self.trend_label.setObjectName(f"translationKpiTrend_{self._accent}")
@@ -191,14 +191,14 @@ class DashboardCard(CardWidget):
         self.value_label.setFont(value_font)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self.unit_label = CaptionLabel(unit, self.body_hbox_container)
-        self.unit_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.unit_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
         self.body_hbox.addWidget(self.value_label)
         self.body_hbox.addWidget(self.unit_label)
         self.body_hbox.addStretch(1)
         content_layout.addWidget(self.body_hbox_container)
         self.detail_label = CaptionLabel("", content)
-        self.detail_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.detail_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.detail_label.setVisible(False)
         content_layout.addWidget(self.detail_label)
         self.progress_bar = QProgressBar(content)
@@ -215,21 +215,10 @@ class DashboardCard(CardWidget):
 
     def _apply_kpi_fallback_style(self) -> None:
         """在未加载全局 QSS 的测试或嵌入场景下保持卡片可读。"""
-        dark = isDarkTheme()
-        palette = {
-            "primary": ("#EEF2FF", "#6366F1", "#4F46E5"),
-            "success": ("#ECFDF5", "#10B981", "#059669"),
-            "warning": ("#FFFBEB", "#F59E0B", "#D97706"),
-            "cyan": ("#ECFEFF", "#06B6D4", "#0891B2"),
-        }
-        box, color, border = palette.get(self._accent, palette["primary"])
-        if dark:
-            box = {
-                "primary": "rgba(99,102,241,0.16)",
-                "success": "rgba(16,185,129,0.14)",
-                "warning": "rgba(245,158,11,0.14)",
-                "cyan": "rgba(6,182,212,0.14)",
-            }.get(self._accent, box)
+        if isDarkTheme():
+            box, color, border = "#242C36", "#C2CFDC", "#303B47"
+        else:
+            box, color, border = "#EDF0F3", "#40566B", "#E4E9EE"
         self.icon_box.setStyleSheet(
             f"background-color: {box}; border: 1px solid {border}; border-radius: 6px;"
         )
@@ -810,20 +799,17 @@ class TranslationPage(QWidget, Base):
             head_layout.setContentsMargins(0, 0, 0, 0)
             head_layout.setSpacing(6)
             item_id = CaptionLabel(str(item.get("id", "")), head)
-            item_id.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            item_id.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
             head_layout.addWidget(item_id)
             speaker = str(item.get("speaker", item.get("character", "")) or "")
             if speaker:
                 speaker_label = CaptionLabel(speaker, head)
-                speaker_label.setStyleSheet(
-                    "color: #C084FC; background: rgba(168,85,247,0.14);"
-                    " border: 1px solid rgba(168,85,247,0.25); border-radius: 4px; padding: 1px 5px;"
-                )
+                speaker_label.setTextColor(QColor("#40566B"), QColor("#C2CFDC"))
                 head_layout.addWidget(speaker_label)
             file_name = str(item.get("file", item.get("file_path", "")) or "")
             if file_name:
                 file_label = CaptionLabel(file_name, head)
-                file_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+                file_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
                 file_label.setToolTip(file_name)
                 head_layout.addWidget(file_label, 1)
             else:
@@ -835,7 +821,7 @@ class TranslationPage(QWidget, Base):
             text_layout.setContentsMargins(0, 0, 0, 0)
             text_layout.setSpacing(0)
             source_label = CaptionLabel(str(item.get("source", "")), text_col)
-            source_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            source_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
             target_label = CaptionLabel(str(item.get("target", "")), text_col)
             text_layout.addWidget(source_label)
             text_layout.addWidget(target_label)
@@ -848,16 +834,13 @@ class TranslationPage(QWidget, Base):
             latency = item.get("latency_ms", item.get("latency"))
             if latency is not None:
                 latency_label = CaptionLabel(f"{latency} ms", meta)
-                latency_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+                latency_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
                 latency_label.setAlignment(Qt.AlignmentFlag.AlignRight)
                 meta_layout.addWidget(latency_label)
             status = str(item.get("status", "") or "")
             if status:
                 status_label = CaptionLabel(status, meta)
-                status_label.setStyleSheet(
-                    "color: #10B981; background: rgba(16,185,129,0.12);"
-                    " border: 1px solid rgba(16,185,129,0.25); border-radius: 8px; padding: 1px 5px;"
-                )
+                status_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
                 status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
                 meta_layout.addWidget(status_label)
             row_layout.addWidget(meta, 0)
@@ -975,7 +958,7 @@ class TranslationPage(QWidget, Base):
         header_layout.addWidget(title)
         self.header_description_label = CaptionLabel("", header_text)
         self.header_description_label.setWordWrap(True)
-        self.header_description_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.header_description_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         header_layout.addWidget(self.header_description_label)
         self.head_hbox.addWidget(header_text, 1)
 
@@ -1055,7 +1038,7 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_progress_title,
             hero_card,
         )
-        hero_title.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        hero_title.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         hero_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hero_layout.addWidget(hero_title)
         self.ring = ProgressRing(hero_card)
@@ -1077,13 +1060,13 @@ class TranslationPage(QWidget, Base):
         breakdown.setContentsMargins(0, 0, 0, 0)
         breakdown.setSpacing(5)
         self.hero_translated_pill = self._make_status_pill(
-            strings.translation_page_translated_percent.format(PERCENT=0), "primary"
+            strings.translation_page_translated_percent.format(PERCENT=0)
         )
         self.hero_cache_pill = self._make_status_pill(
-            strings.translation_page_cache_unavailable, "cyan"
+            strings.translation_page_cache_unavailable
         )
         self.hero_pending_pill = self._make_status_pill(
-            strings.translation_page_pending_percent.format(PERCENT=0), "muted"
+            strings.translation_page_pending_percent.format(PERCENT=0)
         )
         breakdown.addWidget(self.hero_translated_pill, 1)
         breakdown.addWidget(self.hero_cache_pill, 1)
@@ -1093,10 +1076,10 @@ class TranslationPage(QWidget, Base):
         hero_meta = QHBoxLayout()
         hero_meta.setContentsMargins(0, 6, 0, 0)
         self.elapsed_label = CaptionLabel("", hero_card)
-        self.elapsed_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.elapsed_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.remaining_label = CaptionLabel("", hero_card)
         self.remaining_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.remaining_label.setTextColor(QColor("#4F46E5"), QColor("#818CF8"))
+        self.remaining_label.setTextColor(QColor("#53697F"), QColor("#B9C7D4"))
         hero_meta.addWidget(self.elapsed_label)
         hero_meta.addStretch(1)
         hero_meta.addWidget(self.remaining_label)
@@ -1115,14 +1098,14 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_throughput_title,
             throughput_card,
         )
-        throughput_title.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        throughput_title.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         throughput_header.addWidget(throughput_title)
         throughput_header.addStretch(1)
         self.waveform_peak_label = CaptionLabel(
             Localizer.get().translation_page_peak_speed.format(SPEED="0.00"),
             throughput_card,
         )
-        self.waveform_peak_label.setTextColor(QColor("#4F46E5"), QColor("#818CF8"))
+        self.waveform_peak_label.setTextColor(QColor("#53697F"), QColor("#B9C7D4"))
         throughput_header.addWidget(self.waveform_peak_label)
         throughput_layout.addLayout(throughput_header)
         self.waveform = WaveformWidget(throughput_card)
@@ -1145,7 +1128,7 @@ class TranslationPage(QWidget, Base):
             stat_layout.setContentsMargins(8, 5, 8, 5)
             stat_layout.setSpacing(1)
             stat_label = CaptionLabel(label, stat)
-            stat_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+            stat_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
             stat_value = StrongBodyLabel("—", stat)
             value_font = stat_value.font()
             value_font.setPixelSize(13)
@@ -1197,7 +1180,7 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_feed_mode,
             self.stream_feed_card,
         )
-        self.feed_mode_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.feed_mode_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         feed_header.addWidget(self.feed_mode_label)
         feed_layout.addLayout(feed_header)
         self.feed_items_container = QWidget(self.stream_feed_card)
@@ -1208,7 +1191,7 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_feed_empty,
             self.feed_items_container,
         )
-        self.feed_empty_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.feed_empty_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.feed_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.feed_items_layout.addWidget(self.feed_empty_label)
         feed_layout.addWidget(self.feed_items_container, 1)
@@ -1220,20 +1203,12 @@ class TranslationPage(QWidget, Base):
         self._update_dashboard_details()
 
     @staticmethod
-    def _make_status_pill(text: str, variant: str) -> CaptionLabel:
+    def _make_status_pill(text: str) -> CaptionLabel:
         """创建进度环下方的紧凑状态标签。"""
         label = CaptionLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        colors = {
-            "primary": ("#4F46E5", "rgba(99,102,241,0.12)"),
-            "cyan": ("#0891B2", "rgba(6,182,212,0.12)"),
-            "muted": ("#64748B", "rgba(148,163,184,0.10)"),
-        }
-        color, background = colors.get(variant, colors["muted"])
-        label.setStyleSheet(
-            f"color: {color}; background-color: {background}; border: 1px solid {background};"
-            " border-radius: 4px; padding: 2px 3px; font-size: 10px;"
-        )
+        label.setObjectName("translationStatusPill")
+        label.setTextColor(QColor("#40566B"), QColor("#C2CFDC"))
         return label
 
     # 底部
@@ -1270,7 +1245,7 @@ class TranslationPage(QWidget, Base):
             Localizer.get().translation_page_footer_backup,
             self.command_bar_card,
         )
-        self.footer_backup_label.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.footer_backup_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         self.command_bar_card.add_widget(self.footer_backup_label)
         self.command_bar_card.add_spacing(10)
         self.command_bar_card.add_widget(self.info_label)

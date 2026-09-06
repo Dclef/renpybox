@@ -19,7 +19,6 @@ from qfluentwidgets import FluentWindow
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import TitleLabel
 from qfluentwidgets import MessageBox
-from qfluentwidgets import PillPushButton
 from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
@@ -49,6 +48,7 @@ from module.Renpy.ProjectPaths import (
     translation_output_candidates,
 )
 from widget.CommandBarCard import CommandBarCard
+from widget.QuietPillButton import QuietPillButton
 from widget.SearchCard import SearchCard
 from widget.ThemeHelper import mark_app_page
 
@@ -170,7 +170,7 @@ class ProofreadingPage(QWidget, Base):
         )
         filter_layout.addWidget(self.inline_scope_label)
 
-        self.inline_filter_button = PillPushButton(
+        self.inline_filter_button = QuietPillButton(
             Localizer.get().proofreading_page_filter,
             self.inline_filter_bar,
         )
@@ -185,7 +185,7 @@ class ProofreadingPage(QWidget, Base):
         self.inline_search_edit.returnPressed.connect(self._on_inline_search_submitted)
         filter_layout.addWidget(self.inline_search_edit, 1)
 
-        self.inline_search_button = PillPushButton(
+        self.inline_search_button = QuietPillButton(
             Localizer.get().proofreading_page_search,
             self.inline_filter_bar,
         )

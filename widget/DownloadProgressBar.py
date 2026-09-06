@@ -24,11 +24,10 @@ class DownloadProgressBar(ProgressBar):
 
     BAR_HEIGHT = 8
 
-    # 靛蓝渐变与应用主色保持一致：浅色主题向深处收一档，深色主题向亮处提。
-    LIGHT_BAR_START = QColor("#6366F1")
-    LIGHT_BAR_END = QColor("#4338CA")
-    DARK_BAR_START = QColor("#A5B4FC")
-    DARK_BAR_END = QColor("#6366F1")
+    LIGHT_BAR_START = QColor("#657B91")
+    LIGHT_BAR_END = QColor("#53697F")
+    DARK_BAR_START = QColor("#B9C7D4")
+    DARK_BAR_END = QColor("#9DAFBE")
 
     LIGHT_TRACK = QColor(0, 0, 0, 26)
     DARK_TRACK = QColor(255, 255, 255, 32)

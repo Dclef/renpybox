@@ -106,7 +106,7 @@ class RenpyToolboxPage(Base, QWidget):
             header_text,
         )
         self.header_description.setWordWrap(True)
-        self.header_description.setTextColor(QColor("#64748B"), QColor("#94A3B8"))
+        self.header_description.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
         header_text_layout.addWidget(self.header_description)
         header_layout.addWidget(header_text, 1)
 

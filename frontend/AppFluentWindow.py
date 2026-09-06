@@ -46,9 +46,7 @@ class AppFluentWindow(FluentWindow, Base):
 
     APP_WIDTH: int = 1280
     APP_HEIGHT: int = 800
-    # 深靛蓝主题色将浅色模式按钮白字对比度提升至 6.29:1，完全满足并超越 WCAG AA
-    # 4.5:1 标准，彻底清除旧版 2.39:1 导致的发灰看不清问题。
-    APP_THEME_COLOR: str = "#4F46E5"
+    APP_THEME_COLOR: str = "#53697F"
     HOMEPAGE: str = " RenpyBox"
 
     @classmethod
@@ -72,7 +70,7 @@ class AppFluentWindow(FluentWindow, Base):
         self._is_closing = False
         # 关闭系统 Mica 透明材质，确保原型定义的双主题表面在不同 Windows 设置下稳定。
         self.setMicaEffectEnabled(False)
-        self.setCustomBackgroundColor("#F8FAFC", "#0B0F17")
+        self.setCustomBackgroundColor("#F5F6F8", "#12161D")
         # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
         self.notification = NotificationService(self)
         # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
@@ -252,18 +250,18 @@ class AppFluentWindow(FluentWindow, Base):
 
     def _apply_shell_theme(self) -> None:
         """同步窗口表面、导航背景和导航项颜色。"""
-        self.setCustomBackgroundColor("#F8FAFC", "#0B0F17")
+        self.setCustomBackgroundColor("#F5F6F8", "#12161D")
         panel = self.navigationInterface.panel
         panel.setStyleSheet(get_navigation_stylesheet())
 
         if isDarkTheme():
-            title_bg = "#0F1420"
-            title_fg = "#F1F5F9"
+            title_bg = "#181D25"
+            title_fg = "#EDF0F3"
             border = "rgba(255, 255, 255, 0.08)"
         else:
-            title_bg = "#F1F5F9"
-            title_fg = "#0F172A"
-            border = "rgba(15, 23, 42, 0.08)"
+            title_bg = "#EDF0F3"
+            title_fg = "#20262E"
+            border = "rgba(32, 38, 46, 0.08)"
         self.titleBar.setStyleSheet(
             f"FluentTitleBar {{ background-color: {title_bg}; border-bottom: 1px solid {border}; }}"
             f"QLabel#titleLabel {{ color: {title_fg}; font-size: 12px; font-weight: 700; }}"
@@ -271,8 +269,8 @@ class AppFluentWindow(FluentWindow, Base):
 
         light_text = QColor("#334155")
         dark_text = QColor("#CBD5E1")
-        light_indicator = QColor("#4F46E5")
-        dark_indicator = QColor("#6366F1")
+        light_indicator = QColor("#53697F")
+        dark_indicator = QColor("#9DAFBE")
         for item in panel.items.values():
             for widget in (item.widget, *item.widget.findChildren(QWidget)):
                 if hasattr(widget, "setTextColor"):
