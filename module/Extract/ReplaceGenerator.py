@@ -81,6 +81,67 @@ def _entry_has_replace_only_marker(lines: Sequence[str], old_index: int) -> bool
     return False
 
 
+def _remove_empty_translate_strings_blocks(file_path: Path, tl_name: str) -> bool:
+    """Remove empty ``translate <lang> strings:`` blocks left by deduplication.
+
+    Removing the last ``old/new`` pair from a block is a normal outcome of
+    cross-file deduplication.  Ren'Py still parses the remaining header and
+    rejects it, so the cleanup must happen after duplicate entries are removed.
+    """
+    header_re = re.compile(
+        rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
+    )
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines(
+            keepends=True
+        )
+    except Exception:
+        return False
+
+    output: list[str] = []
+    changed = False
+    index = 0
+    while index < len(lines):
+        match = header_re.match(lines[index].rstrip("\r\n"))
+        if not match:
+            output.append(lines[index])
+            index += 1
+            continue
+
+        base_indent = len(lines[index]) - len(lines[index].lstrip(" \t"))
+        end = index + 1
+        while end < len(lines):
+            candidate = lines[end]
+            if not candidate.strip():
+                end += 1
+                continue
+            indent = len(candidate) - len(candidate.lstrip(" \t"))
+            if indent > base_indent:
+                end += 1
+                continue
+            break
+
+        block_lines = lines[index + 1:end]
+        has_content = any(
+            line.strip() and not line.lstrip().startswith("#")
+            for line in block_lines
+        )
+        if has_content:
+            output.extend(lines[index:end])
+        else:
+            changed = True
+        index = end
+
+    if not changed:
+        return False
+
+    try:
+        file_path.write_text("".join(output), encoding="utf-8", newline="")
+    except Exception:
+        return False
+    return True
+
+
 def collect_translated_old_new_pairs(
     tl_dir: str | Path,
     *,
@@ -1506,6 +1567,13 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             continue
         rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
         changed = True
+
+    # Duplicate removal can leave a strings header with no active entries.
+    # Clean these blocks in the same pass, including official common/screens
+    # files that are intentionally part of the scan.
+    for rpy_file in scanned_files:
+        if _remove_empty_translate_strings_blocks(rpy_file, tl_name):
+            changed = True
 
     if not changed:
         return 0
