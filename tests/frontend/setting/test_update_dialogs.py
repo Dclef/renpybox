@@ -16,12 +16,12 @@ from qfluentwidgets import (
 )
 
 import frontend.Setting.ChangelogDialog as changelog_dialog_module
-from frontend.AppFluentWindow import AppFluentWindow
 from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from frontend.Setting.ChangelogDialog import ChangelogDialog
 from frontend.Setting.UpdateDetailsDialog import UpdateDetailsDialog
 from module.Localizer.Localizer import Localizer
+from widget.ThemeTokens import DARK, LIGHT, current_qfluent_accent_seed
 
 
 APP = QApplication.instance() or QApplication([])
@@ -160,21 +160,19 @@ def _contrast(fg: QColor, bg: QColor) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
-def test_primary_button_accent_contrast_is_tracked() -> None:
-    """明暗主题下的主按钮文字与常态、悬停底色均保持可读反差。"""
+def test_primary_button_default_accent_contrast_is_tracked() -> None:
+    """The QFluent primary state uses the WinUI accent with readable text."""
     previous_theme = qconfig.theme
     previous_color = QColor(qconfig.get(qconfig.themeColor))
-    setThemeColor(AppFluentWindow.APP_THEME_COLOR)
     try:
-        setTheme(Theme.DARK)
-        assert _contrast(ThemeColor.PRIMARY.color(), QColor("black")) >= 4.5
-        assert _contrast(ThemeColor.DARK_1.color(), QColor("black")) >= 4.5
-
-        setTheme(Theme.LIGHT)
-        light_contrast = _contrast(ThemeColor.PRIMARY.color(), QColor("white"))
-        assert light_contrast >= 4.5
-        assert _contrast(ThemeColor.LIGHT_1.color(), QColor("white")) >= 4.5
-        assert QColor(AppFluentWindow.APP_THEME_COLOR).saturationF() < 0.4
+        for theme, palette, foreground in (
+            (Theme.DARK, DARK, QColor("black")),
+            (Theme.LIGHT, LIGHT, QColor("white")),
+        ):
+            setTheme(theme)
+            setThemeColor(current_qfluent_accent_seed())
+            assert ThemeColor.PRIMARY.color().name() == QColor(palette.accent).name()
+            assert _contrast(ThemeColor.PRIMARY.color(), foreground) >= 4.5
     finally:
         setThemeColor(previous_color)
         setTheme(previous_theme)

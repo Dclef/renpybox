@@ -1,27 +1,28 @@
 from PyQt5.QtGui import QIcon
 from qfluentwidgets import PushButton, TogglePushButton, setCustomStyleSheet
 
+from widget.ThemeTokens import DARK, LIGHT
+
 
 class QuietPillButton(TogglePushButton):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         styles = []
-        for text, muted, selected, hover, accent in (
-            ("#20262E", "#75808B", "#E4E9EE", "#EDF0F3", "#53697F"),
-            ("#E8ECF0", "#84909D", "#303B47", "#242C36", "#9DAFBE"),
-        ):
+        for palette in (LIGHT, DARK):
             styles.append(
-                f"QuietPillButton {{ color: {text}; background: transparent;"
-                " border: 1px solid transparent; border-radius: 14px; }"
-                f"QuietPillButton:hover {{ color: {text}; background: {hover}; }}"
+                f"QuietPillButton {{ color: {palette.text_primary}; background: transparent;"
+                " border: 1px solid transparent; border-radius: 6px; }"
+                f"QuietPillButton:hover {{ color: {palette.text_primary};"
+                f" background: {palette.surface_hover}; }}"
                 f"QuietPillButton:checked, QuietPillButton:checked:hover {{"
-                f" color: {text}; background: {selected}; border: 1px solid transparent;"
-                f" border-bottom: 2px solid {accent}; }}"
+                f" color: {palette.text_primary}; background: {palette.surface_pressed};"
+                f" border: 1px solid transparent; border-bottom: 2px solid {palette.accent}; }}"
                 f"QuietPillButton:pressed, QuietPillButton:checked:pressed {{"
-                f" color: {text}; background: {selected}; }}"
-                f"QuietPillButton:focus {{ border: 1px solid {accent}; }}"
+                f" color: {palette.text_primary}; background: {palette.surface_pressed}; }}"
+                f"QuietPillButton:focus {{ border: 1px solid {palette.accent}; }}"
                 f"QuietPillButton:disabled, QuietPillButton:checked:disabled {{"
-                f" color: {muted}; background: transparent; border: 1px solid transparent; }}"
+                f" color: {palette.text_disabled}; background: transparent;"
+                " border: 1px solid transparent; }"
             )
         setCustomStyleSheet(self, *styles)
 

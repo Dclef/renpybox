@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QBoxLayout,
@@ -67,7 +66,7 @@ from module.Workbench.WorkbenchData import (
     normalize_worldbook,
     parse_workbench_exchange,
 )
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget, set_text_role
 from widget.QuietPillButton import QuietPillButton
 
 
@@ -145,7 +144,7 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         self.workspace = QWidget(self)
         self.workspace.setObjectName("workbenchWorkspace")
-        self.workspace.setMaximumWidth(1024)
+        self.workspace.setMaximumWidth(1400)
         self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         workspace_layout = QVBoxLayout(self.workspace)
         workspace_layout.setContentsMargins(0, 0, 0, 0)
@@ -168,7 +167,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         header_text_layout.addWidget(title)
         sub = CaptionLabel(Localizer.get().workbench_manage_worldbuilding_character_profiles_prompt_context_current)
         sub.setWordWrap(True)
-        sub.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(sub)
         header_text_layout.addWidget(sub)
         header_layout.addWidget(header_text, 1)
         self.header_actions = QHBoxLayout()

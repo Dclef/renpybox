@@ -38,7 +38,6 @@ from qfluentwidgets import (
     LineEdit,
     CheckBox,
     TransparentToolButton,
-    isDarkTheme,
     qconfig,
     StrongBodyLabel,
 )
@@ -49,7 +48,10 @@ from widget.ItemCard import ItemCard
 from widget.ThemeHelper import (
     mark_toolbox_widget,
     mark_toolbox_scroll_area,
+    set_semantic_status,
+    set_text_role,
 )
+from widget.ThemeTokens import current_palette
 from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy.ProjectPaths import (
@@ -144,7 +146,7 @@ class YiJianFanyiPage(Base, QWidget):
         outer.setSpacing(0)
         outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.workspace = QWidget(self)
-        self.workspace.setMaximumWidth(1024)
+        self.workspace.setMaximumWidth(1400)
         self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         outer.addWidget(self.workspace, 1)
         self.main_layout = QVBoxLayout(self.workspace)
@@ -315,32 +317,21 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _step_bar_style(self) -> str:
         """返回步骤页签容器的主题表面样式。"""
-        if isDarkTheme():
-            background = "#1B212A"
-            border = "rgba(255, 255, 255, 0.08)"
-        else:
-            background = "#FFFFFF"
-            border = "rgba(32, 38, 46, 0.10)"
+        palette = current_palette()
         return (
-            f"QWidget#onekeyStepBar {{ background-color: {background}; "
-            f"border: none; border-bottom: 1px solid {border}; "
+            f"QWidget#onekeyStepBar {{ background-color: {palette.surface}; "
+            f"border: none; border-bottom: 1px solid {palette.divider}; "
             "border-top-left-radius: 8px; border-top-right-radius: 8px; }"
         )
 
     def _step_indicator_style(self, state: str) -> str:
         """返回平铺页签的主题三态样式。"""
-        if isDarkTheme():
-            accent = "#B9C7D4"
-            active_background = "rgba(157, 175, 190, 0.16)"
-            text = "#E8ECF0"
-            muted = "#A8B4C1"
-            hover = "rgba(255, 255, 255, 0.05)"
-        else:
-            accent = "#53697F"
-            active_background = "rgba(83, 105, 127, 0.10)"
-            text = "#20262E"
-            muted = "#586574"
-            hover = "rgba(32, 38, 46, 0.04)"
+        palette = current_palette()
+        accent = palette.accent
+        active_background = palette.accent_surface
+        text = palette.text_primary
+        muted = palette.text_secondary
+        hover = palette.surface_hover
 
         if state == "active":
             return (
@@ -364,10 +355,10 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _step_indicator_icon(self, index: int, state: str) -> QIcon:
         """绘制 20px 步骤圆点，避免图标字体在不同系统下产生偏差。"""
-        dark = isDarkTheme()
-        accent = QColor("#9DAFBE" if dark else "#53697F")
-        muted = QColor("#A8B4C1" if dark else "#586574")
-        outline = QColor("#475569" if dark else "#CBD5E1")
+        palette = current_palette()
+        accent = QColor(palette.accent)
+        muted = QColor(palette.text_secondary)
+        outline = QColor(palette.text_disabled)
 
         pixmap = QPixmap(20, 20)
         pixmap.fill(Qt.GlobalColor.transparent)
@@ -376,9 +367,9 @@ class YiJianFanyiPage(Base, QWidget):
 
         if state == "done":
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#3D6454"))
+            painter.setBrush(QColor(palette.success))
             painter.drawEllipse(1, 1, 18, 18)
-            pen = QPen(QColor("#FFFFFF"))
+            pen = QPen(QColor(palette.on_accent))
             pen.setWidthF(1.8)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -389,7 +380,7 @@ class YiJianFanyiPage(Base, QWidget):
             if state == "active":
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(accent)
-                number_color = QColor("#12161D" if dark else "#FFFFFF")
+                number_color = QColor(palette.on_accent)
             else:
                 pen = QPen(outline)
                 pen.setWidthF(1.2)
@@ -490,7 +481,7 @@ class YiJianFanyiPage(Base, QWidget):
         tip_text = CaptionLabel(
             Localizer.get().onekey_1_select_game_folder_contains_game_subfolder
         )
-        tip_text.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(tip_text)
         tip_text.setWordWrap(True)
         
         # 游戏路径输入框（支持直接粘贴）
@@ -548,7 +539,7 @@ class YiJianFanyiPage(Base, QWidget):
         )
         incremental_desc.setWordWrap(True)
         incremental_desc.setContentsMargins(28, 0, 0, 0)
-        incremental_desc.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(incremental_desc)
         old_trans_layout.addWidget(incremental_desc)
 
         self.full_extract_rb = CheckBox(
@@ -564,7 +555,7 @@ class YiJianFanyiPage(Base, QWidget):
         )
         full_extract_desc.setWordWrap(True)
         full_extract_desc.setContentsMargins(28, 0, 0, 0)
-        full_extract_desc.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(full_extract_desc)
         old_trans_layout.addWidget(full_extract_desc)
         
         tip_label = CaptionLabel(
@@ -706,7 +697,7 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_click_extract_text_begin_existing_translations_preserved
         )
         self.quick_tip_label.setWordWrap(True)
-        self.quick_tip_label.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(self.quick_tip_label)
         page.footer_layout.insertWidget(0, self.quick_tip_label)
         
         # 跳过抽取按钮（已有翻译时显示）
@@ -750,6 +741,7 @@ class YiJianFanyiPage(Base, QWidget):
         text = text.strip()
         if not text:
             self.path_status_label.setText("")
+            set_semantic_status(self.path_status_label, None)
             self.step1_next_btn.setEnabled(False)
             self.old_translation_card.setVisible(False)
             self.has_old_translation = False
@@ -769,7 +761,7 @@ class YiJianFanyiPage(Base, QWidget):
                 self.path_status_label.setText(
                     Localizer.get().onekey_valid_ren_py_game_folder_detected
                 )
-                self.path_status_label.setStyleSheet("color: #27ae60;")
+                set_semantic_status(self.path_status_label, "success")
                 self.step1_next_btn.setEnabled(True)
                 # 检测旧翻译
                 self._check_old_translation(self.game_dir)
@@ -777,7 +769,7 @@ class YiJianFanyiPage(Base, QWidget):
                 self.path_status_label.setText(
                     Localizer.get().onekey_no_game_subfolder_found_may_not_ren
                 )
-                self.path_status_label.setStyleSheet("color: #e67e22;")
+                set_semantic_status(self.path_status_label, "warning")
                 # 仍然允许继续
                 self.game_dir = str(selected_paths.project_root if selected_paths else Path(text))
                 self.game_path = self.game_dir
@@ -792,7 +784,7 @@ class YiJianFanyiPage(Base, QWidget):
             self.path_status_label.setText(
                 Localizer.get().onekey_game_file_selected
             )
-            self.path_status_label.setStyleSheet("color: #27ae60;")
+            set_semantic_status(self.path_status_label, "success")
             self.step1_next_btn.setEnabled(True)
             # 检测旧翻译
             self._check_old_translation(self.game_dir)
@@ -800,7 +792,7 @@ class YiJianFanyiPage(Base, QWidget):
             self.path_status_label.setText(
                 Localizer.get().onekey_path_does_not_exist
             )
-            self.path_status_label.setStyleSheet("color: #e74c3c;")
+            set_semantic_status(self.path_status_label, "error")
             self.step1_next_btn.setEnabled(False)
             self.old_translation_card.setVisible(False)
             self.has_old_translation = False
@@ -2067,9 +2059,9 @@ class YiJianFanyiPage(Base, QWidget):
         configure_tl_translation_mode(config)
         config.save()
         
-        # 根据主题选择样式颜色
-        code_bg = "#2d2d2d" if isDarkTheme() else "#f5f5f5"
-        hint_color = "#aaa" if isDarkTheme() else "#666"
+        palette = current_palette()
+        code_bg = palette.surface_subtle
+        hint_color = palette.text_secondary
         
         msg_box = MessageBox(
             Localizer.get().onekey_translation_folders,
@@ -2435,7 +2427,7 @@ class YiJianFanyiPage(Base, QWidget):
             self.step4_status.setText(
                 Localizer.get().onekey_translation_complete_continue_post_processing_apply_game
             )
-            self.step4_status.setStyleSheet("color: #27ae60;")
+            set_semantic_status(self.step4_status, "success")
             self.start_trans_btn.setText(
                 Localizer.get().onekey_translate_again
             )
@@ -2501,14 +2493,14 @@ class YiJianFanyiPage(Base, QWidget):
             self.step4_status.setText(
                 Localizer.get().onekey_ready_translate_2
             )
-            self.step4_status.setStyleSheet("color: #27ae60;")
+            set_semantic_status(self.step4_status, "success")
             self.start_trans_btn.setEnabled(True)
         else:
             self.step4_status.setText(
                 Localizer.get().onekey_complete_following_setup_first
                 + "\n".join(missing)
             )
-            self.step4_status.setStyleSheet("color: #e67e22;")
+            set_semantic_status(self.step4_status, "warning")
             self.start_trans_btn.setEnabled(False)
         return ready
     
@@ -2620,9 +2612,9 @@ class YiJianFanyiPage(Base, QWidget):
             )
             return
         
-        # 确认对话框 - 根据主题选择样式颜色
-        code_bg = "#2d2d2d" if isDarkTheme() else "#f5f5f5"
-        warn_color = "#e67e22" if isDarkTheme() else "#d35400"
+        palette = current_palette()
+        code_bg = palette.surface_subtle
+        warn_color = palette.warning
         
         msg_box = MessageBox(
             Localizer.get().onekey_confirm_translation_application,
