@@ -72,6 +72,7 @@ from widget.ThemeHelper import (
     mark_toolbox_scroll_area,
     mark_toolbox_widget,
 )
+from widget.ThemeTokens import current_palette
 
 
 # AgentRequester 目前没有导出格式白名单；能力约束暂时保留在 UI，后续任务再下移。
@@ -576,15 +577,11 @@ class AgentMessageWidget(QWidget):
 
     def _apply_document_surface_style(self) -> None:
         """助手文档面板使用 HTML 同级的内嵌表面，随主题切换。"""
-        if isDarkTheme():
-            background = "#12161D"
-            border = "rgba(255,255,255,0.10)"
-        else:
-            background = "#F5F6F8"
-            border = "rgba(0,0,0,0.10)"
+        palette = current_palette()
         self.document_surface.setStyleSheet(
             "QFrame#agentAssistantDocument {"
-            f"background-color: {background}; border: 1px solid {border}; "
+            f"background-color: {palette.surface_subtle}; "
+            f"border: 1px solid {palette.border}; "
             "border-radius: 8px; }"
         )
 
@@ -1583,30 +1580,20 @@ class AgentEmptyState(QWidget):
 
     def _apply_preflight_theme(self) -> None:
         """让项目与诊断状态在明暗主题下保持克制且可读。"""
-        if isDarkTheme():
-            self.preflight_project_label.setStyleSheet(
-                "background: rgba(157, 175, 190, 0.14); color: #C2CFDC; "
-                "border: 1px solid rgba(157, 175, 190, 0.24); "
-                "border-radius: 4px; padding: 1px 6px;"
-            )
-            self.preflight_path_label.setStyleSheet("color: #A8B4C1;")
-            colors = {
-                "warning": ("rgba(245, 158, 11, 0.12)", "#FBBF24"),
-                "success": ("rgba(16, 185, 129, 0.12)", "#34D399"),
-                "neutral": ("rgba(148, 163, 184, 0.10)", "#A8B4C1"),
-            }
-        else:
-            self.preflight_project_label.setStyleSheet(
-                "background: rgba(83, 105, 127, 0.08); color: #53697F; "
-                "border: 1px solid rgba(83, 105, 127, 0.18); "
-                "border-radius: 4px; padding: 1px 6px;"
-            )
-            self.preflight_path_label.setStyleSheet("color: #586574;")
-            colors = {
-                "warning": ("rgba(245, 158, 11, 0.12)", "#B45309"),
-                "success": ("rgba(16, 185, 129, 0.12)", "#047857"),
-                "neutral": ("rgba(148, 163, 184, 0.12)", "#586574"),
-            }
+        palette = current_palette()
+        self.preflight_project_label.setStyleSheet(
+            f"background: {palette.accent_surface}; color: {palette.accent}; "
+            f"border: 1px solid {palette.border}; "
+            "border-radius: 4px; padding: 1px 6px;"
+        )
+        self.preflight_path_label.setStyleSheet(
+            f"color: {palette.text_secondary};"
+        )
+        colors = {
+            "warning": (palette.surface_pressed, palette.warning),
+            "success": (palette.surface_pressed, palette.success),
+            "neutral": (palette.surface_subtle, palette.text_secondary),
+        }
         for value_label in self.preflight_value_labels.values():
             background, foreground = colors.get(
                 str(value_label.property("tone") or "neutral"),
@@ -2023,34 +2010,20 @@ class AgentPage(Base, QWidget):
 
     def _apply_composer_style(self) -> None:
         """输入框融入输入面板，聚焦时再用主色描边。"""
-        accent = get_theme_accent_color().name()
+        tokens = current_palette()
         palette = self.input_box.palette()
-        if isDarkTheme():
-            palette.setColor(QPalette.Text, QColor("#f2f2f2"))
-            palette.setColor(QPalette.PlaceholderText, QColor("#9a9a9a"))
-            self.input_box.setStyleSheet(
-                "QPlainTextEdit#agentInput {"
-                " background: transparent;"
-                " border: 1px solid transparent;"
-                " color: #f2f2f2;"
-                " border-radius: 10px; padding: 8px 10px;"
-                f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
-            )
-            self.hint_label.setStyleSheet("color: #8f8f8f;")
-            self.status_label.setStyleSheet("color: #b8b8b8;")
-        else:
-            palette.setColor(QPalette.Text, QColor("#1a1a1a"))
-            palette.setColor(QPalette.PlaceholderText, QColor("#737373"))
-            self.input_box.setStyleSheet(
-                "QPlainTextEdit#agentInput {"
-                " background: transparent;"
-                " border: 1px solid transparent;"
-                " color: #1a1a1a;"
-                " border-radius: 10px; padding: 8px 10px;"
-                f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {accent}; }}"
-            )
-            self.hint_label.setStyleSheet("color: #6f6f6f;")
-            self.status_label.setStyleSheet("color: #555555;")
+        palette.setColor(QPalette.Text, QColor(tokens.text_primary))
+        palette.setColor(QPalette.PlaceholderText, QColor(tokens.text_disabled))
+        self.input_box.setStyleSheet(
+            "QPlainTextEdit#agentInput {"
+            " background: transparent;"
+            " border: 1px solid transparent;"
+            f" color: {tokens.text_primary};"
+            " border-radius: 8px; padding: 8px 10px;"
+            f"}} QPlainTextEdit#agentInput:focus {{ border: 1px solid {tokens.accent}; }}"
+        )
+        self.hint_label.setStyleSheet(f"color: {tokens.text_disabled};")
+        self.status_label.setStyleSheet(f"color: {tokens.text_secondary};")
         self.input_box.setPalette(palette)
 
     def _autosize_input(self) -> None:

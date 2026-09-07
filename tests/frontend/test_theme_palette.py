@@ -4,17 +4,26 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, qInstallMessageHandler
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QButtonGroup, QLabel, QVBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, PrimaryPushButton, Theme, qconfig, setTheme, setThemeColor
+from qfluentwidgets import (
+    CaptionLabel,
+    PrimaryPushButton,
+    Theme,
+    ThemeColor,
+    qconfig,
+    setTheme,
+    setThemeColor,
+)
 
 from frontend.AppFluentWindow import AppFluentWindow
 from frontend.TranslationPage import TranslationPage
 from widget.QuietPillButton import QuietPillButton
 from widget.SearchCard import SearchCard
 from widget.ThemeHelper import get_current_stylesheet, mark_app_page
+from widget.ThemeTokens import DARK, LIGHT, current_qfluent_accent_seed
 
 
 APP = QApplication.instance() or QApplication([])
@@ -87,7 +96,8 @@ def test_quiet_filters_preserve_selection_and_theme_contrast(initial_theme) -> N
             selected = next(button for button in buttons if button.isChecked())
             background = selected.grab().toImage().pixelColor(6, selected.height() // 2)
             foreground = selected.palette().color(QPalette.ButtonText)
-            assert background.name() == ("#303b47" if theme == Theme.DARK else "#e4e9ee")
+            palette = DARK if theme == Theme.DARK else LIGHT
+            assert background.name() == QColor(palette.surface_pressed).name()
             assert contrast(foreground, background) >= 4.5
             assert (foreground.lightnessF() > background.lightnessF()) == (theme == Theme.DARK)
             assert background.saturationF() < 0.4
@@ -103,6 +113,38 @@ def test_quiet_filters_preserve_selection_and_theme_contrast(initial_theme) -> N
     finally:
         window.close()
         window.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("theme", "palette"),
+    [(Theme.LIGHT, LIGHT), (Theme.DARK, DARK)],
+)
+def test_qfluent_seed_matches_visual_accent(theme, palette) -> None:
+    setTheme(theme)
+    setThemeColor(current_qfluent_accent_seed())
+
+    assert ThemeColor.PRIMARY.color().name() == QColor(palette.accent).name()
+
+
+def test_quiet_pill_stylesheet_has_no_qt_parse_errors() -> None:
+    messages: list[str] = []
+    previous_handler = qInstallMessageHandler(
+        lambda _message_type, _context, message: messages.append(message)
+    )
+    button = None
+    try:
+        button = QuietPillButton("Filter")
+        button.show()
+        for theme in (Theme.LIGHT, Theme.DARK):
+            setTheme(theme)
+            APP.processEvents()
+    finally:
+        qInstallMessageHandler(previous_handler)
+        if button is not None:
+            button.close()
+            button.deleteLater()
+
+    assert not any("Could not parse stylesheet" in message for message in messages)
 
 
 @pytest.mark.parametrize("theme", [Theme.DARK, Theme.LIGHT])

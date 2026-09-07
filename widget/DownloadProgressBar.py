@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import ProgressBar
 from qfluentwidgets import isDarkTheme
 
+from widget.ThemeTokens import DARK, LIGHT, current_palette
+
 
 class DownloadProgressBar(ProgressBar):
     """带圆角轨道、渐变填充与流光动效的下载进度条。
@@ -24,10 +26,10 @@ class DownloadProgressBar(ProgressBar):
 
     BAR_HEIGHT = 8
 
-    LIGHT_BAR_START = QColor("#657B91")
-    LIGHT_BAR_END = QColor("#53697F")
-    DARK_BAR_START = QColor("#B9C7D4")
-    DARK_BAR_END = QColor("#9DAFBE")
+    LIGHT_BAR_START = QColor(LIGHT.accent)
+    LIGHT_BAR_END = QColor(LIGHT.accent)
+    DARK_BAR_START = QColor(DARK.accent)
+    DARK_BAR_END = QColor(DARK.accent)
 
     LIGHT_TRACK = QColor(0, 0, 0, 26)
     DARK_TRACK = QColor(255, 255, 255, 32)
@@ -112,13 +114,9 @@ class DownloadProgressBar(ProgressBar):
         bar_path.addRoundedRect(bar_rect, radius, radius)
 
         if self.isError():
-            painter.setBrush(
-                QColor(255, 153, 164) if isDarkTheme() else QColor(196, 43, 28)
-            )
+            painter.setBrush(QColor(current_palette().error))
         elif self.isPaused():
-            painter.setBrush(
-                QColor(252, 225, 0) if isDarkTheme() else QColor(157, 93, 0)
-            )
+            painter.setBrush(QColor(current_palette().warning))
         else:
             painter.setBrush(self._bar_gradient(bar_rect.width()))
         painter.drawPath(bar_path)

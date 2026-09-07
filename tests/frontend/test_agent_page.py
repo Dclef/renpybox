@@ -41,6 +41,7 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from base.BaseLanguage import BaseLanguage
 from module.Renpy.ProjectPaths import RenpyProjectPaths
+from widget.ThemeTokens import DARK
 
 
 APP = QApplication.instance() or QApplication([])
@@ -1020,8 +1021,8 @@ def test_agent_page_dark_styles_avoid_black_on_black(monkeypatch) -> None:
     assert "background: transparent" in page.input_box.styleSheet()
     assert "border: 1px solid transparent" in page.input_box.styleSheet()
     assert "rgba(0,0,0,0.30)" not in page.input_box.styleSheet()
-    assert page.input_box.palette().color(QPalette.Text).name() == "#f2f2f2"
-    assert page.input_box.palette().color(QPalette.PlaceholderText).name() == "#9a9a9a"
+    assert page.input_box.palette().color(QPalette.Text).name() == QColor(DARK.text_primary).name()
+    assert page.input_box.palette().color(QPalette.PlaceholderText).name() == QColor(DARK.text_disabled).name()
     assert page.settings_menu.minimumWidth() >= 200
 
     # Markdown 正文字色必须显式浅色（暗色下系统调色板是黑色）。

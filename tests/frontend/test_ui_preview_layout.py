@@ -8,10 +8,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QBoxLayout
 from PyQt5.QtWidgets import QWidget
-from PyQt5.QtGui import QFontDatabase
+from PyQt5.QtGui import QColor, QFontDatabase
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
-from qfluentwidgets import SingleDirectionScrollArea, Theme, setTheme
+from qfluentwidgets import SingleDirectionScrollArea, Theme, ThemeColor, qconfig, setTheme
 
 from base.BaseLanguage import BaseLanguage
 from frontend.Agent.AgentPage import AgentEmptyState, AgentPage
@@ -26,6 +26,7 @@ from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 from module.Workbench.WorkbenchData import create_default_character_card
 from widget import ThemeHelper
+from widget.ThemeTokens import DARK, LIGHT
 
 
 APP = QApplication.instance() or QApplication([])
@@ -58,7 +59,7 @@ def test_onekey_preparation_reflows_and_preserves_controls(monkeypatch, language
     page.show()
     APP.processEvents()
 
-    assert page.workspace.width() == 1024
+    assert page.workspace.width() == 1400
     assert page.workspace.x() == (page.width() - page.workspace.width()) // 2
     assert page.step1_columns.direction() == QBoxLayout.LeftToRight
     assert page.project_card.y() == page.language_card.y()
@@ -120,7 +121,7 @@ def test_toolbox_workspace_and_search_reflow(monkeypatch, language) -> None:
     APP.processEvents()
     page._update_card_widths()
 
-    assert page.workspace.width() == 1024
+    assert page.workspace.width() == 1400
     assert page.workspace.x() == (page.width() - page.workspace.width()) // 2
     assert page.header_layout.direction() == QBoxLayout.LeftToRight
 
@@ -279,8 +280,6 @@ def test_workbench_panels_reflow_without_losing_long_content(monkeypatch, langua
 
 @pytest.mark.parametrize("theme", [Theme.DARK, Theme.LIGHT])
 def test_agent_empty_scroll_surface_matches_theme(monkeypatch, theme) -> None:
-    from qfluentwidgets import qconfig
-
     previous_theme = qconfig.theme
     previous_stylesheet = APP.styleSheet()
     monkeypatch.setattr(Config, "load", lambda self, path=None: self)
@@ -293,8 +292,8 @@ def test_agent_empty_scroll_surface_matches_theme(monkeypatch, theme) -> None:
         state.show()
         APP.processEvents()
         surface = state.content_scroll.viewport().grab().toImage()
-        expected = "#12161d" if theme == Theme.DARK else "#f5f6f8"
-        assert surface.pixelColor(2, 2).name() == expected
+        palette = DARK if theme == Theme.DARK else LIGHT
+        assert surface.pixelColor(2, 2).name() == QColor(palette.background).name()
     finally:
         if state is not None:
             state.close()
@@ -400,7 +399,7 @@ def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:
     feed = page.findChild(QWidget, "translationStreamFeedCard")
     footer = page.findChild(QWidget, "translationFooterBar")
     assert hero is not None and throughput is not None and feed is not None and footer is not None
-    assert page.workspace.width() == 1024
+    assert page.workspace.width() == 1400
     assert page.workspace.x() == (page.width() - page.workspace.width()) // 2
     assert hero.width() < throughput.width()
     assert feed.height() >= 168
@@ -500,16 +499,23 @@ def test_workbench_prompt_preview_uses_three_columns(monkeypatch) -> None:
     window.close()
 
 
-def test_platform_active_surface_uses_subtle_accent(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("theme", "palette", "expected_alpha"),
+    [
+        (Theme.DARK, DARK, 28),
+        (Theme.LIGHT, LIGHT, 18),
+    ],
+)
+def test_platform_active_surface_uses_subtle_accent(theme, palette, expected_alpha) -> None:
     """接口激活态应为弱主题色表面，而不是整张实心主按钮色。"""
-    monkeypatch.setattr(ThemeHelper, "isDarkTheme", lambda: True)
-    dark_background = ThemeHelper.get_theme_active_card_background_color()
-    dark_foreground = ThemeHelper.get_theme_active_card_foreground_color()
-    assert 0 < dark_background.alpha() < 64
-    assert dark_foreground.name().upper() == "#E8ECF0"
+    previous_theme = qconfig.theme
+    try:
+        setTheme(theme)
+        background = ThemeHelper.get_theme_active_card_background_color()
+        foreground = ThemeHelper.get_theme_active_card_foreground_color()
 
-    monkeypatch.setattr(ThemeHelper, "isDarkTheme", lambda: False)
-    light_background = ThemeHelper.get_theme_active_card_background_color()
-    light_foreground = ThemeHelper.get_theme_active_card_foreground_color()
-    assert 0 < light_background.alpha() < 64
-    assert light_foreground.name().upper() == "#20262E"
+        assert background.alpha() == expected_alpha
+        assert background.name() == ThemeColor.PRIMARY.color().name()
+        assert foreground.name() == QColor(palette.text_primary).name()
+    finally:
+        setTheme(previous_theme)
