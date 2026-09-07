@@ -1885,6 +1885,38 @@ def test_static_scan_routes_screen_label_literal_to_standard_tl(tmp_path):
     assert 'new "Rank: [who.rank]"' in output
 
 
+def test_static_supplement_sees_official_screens_strings(tmp_path):
+    from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+    tl_dir = tmp_path / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    screens = tl_dir / "screens.rpy"
+    screens.write_text(
+        "translate chinese strings:\n"
+        '    old "Official screen text"\n'
+        '    new "官方屏幕文本"\n',
+        encoding="utf-8",
+    )
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    extractor.logger = types.SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    added = extractor._append_static_supplement_entries(
+        tmp_path,
+        tl_dir,
+        "chinese",
+        candidates={
+            "Official screen text": "screens.rpy",
+            "Extra screen text": "screens.rpy",
+        },
+    )
+
+    assert added == 1
+    content = screens.read_text(encoding="utf-8")
+    assert content.count('old "Official screen text"') == 1
+    assert content.count('old "Extra screen text"') == 1
+
+
 def test_menu_string_is_incremental_even_when_dialogue_block_exists(tmp_path):
     project = tmp_path / "project"
     source = project / "game" / "src" / "plot" / "chapter_beta.rpy"
@@ -1978,6 +2010,32 @@ def test_dedupe_string_translations_removes_cross_file_duplicate_old(tmp_path):
     assert 'old "Virtual (first-time)."' in first.read_text(encoding="utf-8")
     assert 'old "Virtual (first-time)."' not in second.read_text(encoding="utf-8")
     assert 'old "Virtual (first-time)."' not in work.read_text(encoding="utf-8")
+
+
+def test_dedupe_removes_strings_header_left_empty_after_duplicate_removal(tmp_path):
+    from module.Extract.ReplaceGenerator import dedupe_string_translations
+
+    tl = tmp_path / "tl" / "chinese"
+    first = tl / "a.rpy"
+    duplicate_only = tl / "screens.rpy"
+    tl.mkdir(parents=True)
+    first.write_text(
+        "translate chinese strings:\n"
+        '    old "Shared"\n'
+        '    new "共享"\n',
+        encoding="utf-8",
+    )
+    duplicate_only.write_text(
+        "translate chinese strings:\n\n"
+        '    old "Shared"\n'
+        '    new "重复"\n',
+        encoding="utf-8",
+    )
+
+    removed = dedupe_string_translations(tl, "chinese")
+
+    assert removed == 1
+    assert "translate chinese strings:" not in duplicate_only.read_text(encoding="utf-8")
 
 
 def test_dedupe_prefers_official_entry_over_earlier_replace_only_entry(tmp_path):
