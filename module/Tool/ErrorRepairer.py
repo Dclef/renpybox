@@ -52,6 +52,7 @@ class ErrorRepairer:
     SAFE_LINT_FIX_TYPES = frozenset({
         "parse_error",
         "syntax_error",
+        "empty_block",
         "indentation_mismatch",
         "indentation_level",
     })
@@ -496,6 +497,94 @@ class ErrorRepairer:
 
         return errors
 
+    def _scan_empty_translate_blocks(self, lines: List[str]) -> List[Dict]:
+        """报告没有任何可执行语句的 ``translate ... strings`` 块。"""
+        errors: list[Dict] = []
+        header_re = re.compile(
+            r"^(?P<indent>[ \t]*)translate\s+(?P<language>[A-Za-z0-9_]+)"
+            r"\s+strings\s*:\s*$"
+        )
+        index = 0
+        while index < len(lines):
+            content, _ = self._split_line_ending(lines[index])
+            match = header_re.match(content)
+            if not match:
+                index += 1
+                continue
+
+            base_indent = len(match.group("indent"))
+            end = index + 1
+            while end < len(lines):
+                candidate, _ = self._split_line_ending(lines[end])
+                if not candidate.strip():
+                    end += 1
+                    continue
+                candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                if candidate_indent > base_indent:
+                    end += 1
+                    continue
+                break
+
+            has_content = any(
+                self._split_line_ending(line)[0].strip()
+                and not self._split_line_ending(line)[0].lstrip().startswith("#")
+                for line in lines[index + 1:end]
+            )
+            if not has_content:
+                errors.append({
+                    "line": index + 1,
+                    "type": "empty_block",
+                    "message": "translate strings 语句缺少非空内容块",
+                    "content": content.strip(),
+                    "language": match.group("language"),
+                })
+            index = end
+
+        return errors
+
+    def _remove_empty_translate_blocks(self, lines: List[str]) -> tuple[List[str], int]:
+        """删除空的 ``translate <lang> strings:`` 块并返回删除数量。"""
+        header_re = re.compile(
+            r"^(?P<indent>[ \t]*)translate\s+(?P<language>[A-Za-z0-9_]+)"
+            r"\s+strings\s*:\s*$"
+        )
+        output: list[str] = []
+        removed = 0
+        index = 0
+        while index < len(lines):
+            content, _ = self._split_line_ending(lines[index])
+            match = header_re.match(content)
+            if not match:
+                output.append(lines[index])
+                index += 1
+                continue
+
+            base_indent = len(match.group("indent"))
+            end = index + 1
+            while end < len(lines):
+                candidate, _ = self._split_line_ending(lines[end])
+                if not candidate.strip():
+                    end += 1
+                    continue
+                candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                if candidate_indent > base_indent:
+                    end += 1
+                    continue
+                break
+
+            has_content = any(
+                self._split_line_ending(line)[0].strip()
+                and not self._split_line_ending(line)[0].lstrip().startswith("#")
+                for line in lines[index + 1:end]
+            )
+            if has_content:
+                output.extend(lines[index:end])
+            else:
+                removed += 1
+            index = end
+
+        return output, removed
+
     def _scan_translation_issues(self, lines: List[str], file_path: str) -> List[Dict]:
         """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
         errors: list[Dict] = []
@@ -737,6 +826,9 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
+            if check_syntax:
+                errors.extend(self._scan_empty_translate_blocks(lines))
+
             if check_translation_issues:
                 errors.extend(self._scan_translation_issues(lines, file_path))
 
@@ -885,6 +977,11 @@ class ErrorRepairer:
                         fix_count += 1
 
                 new_lines.append(new_line)
+
+            # Empty strings blocks are always safe to remove and are not tied
+            # to any optional quote/indent repair switch.
+            new_lines, removed_blocks = self._remove_empty_translate_blocks(new_lines)
+            fix_count += removed_blocks
 
             # 写回文件
             if fix_count > 0:
@@ -1201,6 +1298,12 @@ class ErrorRepairer:
                         lines[candidate_idx] = repaired_line
                         changed = True
                         break
+            elif error_type == "empty_block":
+                # Removing all empty strings blocks in one pass avoids the
+                # Lint line-number drift that would otherwise require one
+                # iteration per block.
+                lines, removed_blocks = self._remove_empty_translate_blocks(lines)
+                changed = removed_blocks > 0
             elif error_type in {"indentation_mismatch", "indentation_level"}:
                 candidate_indices = [idx] + ([idx - 1] if idx > 0 else [])
                 for candidate_idx in candidate_indices:
