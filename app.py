@@ -45,6 +45,7 @@ warnings.filterwarnings(
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     from qfluentwidgets import Theme
     from qfluentwidgets import setTheme
+    from qfluentwidgets import setThemeColor
 
 from base.CLIManager import CLIManager
 from base.AppPaths import get_app_paths
@@ -53,6 +54,7 @@ from base.VersionManager import VersionManager
 from base.Version import Version
 from base.PathHelper import get_resource_path
 from module.Config import Config
+from widget.ThemeTokens import current_qfluent_accent_seed
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 
@@ -163,6 +165,7 @@ if __name__ == "__main__":
 
     # 设置主题
     setTheme(Theme.DARK if config.theme == Config.THEME_DARK else Theme.LIGHT)
+    setThemeColor(current_qfluent_accent_seed())
 
     # 设置应用语言
     Localizer.set_app_language(config.app_language)

@@ -33,7 +33,12 @@ from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Project.ProjectStore import ProjectStore
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import (
+    mark_toolbox_scroll_area,
+    mark_toolbox_widget,
+    set_semantic_status,
+    set_text_role,
+)
 
 
 class HookTranslatePage(Base, QWidget):
@@ -121,7 +126,7 @@ class HookTranslatePage(Base, QWidget):
             )
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #777;")
+        set_text_role(intro)
         box.addWidget(intro)
 
         row_exe = QHBoxLayout()
@@ -248,7 +253,7 @@ class HookTranslatePage(Base, QWidget):
 
         self.output_hint_label = CaptionLabel("")
         self.output_hint_label.setWordWrap(True)
-        self.output_hint_label.setStyleSheet("color: #8fb3ff;")
+        set_semantic_status(self.output_hint_label, "info")
         box.addWidget(self.output_hint_label)
 
         tip = CaptionLabel(
@@ -258,7 +263,7 @@ class HookTranslatePage(Base, QWidget):
             )
         )
         tip.setWordWrap(True)
-        tip.setStyleSheet("color: #666;")
+        set_text_role(tip)
         box.addWidget(tip)
 
         self._refresh_output_hint()

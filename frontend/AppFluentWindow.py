@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import MessageBox
-from qfluentwidgets import NavigationAvatarWidget
 from qfluentwidgets import NavigationItemPosition
 from qfluentwidgets import NavigationPushButton
 from qfluentwidgets import Theme
@@ -40,13 +39,23 @@ from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from widget.ThemeHelper import get_navigation_stylesheet
+from widget.ThemeTokens import (
+    DARK,
+    LIGHT,
+    current_palette,
+    current_qfluent_accent_seed,
+)
 
 
 class AppFluentWindow(FluentWindow, Base):
 
     APP_WIDTH: int = 1280
     APP_HEIGHT: int = 800
-    APP_THEME_COLOR: str = "#53697F"
+    APP_MIN_WIDTH: int = 900
+    APP_MIN_HEIGHT: int = 640
+    NAVIGATION_EXPAND_WIDTH: int = 256
+    NAVIGATION_EXPAND_BREAKPOINT: int = 1000
+    APP_THEME_COLOR: str = LIGHT.accent
     HOMEPAGE: str = " RenpyBox"
 
     @classmethod
@@ -68,9 +77,9 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
-        # 关闭系统 Mica 透明材质，确保原型定义的双主题表面在不同 Windows 设置下稳定。
+        # 使用稳定的 WinUI 实色表面，避免系统透明度设置改变可读性。
         self.setMicaEffectEnabled(False)
-        self.setCustomBackgroundColor("#F5F6F8", "#12161D")
+        self.setCustomBackgroundColor(LIGHT.background, DARK.background)
         # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
         self.notification = NotificationService(self)
         # 主线程心跳漂移测量：tick 实际间隔与名义间隔之差，>=50ms 记入遥测
@@ -81,12 +90,15 @@ class AppFluentWindow(FluentWindow, Base):
         self._heartbeat_timer.start()
 
         # 设置主题颜色
-        setThemeColor(AppFluentWindow.APP_THEME_COLOR)
+        setThemeColor(current_qfluent_accent_seed())
 
         # 设置窗口属性（在可用区域内居中，不压住任务栏）
         target_width, target_height = self._resolve_window_size()
         self.resize(target_width, target_height)
-        self.setMinimumSize(target_width, target_height)
+        self.setMinimumSize(
+            min(self.APP_MIN_WIDTH, target_width),
+            min(self.APP_MIN_HEIGHT, target_height),
+        )
         self.setWindowTitle(f"RenpyBox {VersionManager.get().get_version()}")
         self._configure_title_bar()
 
@@ -98,17 +110,7 @@ class AppFluentWindow(FluentWindow, Base):
                 available.top() + max(0, (available.height() - self.height()) // 2),
             )
 
-        # 设置侧边栏宽度
-        self.navigationInterface.setExpandWidth(256)
-
-        # 原型侧栏是固定 256px，不随窗口进入浮层菜单模式。
-        self.navigationInterface.setCollapsible(False)
-        self.navigationInterface.panel.setMenuButtonVisible(False)
-        self.navigationInterface.setMinimumExpandWidth(self.APP_WIDTH)
-        self.navigationInterface.expand(useAni = False)
-
-        # 隐藏返回按钮
-        self.navigationInterface.panel.setReturnButtonVisible(False)
+        self._configure_navigation()
 
         # 添加页面
         self.add_pages()
@@ -227,6 +229,7 @@ class AppFluentWindow(FluentWindow, Base):
         else:
             setTheme(Theme.LIGHT)
             config.theme = Config.THEME_LIGHT
+        setThemeColor(current_qfluent_accent_seed())
         config.save()
 
         # 更新全局样式
@@ -242,6 +245,17 @@ class AppFluentWindow(FluentWindow, Base):
         # 主题、语言和应用设置入口统一留在左下角导航，不在顶栏重复添加。
         self.titleBar.iconLabel.hide()
 
+    def _configure_navigation(self) -> None:
+        """Configure the adaptive WinUI-style navigation pane."""
+        navigation = self.navigationInterface
+        navigation.setExpandWidth(self.NAVIGATION_EXPAND_WIDTH)
+        navigation.setCollapsible(True)
+        navigation.setMenuButtonVisible(True)
+        navigation.setMinimumExpandWidth(self.NAVIGATION_EXPAND_BREAKPOINT)
+        navigation.setReturnButtonVisible(False)
+        if self.width() >= self.NAVIGATION_EXPAND_BREAKPOINT:
+            navigation.expand(useAni=False)
+
     def resizeEvent(self, event: QEvent) -> None:
         """保留原生控制按钮，同时让标题栏覆盖完整窗口宽度。"""
         super().resizeEvent(event)
@@ -250,27 +264,22 @@ class AppFluentWindow(FluentWindow, Base):
 
     def _apply_shell_theme(self) -> None:
         """同步窗口表面、导航背景和导航项颜色。"""
-        self.setCustomBackgroundColor("#F5F6F8", "#12161D")
+        palette = current_palette()
+        self.setCustomBackgroundColor(LIGHT.background, DARK.background)
         panel = self.navigationInterface.panel
         panel.setStyleSheet(get_navigation_stylesheet())
 
-        if isDarkTheme():
-            title_bg = "#181D25"
-            title_fg = "#EDF0F3"
-            border = "rgba(255, 255, 255, 0.08)"
-        else:
-            title_bg = "#EDF0F3"
-            title_fg = "#20262E"
-            border = "rgba(32, 38, 46, 0.08)"
         self.titleBar.setStyleSheet(
-            f"FluentTitleBar {{ background-color: {title_bg}; border-bottom: 1px solid {border}; }}"
-            f"QLabel#titleLabel {{ color: {title_fg}; font-size: 12px; font-weight: 700; }}"
+            f"FluentTitleBar {{ background-color: {palette.chrome}; "
+            f"border-bottom: 1px solid {palette.divider}; }}"
+            f"QLabel#titleLabel {{ color: {palette.text_primary}; "
+            "font-size: 12px; font-weight: 600; }}"
         )
 
-        light_text = QColor("#334155")
-        dark_text = QColor("#CBD5E1")
-        light_indicator = QColor("#53697F")
-        dark_indicator = QColor("#9DAFBE")
+        light_text = QColor(LIGHT.text_primary)
+        dark_text = QColor(DARK.text_primary)
+        light_indicator = QColor(LIGHT.accent)
+        dark_indicator = QColor(DARK.accent)
         for item in panel.items.values():
             for widget in (item.widget, *item.widget.findChildren(QWidget)):
                 if hasattr(widget, "setTextColor"):
@@ -312,8 +321,14 @@ class AppFluentWindow(FluentWindow, Base):
         elif status == VersionManager.Status.DOWNLOADED:
             name = Localizer.get().app_new_version_downloaded
         else:
-            name = __class__.HOMEPAGE
-        self.home_page_widget.setName(name)
+            name = Localizer.get().app_settings_page
+        indicator = getattr(self, "home_page_widget", None)
+        if indicator is None:
+            return
+        if hasattr(indicator, "setName"):
+            indicator.setName(name)
+        elif hasattr(indicator, "setText"):
+            indicator.setText(name)
 
     # 更新 - 检查完成
     def app_update_check_done(self, event: str, data: dict) -> None:
@@ -357,16 +372,14 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 开始添加页面
     def add_pages(self) -> None:
-        self.add_project_pages()
-        self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
-        self.add_workbench_pages()
-        self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
-        self.add_renpy_pages()  # 新增 Ren'Py 页面
-        self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
         self.add_task_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
-        self.add_setting_pages()
+        self.add_project_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
+        self.add_renpy_pages()
+        self.add_workbench_pages()
+        self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
+        self.add_setting_pages()
 
         # 设置默认页面
         self.switchTo(self.translation_page)
@@ -383,55 +396,31 @@ class AppFluentWindow(FluentWindow, Base):
             position = NavigationItemPosition.BOTTOM
         )
 
-        # 语言设置按钮
-        self.navigationInterface.addWidget(
-            routeKey = "language_navigation_button",
-            widget = NavigationPushButton(
-                FluentIcon.LANGUAGE,
-                Localizer.get().app_language_btn,
-                False,
-            ),
-            onClick = self.open_app_settings_page,
-            position = NavigationItemPosition.BOTTOM,
-        )
-
         # 应用设置按钮
         self.app_settings_page = AppSettingsPage("app_settings_page", self)
-        self.addSubInterface(
+        self.home_page_widget = self.addSubInterface(
             self.app_settings_page,
             FluentIcon.SETTING,
             Localizer.get().app_settings_page,
             NavigationItemPosition.BOTTOM,
         )
-
-        # 项目主页按钮
-        self.home_page_widget = NavigationAvatarWidget(
-            __class__.HOMEPAGE,
-            get_resource_path("resource", "icon.ico"),
-        )
-        self.navigationInterface.addWidget(
-            routeKey = "avatar_navigation_widget",
-            widget = self.home_page_widget,
-            onClick = self.open_app_settings_page,
-            position = NavigationItemPosition.BOTTOM
-        )
         self._refresh_update_indicator()
 
     # 添加项目类页面
     def add_project_pages(self) -> None:
-        # 接口管理
-        self.addSubInterface(
-            PlatformPage("platform_page", self),
-            FluentIcon.IOT,
-            Localizer.get().app_platform_page,
-            NavigationItemPosition.SCROLL
-        )
-
         # 项目设置
         self.addSubInterface(
             ProjectPage("project_page", self),
             FluentIcon.FOLDER,
             Localizer.get().app_project_page,
+            NavigationItemPosition.SCROLL
+        )
+
+        # 接口管理
+        self.addSubInterface(
+            PlatformPage("platform_page", self),
+            FluentIcon.IOT,
+            Localizer.get().app_platform_page,
             NavigationItemPosition.SCROLL
         )
 
@@ -458,15 +447,6 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 添加任务类页面
     def add_task_pages(self) -> None:
-        # Agent 助手
-        self.agent_page = AgentPage("agent_page", self)
-        self.addSubInterface(
-            self.agent_page,
-            FluentIcon.ROBOT,
-            Localizer.get().app_agent_page,
-            NavigationItemPosition.SCROLL,
-        )
-
         # 开始翻译
         self.translation_page = TranslationPage("translation_page", self)
         self.addSubInterface(
@@ -474,6 +454,15 @@ class AppFluentWindow(FluentWindow, Base):
             FluentIcon.PLAY,
             Localizer.get().app_translation_page,
             NavigationItemPosition.SCROLL
+        )
+
+        # Agent 助手
+        self.agent_page = AgentPage("agent_page", self)
+        self.addSubInterface(
+            self.agent_page,
+            FluentIcon.ROBOT,
+            Localizer.get().app_agent_page,
+            NavigationItemPosition.SCROLL,
         )
 
     # 添加设置类页面

@@ -89,7 +89,7 @@ def test_language_card_persists_selection_without_changing_live_localizer(
         parent.close()
 
 
-def test_main_navigation_exposes_english_language_button(monkeypatch) -> None:
+def test_main_navigation_footer_keeps_only_theme_and_app_settings(monkeypatch) -> None:
     class NavigationStub:
         def __init__(self) -> None:
             self.widgets = []
@@ -131,13 +131,14 @@ def test_main_navigation_exposes_english_language_button(monkeypatch) -> None:
     try:
         AppFluentWindow.add_pages(fake_window)
 
-        bottom_text = {
+        footer_text = {
             item["routeKey"]: item["widget"].text()
             for item in navigation.widgets
             if hasattr(item["widget"], "text")
         }
-        assert bottom_text["theme_navigation_button"] == "Switch Theme"
-        assert bottom_text["language_navigation_button"] == "Language"
+        assert footer_text == {"theme_navigation_button": "Switch Theme"}
+        assert "language_navigation_button" not in footer_text
+        assert "avatar_navigation_widget" not in footer_text
         assert localized_pages == [(settings_page, "App Settings")]
     finally:
         Localizer.set_app_language(original_language)

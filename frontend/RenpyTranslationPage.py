@@ -33,7 +33,7 @@ from module.Config import Config
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Localizer.Localizer import Localizer
 from module.Project.ProjectStore import ProjectStore
-from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 
 
@@ -64,7 +64,7 @@ class RenpyTranslationPage(QWidget):
 
         # 简单说明
         intro = CaptionLabel(Localizer.get().extract_tl_extract_translatable_text_ren_py_game_tl)
-        intro.setStyleSheet("color: gray;")
+        set_text_role(intro)
         layout.addWidget(intro)
 
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -129,7 +129,7 @@ class RenpyTranslationPage(QWidget):
 
         # 快速提示
         tip = CaptionLabel(Localizer.get().extract_tl_existing_translations_preserved_default_supplemental_extraction_works)
-        tip.setStyleSheet("color: #888;")
+        set_text_role(tip)
         layout.addWidget(tip)
 
         return card
@@ -227,7 +227,7 @@ class RenpyTranslationPage(QWidget):
         adv_layout.addLayout(restore_row)
 
         restore_tip = CaptionLabel(Localizer.get().extract_tl_suspected_code_lines_moved_tl_lang_filtered)
-        restore_tip.setStyleSheet("color: #666; font-size: 11px;")
+        set_text_role(restore_tip, pixel_size=11)
         restore_tip.setWordWrap(True)
         adv_layout.addWidget(restore_tip)
 

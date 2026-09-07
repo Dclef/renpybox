@@ -24,7 +24,7 @@ from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
 from module.Tool.Packer import Packer, PackerUnpackError
 from module.Tool.RenpyDecompiler import RenpyDecompiler, remove_decompiled_rpyc
-from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 EXE_SUFFIX = ".exe"
 GAME_DIR_NAME = "game"
@@ -536,7 +536,7 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(self.unpack_progress)
 
         self.unpack_status_label = QLabel("")
-        self.unpack_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.unpack_status_label, pixel_size=11)
         self.unpack_status_label.setVisible(False)
         layout.addWidget(self.unpack_status_label)
 
@@ -612,7 +612,7 @@ class PackUnpackPage(Base, QWidget):
 
         # 进度状态
         self.pack_status_label = QLabel("")
-        self.pack_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.pack_status_label, pixel_size=11)
         self.pack_status_label.setVisible(False)
         layout.addWidget(self.pack_status_label)
 
@@ -694,7 +694,7 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(self.decompile_progress)
 
         self.decompile_status_label = QLabel("")
-        self.decompile_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.decompile_status_label, pixel_size=11)
         self.decompile_status_label.setVisible(False)
         layout.addWidget(self.decompile_status_label)
 

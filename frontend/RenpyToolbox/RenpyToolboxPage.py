@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QGraphicsOpacityEffect,
     QBoxLayout,
@@ -47,7 +46,7 @@ from module.Renpy.ProjectPaths import (
     resolve_translation_output,
 )
 from widget.ItemCard import ItemCard
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget, set_text_role
 
 
 class RenpyToolboxPage(Base, QWidget):
@@ -81,7 +80,7 @@ class RenpyToolboxPage(Base, QWidget):
         outer.setSpacing(0)
         outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.workspace = QWidget(self)
-        self.workspace.setMaximumWidth(1024)
+        self.workspace.setMaximumWidth(1400)
         self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         outer.addWidget(self.workspace, 1)
         self.main_layout = QVBoxLayout(self.workspace)
@@ -106,7 +105,7 @@ class RenpyToolboxPage(Base, QWidget):
             header_text,
         )
         self.header_description.setWordWrap(True)
-        self.header_description.setTextColor(QColor("#586574"), QColor("#A8B4C1"))
+        set_text_role(self.header_description)
         header_text_layout.addWidget(self.header_description)
         header_layout.addWidget(header_text, 1)
 
