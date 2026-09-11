@@ -31,6 +31,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     Theme,
     ThemeColor,
+    InfoBar,
     qconfig,
     setTheme,
     setThemeColor,
@@ -798,7 +799,7 @@ def test_agent_page_batches_streaming_deltas_until_flush(monkeypatch) -> None:
 
 
 def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> None:
-    """长回复降低重排频率，短回复保持 50ms 的即时反馈。"""
+    """长回复降低重排频率，短回复保持 32ms 的即时反馈。"""
     config = Config()
     config.agent_platform = 0
     config.platforms = []
@@ -808,11 +809,11 @@ def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> 
     page = AgentPage("agent_page", window)
 
     page._append_reply_delta("x" * 5_000)
-    assert page._render_timer.interval() == 80
+    assert page._render_timer.interval() == 64
     page._render_timer.stop()
     page._pending_reply_text = "x" * 20_000
     page._schedule_render()
-    assert page._render_timer.interval() == 120
+    assert page._render_timer.interval() == 96
 
     page.deleteLater()
     window.deleteLater()
@@ -872,6 +873,34 @@ def test_agent_message_copy_button_writes_full_text(monkeypatch) -> None:
 
     assert QApplication.clipboard().text() == "要复制的内容，以及增量"
     message.deleteLater()
+
+
+def test_agent_user_message_keeps_short_text_on_one_line() -> None:
+    message = AgentMessageWidget("检查项目并告诉我下一步", "user")
+
+    expected_width = message.text_view.fontMetrics().horizontalAdvance(message.text) + 28
+    assert message.bubble.minimumWidth() >= expected_width
+    assert message.text_view.minimumWidth() >= expected_width - 28
+
+    message.deleteLater()
+
+
+def test_agent_copy_notice_uses_top_level_window(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        InfoBar,
+        "success",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    window = QWidget()
+    message = AgentMessageWidget("复制内容", "assistant", window)
+
+    message._copy_text()
+
+    assert captured["parent"] is window
+    assert captured["position"].name == "TOP"
+    message.deleteLater()
+    window.deleteLater()
 
 
 def test_agent_page_stop_request_appends_stopped_mark(monkeypatch) -> None:
@@ -1113,12 +1142,19 @@ def test_agent_page_uses_compact_visual_hierarchy(monkeypatch) -> None:
     assert page.topbar_divider.width() == 1
     assert "background-color" in page.topbar_divider.styleSheet()
     assert page.settings_panel.width() == 280
+    window.resize(1600, 900)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+    assert page.empty_state.preflight_card.width() == 720
+    assert page.empty_state.suggestions.width() == 720
     assert (
         page.thinking_combo.sizePolicy().horizontalPolicy()
         == QSizePolicy.Expanding
     )
 
     page.deleteLater()
+    window.close()
     window.deleteLater()
 
 

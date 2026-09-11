@@ -83,12 +83,17 @@ def _build_stylesheet(palette: ThemePalette) -> str:
             border-radius: 8px;
         }}
         QFrame#translationThroughputStat,
+        QFrame#translationFeedHeader,
         QFrame#translationFeedItem,
         QWidget#workbenchSummarySurface,
         QWidget#workbenchStatusSurface {{
             background-color: {palette.surface_subtle};
             border: 1px solid {palette.border};
             border-radius: 6px;
+        }}
+        QFrame#translationFeedHeader {{
+            background-color: {palette.surface};
+            border-color: {palette.divider};
         }}
         QFrame#workbenchSummaryRow {{
             background: transparent;

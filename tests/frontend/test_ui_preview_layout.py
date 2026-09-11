@@ -14,7 +14,7 @@ from PyQt5.QtTest import QTest
 from qfluentwidgets import SingleDirectionScrollArea, Theme, ThemeColor, qconfig, setTheme
 
 from base.BaseLanguage import BaseLanguage
-from frontend.Agent.AgentPage import AgentEmptyState, AgentPage
+from frontend.Agent.AgentPage import AgentEmptyState, AgentMessageWidget, AgentPage
 from frontend.AppSettingsPage import AppSettingsPage
 from frontend.Proofreading.ProofreadingPage import ProofreadingPage
 from frontend.Project.ProjectPage import ProjectPage
@@ -179,7 +179,7 @@ def test_agent_compact_topbar_and_scrolling_empty_state(monkeypatch, language) -
         QTest.qWait(100)
         assert page.input_box.height() == 160
         assert page.input_box.toPlainText() == text
-        assert page.empty_state.suggestions.width() == 560
+        assert page.empty_state.suggestions.width() <= 720
         assert len(page.empty_state.suggestion_buttons) == 4
         scroll = page.empty_state.content_scroll
         assert scroll.verticalScrollBar().maximum() > 0
@@ -351,7 +351,7 @@ def test_agent_suggestions_reflow_without_breaking_fixed_width() -> None:
     state.show()
     APP.processEvents()
 
-    assert state.suggestions.width() == 560
+    assert state.suggestions.width() == 720
     assert len(state.suggestion_buttons) == 4
     wide_x = [card.geometry().x() for card in state.suggestion_buttons]
     assert wide_x[0] != wide_x[1]
@@ -377,11 +377,32 @@ def test_agent_workspace_is_centered_without_shrinking_message_contract(monkeypa
     window.show()
     APP.processEvents()
 
-    assert page.workspace.width() == 992
+    assert page.workspace.width() == 1400
     assert page.workspace.x() == (page.width() - page.workspace.width()) // 2
-    assert page.conversation_card.width() == 960
+    assert page.conversation_card.width() == page.workspace.width() - 32
     page.deleteLater()
     window.close()
+
+
+def test_agent_streaming_appends_without_reparsing_markdown() -> None:
+    """流式增量只更新纯文本，完成时才重新解析 Markdown。"""
+    widget = AgentMessageWidget("", "assistant")
+    markdown_calls = []
+    original_set_markdown = widget.text_view.setMarkdown
+    widget.text_view.setMarkdown = markdown_calls.append
+
+    widget.set_streaming(True)
+    widget.append_stream_text("第一段")
+    widget.append_stream_text("第二段")
+
+    assert widget.text == "第一段第二段"
+    assert widget.text_view.toPlainText() == "第一段第二段"
+    assert markdown_calls == []
+
+    widget.set_text("**完成**")
+    assert markdown_calls == ["**完成**"]
+    widget.text_view.setMarkdown = original_set_markdown
+    widget.deleteLater()
 
 
 def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:
@@ -407,6 +428,58 @@ def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:
     assert hero.width() < throughput.width()
     assert feed.height() >= 168
     assert footer.geometry().bottom() <= page.height()
+    assert page.progress_kpi_card.isHidden()
+    assert page.speed_kpi_card.isHidden()
+    assert page.output_token is page.token
+    assert page.output_token.title_label.text() == "输出令牌"
+    assert page.input_token.title_label.text() == "输入令牌"
+    assert page.feed_items_container.sizePolicy().horizontalPolicy() == page.feed_items_container.sizePolicy().Expanding
+
+    page.deleteLater()
+    window.close()
+
+
+def test_translation_dashboard_renders_runtime_metrics_and_feed(monkeypatch) -> None:
+    """监控页展示进度事件中的指标和最近处理条目。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+
+    window = QWidget()
+    page = TranslationPage("translation_page", window)
+    page.data = {
+        "start_time": 0,
+        "time": 2,
+        "line": 12,
+        "total_line": 20,
+        "total_output_tokens": 120,
+        "total_input_tokens": 80,
+        "processed_batches": 3,
+        "cache_hit_rate": 0.25,
+        "latency_ms": 140.5,
+        "recent_items": [{
+            "id": "#12",
+            "speaker": "Alice",
+            "file": "script.rpy:12",
+            "source": "Hello",
+            "target": "你好",
+            "latency_ms": 140.5,
+            "status": "TRANSLATED",
+        }],
+    }
+    page._update_dashboard_details()
+
+    assert [label.text() for label in page.throughput_stat_values] == [
+        "60.00 T/s",
+        "3",
+        "25.0%",
+        "140.5 ms",
+    ]
+    assert page.hero_cache_pill.text() == "缓存 25.0%"
+    assert not page.feed_empty_label.isVisible()
+    assert page.feed_items_layout.count() == 2
+    assert page.output_token.detail_label.text() == "累计输出 120"
+    assert page.input_token.detail_label.text() == "累计输入 80"
 
     page.deleteLater()
     window.close()

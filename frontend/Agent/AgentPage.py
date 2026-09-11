@@ -18,6 +18,7 @@ from PyQt5.QtGui import (
     QKeyEvent,
     QPainter,
     QPalette,
+    QTextCursor,
     QTextLength,
     QTextTable,
     QTextTableFormat,
@@ -44,6 +45,7 @@ from qfluentwidgets import (
     FluentIcon,
     IconWidget,
     InfoBar,
+    InfoBarPosition,
     MessageBox,
     PlainTextEdit,
     PrimaryPushButton,
@@ -84,6 +86,7 @@ SUPPORTED_FORMATS = {
 
 # 对话区最大宽度。宽屏下保持可读行长，窄屏时随窗口收缩。
 CONVERSATION_MAX_WIDTH = 960
+AGENT_WORKSPACE_MAX_WIDTH = 1400
 
 # 顶栏思考等级只作用于 Agent 请求；OFF 保持平台默认关闭行为。
 THINKING_LEVELS = ("OFF", "LOW", "MEDIUM", "HIGH", "MAX")
@@ -94,7 +97,7 @@ MESSAGE_MIN_HEIGHT = 48
 # 用户主动上滚超过该距离后，新消息不再抢回滚动位置。
 AUTO_FOLLOW_THRESHOLD = 80
 
-# 回复越长，Markdown 全量重排越昂贵；逐步放宽刷新间隔以控制主线程开销。
+# 回复越长，逐步放宽刷新间隔；流式正文只插入新增文本，不重新解析全文。
 STREAM_RENDER_MEDIUM_CHARS = 5_000
 STREAM_RENDER_SLOW_CHARS = 20_000
 
@@ -455,6 +458,7 @@ class AgentMessageWidget(QWidget):
         self.role = role
         raw_text = str(text or "")
         self._text = clean_agent_display_text(raw_text) if role == "assistant" else raw_text
+        self._streaming = False
         self._thinking_widgets: list[AgentThinkingWidget] = []
         self._tool_widgets: list[AgentToolWidget] = []
         self._active_thinking: AgentThinkingWidget | None = None
@@ -482,6 +486,7 @@ class AgentMessageWidget(QWidget):
 
             self.bubble = AgentBubble(self)
             self.bubble.setMaximumWidth(int(CONVERSATION_MAX_WIDTH * 0.72))
+            self.bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
             bubble_layout = QVBoxLayout(self.bubble)
             bubble_layout.setContentsMargins(14, 10, 14, 10)
             bubble_layout.setSpacing(0)
@@ -491,9 +496,10 @@ class AgentMessageWidget(QWidget):
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             label.setAttribute(Qt.WA_TranslucentBackground, True)
-            label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
             bubble_layout.addWidget(label)
             self.text_view = label
+            self._update_user_bubble_width()
 
             root.addWidget(self.bubble, 0, Qt.AlignVCenter)
             self.body = self.bubble
@@ -593,11 +599,28 @@ class AgentMessageWidget(QWidget):
     def _copy_text(self) -> None:
         """复制消息全文到剪贴板。"""
         QApplication.clipboard().setText(self.text)
+        window = self.window()
         InfoBar.success(
             Localizer.get().agent_page_copy,
             Localizer.get().agent_page_copied,
-            parent=self,
+            parent=window if window is not None else self,
+            position=InfoBarPosition.TOP,
+            duration=1800,
         )
+
+    def _update_user_bubble_width(self) -> None:
+        """按短消息实际宽度调整气泡，避免几个字就被挤成两行。"""
+        if self.role != "user":
+            return
+        maximum = int(CONVERSATION_MAX_WIDTH * 0.72)
+        lines = self._text.splitlines() or [""]
+        text_width = max(
+            self.text_view.fontMetrics().horizontalAdvance(line)
+            for line in lines
+        )
+        bubble_width = min(maximum, max(1, text_width + 28))
+        self.bubble.setMinimumWidth(bubble_width)
+        self.text_view.setMinimumWidth(max(1, bubble_width - 28))
 
     def set_text(self, text: str) -> None:
         """替换消息正文，保留同一个控件以避免滚动区跳动。"""
@@ -609,9 +632,44 @@ class AgentMessageWidget(QWidget):
         )
         if self.role == "user":
             self.text_view.setText(self._text)
+            self._update_user_bubble_width()
         else:
+            self._streaming = False
             self.text_view.setMarkdown(self._text)
             self.text_view.setVisible(bool(self._text.strip()))
+        self.text_view.updateGeometry()
+        self.updateGeometry()
+
+    def set_streaming(self, streaming: bool) -> None:
+        """切换流式纯文本模式，结束后再统一渲染 Markdown。"""
+        if self.role != "assistant":
+            return
+        streaming = bool(streaming)
+        if streaming == self._streaming:
+            return
+        self._streaming = streaming
+        if streaming:
+            self.text_view.setPlainText(self._text)
+        else:
+            self.text_view.setMarkdown(self._text)
+        self.text_view.setVisible(bool(self._text.strip()))
+        self.text_view.updateGeometry()
+        self.updateGeometry()
+
+    def append_stream_text(self, text: str) -> None:
+        """流式追加文本，避免每个增量都重新解析整段 Markdown。"""
+        if self.role != "assistant":
+            self.append_text(text)
+            return
+        cleaned = clean_agent_display_text(str(text or ""))
+        if not cleaned:
+            return
+        self.set_streaming(True)
+        self._text += cleaned
+        cursor = self.text_view.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(cleaned)
+        self.text_view.setVisible(True)
         self.text_view.updateGeometry()
         self.updateGeometry()
 
@@ -1114,8 +1172,11 @@ class AgentThinkingWidget(AgentToolWidget):
     def append_text(self, text: str) -> None:
         if not text:
             return
-        self._text += str(text)
-        self.detail_label.setPlainText(self._text)
+        value = str(text)
+        self._text += value
+        cursor = self.detail_label.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(value)
         self.toggle_button.setEnabled(bool(self._text.strip()))
         self.updateGeometry()
 
@@ -1410,7 +1471,11 @@ class AgentEmptyState(QWidget):
         columns = 2 if wide else 1
         while self._suggestions_layout.count():
             self._suggestions_layout.takeAt(0)
-        card_width = 276 if wide else max(280, min(528, self.width() - 32))
+        card_width = (
+            max(280, (self.suggestions.width() - 8) // 2)
+            if wide
+            else max(280, min(528, self.width() - 32))
+        )
         for index, card in enumerate(self.suggestion_buttons):
             card.setFixedWidth(card_width)
             self._suggestions_layout.addWidget(
@@ -1422,6 +1487,10 @@ class AgentEmptyState(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if hasattr(self, "preflight_card"):
+            available_width = max(480, min(720, self.width() - 32))
+            self.preflight_card.setFixedWidth(available_width)
+            self.suggestions.setFixedWidth(available_width)
         self._relayout_suggestions()
 
     def _fallback_preflight_data(self, paths: RenpyProjectPaths) -> dict[str, Any]:
@@ -1537,7 +1606,7 @@ class AgentEmptyState(QWidget):
         )
         worldbook_status = (
             localizer.workbench_enabled
-            if assets.get("has_effective_assets") or assets.get("worldbook_draft")
+            if assets.get("worldbook_enabled")
             else localizer.workbench_not_enabled
         )
         worldbook_text = localizer.workbench_draft_summary.format(
@@ -1562,7 +1631,7 @@ class AgentEmptyState(QWidget):
         tl_tone = "success" if tl_file_count else "neutral"
         worldbook_tone = (
             "success"
-            if assets.get("has_effective_assets") or assets.get("worldbook_draft")
+            if assets.get("worldbook_enabled")
             else "neutral"
         )
         values = {
@@ -1653,7 +1722,7 @@ class AgentPage(Base, QWidget):
         outer.setAlignment(Qt.AlignHCenter)
         self.workspace = QWidget(self)
         self.workspace.setObjectName("agentWorkspace")
-        self.workspace.setMaximumWidth(CONVERSATION_MAX_WIDTH + 32)
+        self.workspace.setMaximumWidth(AGENT_WORKSPACE_MAX_WIDTH)
         self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         outer.addWidget(self.workspace, 1)
 
@@ -1957,9 +2026,6 @@ class AgentPage(Base, QWidget):
         self.input_box.setFixedHeight(64)
         self.input_box.setLineWrapMode(PlainTextEdit.WidgetWidth)
         self.input_box.textChanged.connect(self._autosize_input)
-        self.input_box.document().documentLayout().documentSizeChanged.connect(
-            self._autosize_input
-        )
         self.input_box.textChanged.connect(self._update_send_button)
         self.input_box.send_requested.connect(self.send_message)
         composer_layout.addWidget(self.input_box)
@@ -2223,6 +2289,7 @@ class AgentPage(Base, QWidget):
                 self.history_content,
             )
             self._assistant_turn.action_requested.connect(self._handle_reply_action)
+            self._assistant_turn.set_streaming(True)
             self._stream_message = self._assistant_turn
             self._add_history_widget(self._assistant_turn)
         return self._assistant_turn
@@ -2253,11 +2320,11 @@ class AgentPage(Base, QWidget):
         if self._assistant_turn is not None:
             rendered_chars += len(self._assistant_turn.text)
         interval = (
-            50
+            32
             if rendered_chars < STREAM_RENDER_MEDIUM_CHARS
-            else 80
+            else 64
             if rendered_chars < STREAM_RENDER_SLOW_CHARS
-            else 120
+            else 96
         )
         self._render_timer.start(interval)
 
@@ -2269,7 +2336,7 @@ class AgentPage(Base, QWidget):
             self._pending_reply_text = ""
             turn = self._ensure_assistant_turn()
             turn.finish_thinking()
-            turn.append_text(reply_text)
+            turn.append_stream_text(reply_text)
             flushed = True
         if self._pending_thinking_text:
             thinking_text = self._pending_thinking_text
