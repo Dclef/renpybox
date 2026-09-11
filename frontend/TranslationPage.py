@@ -36,6 +36,7 @@ from qfluentwidgets import PushButton
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
+from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
 from base.compat import StrEnum
@@ -329,15 +330,27 @@ class TranslationPage(QWidget, Base):
         self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         outer.addWidget(self.workspace, 1)
 
-        # 设置主容器
-        self.container = QVBoxLayout(self.workspace)
+        # 监控正文在短窗口内可滚动，底部操作栏始终留在可视区域。
+        workspace_layout = QVBoxLayout(self.workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        self.content_scroll = SingleDirectionScrollArea(orient = Qt.Orientation.Vertical)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.enableTransparentBackground()
+        content = QWidget(self.content_scroll)
+        mark_app_page(content)
+        self.content_scroll.setWidget(content)
+        workspace_layout.addWidget(self.content_scroll, 1)
+
+        # 设置正文容器
+        self.container = QVBoxLayout(content)
         self.container.setSpacing(12)
         self.container.setContentsMargins(24, 18, 24, 18) # 左、上、右、下
 
         # 添加控件
         self.add_widget_head(self.container, config, window)
         self.add_widget_body(self.container, config, window)
-        self.add_widget_foot(self.container, config, window)
+        self.add_widget_foot(workspace_layout, config, window)
 
         # 注册事件
         self.subscribe(Base.Event.PLATFORM_TEST_DONE, self.update_button_status)
@@ -358,6 +371,20 @@ class TranslationPage(QWidget, Base):
         self.ui_update_timer = QTimer(self)
         self.ui_update_timer.timeout.connect(self.update_ui_tick)
         self.ui_update_timer.start(500)
+
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "kpi_layout"):
+            self._update_dashboard_layout()
+
+    def _update_dashboard_layout(self) -> None:
+        """在窄窗口中将速览卡改为两列，避免英文状态被裁切。"""
+        compact = self.width() < 1000
+        for index, card in enumerate(self._kpi_cards):
+            self.kpi_layout.removeWidget(card)
+            self.kpi_layout.addWidget(card, index // 2 if compact else 0, index % 2 if compact else index)
+        if hasattr(self, "footer_backup_label"):
+            self.footer_backup_label.setVisible(not compact)
 
     # 页面显示事件
     def showEvent(self, event) -> None:
@@ -991,9 +1018,10 @@ class TranslationPage(QWidget, Base):
 
         self.kpi_strip = QWidget(self)
         self.kpi_strip.setObjectName("translationKpiStrip")
-        kpi_layout = QHBoxLayout(self.kpi_strip)
+        kpi_layout = QGridLayout(self.kpi_strip)
         kpi_layout.setContentsMargins(0, 0, 0, 0)
         kpi_layout.setSpacing(12)
+        self.kpi_layout = kpi_layout
 
         self.progress_kpi_card = DashboardCard(
             self.kpi_strip,
@@ -1011,9 +1039,6 @@ class TranslationPage(QWidget, Base):
             icon=FluentIcon.SPEED_HIGH,
             accent="success",
         )
-        for card in (self.progress_kpi_card, self.speed_kpi_card):
-            kpi_layout.addWidget(card, 1)
-
         self.flow_container = QWidget(self)
         self.flow_container.setObjectName("translationDashboardGrid")
         self.flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1153,8 +1178,13 @@ class TranslationPage(QWidget, Base):
         ):
             card.hide()
 
-        kpi_layout.addWidget(self.token, 1)
-        kpi_layout.addWidget(self.task, 1)
+        self._kpi_cards = (
+            self.progress_kpi_card,
+            self.speed_kpi_card,
+            self.token,
+            self.task,
+        )
+        self._update_dashboard_layout()
 
         # 实际数据指标与原型的两列主网格对齐。
         self.flow_layout.addWidget(hero_card, 0, 0, 1, 1, Qt.AlignmentFlag.AlignTop)
@@ -1216,7 +1246,7 @@ class TranslationPage(QWidget, Base):
         parent.addWidget(self.command_bar_card)
 
         # 单层操作栏：按核心控制、异常恢复、产物工具分组。
-        self.command_bar_card.set_minimum_width(640)
+        self.command_bar_card.set_minimum_width(0)
         self.add_command_bar_action_start(self.command_bar_card, config, window)
         self.add_command_bar_action_stop(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
@@ -1237,7 +1267,8 @@ class TranslationPage(QWidget, Base):
         set_text_role(self.info_label)
         self.info_label.hide()
 
-        self.command_bar_card.add_stretch(1)
+        # 剩余空间交给命令栏，避免操作按钮全部被挤进更多菜单。
+        self.command_bar_card.hbox.setStretch(0, 1)
         self.footer_backup_label = CaptionLabel(
             Localizer.get().translation_page_footer_backup,
             self.command_bar_card,
