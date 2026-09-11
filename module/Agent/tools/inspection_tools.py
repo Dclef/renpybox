@@ -427,6 +427,7 @@ def _asset_summary(project: CacheProject | None) -> dict[str, Any]:
     return {
         "has_effective_assets": preflight.has_effective_assets,
         "effective_sections": list(preflight.effective_sections),
+        "worldbook_enabled": "worldbook" in preflight.effective_sections,
         "has_drafts": worldbook_has_draft or character_draft_count > 0,
         "worldbook_draft": worldbook_has_draft,
         "character_draft_count": character_draft_count,

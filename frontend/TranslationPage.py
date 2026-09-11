@@ -39,7 +39,6 @@ from qfluentwidgets import ToolTipPosition
 from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
-from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator, QualityTaskType
@@ -58,6 +57,8 @@ from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_app_page, set_semantic_status, set_text_role
 from widget.ThemeTokens import current_palette
+
+STREAM_FEED_ROW_MAX_WIDTH = 960
 
 
 def restore_resumable_translation_paths(config: Config) -> Config:
@@ -296,10 +297,6 @@ class TranslationPage(QWidget, Base):
     runtime_status_updated = pyqtSignal(object, object)
     token_estimate_done = pyqtSignal(object, object)
 
-    class TokenDisplayMode(StrEnum):
-        INPUT = "INPUT"
-        OUTPUT = "OUTPUT"
-
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
@@ -376,6 +373,8 @@ class TranslationPage(QWidget, Base):
         super().resizeEvent(event)
         if hasattr(self, "kpi_layout"):
             self._update_dashboard_layout()
+        if hasattr(self, "feed_items_container"):
+            self._resize_stream_feed_rows()
 
     def _update_dashboard_layout(self) -> None:
         """在窄窗口中将速览卡改为两列，避免英文状态被裁切。"""
@@ -580,22 +579,27 @@ class TranslationPage(QWidget, Base):
         ):
             return None
 
-        display_mode = getattr(self, "token_display_mode", self.TokenDisplayMode.OUTPUT)
-        if display_mode == self.TokenDisplayMode.OUTPUT:
-            token = self.data.get("total_output_tokens", 0)
-        else:
-            token = self.data.get("total_input_tokens", 0)
-            if token == 0:
-                token = self.data.get("total_tokens", 0) - self.data.get("total_output_tokens", 0)
-        if token < 1000:
-            self.token.set_unit("Token")
-            self.token.set_value(f"{token}")
-        elif token < 1000 * 1000:
-            self.token.set_unit("KToken")
-            self.token.set_value(f"{(token / 1000):.2f}")
-        else:
-            self.token.set_unit("MToken")
-            self.token.set_value(f"{(token / 1000 / 1000):.2f}")
+        output_tokens = max(0, int(self.data.get("total_output_tokens", 0) or 0))
+        input_tokens = max(0, int(self.data.get("total_input_tokens", 0) or 0))
+        if input_tokens == 0:
+            input_tokens = max(
+                0,
+                int(self.data.get("total_tokens", 0) or 0) - output_tokens,
+            )
+
+        def update_card(card: DashboardCard, token: int) -> None:
+            if token < 1000:
+                card.set_unit("Token")
+                card.set_value(f"{token}")
+            elif token < 1000 * 1000:
+                card.set_unit("KToken")
+                card.set_value(f"{(token / 1000):.2f}")
+            else:
+                card.set_unit("MToken")
+                card.set_value(f"{(token / 1000 / 1000):.2f}")
+
+        update_card(self.output_token, output_tokens)
+        update_card(self.input_token, input_tokens)
 
         start_time = self.data.get("start_time", 0)
         if start_time != self._peak_speed_start_time:
@@ -622,8 +626,8 @@ class TranslationPage(QWidget, Base):
         if label is None:
             return
         config = getattr(self, "_config_snapshot", None) or Config().load()
-        source = getattr(getattr(config, "source_language", ""), "value", "")
-        target = getattr(getattr(config, "target_language", ""), "value", "")
+        source = self._language_code(getattr(config, "source_language", ""))
+        target = self._language_code(getattr(config, "target_language", ""))
         running = Engine.get().get_running_task_count()
         maximum = max(0, int(getattr(config, "max_workers", 0) or 0))
         template = getattr(
@@ -633,8 +637,8 @@ class TranslationPage(QWidget, Base):
         )
         label.setText(
             template.format(
-                SOURCE=source or "-",
-                TARGET=target or "-",
+                SOURCE=source,
+                TARGET=target,
                 RUNNING=running,
                 MAX=maximum,
             )
@@ -662,11 +666,17 @@ class TranslationPage(QWidget, Base):
             return f"{value / 1000:.2f}K"
         return f"{value / 1_000_000:.2f}M"
 
+    @staticmethod
+    def _language_code(value: object) -> str:
+        code = getattr(value, "value", value)
+        return str(code or "").strip() or "-"
+
     def _update_dashboard_details(self) -> None:
         """刷新 Hero 底部摘要、两个原型指标卡及实时流水空态。"""
         if not hasattr(self, "elapsed_label"):
             return
         self._update_header_description()
+        self._update_stream_feed_header()
         total_time = max(0, int(self.data.get("time", 0) or 0))
         if Engine.get().get_status() == Engine.Status.TRANSLATING:
             start_time = self.data.get("start_time", 0)
@@ -708,14 +718,21 @@ class TranslationPage(QWidget, Base):
         )
 
         input_tokens = max(0, int(self.data.get("total_input_tokens", 0) or 0))
-        self.token.set_detail(
-            strings.translation_page_token_detail.format(
+        self.output_token.set_detail(
+            strings.translation_page_output_token_detail.format(
                 OUTPUT=self._format_token_count(output_tokens),
+            )
+        )
+        self.input_token.set_detail(
+            strings.translation_page_input_token_detail.format(
                 INPUT=self._format_token_count(input_tokens),
             )
         )
-        self.token.set_trend(
+        self.output_token.set_trend(
             strings.translation_page_trend_total if output_tokens else strings.translation_page_trend_idle
+        )
+        self.input_token.set_trend(
+            strings.translation_page_trend_total if input_tokens else strings.translation_page_trend_idle
         )
         running = Engine.get().get_running_task_count()
         maximum = max(0, int(getattr(getattr(self, "_config_snapshot", None), "max_workers", 0) or 0))
@@ -761,14 +778,19 @@ class TranslationPage(QWidget, Base):
                 or 0
             ),
         )
-        if cache_count and total_line:
+        cache_hit_rate = self.data.get("cache_hit_rate")
+        try:
+            cache_percent = float(cache_hit_rate) * 100
+        except (TypeError, ValueError):
+            cache_percent = cache_count / total_line * 100 if cache_count and total_line else None
+        if cache_percent is None:
+            self.hero_cache_pill.setText(strings.translation_page_cache_unavailable)
+        else:
             self.hero_cache_pill.setText(
                 strings.translation_page_cache_percent.format(
-                    PERCENT=cache_count / total_line * 100,
+                    PERCENT=cache_percent,
                 )
             )
-        else:
-            self.hero_cache_pill.setText(strings.translation_page_cache_unavailable)
 
     def _update_throughput_stats(self, speed: float, total_time: int) -> None:
         """刷新吞吐卡下方的统计值，未知字段保持占位符。"""
@@ -796,7 +818,7 @@ class TranslationPage(QWidget, Base):
         if not isinstance(items, list):
             items = []
         items = [item for item in items if isinstance(item, dict)]
-        signature = repr(items[-3:])
+        signature = repr(items[-5:])
         if signature == getattr(self, "_stream_feed_signature", None):
             return
         self._stream_feed_signature = signature
@@ -808,67 +830,84 @@ class TranslationPage(QWidget, Base):
         if not items:
             self.feed_empty_label.setVisible(True)
             self.feed_items_layout.addWidget(self.feed_empty_label)
+            self._update_stream_feed_height(0)
             return
         self.feed_empty_label.setVisible(False)
-        for item in items[-3:][::-1]:
+        for item in items[-5:][::-1]:
             row = QFrame(self.feed_items_container)
             row.setObjectName("translationFeedItem")
             row.setFixedHeight(34)
+            row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(8, 4, 8, 4)
-            row_layout.setSpacing(10)
+            row_layout.setContentsMargins(10, 4, 10, 4)
+            row_layout.setSpacing(12)
 
-            head = QWidget(row)
-            head_layout = QHBoxLayout(head)
-            head_layout.setContentsMargins(0, 0, 0, 0)
-            head_layout.setSpacing(6)
-            item_id = CaptionLabel(str(item.get("id", "")), head)
-            set_text_role(item_id)
-            head_layout.addWidget(item_id)
-            speaker = str(item.get("speaker", item.get("character", "")) or "")
-            if speaker:
-                speaker_label = CaptionLabel(speaker, head)
-                set_semantic_status(speaker_label, "info")
-                head_layout.addWidget(speaker_label)
+            timestamp = str(item.get("timestamp", item.get("time", "--:--:--")) or "--:--:--")
+            time_label = CaptionLabel(timestamp, row)
+            set_text_role(time_label)
+            time_label.setFixedWidth(82)
             file_name = str(item.get("file", item.get("file_path", "")) or "")
-            if file_name:
-                file_label = CaptionLabel(file_name, head)
-                set_text_role(file_label)
-                file_label.setToolTip(file_name)
-                head_layout.addWidget(file_label, 1)
-            else:
-                head_layout.addStretch(1)
-            row_layout.addWidget(head, 1)
+            item_id = str(item.get("id", "") or "")
+            time_label.setToolTip(" · ".join(value for value in (item_id, file_name) if value))
+            row_layout.addWidget(time_label)
 
-            text_col = QWidget(row)
-            text_layout = QVBoxLayout(text_col)
-            text_layout.setContentsMargins(0, 0, 0, 0)
-            text_layout.setSpacing(0)
-            source_label = CaptionLabel(str(item.get("source", "")), text_col)
+            source_label = CaptionLabel(str(item.get("source", "")), row)
             set_text_role(source_label)
-            target_label = CaptionLabel(str(item.get("target", "")), text_col)
-            text_layout.addWidget(source_label)
-            text_layout.addWidget(target_label)
-            row_layout.addWidget(text_col, 2)
+            row_layout.addWidget(source_label, 1)
 
-            meta = QWidget(row)
-            meta_layout = QVBoxLayout(meta)
-            meta_layout.setContentsMargins(0, 0, 0, 0)
-            meta_layout.setSpacing(0)
-            latency = item.get("latency_ms", item.get("latency"))
-            if latency is not None:
-                latency_label = CaptionLabel(f"{latency} ms", meta)
-                set_text_role(latency_label)
-                latency_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-                meta_layout.addWidget(latency_label)
+            target_label = CaptionLabel(str(item.get("target", "")), row)
+            set_text_role(target_label)
             status = str(item.get("status", "") or "")
-            if status:
-                status_label = CaptionLabel(status, meta)
-                set_text_role(status_label)
-                status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-                meta_layout.addWidget(status_label)
-            row_layout.addWidget(meta, 0)
+            latency = item.get("latency_ms", item.get("latency"))
+            details = " · ".join(
+                value
+                for value in (status, f"{latency} ms" if latency is not None else "")
+                if value
+            )
+            if details:
+                target_label.setToolTip(details)
+            row_layout.addWidget(target_label, 1)
             self.feed_items_layout.addWidget(row)
+        self.feed_items_layout.addStretch(1)
+        self._resize_stream_feed_rows()
+        self._update_stream_feed_height(len(items[-5:]))
+
+    def _update_stream_feed_height(self, row_count: int) -> None:
+        """按当前流水数量调整卡片高度，最多为五行。"""
+        row_count = max(0, min(5, int(row_count)))
+        height = 168 if row_count == 0 else 100 + row_count * 34 + max(0, row_count - 1) * 6
+        self.stream_feed_card.setFixedHeight(height)
+
+    def _resize_stream_feed_rows(self) -> None:
+        """让流水行保持紧凑宽度，同时在窄窗口中跟随容器收缩。"""
+        available_width = self.feed_items_container.width()
+        if available_width <= 0:
+            return
+        row_width = min(STREAM_FEED_ROW_MAX_WIDTH, available_width)
+        if hasattr(self, "feed_columns_header"):
+            self.feed_columns_header.setFixedWidth(row_width)
+        for index in range(self.feed_items_layout.count()):
+            widget = self.feed_items_layout.itemAt(index).widget()
+            if widget is None or widget is self.feed_empty_label:
+                continue
+            widget.setFixedWidth(row_width)
+            self.feed_items_layout.setAlignment(widget, Qt.AlignmentFlag.AlignHCenter)
+
+    def _update_stream_feed_header(self) -> None:
+        """根据当前任务语言刷新流水表头。"""
+        if not hasattr(self, "feed_source_header"):
+            return
+        strings = Localizer.get()
+        config = getattr(self, "_config_snapshot", None)
+        source = self._language_code(getattr(config, "source_language", ""))
+        target = self._language_code(getattr(config, "target_language", ""))
+        self.feed_time_header.setText(strings.translation_page_feed_time)
+        self.feed_source_header.setText(
+            strings.translation_page_feed_source.format(LANGUAGE=source.upper())
+        )
+        self.feed_target_header.setText(
+            strings.translation_page_feed_target.format(LANGUAGE=target.upper())
+        )
 
     def _trigger_snapshot_export(self) -> None:
         action = getattr(self, "action_export", None)
@@ -1039,6 +1078,9 @@ class TranslationPage(QWidget, Base):
             icon=FluentIcon.SPEED_HIGH,
             accent="success",
         )
+        # 进度和吞吐已经在下方主面板完整展示，顶部只保留令牌与线程摘要。
+        self.progress_kpi_card.hide()
+        self.speed_kpi_card.hide()
         self.flow_container = QWidget(self)
         self.flow_container.setObjectName("translationDashboardGrid")
         self.flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1161,7 +1203,7 @@ class TranslationPage(QWidget, Base):
             self.throughput_stat_values.append(stat_value)
         throughput_layout.addLayout(stats_layout)
 
-        # 旧的七个字段仍由同一套更新逻辑维护，但只把原型四张 KPI 卡放入版面。
+        # 旧的七个字段仍由同一套更新逻辑维护，但顶部只放不重复的摘要卡。
         self.add_time_card(None, None, None)
         self.add_remaining_time_card(None, None, None)
         self.add_line_card(None, None, None)
@@ -1179,9 +1221,8 @@ class TranslationPage(QWidget, Base):
             card.hide()
 
         self._kpi_cards = (
-            self.progress_kpi_card,
-            self.speed_kpi_card,
-            self.token,
+            self.output_token,
+            self.input_token,
             self.task,
         )
         self._update_dashboard_layout()
@@ -1193,7 +1234,7 @@ class TranslationPage(QWidget, Base):
         self.stream_feed_card = CardWidget(self.flow_container)
         self.stream_feed_card.setObjectName("translationStreamFeedCard")
         self.stream_feed_card.setMinimumHeight(168)
-        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         feed_layout = QVBoxLayout(self.stream_feed_card)
         feed_layout.setContentsMargins(14, 12, 14, 12)
         feed_layout.setSpacing(8)
@@ -1210,7 +1251,33 @@ class TranslationPage(QWidget, Base):
         set_text_role(self.feed_mode_label)
         feed_header.addWidget(self.feed_mode_label)
         feed_layout.addLayout(feed_header)
+
+        self.feed_columns_header = QFrame(self.stream_feed_card)
+        self.feed_columns_header.setObjectName("translationFeedHeader")
+        columns_layout = QHBoxLayout(self.feed_columns_header)
+        columns_layout.setContentsMargins(10, 3, 10, 3)
+        columns_layout.setSpacing(12)
+        self.feed_time_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_time_header.setFixedWidth(82)
+        self.feed_source_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_target_header = CaptionLabel("", self.feed_columns_header)
+        for header in (
+            self.feed_time_header,
+            self.feed_source_header,
+            self.feed_target_header,
+        ):
+            set_text_role(header)
+        columns_layout.addWidget(self.feed_time_header)
+        columns_layout.addWidget(self.feed_source_header, 1)
+        columns_layout.addWidget(self.feed_target_header, 1)
+        feed_layout.addWidget(
+            self.feed_columns_header,
+            0,
+            Qt.AlignmentFlag.AlignHCenter,
+        )
         self.feed_items_container = QWidget(self.stream_feed_card)
+        # 容器保持自适应，具体流水行在布局完成后限制宽度并居中。
+        self.feed_items_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.feed_items_layout = QVBoxLayout(self.feed_items_container)
         self.feed_items_layout.setContentsMargins(0, 0, 0, 0)
         self.feed_items_layout.setSpacing(6)
@@ -1223,7 +1290,6 @@ class TranslationPage(QWidget, Base):
         self.feed_items_layout.addWidget(self.feed_empty_label)
         feed_layout.addWidget(self.feed_items_container, 1)
         self.flow_layout.addWidget(self.stream_feed_card, 2, 0, 1, 3)
-        self.flow_layout.setRowStretch(2, 1)
 
         parent.addWidget(self.kpi_strip)
         self.container.addWidget(self.flow_container, 1)
@@ -1337,86 +1403,27 @@ class TranslationPage(QWidget, Base):
 
     # 累计消耗
     def add_token_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
-        self.token_display_mode = self.TokenDisplayMode.OUTPUT
-
-        def on_token_card_clicked(card: DashboardCard) -> None:
-            if self.token_display_mode == self.TokenDisplayMode.OUTPUT:
-                self.token_display_mode = self.TokenDisplayMode.INPUT
-                card.title_label.setText(Localizer.get().translation_page_card_token_input)
-            else:
-                self.token_display_mode = self.TokenDisplayMode.OUTPUT
-                card.title_label.setText(Localizer.get().translation_page_card_token_output)
-
-            self._animate_token_card_switch()
-
-        self.token = DashboardCard(
+        self.output_token = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_token_output,
             value = Localizer.get().none,
             unit = "",
-            clicked = on_token_card_clicked,
             icon = FluentIcon.CALORIES,
             accent = "warning",
         )
-        self.token.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.token.installEventFilter(ToolTipFilter(self.token, 300, ToolTipPosition.TOP))
-        self.token.setToolTip(Localizer.get().translation_page_card_token_tooltip)
+        self.input_token = DashboardCard(
+            parent = self,
+            title = Localizer.get().translation_page_card_token_input,
+            value = Localizer.get().none,
+            unit = "",
+            icon = FluentIcon.CALORIES,
+            accent = "warning",
+        )
+        # 兼容旧调用方：token 代表输出令牌卡。
+        self.token = self.output_token
         if parent is not None:
-            parent.addWidget(self.token)
-
-    def _animate_token_card_switch(self) -> None:
-        from PyQt5.QtCore import QEasingCurve
-        from PyQt5.QtCore import QPropertyAnimation
-        from PyQt5.QtWidgets import QGraphicsOpacityEffect
-
-        value_label = self.token.value_label
-        unit_label = self.token.unit_label
-
-        if not hasattr(self, "_token_value_opacity_effect") or self._token_value_opacity_effect is None:
-            self._token_value_opacity_effect = QGraphicsOpacityEffect(value_label)
-            value_label.setGraphicsEffect(self._token_value_opacity_effect)
-
-        if not hasattr(self, "_token_unit_opacity_effect") or self._token_unit_opacity_effect is None:
-            self._token_unit_opacity_effect = QGraphicsOpacityEffect(unit_label)
-            unit_label.setGraphicsEffect(self._token_unit_opacity_effect)
-
-        fade_out = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
-        fade_out.setDuration(100)
-        fade_out.setStartValue(1.0)
-        fade_out.setEndValue(0.3)
-        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_out_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
-        fade_out_unit.setDuration(100)
-        fade_out_unit.setStartValue(1.0)
-        fade_out_unit.setEndValue(0.3)
-        fade_out_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_in = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
-        fade_in.setDuration(100)
-        fade_in.setStartValue(0.3)
-        fade_in.setEndValue(1.0)
-        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_in_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
-        fade_in_unit.setDuration(100)
-        fade_in_unit.setStartValue(0.3)
-        fade_in_unit.setEndValue(1.0)
-        fade_in_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        def on_fade_out_finished() -> None:
-            self.update_token(self.data)
-            fade_in.start()
-            fade_in_unit.start()
-
-        fade_out.finished.connect(on_fade_out_finished)
-        fade_out.start()
-        fade_out_unit.start()
-
-        self._token_fade_out_anim = fade_out
-        self._token_fade_out_unit_anim = fade_out_unit
-        self._token_fade_in_anim = fade_in
-        self._token_fade_in_unit_anim = fade_in_unit
+            parent.addWidget(self.output_token)
+            parent.addWidget(self.input_token)
 
     # 并行任务
     def add_task_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:

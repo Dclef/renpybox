@@ -119,10 +119,10 @@ def test_old_new_tool_requires_confirmation_and_trusted_context() -> None:
     tool = dispatcher.tools["optimize_old_new_translations"]
     dispatcher._tools["optimize_old_new_translations"] = replace(
         tool,
-        handler=lambda _confirmed_context: ToolResult(
+        handler=lambda confirmed_context: ToolResult(
             True,
             "ok",
-            {"context": _confirmed_context},
+            {"context": confirmed_context},
         ),
     )
 
@@ -140,6 +140,33 @@ def test_old_new_tool_requires_confirmation_and_trusted_context() -> None:
     )
     assert result.success is True
     assert result.data["context"] == context
+
+
+def test_dispatcher_passes_confirmed_archive_context_to_real_tool(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "MyGame"
+    game = root / "game"
+    game.mkdir(parents=True)
+    config = _config_for(root)
+    captured = {}
+
+    def fake_unpack(*, config_loader, confirmed_game_dir):
+        captured["config_loader"] = config_loader
+        captured["game_dir"] = confirmed_game_dir
+        return ToolResult(True, "ok")
+
+    import module.Agent.tools.archive_tools as archive_tools
+
+    monkeypatch.setattr(archive_tools, "unpack_rpa_files", fake_unpack)
+    dispatcher = ToolDispatcher(config_loader=lambda: config, engine=_FakeEngine())
+    result = dispatcher.execute(
+        "unpack_rpa_files",
+        confirmed=True,
+        trusted_context={"game_dir": str(game.resolve())},
+    )
+
+    assert result.success is True
+    assert captured["config_loader"] is not None
+    assert captured["game_dir"] == str(game.resolve())
 
 
 def test_unpack_tool_uses_configured_game_dir_and_keeps_archives(tmp_path) -> None:
@@ -321,10 +348,10 @@ def test_confirmed_unpack_tool_holds_exclusive_engine_status(tmp_path) -> None:
     tool = dispatcher.tools["unpack_rpa_files"]
     dispatcher._tools["unpack_rpa_files"] = replace(
         tool,
-        handler=lambda _confirmed_game_dir: ToolResult(
+        handler=lambda confirmed_game_dir: ToolResult(
             True,
             "ok",
-            {"game_dir": _confirmed_game_dir},
+            {"game_dir": confirmed_game_dir},
         ),
     )
 

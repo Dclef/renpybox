@@ -223,7 +223,7 @@ class ToolDispatcher:
                     localizer.agent_tool_confirmation_stale,
                     code="CONFIRMATION_STALE",
                 )
-            handler_arguments["_confirmed_game_dir"] = confirmed_game_dir
+            handler_arguments["confirmed_game_dir"] = confirmed_game_dir
         elif tool.name == "optimize_old_new_translations":
             if not trusted_context:
                 return ToolResult(
@@ -231,7 +231,7 @@ class ToolDispatcher:
                     localizer.agent_tool_confirmation_stale,
                     code="CONFIRMATION_STALE",
                 )
-            handler_arguments["_confirmed_context"] = dict(trusted_context)
+            handler_arguments["confirmed_context"] = dict(trusted_context)
 
         acquired = False
         if tool.requires_idle_engine:

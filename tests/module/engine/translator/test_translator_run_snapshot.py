@@ -72,6 +72,30 @@ def test_resumed_round_progress_uses_completed_plus_remaining() -> None:
     assert translator.extras["total_line"] == 8
 
 
+def test_translation_progress_merges_runtime_metrics() -> None:
+    translator = _translator()
+    translator.extras = translator._new_progress_extras(
+        90,
+        cached_line_count = 10,
+    )
+
+    progress = translator._merge_task_result_into_progress({
+        "row_count": 4,
+        "input_tokens": 80,
+        "output_tokens": 40,
+        "request_count": 2,
+        "latency_ms": 250.0,
+        "recent_items": [{"id": "#4"}],
+    })
+
+    assert progress["processed_batches"] == 1
+    assert progress["batch_count"] == 1
+    assert progress["request_count"] == 2
+    assert progress["latency_ms"] == 125.0
+    assert progress["cache_hit_rate"] == 0.1
+    assert progress["recent_items"] == [{"id": "#4"}]
+
+
 def test_verify_uppercase_untranslated_only_excludes_double_unchanged(
     tmp_path, monkeypatch
 ) -> None:
@@ -386,8 +410,8 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     assert runtime.token_threshold == 24
     assert runtime.max_workers == 16
     assert runtime.rpm_threshold == 90
-    assert runtime_platform["model"] == "old-model"
-    assert runtime_platform["api_url"] == "https://old.invalid/v1"
+    assert runtime_platform["model"] == "new-model"
+    assert runtime_platform["api_url"] == "https://new.invalid/v1"
     assert runtime_platform["api_key"] == ["new-key"]
 
     persisted = resumed.cache_manager.get_project().get_translation_snapshot()
@@ -539,7 +563,7 @@ def test_no_items_finishes_without_emitting_stop(monkeypatch) -> None:
     assert events[-1][1]["no_items"] is True
 
 
-def test_resume_provider_only_overlays_current_credentials() -> None:
+def test_resume_provider_uses_current_active_platform() -> None:
     persisted = {
         "request_policy": {
             "provider": {
@@ -570,9 +594,9 @@ def test_resume_provider_only_overlays_current_credentials() -> None:
 
     provider = Translator._get_resume_runtime_provider(persisted, config)
 
-    assert provider["model"] == "snapshot-model"
-    assert provider["api_url"] == "https://current-user:current-pass@snapshot.invalid/v1"
-    assert provider["headers"]["X-Region"] == "snapshot-region"
+    assert provider["model"] == "current-model"
+    assert provider["api_url"] == "https://current-user:current-pass@current.invalid/v2"
+    assert provider["headers"]["X-Region"] == "current-region"
     assert provider["headers"]["Authorization"] == "Bearer current-secret"
     assert provider["refresh_token"] == "current-refresh"
 
@@ -587,7 +611,7 @@ def test_resume_provider_follows_stable_identity_after_numeric_reorder() -> None
             },
         },
     }
-    config = Config(platforms=[{
+    config = Config(activate_platform=9, platforms=[{
         "id": 9,
         "credential_id": "a" * 32,
         "model": "current-model",
@@ -596,12 +620,12 @@ def test_resume_provider_follows_stable_identity_after_numeric_reorder() -> None
 
     provider = Translator._get_resume_runtime_provider(persisted, config)
 
-    assert provider["id"] == 3
-    assert provider["model"] == "snapshot-model"
+    assert provider["id"] == 9
+    assert provider["model"] == "current-model"
     assert provider["api_key"] == ["current-key"]
 
 
-def test_resume_provider_rejects_reused_numeric_id_with_new_identity() -> None:
+def test_resume_provider_uses_current_platform_after_identity_change() -> None:
     persisted = {
         "request_policy": {
             "provider": {
@@ -611,14 +635,17 @@ def test_resume_provider_rejects_reused_numeric_id_with_new_identity() -> None:
             },
         },
     }
-    config = Config(platforms=[{
+    config = Config(activate_platform=3, platforms=[{
         "id": 3,
         "credential_id": "b" * 32,
         "api_key": ["other-key"],
     }])
 
-    with pytest.raises(ValueError, match="接口已不存在"):
-        Translator._get_resume_runtime_provider(persisted, config)
+    provider = Translator._get_resume_runtime_provider(persisted, config)
+
+    assert provider["id"] == 3
+    assert provider["credential_id"] == "b" * 32
+    assert provider["api_key"] == ["other-key"]
 
 
 def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
@@ -627,7 +654,7 @@ def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
             "provider": {"id": 3, "model": "snapshot-model"},
         },
     }
-    config = Config(platforms=[{
+    config = Config(activate_platform=8, platforms=[{
         "id": 8,
         "credential_id": "a" * 32,
         "legacy_credential_id": "3",
@@ -636,5 +663,5 @@ def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
 
     provider = Translator._get_resume_runtime_provider(persisted, config)
 
-    assert provider["model"] == "snapshot-model"
+    assert provider["id"] == 8
     assert provider["api_key"] == ["current-key"]

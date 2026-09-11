@@ -26,8 +26,6 @@ from module.Engine.Translator.TranslationTaskContext import (
     ProjectAssets,
     TermAsset,
     TranslationTaskContext,
-    find_provider_by_identity,
-    merge_provider_credentials,
 )
 from module.Engine.Translator.TranslatorTask import TranslatorTask
 from module.File.FileManager import FileManager
@@ -579,23 +577,10 @@ class Translator(Base):
 
     @classmethod
     def _get_resume_runtime_provider(cls, snapshot: dict, config: Config) -> dict:
-        request_policy = snapshot.get("request_policy", {})
-        persisted = (
-            request_policy.get("provider", {})
-            if isinstance(request_policy, Mapping)
-            else {}
-        )
-        persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
-
-        current = find_provider_by_identity(persisted, config.platforms)
-        if persisted and not current:
-            raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再继续翻译")
-        if not current:
-            current = cls._get_active_platform(config)
-
-        if not persisted:
-            return copy.deepcopy(current)
-        return merge_provider_credentials(persisted, current)
+        # 续接任务只沿用快照的翻译状态，接口配置以当前激活平台为准。
+        # 这样用户切换模型、地址或接口后点击“继续任务”不会悄悄回到旧接口。
+        del snapshot
+        return cls._get_active_platform(config)
 
     @staticmethod
     def _copy_entry_config(data: dict) -> Config:
@@ -843,12 +828,18 @@ class Translator(Base):
         context = self._build_task_context(current_config, assets, current_platform)
         self._run_asset_preflight(context, data)
         self._raise_if_stop_requested()
+        cached_line_count = sum(
+            1
+            for item in items
+            if Base.is_item_completed(item.get_status())
+        )
         progress = self._new_progress_extras(
             sum(
                 1
                 for item in items
                 if item.get_status() == Base.TranslationStatus.UNTRANSLATED
-            )
+            ),
+            cached_line_count = cached_line_count,
         )
         self._raise_if_stop_requested()
         self.cache_manager.reset_translation_run(
@@ -941,8 +932,11 @@ class Translator(Base):
         finally:
             TaskRequester.unbind_run_cancel_event()
 
-    def _new_progress_extras(self, total_line: int) -> dict:
+    def _new_progress_extras(self, total_line: int, *, cached_line_count: int = 0) -> dict:
         """创建新的翻译进度统计。"""
+        total_line = max(0, int(total_line or 0))
+        cached_line_count = max(0, int(cached_line_count or 0))
+        cache_lookup_count = total_line + cached_line_count
         return {
             "start_time": time.time(),
             "total_line": total_line,
@@ -954,6 +948,21 @@ class Translator(Base):
             "fallback_line_count": 0,
             "line_count_mismatch_count": 0,
             "requested_line_count": 0,
+            "processed_batches": 0,
+            "batch_count": 0,
+            "request_count": 0,
+            "total_latency_ms": 0.0,
+            "latency_ms": 0.0,
+            "average_latency_ms": 0.0,
+            "cached_line_count": cached_line_count,
+            "cache_hit_count": cached_line_count,
+            "cache_lookup_count": cache_lookup_count,
+            "cache_hit_rate": (
+                cached_line_count / cache_lookup_count
+                if cache_lookup_count
+                else 0.0
+            ),
+            "recent_items": [],
             "time": 0,
         }
 
@@ -977,6 +986,37 @@ class Translator(Base):
         ):
             extras.setdefault(key, 0)
 
+        cached_line_count = max(
+            0,
+            int(
+                extras.get(
+                    "cached_line_count",
+                    extras.get("cache_hit_count", 0),
+                )
+                or 0
+            ),
+        )
+        total_line = max(0, int(extras.get("total_line", 0) or 0))
+        cache_lookup_count = max(
+            cached_line_count + total_line,
+            int(extras.get("cache_lookup_count", 0) or 0),
+        )
+        extras["cached_line_count"] = cached_line_count
+        extras["cache_hit_count"] = cached_line_count
+        extras["cache_lookup_count"] = cache_lookup_count
+        extras["cache_hit_rate"] = (
+            cached_line_count / cache_lookup_count
+            if cache_lookup_count
+            else 0.0
+        )
+        extras.setdefault("processed_batches", 0)
+        extras.setdefault("batch_count", extras["processed_batches"])
+        extras.setdefault("request_count", 0)
+        extras.setdefault("total_latency_ms", 0.0)
+        extras.setdefault("latency_ms", 0.0)
+        extras.setdefault("average_latency_ms", extras["latency_ms"])
+        extras.setdefault("recent_items", [])
+
         return extras
 
     def _merge_task_result_into_progress(self, result: dict) -> dict:
@@ -984,6 +1024,50 @@ class Translator(Base):
         input_tokens = int(result.get("input_tokens", 0) or 0)
         output_tokens = int(result.get("output_tokens", 0) or 0)
         start_time = self.extras.get("start_time", time.time())
+        previous_batch_count = int(
+            self.extras.get(
+                "processed_batches",
+                self.extras.get("batch_count", 0),
+            )
+            or 0
+        )
+        batch_count = previous_batch_count + 1
+        request_count = int(self.extras.get("request_count", 0) or 0) + int(
+            result.get("request_count", 0) or 0
+        )
+        total_latency_ms = float(self.extras.get("total_latency_ms", 0) or 0) + float(
+            result.get("latency_ms", 0) or 0
+        )
+        average_latency_ms = (
+            total_latency_ms / request_count
+            if request_count
+            else 0.0
+        )
+        recent_items = self.extras.get("recent_items", [])
+        if not isinstance(recent_items, list):
+            recent_items = []
+        result_items = result.get("recent_items", [])
+        if isinstance(result_items, list):
+            recent_items = [
+                item
+                for item in recent_items + result_items
+                if isinstance(item, dict)
+            ][-5:]
+        cached_line_count = max(
+            0,
+            int(
+                self.extras.get(
+                    "cached_line_count",
+                    self.extras.get("cache_hit_count", 0),
+                )
+                or 0
+            ),
+        )
+        total_line = max(0, int(self.extras.get("total_line", 0) or 0))
+        cache_lookup_count = max(
+            cached_line_count + total_line,
+            int(self.extras.get("cache_lookup_count", 0) or 0),
+        )
 
         return {
             "start_time": start_time,
@@ -996,6 +1080,21 @@ class Translator(Base):
             "fallback_line_count": self.extras.get("fallback_line_count", 0) + int(result.get("fallback_line_count", 0) or 0),
             "line_count_mismatch_count": self.extras.get("line_count_mismatch_count", 0) + int(result.get("line_count_mismatch_count", 0) or 0),
             "requested_line_count": self.extras.get("requested_line_count", 0) + int(result.get("requested_line_count", 0) or 0),
+            "processed_batches": batch_count,
+            "batch_count": batch_count,
+            "request_count": request_count,
+            "total_latency_ms": round(total_latency_ms, 1),
+            "latency_ms": round(average_latency_ms, 1),
+            "average_latency_ms": round(average_latency_ms, 1),
+            "cached_line_count": cached_line_count,
+            "cache_hit_count": cached_line_count,
+            "cache_lookup_count": cache_lookup_count,
+            "cache_hit_rate": (
+                cached_line_count / cache_lookup_count
+                if cache_lookup_count
+                else 0.0
+            ),
+            "recent_items": recent_items,
             "time": time.time() - start_time,
         }
 
@@ -1208,7 +1307,15 @@ class Translator(Base):
                 self.info(f"[INIT] 初始化进度: 待翻译 {total_untranslated} 行")
                 self.extras = self.cache_manager.get_project().get_progress()
                 if not self.extras:
-                    self.extras = self._new_progress_extras(total_untranslated)
+                    cached_line_count = sum(
+                        1
+                        for item in self.cache_manager.get_items()
+                        if Base.is_item_completed(item.get_status())
+                    )
+                    self.extras = self._new_progress_extras(
+                        total_untranslated,
+                        cached_line_count = cached_line_count,
+                    )
 
             # 更新翻译进度
             self.cache_manager.get_project().set_progress(self.extras)

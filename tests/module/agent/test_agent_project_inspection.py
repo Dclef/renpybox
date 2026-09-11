@@ -2,6 +2,7 @@ from pathlib import Path
 
 from base.Base import Base
 from module.Agent.tools.inspection_tools import inspect_translation_project
+from module.Agent.tools.inspection_tools import _asset_summary
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheManager import CacheManager
@@ -240,6 +241,28 @@ def test_project_inspection_ignores_empty_worldbook_draft_fields(tmp_path) -> No
     assert result.success is True
     assert result.data["assets"]["has_drafts"] is False
     assert result.data["next_action_code"] == "START_TRANSLATION"
+
+
+def test_project_inspection_does_not_report_worldbook_for_character_assets(tmp_path) -> None:
+    root = tmp_path / "Game"
+    game = root / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    config = _config_for(root)
+    project = CacheProject(status=Base.TranslationStatus.UNTRANSLATED)
+    project.set_project_assets({
+        "schema_version": 1,
+        "worldbook": {"enabled": False, "data": {"setting_summary": "旧世界观"}},
+        "character_cards": {
+            "enabled": True,
+            "items": [{"name": "Alice", "identity": "主角", "enabled": True}],
+        },
+    })
+
+    summary = _asset_summary(project)
+
+    assert summary["has_effective_assets"] is True
+    assert summary["worldbook_enabled"] is False
 
 
 def test_project_inspection_reports_partial_translation_cache(tmp_path) -> None:
