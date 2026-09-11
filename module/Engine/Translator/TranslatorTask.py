@@ -133,6 +133,58 @@ class TranslatorTask(Base):
         self.candidate_sink = candidate_sink
         self.prompt_builder = PromptBuilder(self.task_context)
         self.response_checker = ResponseChecker(self.config, items)
+        self._request_count = 0
+        self._latency_ms = 0.0
+
+    def _request_with_metrics(
+        self,
+        requester: TaskRequester,
+        messages: list[dict[str, object]],
+        **kwargs: object,
+    ) -> tuple[object, object, object, object, object]:
+        """记录每次远程请求的次数和耗时。"""
+        started_at = time.perf_counter()
+        try:
+            return requester.request(messages, **kwargs)
+        finally:
+            self._request_count += 1
+            self._latency_ms += (time.perf_counter() - started_at) * 1000
+
+    def _recent_items(self) -> list[dict[str, object]]:
+        """生成监控页展示的最近处理条目。"""
+        average_latency = self._latency_ms / max(1, self._request_count)
+        recent_items: list[dict[str, object]] = []
+        for index, item in enumerate(self.items):
+            source = item.get_src() or ""
+            target = item.get_dst() or ""
+            if not source and not target:
+                continue
+            speaker = item.get_name_src()
+            if isinstance(speaker, list):
+                speaker = ", ".join(str(value) for value in speaker if value)
+            row = item.get_row()
+            file_path = item.get_file_path() or ""
+            file_name = f"{file_path}:{row}" if file_path and row else file_path
+            recent_items.append(
+                {
+                    "id": f"#{row or index + 1}",
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "speaker": str(speaker or ""),
+                    "file": file_name,
+                    "source": source,
+                    "target": target,
+                    "latency_ms": round(average_latency, 1),
+                    "status": str(item.get_status().value),
+                }
+            )
+        return recent_items[-5:]
+
+    def _attach_metrics(self, result: dict[str, object]) -> dict[str, object]:
+        """把任务级监控数据附加到统一结果中。"""
+        result["request_count"] = self._request_count
+        result["latency_ms"] = round(self._latency_ms, 1)
+        result["recent_items"] = self._recent_items()
+        return result
 
     def should_use_single_line_translation(self) -> bool:
         """判断是否启用单行翻译模式。"""
@@ -319,7 +371,8 @@ class TranslatorTask(Base):
             item = item,
         )
 
-        skip, response_think, response_result, input_tokens, output_tokens = requester.request(
+        skip, response_think, response_result, input_tokens, output_tokens = self._request_with_metrics(
+            requester,
             messages,
             response_shape = "none",
         )
@@ -394,7 +447,8 @@ class TranslatorTask(Base):
         self.info(f"[TASK-START] 任务启动: items={len(self.items)}, round={current_round+1}, "
                   f"model={self.platform.get('model', 'unknown')}")
         try:
-            return self.request(self.items, self.processors, self.precedings, self.local_flag, current_round)
+            result = self.request(self.items, self.processors, self.precedings, self.local_flag, current_round)
+            return self._attach_metrics(result)
         except Exception as e:
             # 关键：捕获所有异常，防止线程静默死亡导致主流程挂起
             error_msg = f"任务执行失败: {str(e)}"
@@ -402,7 +456,9 @@ class TranslatorTask(Base):
             self.error(f"[TASK-CRASH] 完整堆栈:\n{traceback.format_exc()}")
             
             # 确保返回有效结果，防止主线程无限等待
-            return TranslatorTaskResult(error = True, error_msg = error_msg).as_dict()
+            return self._attach_metrics(
+                TranslatorTaskResult(error = True, error_msg = error_msg).as_dict()
+            )
 
     # 请求
     def request(self, items: list[CacheItem], processors: list[TextProcessor], precedings: list[CacheItem], local_flag: bool, current_round: int) -> dict[str, object]:
@@ -506,7 +562,8 @@ class TranslatorTask(Base):
             not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
         )
         self.debug("[REQUEST] 发起API请求...")
-        skip, response_think, response_result, input_tokens, output_tokens = requester.request(
+        skip, response_think, response_result, input_tokens, output_tokens = self._request_with_metrics(
+            requester,
             self.messages,
             response_shape = "json_object" if structured_response else "none",
         )
@@ -617,7 +674,8 @@ class TranslatorTask(Base):
                 console_log.extend(retry_log)
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
-            retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = requester.request(
+            retry_skip, retry_think, retry_result, retry_input_tokens, retry_output_tokens = self._request_with_metrics(
+                requester,
                 retry_messages,
                 response_shape = "none",
             )
