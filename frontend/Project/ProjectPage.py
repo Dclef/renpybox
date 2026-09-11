@@ -2,6 +2,7 @@ import os
 import webbrowser
 from pathlib import Path
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QFileDialog
@@ -11,6 +12,7 @@ from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import TitleLabel
+from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -63,16 +65,28 @@ class ProjectPage(QWidget, Base):
         )
         self.vbox.addWidget(header)
 
+        # 长路径换行后允许表单向下延伸，避免短窗口裁掉文字。
+        self.content_scroll = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.enableTransparentBackground()
+        content = QWidget(self.content_scroll)
+        mark_app_page(content)
+        self.content_scroll.setWidget(content)
+        self.vbox.addWidget(self.content_scroll, 1)
+        form = QVBoxLayout(content)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+
         # 添加控件
-        self.add_widget_source_language(self.vbox, config, window)
-        self.add_widget_target_language(self.vbox, config, window)
-        self.add_widget_input_folder(self.vbox, config, window)
-        self.add_widget_output_folder(self.vbox, config, window)
-        self.add_widget_output_folder_open_on_finish(self.vbox, config, window)
-        self.add_widget_traditional_chinese(self.vbox, config, window)
+        self.add_widget_source_language(form, config, window)
+        self.add_widget_target_language(form, config, window)
+        self.add_widget_input_folder(form, config, window)
+        self.add_widget_output_folder(form, config, window)
+        self.add_widget_output_folder_open_on_finish(form, config, window)
+        self.add_widget_traditional_chinese(form, config, window)
 
         # 填充
-        self.vbox.addStretch(1)
+        form.addStretch(1)
 
     def showEvent(self, event) -> None:
         """页面重新显示时刷新路径，避免沿用旧页面创建时的配置快照。"""
@@ -81,13 +95,24 @@ class ProjectPage(QWidget, Base):
         input_card = getattr(self, "input_folder_card", None)
         output_card = getattr(self, "output_folder_card", None)
         if input_card is not None:
-            input_card.get_description_label().setText(
-                f"{Localizer.get().project_page_input_folder_content} {config.input_folder}"
+            self._set_folder_description(
+                input_card,
+                Localizer.get().project_page_input_folder_content,
+                config.input_folder,
             )
         if output_card is not None:
-            output_card.get_description_label().setText(
-                f"{Localizer.get().project_page_output_folder_content} {config.output_folder}"
+            self._set_folder_description(
+                output_card,
+                Localizer.get().project_page_output_folder_content,
+                config.output_folder,
             )
+
+    @staticmethod
+    def _set_folder_description(card: PushButtonCard, description: str, path: str) -> None:
+        """显示可换行的路径，并在悬停时保留完整目录。"""
+        label = card.get_description_label()
+        label.setText(f"{description} {path}")
+        label.setToolTip(path)
 
     def _guess_lang_from_path(self, path: Path) -> BaseLanguage.Enum | None:
         lower = str(path).lower()
@@ -243,7 +268,11 @@ class ProjectPage(QWidget, Base):
             widget.add_spacing(4)
             widget.add_widget(open_btn)
 
-            widget.get_description_label().setText(f"{Localizer.get().project_page_input_folder_content} {config.input_folder}")
+            self._set_folder_description(
+                widget,
+                Localizer.get().project_page_input_folder_content,
+                config.input_folder,
+            )
             widget.get_push_button().setText(Localizer.get().select)
             widget.get_push_button().setIcon(FluentIcon.ADD_TO)
 
@@ -254,7 +283,11 @@ class ProjectPage(QWidget, Base):
                 return
 
             # 更新UI
-            widget.get_description_label().setText(f"{Localizer.get().project_page_input_folder_content} {path.strip()}")
+            self._set_folder_description(
+                widget,
+                Localizer.get().project_page_input_folder_content,
+                path.strip(),
+            )
 
             # 更新并保存配置
             config = Config().load()
@@ -283,7 +316,11 @@ class ProjectPage(QWidget, Base):
             widget.add_spacing(4)
             widget.add_widget(open_btn)
 
-            widget.get_description_label().setText(f"{Localizer.get().project_page_output_folder_content} {config.output_folder}")
+            self._set_folder_description(
+                widget,
+                Localizer.get().project_page_output_folder_content,
+                config.output_folder,
+            )
             widget.get_push_button().setText(Localizer.get().select)
             widget.get_push_button().setIcon(FluentIcon.ADD_TO)
 
@@ -294,7 +331,11 @@ class ProjectPage(QWidget, Base):
                 return
 
             # 更新UI
-            widget.get_description_label().setText(f"{Localizer.get().project_page_output_folder_content} {path.strip()}")
+            self._set_folder_description(
+                widget,
+                Localizer.get().project_page_output_folder_content,
+                path.strip(),
+            )
 
             # 更新并保存配置
             config = Config().load()

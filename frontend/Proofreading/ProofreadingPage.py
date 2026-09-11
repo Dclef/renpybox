@@ -57,17 +57,18 @@ class ProofreadingPage(QWidget, Base):
 
     @staticmethod
     def _cache_load_error_message(error: BaseException) -> str:
-        """将缓存载入异常转换为不泄露路径/凭据的中文提示。"""
+        """将缓存载入异常转换为不泄露路径或凭据的本地化提示。"""
+        strings = Localizer.get()
         if isinstance(error, CacheLoadError):
             text = str(error).casefold()
             if "incomplete" in text or "不存在" in text or "no cache" in text:
-                return "未找到完整翻译缓存，请先完成一键翻译或检查输出目录"
+                return strings.proofreading_page_cache_missing
             if "invalid" in text or "corrupt" in text or "schema" in text:
-                return "翻译缓存格式损坏，请重新执行翻译后再进行校对"
-            return "无法载入翻译缓存，请确认项目路径和输出目录一致"
+                return strings.proofreading_page_cache_invalid
+            return strings.proofreading_page_cache_mismatch
         if isinstance(error, (FileNotFoundError, PermissionError, OSError)):
-            return "无法访问翻译缓存，请检查目录权限和磁盘空间"
-        return "校对缓存载入失败，请检查项目路径后重试"
+            return strings.proofreading_page_cache_access_denied
+        return strings.proofreading_page_cache_load_error
 
     items_loaded = pyqtSignal(list)
     translate_done = pyqtSignal(object, bool)

@@ -23,14 +23,13 @@ class PushButtonCard(CardWidget):
 
         self.title_label = StrongBodyLabel(title, self)
         self.description_label = CaptionLabel(description, self)
+        self.description_label.setWordWrap(True)
         self.description_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
 
         self.vbox.addWidget(self.title_label)
         self.vbox.addWidget(self.description_label)
-        self.root.addLayout(self.vbox)
-
-        # 填充
-        self.root.addStretch(1)
+        # 说明区域占用控件之外的剩余宽度，长文本在卡片内换行。
+        self.root.addLayout(self.vbox, 1)
 
         # 添加控件
         self.push_button = PushButton("", self)

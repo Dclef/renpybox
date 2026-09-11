@@ -347,11 +347,11 @@ class RenpyWorkbenchPage(Base, QWidget):
             title.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
             value = BodyLabel("—", row_widget)
             value.setWordWrap(False)
+            # 长路径允许被省略，但仍须分到标题之外的可见宽度。
             value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             row_layout.addWidget(title, 0)
-            row_layout.addStretch(1)
-            row_layout.addWidget(value, 0)
+            row_layout.addWidget(value, 1)
             row = index // 2
             col = index % 2
             summary_grid.addWidget(row_widget, row, col)

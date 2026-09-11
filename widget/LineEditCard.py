@@ -24,17 +24,15 @@ class LineEditCard(CardWidget):
         self.vbox = QVBoxLayout(self.vbox_container)
         self.vbox.setSpacing(0)
         self.vbox.setContentsMargins(0, 0, 0, 0)
-        self.root.addWidget(self.vbox_container)
+        self.root.addWidget(self.vbox_container, 1)
 
         self.title_label = StrongBodyLabel(title, self)
         self.vbox.addWidget(self.title_label)
 
         self.description_label = CaptionLabel(description, self)
+        self.description_label.setWordWrap(True)
         self.description_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
         self.vbox.addWidget(self.description_label)
-
-        # 填充
-        self.root.addStretch(1)
 
         # 添加控件
         self.line_edit = LineEdit()
