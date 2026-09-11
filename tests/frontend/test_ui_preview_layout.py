@@ -15,9 +15,12 @@ from qfluentwidgets import SingleDirectionScrollArea, Theme, ThemeColor, qconfig
 
 from base.BaseLanguage import BaseLanguage
 from frontend.Agent.AgentPage import AgentEmptyState, AgentPage
+from frontend.AppSettingsPage import AppSettingsPage
 from frontend.Proofreading.ProofreadingPage import ProofreadingPage
+from frontend.Project.ProjectPage import ProjectPage
 from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
 from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
+from frontend.Setting.BasicSettingsPage import BasicSettingsPage
 from frontend.TranslationPage import TranslationPage
 from frontend.Workbench.RenpyWorkbenchPage import RenpyWorkbenchPage
 from module.Cache.CacheItem import CacheItem
@@ -407,6 +410,152 @@ def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:
 
     page.deleteLater()
     window.close()
+
+
+@pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
+def test_translation_dashboard_scrolls_and_reflows_in_short_window(monkeypatch, language) -> None:
+    """短窗口的监控正文可滚动，速览卡改为两列且不会遮挡流水卡。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", language)
+    window = QWidget()
+    window.resize(900, 640)
+    page = TranslationPage("translation_page", window)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+
+    hero = page.findChild(QWidget, "translationProgressCard")
+    feed = page.findChild(QWidget, "translationStreamFeedCard")
+    assert hero is not None and feed is not None
+    assert not hero.geometry().intersects(feed.geometry())
+    assert page.kpi_layout.rowCount() == 2
+    assert page.content_scroll.horizontalScrollBar().maximum() == 0
+    assert page.content_scroll.verticalScrollBar().maximum() > 0
+    assert page.footer_backup_label.isHidden()
+    for width in (1231, 851, 680, 1231):
+        window.resize(width, 601)
+        page.setGeometry(window.rect())
+        QTest.qWait(50)
+        bar = page.command_bar_card.command_bar
+        for button in (page.action_start, page.action_stop, page.action_continue):
+            assert button.isVisible()
+            assert button.width() >= button.sizeHint().width()
+            assert not button.visibleRegion().isEmpty()
+        assert not bar.geometry().intersects(page.footer_backup_label.geometry()) or page.footer_backup_label.isHidden()
+    page.deleteLater()
+    window.close()
+
+
+def test_workbench_summary_values_keep_visible_width(monkeypatch) -> None:
+    """概览摘要的值可省略长路径，但不能被布局压缩成零宽度。"""
+    config = Config()
+    config.platforms = []
+    monkeypatch.setattr(RenpyWorkbenchPage, "_load_config", lambda self: config)
+    monkeypatch.setattr(RenpyWorkbenchPage, "_save_config", lambda self, current: None)
+    window = QWidget()
+    window.resize(1024, 740)
+    page = RenpyWorkbenchPage("workbench", window)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+
+    assert all(label.text() for label in page.summary_labels.values())
+    assert all(label.width() > 0 for label in page.summary_labels.values())
+    page.deleteLater()
+    window.close()
+
+
+@pytest.mark.parametrize("page_type", [BasicSettingsPage, AppSettingsPage])
+def test_settings_cards_wrap_without_horizontal_scrolling(monkeypatch, page_type) -> None:
+    """英文长说明在卡片内换行，不把表单控件推离初始视口。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
+    window = QWidget()
+    window.resize(744, 602)
+    page = page_type("settings", window)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+
+    scroll = page.findChild(SingleDirectionScrollArea)
+    assert scroll is not None
+    assert scroll.horizontalScrollBar().maximum() == 0
+    page.deleteLater()
+    window.close()
+
+
+@pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
+def test_project_path_description_wraps_and_keeps_full_path(monkeypatch, language) -> None:
+    """长目录可换行显示，悬停仍可获得未截断的完整路径。"""
+    config = Config()
+    config.input_folder = "D:/Games/" + "TranslationWorkspace/" * 5 + "game/tl/chinese"
+    config.output_folder = config.input_folder + "/output"
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", language)
+    window = QWidget()
+    page = ProjectPage("project", window)
+    window.show()
+    for width, height in ((1024, 740), (851, 601), (680, 500), (1024, 740)):
+        window.resize(width, height)
+        page.setGeometry(window.rect())
+        QTest.qWait(50)
+        assert page.content_scroll.horizontalScrollBar().maximum() == 0
+        for card, path in (
+            (page.input_folder_card, config.input_folder),
+            (page.output_folder_card, config.output_folder),
+        ):
+            label = card.get_description_label()
+            assert label.wordWrap()
+            assert label.toolTip() == path
+            assert label.height() >= label.heightForWidth(label.width())
+            page.content_scroll.ensureWidgetVisible(card)
+            QTest.qWait(30)
+            assert not card.get_push_button().visibleRegion().isEmpty()
+    page.deleteLater()
+    window.close()
+
+
+@pytest.mark.parametrize("page_type", [TranslationPage, ProjectPage])
+@pytest.mark.parametrize("initial_theme", [Theme.DARK, Theme.LIGHT])
+def test_scrolling_pages_keep_theme_background_after_switch(monkeypatch, page_type, initial_theme) -> None:
+    """滚动正文在明暗主题往返切换后仍使用页面底色。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    previous_theme, previous_style = qconfig.theme, APP.styleSheet()
+    window = QWidget()
+    try:
+        setTheme(initial_theme)
+        APP.setStyleSheet(ThemeHelper.get_current_stylesheet())
+        window.resize(851, 601)
+        page = page_type("theme_review", window)
+        page.setGeometry(window.rect())
+        window.show()
+        for theme in (initial_theme, Theme.LIGHT, Theme.DARK):
+            setTheme(theme)
+            APP.setStyleSheet(ThemeHelper.get_current_stylesheet())
+            QTest.qWait(50)
+            palette = DARK if theme == Theme.DARK else LIGHT
+            surface = page.content_scroll.widget().grab().toImage()
+            assert surface.pixelColor(1, 1).name() == QColor(palette.background).name()
+    finally:
+        window.close()
+        window.deleteLater()
+        setTheme(previous_theme)
+        APP.setStyleSheet(previous_style)
+
+
+def test_proofreading_cache_errors_follow_the_selected_language(monkeypatch) -> None:
+    """缓存异常不泄露路径，同时使用当前界面的语言。"""
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
+    assert ProofreadingPage._cache_load_error_message(FileNotFoundError()) == (
+        Localizer.get().proofreading_page_cache_access_denied
+    )
 
 
 @pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
