@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEventLoop, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette, QTextLength, QTextTable
 from PyQt5.QtWidgets import QApplication, QSizePolicy, QWidget
 
@@ -817,6 +817,44 @@ def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> 
 
     page.deleteLater()
     window.deleteLater()
+
+
+def test_agent_page_renders_while_deltas_keep_arriving(monkeypatch) -> None:
+    """连续到达的增量不能把正文刷新一直推迟到流结束。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    page = AgentPage("agent_page")
+    turn = page._ensure_assistant_turn()
+    loop = QEventLoop()
+    producer = QTimer(page)
+    producer.setInterval(5)
+    deadline = QTimer(page)
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(loop.quit)
+    rendered = []
+
+    def deliver() -> None:
+        page._append_reply_delta("片段")
+        rendered.append(turn.text)
+        if len(rendered) == 60:
+            producer.stop()
+            loop.quit()
+
+    producer.timeout.connect(deliver)
+    try:
+        producer.start()
+        deadline.start(3000)
+        loop.exec()
+        assert len(rendered) == 60
+        assert any(rendered), "持续输出期间也应显示已经收到的正文"
+        page._flush_pending_deltas()
+        assert turn.text == "片段" * 60
+    finally:
+        producer.stop()
+        deadline.stop()
+        page.deleteLater()
 
 
 def test_agent_page_flushes_thinking_before_final_reply(monkeypatch) -> None:

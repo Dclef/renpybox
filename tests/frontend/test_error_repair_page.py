@@ -71,19 +71,23 @@ def test_page_removes_dead_encoding_option_and_gates_report_export(monkeypatch) 
 def test_scan_runs_in_worker_saves_report_and_blocks_duplicate_actions(
     tmp_path, monkeypatch
 ) -> None:
-    game_dir = tmp_path / "game"
-    game_dir.mkdir()
-    report = {str(game_dir / "script.rpy"): [{"line": 3, "type": "quotes"}]}
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    report = {str(translation_dir / "script.rpy"): [{"line": 3, "type": "quotes"}]}
     calls = []
 
     class FakeRepairer:
+        @staticmethod
+        def resolve_translation_folder(path):
+            return Path(path)
+
         def check_folder(self, path, **kwargs):
             calls.append((path, kwargs))
             return report
 
     page = _new_page(monkeypatch)
     monkeypatch.setattr(error_page_module, "ErrorRepairer", FakeRepairer)
-    page.game_dir_edit.setText(str(game_dir))
+    page.game_dir_edit.setText(str(translation_dir))
 
     page._scan_errors()
     page._scan_errors()
@@ -102,7 +106,7 @@ def test_scan_runs_in_worker_saves_report_and_blocks_duplicate_actions(
     worker.finish()
 
     assert calls == [(
-        str(game_dir),
+        str(translation_dir),
         {
             "check_indent": True,
             "check_indent_level": False,
@@ -121,22 +125,30 @@ def test_scan_runs_in_worker_saves_report_and_blocks_duplicate_actions(
 
 
 def test_auto_repair_runs_in_worker_with_snapshotted_options(tmp_path, monkeypatch) -> None:
-    game_dir = tmp_path / "game"
-    game_dir.mkdir()
-    first = game_dir / "first.rpy"
-    second = game_dir / "second.rpy"
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    first = translation_dir / "first.rpy"
+    second = translation_dir / "second.rpy"
     first.write_text("label start:\n", encoding="utf-8")
     second.write_text("label end:\n", encoding="utf-8")
     calls = []
 
     class FakeRepairer:
+        @staticmethod
+        def resolve_translation_folder(path):
+            return Path(path)
+
+        @staticmethod
+        def get_rpy_files(path):
+            return sorted(Path(path).glob("*.rpy"))
+
         def auto_fix_file(self, path, **kwargs):
             calls.append((Path(path).name, kwargs))
             return (True, 2) if Path(path).name == "first.rpy" else (False, 0)
 
     page = _new_page(monkeypatch)
     monkeypatch.setattr(error_page_module, "ErrorRepairer", FakeRepairer)
-    page.game_dir_edit.setText(str(game_dir))
+    page.game_dir_edit.setText(str(translation_dir))
     page.fix_indent_check.setChecked(False)
     page.fix_indent_level_check.setChecked(True)
     page.fix_quotes_check.setChecked(True)
@@ -168,20 +180,31 @@ def test_auto_repair_runs_in_worker_with_snapshotted_options(tmp_path, monkeypat
 def test_lint_runs_in_worker_and_parses_output_off_main_path(tmp_path, monkeypatch) -> None:
     game_exe = tmp_path / "game.exe"
     game_exe.write_bytes(b"")
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
     calls = []
 
     class FakeRepairer:
+        @staticmethod
+        def resolve_translation_folder(path):
+            return Path(path)
+
         def exec_renpy_lint(self, path):
             calls.append(("exec", path))
             return "lint output"
 
         def parse_lint_errors(self, output):
             calls.append(("parse", output))
-            return [{"line": 7}]
+            return [{"file": "game/tl/chinese/script.rpy", "line": 7}]
+
+        def filter_lint_errors(self, errors, path):
+            calls.append(("filter", errors, path))
+            return errors
 
     page = _new_page(monkeypatch)
     monkeypatch.setattr(error_page_module, "ErrorRepairer", FakeRepairer)
     page.game_exe_edit.setText(str(game_exe))
+    page.game_dir_edit.setText(str(translation_dir))
 
     page._run_lint_check()
 
@@ -190,7 +213,11 @@ def test_lint_runs_in_worker_and_parses_output_off_main_path(tmp_path, monkeypat
     assert len(_DeferredThread.instances) == 1
     _DeferredThread.instances[0].finish()
 
-    assert calls == [("exec", str(game_exe)), ("parse", "lint output")]
+    assert calls == [
+        ("exec", str(game_exe)),
+        ("parse", "lint output"),
+        ("filter", [{"file": "game/tl/chinese/script.rpy", "line": 7}], translation_dir),
+    ]
     assert page._running_operation is None
     assert page.lint_check_button.isEnabled()
     page.close()
@@ -199,9 +226,15 @@ def test_lint_runs_in_worker_and_parses_output_off_main_path(tmp_path, monkeypat
 def test_lint_execution_failure_uses_error_path(tmp_path, monkeypatch) -> None:
     game_exe = tmp_path / "game.exe"
     game_exe.write_bytes(b"")
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
     messages = []
 
     class FakeRepairer:
+        @staticmethod
+        def resolve_translation_folder(path):
+            return Path(path)
+
         def exec_renpy_lint(self, path):
             del path
             return None
@@ -214,6 +247,7 @@ def test_lint_execution_failure_uses_error_path(tmp_path, monkeypatch) -> None:
         lambda *args, **kwargs: messages.append((args, kwargs)),
     )
     page.game_exe_edit.setText(str(game_exe))
+    page.game_dir_edit.setText(str(translation_dir))
 
     page._run_lint_check()
     _DeferredThread.instances[0].finish()
@@ -257,11 +291,15 @@ def test_export_uses_last_scan_report(tmp_path, monkeypatch) -> None:
 def test_worker_failure_restores_actions_and_preserves_previous_report(
     tmp_path, monkeypatch
 ) -> None:
-    game_dir = tmp_path / "game"
-    game_dir.mkdir()
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
     previous_report = {"old.rpy": [{"line": 1}]}
 
     class FakeRepairer:
+        @staticmethod
+        def resolve_translation_folder(path):
+            return Path(path)
+
         def check_folder(self, path, **kwargs):
             raise RuntimeError("scan exploded")
 
@@ -269,7 +307,7 @@ def test_worker_failure_restores_actions_and_preserves_previous_report(
     monkeypatch.setattr(error_page_module, "ErrorRepairer", FakeRepairer)
     page._last_scan_report = previous_report
     page._set_running_operation(None)
-    page.game_dir_edit.setText(str(game_dir))
+    page.game_dir_edit.setText(str(translation_dir))
 
     page._scan_errors()
     _DeferredThread.instances[0].finish()

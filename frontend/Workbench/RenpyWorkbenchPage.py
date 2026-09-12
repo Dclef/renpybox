@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 from contextlib import closing
@@ -78,7 +79,7 @@ class _WorkbenchSignals(QObject):
     analysis_success = pyqtSignal(object)
     analysis_failed = pyqtSignal(object)
     sync_success = pyqtSignal(object)
-    sync_failed = pyqtSignal(str)
+    sync_failed = pyqtSignal(object)
 
 
 class RenpyWorkbenchPage(Base, QWidget):
@@ -1433,6 +1434,9 @@ class RenpyWorkbenchPage(Base, QWidget):
             return
         self._analysis_running = True
         try:
+            self._flush_pending_edits()
+            config = copy.deepcopy(self._get_config_snapshot())
+            project_output = ProjectAssetsRepository.from_config(config).output_folder
             self._refresh_action_state()
         except Exception:
             self._analysis_running = False
@@ -1446,7 +1450,6 @@ class RenpyWorkbenchPage(Base, QWidget):
             success_payload: dict[str, Any] | None = None
             failure_payload: dict[str, Any] | None = None
             try:
-                config = self._load_config()
                 if mode == "all":
                     result = self.analysis_service.analyze_all(
                         config,
@@ -1475,6 +1478,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 else:
                     raise AnalysisServiceError(Localizer.get().workbench_unknown_analysis_mode)
                 success_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "result": result,
@@ -1482,6 +1486,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 }
             except AnalysisServiceError as exc:
                 failure_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": str(exc),
@@ -1489,6 +1494,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 }
             except Exception as exc:
                 failure_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": str(exc),
@@ -1501,6 +1507,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 self.signals.analysis_success.emit(success_payload)
             else:
                 self.signals.analysis_failed.emit(failure_payload or {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": Localizer.get().workbench_ai_analysis_failed_2,
@@ -1516,13 +1523,25 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._refresh_action_state()
             raise
 
+    def _background_result_config(self, payload: dict[str, Any]) -> Config | None:
+        """后台结果只应用到原项目；项目已切换时刷新当前页面并丢弃旧结果。"""
+        config = self._load_config()
+        current_output = ProjectAssetsRepository.from_config(config).output_folder
+        if Path(payload["project_output"]).resolve() != Path(current_output).resolve():
+            self.overview_status_label.setText(Localizer.get().workbench_ready)
+            self.refresh_from_config(config)
+            return None
+        return config
+
     def _on_analysis_success(self, payload: dict[str, Any]) -> None:
         """处理分析成功。"""
         self._analysis_running = False
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         result: AnalysisResult = payload["result"]
         mode = payload["mode"]
         card_id = payload.get("card_id", "")
-        config = self._load_config()
         config.renpy_workbench_last_analysis_scope = result.scope
         self._analysis_source_summary = Localizer.get().workbench_latest_analysis_source.format(source_summary=result.source_summary)
 
@@ -1572,6 +1591,9 @@ class RenpyWorkbenchPage(Base, QWidget):
     def _on_analysis_failed(self, payload: dict[str, Any]) -> None:
         """处理分析失败。"""
         self._analysis_running = False
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         mode = payload.get("mode", "")
         raw_response = normalize_text(payload.get("raw_response", ""))
         message = normalize_text(payload.get("message", Localizer.get().workbench_ai_analysis_failed))
@@ -1579,7 +1601,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             self._last_worldbook_raw = raw_response
         else:
             self._last_character_raw = raw_response
-        self.refresh_from_config(self._get_config_snapshot())
+        self.refresh_from_config(config)
         self.overview_status_label.setText(message)
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
@@ -1624,33 +1646,46 @@ class RenpyWorkbenchPage(Base, QWidget):
         """启动角色同步。"""
         if self._sync_running:
             return
+        self._flush_pending_edits()
+        config = copy.deepcopy(self._get_config_snapshot())
+        project_output = ProjectAssetsRepository.from_config(config).output_folder
         self._sync_running = True
         self._refresh_action_state()
         self.overview_status_label.setText(Localizer.get().workbench_syncing_character_candidates)
 
         def task() -> None:
             try:
-                config = self._load_config()
                 items, source_summary = self.analysis_service.load_scope_items(config, ANALYSIS_SCOPE_CURRENT)
                 candidates = self.character_scanner.build_candidates(config, items, self.analysis_service.resolve_project_root(config))
                 candidate_cards = [candidate.as_card_seed() for candidate in candidates]
                 merged_cards, added = self._merge_candidates_into_cards(config, candidate_cards)
                 self.signals.sync_success.emit(
                     {
+                        "project_output": project_output,
                         "drafts": merged_cards,
                         "added": added,
                         "source_summary": source_summary,
                     }
                 )
             except Exception as exc:
-                self.signals.sync_failed.emit(str(exc))
+                self.signals.sync_failed.emit({
+                    "project_output": project_output,
+                    "message": str(exc),
+                })
 
-        threading.Thread(target = task, daemon = True).start()
+        try:
+            threading.Thread(target = task, daemon = True).start()
+        except Exception:
+            self._sync_running = False
+            self._refresh_action_state()
+            raise
 
     def _on_sync_success(self, payload: dict[str, Any]) -> None:
         """同步成功回调。"""
         self._sync_running = False
-        config = self._load_config()
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         merged_drafts, _ = self._merge_candidates_into_cards(
             config,
             payload["drafts"],
@@ -1670,10 +1705,14 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.overview_status_label.setText(sync_result)
         InfoBar.success(Localizer.get().complete, sync_result, parent = self)
 
-    def _on_sync_failed(self, message: str) -> None:
+    def _on_sync_failed(self, payload: dict[str, Any]) -> None:
         """同步失败回调。"""
         self._sync_running = False
-        self._refresh_action_state()
+        config = self._background_result_config(payload)
+        if config is None:
+            return
+        message = str(payload["message"])
+        self._refresh_action_state(config)
         self.overview_status_label.setText(message)
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 

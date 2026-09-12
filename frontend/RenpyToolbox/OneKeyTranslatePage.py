@@ -43,6 +43,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from widget.ItemCard import ItemCard
 from widget.ThemeHelper import (
@@ -111,6 +112,7 @@ class YiJianFanyiPage(Base, QWidget):
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
         self._onekey_translation_completed = False
+        self._onekey_project_key = ""
         self._onekey_request_id = ""
         self._onekey_run_id = None
         self._auto_hook_pending = False
@@ -648,15 +650,18 @@ class YiJianFanyiPage(Base, QWidget):
             CaptionLabel(Localizer.get().onekey_source_language), 0, 0
         )
         self.src_lang_combo = ComboBox()
-        self.src_lang_combo.addItems(
-            [
-                Localizer.get().direct_rpy_english,
-                Localizer.get().direct_rpy_japanese,
-                Localizer.get().direct_rpy_korean,
-                Localizer.get().onekey_russian,
-                Localizer.get().onekey_other,
-            ]
-        )
+        source_languages = [
+            BaseLanguage.Enum.EN,
+            BaseLanguage.Enum.JA,
+            BaseLanguage.Enum.KO,
+            BaseLanguage.Enum.RU,
+        ]
+        source_languages.extend(language for language in BaseLanguage.get_languages() if language not in source_languages)
+        for language in source_languages:
+            self.src_lang_combo.addItem(
+                Localizer.localize(BaseLanguage.get_name_zh(language), BaseLanguage.get_name_en(language)),
+                userData=language,
+            )
         self.src_lang_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lang_row.addWidget(self.src_lang_combo, 0, 1)
         
@@ -665,16 +670,24 @@ class YiJianFanyiPage(Base, QWidget):
             CaptionLabel(Localizer.get().onekey_target_language), 1, 0
         )
         self.tgt_lang_combo = ComboBox()
-        self.tgt_lang_combo.addItems(
-            [
-                Localizer.get().direct_rpy_simplified_chinese,
-                Localizer.get().direct_rpy_traditional_chinese,
-                Localizer.get().direct_rpy_japanese,
-                Localizer.get().direct_rpy_english,
-            ]
-        )
+        for label, language, traditional in (
+            (Localizer.get().direct_rpy_simplified_chinese, BaseLanguage.Enum.ZH, False),
+            (Localizer.get().direct_rpy_traditional_chinese, BaseLanguage.Enum.ZH, True),
+            (Localizer.get().direct_rpy_japanese, BaseLanguage.Enum.JA, False),
+            (Localizer.get().direct_rpy_english, BaseLanguage.Enum.EN, False),
+        ):
+            self.tgt_lang_combo.addItem(label, userData=(language, traditional))
+        for language in BaseLanguage.get_languages():
+            if language not in (BaseLanguage.Enum.ZH, BaseLanguage.Enum.JA, BaseLanguage.Enum.EN):
+                self.tgt_lang_combo.addItem(
+                    Localizer.localize(BaseLanguage.get_name_zh(language), BaseLanguage.get_name_en(language)),
+                    userData=(language, False),
+                )
         self.tgt_lang_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lang_row.addWidget(self.tgt_lang_combo, 1, 1)
+        self._refresh_translation_languages()
+        self.src_lang_combo.currentIndexChanged.connect(self._on_translation_languages_changed)
+        self.tgt_lang_combo.currentIndexChanged.connect(self._on_translation_languages_changed)
         
         # TL 文件夹名（折叠/隐藏给高级用户）
         lang_row.addWidget(
@@ -818,14 +831,26 @@ class YiJianFanyiPage(Base, QWidget):
         paths = RenpyProjectPaths.from_path(game_dir, tl_name)
         if paths is None:
             raise ValueError(f"无法解析项目目录：{game_dir}")
+        if paths.project_key != self._onekey_project_key:
+            self._onekey_project_key = paths.project_key
+            self._onekey_translation_completed = False
+            self._reset_auto_hook_state()
+            self._incremental_dir = None
+            self._incremental_output_dir = None
+            self._apply_target_dir = None
+            self._max_reached_step = 1
+
+        # 同一项目往返工作台时保留增量输入、输出，不能退回全量翻译。
         ProjectStore.get().apply_resolved(
             config,
             paths,
+            input_folder = self._incremental_dir,
+            output_folder = self._incremental_output_dir,
             mutate = configure_tl_translation_mode,
         )
 
         # 确保输出目录存在
-        paths.translation_output_dir.mkdir(parents = True, exist_ok = True)
+        Path(config.output_folder).mkdir(parents = True, exist_ok = True)
 
         self.info(f"[配置] 输入目录: {config.input_folder}")
         self.info(f"[配置] 输出目录: {config.output_folder}")
@@ -857,6 +882,27 @@ class YiJianFanyiPage(Base, QWidget):
             # 隐藏跳过按钮
             self.skip_extract_btn.setVisible(False)
     
+    def _refresh_translation_languages(self) -> None:
+        """回到向导时显示当前翻译设置，刷新控件不反向覆盖配置。"""
+        config = Config().load()
+        for combo, value in (
+            (self.src_lang_combo, config.source_language),
+            (self.tgt_lang_combo, (
+                config.target_language,
+                config.target_language == BaseLanguage.Enum.ZH and config.traditional_chinese_enable,
+            )),
+        ):
+            blocked = combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+            combo.blockSignals(blocked)
+
+    def _on_translation_languages_changed(self, _index: int) -> None:
+        """语言选择直接更新实际翻译配置，繁体中文沿用现有转换开关。"""
+        config = Config().load()
+        config.source_language = self.src_lang_combo.currentData()
+        config.target_language, config.traditional_chinese_enable = self.tgt_lang_combo.currentData()
+        config.save()
+
     def _on_tl_name_changed(self, text):
         """TL 文件夹名变化时重新检测旧翻译并同步配置"""
         if self.game_dir:
@@ -2037,11 +2083,14 @@ class YiJianFanyiPage(Base, QWidget):
     def showEvent(self, event):
         """从翻译面板返回本页时刷新第 4 步状态，避免显示“未翻译”的假象。"""
         super().showEvent(event)
+        self._refresh_translation_languages()
         if self.current_step == 4:
             self._refresh_step4_state()
     
     def _on_start_translate_clicked(self):
         """检查配置后再进入翻译面板"""
+        if self.game_dir:
+            self._sync_game_dir_to_config(self.game_dir)
         if not self._refresh_step4_ready():
             InfoBar.warning(
                 Localizer.get().notice,
@@ -2407,12 +2456,15 @@ class YiJianFanyiPage(Base, QWidget):
         try:
             from module.Cache.CacheManager import CacheManager
 
-            cfg = Config().load()
-            output = str(getattr(cfg, "output_folder", "") or "")
-            if not output:
+            paths = RenpyProjectPaths.from_path(
+                self.game_dir,
+                self.tl_folder_edit.text().strip() or "chinese",
+            ) if self.game_dir else None
+            if paths is None:
                 return False
+            output = self._incremental_output_dir or paths.translation_output_dir
             manager = CacheManager(service=False)
-            manager.load_project_from_file(output)
+            manager.load_project_from_file(str(output))
             return (
                 manager.get_project().get_status()
                 == Base.TranslationStatus.TRANSLATED
@@ -2544,6 +2596,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.skip_extract_btn.setVisible(False)
         self.game_path = ""
         self.game_dir = ""
+        self._onekey_project_key = ""
         self.game_path_edit.clear()
         self.path_status_label.setText("")
         self.old_translation_card.setVisible(False)
@@ -2781,17 +2834,18 @@ class YiJianFanyiPage(Base, QWidget):
             )
     
     def _tool_fix_errors(self, card):
-        """打开错误修复页面，并预填当前项目的 game 目录。"""
+        """打开错误修复页面，并预填当前语言的翻译目录。"""
         try:
             page = self._get_tool_page("error_repair")
             if self.game_dir and hasattr(page, "game_dir_edit"):
-                project_path = Path(self.game_dir)
-                game_path = (
-                    project_path
-                    if project_path.name.casefold() == "game"
-                    else project_path / "game"
+                tl_name = self.tl_folder_edit.text().strip() or "chinese"
+                paths = RenpyProjectPaths.from_path(self.game_dir, tl_name)
+                translation_path = (
+                    paths.tl_language_dir
+                    if paths is not None
+                    else Path(self.game_dir) / "game" / "tl" / tl_name
                 )
-                page.game_dir_edit.setText(str(game_path))
+                page.game_dir_edit.setText(str(translation_path))
             self.window.navigate_to_page(page)
         except Exception as exc:
             self.logger.error(f"打开错误修复页面失败: {exc}")

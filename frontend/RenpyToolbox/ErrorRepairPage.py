@@ -90,12 +90,17 @@ class ErrorRepairPage(Base, QWidget):
         layout = QVBoxLayout(card)
         layout.setSpacing(12)
 
-        layout.addWidget(StrongBodyLabel(Localizer.localize("📁 目标目录", "📁 Target Folder")))
+        layout.addWidget(StrongBodyLabel(Localizer.localize("📁 翻译目录", "📁 Translation Folder")))
 
         row = QHBoxLayout()
-        row.addWidget(QLabel(Localizer.localize("game 目录:", "Game Folder:")))
+        row.addWidget(QLabel(Localizer.localize("翻译目录:", "Translation Folder:")))
         self.game_dir_edit = LineEdit()
-        self.game_dir_edit.setPlaceholderText(Localizer.localize("选择包含 .rpy 文件的 game 目录", "Select the game folder containing .rpy files"))
+        self.game_dir_edit.setPlaceholderText(
+            Localizer.localize(
+                "选择 game/tl/<语言> 或包含生成 .rpy 的目录",
+                "Select game/tl/<language> or a folder containing generated .rpy files",
+            )
+        )
         btn_browse = PushButton(Localizer.get().browse, icon=FluentIcon.FOLDER)
         btn_browse.clicked.connect(self._browse_game_dir)
         row.addWidget(self.game_dir_edit, 1)
@@ -189,28 +194,41 @@ class ErrorRepairPage(Base, QWidget):
 
     def _browse_game_dir(self):
         """浏览目录"""
-        directory = QFileDialog.getExistingDirectory(self, Localizer.localize("选择 game 目录", "Select Game Folder"), "")
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            Localizer.localize("选择翻译目录", "Select Translation Folder"),
+            "",
+        )
         if directory:
             self.game_dir_edit.setText(directory)
 
     def _scan_errors(self):
         """扫描错误"""
-        game_dir = self.game_dir_edit.text().strip()
-        if not game_dir:
-            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择 game 目录", "Select a game folder."), parent=self)
+        raw_folder = self.game_dir_edit.text().strip()
+        if not raw_folder:
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.localize("请选择翻译目录", "Select a translation folder."),
+                parent=self,
+            )
             return
-        if not Path(game_dir).is_dir():
-            InfoBar.error(Localizer.get().error, Localizer.localize("目录不存在", "The folder does not exist."), parent=self)
+        translation_dir = ErrorRepairer.resolve_translation_folder(raw_folder)
+        if not translation_dir.is_dir():
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("翻译目录不存在", "The translation folder does not exist."),
+                parent=self,
+            )
             return
 
         check_indent = self.fix_indent_check.isChecked()
         check_indent_level = self.fix_indent_level_check.isChecked()
-        LogManager.get().info(f"开始扫描错误: {game_dir}")
+        LogManager.get().info(f"开始扫描翻译文件错误: {translation_dir}")
 
         def task():
             repairer = ErrorRepairer()
             return repairer.check_folder(
-                game_dir,
+                str(translation_dir),
                 check_indent=check_indent,
                 check_indent_level=check_indent_level,
                 check_quotes=True,
@@ -222,26 +240,35 @@ class ErrorRepairPage(Base, QWidget):
 
     def _repair_errors(self):
         """修复错误"""
-        game_dir = self.game_dir_edit.text().strip()
-        if not game_dir:
-            InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择 game 目录", "Select a game folder."), parent=self)
+        raw_folder = self.game_dir_edit.text().strip()
+        if not raw_folder:
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.localize("请选择翻译目录", "Select a translation folder."),
+                parent=self,
+            )
             return
-        if not Path(game_dir).is_dir():
-            InfoBar.error(Localizer.get().error, Localizer.localize("目录不存在", "The folder does not exist."), parent=self)
+        translation_dir = ErrorRepairer.resolve_translation_folder(raw_folder)
+        if not translation_dir.is_dir():
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("翻译目录不存在", "The translation folder does not exist."),
+                parent=self,
+            )
             return
 
         fix_indent = self.fix_indent_check.isChecked()
         fix_indent_level = self.fix_indent_level_check.isChecked()
         fix_quotes = self.fix_quotes_check.isChecked()
         fix_dialogue_quotes = self.fix_dialogue_quotes_check.isChecked()
-        LogManager.get().info(f"开始修复错误: {game_dir}")
+        LogManager.get().info(f"开始修复翻译文件错误: {translation_dir}")
 
         def task():
             repairer = ErrorRepairer()
             fixed_files = 0
             fixed_items = 0
             failed_files = 0
-            for rpy_file in Path(game_dir).rglob("*.rpy"):
+            for rpy_file in repairer.get_rpy_files(translation_dir):
                 success, count = repairer.auto_fix_file(
                     str(rpy_file),
                     fix_indent=fix_indent,
@@ -273,6 +300,23 @@ class ErrorRepairPage(Base, QWidget):
 
     def _run_lint_check(self):
         """执行深度 Lint 检查"""
+        raw_folder = self.game_dir_edit.text().strip()
+        if not raw_folder:
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.localize("请先选择翻译目录", "Select a translation folder first."),
+                parent=self,
+            )
+            return
+        translation_dir = ErrorRepairer.resolve_translation_folder(raw_folder)
+        if not translation_dir.is_dir():
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("翻译目录不存在", "The translation folder does not exist."),
+                parent=self,
+            )
+            return
+
         game_exe = self.game_exe_edit.text().strip()
         if not game_exe:
             InfoBar.warning(Localizer.get().notice, Localizer.localize("请选择游戏主程序", "Select the game executable."), parent=self)
@@ -281,7 +325,7 @@ class ErrorRepairPage(Base, QWidget):
             InfoBar.error(Localizer.get().error, Localizer.localize("游戏主程序不存在", "The game executable does not exist."), parent=self)
             return
 
-        LogManager.get().info(f"开始深度 Lint 检查: {game_exe}")
+        LogManager.get().info(f"开始深度 Lint 检查（仅翻译目录）: {translation_dir}")
 
         def task():
             repairer = ErrorRepairer()
@@ -289,6 +333,7 @@ class ErrorRepairPage(Base, QWidget):
             if lint_output is None:
                 raise RuntimeError(Localizer.localize("Ren'Py Lint 执行失败，请查看日志", "Ren'Py Lint failed. Check the logs."))
             errors = repairer.parse_lint_errors(lint_output) if lint_output else []
+            errors = repairer.filter_lint_errors(errors, translation_dir)
             return {"output": lint_output, "errors": errors}
 
         self._start_background_operation("lint", task)
@@ -360,7 +405,7 @@ class ErrorRepairPage(Base, QWidget):
             lint_output = result.get("output")
             errors = result.get("errors") or []
             self._set_running_operation(None)
-            if lint_output:
+            if errors:
                 LogManager.get().info(f"Lint 检查发现 {len(errors)} 个问题")
                 InfoBar.warning(
                     Localizer.localize("检查完成", "Check Complete"),
@@ -368,8 +413,15 @@ class ErrorRepairPage(Base, QWidget):
                     parent=self,
                 )
             else:
-                LogManager.get().info("Lint 检查完成，未发现错误")
-                InfoBar.success(Localizer.localize("检查完成", "Check Complete"), Localizer.localize("未发现语法错误", "No syntax errors were found."), parent=self)
+                LogManager.get().info("Lint 检查完成，翻译目录未发现错误")
+                InfoBar.success(
+                    Localizer.localize("检查完成", "Check Complete"),
+                    Localizer.localize(
+                        "翻译目录未发现语法错误",
+                        "No syntax errors were found in the translation folder.",
+                    ),
+                    parent=self,
+                )
         else:
             self._set_running_operation(None)
 

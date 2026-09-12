@@ -4,7 +4,11 @@ from module.Agent.ToolDispatcher import ToolDispatcher
 from module.Agent.AgentPromptBuilder import AgentPromptBuilder
 from module.Agent.types import ToolResult
 from module.Agent.tools.archive_tools import unpack_rpa_files
-from module.Agent.tools.project_tools import list_rpa_files, set_project
+from module.Agent.tools.project_tools import (
+    list_rpa_files,
+    scan_script_errors,
+    set_project,
+)
 from module.Agent.tools.translation_tools import (
     old_new_replace_confirmation_context,
     optimize_old_new_translations,
@@ -431,6 +435,29 @@ def test_list_rpa_reports_whether_scripts_are_already_available(tmp_path) -> Non
     assert scripts_available.data["unpack_required"] is False
     assert scripts_available.data["rpa_state"] == "scripts_present"
     assert scripts_available.data["rpy_count"] == 1
+
+
+def test_scan_script_errors_only_checks_current_translation_folder(tmp_path) -> None:
+    root = tmp_path / "Game"
+    game = root / "game"
+    translation_dir = game / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    (game / "script.rpy").write_text('new "Broken "source""\n', encoding="utf-8")
+    generated = translation_dir / "script.rpy"
+    generated.write_text(
+        'translate chinese strings:\n'
+        '    old "Hello [name]"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+    config = _config_for(root)
+
+    result = scan_script_errors(config_loader=lambda: config)
+
+    assert result.success is True
+    assert result.data["translation_dir"] == str(translation_dir.resolve())
+    assert str(game / "script.rpy") not in result.data["errors"]
+    assert str(generated) in result.data["errors"]
 
 
 class _FakeEngine:

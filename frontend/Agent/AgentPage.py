@@ -2316,6 +2316,8 @@ class AgentPage(Base, QWidget):
 
     def _schedule_render(self) -> None:
         """按当前消息长度选择节流间隔，短回复仍保持即时打字感。"""
+        if self._render_timer.isActive():
+            return
         rendered_chars = len(self._pending_reply_text) + len(self._pending_thinking_text)
         if self._assistant_turn is not None:
             rendered_chars += len(self._assistant_turn.text)
