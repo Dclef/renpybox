@@ -548,11 +548,11 @@ class LocalizerZH():
     agent_page_empty_description: str = "当前会话尚无内容"
     agent_page_suggestion_project: str = "检查项目并告诉我下一步"
     agent_page_suggestion_rpa: str = "列出项目中的 RPA 文件"
-    agent_page_suggestion_errors: str = "扫描项目脚本错误"
+    agent_page_suggestion_errors: str = "扫描译文脚本错误"
     agent_page_suggestion_old_new: str = "优化未生效的 old/new 译文"
     agent_page_suggestion_project_desc: str = "汇总解包、翻译、资产与质量状态"
     agent_page_suggestion_rpa_desc: str = "列出 game 目录中的 RPA 归档文件"
-    agent_page_suggestion_errors_desc: str = "扫描常见脚本错误，不修改任何文件"
+    agent_page_suggestion_errors_desc: str = "扫描当前语言翻译目录中的生成 .rpy，不修改任何文件"
     agent_page_suggestion_old_new_desc: str = "翻译完成后生成运行时替换补丁"
     agent_page_tool_expand: str = "查看详情"
     agent_page_tool_running: str = "执行中"
@@ -564,7 +564,7 @@ class LocalizerZH():
     agent_page_tool_get_project_info: str = "读取项目信息"
     agent_page_tool_inspect_translation_project: str = "检查项目翻译状态"
     agent_page_tool_list_rpa_files: str = "查找 RPA 文件"
-    agent_page_tool_scan_script_errors: str = "扫描脚本错误"
+    agent_page_tool_scan_script_errors: str = "扫描译文脚本错误"
     agent_page_tool_unpack_rpa_files: str = "解包 RPA 文件"
     agent_page_tool_optimize_old_new_translations: str = "生成补充兜底补丁"
     agent_page_action_open_translation: str = "进入翻译页面"
@@ -624,7 +624,7 @@ class LocalizerZH():
         "列出当前项目 game 目录中的 RPA 文件。目录由服务端配置注入。"
     )
     agent_tool_scan_script_errors_description: str = (
-        "扫描当前项目 game 目录中的 Ren'Py 脚本错误，不修改文件。"
+        "扫描当前项目当前语言翻译目录中的生成 .rpy 错误，不检查源代码，不修改文件。"
     )
     agent_tool_unpack_rpa_files_description: str = (
         "解包当前项目 game 目录中的全部 RPA 文件。目录由服务端注入，"
@@ -2141,7 +2141,7 @@ class LocalizerZH():
     toolbox_tool_pack_unpack_title: str = '解包/打包'
     toolbox_tool_pack_unpack_description: str = '解包 RPA 文件或打包游戏资源'
     toolbox_tool_error_repair_title: str = '错误修复'
-    toolbox_tool_error_repair_description: str = '扫描并修复常见脚本错误'
+    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录中生成的 .rpy 错误'
     toolbox_tool_translation_reuse_title: str = '更新翻译复用'
     toolbox_tool_translation_reuse_description: str = '按原文将旧译文安全填入新版本的空条目'
     toolbox_tool_formatter_title: str = '代码格式化'

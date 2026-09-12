@@ -549,11 +549,11 @@ class LocalizerEN(LocalizerZH):
     agent_page_empty_description: str = "This conversation is empty"
     agent_page_suggestion_project: str = "Inspect the project and suggest the next step"
     agent_page_suggestion_rpa: str = "List RPA files in the project"
-    agent_page_suggestion_errors: str = "Scan project script errors"
+    agent_page_suggestion_errors: str = "Scan translation script errors"
     agent_page_suggestion_old_new: str = "Fix old/new translations not taking effect"
     agent_page_suggestion_project_desc: str = "Summarize unpacking, translation, assets, and quality"
     agent_page_suggestion_rpa_desc: str = "List RPA archives in the game folder"
-    agent_page_suggestion_errors_desc: str = "Scan for common script errors without modifying files"
+    agent_page_suggestion_errors_desc: str = "Scan generated .rpy files in the current language folder without modifying files"
     agent_page_suggestion_old_new_desc: str = "Generate a runtime replacement patch after translation"
     agent_page_tool_expand: str = "Show details"
     agent_page_tool_running: str = "Running"
@@ -565,7 +565,7 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_get_project_info: str = "Read project details"
     agent_page_tool_inspect_translation_project: str = "Inspect translation status"
     agent_page_tool_list_rpa_files: str = "Find RPA files"
-    agent_page_tool_scan_script_errors: str = "Scan script errors"
+    agent_page_tool_scan_script_errors: str = "Scan translation script errors"
     agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
     agent_page_tool_optimize_old_new_translations: str = "Build supplement fallback"
     agent_page_action_open_translation: str = "Open Translation"
@@ -637,7 +637,7 @@ class LocalizerEN(LocalizerZH):
         "List RPA files in the current project game folder. The server injects the path."
     )
     agent_tool_scan_script_errors_description: str = (
-        "Scan Ren'Py script errors in the current project game folder without modifying files."
+        "Scan generated .rpy errors in the current language folder, excluding source scripts, without modifying files."
     )
     agent_tool_unpack_rpa_files_description: str = (
         "Unpack all RPA files in the current project game folder. The server injects the path, "
@@ -2242,7 +2242,7 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_pack_unpack_title: str = 'Pack / Unpack'
     toolbox_tool_pack_unpack_description: str = 'Unpack RPA archives or package game assets'
     toolbox_tool_error_repair_title: str = 'Error Repair'
-    toolbox_tool_error_repair_description: str = 'Scan for and fix common script errors'
+    toolbox_tool_error_repair_description: str = 'Scan and fix generated .rpy errors in the translation folder'
     toolbox_tool_translation_reuse_title: str = 'Reuse Updated Translations'
     toolbox_tool_translation_reuse_description: str = 'Fill empty entries in a new version with matching previous translations'
     toolbox_tool_formatter_title: str = 'Code Formatter'

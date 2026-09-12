@@ -77,6 +77,32 @@ class ErrorRepairer:
         self.logger = LogManager.get()
         self.errors_found = []
 
+    @staticmethod
+    def resolve_translation_folder(folder_path: str | Path) -> Path:
+        """将项目目录或 game 目录解析为翻译文件目录。"""
+        path = Path(folder_path).expanduser()
+        if path.name.casefold() == "game":
+            return path / "tl"
+        project_tl = path / "game" / "tl"
+        if project_tl.is_dir():
+            return project_tl
+        return path
+
+    @staticmethod
+    def get_rpy_files(folder_path: str | Path) -> list[Path]:
+        """返回目录下的 Ren'Py 脚本，统一处理大小写扩展名。"""
+        root = Path(folder_path)
+        if not root.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.casefold() == ".rpy"
+            ),
+            key=lambda path: path.as_posix().casefold(),
+        )
+
     def _split_line_ending(self, line: str) -> tuple[str, str]:
         """拆分行内容和换行符，修复后保持原始换行风格。"""
         if line.endswith("\r\n"):
@@ -765,7 +791,8 @@ class ErrorRepairer:
                 # 语法检查
                 if check_syntax:
                     # 检查 label 后是否有冒号
-                    if line.strip().startswith("label ") and not line.strip().endswith(":"):
+                    stripped_line = line.strip()
+                    if re.match(r"^label(?:\s|$)", stripped_line) and not stripped_line.endswith(":"):
                         errors.append({
                             "line": line_num,
                             "type": "syntax",
@@ -773,9 +800,17 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
-                    # 检查 if/elif/else/menu 后是否有冒号
-                    if re.match(r'^\s*(if|elif|else|menu|while|for)\s', line) and \
-                       not line.strip().endswith(":"):
+                    # 检查翻译块头和控制流语句后是否有冒号。
+                    if re.match(r"^translate\s+\S+", stripped_line) and not stripped_line.endswith(":"):
+                        errors.append({
+                            "line": line_num,
+                            "type": "syntax",
+                            "message": "translate 语句缺少冒号",
+                            "content": stripped_line,
+                        })
+
+                    if re.match(r'^\s*(if|elif|else|menu|while|for)(?:\s|$)', line) and \
+                       not stripped_line.endswith(":"):
                         errors.append({
                             "line": line_num,
                             "type": "syntax",
@@ -863,7 +898,7 @@ class ErrorRepairer:
             {文件路径: 错误列表}
         """
         all_errors = {}
-        rpy_files = sorted(Path(folder_path).rglob("*.rpy"))
+        rpy_files = self.get_rpy_files(folder_path)
 
         self.logger.info(f"检查 {len(rpy_files)} 个 .rpy 文件")
 
@@ -1174,6 +1209,46 @@ class ErrorRepairer:
             errors.append(error_info)
             
         return errors
+
+    @staticmethod
+    def filter_lint_errors(
+        errors: List[Dict],
+        folder_path: str | Path,
+    ) -> List[Dict]:
+        """只保留目标翻译目录下的 Lint 文件错误。"""
+        root_parts = [
+            part.casefold()
+            for part in Path(folder_path).expanduser().resolve().as_posix().split("/")
+            if part
+        ]
+        if not root_parts:
+            return []
+
+        variants = [root_parts]
+        for marker in ("game", "tl"):
+            try:
+                marker_index = len(root_parts) - 1 - root_parts[::-1].index(marker)
+            except ValueError:
+                continue
+            variants.append(root_parts[marker_index:])
+
+        filtered: List[Dict] = []
+        for error in errors:
+            file_value = str(error.get("file") or "").strip().strip("\"'")
+            if not file_value or not file_value.casefold().endswith(".rpy"):
+                continue
+            file_parts = [
+                part.casefold()
+                for part in file_value.replace("\\", "/").split("/")
+                if part
+            ]
+            if any(
+                len(file_parts) >= len(variant)
+                and file_parts[:len(variant)] == variant
+                for variant in variants
+            ):
+                filtered.append(error)
+        return filtered
     
     def fix_by_lint(self, game_path: str, max_iterations: int = 16) -> Tuple[bool, int]:
         """
