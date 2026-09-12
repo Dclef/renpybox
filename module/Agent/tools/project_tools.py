@@ -164,13 +164,14 @@ def scan_script_errors(
     config: Config | None = None,
     config_loader: ConfigLoader | None = None,
 ) -> "ToolResult":
-    """扫描当前项目脚本错误，不接收路径参数，也不修改文件。"""
+    """扫描当前语言翻译目录中的生成脚本错误，不修改文件。"""
     from module.Agent.types import ToolResult
 
     paths = _resolve_paths(_config(config, config_loader))
     if paths is None:
         return _not_set()
-    errors = ErrorRepairer().check_folder(str(paths.game_dir))
+    translation_dir = paths.tl_language_dir
+    errors = ErrorRepairer().check_folder(str(translation_dir))
     total = sum(len(items) for items in errors.values())
     limited: dict[str, list[dict[str, Any]]] = {}
     remaining = 100
@@ -196,5 +197,6 @@ def scan_script_errors(
             "file_count": len(errors),
             "error_count": total,
             "truncated": total > sum(len(v) for v in limited.values()),
+            "translation_dir": str(translation_dir),
         },
     )

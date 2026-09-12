@@ -387,6 +387,68 @@ def test_folder_scan_reports_cross_file_duplicates_per_language_without_writing(
     assert {path: path.read_bytes() for path in before} == before
 
 
+def test_translation_folder_resolution_excludes_source_scripts(tmp_path) -> None:
+    game_dir = tmp_path / "game"
+    translation_dir = game_dir / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    generated = translation_dir / "script.rpy"
+    source.write_text('new "Broken "source""\n', encoding="utf-8")
+    generated.write_text(
+        'translate chinese strings:\n'
+        '    old "Hello [name]"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+
+    resolved = ErrorRepairer.resolve_translation_folder(game_dir)
+    report = ErrorRepairer().check_folder(str(resolved))
+
+    assert resolved == game_dir / "tl"
+    assert str(source) not in report
+    assert str(generated) in report
+    assert report[str(generated)][0]["type"] == "placeholder_missing"
+
+
+def test_lint_filter_keeps_only_translation_directory_errors(tmp_path) -> None:
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    errors = [
+        {"file": "game/tl/chinese/dialogue.rpy", "line": 3},
+        {"file": "game/script.rpy", "line": 8},
+        {"file": "other.rpy", "line": 1},
+        {"raw": "warning without a file"},
+    ]
+
+    filtered = ErrorRepairer.filter_lint_errors(errors, translation_dir)
+
+    assert filtered == [errors[0]]
+
+
+def test_syntax_scan_reports_malformed_translation_headers_and_else(tmp_path) -> None:
+    script = tmp_path / "translation.rpy"
+    script.write_text(
+        "translate chinese strings\n"
+        "    old \"Hello\"\n"
+        "    new \"你好\"\n"
+        "else\n",
+        encoding="utf-8",
+    )
+
+    errors = ErrorRepairer().check_file(
+        str(script),
+        check_indent=False,
+        check_indent_level=False,
+        check_quotes=False,
+        check_dialogue_quotes=False,
+        check_translation_issues=False,
+    )
+
+    assert [(error["line"], error["message"]) for error in errors] == [
+        (1, "translate 语句缺少冒号"),
+        (4, "控制流语句缺少冒号"),
+    ]
+
 def test_translation_scan_never_writes_the_source_file(tmp_path) -> None:
     content = '''translate schinese strings:
     old "Hi [name]\\n"

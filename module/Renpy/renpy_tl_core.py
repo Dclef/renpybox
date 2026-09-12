@@ -181,13 +181,37 @@ def normalize_ws(text: str) -> str:
 
 
 def unescape_tl_string(raw_inner: str) -> str:
-    """仅做最小反转义，避免行为偏离。"""
-    return raw_inner.replace("\\n", "\n").replace('\\"', '"')
+    """还原写入翻译文件时使用的字符串转义。"""
+    result: list[str] = []
+    index = 0
+    escape_map = {"n": "\n", "r": "\r", "t": "\t"}
+    while index < len(raw_inner):
+        char = raw_inner[index]
+        if char != "\\" or index + 1 >= len(raw_inner):
+            result.append(char)
+            index += 1
+            continue
+
+        escaped = raw_inner[index + 1]
+        if escaped in escape_map:
+            result.append(escape_map[escaped])
+        elif escaped in {"\\", '"', "'"}:
+            result.append(escaped)
+        else:
+            result.extend(("\\", escaped))
+        index += 2
+    return "".join(result)
 
 
 def escape_tl_string(text: str) -> str:
     """写回时转义引号与换行。"""
-    return text.replace("\n", "\\n").replace('\\"', '"').replace('"', '\\"')
+    return (
+        text.replace("\\", "\\\\")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\n")
+        .replace('"', '\\"')
+    )
 
 
 def scan_quoted_literals(code: str) -> list[TlStringLiteral]:

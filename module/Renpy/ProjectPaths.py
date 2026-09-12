@@ -231,9 +231,10 @@ class RenpyProjectPaths:
         # tl/ 下。只要输入路径明确位于某个 tl 父目录，就保留该目录，
         # 避免 Direct/Hook 页面再次改写成 game/tl/<lang>。
         tl_root = explicit_tl_root or (game_dir / "tl")
+        language_is_explicit = bool(_safe_language(language, ""))
         language = _safe_language(language or inferred_language, "")
-        # 输入目录明确位于 tl/<lang> 时，即使该目录尚未创建，也要保留
-        # 用户刚选择的语言；否则旧配置中的其他语言目录会抢占路径。
+        # 明确指定的语言或 tl/<lang> 输入即使尚未创建，也应保留用户选择，
+        # 避免已有语言目录抢占新建翻译的路径。
         direct_language_input = bool(
             explicit_tl_root is not None
             and inferred_language
@@ -242,7 +243,7 @@ class RenpyProjectPaths:
         language = _pick_language(
             tl_root,
             language,
-            allow_missing_preferred = direct_language_input,
+            allow_missing_preferred = language_is_explicit or direct_language_input,
         )
         tl_language_dir = tl_root / language
         output_dir = project_root / "RenpyBox_Translation" / language

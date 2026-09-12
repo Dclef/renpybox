@@ -245,3 +245,117 @@ def test_character_ui_reuses_snapshot_and_debounces_edits(monkeypatch) -> None:
     finally:
         page.close()
         window.close()
+
+
+@pytest.mark.parametrize("operation", ["analysis", "sync"])
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("switch_stage", ["before_worker", "during_worker", "none"])
+def test_workbench_background_result_stays_with_its_project(
+    monkeypatch, tmp_path, operation, failed, switch_stage,
+) -> None:
+    """切换工程前后的后台结果不能串写草稿，也不能覆盖新工程的状态。"""
+    from types import SimpleNamespace
+
+    from base.Base import Base
+    from module.Engine.Engine import Engine
+    from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError
+
+    configs = []
+    for name in ("A", "B"):
+        config = Config()
+        config.input_folder = ""
+        config.output_folder = str(tmp_path / name)
+        config.renpy_project_path = ""
+        config.renpy_game_folder = ""
+        config.renpy_tl_folder = ""
+        config.get_platform = lambda _: {"api_format": Base.APIFormat.OPENAI}
+        config.renpy_workbench_generated_worldbook_draft = {"project_name": name}
+        config.renpy_workbench_generated_character_drafts = [create_default_character_card(name)]
+        configs.append(config)
+    selected = [configs[0]]
+    saved = []
+    notices = []
+    jobs = []
+    observed_inputs = []
+    engine = Engine()
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
+    monkeypatch.setattr(RenpyWorkbenchPage, "_load_config", lambda self: selected[0])
+    monkeypatch.setattr(RenpyWorkbenchPage, "_save_config", lambda self, config: saved.append(config))
+    for level in ("success", "error"):
+        monkeypatch.setattr(
+            workbench_module.InfoBar, level,
+            lambda *args, **kwargs: notices.append(args),
+        )
+    page = RenpyWorkbenchPage("workbench")
+    try:
+        def switch_project() -> None:
+            selected[0] = configs[1]
+            page.refresh_from_config(configs[1])
+
+        def finish_work(config, *args, **kwargs):
+            observed_inputs.append(config.output_folder)
+            if switch_stage == "during_worker":
+                switch_project()
+            if failed:
+                raise AnalysisServiceError("A analysis failed", raw_response="A failed response")
+            if operation == "sync":
+                return [], "A source"
+            return AnalysisResult(
+                scope="current",
+                worldbook_draft={"project_name": "Generated A"},
+                character_drafts=[create_default_character_card("Generated A")],
+                source_summary="A source",
+            )
+
+        monkeypatch.setattr(
+            workbench_module.threading, "Thread",
+            lambda *, target, daemon: SimpleNamespace(start=lambda: jobs.append(target)),
+        )
+        monkeypatch.setattr(page.analysis_service, "analyze_all", finish_work)
+        monkeypatch.setattr(page.analysis_service, "load_scope_items", finish_work)
+        monkeypatch.setattr(page.character_scanner, "build_candidates", lambda *args: [
+            SimpleNamespace(as_card_seed=lambda: create_default_character_card("Generated A")),
+        ])
+
+        if operation == "analysis":
+            page._start_analysis("all", "current")
+        else:
+            page._start_sync_characters()
+        assert len(jobs) == 1
+        if switch_stage == "before_worker":
+            switch_project()
+        jobs[0]()
+
+        assert observed_inputs == [configs[0].output_folder]
+        assert not page._analysis_running
+        assert not page._sync_running
+        assert engine.get_status() == Engine.Status.IDLE
+        if switch_stage != "none":
+            assert saved == []
+            assert notices == []
+            assert page._config_snapshot is configs[1]
+            assert page._last_worldbook_raw == ""
+            assert page._last_character_raw == ""
+            assert page.overview_status_label.text() == Localizer.get().workbench_ready
+            assert page.btn_generate_current.isEnabled()
+            assert page.btn_sync_characters.isEnabled()
+            assert page.btn_apply_all.isEnabled()
+            assert configs[1].renpy_workbench_generated_worldbook_draft["project_name"] == "B"
+            assert [card["name"] for card in configs[1].renpy_workbench_generated_character_drafts] == ["B"]
+            page._apply_all_drafts()
+            assert saved == [configs[1]]
+            assert configs[1].renpy_workbench_worldbook_data["project_name"] == "B"
+            assert [card["name"] for card in configs[1].renpy_workbench_character_cards] == ["B"]
+        else:
+            assert len(notices) == 1
+            if failed:
+                assert saved == []
+                assert page.overview_status_label.text() == "A analysis failed"
+            else:
+                assert saved == [configs[0]]
+                assert "Generated A" in [
+                    card["name"] for card in configs[0].renpy_workbench_generated_character_drafts
+                ]
+    finally:
+        page.close()
+        page.deleteLater()
