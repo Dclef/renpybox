@@ -58,9 +58,6 @@ from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_app_page, set_semantic_status, set_text_role
 from widget.ThemeTokens import current_palette
 
-STREAM_FEED_ROW_MAX_WIDTH = 960
-
-
 def restore_resumable_translation_paths(config: Config) -> Config:
     """Bind a resume request to the cache selected by the last-run manifest."""
     output_path = resolve_translation_output(config)
@@ -373,8 +370,6 @@ class TranslationPage(QWidget, Base):
         super().resizeEvent(event)
         if hasattr(self, "kpi_layout"):
             self._update_dashboard_layout()
-        if hasattr(self, "feed_items_container"):
-            self._resize_stream_feed_rows()
 
     def _update_dashboard_layout(self) -> None:
         """在窄窗口中将速览卡改为两列，避免英文状态被裁切。"""
@@ -384,6 +379,12 @@ class TranslationPage(QWidget, Base):
             self.kpi_layout.addWidget(card, index // 2 if compact else 0, index % 2 if compact else index)
         if hasattr(self, "footer_backup_label"):
             self.footer_backup_label.setVisible(not compact)
+        if hasattr(self, "throughput_card"):
+            stacked = self.width() < 820
+            self.flow_layout.removeWidget(self.progress_card)
+            self.flow_layout.removeWidget(self.throughput_card)
+            self.flow_layout.addWidget(self.progress_card, 0, 0, 1, 3 if stacked else 1, Qt.AlignTop)
+            self.flow_layout.addWidget(self.throughput_card, 1 if stacked else 0, 0 if stacked else 1, 1, 3 if stacked else 2, Qt.AlignTop)
 
     # 页面显示事件
     def showEvent(self, event) -> None:
@@ -830,14 +831,13 @@ class TranslationPage(QWidget, Base):
         if not items:
             self.feed_empty_label.setVisible(True)
             self.feed_items_layout.addWidget(self.feed_empty_label)
-            self._update_stream_feed_height(0)
             return
         self.feed_empty_label.setVisible(False)
         for item in items[-5:][::-1]:
             row = QFrame(self.feed_items_container)
             row.setObjectName("translationFeedItem")
-            row.setFixedHeight(34)
-            row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            row.setMinimumHeight(34)
+            row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(10, 4, 10, 4)
             row_layout.setSpacing(12)
@@ -853,10 +853,17 @@ class TranslationPage(QWidget, Base):
 
             source_label = CaptionLabel(str(item.get("source", "")), row)
             set_text_role(source_label)
+            source_label.setTextFormat(Qt.PlainText)
+            source_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            source_label.setWordWrap(True)
+            source_label.setToolTip(source_label.text())
             row_layout.addWidget(source_label, 1)
 
             target_label = CaptionLabel(str(item.get("target", "")), row)
             set_text_role(target_label)
+            target_label.setTextFormat(Qt.PlainText)
+            target_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            target_label.setWordWrap(True)
             status = str(item.get("status", "") or "")
             latency = item.get("latency_ms", item.get("latency"))
             details = " · ".join(
@@ -864,34 +871,10 @@ class TranslationPage(QWidget, Base):
                 for value in (status, f"{latency} ms" if latency is not None else "")
                 if value
             )
-            if details:
-                target_label.setToolTip(details)
+            target_label.setToolTip("\n\n".join(value for value in (target_label.text(), details) if value))
             row_layout.addWidget(target_label, 1)
             self.feed_items_layout.addWidget(row)
         self.feed_items_layout.addStretch(1)
-        self._resize_stream_feed_rows()
-        self._update_stream_feed_height(len(items[-5:]))
-
-    def _update_stream_feed_height(self, row_count: int) -> None:
-        """按当前流水数量调整卡片高度，最多为五行。"""
-        row_count = max(0, min(5, int(row_count)))
-        height = 168 if row_count == 0 else 100 + row_count * 34 + max(0, row_count - 1) * 6
-        self.stream_feed_card.setFixedHeight(height)
-
-    def _resize_stream_feed_rows(self) -> None:
-        """让流水行保持紧凑宽度，同时在窄窗口中跟随容器收缩。"""
-        available_width = self.feed_items_container.width()
-        if available_width <= 0:
-            return
-        row_width = min(STREAM_FEED_ROW_MAX_WIDTH, available_width)
-        if hasattr(self, "feed_columns_header"):
-            self.feed_columns_header.setFixedWidth(row_width)
-        for index in range(self.feed_items_layout.count()):
-            widget = self.feed_items_layout.itemAt(index).widget()
-            if widget is None or widget is self.feed_empty_label:
-                continue
-            widget.setFixedWidth(row_width)
-            self.feed_items_layout.setAlignment(widget, Qt.AlignmentFlag.AlignHCenter)
 
     def _update_stream_feed_header(self) -> None:
         """根据当前任务语言刷新流水表头。"""
@@ -1093,6 +1076,7 @@ class TranslationPage(QWidget, Base):
         self.flow_layout.setColumnStretch(2, 1)
 
         hero_card = CardWidget(self.flow_container)
+        self.progress_card = hero_card
         hero_card.setObjectName("translationProgressCard")
         hero_card.setFixedHeight(248)
         hero_layout = QVBoxLayout(hero_card)
@@ -1129,6 +1113,7 @@ class TranslationPage(QWidget, Base):
         self.hero_cache_pill = self._make_status_pill(
             strings.translation_page_cache_unavailable
         )
+        self.hero_cache_pill.setToolTip(strings.translation_page_cache_help)
         self.hero_pending_pill = self._make_status_pill(
             strings.translation_page_pending_percent.format(PERCENT=0)
         )
@@ -1151,6 +1136,7 @@ class TranslationPage(QWidget, Base):
 
         # 右侧吞吐卡只绘制真实运行速率，并补充可用的运行统计。
         throughput_card = CardWidget(self.flow_container)
+        self.throughput_card = throughput_card
         throughput_card.setObjectName("translationThroughputCard")
         throughput_card.setFixedHeight(248)
         throughput_layout = QVBoxLayout(throughput_card)
@@ -1188,10 +1174,14 @@ class TranslationPage(QWidget, Base):
         ):
             stat = QFrame(throughput_card)
             stat.setObjectName("translationThroughputStat")
+            if label == strings.translation_page_stat_cache_hit:
+                stat.setToolTip(strings.translation_page_cache_help)
             stat_layout = QVBoxLayout(stat)
             stat_layout.setContentsMargins(8, 5, 8, 5)
             stat_layout.setSpacing(1)
             stat_label = CaptionLabel(label, stat)
+            stat_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            stat_label.setWordWrap(True)
             set_text_role(stat_label)
             stat_value = StrongBodyLabel("—", stat)
             value_font = stat_value.font()
@@ -1225,7 +1215,6 @@ class TranslationPage(QWidget, Base):
             self.input_token,
             self.task,
         )
-        self._update_dashboard_layout()
 
         # 实际数据指标与原型的两列主网格对齐。
         self.flow_layout.addWidget(hero_card, 0, 0, 1, 1, Qt.AlignmentFlag.AlignTop)
@@ -1234,7 +1223,7 @@ class TranslationPage(QWidget, Base):
         self.stream_feed_card = CardWidget(self.flow_container)
         self.stream_feed_card.setObjectName("translationStreamFeedCard")
         self.stream_feed_card.setMinimumHeight(168)
-        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         feed_layout = QVBoxLayout(self.stream_feed_card)
         feed_layout.setContentsMargins(14, 12, 14, 12)
         feed_layout.setSpacing(8)
@@ -1261,6 +1250,8 @@ class TranslationPage(QWidget, Base):
         self.feed_time_header.setFixedWidth(82)
         self.feed_source_header = CaptionLabel("", self.feed_columns_header)
         self.feed_target_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_source_header.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.feed_target_header.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         for header in (
             self.feed_time_header,
             self.feed_source_header,
@@ -1270,14 +1261,10 @@ class TranslationPage(QWidget, Base):
         columns_layout.addWidget(self.feed_time_header)
         columns_layout.addWidget(self.feed_source_header, 1)
         columns_layout.addWidget(self.feed_target_header, 1)
-        feed_layout.addWidget(
-            self.feed_columns_header,
-            0,
-            Qt.AlignmentFlag.AlignHCenter,
-        )
+        feed_layout.addWidget(self.feed_columns_header)
         self.feed_items_container = QWidget(self.stream_feed_card)
-        # 容器保持自适应，具体流水行在布局完成后限制宽度并居中。
-        self.feed_items_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 表头和流水共享可用宽度，行高由换行后的文本决定。
+        self.feed_items_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.feed_items_layout = QVBoxLayout(self.feed_items_container)
         self.feed_items_layout.setContentsMargins(0, 0, 0, 0)
         self.feed_items_layout.setSpacing(6)
@@ -1293,6 +1280,7 @@ class TranslationPage(QWidget, Base):
 
         parent.addWidget(self.kpi_strip)
         self.container.addWidget(self.flow_container, 1)
+        self._update_dashboard_layout()
         self._update_dashboard_details()
 
     @staticmethod
