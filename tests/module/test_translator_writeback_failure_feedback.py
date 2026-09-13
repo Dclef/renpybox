@@ -83,6 +83,7 @@ def test_manual_export_emits_error_toast_on_writeback_failure(monkeypatch):
 
     translator.cache_manager = FakeCacheManager()
     translator.mtool_optimizer_postprocess = lambda _items: None
+    translator._translation_run_initialized = True
 
     started: list = []
     monkeypatch.setattr(
