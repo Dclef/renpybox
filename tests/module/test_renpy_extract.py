@@ -1360,8 +1360,13 @@ def test_replace_hook_imports_regex_inside_generated_function():
         [("[name]Have you heard anything about the crisis?", "[name]你听说过这次危机的事吗？")]
     )
 
-    assert "\n    import re\n" not in script
-    assert "        import re" in script
+    namespace = {"config": types.SimpleNamespace(replace_text=None)}
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    # 模拟返回主菜单后 store 不再保留翻译块中的模块导入。
+    namespace.pop("re", None)
+    hook = namespace["config"].replace_text
+    assert hook("Alice: Have you heard anything about the crisis?") == "Alice: 你听说过这次危机的事吗？"
+    assert hook("Main menu") == "Main menu"
 
 
 def test_replace_hook_omits_text_now_covered_by_normal_tl(tmp_path):

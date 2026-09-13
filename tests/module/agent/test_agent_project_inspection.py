@@ -248,7 +248,6 @@ def test_project_inspection_does_not_report_worldbook_for_character_assets(tmp_p
     game = root / "game"
     game.mkdir(parents=True)
     (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
-    config = _config_for(root)
     project = CacheProject(status=Base.TranslationStatus.UNTRANSLATED)
     project.set_project_assets({
         "schema_version": 1,

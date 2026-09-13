@@ -429,22 +429,18 @@ class TranslationPage(QWidget, Base):
             self.action_stop.setEnabled(False)
             # 空闲状态下，如果有缓存数据也允许导出
             self.action_export.setEnabled(has_cache_data)
-            self.action_reinject_cache.setEnabled(has_cache_data)
         elif Engine.get().get_status() == Engine.Status.TESTING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(True)
             self.action_export.setEnabled(True)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.STOPPING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.QUALITY:
             # 润色/校对与初译共享同一引擎锁，期间禁止启动或导出初译任务。
             self.action_start.setEnabled(False)
@@ -456,7 +452,6 @@ class TranslationPage(QWidget, Base):
             )
             self.action_stop.setEnabled(not cancel_requested)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
 
         if Engine.get().get_status() == Engine.Status.IDLE and data.get('status') == Base.TranslationStatus.TRANSLATING:
             self.action_continue.setEnabled(True)
@@ -894,11 +889,6 @@ class TranslationPage(QWidget, Base):
             strings.translation_page_feed_target.format(LANGUAGE=target.upper())
         )
 
-    def _trigger_snapshot_export(self) -> None:
-        action = getattr(self, "action_export", None)
-        if action is not None and action.isEnabled():
-            action.trigger()
-
     def _open_proofreading_page(self, window: FluentWindow) -> None:
         """复用工具箱中的校对页，避免新增导航路由。"""
         toolbox = getattr(window, "renpy_toolbox_page", None)
@@ -1023,14 +1013,6 @@ class TranslationPage(QWidget, Base):
             lambda: self._open_proofreading_page(window)
         )
         header_actions.addWidget(self.open_proofreading_button)
-        self.snapshot_button = PushButton(
-            FluentIcon.SHARE,
-            Localizer.get().translation_page_export_snapshot,
-            self.head_hbox_container,
-        )
-        self.snapshot_button.setFixedHeight(32)
-        self.snapshot_button.clicked.connect(self._trigger_snapshot_export)
-        header_actions.addWidget(self.snapshot_button)
         self.head_hbox.addLayout(header_actions)
         parent.addWidget(self.head_hbox_container)
         self._update_header_description()
@@ -1310,7 +1292,6 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_retry_failed(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_export(self.command_bar_card, config, window)
-        self.add_command_bar_action_reinject_cache(self.command_bar_card, config, window)
         self.add_command_bar_action_estimate(self.command_bar_card, config, window)
         self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
@@ -1648,14 +1629,10 @@ class TranslationPage(QWidget, Base):
         )
         self.action_retry_failed.setEnabled(False)
 
-    # 导出已完成的内容
+    # 将当前译文写入配置的输出目录
     def add_command_bar_action_export(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
         def triggered() -> None:
             self.emit(Base.Event.TRANSLATION_MANUAL_EXPORT, {})
-            self.emit(Base.Event.APP_TOAST_SHOW, {
-                "type": Base.ToastType.SUCCESS,
-                "message": Localizer.get().task_success,
-            })
 
         self.action_export = parent.add_action(
             Action(FluentIcon.SHARE, Localizer.get().translation_page_export, parent, triggered = triggered),
@@ -1663,32 +1640,6 @@ class TranslationPage(QWidget, Base):
         self.action_export.installEventFilter(ToolTipFilter(self.action_export, 300, ToolTipPosition.TOP))
         self.action_export.setToolTip(Localizer.get().translation_page_export_tooltip)
         self.action_export.setEnabled(False)
-
-    # 从缓存重新注入
-    def add_command_bar_action_reinject_cache(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
-        def triggered() -> None:
-            message_box = MessageBox(
-                Localizer.get().alert,
-                Localizer.get().translation_page_reinject_cache_confirm,
-                window,
-            )
-            message_box.yesButton.setText(Localizer.get().confirm)
-            message_box.cancelButton.setText(Localizer.get().cancel)
-
-            if not message_box.exec():
-                return
-
-            current_config = Config().load()
-            self.emit(Base.Event.TRANSLATION_CACHE_REINJECT, {
-                "output_folder": current_config.output_folder,
-            })
-
-        self.action_reinject_cache = parent.add_action(
-            Action(FluentIcon.SYNC, Localizer.get().translation_page_reinject_cache, parent, triggered = triggered),
-        )
-        self.action_reinject_cache.installEventFilter(ToolTipFilter(self.action_reinject_cache, 300, ToolTipPosition.TOP))
-        self.action_reinject_cache.setToolTip(Localizer.get().translation_page_reinject_cache_tooltip)
-        self.action_reinject_cache.setEnabled(False)
 
     def add_command_bar_action_estimate(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
 

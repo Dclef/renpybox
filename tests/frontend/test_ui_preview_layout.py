@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QBoxLayout
 from PyQt5.QtWidgets import QWidget
-from PyQt5.QtGui import QColor, QFontDatabase
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QFontDatabase, QWheelEvent
+from PyQt5.QtCore import QPoint, QPointF, Qt
 from PyQt5.QtTest import QTest
 from qfluentwidgets import SingleDirectionScrollArea, Theme, ThemeColor, qconfig, setTheme
 
+from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from frontend.Agent.AgentPage import AgentEmptyState, AgentMessageWidget, AgentPage
 from frontend.AppSettingsPage import AppSettingsPage
@@ -414,6 +416,84 @@ def test_agent_streaming_appends_without_reparsing_markdown() -> None:
     assert markdown_calls == ["**完成**"]
     widget.text_view.setMarkdown = original_set_markdown
     widget.deleteLater()
+
+
+@pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
+def test_onekey_postprocessing_wheel_has_no_empty_scroll_range(monkeypatch, language) -> None:
+    """宽窗滚轮不能把放得下的卡片滚走，缩小后只滚动真实溢出的内容。"""
+    monkeypatch.setattr(Config, "load", lambda self, path=None: self)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", language)
+    page = YiJianFanyiPage()
+    page.resize(1000, 780)
+    page.show()
+    page._go_step5()
+    scroll = page.step5_page.content_scroll
+    try:
+        for width, height in ((1000, 780), (680, 500), (1000, 780)):
+            page.resize(width, height)
+            QTest.qWait(50)
+            viewport = scroll.viewport()
+            cards = page._step5_cards
+            card_bottom = max(card.geometry().bottom() + 1 for card in cards)
+            assert page._step5_flow_container.height() == card_bottom
+            assert len(page.step5_page.findChildren(SingleDirectionScrollArea)) == 1
+            expected_overflow = max(
+                0, page._step5_flow_container.y() + card_bottom + 16 - viewport.height()
+            )
+            assert scroll.verticalScrollBar().maximum() == expected_overflow
+            if width == 1000:
+                assert expected_overflow == 0
+            before = cards[0].mapTo(viewport, QPoint())
+            for _ in range(8):
+                event = QWheelEvent(
+                    QPointF(80, 80), QPointF(viewport.mapToGlobal(QPoint(80, 80))),
+                    QPoint(), QPoint(0, -120), Qt.NoButton, Qt.NoModifier,
+                    Qt.NoScrollPhase, False,
+                )
+                APP.sendEvent(viewport, event)
+                QTest.qWait(20)
+            QTest.qWait(450)
+            if width == 1000:
+                assert scroll.verticalScrollBar().value() == 0
+                assert cards[0].mapTo(viewport, QPoint()) == before
+                assert all(not card.visibleRegion().isEmpty() for card in cards)
+            else:
+                assert scroll.verticalScrollBar().value() == expected_overflow
+                assert max(card.mapTo(viewport, QPoint()).y() + card.height() for card in cards) == viewport.height() - 16
+    finally:
+        page.close()
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_single_export_button_dispatches_without_premature_success(monkeypatch, enabled) -> None:
+    """导出只保留底部入口；点击只发起任务，成功反馈由写出结果决定。"""
+    monkeypatch.setattr(Config, "load", lambda self, path=None: self)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    window = QWidget()
+    window.resize(1280, 800)
+    page = TranslationPage("translation_page", window)
+    page.setGeometry(window.rect())
+    page.ui_update_timer.stop()
+    events, errors = [], []
+    monkeypatch.setattr(page, "emit", lambda event, data: events.append((event, data)))
+    monkeypatch.setattr(sys, "excepthook", lambda *error: errors.append(error))
+    window.show()
+    APP.processEvents()
+    page.action_export.setEnabled(enabled)
+    try:
+        assert not hasattr(page, "snapshot_button")
+        assert not hasattr(page, "action_reinject_cache")
+        assert page.action_export.text() == Localizer.get().translation_page_export
+        QTest.mouseClick(page.action_export, Qt.LeftButton)
+        APP.processEvents()
+        assert errors == []
+        exports = [data for event, data in events if event == Base.Event.TRANSLATION_MANUAL_EXPORT]
+        assert exports == ([{}] if enabled else [])
+        assert not any(event == Base.Event.APP_TOAST_SHOW for event, _ in events)
+    finally:
+        window.close()
+        window.deleteLater()
 
 
 def test_translation_dashboard_uses_html_grid_hierarchy(monkeypatch) -> None:

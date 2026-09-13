@@ -7,6 +7,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PyQt5.QtCore import QEvent
 from PyQt5.QtGui import QFontDatabase
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QBoxLayout, QWidget
@@ -376,3 +377,20 @@ def test_proofreading_export_requires_persisted_edits(monkeypatch, tmp_path, sav
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_platform_group_disconnects_theme_signal_when_deleted(monkeypatch):
+    """接口卡片销毁后再切换主题，不应调用已销毁的图标。"""
+    import sys
+    from PyQt5 import sip
+    from qfluentwidgets import FluentIcon
+    from frontend.Project.PlatformGroupCard import PlatformGroupCard
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *args: errors.append(args))
+    card = PlatformGroupCard(None, "接口", "描述", FluentIcon.SETTING)
+    card.deleteLater()
+    APP.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert sip.isdeleted(card)
+    qconfig.themeChanged.emit(qconfig.theme)
+    assert errors == []

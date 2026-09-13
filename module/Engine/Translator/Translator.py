@@ -425,7 +425,14 @@ class Translator(Base):
 
     # 翻译结果手动导出事件
     def translation_manual_export(self, event: str, data: dict) -> None:
-        if Engine.get().get_status() != Engine.Status.TRANSLATING:
+        status = Engine.get().get_status()
+        if status == Engine.Status.IDLE:
+            # 暂停、完成或重启应用后，使用项目持久化缓存恢复译文文件。
+            self.translation_cache_reinject(event, {
+                "output_folder": self._resolve_project_status_output_folder(data),
+            })
+            return None
+        if status != Engine.Status.TRANSLATING:
             return None
         if not getattr(self, "_translation_run_initialized", False):
             self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -440,9 +447,15 @@ class Translator(Base):
                 items = self.cache_manager.copy_items()
                 self.mtool_optimizer_postprocess(items)
                 self.check_and_wirte_result(items)
+                self.emit(Base.Event.APP_TOAST_SHOW, {
+                    "type": Base.ToastType.SUCCESS,
+                    "message": Localizer.get().translation_page_export_success.format(
+                        PATH=os.path.abspath(self.config.output_folder),
+                    ),
+                })
             except Exception as exc:
                 # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
-                self.error("[EXPORT] 手动导出失败", exc)
+                self.error("[EXPORT] 写入译文文件失败", exc)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
                     "message": str(exc),
@@ -477,22 +490,24 @@ class Translator(Base):
             config.output_folder = output_folder
             config.input_folder = output_folder
 
-            self.info(f"[REINJECT] 从缓存重新注入：{output_folder} (items={len(items)})")
+            self.info(f"[REINJECT] 从缓存写入译文文件：{output_folder} (items={len(items)})")
             try:
                 FileManager(config).write_to_path(items)
             except Exception as exc:
                 # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
-                self.error("[REINJECT] 从缓存重新注入失败", exc)
+                self.error("[REINJECT] 从缓存写入译文文件失败", exc)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
                     "message": str(exc),
                 })
                 return
-            self.info(f"[REINJECT] 注入完成：{output_folder}")
+            self.info(f"[REINJECT] 译文文件写入完成：{output_folder}")
 
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.SUCCESS,
-                "message": Localizer.get().translation_page_reinject_cache_success,
+                "message": Localizer.get().translation_page_export_success.format(
+                    PATH=os.path.abspath(output_folder),
+                ),
             })
 
         threading.Thread(target = task, args = (event, data)).start()

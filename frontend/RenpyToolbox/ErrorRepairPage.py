@@ -402,7 +402,6 @@ class ErrorRepairPage(Base, QWidget):
                 )
         elif operation == "lint":
             result = payload if isinstance(payload, dict) else {}
-            lint_output = result.get("output")
             errors = result.get("errors") or []
             self._set_running_operation(None)
             if errors:
