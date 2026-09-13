@@ -6,6 +6,7 @@
 - 手动导出与缓存重新注入跑在子线程里，必须自行发出错误 Toast。
 """
 
+import os
 import types
 
 import pytest
@@ -73,8 +74,9 @@ def test_successful_writeback_still_runs_reinject_check(monkeypatch):
     assert calls == ["check", "write", "reinject"]
 
 
-def test_manual_export_emits_error_toast_on_writeback_failure(monkeypatch):
-    error = RuntimeError("部分文件写回失败：RENPYSOURCE: 译文未生效")
+@pytest.mark.parametrize("write_fails", [True, False])
+def test_manual_export_reports_result_after_writeback(monkeypatch, write_fails):
+    error = RuntimeError("部分文件写回失败：RENPYSOURCE: 译文未生效") if write_fails else None
     translator, calls, toasts = _make_translator(monkeypatch, write_error = error)
 
     class FakeCacheManager:
@@ -112,8 +114,25 @@ def test_manual_export_emits_error_toast_on_writeback_failure(monkeypatch):
 
     assert started == [True]
     assert calls == ["check", "write", "reinject"]
-    assert [toast["type"] for toast in toasts] == [Base.ToastType.ERROR]
-    assert "部分文件写回失败" in toasts[0]["message"]
+    expected_type = Base.ToastType.ERROR if write_fails else Base.ToastType.SUCCESS
+    assert [toast["type"] for toast in toasts] == [expected_type]
+    if write_fails:
+        assert "部分文件写回失败" in toasts[0]["message"]
+    else:
+        assert os.path.abspath(translator.config.output_folder) in toasts[0]["message"]
+
+
+def test_idle_manual_export_uses_resolved_cache_directory(monkeypatch):
+    """翻译结束后仍可导出；目录以当前项目的缓存解析结果为准。"""
+    translator = Translator.__new__(Translator)
+    calls = []
+    translator._resolve_project_status_output_folder = lambda data: "project/output"
+    translator.translation_cache_reinject = lambda event, data: calls.append((event, data))
+    monkeypatch.setattr(translator_module.Engine, "get", staticmethod(
+        lambda: types.SimpleNamespace(get_status=lambda: translator_module.Engine.Status.IDLE)
+    ))
+    translator.translation_manual_export("export", {})
+    assert calls == [("export", {"output_folder": "project/output"})]
 
 
 def test_cache_reinject_emits_error_toast_instead_of_success(monkeypatch):

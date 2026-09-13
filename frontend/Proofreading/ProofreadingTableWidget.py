@@ -12,6 +12,7 @@ from qfluentwidgets import IconWidget
 from qfluentwidgets import PillToolButton
 from qfluentwidgets import RoundMenu
 from qfluentwidgets import TableWidget
+from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
 from qfluentwidgets import setCustomStyleSheet
@@ -21,6 +22,15 @@ from frontend.Proofreading.TextEditDialog import TextEditDialog
 from module.Cache.CacheItem import CacheItem
 from module.Localizer.Localizer import Localizer
 from module.ResultChecker import WarningType
+
+class _RowWidgetDelegate(TableItemDelegate):
+    def updateEditorGeometry(self, editor, option, index) -> None:
+        # 状态和操作控件铺满单元格，不能按调整前的控件高度计算居中位置。
+        if index.column() in (ProofreadingTableWidget.COL_STATUS, ProofreadingTableWidget.COL_ACTION):
+            editor.setGeometry(option.rect)
+        else:
+            super().updateEditorGeometry(editor, option, index)
+
 
 class ProofreadingTableWidget(TableWidget):
     """校对任务专用表格组件"""
@@ -51,6 +61,7 @@ class ProofreadingTableWidget(TableWidget):
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
 
+        self.setItemDelegate(_RowWidgetDelegate(self))
         self.setColumnCount(4)
         self.setHorizontalHeaderLabels([
             Localizer.get().proofreading_page_col_src,
