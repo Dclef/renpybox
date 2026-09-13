@@ -405,6 +405,8 @@ class LocalizerZH():
     translation_page_export_tooltip: str = "将当前译文写入输出目录；已存在的译文文件会更新，不会重新翻译。"
     translation_page_export_success: str = "译文文件已写入：{PATH}"
     translation_page_export_preparing: str = "翻译任务仍在准备中，请稍后再写入译文文件。"
+    proofreading_hook_group_hint: str = '补漏译文（含带标记的补充抽取）；校对后写回来源文件并更新 replace_text_auto.rpy。'
+    translation_reuse_hook_updated: str = '已同步生成 replace_text_auto.rpy（仅包含补充替换与独立补漏译文）。'
     translation_reuse_summary: str = "可复用 {reusable} 条，冲突 {conflicts} 条，已一致 {existing} 条，无可复用旧译文 {unmatched} 条"
     translation_reuse_unmatched_hint: str = "无可复用旧译文：旧译文为空、与原文相同，或没有对应条目；不代表写入失败。"
     translation_page_reinject_cache_no_cache: str = "未找到缓存数据，请先翻译"
@@ -1896,6 +1898,14 @@ class LocalizerZH():
     workbench_open_local_glossary: str = '打开本地词库'
     workbench_open_do_not_translate_list: str = '打开禁翻表'
     workbench_open_custom_prompts: str = '打开自定义提示词'
+    workbench_progress_loading: str = '正在读取项目文本并扫描角色候选…'
+    workbench_progress_worldbook: str = '正在生成世界观草稿，等待模型回复…'
+    workbench_progress_worldbook_done: str = '世界观草稿已生成并解析完成。'
+    workbench_progress_no_characters: str = '没有找到可生成草稿的角色候选。'
+    workbench_progress_characters: str = '角色卡第 {batch}/{total} 批，等待模型回复：{names}'
+    workbench_progress_characters_done: str = '已处理 {count} 张角色草稿。'
+    workbench_progress_elapsed: str = '已用时间：{minutes} 分 {seconds} 秒'
+    workbench_progress_complete: str = '分析完成：世界观草稿 {worlds} 份，角色草稿 {count} 张。请检查并应用。'
     workbench_ready: str = '等待操作'
     workbench_worldbuilding: str = '世界观设定'
     workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = '填写背景与翻译风格；也可生成 AI 草稿，确认后应用。'

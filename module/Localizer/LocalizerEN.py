@@ -406,6 +406,8 @@ class LocalizerEN(LocalizerZH):
     translation_page_export: str = "Write Translation Files"
     translation_page_export_tooltip: str = "Write current translations to the output folder, updating existing files without translating again."
     translation_page_export_success: str = "Translation files written to: {PATH}"
+    proofreading_hook_group_hint: str = 'Supplemental translations, including marked extraction entries. Writing the proofread translations updates their source files and replace_text_auto.rpy.'
+    translation_reuse_hook_updated: str = 'Regenerated replace_text_auto.rpy from marked supplemental translations only.'
     translation_reuse_summary: str = "Reusable: {reusable}; conflicts: {conflicts}; already matched: {existing}; no reusable old translation: {unmatched}"
     translation_reuse_unmatched_hint: str = "No reusable old translation: the previous translation is empty, identical to its source, or has no matching entry. This does not indicate a write failure."
     translation_page_reinject_cache_no_cache: str = "No cache data found, please translate first"
@@ -1993,6 +1995,14 @@ class LocalizerEN(LocalizerZH):
     workbench_open_local_glossary: str = 'Open Local Glossary'
     workbench_open_do_not_translate_list: str = 'Open Do-Not-Translate List'
     workbench_open_custom_prompts: str = 'Open Custom Prompts'
+    workbench_progress_loading: str = 'Reading project text and scanning character candidates...'
+    workbench_progress_worldbook: str = 'Generating the worldbuilding draft; waiting for the model...'
+    workbench_progress_worldbook_done: str = 'Worldbuilding draft generated and parsed.'
+    workbench_progress_no_characters: str = 'No character candidates available for draft generation.'
+    workbench_progress_characters: str = 'Character batch {batch}/{total}; waiting for the model: {names}'
+    workbench_progress_characters_done: str = 'Processed {count} character drafts.'
+    workbench_progress_elapsed: str = 'Elapsed: {minutes} min {seconds} sec'
+    workbench_progress_complete: str = 'Analysis complete: {worlds} worldbuilding drafts and {count} character drafts. Review and apply them.'
     workbench_ready: str = 'Ready'
     workbench_worldbuilding: str = 'Worldbuilding'
     workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = 'Describe the setting and translation style, or generate and review an AI draft.'

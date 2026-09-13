@@ -28,6 +28,7 @@ from module.Extract.MaExtractor import MaExtractor
 from module.Extract.JsonExtractor import JsonExtractor
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import (
+    TlBlockKind,
     RENPYBOX_REPLACE_ONLY_MARKER,
     parse_tl_document,
     scan_quoted_literals,
@@ -80,6 +81,7 @@ class TranslationReuseResult:
     already_reused: int = 0
     conflicts: int = 0
     unmatched_entries: int = 0
+    hook_updated: bool = False
     backup_path: Optional[Path] = None
 
 
@@ -4203,7 +4205,7 @@ class UnifiedExtractor:
     ) -> TranslationReuseResult:
         """只读统计旧译文可安全复用到目标目录的数量。"""
         source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
-        translations = self._get_existing_translations(source)
+        translations = self._load_reuse_translations(source, target)
         return self._apply_translation_reuse(target, translations, dry_run=True)
 
     def reuse_translations(
@@ -4213,15 +4215,60 @@ class UnifiedExtractor:
     ) -> TranslationReuseResult:
         """仅填充目标中的空白/原文占位译文，绝不覆盖已有译文。"""
         source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
-        translations = self._get_existing_translations(source)
+        from module.Extract.ReplaceGenerator import render_replace_script, write_replace_script
+        translations = self._load_reuse_translations(source, target)
         preview = self._apply_translation_reuse(target, translations, dry_run=True)
-        if preview.reusable_entries == 0:
+        plan = self._reuse_hook_plan(target)
+        hook_outdated = bool(plan and plan.pairs and (
+            not plan.output_path.is_file()
+            or plan.output_path.read_text(encoding="utf-8") != render_replace_script(plan.pairs, language=plan.language)
+        ))
+        if preview.reusable_entries == 0 and not hook_outdated:
             return preview
 
         backup_path = self._copy_tl_backup(target)
         result = self._apply_translation_reuse(target, translations, dry_run=False)
         result.backup_path = backup_path
+        plan = self._reuse_hook_plan(target)
+        if plan and plan.pairs:
+            write_replace_script(plan.output_path, plan.pairs, language=plan.language)
+            result.hook_updated = True
         return result
+
+    def _iter_reuse_files(self, tl_dir: Path):
+        """复用包含独立补漏的译文来源，自动生成的钩子不作为普通 TL 解析。"""
+        from module.Extract.ReplaceGenerator import _resolve_miss_path
+        yield from self._iter_rpy_files(tl_dir)
+        miss_path = _resolve_miss_path(tl_dir)
+        if miss_path is not None and miss_path.is_file():
+            yield miss_path
+
+    def _load_reuse_translations(self, source: Path, target: Path) -> ExistingTranslations:
+        from module.Extract.ReplaceGenerator import parse_miss_rpy, read_generated_replace_pairs
+        translations = self._get_existing_translations(source)
+        for src, dst in parse_miss_rpy(source, source.name, tl_dir=source):
+            translations.strings.setdefault(src, dst)
+        supplement_sources = set()
+        extractor = RenpyTlItemExtractor()
+        for path in self._iter_reuse_files(target):
+            doc = parse_tl_document(path.read_text(encoding="utf-8").splitlines())
+            for item in extractor.extract(doc, path.relative_to(target).as_posix()):
+                if path.name.startswith("miss_ready_replace") or item.get_extra_field()["renpy"].get("replace_only"):
+                    supplement_sources.add(item.get_src())
+        # 旧目录只剩自动钩子时，只向目标明确标记的补漏条目恢复译文。
+        for src, dst in read_generated_replace_pairs(source / "replace_text_auto.rpy", supplement_sources):
+            translations.strings.setdefault(src, dst)
+        return translations
+
+    def _reuse_hook_plan(self, target: Path):
+        from module.Extract.ReplaceGenerator import build_old_new_replace_plan
+        languages = set()
+        for path in self._iter_reuse_files(target):
+            doc = parse_tl_document(path.read_text(encoding="utf-8").splitlines())
+            languages.update(block.lang for block in doc.blocks if block.kind == TlBlockKind.STRINGS)
+        if len(languages) != 1:
+            return None
+        return build_old_new_replace_plan(target, languages.pop(), tl_dir=target)
 
     def _validate_translation_reuse_paths(
         self,
@@ -4268,7 +4315,7 @@ class UnifiedExtractor:
         extractor = RenpyTlItemExtractor()
         writer = RenpyTlLineUpdater()
 
-        for rpy_file in self._iter_rpy_files(tl_dir):
+        for rpy_file in self._iter_reuse_files(tl_dir):
             # 优先使用 AST 回填，失败再走旧正则逻辑
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")

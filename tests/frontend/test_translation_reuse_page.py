@@ -25,3 +25,13 @@ def test_translation_reuse_page_prefills_configured_target(tmp_path, monkeypatch
     assert page.preview_button.isEnabled()
     assert page.execute_button.isEnabled()
     page.close()
+
+
+def test_filter_groups_marked_supplement_as_generated_hook():
+    from module.Cache.CacheItem import CacheItem
+    marked = CacheItem(src="补漏", dst="补漏译文", file_path="scripts/miss.rpy", file_type=CacheItem.FileType.RENPY)
+    extra = {"renpy": {"replace_only": True}}
+    marked.set_extra_field(extra)
+    assert TranslationReusePage is not None
+    from frontend.Proofreading.FilterDialog import FilterDialog
+    assert FilterDialog.file_group_key(marked) == "replace_text_auto.rpy"

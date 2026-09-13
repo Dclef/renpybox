@@ -5,6 +5,7 @@ import json
 import sqlite3
 from contextlib import closing
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,7 @@ from widget.QuietPillButton import QuietPillButton
 class _WorkbenchSignals(QObject):
     """跨线程 UI 信号。"""
 
+    task_progress = pyqtSignal(object)
     analysis_success = pyqtSignal(object)
     analysis_failed = pyqtSignal(object)
     sync_success = pyqtSignal(object)
@@ -97,11 +99,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.analysis_service = WorkbenchAnalysisService()
         self.character_scanner = CharacterScanner()
         self.signals = _WorkbenchSignals()
+        self.signals.task_progress.connect(self._on_task_progress)
         self.signals.analysis_success.connect(self._on_analysis_success)
         self.signals.analysis_failed.connect(self._on_analysis_failed)
         self.signals.sync_success.connect(self._on_sync_success)
         self.signals.sync_failed.connect(self._on_sync_failed)
 
+        self._task_started_at = None
+        self._task_elapsed_timer = QTimer(self)
+        self._task_elapsed_timer.setInterval(1000)
+        self._task_elapsed_timer.timeout.connect(self._update_task_elapsed)
         self._loading_ui = False
         self._analysis_running = False
         self._sync_running = False
@@ -212,6 +219,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.stack.addWidget(self._wrap_scroll(self._build_worldbook_panel()))
         self.stack.addWidget(self._wrap_scroll(self._build_character_panel()))
         self.stack.addWidget(self._wrap_scroll(self._build_preview_panel()))
+        workspace_layout.insertWidget(2, self.task_status_surface)
         self.switch_panel("overview")
         root.addWidget(self.workspace, 1)
         self._update_responsive_layout()
@@ -421,15 +429,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.overview_status_label.setWordWrap(True)
         self.overview_hint_label = CaptionLabel("")
         self.overview_hint_label.setWordWrap(True)
-        status_surface = QWidget(action_card)
+        status_surface = QWidget(self.workspace)
+        self.task_status_surface = status_surface
         status_surface.setObjectName("workbenchStatusSurface")
         status_surface.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        status_layout = QHBoxLayout(status_surface)
-        status_layout.setContentsMargins(10, 7, 10, 7)
-        status_layout.setSpacing(16)
+        status_layout = QVBoxLayout(status_surface)
+        status_layout.setContentsMargins(24, 7, 24, 10)
+        status_layout.setSpacing(4)
         status_layout.addWidget(self.overview_status_label, 1)
         status_layout.addWidget(self.overview_hint_label, 1)
-        action_layout.addWidget(status_surface)
+        self.task_elapsed_label = CaptionLabel(status_surface)
+        self.task_elapsed_label.hide()
+        status_layout.addWidget(self.task_elapsed_label)
 
         self.btn_export_assets.setFixedHeight(32)
         self.btn_apply_all.setFixedHeight(32)
@@ -1269,14 +1280,35 @@ class RenpyWorkbenchPage(Base, QWidget):
         ):
             button.setEnabled(not self._analysis_running and not self._sync_running)
 
+        if self._analysis_running or self._sync_running:
+            # 本页持有引擎锁时保留实际步骤，不能误报为翻译任务占用。
+            return
         if engine_busy:
             self.overview_status_label.setText(Localizer.get().workbench_translation_task_running_ai_generation_character_sync)
         elif supported is False:
             self.overview_status_label.setText(Localizer.get().workbench_current_api_does_not_support_ai_analysis)
-        elif self._analysis_running:
-            self.overview_status_label.setText(Localizer.get().workbench_ai_analysis_running_please_wait)
-        elif self._sync_running:
-            self.overview_status_label.setText(Localizer.get().workbench_character_sync_running_please_wait)
+
+    def _begin_task_status(self, message: str) -> None:
+        self._task_started_at = time.monotonic()
+        self.overview_status_label.setText(message)
+        self.task_elapsed_label.show()
+        self._update_task_elapsed()
+        self._task_elapsed_timer.start()
+        self.info(f"[Workbench] {message}")
+
+    def _update_task_elapsed(self) -> None:
+        if self._task_started_at is not None:
+            elapsed = max(0, int(time.monotonic() - self._task_started_at))
+            self.task_elapsed_label.setText(Localizer.get().workbench_progress_elapsed.format(
+                minutes=elapsed // 60, seconds=elapsed % 60,
+            ))
+
+    def _on_task_progress(self, payload: dict[str, Any]) -> None:
+        if not self._analysis_running:
+            return
+        current = ProjectAssetsRepository.from_config(self._get_config_snapshot()).output_folder
+        if Path(payload["project_output"]).resolve() == Path(current).resolve():
+            self.overview_status_label.setText(payload["message"])
 
     def _on_worldbook_toggle_changed(self, state: int) -> None:
         """世界观开关变化。"""
@@ -1501,10 +1533,14 @@ class RenpyWorkbenchPage(Base, QWidget):
             project_output = ProjectAssetsRepository.from_config(config).output_folder
             self._refresh_action_state()
         except Exception:
+            self._task_elapsed_timer.stop()
             self._analysis_running = False
             Engine.get().release_status(Engine.Status.TESTING)
             raise
-        self.overview_status_label.setText(Localizer.get().workbench_running_ai_analysis)
+        self._begin_task_status(Localizer.get().workbench_running_ai_analysis)
+        self.analysis_service.progress_callback = lambda message: self.signals.task_progress.emit({
+            "project_output": project_output, "message": message,
+        })
         scope = normalize_analysis_scope(scope)
         current_id = self._selected_character_id
 
@@ -1580,6 +1616,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         try:
             thread.start()
         except Exception:
+            self._task_elapsed_timer.stop()
             self._analysis_running = False
             Engine.get().release_status(Engine.Status.TESTING)
             self._refresh_action_state()
@@ -1590,6 +1627,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         config = self._load_config()
         current_output = ProjectAssetsRepository.from_config(config).output_folder
         if Path(payload["project_output"]).resolve() != Path(current_output).resolve():
+            self.task_elapsed_label.hide()
             self.overview_status_label.setText(Localizer.get().workbench_ready)
             self.refresh_from_config(config)
             return None
@@ -1597,6 +1635,8 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _on_analysis_success(self, payload: dict[str, Any]) -> None:
         """处理分析成功。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._analysis_running = False
         config = self._background_result_config(payload)
         if config is None:
@@ -1643,7 +1683,9 @@ class RenpyWorkbenchPage(Base, QWidget):
         elif card_id:
             self._selected_character_id = card_id
         self.refresh_from_config(config)
-        self.overview_status_label.setText(Localizer.get().workbench_ai_drafts_ready_review_them_right_before)
+        completion = Localizer.get().workbench_progress_complete.format(count=len(result.character_drafts), worlds=int(bool(result.worldbook_draft)))
+        self.overview_status_label.setText(completion)
+        self.info(f"[Workbench] {completion}")
         InfoBar.success(
             Localizer.get().complete,
             Localizer.get().workbench_ai_draft_generation_complete,
@@ -1652,6 +1694,8 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _on_analysis_failed(self, payload: dict[str, Any]) -> None:
         """处理分析失败。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._analysis_running = False
         config = self._background_result_config(payload)
         if config is None:
@@ -1669,6 +1713,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         if raw_response and mode != "worldbook" and "世界观" not in message:
             self.character_detail_stack.setCurrentIndex(1)
         self.overview_status_label.setText(message)
+        self.error(f"[Workbench] {message}")
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _merge_candidates_into_cards(
@@ -1717,7 +1762,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         project_output = ProjectAssetsRepository.from_config(config).output_folder
         self._sync_running = True
         self._refresh_action_state()
-        self.overview_status_label.setText(Localizer.get().workbench_syncing_character_candidates)
+        self._begin_task_status(Localizer.get().workbench_syncing_character_candidates)
 
         def task() -> None:
             try:
@@ -1742,12 +1787,15 @@ class RenpyWorkbenchPage(Base, QWidget):
         try:
             threading.Thread(target = task, daemon = True).start()
         except Exception:
+            self._task_elapsed_timer.stop()
             self._sync_running = False
             self._refresh_action_state()
             raise
 
     def _on_sync_success(self, payload: dict[str, Any]) -> None:
         """同步成功回调。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._sync_running = False
         config = self._background_result_config(payload)
         if config is None:
@@ -1769,10 +1817,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         added = payload.get("added", 0)
         sync_result = Localizer.get().workbench_character_sync_complete_new_drafts_ready_review.format(added=added)
         self.overview_status_label.setText(sync_result)
+        self.info(f"[Workbench] {sync_result}")
         InfoBar.success(Localizer.get().complete, sync_result, parent = self)
 
     def _on_sync_failed(self, payload: dict[str, Any]) -> None:
         """同步失败回调。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._sync_running = False
         config = self._background_result_config(payload)
         if config is None:
@@ -1780,6 +1831,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         message = str(payload["message"])
         self._refresh_action_state(config)
         self.overview_status_label.setText(message)
+        self.error(f"[Workbench] {message}")
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _apply_worldbook_draft(self) -> None:

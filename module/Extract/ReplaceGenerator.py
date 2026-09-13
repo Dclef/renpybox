@@ -26,7 +26,7 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.Renpy.renpy_tl_core import (
-    RENPYBOX_REPLACE_ONLY_MARKER,
+    has_replace_only_marker,
     TlBlockKind,
     pair_old_new_lines,
     parse_tl_document,
@@ -68,17 +68,6 @@ COMPILED_CACHE_VERSION = 3
 _TL_COVERED_CACHE: dict = {}
 
 DECLINED_CANDIDATES_SCHEMA_VERSION = 1
-
-
-def _entry_has_replace_only_marker(lines: Sequence[str], old_index: int) -> bool:
-    cursor = old_index - 1
-    while cursor >= 0:
-        stripped = lines[cursor].strip()
-        if not stripped or stripped.startswith("# game/"):
-            cursor -= 1
-            continue
-        return stripped == f"# {RENPYBOX_REPLACE_ONLY_MARKER}"
-    return False
 
 
 def _remove_empty_translate_strings_blocks(file_path: Path, tl_name: str) -> bool:
@@ -184,7 +173,7 @@ def collect_translated_old_new_pairs(
                 continue
             statements = {statement.line_no: statement for statement in block.statements}
             for old_line, new_line in pair_old_new_lines(block).items():
-                if marked_only and not _entry_has_replace_only_marker(
+                if marked_only and not has_replace_only_marker(
                     lines, old_line - 1
                 ):
                     continue
@@ -1449,7 +1438,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
                 new_match.group(1), new_match.group("text")
             )
             translated = bool(new_value and new_value != old_value)
-            replace_only = _entry_has_replace_only_marker(lines, i)
+            replace_only = has_replace_only_marker(lines, i)
             records.setdefault(old_value, []).append(
                 (rpy_file, i, j, translated, replace_only)
             )
@@ -2421,6 +2410,38 @@ def render_replace_script(
     lines.append("")
     return "\n".join(lines)
 
+def read_generated_replace_pairs(path: Path, originals: Set[str]) -> List[Pair]:
+    """从自动钩子恢复指定补漏条目；只解析字面量，不执行游戏脚本。"""
+    if not path.is_file() or not originals:
+        return []
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("# Auto-generated replace_text hook"):
+        return []
+    text = re.sub(r"(?m)^translate \w+ python:$|^init python:$", "if True:", text)
+    tree = ast.parse(text)
+    pairs: dict[str, str] = {}
+    patterns = {}
+    for original in originals:
+        rule = _build_interpolated_replace_rule(original, original)
+        if rule is not None:
+            patterns[rule[0]] = original
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "renpybox_replace_text_auto":
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+                continue
+            if len(call.args) < 2 or not all(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in call.args[:2]):
+                continue
+            first, second = (arg.value for arg in call.args[:2])
+            if call.func.attr == "replace" and first in originals:
+                pairs[first] = second
+            elif call.func.attr == "sub" and isinstance(call.func.value, ast.Name) and call.func.value.id == "re" and first in patterns:
+                original = patterns[first]
+                pairs[original] = re.sub(first, second, original)
+    return list(pairs.items())
+
+
 def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwargs) -> Path:
     """Write a rendered replace hook to ``output_path`` and return the path."""
 
@@ -2432,7 +2453,7 @@ def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwarg
     return output
 
 
-def generate_replace_from_miss(target_path: str | Path, tl_name: str) -> Tuple[Path | None, int]:
+def generate_replace_from_miss(target_path: str | Path, tl_name: str, *, tl_dir: str | Path | None = None) -> Tuple[Path | None, int]:
     """从标记的源码补充译文和独立补漏译文生成统一 replace 钩子。
     
     读取 miss.rpy 与当前语言目录中带 replace-only 标记的译文，生成
@@ -2442,7 +2463,7 @@ def generate_replace_from_miss(target_path: str | Path, tl_name: str) -> Tuple[P
         (输出路径或 None, 条目数量)
     """
     logger = LogManager.get()
-    plan = build_old_new_replace_plan(target_path, tl_name)
+    plan = build_old_new_replace_plan(target_path, tl_name, tl_dir=tl_dir)
 
     if not plan.pairs:
         plan.output_path.unlink(missing_ok=True)

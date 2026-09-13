@@ -154,6 +154,19 @@ RE_GAME_LOCATION = re.compile(r"^game/.+?:\d+\s*$")
 RENPYBOX_REPLACE_ONLY_MARKER = "renpybox: replace-only"
 
 
+def has_replace_only_marker(lines, old_index: int) -> bool:
+    """只认紧邻条目的补充替换标记，允许中间有空行和源码位置注释。"""
+    cursor = old_index - 1
+    while cursor >= 0:
+        stripped = lines[cursor].strip()
+        if not stripped or stripped.startswith("# game/"):
+            cursor -= 1
+            continue
+        return stripped == f"# {RENPYBOX_REPLACE_ONLY_MARKER}"
+    return False
+
+
+
 # ==================== 词法工具 ====================
 
 def split_indent(raw_line: str) -> tuple[str, str]:

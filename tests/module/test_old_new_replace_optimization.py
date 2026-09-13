@@ -160,3 +160,11 @@ def test_hook_write_combines_marked_old_new_with_supplement_items(tmp_path) -> N
     assert '.replace("Native", "原生")' not in script
     assert '.replace("Choice", "选项")' in script
     assert '.replace("Guide", "攻略")' in script
+
+
+def test_generated_hook_pairs_are_read_for_marked_target_entries(tmp_path):
+    """复用时自动钩子只恢复目标已标记的补漏条目。"""
+    from module.Extract.ReplaceGenerator import read_generated_replace_pairs, write_replace_script
+    hook = tmp_path / "replace_text_auto.rpy"
+    write_replace_script(hook, [("Supplement", "补漏"), ("Official", "官方")])
+    assert read_generated_replace_pairs(hook, {"Supplement"}) == [("Supplement", "补漏")]

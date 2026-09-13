@@ -8,6 +8,7 @@ from __future__ import annotations
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Renpy.renpy_tl_core import (
+    has_replace_only_marker,
     TlBlock,
     TlBlockKind,
     TlDocument,
@@ -56,6 +57,10 @@ class RenpyTlItemExtractor(Base):
 
                 item = self._build_cache_item(block, template_stmt, target_stmt, rel_path)
                 if item is not None:
+                    if block.kind == TlBlockKind.STRINGS and has_replace_only_marker(doc.lines, template_line - 1):
+                        extra = item.get_extra_field()
+                        extra["renpy"]["replace_only"] = True
+                        item.set_extra_field(extra)
                     items.append(item)
 
         # 保持稳定排序
