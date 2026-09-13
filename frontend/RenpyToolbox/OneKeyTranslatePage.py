@@ -1312,6 +1312,8 @@ class YiJianFanyiPage(Base, QWidget):
         
         flow_container = QWidget()
         mark_toolbox_widget(flow_container, "toolboxFlow")
+        flow_container.setObjectName("onekeyTools")
+        flow_container.setStyleSheet("QWidget#onekeyTools { background: transparent; }")
         flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         flow_layout = FlowLayout(flow_container, needAni=False)
         flow_layout.setHorizontalSpacing(8)
@@ -1402,6 +1404,8 @@ class YiJianFanyiPage(Base, QWidget):
         for card in cards:
             card.setFixedWidth(card_width)
 
+        # 固定为当前列数的实际高度，防止 Qt 按单列高度制造多余滚动范围。
+        container.setFixedHeight(self._step5_flow_layout.heightForWidth(width))
         self._step5_flow_layout.invalidate()
         self._step5_flow_layout.activate()
 
