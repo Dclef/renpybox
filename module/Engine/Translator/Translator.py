@@ -834,7 +834,13 @@ class Translator(Base):
             self._raise_if_stop_requested()
             return context
 
+        self.info("[INIT] 开始读取翻译输入目录")
+        self.emit(Base.Event.TRANSLATION_UPDATE, {
+            "phase": "preparing",
+            "message": "正在读取翻译输入目录…",
+        })
         fresh_project, items = FileManager(current_config).read_from_path()
+        self.info(f"[INIT] 输入目录读取完成: 条目 {len(items)} 行")
         self._raise_if_stop_requested()
         if self._has_cache_snapshot(output_folder):
             self.cache_manager.load_project_from_file(output_folder, strict = True)
@@ -863,12 +869,18 @@ class Translator(Base):
             cached_line_count = cached_line_count,
         )
         self._raise_if_stop_requested()
+        self.emit(Base.Event.TRANSLATION_UPDATE, {
+            "phase": "preparing",
+            "message": "正在写入翻译缓存…",
+        })
+        self.info("[INIT] 开始写入翻译缓存")
         self.cache_manager.reset_translation_run(
             items,
             output_folder,
             snapshot = context,
             progress = progress,
         )
+        self.info("[INIT] 翻译缓存写入完成")
         return context
 
     def _completed_item_count(self) -> int:

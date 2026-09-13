@@ -386,10 +386,16 @@ def remove_repeat_extracted_from_tl(
             rpy_files.append(i)
     rpy_files.sort(key=lambda value: os.path.relpath(value, p).replace('\\', '/').casefold())
     
-    # 第一步：对每个文件执行去重（单文件内去重）和提取
+    # 第一步只做单文件去重。这里的 extracted 结果只会写入一个从未被消费的
+    # 全局列表，重新运行完整源码提取会在大文件上产生大量无效开销。
     # 注意：这一步会修改文件内容，必须先执行
     for file_path in rpy_files:
-        t = ExtractTlThread(file_path, is_py2, duplicate_action=duplicate_action)
+        t = ExtractTlThread(
+            file_path,
+            is_py2,
+            is_remove_repeat_only=True,
+            duplicate_action=duplicate_action,
+        )
         get_extracted_threads.append(t)
         cnt = cnt + 1
         t.start()

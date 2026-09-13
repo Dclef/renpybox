@@ -6,7 +6,11 @@ from __future__ import print_function
 import sys
 import os
 import codecs
-import pickle
+try:
+    # 新版 Ren'Py 可能使用 Python 3.7 的 pickle5 协议。
+    import pickle5 as pickle
+except ImportError:
+    import pickle
 import errno
 import random
 
@@ -38,14 +42,14 @@ if sys.version_info[0] >= 3:
         return text
 
     def _unmangle(data):
-        return data.encode('latin1')
+        return data if isinstance(data, bytes) else data.encode('latin1')
 
     def _unpickle(data):
         # Specify latin1 encoding to prevent raw byte values from causing an ASCII decode error.
         return pickle.loads(data, encoding='latin1')
 elif sys.version_info[0] == 2:
     def _unicode(text):
-        if isinstance(text, unicode):
+        if isinstance(text, type(u"")):
             return text
         return text.decode('utf-8')
 
@@ -154,7 +158,7 @@ class RenPyArchive:
             padding += chr(random.randint(1, 255))
             length -= 1
 
-        return padding
+        return padding.encode('latin1')
 
     # Converts a filename to archive format.
     def convert_filename(self, filename):

@@ -131,7 +131,12 @@ class RenPyArchive:
             self._renpy_config.basedir = os.path.dirname(self._renpy_config.searchpath[0])
 
             self._renpy_loader.index_archives()
-            items = self._renpy_loader.archives[index][1].items()
+            # 这里传入的 index 来自扫描到的文件列表；Ren'Py 重新建立归档列表后
+            # 可能只保留当前归档，直接按原 index 取值会触发 archives[1] 越界。
+            archives = getattr(self._renpy_loader, "archives", None) or []
+            if not archives:
+                raise Exception("index_archives returned empty")
+            items = archives[-1][1].items()
 
         for file, index in items:
             self.indexes[file] = index

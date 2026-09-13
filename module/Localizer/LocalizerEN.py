@@ -1672,6 +1672,8 @@ class LocalizerEN(LocalizerZH):
     )
     onekey_start_translation_2: str = 'Start Translation →'
     onekey_extraction_completed_character_names_variable_references_scanned: str = 'Extraction completed. Character names and variable references were scanned automatically.'
+    onekey_character_scan_in_background: str = 'Character names and variable references are being scanned in the background.'
+    onekey_character_scan_failed: str = 'Character scan did not finish: {message}'
     onekey_extraction_failed: str = '✗ Extraction Failed'
     onekey_error_select_extract_again_if_still_fails: str = (
         'Error: {msg}\n\nSelect Extract Again. If it still fails, check the path and permissions or'
@@ -1784,9 +1786,9 @@ class LocalizerEN(LocalizerZH):
     pack_unpack_select_game_folder_project_root_launcher_exe: str = 'Select the game folder, project root, or launcher .exe'
     pack_unpack_overwrite_existing_rpy_files_unrpyc_clobber: str = 'Overwrite existing .rpy files (unrpyc --clobber)'
     pack_unpack_direct_decompilation_unren_uses_game_s_python: str = "Direct decompilation (UnRen: uses the game's Python without launching it)"
-    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = 'Try UnRen first, then fall back to unrpyc'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = 'Try the matching unrpyc version first, then fall back to UnRen'
     pack_unpack_decompile: str = 'Decompile'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = 'Try UnRen first, then fall back to unrpyc v2'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = 'Try the matching unrpyc version first, then fall back to UnRen'
     pack_unpack_clean_rpyc_files: str = 'Clean RPYC Files'
     pack_unpack_delete_rpyc_files_have_matching_decompiled_rpy: str = 'Delete RPYC files that have matching decompiled RPY files'
     pack_unpack_select_game_folder: str = 'Select Game Folder'
@@ -1821,6 +1823,7 @@ class LocalizerEN(LocalizerZH):
     pack_unpack_cancelling_after_current_part_finishes_writing: str = 'Cancelling after the current part finishes writing...'
     pack_unpack_no_rpa_files_found_external_tools_unren: str = 'No RPA files were found, or the external tools/UnRen are unavailable'
     pack_unpack_decompiling_unren: str = 'Decompiling with UnRen…'
+    pack_unpack_decompiling_unrpyc: str = 'Decompiling with the matching unrpyc version…'
     pack_unpack_decompilation_complete_generated_rpy_files: str = 'Decompilation complete. Generated .rpy files'
     pack_unpack_unren_failed: str = ' (UnRen failed: {unren_error})'
     pack_unpack_skipped_file_s_without_matching_rpy_files: str = '; skipped {skipped} file(s) without matching .rpy files'
