@@ -117,6 +117,7 @@ class LocalizerEN(LocalizerZH):
     translation_page_stat_latency: str = "Latency"
     translation_page_open_proofreading: str = "Open Parallel Proofreading"
     translation_page_export_snapshot: str = "Export Snapshot"
+    translation_page_export_preparing: str = "The translation is still preparing. Try exporting again shortly."
     translation_page_elapsed: str = "Elapsed: {TIME}"
     translation_page_remaining: str = "Remaining: {TIME}"
     translation_page_duration_hms: str = "{H}h {M}m {S}s"

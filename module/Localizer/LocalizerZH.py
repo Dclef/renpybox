@@ -404,6 +404,7 @@ class LocalizerZH():
     translation_page_continue: str = "继续任务"
     translation_page_export: str = "导出任务数据"
     translation_page_export_tooltip: str = "导出译文文件"
+    translation_page_export_preparing: str = "翻译任务仍在准备中，请稍后再导出。"
     translation_page_reinject_cache: str = "从缓存重新注入"
     translation_page_reinject_cache_tooltip: str = "将缓存中的译文重新写回输出目录"
     translation_page_reinject_cache_confirm: str = "将从缓存重新写回译文文件，是否继续？"

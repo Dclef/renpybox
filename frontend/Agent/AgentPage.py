@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
+import sqlite3
 import time
 from typing import Any
 
@@ -84,8 +86,6 @@ SUPPORTED_FORMATS = {
     str(Base.APIFormat.GOOGLE),
 }
 
-# 对话区最大宽度。宽屏下保持可读行长，窄屏时随窗口收缩。
-CONVERSATION_MAX_WIDTH = 960
 AGENT_WORKSPACE_MAX_WIDTH = 1400
 
 # 顶栏思考等级只作用于 Agent 请求；OFF 保持平台默认关闭行为。
@@ -476,7 +476,7 @@ class AgentMessageWidget(QWidget):
         if role == "user":
             # 用户：右侧气泡 + 左侧复制按钮，不再重复头像与名字。
             self.avatar = None
-            root.addStretch(1)
+            root.addStretch(28)
             self.copy_button = TransparentToolButton(self)
             self.copy_button.setIcon(FluentIcon.COPY)
             self.copy_button.setFixedSize(20, 20)
@@ -485,8 +485,7 @@ class AgentMessageWidget(QWidget):
             root.addWidget(self.copy_button, 0, Qt.AlignVCenter)
 
             self.bubble = AgentBubble(self)
-            self.bubble.setMaximumWidth(int(CONVERSATION_MAX_WIDTH * 0.72))
-            self.bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
+            self.bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             bubble_layout = QVBoxLayout(self.bubble)
             bubble_layout.setContentsMargins(14, 10, 14, 10)
             bubble_layout.setSpacing(0)
@@ -496,12 +495,12 @@ class AgentMessageWidget(QWidget):
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             label.setAttribute(Qt.WA_TranslucentBackground, True)
-            label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
             bubble_layout.addWidget(label)
             self.text_view = label
             self._update_user_bubble_width()
 
-            root.addWidget(self.bubble, 0, Qt.AlignVCenter)
+            root.addWidget(self.bubble, 72, Qt.AlignVCenter)
             self.body = self.bubble
             self.body_layout = bubble_layout
             self.detail_container = QWidget(self.bubble)
@@ -612,15 +611,13 @@ class AgentMessageWidget(QWidget):
         """按短消息实际宽度调整气泡，避免几个字就被挤成两行。"""
         if self.role != "user":
             return
-        maximum = int(CONVERSATION_MAX_WIDTH * 0.72)
         lines = self._text.splitlines() or [""]
         text_width = max(
             self.text_view.fontMetrics().horizontalAdvance(line)
             for line in lines
         )
-        bubble_width = min(maximum, max(1, text_width + 28))
-        self.bubble.setMinimumWidth(bubble_width)
-        self.text_view.setMinimumWidth(max(1, bubble_width - 28))
+        # 短消息按文本收口，长消息由布局分配空间，避免最小宽度撑破窄窗。
+        self.bubble.setMaximumWidth(max(28, text_width + 28))
 
     def set_text(self, text: str) -> None:
         """替换消息正文，保留同一个控件以避免滚动区跳动。"""
@@ -1517,10 +1514,12 @@ class AgentEmptyState(QWidget):
                 (cache_dir / name).is_file()
                 for name in ("cache.db", "project.json", "items.json")
             )
+            cache_item_count = self._read_cache_item_count(cache_dir)
         except (AttributeError, OSError, RuntimeError):
             rpa_paths = []
             rpy_count = rpyc_count = tl_file_count = 0
             cache_exists = False
+            cache_item_count = 0
         return {
             "files": {
                 "rpa_count": len(rpa_paths),
@@ -1530,9 +1529,36 @@ class AgentEmptyState(QWidget):
                 "unpack_required": bool(rpa_paths) and not (rpy_count or rpyc_count),
                 "rpa_names": [item.name for item in rpa_paths],
             },
-            "cache": {"exists": cache_exists, "item_count": 0},
+            "cache": {"exists": cache_exists, "item_count": cache_item_count},
             "assets": {},
         }
+
+    @staticmethod
+    def _read_cache_item_count(cache_dir: Path) -> int:
+        """只读读取缓存条数，避免体检兜底把已有缓存显示为 0。"""
+        database = cache_dir / "cache.db"
+        if database.is_file():
+            try:
+                uri = f"{database.resolve().as_uri()}?mode=ro"
+                with sqlite3.connect(uri, uri=True, timeout=0.1) as connection:
+                    has_items = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items'"
+                    ).fetchone()
+                    if has_items is not None:
+                        row = connection.execute("SELECT COUNT(*) FROM items").fetchone()
+                        return max(0, int(row[0] if row else 0))
+            except (OSError, TypeError, ValueError, RuntimeError, sqlite3.Error):
+                pass
+
+        items_json = cache_dir / "items.json"
+        if items_json.is_file():
+            try:
+                payload = json.loads(items_json.read_text(encoding="utf-8-sig"))
+                if isinstance(payload, list):
+                    return len(payload)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return 0
 
     def _refresh_preflight(self, config: Config | None = None) -> None:
         """刷新当前工程的诊断指标，不触碰建议卡结构。"""
@@ -1845,15 +1871,18 @@ class AgentPage(Base, QWidget):
         for column, widget in enumerate(self._topbar_widgets):
             self.topbar_layout.removeWidget(widget)
             self.topbar_layout.setColumnStretch(column, 0)
+        self.topbar_layout.setColumnStretch(10, 0)
         self.topbar_divider.setVisible(not compact)
         positions = (
             ((0, 0, 1), (0, 1, 3), (0, 3, 1), (1, 0, 1), (1, 1, 3),
              (1, 4, 1), (1, 5, 5), (0, 4, 3), (0, 7, 1), (0, 8, 2))
-            if compact else tuple((0, column, 1) for column in range(10))
+            if compact else tuple((0, column if column < 8 else column + 1, 1) for column in range(10))
         )
         for widget, (row, column, span) in zip(self._topbar_widgets, positions):
             self.topbar_layout.addWidget(widget, row, column, 1, span, Qt.AlignVCenter)
         self.topbar_layout.setColumnStretch(4 if compact else 7, 1)
+        if not compact:
+            self.topbar_layout.setColumnStretch(8, 1)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1971,9 +2000,8 @@ class AgentPage(Base, QWidget):
         mark_toolbox_scroll_area(self.history)
 
         # 让滚动区直接管理唯一的 expanding 内容列，避免左右 stretch 把正文压窄。
-        self.history.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.history.setAlignment(Qt.AlignTop)
         self.history_content = QWidget(self.history)
-        self.history_content.setMaximumWidth(CONVERSATION_MAX_WIDTH)
         self.history_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         mark_toolbox_widget(self.history_content, "toolboxScroll")
         self.history_layout = QVBoxLayout(self.history_content)
