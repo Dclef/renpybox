@@ -1,3 +1,4 @@
+import shutil
 import types
 
 import pytest
@@ -112,3 +113,62 @@ def test_translation_reuse_places_game_backup_outside_active_game_tree(tmp_path)
     assert result.backup_path.parent == project
     assert result.backup_path.name.startswith("tl_backup_chinese_reuse_")
     assert result.backup_path.joinpath("strings.rpy").is_file()
+
+
+def _write_scoped_translations(source):
+    source.mkdir()
+    source.joinpath("script.rpy").write_text(
+        'translate chinese strings:\n'
+        '    old "Hello"\n'
+        '    new "菜单问候"\n\n'
+        'translate chinese scene_a:\n'
+        '    # e "Hello"\n'
+        '    e "第一幕问候"\n\n'
+        'translate chinese scene_b:\n'
+        '    # e "Hello"\n'
+        '    e "第二幕问候"\n\n'
+        'translate chinese scene_c:\n'
+        '    # e "Only in dialogue"\n'
+        '    e "仅出现在剧情中"\n',
+        encoding="utf-8",
+    )
+
+
+def test_identical_translation_copy_has_no_false_conflicts(tmp_path):
+    source, target = tmp_path / "old", tmp_path / "new"
+    _write_scoped_translations(source)
+    shutil.copytree(source, target)
+    before = target.joinpath("script.rpy").read_bytes()
+    extractor = _extractor()
+    for result in (
+        extractor.preview_translation_reuse(source, target),
+        extractor.reuse_translations(source, target),
+    ):
+        assert result.source_translations == 4
+        assert result.target_entries == result.matched_entries == result.already_reused == 4
+        assert result.conflicts == result.unmatched_entries == result.applied_entries == 0
+        assert result.backup_path is None
+    assert target.joinpath("script.rpy").read_bytes() == before
+
+
+def test_reuse_matches_dialogue_context_and_preserves_manual_translation(tmp_path):
+    source, target = tmp_path / "old", tmp_path / "new"
+    _write_scoped_translations(source)
+    shutil.copytree(source, target)
+    path = target / "script.rpy"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        .replace('e "第一幕问候"', 'e ""')
+        .replace('e "第二幕问候"', 'e "人工新译文"'),
+        encoding="utf-8",
+    )
+    result = _extractor().reuse_translations(source, target)
+    assert result.applied_entries == 1
+    assert result.conflicts == 1
+    assert result.already_reused == 2
+    assert result.unmatched_entries == 0
+    assert result.backup_path is not None
+    content = path.read_text(encoding="utf-8")
+    assert 'e "第一幕问候"' in content
+    assert 'e "人工新译文"' in content
+    assert 'e "菜单问候"' not in content
