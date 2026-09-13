@@ -110,6 +110,17 @@ def test_onekey_steps_share_surface_and_keep_progress_contract(monkeypatch, lang
         assert not step.progress_bar.visibleRegion().isEmpty()
         assert step.content_scroll.horizontalScrollBar().maximum() == 0
 
+    flow_width = page._step5_flow_container.contentsRect().width()
+    assert page._step5_cards[0].width() == page._step5_cards[1].width()
+    first_row_y = min(card.y() for card in page._step5_cards)
+    first_row = [card for card in page._step5_cards if card.y() == first_row_y]
+    assert max(card.geometry().right() for card in first_row) >= flow_width - 4
+    assert page.step5_page.content_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    page.step5_page.content_scroll.verticalScrollBar().setValue(99)
+    page._go_step5()
+    APP.processEvents()
+    assert page.step5_page.content_scroll.verticalScrollBar().value() == 0
+
     page.close()
     page.deleteLater()
 
@@ -525,6 +536,39 @@ def test_translation_feed_fills_card_and_wraps_long_text(monkeypatch, language) 
             assert target in long_row.layout().itemAt(2).widget().toolTip()
     finally:
         page.ui_update_timer.stop()
+        window.close()
+        window.deleteLater()
+
+
+def test_agent_conversation_fills_viewport_and_shrinks_long_bubbles(monkeypatch) -> None:
+    """正文用满可用宽度，长用户消息和操作按钮不能阻止窄窗收缩。"""
+    config = Config()
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    user = page._append("请检查项目并整理下一步操作。" * 60, role="user")
+    reply = page._append("## 项目检查\n\n" + "当前翻译任务可以继续处理。" * 30, role="assistant")
+    reply.set_actions([
+        ("continue", "继续翻译", None),
+        ("archives", "查找 RPA 文件", None),
+        ("errors", "扫描译文脚本错误", None),
+    ])
+    try:
+        for width in (1400, 680, 1024, 1400):
+            window.resize(width, 640)
+            page.setGeometry(window.rect())
+            window.show()
+            QTest.qWait(50)
+            assert page.history_content.width() == page.history.viewport().width()
+            assert page.history.horizontalScrollBar().maximum() == 0
+            assert user.rect().contains(user.bubble.geometry())
+            assert user.bubble.width() <= user.width() * 0.75
+            assert reply.document_surface.width() >= reply.width() * 0.85
+            assert page.composer.geometry().bottom() < page.workspace.height()
+            for button in reply.action_buttons.values():
+                assert reply.action_container.rect().contains(button.geometry())
+    finally:
         window.close()
         window.deleteLater()
 

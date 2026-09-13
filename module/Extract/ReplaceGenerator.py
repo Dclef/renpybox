@@ -2345,8 +2345,10 @@ def render_replace_script(
         "",
     ]
 
-    if any(RE_RENPY_INTERPOLATION.search(original) for original, _ in normalized_pairs):
-        lines.extend(["    import re", ""])
+    uses_regex = any(
+        _build_interpolated_replace_rule(original, translation) is not None
+        for original, translation in normalized_pairs
+    )
 
     if wrap_existing:
         lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
@@ -2377,6 +2379,10 @@ def render_replace_script(
         f"            return {target_name}",
         "",
     ])
+
+    if uses_regex:
+        # Ren'Py 的 translate python 上下文可能不会把外层导入暴露给钩子函数。
+        lines.extend(["        import re", ""])
 
     if wrap_existing:
         lines.extend([

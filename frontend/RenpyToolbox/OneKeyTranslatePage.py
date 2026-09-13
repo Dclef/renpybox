@@ -158,6 +158,9 @@ class YiJianFanyiPage(Base, QWidget):
         # 使用 QStackedWidget 切换不同进度页面
         self.stacked = QStackedWidget()
         self.main_layout.addWidget(self.stacked)
+        self.stacked.currentChanged.connect(
+            lambda _index: QTimer.singleShot(0, self._update_step5_card_widths)
+        )
         
         # 创建各个进度页面
         self._create_step1_page()  # 前期设置
@@ -452,7 +455,14 @@ class YiJianFanyiPage(Base, QWidget):
             self._refresh_step4_state()
         elif target == 5:
             self.step5_page.progress_bar.setValue(100)
+            self._reset_step5_scroll()
         self._refresh_step_indicators()
+
+    def _reset_step5_scroll(self) -> None:
+        """进入后处理页时回到内容顶部，避免沿用其他步骤的滚动位置。"""
+        scroll_bar = self.step5_page.content_scroll.verticalScrollBar()
+        scroll_bar.setValue(0)
+        QTimer.singleShot(0, lambda: scroll_bar.setValue(0))
     
     # ==================== 进度一：前期设置 ====================
     def _create_step1_page(self):
@@ -738,6 +748,7 @@ class YiJianFanyiPage(Base, QWidget):
             self.step1_columns.setDirection(
                 QBoxLayout.LeftToRight if self.width() >= 860 else QBoxLayout.TopToBottom
             )
+        self._update_step5_card_widths()
     
     def _skip_to_translate(self):
         """跳过抽取，直接进入翻译步骤"""
@@ -1299,19 +1310,9 @@ class YiJianFanyiPage(Base, QWidget):
             )
         )
         
-        # 创建滚动区域
-        scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.enableTransparentBackground()
-        mark_toolbox_scroll_area(scroll_area)
-        
-        scroll_widget = QWidget()
-        mark_toolbox_widget(scroll_widget, "toolboxScroll")
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
-        
         flow_container = QWidget()
         mark_toolbox_widget(flow_container, "toolboxFlow")
+        flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         flow_layout = FlowLayout(flow_container, needAni=False)
         flow_layout.setHorizontalSpacing(8)
         flow_layout.setVerticalSpacing(8)
@@ -1361,21 +1362,48 @@ class YiJianFanyiPage(Base, QWidget):
             ),
         ]
         
+        step5_cards = []
         for title, desc, func in tools:
             card = ItemCard(parent=self, title=title, description=desc, clicked=func)
             card.title_button.setToolTip(
                 Localizer.get().onekey_open.format(title=title)
             )
             flow_layout.addWidget(card)
+            step5_cards.append(card)
         
-        scroll_layout.addWidget(flow_container)
-        scroll_layout.addStretch(1)
-        
-        scroll_area.setWidget(scroll_widget)
-        layout.addWidget(scroll_area)
+        # 第 5 步直接复用向导外层滚动区，避免嵌套滚动条产生额外空隙。
+        layout.addWidget(flow_container)
+        layout.addStretch(1)
+        page.content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self._step5_flow_container = flow_container
+        self._step5_flow_layout = flow_layout
+        self._step5_cards = step5_cards
+        self._update_step5_card_widths()
+        QTimer.singleShot(0, self._update_step5_card_widths)
         
         self.step5_page = page
         self.stacked.addWidget(page)
+
+    def _update_step5_card_widths(self) -> None:
+        """让后处理卡片按列均分可用宽度，避免右侧留下大块空白。"""
+        container = getattr(self, "_step5_flow_container", None)
+        cards = getattr(self, "_step5_cards", None)
+        if container is None or not cards:
+            return
+
+        width = container.contentsRect().width()
+        if width <= 0:
+            return
+
+        spacing = 8
+        columns = min(3, max(1, (width + spacing) // 300))
+        card_width = max(260, (width - spacing * (columns - 1) - 1) // columns)
+        for card in cards:
+            card.setFixedWidth(card_width)
+
+        self._step5_flow_layout.invalidate()
+        self._step5_flow_layout.activate()
 
     # ==================== 逻辑处理 ====================
     
@@ -2176,6 +2204,8 @@ class YiJianFanyiPage(Base, QWidget):
         self._max_reached_step = max(self._max_reached_step, 5)
         self.stacked.setCurrentIndex(4)
         self.step5_page.progress_bar.setValue(100)
+        self._reset_step5_scroll()
+        QTimer.singleShot(0, self._update_step5_card_widths)
         self._refresh_step_indicators()
 
     def _start_auto_hook_supplement(

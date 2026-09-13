@@ -1355,6 +1355,15 @@ def test_replace_hook_unwraps_previous_generated_hook_on_reload():
     assert "_renpybox_previous=_renpybox_replace_text_previous" in script
 
 
+def test_replace_hook_imports_regex_inside_generated_function():
+    script = render_replace_script(
+        [("[name]Have you heard anything about the crisis?", "[name]你听说过这次危机的事吗？")]
+    )
+
+    assert "\n    import re\n" not in script
+    assert "        import re" in script
+
+
 def test_replace_hook_omits_text_now_covered_by_normal_tl(tmp_path):
     game = tmp_path / "game"
     tl_file = game / "tl" / "chinese" / "src" / "menu" / "pref.rpy"

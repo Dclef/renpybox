@@ -13,7 +13,6 @@ from frontend.Agent.AgentPage import (
     ACTION_OPEN_TRANSLATION,
     ACTION_SCAN_ERRORS,
     ACTION_UNPACK_RPA,
-    CONVERSATION_MAX_WIDTH,
     AgentAvatar,
     AgentEmptyState,
     AgentErrorWidget,
@@ -764,7 +763,7 @@ def test_agent_page_content_width_and_markdown_height_follow_layout(monkeypatch)
     window.show()
     APP.processEvents()
 
-    assert page.history_content.width() == CONVERSATION_MAX_WIDTH
+    assert page.history_content.width() == page.history.viewport().width()
     assert message.text_view.maximumHeight() > 1000
     assert message.text_view.height() >= 600
 
@@ -817,6 +816,29 @@ def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> 
 
     page.deleteLater()
     window.deleteLater()
+
+
+def test_agent_empty_state_fallback_reports_cache_item_count(tmp_path) -> None:
+    """体检工具异常时，兜底数据仍应读取已有缓存条数。"""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "items.json").write_text('[{"src": "a"}, {"src": "b"}]', encoding="utf-8")
+    paths = type(
+        "Paths",
+        (),
+        {
+            "game_dir": tmp_path / "game",
+            "tl_language_dir": tmp_path / "tl" / "chinese",
+            "project_root": tmp_path,
+            "translation_output_dir": tmp_path,
+        },
+    )()
+    state = AgentEmptyState.__new__(AgentEmptyState)
+
+    result = state._fallback_preflight_data(paths)
+
+    assert result["cache"]["exists"] is True
+    assert result["cache"]["item_count"] == 2
 
 
 def test_agent_page_renders_while_deltas_keep_arriving(monkeypatch) -> None:
@@ -915,10 +937,13 @@ def test_agent_message_copy_button_writes_full_text(monkeypatch) -> None:
 
 def test_agent_user_message_keeps_short_text_on_one_line() -> None:
     message = AgentMessageWidget("检查项目并告诉我下一步", "user")
+    message.resize(800, 100)
+    message.show()
+    APP.processEvents()
 
     expected_width = message.text_view.fontMetrics().horizontalAdvance(message.text) + 28
-    assert message.bubble.minimumWidth() >= expected_width
-    assert message.text_view.minimumWidth() >= expected_width - 28
+    assert message.bubble.width() >= expected_width
+    assert message.text_view.width() >= expected_width - 28
 
     message.deleteLater()
 
@@ -1175,8 +1200,6 @@ def test_agent_page_uses_compact_visual_hierarchy(monkeypatch) -> None:
     assert isinstance(page.empty_state.title_label, SubtitleLabel)
     assert page.empty_state.brand_badge.width() == 48
     assert page.new_task_button.height() == 30
-    assert CONVERSATION_MAX_WIDTH == 960
-    assert page.history_content.maximumWidth() == CONVERSATION_MAX_WIDTH
     assert page.topbar_divider.width() == 1
     assert "background-color" in page.topbar_divider.styleSheet()
     assert page.settings_panel.width() == 280

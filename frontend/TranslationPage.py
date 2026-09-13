@@ -467,12 +467,14 @@ class TranslationPage(QWidget, Base):
 
     # 翻译更新事件
     def translation_update(self, event: str, data: dict) -> None:
-        if isinstance(data, dict) and "quality_task" in data:
-            # 质量任务只更新自己的分区，不能覆盖初译的行数与 Token 统计。
+        if isinstance(data, dict):
+            # 进度事件可能只携带 phase/message；合并更新，避免覆盖已有计时与行数。
             self.data = {**self.data, **data}
-            self.runtime_status_updated.emit(event, self.data)
+            if "quality_task" in data:
+                # 质量任务只更新自己的分区，并通知按钮状态同步。
+                self.runtime_status_updated.emit(event, self.data)
         else:
-            self.data = data if isinstance(data, dict) else {}
+            self.data = {}
         refresh = getattr(self, "_update_dashboard_details", None)
         if callable(refresh):
             refresh()

@@ -6,7 +6,6 @@ import re
 import threading
 import time
 import webbrowser
-from collections.abc import Mapping
 from itertools import zip_longest
 
 import httpx
@@ -428,6 +427,12 @@ class Translator(Base):
     def translation_manual_export(self, event: str, data: dict) -> None:
         if Engine.get().get_status() != Engine.Status.TRANSLATING:
             return None
+        if not getattr(self, "_translation_run_initialized", False):
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().translation_page_export_preparing,
+            })
+            return None
 
         # 复制一份以避免影响原始数据
         def task(event: str, data: dict) -> None:
@@ -442,7 +447,8 @@ class Translator(Base):
                     "type": Base.ToastType.ERROR,
                     "message": str(exc),
                 })
-        threading.Thread(target = task, args = (event, data)).start()
+        # 导出是后台辅助操作，应用退出时不能被非守护线程阻塞。
+        threading.Thread(target = task, args = (event, data), daemon = True).start()
 
     # 从缓存重新注入翻译结果
     def translation_cache_reinject(self, event: str, data: dict) -> None:

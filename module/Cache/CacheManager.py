@@ -664,7 +664,9 @@ class CacheManager(Base):
 
     # 复制缓存数据
     def copy_items(self) -> list[CacheItem]:
-        return [CacheItem.from_dict(item.asdict()) for item in self.items]
+        # 导出与后台保存/翻译回调可能并发，复制时必须持有同一把锁。
+        with __class__.LOCK:
+            return [CacheItem.from_dict(item.asdict()) for item in self.items]
 
     # 获取缓存数据数量（根据翻译状态）
     def get_item_count_by_status(self, status: int) -> int:
