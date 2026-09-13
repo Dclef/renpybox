@@ -4204,7 +4204,7 @@ class UnifiedExtractor:
         """只读统计旧译文可安全复用到目标目录的数量。"""
         source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
         translations = self._get_existing_translations(source)
-        return self._apply_translation_reuse(target, translations.strings, dry_run=True)
+        return self._apply_translation_reuse(target, translations, dry_run=True)
 
     def reuse_translations(
         self,
@@ -4214,12 +4214,12 @@ class UnifiedExtractor:
         """仅填充目标中的空白/原文占位译文，绝不覆盖已有译文。"""
         source, target = self._validate_translation_reuse_paths(source_tl_dir, target_tl_dir)
         translations = self._get_existing_translations(source)
-        preview = self._apply_translation_reuse(target, translations.strings, dry_run=True)
+        preview = self._apply_translation_reuse(target, translations, dry_run=True)
         if preview.reusable_entries == 0:
             return preview
 
         backup_path = self._copy_tl_backup(target)
-        result = self._apply_translation_reuse(target, translations.strings, dry_run=False)
+        result = self._apply_translation_reuse(target, translations, dry_run=False)
         result.backup_path = backup_path
         return result
 
@@ -4258,11 +4258,11 @@ class UnifiedExtractor:
     def _apply_translation_reuse(
         self,
         tl_dir: Path,
-        translations: Dict[str, str],
+        translations: ExistingTranslations,
         *,
         dry_run: bool = False,
     ) -> TranslationReuseResult:
-        """按原文回填译文；已有非占位译文只计为冲突，不覆盖。"""
+        """按字符串或剧情块作用域复用，已有不同译文只计冲突，不覆盖。"""
         result = TranslationReuseResult(source_translations=len(translations))
 
         extractor = RenpyTlItemExtractor()
@@ -4281,12 +4281,20 @@ class UnifiedExtractor:
                         src = item.get_src()
                         dst = item.get_dst()
                         result.target_entries += 1
-                        if src not in translations:
+                        # 编号剧情块必须使用文件、标签和语句身份匹配，不能套用菜单译文。
+                        block_key = self._numbered_item_translation_key(
+                            rpy_file.relative_to(tl_dir).as_posix(), item,
+                        )
+                        translated = (
+                            translations.blocks.get(block_key)
+                            if block_key is not None
+                            else translations.strings.get(src)
+                        )
+                        if translated is None:
                             result.unmatched_entries += 1
                             continue
 
                         result.matched_entries += 1
-                        translated = translations[src]
                         if not dst or dst == src:
                             result.reusable_entries += 1
                             if not dry_run:
@@ -4355,11 +4363,11 @@ class UnifiedExtractor:
                     new_text = new_match.group("text")
                     new_text_unescaped = new_text.replace('\\"', '"').replace("\\'", "'")
                     result.target_entries += 1
-                    if old_text_unescaped not in translations:
+                    if old_text_unescaped not in translations.strings:
                         result.unmatched_entries += 1
                     else:
                         result.matched_entries += 1
-                        translated = translations[old_text_unescaped]
+                        translated = translations.strings[old_text_unescaped]
                         if not new_text_unescaped or new_text_unescaped == old_text_unescaped:
                             result.reusable_entries += 1
                             if not dry_run:
