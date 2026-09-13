@@ -258,6 +258,84 @@ translate schinese start_abcd:
     assert all(error["count"] == 1 for error in errors)
 
 
+def test_empty_translate_strings_blocks_are_reported_and_removed(tmp_path) -> None:
+    script = tmp_path / "screens.rpy"
+    script.write_text(
+        "translate chinese strings:\n\n"
+        "translate chinese strings:\n"
+        '    old "Keep"\n'
+        '    new "保留"\n\n'
+        "translate chinese strings:\n"
+        "    # generated placeholder\n\n",
+        encoding="utf-8",
+    )
+    repairer = ErrorRepairer()
+
+    errors = repairer.check_file(
+        str(script),
+        check_indent=False,
+        check_indent_level=False,
+        check_quotes=False,
+        check_dialogue_quotes=False,
+        check_translation_issues=False,
+    )
+
+    assert [(error["line"], error["type"]) for error in errors] == [
+        (1, "empty_block"),
+        (7, "empty_block"),
+    ]
+
+    success, fixed = repairer.auto_fix_file(
+        str(script),
+        fix_indent=False,
+        fix_indent_level=False,
+        fix_quotes=False,
+        fix_dialogue_quotes=False,
+    )
+
+    assert success is True
+    assert fixed == 2
+    assert script.read_text(encoding="utf-8") == (
+        "translate chinese strings:\n"
+        '    old "Keep"\n'
+        '    new "保留"\n\n'
+    )
+
+
+def test_lint_empty_block_fix_removes_all_empty_blocks(monkeypatch, tmp_path) -> None:
+    game_dir = tmp_path / "game"
+    tl_dir = game_dir / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    script = tl_dir / "screens.rpy"
+    script.write_text(
+        "translate chinese strings:\n\n"
+        "translate chinese strings:\n\n"
+        '    old "Keep"\n'
+        '    new "保留"\n',
+        encoding="utf-8",
+    )
+    game_exe = tmp_path / "game.exe"
+    game_exe.write_text("", encoding="utf-8")
+    outputs = iter([
+        'File "game/tl/chinese/screens.rpy", line 1: '
+        "translate strings statement expects a non-empty block",
+        "",
+    ])
+    repairer = ErrorRepairer()
+    monkeypatch.setattr(repairer, "exec_renpy_lint", lambda _path: next(outputs))
+
+    success, fixed = repairer.fix_by_lint(str(game_exe))
+
+    assert success is True
+    assert fixed == 1
+    assert script.read_text(encoding="utf-8") == (
+        "translate chinese strings:\n"
+        "\n"
+        '    old "Keep"\n'
+        '    new "保留"\n'
+    )
+
+
 def test_scan_reports_same_file_duplicate_without_writing(tmp_path) -> None:
     content = '''translate schinese strings:
     old "Same"
@@ -308,6 +386,68 @@ def test_folder_scan_reports_cross_file_duplicates_per_language_without_writing(
     assert str(other_language) not in report
     assert {path: path.read_bytes() for path in before} == before
 
+
+def test_translation_folder_resolution_excludes_source_scripts(tmp_path) -> None:
+    game_dir = tmp_path / "game"
+    translation_dir = game_dir / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    source = game_dir / "script.rpy"
+    generated = translation_dir / "script.rpy"
+    source.write_text('new "Broken "source""\n', encoding="utf-8")
+    generated.write_text(
+        'translate chinese strings:\n'
+        '    old "Hello [name]"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+
+    resolved = ErrorRepairer.resolve_translation_folder(game_dir)
+    report = ErrorRepairer().check_folder(str(resolved))
+
+    assert resolved == game_dir / "tl"
+    assert str(source) not in report
+    assert str(generated) in report
+    assert report[str(generated)][0]["type"] == "placeholder_missing"
+
+
+def test_lint_filter_keeps_only_translation_directory_errors(tmp_path) -> None:
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    errors = [
+        {"file": "game/tl/chinese/dialogue.rpy", "line": 3},
+        {"file": "game/script.rpy", "line": 8},
+        {"file": "other.rpy", "line": 1},
+        {"raw": "warning without a file"},
+    ]
+
+    filtered = ErrorRepairer.filter_lint_errors(errors, translation_dir)
+
+    assert filtered == [errors[0]]
+
+
+def test_syntax_scan_reports_malformed_translation_headers_and_else(tmp_path) -> None:
+    script = tmp_path / "translation.rpy"
+    script.write_text(
+        "translate chinese strings\n"
+        "    old \"Hello\"\n"
+        "    new \"你好\"\n"
+        "else\n",
+        encoding="utf-8",
+    )
+
+    errors = ErrorRepairer().check_file(
+        str(script),
+        check_indent=False,
+        check_indent_level=False,
+        check_quotes=False,
+        check_dialogue_quotes=False,
+        check_translation_issues=False,
+    )
+
+    assert [(error["line"], error["message"]) for error in errors] == [
+        (1, "translate 语句缺少冒号"),
+        (4, "控制流语句缺少冒号"),
+    ]
 
 def test_translation_scan_never_writes_the_source_file(tmp_path) -> None:
     content = '''translate schinese strings:

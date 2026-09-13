@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QRect
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 APP = QApplication.instance() or QApplication(sys.argv)
 
@@ -36,3 +36,70 @@ def test_window_size_without_screen(monkeypatch) -> None:
 
     monkeypatch.setattr(QApplication, "primaryScreen", lambda: None)
     assert AppFluentWindow._resolve_window_size() == (1280, 800)
+
+
+def test_navigation_content_starts_below_title_bar() -> None:
+    from frontend.AppFluentWindow import AppFluentWindow
+
+    title_bar = QWidget()
+    title_bar.iconLabel = QLabel(title_bar)
+    content = QWidget()
+    widget_layout = QHBoxLayout(content)
+    navigation = QWidget()
+    navigation_layout = QVBoxLayout(navigation)
+    window = SimpleNamespace(
+        titleBar=title_bar,
+        widgetLayout=widget_layout,
+        navigationInterface=SimpleNamespace(
+            panel=SimpleNamespace(vBoxLayout=navigation_layout),
+        ),
+    )
+    AppFluentWindow._configure_title_bar(window)
+
+    assert window.titleBar.height() == 38
+    assert window.widgetLayout.contentsMargins().top() == 38
+    assert window.navigationInterface.panel.vBoxLayout.contentsMargins().top() == 38
+
+
+def test_navigation_only_starts_expanded_above_breakpoint() -> None:
+    from frontend.AppFluentWindow import AppFluentWindow
+
+    class NavigationStub:
+        def __init__(self) -> None:
+            self.expand_calls = []
+
+        def setExpandWidth(self, width) -> None:
+            self.expand_width = width
+
+        def setCollapsible(self, enabled) -> None:
+            self.collapsible = enabled
+
+        def setMenuButtonVisible(self, visible) -> None:
+            self.menu_visible = visible
+
+        def setMinimumExpandWidth(self, width) -> None:
+            self.minimum_expand_width = width
+
+        def setReturnButtonVisible(self, visible) -> None:
+            self.return_visible = visible
+
+        def expand(self, useAni=True) -> None:
+            self.expand_calls.append(useAni)
+
+    for width, expected_calls in ((800, []), (1280, [False])):
+        navigation = NavigationStub()
+        window = SimpleNamespace(
+            NAVIGATION_EXPAND_WIDTH=256,
+            NAVIGATION_EXPAND_BREAKPOINT=1000,
+            navigationInterface=navigation,
+            width=lambda width=width: width,
+        )
+
+        AppFluentWindow._configure_navigation(window)
+
+        assert navigation.expand_width == 256
+        assert navigation.collapsible is True
+        assert navigation.menu_visible is True
+        assert navigation.minimum_expand_width == 1000
+        assert navigation.return_visible is False
+        assert navigation.expand_calls == expected_calls

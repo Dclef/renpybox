@@ -316,6 +316,19 @@ def test_missing_tl_language_input_is_not_replaced_by_existing_language(tmp_path
     assert paths.tl_language_dir == missing.resolve()
 
 
+def test_explicit_language_at_project_root_is_kept_before_directory_exists(tmp_path):
+    """从项目根选择新语言时，已有语言不能覆盖明确的目录名。"""
+    project = tmp_path / "project"
+    (project / "game" / "tl" / "chinese").mkdir(parents=True)
+
+    paths = RenpyProjectPaths.from_path(project, "japanese")
+
+    assert paths is not None
+    assert paths.language == "japanese"
+    assert paths.tl_language_dir == project / "game" / "tl" / "japanese"
+    assert not paths.tl_language_dir.exists()
+
+
 def test_explicit_tl_input_wins_over_existing_stale_tl_field(tmp_path):
     """旧 tl 字段仍存在时，明确的新输入也必须优先。"""
     stale = tmp_path / "stale-project"

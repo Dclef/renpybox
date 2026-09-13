@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEventLoop, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette, QTextLength, QTextTable
 from PyQt5.QtWidgets import QApplication, QSizePolicy, QWidget
 
@@ -13,7 +13,6 @@ from frontend.Agent.AgentPage import (
     ACTION_OPEN_TRANSLATION,
     ACTION_SCAN_ERRORS,
     ACTION_UNPACK_RPA,
-    CONVERSATION_MAX_WIDTH,
     AgentAvatar,
     AgentEmptyState,
     AgentErrorWidget,
@@ -31,6 +30,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     Theme,
     ThemeColor,
+    InfoBar,
     qconfig,
     setTheme,
     setThemeColor,
@@ -41,6 +41,7 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from base.BaseLanguage import BaseLanguage
 from module.Renpy.ProjectPaths import RenpyProjectPaths
+from widget.ThemeTokens import DARK
 
 
 APP = QApplication.instance() or QApplication([])
@@ -144,6 +145,26 @@ def test_agent_page_can_select_real_platform_zero(monkeypatch) -> None:
     window.deleteLater()
 
 
+def test_agent_page_treats_malformed_platform_ids_as_unset(monkeypatch) -> None:
+    """配置被手工改坏时，页面仍能打开并忽略非法接口编号。"""
+    config = Config(agent_platform="invalid")
+    config.platforms = [
+        {"id": "broken", "name": "坏配置", "api_format": Base.APIFormat.OPENAI},
+        {"id": 3, "name": "OpenAI", "api_format": Base.APIFormat.OPENAI},
+    ]
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    assert page.platform_combo.itemData(0) == -1
+    assert page.platform_combo.count() == 2
+    assert page.platform_combo.itemData(1) == 3
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
     config = Config()
     config.agent_platform = 0
@@ -175,6 +196,7 @@ def test_agent_page_merges_tool_start_and_result(monkeypatch) -> None:
     assert tool_widget.state == "done"
     assert tool_widget.detail_label.toPlainText() == "已识别当前项目"
     assert tool_widget.toggle_button.isEnabled()
+    assert page.activity_widget.label.text() == Localizer.get().agent_page_running
     tool_widget.toggle_button.click()
     assert not tool_widget.detail_label.isHidden()
 
@@ -607,6 +629,34 @@ def test_agent_page_respects_manual_scroll(monkeypatch) -> None:
     window.deleteLater()
 
 
+def test_agent_page_offers_return_to_latest_after_manual_scroll(monkeypatch) -> None:
+    """用户上滚查看旧消息时，应能一键恢复自动跟随。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page._append("历史消息", role="assistant")
+
+    bar = page.history.verticalScrollBar()
+    bar.setRange(0, 1000)
+    bar.setValue(0)
+    page._on_history_scrolled()
+
+    assert not page._auto_follow
+    assert not page.scroll_latest_button.isHidden()
+
+    page._scroll_to_latest()
+
+    assert page._auto_follow
+    assert page.scroll_latest_button.isHidden()
+
+    page.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_folds_intermediate_text_under_one_assistant_turn(monkeypatch) -> None:
     """工具前的普通说明只进折叠过程，不应和最终答案重复显示。"""
     config = Config()
@@ -713,7 +763,7 @@ def test_agent_page_content_width_and_markdown_height_follow_layout(monkeypatch)
     window.show()
     APP.processEvents()
 
-    assert page.history_content.width() == CONVERSATION_MAX_WIDTH
+    assert page.history_content.width() == page.history.viewport().width()
     assert message.text_view.maximumHeight() > 1000
     assert message.text_view.height() >= 600
 
@@ -745,6 +795,88 @@ def test_agent_page_batches_streaming_deltas_until_flush(monkeypatch) -> None:
 
     page.deleteLater()
     window.deleteLater()
+
+
+def test_agent_page_adapts_stream_render_interval_to_reply_size(monkeypatch) -> None:
+    """长回复降低重排频率，短回复保持 32ms 的即时反馈。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+
+    page._append_reply_delta("x" * 5_000)
+    assert page._render_timer.interval() == 64
+    page._render_timer.stop()
+    page._pending_reply_text = "x" * 20_000
+    page._schedule_render()
+    assert page._render_timer.interval() == 96
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_empty_state_fallback_reports_cache_item_count(tmp_path) -> None:
+    """体检工具异常时，兜底数据仍应读取已有缓存条数。"""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "items.json").write_text('[{"src": "a"}, {"src": "b"}]', encoding="utf-8")
+    paths = type(
+        "Paths",
+        (),
+        {
+            "game_dir": tmp_path / "game",
+            "tl_language_dir": tmp_path / "tl" / "chinese",
+            "project_root": tmp_path,
+            "translation_output_dir": tmp_path,
+        },
+    )()
+    state = AgentEmptyState.__new__(AgentEmptyState)
+
+    result = state._fallback_preflight_data(paths)
+
+    assert result["cache"]["exists"] is True
+    assert result["cache"]["item_count"] == 2
+
+
+def test_agent_page_renders_while_deltas_keep_arriving(monkeypatch) -> None:
+    """连续到达的增量不能把正文刷新一直推迟到流结束。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    page = AgentPage("agent_page")
+    turn = page._ensure_assistant_turn()
+    loop = QEventLoop()
+    producer = QTimer(page)
+    producer.setInterval(5)
+    deadline = QTimer(page)
+    deadline.setSingleShot(True)
+    deadline.timeout.connect(loop.quit)
+    rendered = []
+
+    def deliver() -> None:
+        page._append_reply_delta("片段")
+        rendered.append(turn.text)
+        if len(rendered) == 60:
+            producer.stop()
+            loop.quit()
+
+    producer.timeout.connect(deliver)
+    try:
+        producer.start()
+        deadline.start(3000)
+        loop.exec()
+        assert len(rendered) == 60
+        assert any(rendered), "持续输出期间也应显示已经收到的正文"
+        page._flush_pending_deltas()
+        assert turn.text == "片段" * 60
+    finally:
+        producer.stop()
+        deadline.stop()
+        page.deleteLater()
 
 
 def test_agent_page_flushes_thinking_before_final_reply(monkeypatch) -> None:
@@ -803,6 +935,37 @@ def test_agent_message_copy_button_writes_full_text(monkeypatch) -> None:
     message.deleteLater()
 
 
+def test_agent_user_message_keeps_short_text_on_one_line() -> None:
+    message = AgentMessageWidget("检查项目并告诉我下一步", "user")
+    message.resize(800, 100)
+    message.show()
+    APP.processEvents()
+
+    expected_width = message.text_view.fontMetrics().horizontalAdvance(message.text) + 28
+    assert message.bubble.width() >= expected_width
+    assert message.text_view.width() >= expected_width - 28
+
+    message.deleteLater()
+
+
+def test_agent_copy_notice_uses_top_level_window(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        InfoBar,
+        "success",
+        lambda *args, **kwargs: captured.update(kwargs),
+    )
+    window = QWidget()
+    message = AgentMessageWidget("复制内容", "assistant", window)
+
+    message._copy_text()
+
+    assert captured["parent"] is window
+    assert captured["position"].name == "TOP"
+    message.deleteLater()
+    window.deleteLater()
+
+
 def test_agent_page_stop_request_appends_stopped_mark(monkeypatch) -> None:
     """停止后已流出正文尾部应有停止标记。"""
     class _StubWorker:
@@ -833,6 +996,52 @@ def test_agent_page_stop_request_appends_stopped_mark(monkeypatch) -> None:
     assert page.status_label.text()
 
     page._worker = None
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_request_event_restores_activity_after_confirmation(monkeypatch) -> None:
+    config = Config(agent_platform=0)
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page.activity_widget.set_running(False)
+
+    page._on_worker_event("request", {"iteration": 2})
+
+    assert not page.activity_widget.isHidden()
+    assert page.activity_widget.label.text() == Localizer.get().agent_page_running
+
+    page.deleteLater()
+    window.deleteLater()
+
+
+def test_agent_page_cancelled_worker_does_not_append_retry_error(monkeypatch) -> None:
+    """主动停止是正常结束，不应再追加一条红色失败记录。"""
+    config = Config()
+    config.agent_platform = 0
+    config.platforms = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+
+    window = QWidget()
+    page = AgentPage("agent_page", window)
+    page._append("检查项目", role="user")
+
+    result = type(
+        "Result",
+        (),
+        {"success": False, "message": "Agent 请求已取消。", "code": "CANCELLED"},
+    )()
+    page._on_worker_finished(result)
+
+    assert all(
+        not isinstance(widget, AgentErrorWidget)
+        for widget in page.history_widgets
+    )
+    assert page.status_label.text() == Localizer.get().agent_page_cancelled
+
     page.deleteLater()
     window.deleteLater()
 
@@ -904,8 +1113,8 @@ def test_agent_page_dark_styles_avoid_black_on_black(monkeypatch) -> None:
     assert "background: transparent" in page.input_box.styleSheet()
     assert "border: 1px solid transparent" in page.input_box.styleSheet()
     assert "rgba(0,0,0,0.30)" not in page.input_box.styleSheet()
-    assert page.input_box.palette().color(QPalette.Text).name() == "#f2f2f2"
-    assert page.input_box.palette().color(QPalette.PlaceholderText).name() == "#9a9a9a"
+    assert page.input_box.palette().color(QPalette.Text).name() == QColor(DARK.text_primary).name()
+    assert page.input_box.palette().color(QPalette.PlaceholderText).name() == QColor(DARK.text_disabled).name()
     assert page.settings_menu.minimumWidth() >= 200
 
     # Markdown 正文字色必须显式浅色（暗色下系统调色板是黑色）。
@@ -991,17 +1200,22 @@ def test_agent_page_uses_compact_visual_hierarchy(monkeypatch) -> None:
     assert isinstance(page.empty_state.title_label, SubtitleLabel)
     assert page.empty_state.brand_badge.width() == 48
     assert page.new_task_button.height() == 30
-    assert CONVERSATION_MAX_WIDTH == 960
-    assert page.history_content.maximumWidth() == CONVERSATION_MAX_WIDTH
     assert page.topbar_divider.width() == 1
     assert "background-color" in page.topbar_divider.styleSheet()
     assert page.settings_panel.width() == 280
+    window.resize(1600, 900)
+    page.setGeometry(window.rect())
+    window.show()
+    APP.processEvents()
+    assert page.empty_state.preflight_card.width() == 720
+    assert page.empty_state.suggestions.width() == 720
     assert (
         page.thinking_combo.sizePolicy().horizontalPolicy()
         == QSizePolicy.Expanding
     )
 
     page.deleteLater()
+    window.close()
     window.deleteLater()
 
 

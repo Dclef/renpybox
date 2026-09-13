@@ -52,6 +52,7 @@ class ErrorRepairer:
     SAFE_LINT_FIX_TYPES = frozenset({
         "parse_error",
         "syntax_error",
+        "empty_block",
         "indentation_mismatch",
         "indentation_level",
     })
@@ -75,6 +76,32 @@ class ErrorRepairer:
     def __init__(self):
         self.logger = LogManager.get()
         self.errors_found = []
+
+    @staticmethod
+    def resolve_translation_folder(folder_path: str | Path) -> Path:
+        """将项目目录或 game 目录解析为翻译文件目录。"""
+        path = Path(folder_path).expanduser()
+        if path.name.casefold() == "game":
+            return path / "tl"
+        project_tl = path / "game" / "tl"
+        if project_tl.is_dir():
+            return project_tl
+        return path
+
+    @staticmethod
+    def get_rpy_files(folder_path: str | Path) -> list[Path]:
+        """返回目录下的 Ren'Py 脚本，统一处理大小写扩展名。"""
+        root = Path(folder_path)
+        if not root.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.casefold() == ".rpy"
+            ),
+            key=lambda path: path.as_posix().casefold(),
+        )
 
     def _split_line_ending(self, line: str) -> tuple[str, str]:
         """拆分行内容和换行符，修复后保持原始换行风格。"""
@@ -496,6 +523,94 @@ class ErrorRepairer:
 
         return errors
 
+    def _scan_empty_translate_blocks(self, lines: List[str]) -> List[Dict]:
+        """报告没有任何可执行语句的 ``translate ... strings`` 块。"""
+        errors: list[Dict] = []
+        header_re = re.compile(
+            r"^(?P<indent>[ \t]*)translate\s+(?P<language>[A-Za-z0-9_]+)"
+            r"\s+strings\s*:\s*$"
+        )
+        index = 0
+        while index < len(lines):
+            content, _ = self._split_line_ending(lines[index])
+            match = header_re.match(content)
+            if not match:
+                index += 1
+                continue
+
+            base_indent = len(match.group("indent"))
+            end = index + 1
+            while end < len(lines):
+                candidate, _ = self._split_line_ending(lines[end])
+                if not candidate.strip():
+                    end += 1
+                    continue
+                candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                if candidate_indent > base_indent:
+                    end += 1
+                    continue
+                break
+
+            has_content = any(
+                self._split_line_ending(line)[0].strip()
+                and not self._split_line_ending(line)[0].lstrip().startswith("#")
+                for line in lines[index + 1:end]
+            )
+            if not has_content:
+                errors.append({
+                    "line": index + 1,
+                    "type": "empty_block",
+                    "message": "translate strings 语句缺少非空内容块",
+                    "content": content.strip(),
+                    "language": match.group("language"),
+                })
+            index = end
+
+        return errors
+
+    def _remove_empty_translate_blocks(self, lines: List[str]) -> tuple[List[str], int]:
+        """删除空的 ``translate <lang> strings:`` 块并返回删除数量。"""
+        header_re = re.compile(
+            r"^(?P<indent>[ \t]*)translate\s+(?P<language>[A-Za-z0-9_]+)"
+            r"\s+strings\s*:\s*$"
+        )
+        output: list[str] = []
+        removed = 0
+        index = 0
+        while index < len(lines):
+            content, _ = self._split_line_ending(lines[index])
+            match = header_re.match(content)
+            if not match:
+                output.append(lines[index])
+                index += 1
+                continue
+
+            base_indent = len(match.group("indent"))
+            end = index + 1
+            while end < len(lines):
+                candidate, _ = self._split_line_ending(lines[end])
+                if not candidate.strip():
+                    end += 1
+                    continue
+                candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                if candidate_indent > base_indent:
+                    end += 1
+                    continue
+                break
+
+            has_content = any(
+                self._split_line_ending(line)[0].strip()
+                and not self._split_line_ending(line)[0].lstrip().startswith("#")
+                for line in lines[index + 1:end]
+            )
+            if has_content:
+                output.extend(lines[index:end])
+            else:
+                removed += 1
+            index = end
+
+        return output, removed
+
     def _scan_translation_issues(self, lines: List[str], file_path: str) -> List[Dict]:
         """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
         errors: list[Dict] = []
@@ -676,7 +791,8 @@ class ErrorRepairer:
                 # 语法检查
                 if check_syntax:
                     # 检查 label 后是否有冒号
-                    if line.strip().startswith("label ") and not line.strip().endswith(":"):
+                    stripped_line = line.strip()
+                    if re.match(r"^label(?:\s|$)", stripped_line) and not stripped_line.endswith(":"):
                         errors.append({
                             "line": line_num,
                             "type": "syntax",
@@ -684,9 +800,17 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
-                    # 检查 if/elif/else/menu 后是否有冒号
-                    if re.match(r'^\s*(if|elif|else|menu|while|for)\s', line) and \
-                       not line.strip().endswith(":"):
+                    # 检查翻译块头和控制流语句后是否有冒号。
+                    if re.match(r"^translate\s+\S+", stripped_line) and not stripped_line.endswith(":"):
+                        errors.append({
+                            "line": line_num,
+                            "type": "syntax",
+                            "message": "translate 语句缺少冒号",
+                            "content": stripped_line,
+                        })
+
+                    if re.match(r'^\s*(if|elif|else|menu|while|for)(?:\s|$)', line) and \
+                       not stripped_line.endswith(":"):
                         errors.append({
                             "line": line_num,
                             "type": "syntax",
@@ -737,6 +861,9 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
+            if check_syntax:
+                errors.extend(self._scan_empty_translate_blocks(lines))
+
             if check_translation_issues:
                 errors.extend(self._scan_translation_issues(lines, file_path))
 
@@ -771,7 +898,7 @@ class ErrorRepairer:
             {文件路径: 错误列表}
         """
         all_errors = {}
-        rpy_files = sorted(Path(folder_path).rglob("*.rpy"))
+        rpy_files = self.get_rpy_files(folder_path)
 
         self.logger.info(f"检查 {len(rpy_files)} 个 .rpy 文件")
 
@@ -885,6 +1012,11 @@ class ErrorRepairer:
                         fix_count += 1
 
                 new_lines.append(new_line)
+
+            # Empty strings blocks are always safe to remove and are not tied
+            # to any optional quote/indent repair switch.
+            new_lines, removed_blocks = self._remove_empty_translate_blocks(new_lines)
+            fix_count += removed_blocks
 
             # 写回文件
             if fix_count > 0:
@@ -1077,6 +1209,46 @@ class ErrorRepairer:
             errors.append(error_info)
             
         return errors
+
+    @staticmethod
+    def filter_lint_errors(
+        errors: List[Dict],
+        folder_path: str | Path,
+    ) -> List[Dict]:
+        """只保留目标翻译目录下的 Lint 文件错误。"""
+        root_parts = [
+            part.casefold()
+            for part in Path(folder_path).expanduser().resolve().as_posix().split("/")
+            if part
+        ]
+        if not root_parts:
+            return []
+
+        variants = [root_parts]
+        for marker in ("game", "tl"):
+            try:
+                marker_index = len(root_parts) - 1 - root_parts[::-1].index(marker)
+            except ValueError:
+                continue
+            variants.append(root_parts[marker_index:])
+
+        filtered: List[Dict] = []
+        for error in errors:
+            file_value = str(error.get("file") or "").strip().strip("\"'")
+            if not file_value or not file_value.casefold().endswith(".rpy"):
+                continue
+            file_parts = [
+                part.casefold()
+                for part in file_value.replace("\\", "/").split("/")
+                if part
+            ]
+            if any(
+                len(file_parts) >= len(variant)
+                and file_parts[:len(variant)] == variant
+                for variant in variants
+            ):
+                filtered.append(error)
+        return filtered
     
     def fix_by_lint(self, game_path: str, max_iterations: int = 16) -> Tuple[bool, int]:
         """
@@ -1201,6 +1373,12 @@ class ErrorRepairer:
                         lines[candidate_idx] = repaired_line
                         changed = True
                         break
+            elif error_type == "empty_block":
+                # Removing all empty strings blocks in one pass avoids the
+                # Lint line-number drift that would otherwise require one
+                # iteration per block.
+                lines, removed_blocks = self._remove_empty_translate_blocks(lines)
+                changed = removed_blocks > 0
             elif error_type in {"indentation_mismatch", "indentation_level"}:
                 candidate_indices = [idx] + ([idx - 1] if idx > 0 else [])
                 for candidate_idx in candidate_indices:

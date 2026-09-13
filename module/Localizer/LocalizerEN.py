@@ -79,6 +79,10 @@ class LocalizerEN(LocalizerZH):
     app_new_version_waiting_restart: str = "Restarting to install update"
     app_new_version_apply_failure: str = "Failed to apply update: "
     app_theme_btn: str = "Switch Theme"
+    app_brand_short: str = "RB"
+    app_brand_name: str = "RenpyBox"
+    app_titlebar_project: str = "Project: {NAME}"
+    app_titlebar_project_unset: str = "No project selected"
     app_language_btn: str = "Language"
     app_settings_page: str = "App Settings"
     app_platform_page: str = "API"
@@ -88,6 +92,58 @@ class LocalizerEN(LocalizerZH):
     app_translation_page: str = "Translation Task"
     app_agent_page: str = "Agent Assistant"
     app_proofreading_page: str = "Proofreading"
+    translation_page_header_title: str = "Task Monitor"
+    translation_page_header_description: str = "Track translation progress, throughput, and recovery actions"
+    translation_page_header_summary: str = "Current task · {SOURCE} ➔ {TARGET} · Worker pool {RUNNING}/{MAX}"
+    translation_page_progress_title: str = "Overall Translation Progress"
+    translation_page_progress_empty: str = "0.0%\n0 / 0"
+    translation_page_throughput_title: str = "Real-time Token Throughput"
+    translation_page_peak_speed: str = "Peak {SPEED} T/s"
+    translation_page_kpi_progress: str = "Translation Progress"
+    translation_page_kpi_throughput: str = "Live Throughput"
+    translation_page_lines_detail: str = "{LINE:,} / {TOTAL:,} lines"
+    translation_page_trend_live: str = "Live"
+    translation_page_trend_idle: str = "Idle"
+    translation_page_trend_total: str = "Total"
+    translation_page_trend_healthy: str = "Healthy"
+    translation_page_translated_percent: str = "Translated {PERCENT:.1f}%"
+    translation_page_pending_percent: str = "Pending {PERCENT:.1f}%"
+    translation_page_cache_percent: str = "Existing {PERCENT:.1f}%"
+    translation_page_cache_unavailable: str = "Existing —"
+    translation_page_cache_help: str = "Share of entries already translated before this task. 0% does not disable progress saving; paused tasks can be resumed."
+    translation_page_stat_average: str = "Average"
+    translation_page_stat_batches: str = "Batches"
+    translation_page_stat_cache_hit: str = "Existing translations"
+    translation_page_stat_latency: str = "Latency"
+    translation_page_open_proofreading: str = "Open Parallel Proofreading"
+    translation_page_export_preparing: str = "The translation is still preparing. Try writing the translation files again shortly."
+    translation_page_elapsed: str = "Elapsed: {TIME}"
+    translation_page_remaining: str = "Remaining: {TIME}"
+    translation_page_duration_hms: str = "{H}h {M}m {S}s"
+    translation_page_duration_ms: str = "{M}m {S}s"
+    translation_page_duration_s: str = "{S}s"
+    translation_page_token_detail: str = "Output: {OUTPUT} · Input: {INPUT}"
+    translation_page_output_token_detail: str = "Total output {OUTPUT}"
+    translation_page_input_token_detail: str = "Total input {INPUT}"
+    translation_page_thread_title: str = "Thread Health"
+    translation_page_thread_unit: str = "Active"
+    translation_page_thread_detail: str = "Running {RUNNING}/{MAX} · Failed retries {FAILED}"
+    translation_page_feed_title: str = "Live Translation Stream"
+    translation_page_feed_mode: str = "Live status"
+    translation_page_feed_empty: str = "Waiting for translation stream data"
+    translation_page_feed_time: str = "Time"
+    translation_page_feed_source: str = "Source ({LANGUAGE})"
+    translation_page_feed_target: str = "Translation ({LANGUAGE})"
+    translation_page_footer_backup: str = "Automatic snapshot backup enabled"
+    proofreading_page_header_description: str = "Compare source and translation side by side. Double-click to edit, then save and export."
+    proofreading_page_search_placeholder: str = "Search source or translation"
+    proofreading_page_search_help: str = "Search source or translation as plain text. Press Enter or Search again for the next match."
+    proofreading_page_only_issues: str = "Issues only"
+    project_page_header_description: str = "Bind a Ren'Py project and configure translation input and output folders"
+    app_settings_page_header_description: str = "Manage language, updates, sound, and application display options"
+    basic_settings_page_header_description: str = "Adjust concurrency, timeout, and retry thresholds for translation tasks"
+    expert_settings_page_header_description: str = "Control prompts, asset analysis, and result checking behavior"
+    custom_prompt_page_header_description: str = "Configure translation prompt modes, styles, and preview content"
     app_basic_settings_page: str = "Basic Settings"
     app_expert_settings_page: str = "Expert Settings"
     app_glossary_page: str = "Glossary"
@@ -255,6 +311,7 @@ class LocalizerEN(LocalizerZH):
     platform_page_api_delete: str = "Delete API"
     platform_page_widget_add_title: str = "API List"
     platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI, Anthropic, DeepL and DeepLX here"
+    platform_page_header_description: str = "Manage translation APIs, model parameters, and the active channel"
     platform_page_active_hint: str = "Active API: {NAME}"
     platform_page_active_none: str = "No active API selected"
     platform_page_empty_title: str = "No APIs yet"
@@ -346,12 +403,13 @@ class LocalizerEN(LocalizerZH):
     translation_page_card_task: str = "Real Time Tasks"
     translation_page_alert_pause: str = "Stopped translation tasks can be resumed at any time. Confirm to stop the task … ?"
     translation_page_continue: str = "Continue Task"
-    translation_page_export: str = "Export Task Data"
-    translation_page_export_tooltip: str = "Export translation file"
-    translation_page_reinject_cache: str = "Reinject from Cache"
-    translation_page_reinject_cache_tooltip: str = "Rewrite translations from cache to the output folder"
-    translation_page_reinject_cache_confirm: str = "This will rewrite translation files from cache. Continue?"
-    translation_page_reinject_cache_success: str = "Cache reinjection completed"
+    translation_page_export: str = "Write Translation Files"
+    translation_page_export_tooltip: str = "Write current translations to the output folder, updating existing files without translating again."
+    translation_page_export_success: str = "Translation files written to: {PATH}"
+    proofreading_hook_group_hint: str = 'Supplemental translations, including marked extraction entries. Writing the proofread translations updates their source files and replace_text_auto.rpy.'
+    translation_reuse_hook_updated: str = 'Regenerated replace_text_auto.rpy from marked supplemental translations only.'
+    translation_reuse_summary: str = "Reusable: {reusable}; conflicts: {conflicts}; already matched: {existing}; no reusable old translation: {unmatched}"
+    translation_reuse_unmatched_hint: str = "No reusable old translation: the previous translation is empty, identical to its source, or has no matching entry. This does not indicate a write failure."
     translation_page_reinject_cache_no_cache: str = "No cache data found, please translate first"
     translation_page_timer: str = "Waiting time before delayed startup"
     translation_page_preflight_missing_assets_title: str = "No usable project assets"
@@ -368,6 +426,7 @@ class LocalizerEN(LocalizerZH):
     proofreading_page_export: str = "Export"
     proofreading_page_search: str = "Search"
     proofreading_page_filter: str = "Filter"
+    proofreading_page_current_view: str = "Current view"
     proofreading_page_retranslate: str = "Retranslate"
     proofreading_page_confirm_translation: str = "Mark Translation as Correct"
     proofreading_page_confirm_selected_translations: str = "Mark Selected Translations as Correct"
@@ -386,6 +445,11 @@ class LocalizerEN(LocalizerZH):
     proofreading_page_col_status: str = "Status"
     proofreading_page_no_cache: str = "No cache file found, please run translation task first"
     proofreading_page_load_failed: str = "Failed to read cache file"
+    proofreading_page_cache_missing: str = "No complete translation cache was found. Run one-click translation or check the output folder."
+    proofreading_page_cache_invalid: str = "The translation cache is damaged. Run translation again before proofreading."
+    proofreading_page_cache_mismatch: str = "The translation cache could not be loaded. Check that the project and output folders match."
+    proofreading_page_cache_access_denied: str = "The translation cache cannot be accessed. Check folder permissions and disk space."
+    proofreading_page_cache_load_error: str = "The proofreading cache could not be loaded. Check the project path and try again."
     proofreading_page_save_failed: str = "Save failed"
     proofreading_page_retranslate_confirm: str = "Confirm to retranslate this entry?"
     proofreading_page_retranslate_failed: str = "Translation failed, please retry"
@@ -490,11 +554,11 @@ class LocalizerEN(LocalizerZH):
     agent_page_empty_description: str = "This conversation is empty"
     agent_page_suggestion_project: str = "Inspect the project and suggest the next step"
     agent_page_suggestion_rpa: str = "List RPA files in the project"
-    agent_page_suggestion_errors: str = "Scan project script errors"
+    agent_page_suggestion_errors: str = "Scan translation script errors"
     agent_page_suggestion_old_new: str = "Fix old/new translations not taking effect"
     agent_page_suggestion_project_desc: str = "Summarize unpacking, translation, assets, and quality"
     agent_page_suggestion_rpa_desc: str = "List RPA archives in the game folder"
-    agent_page_suggestion_errors_desc: str = "Scan for common script errors without modifying files"
+    agent_page_suggestion_errors_desc: str = "Scan generated .rpy files in the current language folder without modifying files"
     agent_page_suggestion_old_new_desc: str = "Generate a runtime replacement patch after translation"
     agent_page_tool_expand: str = "Show details"
     agent_page_tool_running: str = "Running"
@@ -506,9 +570,9 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_get_project_info: str = "Read project details"
     agent_page_tool_inspect_translation_project: str = "Inspect translation status"
     agent_page_tool_list_rpa_files: str = "Find RPA files"
-    agent_page_tool_scan_script_errors: str = "Scan script errors"
+    agent_page_tool_scan_script_errors: str = "Scan translation script errors"
     agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
-    agent_page_tool_optimize_old_new_translations: str = "Optimize old/new translations"
+    agent_page_tool_optimize_old_new_translations: str = "Build supplement fallback"
     agent_page_action_open_translation: str = "Open Translation"
     agent_page_action_one_key_translate: str = "Start One-click Translation"
     agent_page_action_continue_translation: str = "Continue Translation"
@@ -524,11 +588,11 @@ class LocalizerEN(LocalizerZH):
         "Files will be written directly into the game folder and may overwrite files with the same name. "
         "The original RPA files will be kept. Continue?"
     )
-    agent_page_old_new_confirmation_title: str = "Confirm old/new replacement patch"
+    agent_page_old_new_confirmation_title: str = "Confirm supplement fallback"
     agent_page_old_new_confirmation: str = (
         "Current language folder:\n{tl_dir}\n\n"
-        "Effective old/new entries: {old_new_count}\n"
-        "Existing supplements merged: {supplement_count}\n"
+        "Supplemental extraction entries: {old_new_count}\n"
+        "Independent supplement entries: {supplement_count}\n"
         "Final replacements: {total_count}\n"
         "Conflicting sources skipped: {conflict_count}\n\n"
         "A runtime replacement script will be generated from longest source text to shortest:\n"
@@ -548,6 +612,7 @@ class LocalizerEN(LocalizerZH):
     agent_page_copy: str = "Copy"
     agent_page_copied: str = "Copied to clipboard"
     agent_page_stopped_hint: str = "Generation stopped"
+    agent_page_scroll_latest: str = "Back to latest message"
     agent_page_platform_changed_hint: str = (
         "Agent API switched. This conversation still uses the previous API context; "
         "click \"New task\" for a fresh context."
@@ -577,16 +642,16 @@ class LocalizerEN(LocalizerZH):
         "List RPA files in the current project game folder. The server injects the path."
     )
     agent_tool_scan_script_errors_description: str = (
-        "Scan Ren'Py script errors in the current project game folder without modifying files."
+        "Scan generated .rpy errors in the current language folder, excluding source scripts, without modifying files."
     )
     agent_tool_unpack_rpa_files_description: str = (
         "Unpack all RPA files in the current project game folder. The server injects the path, "
         "the user must confirm overwrite risk, and original archives are kept."
     )
     agent_tool_optimize_old_new_translations_description: str = (
-        "After translation, read effective old/new translations from the current language folder and "
-        "generate a longest-first replace_text runtime patch for full-string mismatches caused by "
-        "appended walkthrough text, color tags, or similar processing."
+        "After translation, read entries marked as supplemental extraction results from the current "
+        "language folder and generate a longest-first replace_text runtime fallback. Officially "
+        "extracted old/new entries are excluded."
     )
     agent_project_inspection_complete: str = (
         "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
@@ -600,6 +665,7 @@ class LocalizerEN(LocalizerZH):
     agent_inspection_action_start_translation: str = "start translation on the translation page"
     agent_inspection_action_continue_translation: str = "continue the unfinished translation"
     agent_inspection_action_review_quality: str = "resolve the translation quality issues first"
+    agent_inspection_action_refresh_replace_fallback: str = "regenerate the replace_text fallback"
     agent_inspection_action_review_translation: str = "review and apply the translation results"
     agent_inspection_action_check_project_files: str = "check the project for processable scripts"
     agent_system_prompt: str = (
@@ -618,8 +684,9 @@ class LocalizerEN(LocalizerZH):
         "ask for it again in text. Do not use Emoji or colored Unicode status icons in replies; the UI renders "
         "status and action icons. Translation itself belongs to the translation page; do not "
         "retranslate through the Agent. Only call optimize_old_new_translations after translations are applied "
-        "and the user asks to fix runtime old/new, walkthrough suffix, or color-tag mismatches, and require "
-        "confirmation. Summarize key results; full details are shown in the UI."
+        "and the user asks to fix supplemental extraction text, or when inspection "
+        "returns REFRESH_REPLACE_FALLBACK and the user asks to apply that recommendation. Require confirmation. "
+        "Summarize key results; full details are shown in the UI."
     )
 
     # Agent runtime
@@ -664,8 +731,9 @@ class LocalizerEN(LocalizerZH):
     agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
     agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."
     agent_unpack_failed: str = "RPA unpacking failed. Check the log for details."
-    agent_old_new_translation_not_found: str = "No effective old/new translations were found in the current language folder."
-    agent_old_new_optimization_complete: str = "Generated the old/new runtime replacement patch with {count} entries: {output_path}"
+    agent_old_new_translation_not_found: str = "No translated supplemental extraction entries were found in the current language folder."
+    agent_old_new_optimization_complete: str = "Generated the supplemental runtime fallback with {count} entries: {output_path}"
+    agent_old_new_stale_hook_removed: str = "Removed the stale replace_text patch because no supplemental translations remain: {output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
@@ -1465,12 +1533,6 @@ class LocalizerEN(LocalizerZH):
         'Injects bundled UI translations for Start, Save, Settings, and more.\nDisable this option'
         ' if the game already has custom UI translations.'
     )
-    onekey_extract_translate_hidden_built_text_creates_renpybox: str = 'Extract and translate hidden built-in text (creates renpybox_bytecode_strings.rpy)'
-    onekey_some_player_visible_text_embedded_compiled_files: str = (
-        "Some player-visible text is embedded in compiled files and cannot be found by Ren'Py's e"
-        'xtractor.\nThis option adds that text as regular translation entries in tl/<language>/ren'
-        'pybox_bytecode_strings.rpy.\nDisable it only if you plan to recover missed text later.'
-    )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = 'Review untranslated uppercase abbreviations (uses additional quota)'
     onekey_clear_skipped_candidates: str = 'Clear skipped candidates'
     onekey_click_extract_text_begin_existing_translations_preserved: str = 'Click Extract Text to begin. Existing translations are preserved by default.'
@@ -1515,6 +1577,7 @@ class LocalizerEN(LocalizerZH):
     )
     onekey_skip_translation: str = 'Skip Translation →'
     onekey_review_export_post_process: str = 'Review, Export, and Post-process'
+    onekey_apply_translation_5: str = 'Apply Translation'
     onekey_select_game_folder: str = 'Select Game Folder'
     onekey_no_extractable_files_found: str = 'No extractable files were found'
     onekey_extracting_text_game_creating_translation_files: str = 'Extracting text from the game and creating translation files...'
@@ -1609,6 +1672,8 @@ class LocalizerEN(LocalizerZH):
     )
     onekey_start_translation_2: str = 'Start Translation →'
     onekey_extraction_completed_character_names_variable_references_scanned: str = 'Extraction completed. Character names and variable references were scanned automatically.'
+    onekey_character_scan_in_background: str = 'Character names and variable references are being scanned in the background.'
+    onekey_character_scan_failed: str = 'Character scan did not finish: {message}'
     onekey_extraction_failed: str = '✗ Extraction Failed'
     onekey_error_select_extract_again_if_still_fails: str = (
         'Error: {msg}\n\nSelect Extract Again. If it still fails, check the path and permissions or'
@@ -1721,9 +1786,9 @@ class LocalizerEN(LocalizerZH):
     pack_unpack_select_game_folder_project_root_launcher_exe: str = 'Select the game folder, project root, or launcher .exe'
     pack_unpack_overwrite_existing_rpy_files_unrpyc_clobber: str = 'Overwrite existing .rpy files (unrpyc --clobber)'
     pack_unpack_direct_decompilation_unren_uses_game_s_python: str = "Direct decompilation (UnRen: uses the game's Python without launching it)"
-    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = 'Try UnRen first, then fall back to unrpyc'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = 'Try the matching unrpyc version first, then fall back to UnRen'
     pack_unpack_decompile: str = 'Decompile'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = 'Try UnRen first, then fall back to unrpyc v2'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = 'Try the matching unrpyc version first, then fall back to UnRen'
     pack_unpack_clean_rpyc_files: str = 'Clean RPYC Files'
     pack_unpack_delete_rpyc_files_have_matching_decompiled_rpy: str = 'Delete RPYC files that have matching decompiled RPY files'
     pack_unpack_select_game_folder: str = 'Select Game Folder'
@@ -1758,6 +1823,7 @@ class LocalizerEN(LocalizerZH):
     pack_unpack_cancelling_after_current_part_finishes_writing: str = 'Cancelling after the current part finishes writing...'
     pack_unpack_no_rpa_files_found_external_tools_unren: str = 'No RPA files were found, or the external tools/UnRen are unavailable'
     pack_unpack_decompiling_unren: str = 'Decompiling with UnRen…'
+    pack_unpack_decompiling_unrpyc: str = 'Decompiling with the matching unrpyc version…'
     pack_unpack_decompilation_complete_generated_rpy_files: str = 'Decompilation complete. Generated .rpy files'
     pack_unpack_unren_failed: str = ' (UnRen failed: {unren_error})'
     pack_unpack_skipped_file_s_without_matching_rpy_files: str = '; skipped {skipped} file(s) without matching .rpy files'
@@ -1913,13 +1979,16 @@ class LocalizerEN(LocalizerZH):
         'Manage worldbuilding, character profiles, and prompt context for the current output proj'
         'ect, and generate AI drafts on demand.'
     )
-    workbench_current_project_summary: str = 'Current Project Summary'
-    workbench_single_view_current_api_paths_workbench_state: str = 'A single view of the current API, paths, workbench state, and draft status.'
-    workbench_analysis_shortcuts: str = 'Analysis & Shortcuts'
-    workbench_generate_ai_drafts_demand_current_scope_then: str = 'Generate AI drafts on demand for the current scope, then expand to the full project when needed.'
+    workbench_current_project_summary: str = 'Current Project Asset Summary'
+    workbench_single_view_current_api_paths_workbench_state: str = 'Review the current API, model, language pair, and workbench asset state in one place.'
+    workbench_analysis_shortcuts: str = 'AI Extraction and Analysis Actions'
+    workbench_generate_ai_drafts_demand_current_scope_then: str = 'Generate character drafts for the current scope or the full project, with linked shortcuts.'
     workbench_generate_current_scope_drafts: str = 'Generate Current-Scope Drafts'
     workbench_reanalyze_full_project: str = 'Reanalyze Full Project'
-    workbench_sync_character_names: str = 'Sync Character Names'
+    workbench_sync_character_names: str = 'Scan Project Characters'
+    workbench_character_details: str = "Character Details"
+    workbench_more_settings: str = "More Worldbuilding Settings"
+    workbench_more_character_details: str = "Aliases, Matching, and Dialogue"
     workbench_apply_all_drafts: str = 'Apply All Drafts'
     workbench_apply_all_and_enable: str = 'Apply All & Enable'
     workbench_import_as_drafts: str = 'Import for Review'
@@ -1929,9 +1998,17 @@ class LocalizerEN(LocalizerZH):
     workbench_open_local_glossary: str = 'Open Local Glossary'
     workbench_open_do_not_translate_list: str = 'Open Do-Not-Translate List'
     workbench_open_custom_prompts: str = 'Open Custom Prompts'
+    workbench_progress_loading: str = 'Reading project text and scanning character candidates...'
+    workbench_progress_worldbook: str = 'Generating the worldbuilding draft; waiting for the model...'
+    workbench_progress_worldbook_done: str = 'Worldbuilding draft generated and parsed.'
+    workbench_progress_no_characters: str = 'No character candidates available for draft generation.'
+    workbench_progress_characters: str = 'Character batch {batch}/{total}; waiting for the model: {names}'
+    workbench_progress_characters_done: str = 'Processed {count} character drafts.'
+    workbench_progress_elapsed: str = 'Elapsed: {minutes} min {seconds} sec'
+    workbench_progress_complete: str = 'Analysis complete: {worlds} worldbuilding drafts and {count} character drafts. Review and apply them.'
     workbench_ready: str = 'Ready'
     workbench_worldbuilding: str = 'Worldbuilding'
-    workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = 'Edit approved worldbuilding on the left and review AI drafts and raw responses on the right.'
+    workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = 'Describe the setting and translation style, or generate and review an AI draft.'
     workbench_inject_worldbuilding_context: str = 'Inject Worldbuilding Context'
     workbench_approved_worldbuilding: str = 'Approved Worldbuilding'
     workbench_content_inserted_directly_generated_prompts: str = 'This content is inserted directly into generated prompts.'
@@ -1943,7 +2020,7 @@ class LocalizerEN(LocalizerZH):
     workbench_generated_worldbuilding_drafts_appear_here: str = 'Generated worldbuilding drafts appear here.'
     workbench_if_parsing_fails_raw_model_response_appears: str = 'If parsing fails, the raw model response appears here.'
     workbench_character_card_workbench: str = 'Character Card Workbench'
-    workbench_browse_characters_left_edit_approved_cards_center: str = 'Browse characters on the left, edit approved cards in the center, and review AI drafts on the right.'
+    workbench_browse_characters_left_edit_approved_cards_center: str = 'Scan the project, search for a character, then edit their details or review a draft.'
     workbench_inject_character_card_context: str = 'Inject Character Card Context'
     workbench_generate_all_character_cards: str = 'Generate All Character Cards'
     workbench_regenerate_current_character: str = 'Regenerate Current Character'
@@ -1952,8 +2029,10 @@ class LocalizerEN(LocalizerZH):
     workbench_add_blank_character_card: str = 'Add Blank Character Card'
     workbench_delete_current_character: str = 'Delete Current Character'
     workbench_character_list: str = 'Character List'
-    workbench_synced_character_candidates_added_here_review: str = 'Synced character candidates are added here for review.'
-    workbench_search_characters: str = 'Search names, aliases, or keywords'
+    workbench_synced_character_candidates_added_here_review: str = 'Scanning needs no AI. Review characters, then add details manually or generate them with AI.'
+    workbench_character_empty: str = 'No characters yet. Scan the project; if none appear, check the project folder and unpack or decompile scripts, or add a character manually.'
+    workbench_character_no_match: str = 'No matching characters. Clear the search or select All.'
+    workbench_search_characters: str = 'Search names, translations, or aliases'
     workbench_filter_all: str = 'All'
     workbench_filter_pending: str = 'Pending'
     workbench_filter_applied: str = 'Applied'
@@ -2001,6 +2080,10 @@ class LocalizerEN(LocalizerZH):
     workbench_project_folder: str = 'Project Folder'
     workbench_tl_folder: str = 'TL Folder'
     workbench_draft_status: str = 'Draft Status'
+    workbench_cache_status: str = 'Cache Status'
+    workbench_cache_sqlite: str = 'SQLite cache · {item_count} entries'
+    workbench_cache_json: str = 'JSON cache · {item_count} entries'
+    workbench_cache_unreadable: str = 'Cache read failed'
     workbench_project_name: str = 'Project Name'
     workbench_genre: str = 'Genre'
     workbench_setting_summary: str = 'Setting Summary'
@@ -2137,6 +2220,8 @@ class LocalizerEN(LocalizerZH):
     toolbox_group_translate: str = "Translation Methods"
     toolbox_group_asset: str = "Resources & Glossaries"
     toolbox_group_engineer: str = "Engineering & Repair"
+    toolbox_page_header_description: str = "Manage translation workflows, text processing, terminology assets, and engineering tools"
+    toolbox_group_count: str = "{COUNT} tools"
     toolbox_tool_continue_translation_title: str = 'Continue Translation'
     toolbox_tool_continue_translation_description: str = 'Resume the unfinished translation task'
     toolbox_tool_one_key_translate_title: str = 'One-click Translation'
@@ -2178,7 +2263,7 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_pack_unpack_title: str = 'Pack / Unpack'
     toolbox_tool_pack_unpack_description: str = 'Unpack RPA archives or package game assets'
     toolbox_tool_error_repair_title: str = 'Error Repair'
-    toolbox_tool_error_repair_description: str = 'Scan for and fix common script errors'
+    toolbox_tool_error_repair_description: str = 'Scan and fix generated .rpy errors in the translation folder'
     toolbox_tool_translation_reuse_title: str = 'Reuse Updated Translations'
     toolbox_tool_translation_reuse_description: str = 'Fill empty entries in a new version with matching previous translations'
     toolbox_tool_formatter_title: str = 'Code Formatter'

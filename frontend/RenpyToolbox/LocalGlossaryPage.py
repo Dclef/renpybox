@@ -30,8 +30,6 @@ from qfluentwidgets import (
     CaptionLabel,
     StrongBodyLabel,
     ProgressBar,
-    isDarkTheme,
-    qconfig,
 )
 
 from base.Base import Base
@@ -382,7 +380,6 @@ class LocalGlossaryPage(Base, QWidget):
         self._load_from_config()
 
         # 监听主题变化以更新表格配色
-        qconfig.themeChanged.connect(self._on_theme_changed)
 
     # --- UI ---
     def _init_ui(self):
@@ -602,70 +599,9 @@ class LocalGlossaryPage(Base, QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setColumnWidth(self.STATS_COLUMN, self.STATS_COLUMN_WIDTH)
         self.table.itemChanged.connect(self._on_table_item_changed)
-        self._apply_table_theme()
         v_layout.addWidget(self.table)
 
         return card
-
-    def _apply_table_theme(self) -> None:
-        """根据当前主题更新表格样式"""
-        if isDarkTheme():
-            stylesheet = """
-                QTableWidget {
-                    background-color: rgb(39, 39, 39);
-                    alternate-background-color: rgb(45, 45, 45);
-                    color: rgb(200, 200, 200);
-                    border: 1px solid rgb(55, 55, 55);
-                    border-radius: 4px;
-                    gridline-color: rgb(55, 55, 55);
-                }
-                QTableWidget::item {
-                    padding: 6px;
-                }
-                QTableWidget::item:selected {
-                    background-color: rgb(70, 70, 70);
-                    color: rgb(255, 255, 255);
-                }
-                QHeaderView::section {
-                    background-color: rgb(50, 50, 50);
-                    color: rgb(200, 200, 200);
-                    padding: 8px;
-                    border: none;
-                    border-bottom: 1px solid rgb(65, 65, 65);
-                    font-weight: bold;
-                }
-            """
-        else:
-            stylesheet = """
-                QTableWidget {
-                    background-color: rgb(255, 255, 255);
-                    alternate-background-color: rgb(248, 248, 248);
-                    color: rgb(32, 32, 32);
-                    border: 1px solid rgb(220, 220, 220);
-                    border-radius: 4px;
-                    gridline-color: rgb(230, 230, 230);
-                }
-                QTableWidget::item {
-                    padding: 6px;
-                }
-                QTableWidget::item:selected {
-                    background-color: rgb(210, 210, 210);
-                    color: rgb(0, 0, 0);
-                }
-                QHeaderView::section {
-                    background-color: rgb(245, 245, 245);
-                    color: rgb(32, 32, 32);
-                    padding: 8px;
-                    border: none;
-                    border-bottom: 1px solid rgb(220, 220, 220);
-                    font-weight: bold;
-                }
-            """
-        self.table.setStyleSheet(stylesheet)
-
-    def _on_theme_changed(self) -> None:
-        """主题切换时同步更新表格样式"""
-        self._apply_table_theme()
 
     def _create_table_item(
         self,

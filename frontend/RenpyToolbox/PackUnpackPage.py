@@ -23,8 +23,8 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
 from module.Tool.Packer import Packer, PackerUnpackError
-from module.Tool.RenpyDecompiler import RenpyDecompiler
-from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+from module.Tool.RenpyDecompiler import RenpyDecompiler, remove_decompiled_rpyc
+from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 EXE_SUFFIX = ".exe"
 GAME_DIR_NAME = "game"
@@ -207,6 +207,30 @@ class DecompileWorker(QThread):
         )
 
     def run(self):
+        # 先运行匹配游戏 Python 版本的 unrpyc（Ren'Py 7 使用 v1，Ren'Py 8 使用 v2）。
+        # UnRen 仅作为兼容旧游戏或特殊脚本格式的兜底，避免 current/legacy 选错导致卡住。
+        unrpyc_error: Exception | None = None
+        try:
+            self.progress.emit(Localizer.get().pack_unpack_decompiling_unrpyc)
+            game_dir = self._resolve_game_dir()
+            decompiler = RenpyDecompiler()
+            decompiler.decompile(
+                self.target,
+                overwrite=self.overwrite,
+                output_callback=lambda line: self.progress.emit(f"unrpyc：{line}"),
+            )
+            removed = remove_decompiled_rpyc(game_dir)
+            LogManager.get().info(f"反编译后已清理 {removed} 个同名 .rpyc")
+            self.finished.emit({
+                "level": "success",
+                "title": Localizer.get().local_glossary_completed,
+                "message": Localizer.get().pack_unpack_decompilation_complete_generated_rpy_files,
+            })
+            return
+        except Exception as exc:
+            unrpyc_error = exc
+            LogManager.get().error(f"unrpyc 反编译失败: {exc}")
+
         unren_error: Exception | None = None
         if self.use_unren and self.fallback_unren_options:
             try:
@@ -216,42 +240,39 @@ class DecompileWorker(QThread):
                     str(game_dir),
                     lang="zh",
                     options=self.fallback_unren_options,
-                    purpose="反编译",
+                    purpose="反编译兜底",
                     timeout_s=60 * 60,
+                    output_callback=lambda line: self.progress.emit(
+                        f"UnRen：{line}"
+                    ),
                 )
                 if ok:
+                    removed = remove_decompiled_rpyc(game_dir)
+                    LogManager.get().info(f"反编译后已清理 {removed} 个同名 .rpyc")
                     self.finished.emit({
                         "level": "success",
                         "title": Localizer.get().local_glossary_completed,
                         "message": Localizer.get().pack_unpack_decompilation_completed_unren,
                     })
                     return
+                unren_error = RuntimeError("UnRen 返回失败")
             except Exception as unren_exc:
                 unren_error = unren_exc
-                LogManager.get().error(f"UnRen 反编译失败: {unren_exc}")
+                LogManager.get().error(f"UnRen 反编译兜底失败: {unren_exc}")
 
-        try:
-            self.progress.emit(Localizer.get().pack_unpack_decompiling)
-            decompiler = RenpyDecompiler()
-            decompiler.decompile(self.target, overwrite=self.overwrite)
-            self.finished.emit({
-                "level": "success",
-                "title": Localizer.get().local_glossary_completed,
-                "message": Localizer.get().pack_unpack_decompilation_complete_generated_rpy_files,
-            })
-        except Exception as exc:
-            LogManager.get().error(f"反编译失败: {exc}")
-            extra = (
-                Localizer.get().pack_unpack_unren_failed.format(unren_error=unren_error)
-                if unren_error
-                else ""
-            )
-            self.finished.emit({
-                "level": "error",
-                "title": Localizer.get().error,
-                "message": Localizer.get().pack_unpack_decompilation_failed_2.format(exc=exc, extra=extra),
-            })
-
+        extra = ""
+        if unrpyc_error:
+            extra += f"\nunrpyc：{unrpyc_error}"
+        if unren_error:
+            extra += "\n" + Localizer.get().pack_unpack_unren_failed.format(unren_error=unren_error)
+        self.finished.emit({
+            "level": "error",
+            "title": Localizer.get().error,
+            "message": Localizer.get().pack_unpack_decompilation_failed_2.format(
+                exc=unrpyc_error or unren_error or "未知错误",
+                extra=extra,
+            ),
+        })
 class CleanupWorker(QThread):
     """后台清理工作线程（避免阻塞 UI）"""
 
@@ -531,7 +552,7 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(self.unpack_progress)
 
         self.unpack_status_label = QLabel("")
-        self.unpack_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.unpack_status_label, pixel_size=11)
         self.unpack_status_label.setVisible(False)
         layout.addWidget(self.unpack_status_label)
 
@@ -607,7 +628,7 @@ class PackUnpackPage(Base, QWidget):
 
         # 进度状态
         self.pack_status_label = QLabel("")
-        self.pack_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.pack_status_label, pixel_size=11)
         self.pack_status_label.setVisible(False)
         layout.addWidget(self.pack_status_label)
 
@@ -689,7 +710,7 @@ class PackUnpackPage(Base, QWidget):
         layout.addWidget(self.decompile_progress)
 
         self.decompile_status_label = QLabel("")
-        self.decompile_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(self.decompile_status_label, pixel_size=11)
         self.decompile_status_label.setVisible(False)
         layout.addWidget(self.decompile_status_label)
 
@@ -895,7 +916,7 @@ class PackUnpackPage(Base, QWidget):
             InfoBar.info(title, message, parent=self)
 
     def _decompile(self, fallback_unren_options: str | None = None):
-        """反编译 RPYC → RPY（unrpyc v2）"""
+        """反编译 RPYC → RPY（按游戏版本选择 unrpyc，必要时用 UnRen 兜底）。"""
         try:
             if self.decompile_worker and self.decompile_worker.isRunning():
                 InfoBar.warning(
@@ -924,7 +945,7 @@ class PackUnpackPage(Base, QWidget):
 
             overwrite = self.decompile_overwrite_check.isChecked()
             use_unren = self.decompile_direct_check.isChecked()
-            mode = "优先 UnRen" if use_unren else "unrpyc"
+            mode = "unrpyc 优先，UnRen 兜底" if use_unren else "unrpyc"
             LogManager.get().info(f"开始反编译: {exe_path} (覆盖: {overwrite}, {mode})")
 
             fallback_options = fallback_unren_options or "2x"

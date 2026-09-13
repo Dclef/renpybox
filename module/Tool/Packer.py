@@ -14,6 +14,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from queue import Empty, Queue
+from threading import Thread
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -179,42 +182,38 @@ class Packer:
         return None
 
     def _select_unren_bats(self, root_dir: Path) -> tuple[list[Path], int | None]:
+        """按游戏版本选择 UnRen；游戏目录自带脚本优先于项目资源脚本。"""
         major = self._detect_renpy_major(root_dir)
         legacy_res = Path(get_resource_path("resource", "UnRen-legacy.bat"))
         current_res = Path(get_resource_path("resource", "UnRen-current.bat"))
-        legacy = legacy_res if legacy_res.exists() else (self.base_dir / "dist" / "UnRen-legacy.bat")
-        current = current_res if current_res.exists() else (self.base_dir / "dist" / "UnRen-current.bat")
-        candidates: list[Path] = []
+        legacy_res = legacy_res if legacy_res.exists() else self.base_dir / "dist" / "UnRen-legacy.bat"
+        current_res = current_res if current_res.exists() else self.base_dir / "dist" / "UnRen-current.bat"
+        local_legacy = root_dir / "UnRen-legacy.bat"
+        local_current = root_dir / "UnRen-current.bat"
         cached = self._get_cached_unren_preference(root_dir)
 
-        def add_candidate(path: Path) -> None:
-            if path.exists() and path not in candidates:
-                candidates.append(path)
+        if major is not None and major >= 8:
+            preferred = "current"
+        else:
+            # Ren'Py 7 使用 Python 2，只能使用 unrpyc v1/legacy。
+            preferred = "legacy"
 
-        if cached == "legacy":
-            add_candidate(legacy)
-            add_candidate(current)
-            return candidates, major
+        if major is None and cached in {"legacy", "current"}:
+            preferred = cached
 
-        if cached == "current":
-            add_candidate(current)
-            add_candidate(legacy)
-            return candidates, major
-
-        if major is None:
-            # 真正无法识别时，先尝试 legacy，再尝试 current。
-            # 对 Ren'Py 7 项目更稳妥，同时保留 8 的自动兜底。
-            add_candidate(legacy)
-            add_candidate(current)
-            return candidates, major
-
-        if major >= 8:
-            add_candidate(current)
-            add_candidate(legacy)
-            return candidates, major
-
-        add_candidate(legacy)
-        add_candidate(current)
+        local = {
+            "legacy": local_legacy,
+            "current": local_current,
+        }
+        bundled = {
+            "legacy": legacy_res,
+            "current": current_res,
+        }
+        candidates: list[Path] = []
+        for kind in (preferred, "current" if preferred == "legacy" else "legacy"):
+            for path in (local[kind], bundled[kind]):
+                if path.is_file() and path not in candidates:
+                    candidates.append(path)
         return candidates, major
 
     def _get_unren_script_version_label(self, unren_bat: Path, major: int | None) -> str:
@@ -239,26 +238,75 @@ class Packer:
         options: str,
         lang: str,
         timeout_s: int | None,
+        output_callback: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str] | None:
         if os.name != "nt":
             return None
         if not unren_bat.is_file():
             return None
+        process = None
         try:
-            return subprocess.run(
+            process = subprocess.Popen(
                 ["cmd.exe", "/c", str(unren_bat), str(game_root), lang, "--auto"],
                 cwd=str(game_root),
-                input=f"{options}\n",
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="ignore",
-                timeout=timeout_s,
+                bufsize=1,
                 creationflags=self._creationflags_no_window(),
+            )
+            if process.stdin is not None:
+                process.stdin.write(f"{options}\n")
+                process.stdin.close()
+
+            lines: list[str] = []
+            output_queue: Queue[str | None] = Queue()
+
+            def read_output() -> None:
+                if process is None or process.stdout is None:
+                    output_queue.put(None)
+                    return
+                for raw_line in process.stdout:
+                    output_queue.put(raw_line.rstrip())
+                output_queue.put(None)
+
+            Thread(target=read_output, daemon=True).start()
+            deadline = time.monotonic() + timeout_s if timeout_s else None
+            output_closed = False
+            while not output_closed:
+                remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
+                try:
+                    line = output_queue.get(timeout=remaining)
+                except Empty as exc:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(
+                        ["cmd.exe", "/c", str(unren_bat)], timeout_s
+                    ) from exc
+                if line is None:
+                    output_closed = True
+                    continue
+                if not line:
+                    continue
+                lines.append(line)
+                if output_callback:
+                    output_callback(line)
+
+            returncode = process.wait()
+            return subprocess.CompletedProcess(
+                process.args,
+                returncode,
+                "\n".join(lines),
+                None,
             )
         except Exception as exc:
             self.logger.warning(f"UnRen 启动失败: {exc}")
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
             return None
 
     def unpack_all_unren_bat(
@@ -269,6 +317,7 @@ class Packer:
         options: str = "6x",
         purpose: str = "解包",
         timeout_s: int | None = None,
+        output_callback: Callable[[str], None] | None = None,
     ) -> Tuple[bool, List[str]]:
         """Fallback via UnRen-legacy/current.bat (no window, no prompts)."""
         game_path = Path(game_dir).resolve()
@@ -300,6 +349,7 @@ class Packer:
                 options=options,
                 lang=lang,
                 timeout_s=timeout_s,
+                output_callback=output_callback,
             )
             if result is None:
                 last_lines = ["UnRen 启动失败"]
