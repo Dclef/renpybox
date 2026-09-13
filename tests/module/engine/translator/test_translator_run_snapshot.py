@@ -372,13 +372,14 @@ def test_resume_completes_allowed_acronym_but_not_translatable_ui_word() -> None
     assert start.get_status() == Base.TranslationStatus.UNTRANSLATED
 
 
-def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_path) -> None:
+def test_continue_preserves_prompt_and_refreshes_provider_and_batch_settings(tmp_path) -> None:
     input_folder = tmp_path / "input"
     output_folder = tmp_path / "output"
     input_folder.mkdir()
     (input_folder / "story.txt").write_text("Hello", encoding = "utf-8")
 
     initial = _config(input_folder, output_folder, model = "old-model", api_key = "old-key")
+    initial.token_threshold = 10
     initial.max_workers = 4
     initial.rpm_threshold = 30
     first = _translator()
@@ -391,7 +392,7 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     changed = _config(input_folder, output_folder, model = "new-model", api_key = "new-key")
     changed.max_workers = 16
     changed.rpm_threshold = 90
-    changed.token_threshold = 99
+    changed.token_threshold = 20
     changed.translation_prompt_mode = Config.PROMPT_MODE_LOCAL
     changed.translation_style_id = Config.STYLE_R18
     changed.platforms[0]["api_url"] = "https://new.invalid/v1"
@@ -407,7 +408,7 @@ def test_continue_reuses_snapshot_semantics_and_only_refreshes_credentials(tmp_p
     assert resumed_context.snapshot_id == original_context.snapshot_id
     assert resumed_context.prompt["mode"] == Config.PROMPT_MODE_COT
     assert resumed_context.prompt["style_id"] == Config.STYLE_LITERARY
-    assert runtime.token_threshold == 24
+    assert runtime.token_threshold == 20
     assert runtime.max_workers == 16
     assert runtime.rpm_threshold == 90
     assert runtime_platform["model"] == "new-model"
