@@ -136,6 +136,7 @@ class LocalizerZH():
     translation_page_footer_backup: str = "自动快照备份已开启"
     proofreading_page_header_description: str = "原文与译文并排校对，双击译文修改，保存后导出"
     proofreading_page_search_placeholder: str = "搜索原文或译文"
+    proofreading_page_search_help: str = "按普通文本搜索原文或译文；再次按回车或点击搜索可跳到下一处。"
     proofreading_page_only_issues: str = "只看问题"
     project_page_header_description: str = "绑定 Ren'Py 项目并设置翻译输入与输出目录"
     app_settings_page_header_description: str = "管理语言、更新、声音和应用级显示选项"
