@@ -131,6 +131,7 @@ class RENPYHOOK(Base):
             target_path,
             tl_name,
             supplement_pairs=supplement_pairs,
+            tl_dir=output_path.parent,
         )
         pairs = list(plan.pairs)
         if pairs:

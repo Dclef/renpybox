@@ -1031,7 +1031,7 @@ class TranslationTaskContext:
         The projection exists only while legacy translator components still read
         Config attributes. Callers may mutate it for adaptive runtime behavior,
         but must never save it. Snapshot-owned values override ``current_config``;
-        the live concurrency and RPM settings are the only exceptions.
+        the live batch size, concurrency and RPM settings are the exceptions.
         """
         from base.BaseLanguage import BaseLanguage
         from module.Config import Config
@@ -1060,8 +1060,8 @@ class TranslationTaskContext:
                     setattr(runtime, key, _thaw(value))
 
         if current_config is not None:
-            # 停止后继续翻译时，并发和 RPM 应使用当前设置，而不是旧快照。
-            for key in ("max_workers", "rpm_threshold"):
+            # 停止后继续翻译时，任务行数、并发和 RPM 使用当前设置。
+            for key in ("token_threshold", "max_workers", "rpm_threshold"):
                 if key in current_data:
                     setattr(runtime, key, deepcopy(current_data[key]))
 

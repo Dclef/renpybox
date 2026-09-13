@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
 
 import frontend.RenpyToolbox.PackUnpackPage as pack_page_module
-from frontend.RenpyToolbox.PackUnpackPage import UnpackWorker
+from frontend.RenpyToolbox.PackUnpackPage import DecompileWorker, UnpackWorker
 
 
 APP = QApplication.instance() or QApplication([])
@@ -128,3 +128,70 @@ def test_unpack_worker_unknown_error_falls_back(monkeypatch) -> None:
 
     assert results[0]["level"] == "error"
     assert "boom" not in results[0]["message"]
+
+
+def test_decompile_worker_tries_matching_unrpyc_before_unren(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "game-root"
+    (root / "game").mkdir(parents=True)
+    calls = []
+
+    class DecompilerStub:
+        def decompile(self, target, *, overwrite, output_callback):
+            calls.append(("unrpyc", target, overwrite))
+            output_callback("decompiled script.rpyc")
+
+    class UnexpectedPacker:
+        def unpack_all_unren_bat(self, *args, **kwargs):
+            raise AssertionError("unrpyc 成功后不应调用 UnRen")
+
+    monkeypatch.setattr(pack_page_module, "RenpyDecompiler", DecompilerStub)
+    monkeypatch.setattr(pack_page_module, "Packer", UnexpectedPacker)
+    monkeypatch.setattr(pack_page_module, "remove_decompiled_rpyc", lambda _path: 0)
+
+    worker = DecompileWorker(
+        str(root), overwrite=True, fallback_unren_options="2x", use_unren=True
+    )
+    progress = []
+    results = []
+    worker.progress.connect(progress.append)
+    worker.finished.connect(results.append)
+
+    worker.run()
+
+    assert calls == [("unrpyc", str(root), True)]
+    assert any("unrpyc：decompiled script.rpyc" in item for item in progress)
+    assert results[0]["level"] == "success"
+
+
+def test_decompile_worker_falls_back_to_unren_after_unrpyc_failure(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "game-root"
+    (root / "game").mkdir(parents=True)
+    calls = []
+
+    class DecompilerStub:
+        def decompile(self, *args, **kwargs):
+            raise RuntimeError("v1 不兼容")
+
+    class PackerStub:
+        def unpack_all_unren_bat(self, game_dir, **kwargs):
+            calls.append((game_dir, kwargs["purpose"]))
+            kwargs["output_callback"]("Unpacking script.rpyc")
+            return True, ["操作完成。"]
+
+    monkeypatch.setattr(pack_page_module, "RenpyDecompiler", DecompilerStub)
+    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
+    monkeypatch.setattr(pack_page_module, "remove_decompiled_rpyc", lambda _path: 0)
+
+    worker = DecompileWorker(
+        str(root), overwrite=False, fallback_unren_options="2x", use_unren=True
+    )
+    progress = []
+    results = []
+    worker.progress.connect(progress.append)
+    worker.finished.connect(results.append)
+
+    worker.run()
+
+    assert calls == [(str(root / "game"), "反编译兜底")]
+    assert any("UnRen：Unpacking script.rpyc" in item for item in progress)
+    assert results[0]["level"] == "success"

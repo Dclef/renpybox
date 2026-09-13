@@ -14,7 +14,7 @@ class ComboBoxCard(CardWidget):
         super().__init__(None)
 
         # 设置容器
-        self.setBorderRadius(4)
+        self.setBorderRadius(8)
         self.hbox = QHBoxLayout(self)
         self.hbox.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
 
@@ -23,14 +23,13 @@ class ComboBoxCard(CardWidget):
 
         self.title_label = StrongBodyLabel(title, self)
         self.description_label = CaptionLabel(description, self)
+        self.description_label.setWordWrap(True)
         self.description_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
 
         self.vbox.addWidget(self.title_label)
         self.vbox.addWidget(self.description_label)
-        self.hbox.addLayout(self.vbox)
-
-        # 填充
-        self.hbox.addStretch(1)
+        # 说明区域占用控件之外的剩余宽度，长文本在卡片内换行。
+        self.hbox.addLayout(self.vbox, 1)
 
         # 下拉框控件
         self.combo_box = ComboBox(self)

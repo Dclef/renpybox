@@ -6,16 +6,11 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import threading
 from typing import Any, Callable
-
-import anthropic
-import httpx
-import openai
-from google import genai
-from google.genai import types
 
 from base.Base import Base
 from module.Secret.SecretStore import SecretStore
@@ -29,6 +24,30 @@ TextDeltaCallback = Callable[[str], None]
 
 
 THINKING_LEVELS = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"}
+
+
+class _LazyModule:
+    """首次访问属性时再加载供应商 SDK，避免打开 Agent 页面时阻塞启动。"""
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+        self._module: Any | None = None
+
+    def _load(self) -> Any:
+        if self._module is None:
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._load(), name)
+
+
+# 保留模块级名称，兼容已有测试和外部调用方的补丁入口；实际导入延迟到请求发送时。
+anthropic = _LazyModule("anthropic")
+httpx = _LazyModule("httpx")
+openai = _LazyModule("openai")
+genai = _LazyModule("google.genai")
+types = _LazyModule("google.genai.types")
 
 
 class AgentRequester:
@@ -812,6 +831,7 @@ class AgentRequester:
         reasoning_callback: TextDeltaCallback | None,
     ) -> AgentRequestResult:
         texts: list[str] = []
+        rendered_text = ""
         calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, int] = {}
         stream = client.models.generate_content_stream(
@@ -839,11 +859,15 @@ class AgentRequester:
                         if bool(self._value(part, "thought", False)):
                             self._emit_text(reasoning_callback, text)
                             continue
-                        # 兼容少数端点返回“累计文本”而不是增量文本。
-                        current = "".join(texts)
-                        delta = text[len(current):] if current and text.startswith(current) else text
+                        # 兼容少数端点返回累计文本，避免每个分片都重新 join 全部历史。
+                        delta = (
+                            text[len(rendered_text):]
+                            if rendered_text and text.startswith(rendered_text)
+                            else text
+                        )
                         if delta:
                             texts.append(delta)
+                            rendered_text += delta
                             self._emit_text(callback, delta)
                     function_call = self._value(part, "function_call", None)
                     if function_call is None:
