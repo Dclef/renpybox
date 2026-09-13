@@ -189,6 +189,8 @@ class TranslationReusePage(Base, QWidget):
             summary = Localizer.localize("已写入 {count} 条。", "Applied {count}. ").format(
                 count=result.applied_entries
             ) + summary
+        if result.hook_updated:
+            summary += "\n" + Localizer.get().translation_reuse_hook_updated
         if result.unmatched_entries:
             summary += "\n" + Localizer.get().translation_reuse_unmatched_hint
         if result.backup_path is not None:

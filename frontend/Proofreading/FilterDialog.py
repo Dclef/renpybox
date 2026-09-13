@@ -54,6 +54,15 @@ class FilterDialog(MessageBoxBase):
         self._build_glossary_error_map()
         self._init_ui()
 
+    @staticmethod
+    def file_group_key(item: CacheItem) -> str:
+        """补漏按生成文件集中筛选，写回仍保留原始文件路径。"""
+        extra = item.get_extra_field()
+        renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+        if item.get_file_type() == CacheItem.FileType.RENPYHOOK or renpy.get("replace_only"):
+            return "replace_text_auto.rpy"
+        return item.get_file_path()
+
     def _init_ui(self) -> None:
         self.widget.setMinimumWidth(680)
         self.viewLayout.setSpacing(16)
@@ -169,7 +178,7 @@ class FilterDialog(MessageBoxBase):
 
         self.file_list.setStyleSheet(list_style)
 
-        file_paths = sorted(set(item.get_file_path() for item in self.items))
+        file_paths = sorted(set(self.file_group_key(item) for item in self.items))
         self.file_checkboxes = {}
 
         for path in file_paths:
@@ -187,6 +196,8 @@ class FilterDialog(MessageBoxBase):
             self.file_list.setItemWidget(list_item, cb)
             self.file_checkboxes[path] = cb
 
+        if "replace_text_auto.rpy" in self.file_checkboxes:
+            self.file_checkboxes["replace_text_auto.rpy"].setToolTip(Localizer.get().proofreading_hook_group_hint)
         self.file_list.itemClicked.connect(self._on_file_item_clicked)
 
         self.file_card, file_layout, file_head_layout = self._create_section_card(
@@ -338,7 +349,7 @@ class FilterDialog(MessageBoxBase):
             if statuses is not None and item.get_status() not in statuses:
                 continue
 
-            if file_paths is not None and item.get_file_path() not in file_paths:
+            if file_paths is not None and self.file_group_key(item) not in file_paths:
                 continue
 
             filtered.append(item)
