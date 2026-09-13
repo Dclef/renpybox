@@ -408,6 +408,8 @@ class ProofreadingPage(QWidget, Base):
                     self.items_loaded.emit([])
                     return
 
+                from module.File.RENPY import RENPY
+                RENPY(self.config).refresh_replace_markers(items)
                 self.items = items
                 self._translation_progress = cache_manager.get_project().get_progress()
                 self.quality_report = build_translation_quality_report(
@@ -579,7 +581,7 @@ class ProofreadingPage(QWidget, Base):
             if statuses is not None and item.get_status() not in statuses:
                 continue
 
-            if file_paths is not None and item.get_file_path() not in file_paths:
+            if file_paths is not None and FilterDialog.file_group_key(item) not in file_paths:
                 continue
 
             filtered.append(item)
