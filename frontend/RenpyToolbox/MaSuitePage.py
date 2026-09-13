@@ -37,7 +37,7 @@ from module.Extract.EmojiReplacer import (
     apply_replacements_dir,
     backup_folder,
 )
-from widget.ThemeHelper import mark_toolbox_widget
+from widget.ThemeHelper import mark_toolbox_widget, set_semantic_status, set_text_role
 
 
 class MaSuitePage(Base, QWidget):
@@ -65,7 +65,7 @@ class MaSuitePage(Base, QWidget):
 
         desc = CaptionLabel(Localizer.get().ma_suite_description)
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #666;")
+        set_text_role(desc)
         layout.addWidget(desc)
 
         layout.addWidget(self._create_form_card())
@@ -148,7 +148,7 @@ class MaSuitePage(Base, QWidget):
         # 状态 + 按钮
         status_row = QHBoxLayout()
         self.status_label = CaptionLabel(Localizer.get().ready)
-        self.status_label.setStyleSheet("color: #666;")
+        set_text_role(self.status_label)
         status_row.addWidget(self.status_label)
         status_row.addStretch(1)
         card_layout.addLayout(status_row)
@@ -170,7 +170,7 @@ class MaSuitePage(Base, QWidget):
 
         layout.addWidget(BodyLabel(Localizer.get().ma_suite_emoji_helper))
         tip = CaptionLabel(Localizer.get().ma_suite_emoji_helper_description)
-        tip.setStyleSheet("color: #666;")
+        set_text_role(tip)
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -239,7 +239,7 @@ class MaSuitePage(Base, QWidget):
         self.run_btn.setEnabled(not running)
         if message is not None:
             self.status_label.setText(message)
-            self.status_label.setStyleSheet("color: #0078d4;" if running else "color: #666;")
+            set_semantic_status(self.status_label, "info" if running else None)
 
     def _run_suite(self):
         game_path = self.path_edit.text().strip()
@@ -266,7 +266,7 @@ class MaSuitePage(Base, QWidget):
             if result is None:
                 InfoBar.info(Localizer.get().complete, Localizer.get().ma_suite_no_result_check_paths, parent=self)
                 self.status_label.setText(Localizer.get().ma_suite_no_result)
-                self.status_label.setStyleSheet("color: #e67e22;")
+                set_semantic_status(self.status_label, "warning")
                 return
 
             result_path = ""
@@ -304,7 +304,7 @@ class MaSuitePage(Base, QWidget):
             self.status_label.setText(Localizer.get().ma_suite_complete_status.format(
                 output=result_path or Localizer.get().ma_suite_output_written
             ))
-            self.status_label.setStyleSheet("color: #107c10;")
+            set_semantic_status(self.status_label, "success")
 
             # 记住路径
             ProjectStore.get().set_game_folder(self.config, game_path)
@@ -313,7 +313,7 @@ class MaSuitePage(Base, QWidget):
             self.logger.error(f"翻译套件执行失败: {e}")
             InfoBar.error(Localizer.get().error, str(e), parent=self)
             self.status_label.setText(Localizer.get().ma_suite_execution_failed)
-            self.status_label.setStyleSheet("color: #c50f1f;")
+            set_semantic_status(self.status_label, "error")
         finally:
             self._set_running(False)
 

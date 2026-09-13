@@ -30,7 +30,11 @@ from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
-from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
+from widget.ThemeHelper import (
+    mark_toolbox_widget,
+    mark_toolbox_scroll_area,
+    set_semantic_status,
+)
 
 
 class SourceTranslatePage(Base, QWidget):
@@ -70,7 +74,7 @@ class SourceTranslatePage(Base, QWidget):
                 "and backup options, then start.",
             )
         )
-        warn.setStyleSheet("color: #e0a000;")
+        set_semantic_status(warn, "warning")
         layout.addWidget(warn)
 
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
@@ -148,7 +152,7 @@ class SourceTranslatePage(Base, QWidget):
 
         self.output_hint_label = CaptionLabel("")
         self.output_hint_label.setWordWrap(True)
-        self.output_hint_label.setStyleSheet("color: #8fb3ff;")
+        set_semantic_status(self.output_hint_label, "info")
         box.addWidget(self.output_hint_label)
 
         # 源语言

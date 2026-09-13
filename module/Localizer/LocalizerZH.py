@@ -78,6 +78,10 @@ class LocalizerZH():
     app_new_version_waiting_restart: str = "正在重启并安装"
     app_new_version_apply_failure: str = "应用更新失败："
     app_theme_btn: str = "切换主题"
+    app_brand_short: str = "RB"
+    app_brand_name: str = "RenpyBox"
+    app_titlebar_project: str = "当前工程：{NAME}"
+    app_titlebar_project_unset: str = "未选择工程"
     app_language_btn: str = "语言"
     app_settings_page: str = "应用设置"
     app_platform_page: str = "接口管理"
@@ -87,6 +91,57 @@ class LocalizerZH():
     app_translation_page: str = "翻译任务"
     app_agent_page: str = "Agent 助手"
     app_proofreading_page: str = "校对任务"
+    translation_page_header_title: str = "任务执行监控"
+    translation_page_header_description: str = "实时查看翻译进度、吞吐和可恢复操作"
+    translation_page_header_summary: str = "当前翻译任务 · 源语言 {SOURCE} ➔ 目标语言 {TARGET} · 线程池 {RUNNING}/{MAX}"
+    translation_page_progress_title: str = "总体翻译完成度"
+    translation_page_progress_empty: str = "0.0%\n0 / 0"
+    translation_page_throughput_title: str = "实时 Token 吞吐速率"
+    translation_page_peak_speed: str = "峰值 {SPEED} T/s"
+    translation_page_kpi_progress: str = "翻译进度"
+    translation_page_kpi_throughput: str = "实时吞吐"
+    translation_page_lines_detail: str = "{LINE:,} / {TOTAL:,} 行"
+    translation_page_trend_live: str = "实时"
+    translation_page_trend_idle: str = "等待"
+    translation_page_trend_total: str = "累计"
+    translation_page_trend_healthy: str = "健康"
+    translation_page_translated_percent: str = "已翻译 {PERCENT:.1f}%"
+    translation_page_pending_percent: str = "待处理 {PERCENT:.1f}%"
+    translation_page_cache_percent: str = "已有 {PERCENT:.1f}%"
+    translation_page_cache_unavailable: str = "已有 —"
+    translation_page_cache_help: str = "任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。"
+    translation_page_stat_average: str = "均值吞吐"
+    translation_page_stat_batches: str = "已处理批次"
+    translation_page_stat_cache_hit: str = "已有译文占比"
+    translation_page_stat_latency: str = "平均网络延迟"
+    translation_page_open_proofreading: str = "打开平行校对台"
+    translation_page_elapsed: str = "已用: {TIME}"
+    translation_page_remaining: str = "剩余约: {TIME}"
+    translation_page_duration_hms: str = "{H}时 {M}分 {S}秒"
+    translation_page_duration_ms: str = "{M}分 {S}秒"
+    translation_page_duration_s: str = "{S}秒"
+    translation_page_token_detail: str = "输出: {OUTPUT} · 输入: {INPUT}"
+    translation_page_output_token_detail: str = "累计输出 {OUTPUT}"
+    translation_page_input_token_detail: str = "累计输入 {INPUT}"
+    translation_page_thread_title: str = "并发线程健康度"
+    translation_page_thread_unit: str = "Active"
+    translation_page_thread_detail: str = "运行中 {RUNNING}/{MAX} · 失败重试 {FAILED}"
+    translation_page_feed_title: str = "实时翻译流水"
+    translation_page_feed_mode: str = "实时状态"
+    translation_page_feed_empty: str = "等待翻译任务产生流水数据"
+    translation_page_feed_time: str = "时间"
+    translation_page_feed_source: str = "原文 ({LANGUAGE})"
+    translation_page_feed_target: str = "译文 ({LANGUAGE})"
+    translation_page_footer_backup: str = "自动快照备份已开启"
+    proofreading_page_header_description: str = "原文与译文并排校对，双击译文修改，保存后导出"
+    proofreading_page_search_placeholder: str = "搜索原文或译文"
+    proofreading_page_search_help: str = "按普通文本搜索原文或译文；再次按回车或点击搜索可跳到下一处。"
+    proofreading_page_only_issues: str = "只看问题"
+    project_page_header_description: str = "绑定 Ren'Py 项目并设置翻译输入与输出目录"
+    app_settings_page_header_description: str = "管理语言、更新、声音和应用级显示选项"
+    basic_settings_page_header_description: str = "调整翻译任务的并发、超时和重试阈值"
+    expert_settings_page_header_description: str = "控制提示词、资产分析和结果检查等高级行为"
+    custom_prompt_page_header_description: str = "配置翻译提示词模式、风格和预览内容"
     app_basic_settings_page: str = "基础设置"
     app_expert_settings_page: str = "专家设置"
     app_glossary_page: str = "术语表"
@@ -254,6 +309,7 @@ class LocalizerZH():
     platform_page_api_delete: str = "删除接口"
     platform_page_widget_add_title: str = "接口列表"
     platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic、DeepL、DeepLX 的翻译接口"
+    platform_page_header_description: str = "管理翻译接口、模型参数与当前激活通道"
     platform_page_active_hint: str = "当前激活接口：{NAME}"
     platform_page_active_none: str = "尚未设置激活接口"
     platform_page_empty_title: str = "暂无接口"
@@ -345,12 +401,14 @@ class LocalizerZH():
     translation_page_card_task: str = "实时任务数"
     translation_page_alert_pause: str = "停止的翻译任务可以随时继续翻译，是否确定停止任务 … ？"
     translation_page_continue: str = "继续任务"
-    translation_page_export: str = "导出任务数据"
-    translation_page_export_tooltip: str = "导出译文文件"
-    translation_page_reinject_cache: str = "从缓存重新注入"
-    translation_page_reinject_cache_tooltip: str = "将缓存中的译文重新写回输出目录"
-    translation_page_reinject_cache_confirm: str = "将从缓存重新写回译文文件，是否继续？"
-    translation_page_reinject_cache_success: str = "缓存重新注入完成"
+    translation_page_export: str = "写入译文文件"
+    translation_page_export_tooltip: str = "将当前译文写入输出目录；已存在的译文文件会更新，不会重新翻译。"
+    translation_page_export_success: str = "译文文件已写入：{PATH}"
+    translation_page_export_preparing: str = "翻译任务仍在准备中，请稍后再写入译文文件。"
+    proofreading_hook_group_hint: str = '补漏译文（含带标记的补充抽取）；校对后写回来源文件并更新 replace_text_auto.rpy。'
+    translation_reuse_hook_updated: str = '已同步生成 replace_text_auto.rpy（仅包含补充替换与独立补漏译文）。'
+    translation_reuse_summary: str = "可复用 {reusable} 条，冲突 {conflicts} 条，已一致 {existing} 条，无可复用旧译文 {unmatched} 条"
+    translation_reuse_unmatched_hint: str = "无可复用旧译文：旧译文为空、与原文相同，或没有对应条目；不代表写入失败。"
     translation_page_reinject_cache_no_cache: str = "未找到缓存数据，请先翻译"
     translation_page_timer: str = "请设置延迟启动前要等待的时间"
     translation_page_preflight_missing_assets_title: str = "当前项目没有可用资产"
@@ -367,6 +425,7 @@ class LocalizerZH():
     proofreading_page_export: str = "导出"
     proofreading_page_search: str = "搜索"
     proofreading_page_filter: str = "筛选"
+    proofreading_page_current_view: str = "当前视图"
     proofreading_page_retranslate: str = "重新翻译"
     proofreading_page_confirm_translation: str = "确认译文无误"
     proofreading_page_confirm_selected_translations: str = "确认选中译文无误"
@@ -385,6 +444,11 @@ class LocalizerZH():
     proofreading_page_col_status: str = "状态"
     proofreading_page_no_cache: str = "未找到缓存文件，请先执行翻译任务"
     proofreading_page_load_failed: str = "缓存文件读取失败"
+    proofreading_page_cache_missing: str = "未找到完整翻译缓存，请先完成一键翻译或检查输出目录"
+    proofreading_page_cache_invalid: str = "翻译缓存格式损坏，请重新执行翻译后再进行校对"
+    proofreading_page_cache_mismatch: str = "无法载入翻译缓存，请确认项目路径和输出目录一致"
+    proofreading_page_cache_access_denied: str = "无法访问翻译缓存，请检查目录权限和磁盘空间"
+    proofreading_page_cache_load_error: str = "校对缓存载入失败，请检查项目路径后重试"
     proofreading_page_save_failed: str = "保存失败"
     proofreading_page_retranslate_confirm: str = "确定要重新翻译此条目吗？"
     proofreading_page_retranslate_failed: str = "翻译失败，请重试"
@@ -489,11 +553,11 @@ class LocalizerZH():
     agent_page_empty_description: str = "当前会话尚无内容"
     agent_page_suggestion_project: str = "检查项目并告诉我下一步"
     agent_page_suggestion_rpa: str = "列出项目中的 RPA 文件"
-    agent_page_suggestion_errors: str = "扫描项目脚本错误"
+    agent_page_suggestion_errors: str = "扫描译文脚本错误"
     agent_page_suggestion_old_new: str = "优化未生效的 old/new 译文"
     agent_page_suggestion_project_desc: str = "汇总解包、翻译、资产与质量状态"
     agent_page_suggestion_rpa_desc: str = "列出 game 目录中的 RPA 归档文件"
-    agent_page_suggestion_errors_desc: str = "扫描常见脚本错误，不修改任何文件"
+    agent_page_suggestion_errors_desc: str = "扫描当前语言翻译目录中的生成 .rpy，不修改任何文件"
     agent_page_suggestion_old_new_desc: str = "翻译完成后生成运行时替换补丁"
     agent_page_tool_expand: str = "查看详情"
     agent_page_tool_running: str = "执行中"
@@ -505,9 +569,9 @@ class LocalizerZH():
     agent_page_tool_get_project_info: str = "读取项目信息"
     agent_page_tool_inspect_translation_project: str = "检查项目翻译状态"
     agent_page_tool_list_rpa_files: str = "查找 RPA 文件"
-    agent_page_tool_scan_script_errors: str = "扫描脚本错误"
+    agent_page_tool_scan_script_errors: str = "扫描译文脚本错误"
     agent_page_tool_unpack_rpa_files: str = "解包 RPA 文件"
-    agent_page_tool_optimize_old_new_translations: str = "优化 old/new 译文"
+    agent_page_tool_optimize_old_new_translations: str = "生成补充兜底补丁"
     agent_page_action_open_translation: str = "进入翻译页面"
     agent_page_action_one_key_translate: str = "一键开始翻译"
     agent_page_action_continue_translation: str = "继续翻译"
@@ -522,11 +586,11 @@ class LocalizerZH():
         "即将解包当前项目中的 {count} 个 RPA 文件：\n{game_dir}\n\n"
         "解包结果会直接写入 game 目录，并可能覆盖同名文件；原 RPA 文件会保留。是否继续？"
     )
-    agent_page_old_new_confirmation_title: str = "确认生成 old/new 替换补丁"
+    agent_page_old_new_confirmation_title: str = "确认生成补充翻译兜底"
     agent_page_old_new_confirmation: str = (
         "当前语言目录：\n{tl_dir}\n\n"
-        "有效 old/new：{old_new_count} 条\n"
-        "合并现有补漏：{supplement_count} 条\n"
+        "补充抽取译文：{old_new_count} 条\n"
+        "独立补漏译文：{supplement_count} 条\n"
         "最终替换：{total_count} 条\n"
         "跳过冲突原文：{conflict_count} 条\n\n"
         "将按原文从长到短生成运行时替换代码：\n{output_path}\n\n"
@@ -545,6 +609,7 @@ class LocalizerZH():
     agent_page_copy: str = "复制"
     agent_page_copied: str = "已复制到剪贴板"
     agent_page_stopped_hint: str = "已停止生成"
+    agent_page_scroll_latest: str = "回到最新消息"
     agent_page_platform_changed_hint: str = "已切换 Agent 接口，当前会话上下文仍属于原接口；如需全新上下文请点击「新任务」。"
     agent_page_tool_detail_truncated: str = "结果过长，仅显示前 {shown} 个字符（共 {total} 个），完整内容见悬停提示。"
 
@@ -564,15 +629,15 @@ class LocalizerZH():
         "列出当前项目 game 目录中的 RPA 文件。目录由服务端配置注入。"
     )
     agent_tool_scan_script_errors_description: str = (
-        "扫描当前项目 game 目录中的 Ren'Py 脚本错误，不修改文件。"
+        "扫描当前项目当前语言翻译目录中的生成 .rpy 错误，不检查源代码，不修改文件。"
     )
     agent_tool_unpack_rpa_files_description: str = (
         "解包当前项目 game 目录中的全部 RPA 文件。目录由服务端注入，"
         "执行前必须由用户确认同名文件覆盖风险，原 RPA 文件始终保留。"
     )
     agent_tool_optimize_old_new_translations_description: str = (
-        "翻译完成后，读取当前语言目录的有效 old/new 译文，按原文从长到短生成 "
-        "replace_text 运行时补丁，以覆盖追加攻略文本、颜色标签等导致的完整字符串失配。"
+        "翻译完成后，读取当前语言目录中带补充抽取标记的译文，按原文从长到短生成 "
+        "replace_text 运行时兜底；官方抽取的 old/new 不参与。"
     )
     agent_project_inspection_complete: str = (
         "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
@@ -585,6 +650,7 @@ class LocalizerZH():
     agent_inspection_action_start_translation: str = "进入翻译页面开始翻译"
     agent_inspection_action_continue_translation: str = "继续未完成的翻译"
     agent_inspection_action_review_quality: str = "先处理翻译质量问题"
+    agent_inspection_action_refresh_replace_fallback: str = "重新生成 replace_text 兜底补丁"
     agent_inspection_action_review_translation: str = "检查并应用翻译结果"
     agent_inspection_action_check_project_files: str = "检查项目目录中是否有可处理脚本"
     agent_system_prompt: str = (
@@ -601,7 +667,8 @@ class LocalizerZH():
         "不要在回复中重复用文字询问。回复不要使用 Emoji 或彩色 Unicode 状态图标，"
         "状态和操作图标由界面统一显示。"
         "翻译本身由翻译页面完成，不要使用 Agent 重新翻译；翻译已应用后，只有用户要求修复运行时"
-        "未生效的 old/new、选项攻略尾注或颜色标记时，才调用 optimize_old_new_translations，且必须确认。"
+        "补充抽取文本未生效，或体检返回 REFRESH_REPLACE_FALLBACK 且用户要求执行建议时，"
+        "才调用 optimize_old_new_translations，且必须确认。"
         "工具结果中的完整详情由界面展示，你的回复只总结关键结果。"
     )
 
@@ -647,8 +714,9 @@ class LocalizerZH():
     agent_unpack_project_changed: str = "项目目录已变化，请重新确认后再试。"
     agent_unpack_complete: str = "RPA 解包完成，共处理 {count} 个归档；原 RPA 文件已保留。"
     agent_unpack_failed: str = "RPA 解包失败，请查看日志了解详情。"
-    agent_old_new_translation_not_found: str = "当前语言目录没有找到可用于优化的有效 old/new 译文。"
-    agent_old_new_optimization_complete: str = "old/new 运行时替换补丁已生成，共 {count} 条：{output_path}"
+    agent_old_new_translation_not_found: str = "当前语言目录没有找到已翻译的补充抽取条目。"
+    agent_old_new_optimization_complete: str = "补充翻译运行时兜底已生成，共 {count} 条：{output_path}"
+    agent_old_new_stale_hook_removed: str = "已清理没有补充译文支撑的旧 replace_text 补丁：{output_path}"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
@@ -1401,11 +1469,6 @@ class LocalizerZH():
     onekey_injects_bundled_ui_translations_start_save_settings: str = (
         '自动注入预置的 UI 翻译（开始、保存、设置等）。\n如果你已有自定义 UI 翻译，请取消勾选。'
     )
-    onekey_extract_translate_hidden_built_text_creates_renpybox: str = '提取游戏内置隐藏文本并翻译（生成 renpybox_bytecode_strings.rpy）'
-    onekey_some_player_visible_text_embedded_compiled_files: str = (
-        "游戏中部分玩家可见文本写死在程序文件里，Ren'Py 官方抽取识别不到。\n勾选后会自动找出这些隐藏文本，作为普通翻译条目一并翻译（写入 tl/<语言>/renpybox_byt"
-        'ecode_strings.rpy）。\n不勾选则这些文本不纳入标准翻译，翻译时容易漏掉，需要之后靠补全功能兜底。'
-    )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = '对未翻译的大写缩写做二次确认（会额外消耗额度）'
     onekey_clear_skipped_candidates: str = '清除判定不译清单'
     onekey_click_extract_text_begin_existing_translations_preserved: str = '直接点击“开始提取文本”即可，完成后进入翻译。如果已有翻译，默认会保留。'
@@ -1444,6 +1507,7 @@ class LocalizerZH():
     )
     onekey_skip_translation: str = '跳过翻译 →'
     onekey_review_export_post_process: str = '检查、导出与后处理'
+    onekey_apply_translation_5: str = '应用生效'
     onekey_select_game_folder: str = '选择游戏目录'
     onekey_no_extractable_files_found: str = '未检测到可提取的文件'
     onekey_extracting_text_game_creating_translation_files: str = '正在从游戏中提取文本并生成翻译文件，请稍候。'
@@ -1528,6 +1592,8 @@ class LocalizerZH():
     )
     onekey_start_translation_2: str = '开始翻译 →'
     onekey_extraction_completed_character_names_variable_references_scanned: str = '提取完成，已自动扫描角色名和变量引用'
+    onekey_character_scan_in_background: str = '正在后台扫描角色名和变量引用，完成后会提示。'
+    onekey_character_scan_failed: str = '角色名扫描未完成：{message}'
     onekey_extraction_failed: str = '✗ 提取遇到问题'
     onekey_error_select_extract_again_if_still_fails: str = (
         '错误信息：{msg}\n\n建议先点"重新抽取"。如仍失败，可跳过直接翻译，或检查路径/权限后再试。'
@@ -1634,9 +1700,9 @@ class LocalizerZH():
     pack_unpack_select_game_folder_project_root_launcher_exe: str = '选择 game 目录（或根目录/启动程序 .exe）'
     pack_unpack_overwrite_existing_rpy_files_unrpyc_clobber: str = '覆盖已存在的 .rpy (unrpyc --clobber)'
     pack_unpack_direct_decompilation_unren_uses_game_s_python: str = '直接反编译（UnRen：使用游戏自带 python，无需启动游戏）'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = '优先使用 UnRen 执行反编译，失败再尝试 unrpyc'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = '优先使用匹配版本的 unrpyc，失败再用 UnRen 兜底'
     pack_unpack_decompile: str = '反编译'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = '优先使用 UnRen 反编译，失败再尝试 unrpyc v2'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = '优先使用匹配版本的 unrpyc，失败再用 UnRen 兜底'
     pack_unpack_clean_rpyc_files: str = '清理 RPYC 文件'
     pack_unpack_delete_rpyc_files_have_matching_decompiled_rpy: str = '删除 game 目录内已成功反编译的 RPYC 文件'
     pack_unpack_select_game_folder: str = '选择 game 目录'
@@ -1671,6 +1737,7 @@ class LocalizerZH():
     pack_unpack_cancelling_after_current_part_finishes_writing: str = '正在取消，当前分包写完后停止...'
     pack_unpack_no_rpa_files_found_external_tools_unren: str = '未找到 RPA 文件，或外部工具/UnRen 不可用'
     pack_unpack_decompiling_unren: str = '正在使用 UnRen 反编译…'
+    pack_unpack_decompiling_unrpyc: str = '正在使用匹配版本的 unrpyc 反编译…'
     pack_unpack_decompilation_complete_generated_rpy_files: str = '反编译完成，已生成 .rpy 文件'
     pack_unpack_unren_failed: str = '（UnRen 失败：{unren_error}）'
     pack_unpack_skipped_file_s_without_matching_rpy_files: str = '，跳过 {skipped} 个未找到同名 .rpy 的文件'
@@ -1815,13 +1882,16 @@ class LocalizerZH():
     workbench_character_sync_source: str = '角色同步来源：{payload_get_source_summary}'
     workbench_character_sync_complete_new_drafts_ready_review: str = '角色同步完成，共新增 {added} 张待确认草稿。'
     workbench_manage_worldbuilding_character_profiles_prompt_context_current: str = '在这里维护当前输出项目的世界观、人设和提示词上下文，并可手动触发 AI 生成草稿。'
-    workbench_current_project_summary: str = '当前项目摘要'
-    workbench_single_view_current_api_paths_workbench_state: str = '这里聚合当前接口、路径、工作台状态和草稿状态，作为主入口总览。'
-    workbench_analysis_shortcuts: str = '分析与跳转'
-    workbench_generate_ai_drafts_demand_current_scope_then: str = '默认手动触发 AI 生成；支持先当前范围，再扩展到全项目重分析。'
+    workbench_current_project_summary: str = '当前项目资产摘要'
+    workbench_single_view_current_api_paths_workbench_state: str = '集中单屏掌握当前接口、模型、语言对与工作台资产状态。'
+    workbench_analysis_shortcuts: str = 'AI 提炼与分析动作'
+    workbench_generate_ai_drafts_demand_current_scope_then: str = '按当前待译范围或全量工程自动生成人设草稿，并提供快捷联动。'
     workbench_generate_current_scope_drafts: str = '生成当前范围草稿'
     workbench_reanalyze_full_project: str = '扩展到全项目重分析'
-    workbench_sync_character_names: str = '同步角色名'
+    workbench_sync_character_names: str = '扫描项目角色'
+    workbench_character_details: str = "角色资料"
+    workbench_more_settings: str = "更多世界观设定"
+    workbench_more_character_details: str = "别名、匹配与台词"
     workbench_apply_all_drafts: str = '应用全部草稿'
     workbench_apply_all_and_enable: str = '应用全部并启用'
     workbench_import_as_drafts: str = '导入为待审核'
@@ -1831,9 +1901,17 @@ class LocalizerZH():
     workbench_open_local_glossary: str = '打开本地词库'
     workbench_open_do_not_translate_list: str = '打开禁翻表'
     workbench_open_custom_prompts: str = '打开自定义提示词'
+    workbench_progress_loading: str = '正在读取项目文本并扫描角色候选…'
+    workbench_progress_worldbook: str = '正在生成世界观草稿，等待模型回复…'
+    workbench_progress_worldbook_done: str = '世界观草稿已生成并解析完成。'
+    workbench_progress_no_characters: str = '没有找到可生成草稿的角色候选。'
+    workbench_progress_characters: str = '角色卡第 {batch}/{total} 批，等待模型回复：{names}'
+    workbench_progress_characters_done: str = '已处理 {count} 张角色草稿。'
+    workbench_progress_elapsed: str = '已用时间：{minutes} 分 {seconds} 秒'
+    workbench_progress_complete: str = '分析完成：世界观草稿 {worlds} 份，角色草稿 {count} 张。请检查并应用。'
     workbench_ready: str = '等待操作'
     workbench_worldbuilding: str = '世界观设定'
-    workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = '左侧维护正式世界观，右侧查看 AI 草稿与原始响应预览。'
+    workbench_edit_approved_worldbuilding_left_review_ai_drafts: str = '填写背景与翻译风格；也可生成 AI 草稿，确认后应用。'
     workbench_inject_worldbuilding_context: str = '启用世界观上下文注入'
     workbench_approved_worldbuilding: str = '正式世界观'
     workbench_content_inserted_directly_generated_prompts: str = '这些内容会直接进入提示词构建。'
@@ -1845,7 +1923,7 @@ class LocalizerZH():
     workbench_generated_worldbuilding_drafts_appear_here: str = '生成后在这里查看世界观草稿。'
     workbench_if_parsing_fails_raw_model_response_appears: str = '解析失败时，这里会显示模型原始响应。'
     workbench_character_card_workbench: str = '角色卡工作台'
-    workbench_browse_characters_left_edit_approved_cards_center: str = '左侧角色列表，中间正式角色卡，右侧 AI 草稿与原始响应。'
+    workbench_browse_characters_left_edit_approved_cards_center: str = '先扫描项目角色，再按名字查找；选中角色查看资料或审核草稿。'
     workbench_inject_character_card_context: str = '启用角色卡上下文注入'
     workbench_generate_all_character_cards: str = '整批生成角色卡'
     workbench_regenerate_current_character: str = '重新生成当前角色'
@@ -1854,8 +1932,10 @@ class LocalizerZH():
     workbench_add_blank_character_card: str = '新增空白角色卡'
     workbench_delete_current_character: str = '删除当前角色'
     workbench_character_list: str = '角色列表'
-    workbench_synced_character_candidates_added_here_review: str = '同步角色名后，会把候选角色预填到这里。'
-    workbench_search_characters: str = '搜索角色名、别名或关键词'
+    workbench_synced_character_candidates_added_here_review: str = '扫描无需 AI；确认角色后，可手动补充资料或用 AI 生成。'
+    workbench_character_empty: str = '暂无角色。先扫描项目角色；若仍为空，请确认项目目录，解包或反编译脚本后重试，也可手动新增。'
+    workbench_character_no_match: str = '没有匹配角色，请清空搜索或切换到“全部”。'
+    workbench_search_characters: str = '搜索角色名、译名或别名'
     workbench_filter_all: str = '全部'
     workbench_filter_pending: str = '待审核'
     workbench_filter_applied: str = '已应用'
@@ -1903,6 +1983,10 @@ class LocalizerZH():
     workbench_project_folder: str = '项目目录'
     workbench_tl_folder: str = 'TL 目录'
     workbench_draft_status: str = '草稿状态'
+    workbench_cache_status: str = '缓存状态'
+    workbench_cache_sqlite: str = 'SQLite 缓存 · {item_count} 条'
+    workbench_cache_json: str = 'JSON 缓存 · {item_count} 条'
+    workbench_cache_unreadable: str = '缓存读取失败'
     workbench_project_name: str = '项目名'
     workbench_genre: str = '类型'
     workbench_setting_summary: str = '背景摘要'
@@ -2035,6 +2119,8 @@ class LocalizerZH():
     toolbox_group_translate: str = "翻译方式"
     toolbox_group_asset: str = "资源与词表"
     toolbox_group_engineer: str = "工程与修复"
+    toolbox_page_header_description: str = "集中管理翻译流程、文本处理、术语资产与工程辅助工具"
+    toolbox_group_count: str = "{COUNT} 款工具"
     toolbox_tool_continue_translation_title: str = '继续翻译'
     toolbox_tool_continue_translation_description: str = '检测到上次未完成的翻译任务'
     toolbox_tool_one_key_translate_title: str = '一键翻译'
@@ -2076,7 +2162,7 @@ class LocalizerZH():
     toolbox_tool_pack_unpack_title: str = '解包/打包'
     toolbox_tool_pack_unpack_description: str = '解包 RPA 文件或打包游戏资源'
     toolbox_tool_error_repair_title: str = '错误修复'
-    toolbox_tool_error_repair_description: str = '扫描并修复常见脚本错误'
+    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录中生成的 .rpy 错误'
     toolbox_tool_translation_reuse_title: str = '更新翻译复用'
     toolbox_tool_translation_reuse_description: str = '按原文将旧译文安全填入新版本的空条目'
     toolbox_tool_formatter_title: str = '代码格式化'

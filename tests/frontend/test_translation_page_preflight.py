@@ -236,6 +236,32 @@ def test_quality_update_preserves_translation_dashboard_progress() -> None:
     )]
 
 
+def test_partial_translation_update_preserves_eta_progress() -> None:
+    """请求准备阶段的局部事件不能清空剩余时间所需的进度字段。"""
+    page = SimpleNamespace(
+        data={
+            "start_time": 100,
+            "time": 120,
+            "line": 20,
+            "total_line": 100,
+            "total_output_tokens": 300,
+        },
+        runtime_status_updated=_RuntimeSignalStub(),
+    )
+
+    TranslationPage.translation_update(
+        page,
+        Base.Event.TRANSLATION_UPDATE,
+        {"phase": "preparing", "message": "生成任务中…"},
+    )
+
+    assert page.data["start_time"] == 100
+    assert page.data["line"] == 20
+    assert page.data["total_line"] == 100
+    assert page.data["phase"] == "preparing"
+    assert page.runtime_status_updated.events == []
+
+
 def test_quality_status_uses_explicit_task_name(monkeypatch) -> None:
     strings = SimpleNamespace(
         translation_page_status_polishing = "AI 润色中",

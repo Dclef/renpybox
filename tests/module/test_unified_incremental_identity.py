@@ -1264,7 +1264,6 @@ def test_regular_extract_restores_tl_on_failure(tmp_path, monkeypatch):
         lambda *args, **kwargs: None,
     )
     extractor._append_static_supplement_entries = lambda *args, **kwargs: 0
-    extractor._append_compiled_supplement_entries = lambda *args, **kwargs: 0
 
     result = extractor.extract_regular(game_dir, "chinese", exe_path=None, use_official=False)
 

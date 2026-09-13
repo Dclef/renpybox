@@ -179,10 +179,7 @@ class TranslationReusePage(Base, QWidget):
         self.execute_button.setEnabled(not running)
 
     def _format_result(self, result: TranslationReuseResult) -> str:
-        summary = Localizer.localize(
-            "可复用 {reusable} 条，冲突 {conflicts} 条，已一致 {existing} 条，无法匹配 {unmatched} 条",
-            "Reusable: {reusable}; conflicts: {conflicts}; already matched: {existing}; unmatched: {unmatched}",
-        ).format(
+        summary = Localizer.get().translation_reuse_summary.format(
             reusable=result.reusable_entries,
             conflicts=result.conflicts,
             existing=result.already_reused,
@@ -192,6 +189,10 @@ class TranslationReusePage(Base, QWidget):
             summary = Localizer.localize("已写入 {count} 条。", "Applied {count}. ").format(
                 count=result.applied_entries
             ) + summary
+        if result.hook_updated:
+            summary += "\n" + Localizer.get().translation_reuse_hook_updated
+        if result.unmatched_entries:
+            summary += "\n" + Localizer.get().translation_reuse_unmatched_hint
         if result.backup_path is not None:
             summary += Localizer.localize("\n备份: {path}", "\nBackup: {path}").format(path=result.backup_path)
         return summary

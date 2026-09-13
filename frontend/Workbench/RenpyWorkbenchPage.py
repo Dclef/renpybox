@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import copy
 import json
+import sqlite3
+from contextlib import closing
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
+    QBoxLayout,
     QFileDialog,
+    QFrame,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QListWidgetItem,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -24,15 +31,16 @@ from qfluentwidgets import (
     CardWidget,
     CheckBox,
     FluentIcon as FIF,
+    FlowLayout,
     InfoBar,
     LineEdit,
     ListWidget,
     MessageBox,
-    PillPushButton,
     PlainTextEdit,
     PrimaryPushButton,
     PushButton,
     SearchLineEdit,
+    SegmentedWidget,
     SingleDirectionScrollArea,
     StrongBodyLabel,
     TitleLabel,
@@ -44,6 +52,7 @@ from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Localizer.Localizer import Localizer
 from module.PromptBuilder import PromptBuilder
+from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError, WorkbenchAnalysisService
 from module.Workbench.CharacterScanner import CharacterScanner
 from module.Workbench.WorkbenchData import (
@@ -61,7 +70,8 @@ from module.Workbench.WorkbenchData import (
     normalize_worldbook,
     parse_workbench_exchange,
 )
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget, set_text_role
+from widget.QuietPillButton import QuietPillButton
 
 
 
@@ -69,10 +79,11 @@ from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
 class _WorkbenchSignals(QObject):
     """跨线程 UI 信号。"""
 
+    task_progress = pyqtSignal(object)
     analysis_success = pyqtSignal(object)
     analysis_failed = pyqtSignal(object)
     sync_success = pyqtSignal(object)
-    sync_failed = pyqtSignal(str)
+    sync_failed = pyqtSignal(object)
 
 
 class RenpyWorkbenchPage(Base, QWidget):
@@ -88,11 +99,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.analysis_service = WorkbenchAnalysisService()
         self.character_scanner = CharacterScanner()
         self.signals = _WorkbenchSignals()
+        self.signals.task_progress.connect(self._on_task_progress)
         self.signals.analysis_success.connect(self._on_analysis_success)
         self.signals.analysis_failed.connect(self._on_analysis_failed)
         self.signals.sync_success.connect(self._on_sync_success)
         self.signals.sync_failed.connect(self._on_sync_failed)
 
+        self._task_started_at = None
+        self._task_elapsed_timer = QTimer(self)
+        self._task_elapsed_timer.setInterval(1000)
+        self._task_elapsed_timer.timeout.connect(self._update_task_elapsed)
         self._loading_ui = False
         self._analysis_running = False
         self._sync_running = False
@@ -103,6 +119,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         self._config_snapshot: Config | None = None
         self._skip_next_show_refresh = True
         self._character_filter_mode = "all"
+        self._compact_layout = None
+        self._action_rows: list[QBoxLayout] = []
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -132,16 +150,41 @@ class RenpyWorkbenchPage(Base, QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        root.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        header = QWidget(self)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(24, 24, 24, 12)
-        header_layout.setSpacing(10)
-        header_layout.addWidget(TitleLabel(Localizer.get().workbench_character_worldbuilding_workbench))
+        self.workspace = QWidget(self)
+        self.workspace.setObjectName("workbenchWorkspace")
+        self.workspace.setMaximumWidth(1400)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        workspace_layout = QVBoxLayout(self.workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+
+        header = QWidget(self.workspace)
+        header_layout = QBoxLayout(QBoxLayout.LeftToRight, header)
+        self.header_layout = header_layout
+        header_layout.setContentsMargins(24, 18, 24, 8)
+        header_layout.setSpacing(16)
+        header_text = QWidget(header)
+        header_text_layout = QVBoxLayout(header_text)
+        header_text_layout.setContentsMargins(0, 0, 0, 0)
+        header_text_layout.setSpacing(2)
+        title = TitleLabel(Localizer.get().workbench_character_worldbuilding_workbench)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title.setFont(title_font)
+        title.setWordWrap(True)
+        header_text_layout.addWidget(title)
         sub = CaptionLabel(Localizer.get().workbench_manage_worldbuilding_character_profiles_prompt_context_current)
         sub.setWordWrap(True)
-        header_layout.addWidget(sub)
-        root.addWidget(header)
+        set_text_role(sub)
+        header_text_layout.addWidget(sub)
+        header_layout.addWidget(header_text, 1)
+        self.header_actions = QHBoxLayout()
+        self.header_actions.setContentsMargins(0, 0, 0, 0)
+        self.header_actions.setSpacing(8)
+        header_layout.addLayout(self.header_actions)
+        workspace_layout.addWidget(header)
 
         self.tab_group = QButtonGroup(self)
         self.tab_group.setExclusive(True)
@@ -150,7 +193,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         tab_layout.setContentsMargins(24, 0, 24, 12)
         tab_layout.setSpacing(8)
 
-        self.tab_buttons: dict[str, PillPushButton] = {}
+        self.tab_buttons: dict[str, QuietPillButton] = {}
         self.panel_order = [
             ("overview", Localizer.get().workbench_overview),
             ("worldbook", Localizer.get().workbench_worldbuilding_2),
@@ -158,7 +201,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             ("preview", Localizer.get().workbench_prompt_preview),
         ]
         for idx, (key, text) in enumerate(self.panel_order):
-            button = PillPushButton(text, self)
+            button = QuietPillButton(text, self)
             button.setCheckable(True)
             button.clicked.connect(lambda checked = False, value = key: self.switch_panel(value))
             self.tab_group.addButton(button)
@@ -167,16 +210,53 @@ class RenpyWorkbenchPage(Base, QWidget):
             if idx == 0:
                 button.setChecked(True)
         tab_layout.addStretch(1)
-        root.addWidget(tab_row)
+        workspace_layout.addWidget(tab_row)
 
         self.stack = QStackedWidget(self)
-        root.addWidget(self.stack, 1)
+        workspace_layout.addWidget(self.stack, 1)
 
         self.stack.addWidget(self._wrap_scroll(self._build_overview_panel()))
         self.stack.addWidget(self._wrap_scroll(self._build_worldbook_panel()))
         self.stack.addWidget(self._wrap_scroll(self._build_character_panel()))
         self.stack.addWidget(self._wrap_scroll(self._build_preview_panel()))
+        workspace_layout.insertWidget(2, self.task_status_surface)
         self.switch_panel("overview")
+        root.addWidget(self.workspace, 1)
+        self._update_responsive_layout()
+
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "preview_grid"):
+            self._update_responsive_layout()
+
+    def _update_responsive_layout(self) -> None:
+        compact = self.width() < 900
+        if self._compact_layout == compact:
+            return
+        self._compact_layout = compact
+        direction = QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight
+        self.header_layout.setDirection(direction)
+        for row in self._action_rows:
+            row.setDirection(direction)
+        for splitter, widths in (
+            (self.worldbook_splitter, [640, 420]),
+            (self.character_splitter, [240, 820]),
+        ):
+            splitter.setOrientation(Qt.Vertical if compact else Qt.Horizontal)
+            splitter.setSizes(
+                [splitter.widget(index).sizeHint().height() for index in range(splitter.count())]
+                if compact else widths
+            )
+        for column in range(3):
+            self.preview_grid.setColumnStretch(column, 0 if compact and column else (13 if column == 2 else 10))
+        for index, (label, edit) in enumerate(zip(
+            self.preview_labels,
+            (self.preview_world_context, self.preview_character_context, self.preview_final_context),
+        )):
+            self.preview_grid.removeWidget(label)
+            self.preview_grid.removeWidget(edit)
+            self.preview_grid.addWidget(label, index * 2 if compact else 0, 0 if compact else index)
+            self.preview_grid.addWidget(edit, index * 2 + 1 if compact else 1, 0 if compact else index)
 
     def _wrap_scroll(self, content: QWidget) -> QWidget:
         """为面板包装滚动区域。"""
@@ -198,9 +278,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         card = CardWidget(self)
         mark_toolbox_widget(card)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-        layout.addWidget(StrongBodyLabel(title))
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        title_label = StrongBodyLabel(title)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
         if description:
             desc = CaptionLabel(description)
             desc.setWordWrap(True)
@@ -237,9 +319,13 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_current_project_summary,
             Localizer.get().workbench_single_view_current_api_paths_workbench_state,
         )
-        summary_grid = QGridLayout()
-        summary_grid.setHorizontalSpacing(18)
-        summary_grid.setVerticalSpacing(10)
+        summary_surface = QWidget(summary_card)
+        summary_surface.setObjectName("workbenchSummarySurface")
+        summary_surface.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        summary_grid = QGridLayout(summary_surface)
+        summary_grid.setContentsMargins(14, 10, 14, 10)
+        summary_grid.setHorizontalSpacing(16)
+        summary_grid.setVerticalSpacing(8)
         self.summary_labels: dict[str, BodyLabel] = {}
         summary_items = [
             ("platform", Localizer.get().workbench_current_api),
@@ -248,28 +334,39 @@ class RenpyWorkbenchPage(Base, QWidget):
             ("input_folder", Localizer.get().workbench_input_folder),
             ("output_folder", Localizer.get().workbench_output_folder),
             ("project_root", Localizer.get().workbench_project_folder),
-            ("tl_folder", Localizer.get().workbench_tl_folder),
             ("worldbook", Localizer.get().workbench_worldbuilding_2),
             ("characters", Localizer.get().workbench_character_cards),
             ("drafts", Localizer.get().workbench_draft_status),
+            ("cache", Localizer.get().workbench_cache_status),
         ]
         for index, (key, text) in enumerate(summary_items):
-            title = CaptionLabel(text)
-            value = BodyLabel("—")
-            value.setWordWrap(True)
+            row_widget = QFrame(summary_surface)
+            row_widget.setObjectName("workbenchSummaryRow")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 5, 0, 5)
+            row_layout.setSpacing(8)
+            title = CaptionLabel(text, row_widget)
+            title.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+            value = BodyLabel("—", row_widget)
+            value.setWordWrap(False)
+            # 长路径允许被省略，但仍须分到标题之外的可见宽度。
+            value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(title, 0)
+            row_layout.addWidget(value, 1)
             row = index // 2
-            col = (index % 2) * 2
-            summary_grid.addWidget(title, row, col)
-            summary_grid.addWidget(value, row, col + 1)
+            col = index % 2
+            summary_grid.addWidget(row_widget, row, col)
             self.summary_labels[key] = value
-        summary_layout.addLayout(summary_grid)
+        summary_layout.addWidget(summary_surface)
         layout.addWidget(summary_card)
 
         action_card, action_layout = self._create_card(
             Localizer.get().workbench_analysis_shortcuts,
             Localizer.get().workbench_generate_ai_drafts_demand_current_scope_then,
         )
-        action_row = QHBoxLayout()
+        action_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self._action_rows.append(action_row)
         action_row.setSpacing(10)
         self.btn_generate_current = PushButton(Localizer.get().workbench_generate_current_scope_drafts)
         self.btn_generate_current.clicked.connect(lambda: self._start_analysis("all", ANALYSIS_SCOPE_CURRENT))
@@ -281,12 +378,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_apply_all.clicked.connect(self._apply_all_drafts)
         action_row.addWidget(self.btn_generate_current)
         action_row.addWidget(self.btn_generate_full)
-        action_row.addWidget(self.btn_sync_characters)
-        action_row.addWidget(self.btn_apply_all)
         action_row.addStretch(1)
         action_layout.addLayout(action_row)
 
-        shortcut_row = QHBoxLayout()
+        shortcut_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self._action_rows.append(shortcut_row)
         shortcut_row.setSpacing(10)
         self.btn_open_glossary = PushButton(Localizer.get().workbench_open_local_glossary)
         self.btn_open_glossary.clicked.connect(self._open_glossary_page)
@@ -300,7 +396,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         shortcut_row.addStretch(1)
         action_layout.addLayout(shortcut_row)
 
-        exchange_row = QHBoxLayout()
+        exchange_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self._action_rows.append(exchange_row)
         exchange_row.setSpacing(10)
         self.btn_import_drafts = PushButton(
             Localizer.get().workbench_import_as_drafts,
@@ -324,17 +421,31 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_clear_characters.clicked.connect(self._clear_current_project_characters)
         exchange_row.addWidget(self.btn_import_drafts)
         exchange_row.addWidget(self.btn_import_apply)
-        exchange_row.addWidget(self.btn_export_assets)
         exchange_row.addWidget(self.btn_clear_characters)
         exchange_row.addStretch(1)
         action_layout.addLayout(exchange_row)
 
         self.overview_status_label = BodyLabel(Localizer.get().workbench_ready)
         self.overview_status_label.setWordWrap(True)
-        action_layout.addWidget(self.overview_status_label)
         self.overview_hint_label = CaptionLabel("")
         self.overview_hint_label.setWordWrap(True)
-        action_layout.addWidget(self.overview_hint_label)
+        status_surface = QWidget(self.workspace)
+        self.task_status_surface = status_surface
+        status_surface.setObjectName("workbenchStatusSurface")
+        status_surface.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        status_layout = QVBoxLayout(status_surface)
+        status_layout.setContentsMargins(24, 7, 24, 10)
+        status_layout.setSpacing(4)
+        status_layout.addWidget(self.overview_status_label, 1)
+        status_layout.addWidget(self.overview_hint_label, 1)
+        self.task_elapsed_label = CaptionLabel(status_surface)
+        self.task_elapsed_label.hide()
+        status_layout.addWidget(self.task_elapsed_label)
+
+        self.btn_export_assets.setFixedHeight(32)
+        self.btn_apply_all.setFixedHeight(32)
+        self.header_actions.addWidget(self.btn_export_assets)
+        self.header_actions.addWidget(self.btn_apply_all)
         layout.addWidget(action_card)
         layout.addStretch(1)
         return panel
@@ -356,16 +467,28 @@ class RenpyWorkbenchPage(Base, QWidget):
         layout.addWidget(header_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setObjectName("worldbookSplitter")
+        self.worldbook_splitter = splitter
+        # 对齐原型 3:2 分栏，避免拖拽时把任一侧收缩为不可用宽度。
+        splitter.setChildrenCollapsible(False)
 
         official_card, official_layout = self._create_card(
             Localizer.get().workbench_approved_worldbuilding,
             Localizer.get().workbench_content_inserted_directly_generated_prompts,
         )
+        # 允许在窗口收缩时继续压缩，避免最小窗口出现横向溢出。
+        official_card.setMinimumWidth(240)
         official_form = QFormLayout()
+        official_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         official_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         official_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         official_form.setHorizontalSpacing(14)
         official_form.setVerticalSpacing(12)
+        self.worldbook_extra_fields = QWidget(official_card)
+        extra_form = QFormLayout(self.worldbook_extra_fields)
+        extra_form.setContentsMargins(0, 0, 0, 0)
+        extra_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        extra_form.setVerticalSpacing(12)
         self.worldbook_widgets: dict[str, QWidget] = {}
         worldbook_specs = [
             ("project_name", Localizer.get().workbench_project_name, False),
@@ -381,21 +504,28 @@ class RenpyWorkbenchPage(Base, QWidget):
         for field, label, multiline in worldbook_specs:
             if multiline:
                 widget = PlainTextEdit(self)
-                widget.setMinimumHeight(88)
+                widget.setFixedHeight(88)
                 widget.textChanged.connect(lambda name = field: self._on_worldbook_field_changed(name))
             else:
                 widget = LineEdit(self)
                 widget.textChanged.connect(lambda text, name = field: self._on_worldbook_field_changed(name))
             self.worldbook_widgets[field] = widget
-            official_form.addRow(BodyLabel(label), widget)
+            form = official_form if field in {"project_name", "genre", "setting_summary", "tone_style"} else extra_form
+            form.addRow(BodyLabel(label), widget)
         official_layout.addLayout(official_form)
+        self.worldbook_more_toggle = CheckBox(Localizer.get().workbench_more_settings, official_card)
+        self.worldbook_more_toggle.toggled.connect(self.worldbook_extra_fields.setVisible)
+        official_layout.addWidget(self.worldbook_more_toggle)
+        official_layout.addWidget(self.worldbook_extra_fields)
+        self.worldbook_extra_fields.hide()
         splitter.addWidget(official_card)
 
         draft_card, draft_layout = self._create_card(
             Localizer.get().workbench_ai_draft_preview,
             Localizer.get().workbench_generated_content_remains_draft_until_you_apply,
         )
-        draft_action_row = QHBoxLayout()
+        draft_card.setMinimumWidth(180)
+        draft_action_row = QVBoxLayout()
         draft_action_row.setSpacing(10)
         self.btn_world_current = PrimaryPushButton(Localizer.get().workbench_generate_current_scope)
         self.btn_world_current.clicked.connect(lambda: self._start_analysis("worldbook", ANALYSIS_SCOPE_CURRENT))
@@ -406,18 +536,22 @@ class RenpyWorkbenchPage(Base, QWidget):
         draft_action_row.addWidget(self.btn_world_current)
         draft_action_row.addWidget(self.btn_world_full)
         draft_action_row.addWidget(self.btn_apply_worldbook)
-        draft_action_row.addStretch(1)
         draft_layout.addLayout(draft_action_row)
 
         self.worldbook_draft_preview = self._create_preview_edit(Localizer.get().workbench_generated_worldbuilding_drafts_appear_here)
         self.worldbook_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears)
         draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.worldbook_draft_preview)
-        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
+        self.worldbook_raw_toggle = CheckBox(Localizer.get().workbench_raw_response_error_preview)
+        self.worldbook_raw_toggle.toggled.connect(self.worldbook_raw_preview.setVisible)
+        draft_layout.addWidget(self.worldbook_raw_toggle)
         draft_layout.addWidget(self.worldbook_raw_preview)
+        self.worldbook_raw_preview.hide()
         splitter.addWidget(draft_card)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
+        # 页面默认内容宽度约为 976px，按 3:2 给出稳定的首屏比例。
+        splitter.setSizes([580, 390])
         layout.addWidget(splitter, 1)
         return panel
 
@@ -436,7 +570,8 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.character_cards_enable.stateChanged.connect(self._on_character_cards_toggle_changed)
         header_layout.addWidget(self.character_cards_enable)
 
-        action_row = QHBoxLayout()
+        action_row = FlowLayout()
+        self.character_actions = action_row
         action_row.setSpacing(10)
         self.btn_character_batch = PushButton(Localizer.get().workbench_generate_all_character_cards)
         self.btn_character_batch.clicked.connect(lambda: self._start_analysis("characters", ANALYSIS_SCOPE_CURRENT))
@@ -453,16 +588,21 @@ class RenpyWorkbenchPage(Base, QWidget):
         action_row.addWidget(self.btn_character_apply)
         action_row.addWidget(self.btn_character_add)
         action_row.addWidget(self.btn_character_delete)
-        action_row.addStretch(1)
         header_layout.addLayout(action_row)
         layout.addWidget(header_card)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setObjectName("characterSplitter")
+        self.character_splitter = splitter
+        # 角色花名册和草稿预览需要保持可读宽度，禁止拖拽折叠。
+        splitter.setChildrenCollapsible(False)
 
         roster_card, roster_layout = self._create_card(
             Localizer.get().workbench_character_list,
             Localizer.get().workbench_synced_character_candidates_added_here_review,
         )
+        roster_card.setMinimumWidth(160)
+        roster_layout.addWidget(self.btn_sync_characters)
         self.character_search_edit = SearchLineEdit(self)
         self.character_search_edit.setPlaceholderText(Localizer.get().workbench_search_characters)
         self.character_search_edit.textChanged.connect(self._apply_character_filters)
@@ -472,19 +612,20 @@ class RenpyWorkbenchPage(Base, QWidget):
         filter_row.setSpacing(6)
         self.character_filter_group = QButtonGroup(self)
         self.character_filter_group.setExclusive(True)
-        self.character_filter_buttons: dict[str, PillPushButton] = {}
+        self.character_filter_buttons: dict[str, QuietPillButton] = {}
         for key, text in (
             ("all", Localizer.get().workbench_filter_all),
             ("pending", Localizer.get().workbench_filter_pending),
             ("applied", Localizer.get().workbench_filter_applied),
         ):
-            button = PillPushButton(text, self)
+            button = QuietPillButton(text, self)
             button.setCheckable(True)
             button.clicked.connect(
                 lambda checked = False, value = key: self._set_character_filter(value)
             )
             self.character_filter_group.addButton(button)
             self.character_filter_buttons[key] = button
+            button.setMinimumWidth(button.sizeHint().width())
             filter_row.addWidget(button)
         self.character_filter_buttons["all"].setChecked(True)
         filter_row.addStretch(1)
@@ -493,19 +634,50 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.character_count_label = CaptionLabel("")
         roster_layout.addWidget(self.character_count_label)
         self.character_list = ListWidget(self)
+        self.character_list.setMinimumHeight(160)
         self.character_list.currentItemChanged.connect(self._on_character_item_changed)
         roster_layout.addWidget(self.character_list, 1)
+        self.character_empty_label = CaptionLabel(Localizer.get().workbench_character_empty, roster_card)
+        self.character_empty_label.setWordWrap(True)
+        roster_layout.addWidget(self.character_empty_label)
         splitter.addWidget(roster_card)
+
+        details = QWidget(splitter)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        self.character_detail_tabs = SegmentedWidget(details)
+        self.character_detail_stack = QStackedWidget(details)
+        for index, (key, title) in enumerate((
+            ("editor", Localizer.get().workbench_character_details),
+            ("draft", Localizer.get().workbench_character_draft_preview),
+        )):
+            self.character_detail_tabs.addItem(
+                key, title,
+                onClick=lambda checked=False, current=index: self.character_detail_stack.setCurrentIndex(current),
+            )
+        self.character_detail_tabs.setCurrentItem("editor")
+        self.character_detail_stack.currentChanged.connect(
+            lambda index: self.character_detail_tabs.setCurrentItem(("editor", "draft")[index])
+        )
+        details_layout.addWidget(self.character_detail_tabs)
+        details_layout.addWidget(self.character_detail_stack, 1)
 
         editor_card, editor_layout = self._create_card(
             Localizer.get().workbench_approved_character_card,
             Localizer.get().workbench_manual_edits_saved_immediately_current_project_assets,
         )
+        editor_card.setMinimumWidth(220)
         editor_form = QFormLayout()
+        editor_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         editor_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         editor_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         editor_form.setHorizontalSpacing(14)
         editor_form.setVerticalSpacing(12)
+        self.character_extra_fields = QWidget(editor_card)
+        extra_form = QFormLayout(self.character_extra_fields)
+        extra_form.setContentsMargins(0, 0, 0, 0)
+        extra_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        extra_form.setVerticalSpacing(12)
         self.character_widgets: dict[str, QWidget] = {}
         char_specs = [
             ("name", Localizer.get().workbench_character_name, False),
@@ -522,16 +694,17 @@ class RenpyWorkbenchPage(Base, QWidget):
         for field, label, multiline in char_specs:
             if multiline:
                 widget = PlainTextEdit(self)
-                widget.setMinimumHeight(78)
+                widget.setFixedHeight(64)
                 widget.textChanged.connect(lambda name = field: self._on_character_field_changed(name))
             else:
                 widget = LineEdit(self)
                 widget.textChanged.connect(lambda text, name = field: self._on_character_field_changed(name))
             self.character_widgets[field] = widget
-            editor_form.addRow(BodyLabel(label), widget)
+            form = extra_form if field in {"aliases", "match_keywords", "relationship_notes", "sample_lines"} else editor_form
+            form.addRow(BodyLabel(label), widget)
 
         toggle_box = QWidget(self)
-        toggle_layout = QHBoxLayout(toggle_box)
+        toggle_layout = QVBoxLayout(toggle_box)
         toggle_layout.setContentsMargins(0, 0, 0, 0)
         toggle_layout.setSpacing(12)
         self.character_enabled_checkbox = CheckBox(Localizer.get().workbench_enable_character_card)
@@ -544,23 +717,34 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         editor_layout.addWidget(toggle_box)
         editor_layout.addLayout(editor_form)
-        splitter.addWidget(editor_card)
+        self.character_more_toggle = CheckBox(Localizer.get().workbench_more_character_details, editor_card)
+        self.character_more_toggle.toggled.connect(self.character_extra_fields.setVisible)
+        editor_layout.addWidget(self.character_more_toggle)
+        editor_layout.addWidget(self.character_extra_fields)
+        self.character_extra_fields.hide()
+        self.character_detail_stack.addWidget(editor_card)
 
         draft_card, draft_layout = self._create_card(
             Localizer.get().workbench_character_draft_preview,
             Localizer.get().workbench_ai_generated_character_drafts_appear_here,
         )
+        draft_card.setMinimumWidth(180)
         self.character_draft_preview = self._create_preview_edit(Localizer.get().workbench_select_character_view_draft_details)
         self.character_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears_2)
         draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.character_draft_preview)
-        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
+        self.character_raw_toggle = CheckBox(Localizer.get().workbench_raw_response_error_preview)
+        self.character_raw_toggle.toggled.connect(self.character_raw_preview.setVisible)
+        draft_layout.addWidget(self.character_raw_toggle)
         draft_layout.addWidget(self.character_raw_preview)
-        splitter.addWidget(draft_card)
+        self.character_raw_preview.hide()
+        self.character_detail_stack.addWidget(draft_card)
+        splitter.addWidget(details)
 
         splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 3)
+        splitter.setStretchFactor(1, 7)
+        # 左侧查找角色，右侧切换资料与草稿，避免三个编辑区同时争抢宽度。
+        splitter.setSizes([240, 820])
         layout.addWidget(splitter, 1)
         return panel
 
@@ -590,18 +774,28 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_preview_how_workbench_context_inserted_final_prompt,
         )
         grid = QGridLayout()
+        self.preview_grid = grid
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(12)
         self.preview_world_context = self._create_preview_edit(Localizer.get().workbench_worldbuilding_context_appears_here)
         self.preview_character_context = self._create_preview_edit(Localizer.get().workbench_matched_character_context_appears_here)
         self.preview_final_context = self._create_preview_edit(Localizer.get().workbench_final_injected_context_appears_here)
-        grid.addWidget(BodyLabel(Localizer.get().workbench_worldbuilding_context), 0, 0)
-        grid.addWidget(self.preview_world_context, 1, 0)
-        grid.addWidget(BodyLabel(Localizer.get().workbench_character_context), 0, 1)
-        grid.addWidget(self.preview_character_context, 1, 1)
+        self.preview_labels = (
+            BodyLabel(Localizer.get().workbench_worldbuilding_context),
+            BodyLabel(Localizer.get().workbench_character_context),
+            BodyLabel(Localizer.get().workbench_final_injected_context),
+        )
+        for index, (label, edit) in enumerate(zip(
+            self.preview_labels,
+            (self.preview_world_context, self.preview_character_context, self.preview_final_context),
+        )):
+            label.setWordWrap(True)
+            grid.addWidget(label, 0, index)
+            grid.addWidget(edit, 1, index)
+        grid.setColumnStretch(0, 10)
+        grid.setColumnStretch(1, 10)
+        grid.setColumnStretch(2, 13)
         preview_layout.addLayout(grid)
-        preview_layout.addWidget(BodyLabel(Localizer.get().workbench_final_injected_context))
-        preview_layout.addWidget(self.preview_final_context)
         layout.addWidget(preview_card)
         layout.addStretch(1)
         return panel
@@ -689,9 +883,10 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _refresh_summary(self, config: Config) -> None:
         """刷新摘要。"""
+        localizer = Localizer.get()
         platform = config.get_platform(config.activate_platform)
-        not_configured = Localizer.get().workbench_not_configured
-        not_set = Localizer.get().workbench_not_set
+        not_configured = localizer.workbench_not_configured
+        not_set = localizer.workbench_not_set
         platform_name = normalize_text(platform.get("name", "")) if platform else not_configured
         model_name = normalize_text(platform.get("model", "")) if platform else not_configured
         worldbook = normalize_worldbook(getattr(config, "renpy_workbench_worldbook_data", {}))
@@ -729,17 +924,48 @@ class RenpyWorkbenchPage(Base, QWidget):
             "project_root": str(resolved_project_root) if resolved_project_root else (normalize_text(config.renpy_game_folder) or not_set),
             "tl_folder": normalize_text(config.renpy_tl_folder) or not_set,
             "worldbook": world_ready,
-            "characters": Localizer.get().workbench_total_enabled.format(cards_count=len(cards), enabled_cards=enabled_cards),
+            "characters": localizer.workbench_total_enabled.format(cards_count=len(cards), enabled_cards=enabled_cards),
             "drafts": draft_text,
+            "cache": self._cache_summary(config),
         }
         for key, value in summary.items():
             label = self.summary_labels.get(key)
             if label is not None:
                 label.setText(value)
+                label.setToolTip(value)
 
         self.overview_hint_label.setText(
-            self._analysis_source_summary or Localizer.get().workbench_no_ai_analysis_has_been_run_yet
+            self._analysis_source_summary or localizer.workbench_no_ai_analysis_has_been_run_yet
         )
+
+    def _cache_summary(self, config: Config) -> str:
+        """读取当前输出缓存的真实条数，失败时明确显示不可用。"""
+        localizer = Localizer.get()
+        paths = RenpyProjectPaths.from_config(config)
+        output_folder = normalize_text(config.output_folder)
+        if paths is not None:
+            output_folder = str(getattr(paths, "translation_output_dir", "")) or output_folder
+        if not output_folder:
+            return localizer.workbench_not_set
+
+        cache_dir = Path(output_folder) / "cache"
+        database = cache_dir / "cache.db"
+        items_json = cache_dir / "items.json"
+        try:
+            if database.is_file():
+                with closing(sqlite3.connect(
+                    f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=0.1,
+                )) as connection:
+                    count = connection.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+                return localizer.workbench_cache_sqlite.format(item_count=count)
+            if items_json.is_file():
+                payload = json.loads(items_json.read_text(encoding="utf-8-sig"))
+                if isinstance(payload, list):
+                    return localizer.workbench_cache_json.format(item_count=len(payload))
+                return localizer.workbench_cache_unreadable
+        except (OSError, TypeError, ValueError, RuntimeError, sqlite3.Error):
+            return localizer.workbench_cache_unreadable
+        return localizer.workbench_not_set
 
     def _refresh_worldbook_draft_view(self, config: Config) -> None:
         """刷新世界观草稿预览。"""
@@ -795,11 +1021,14 @@ class RenpyWorkbenchPage(Base, QWidget):
         """切换角色列表筛选。"""
         if mode not in self.character_filter_buttons:
             mode = "all"
+        self._flush_pending_edits()
         self._character_filter_mode = mode
         button = self.character_filter_buttons.get(mode)
         if button is not None:
             button.setChecked(True)
         self._apply_character_filters()
+        # 列表仍选中同一角色时不会发出选中信号，也需要切到对应的资料或草稿。
+        self._refresh_character_editor(self._get_config_snapshot())
 
     def _prepare_character_view(
         self,
@@ -828,14 +1057,19 @@ class RenpyWorkbenchPage(Base, QWidget):
         for row in range(self.character_list.count()):
             item = self.character_list.item(row)
             card_id = normalize_text(item.data(Qt.ItemDataRole.UserRole))
-            card = self._visible_cards_by_id.get(card_id, {})
+            # 正式资料和待审核草稿都可检索，避免新草稿的译名被旧资料遮蔽。
             search_text = "\n".join(
-                [
+                value
+                for card in (
+                    self._formal_cards_by_id.get(card_id, {}),
+                    self._draft_cards_by_id.get(card_id, {}),
+                )
+                for value in (
                     normalize_text(card.get("name", "")),
                     normalize_text(card.get("name_translation", "")),
                     *normalize_text_list(card.get("aliases", [])),
                     *normalize_text_list(card.get("match_keywords", [])),
-                ]
+                )
             ).casefold()
             matches_mode = (
                 self._character_filter_mode == "all"
@@ -859,6 +1093,11 @@ class RenpyWorkbenchPage(Base, QWidget):
                 total=self.character_list.count(),
             )
         )
+        self.character_empty_label.setText(
+            Localizer.get().workbench_character_empty
+            if self.character_list.count() == 0 else Localizer.get().workbench_character_no_match
+        )
+        self.character_empty_label.setVisible(not visible_items)
         current = self.character_list.currentItem()
         if current is not None and current.isHidden() is False:
             return
@@ -944,6 +1183,10 @@ class RenpyWorkbenchPage(Base, QWidget):
     def _refresh_character_editor(self, config: Config) -> None:
         """根据当前选中角色刷新编辑器。"""
         current = self._formal_cards_by_id.get(self._selected_character_id)
+        show_draft = self._selected_character_id in self._draft_cards_by_id and (
+            current is None or self._character_filter_mode == "pending"
+        )
+        self.character_detail_stack.setCurrentIndex(1 if show_draft else 0)
         if current is None:
             self._clear_character_editor()
             self._refresh_character_draft_view(config)
@@ -1037,14 +1280,35 @@ class RenpyWorkbenchPage(Base, QWidget):
         ):
             button.setEnabled(not self._analysis_running and not self._sync_running)
 
+        if self._analysis_running or self._sync_running:
+            # 本页持有引擎锁时保留实际步骤，不能误报为翻译任务占用。
+            return
         if engine_busy:
             self.overview_status_label.setText(Localizer.get().workbench_translation_task_running_ai_generation_character_sync)
         elif supported is False:
             self.overview_status_label.setText(Localizer.get().workbench_current_api_does_not_support_ai_analysis)
-        elif self._analysis_running:
-            self.overview_status_label.setText(Localizer.get().workbench_ai_analysis_running_please_wait)
-        elif self._sync_running:
-            self.overview_status_label.setText(Localizer.get().workbench_character_sync_running_please_wait)
+
+    def _begin_task_status(self, message: str) -> None:
+        self._task_started_at = time.monotonic()
+        self.overview_status_label.setText(message)
+        self.task_elapsed_label.show()
+        self._update_task_elapsed()
+        self._task_elapsed_timer.start()
+        self.info(f"[Workbench] {message}")
+
+    def _update_task_elapsed(self) -> None:
+        if self._task_started_at is not None:
+            elapsed = max(0, int(time.monotonic() - self._task_started_at))
+            self.task_elapsed_label.setText(Localizer.get().workbench_progress_elapsed.format(
+                minutes=elapsed // 60, seconds=elapsed % 60,
+            ))
+
+    def _on_task_progress(self, payload: dict[str, Any]) -> None:
+        if not self._analysis_running:
+            return
+        current = ProjectAssetsRepository.from_config(self._get_config_snapshot()).output_folder
+        if Path(payload["project_output"]).resolve() == Path(current).resolve():
+            self.overview_status_label.setText(payload["message"])
 
     def _on_worldbook_toggle_changed(self, state: int) -> None:
         """世界观开关变化。"""
@@ -1193,13 +1457,14 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _add_character_card(self) -> None:
         """新增空白角色卡。"""
+        self._flush_pending_edits()
         config = self._get_config_snapshot()
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
         card = create_default_character_card(Localizer.get().workbench_character.format(len_cards=len(cards) + 1))
         cards.append(card)
         config.renpy_workbench_character_cards = cards
         self._save_config(config)
-        self._prepare_character_view("applied", card["id"])
+        self._prepare_character_view("applied", card["id"], clear_search=True)
         self.refresh_from_config(config)
 
     def _delete_current_character(self) -> None:
@@ -1263,12 +1528,19 @@ class RenpyWorkbenchPage(Base, QWidget):
             return
         self._analysis_running = True
         try:
+            self._flush_pending_edits()
+            config = copy.deepcopy(self._get_config_snapshot())
+            project_output = ProjectAssetsRepository.from_config(config).output_folder
             self._refresh_action_state()
         except Exception:
+            self._task_elapsed_timer.stop()
             self._analysis_running = False
             Engine.get().release_status(Engine.Status.TESTING)
             raise
-        self.overview_status_label.setText(Localizer.get().workbench_running_ai_analysis)
+        self._begin_task_status(Localizer.get().workbench_running_ai_analysis)
+        self.analysis_service.progress_callback = lambda message: self.signals.task_progress.emit({
+            "project_output": project_output, "message": message,
+        })
         scope = normalize_analysis_scope(scope)
         current_id = self._selected_character_id
 
@@ -1276,7 +1548,6 @@ class RenpyWorkbenchPage(Base, QWidget):
             success_payload: dict[str, Any] | None = None
             failure_payload: dict[str, Any] | None = None
             try:
-                config = self._load_config()
                 if mode == "all":
                     result = self.analysis_service.analyze_all(
                         config,
@@ -1305,6 +1576,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 else:
                     raise AnalysisServiceError(Localizer.get().workbench_unknown_analysis_mode)
                 success_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "result": result,
@@ -1312,6 +1584,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 }
             except AnalysisServiceError as exc:
                 failure_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": str(exc),
@@ -1319,6 +1592,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 }
             except Exception as exc:
                 failure_payload = {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": str(exc),
@@ -1331,6 +1605,7 @@ class RenpyWorkbenchPage(Base, QWidget):
                 self.signals.analysis_success.emit(success_payload)
             else:
                 self.signals.analysis_failed.emit(failure_payload or {
+                    "project_output": project_output,
                     "mode": mode,
                     "scope": scope,
                     "message": Localizer.get().workbench_ai_analysis_failed_2,
@@ -1341,18 +1616,34 @@ class RenpyWorkbenchPage(Base, QWidget):
         try:
             thread.start()
         except Exception:
+            self._task_elapsed_timer.stop()
             self._analysis_running = False
             Engine.get().release_status(Engine.Status.TESTING)
             self._refresh_action_state()
             raise
 
+    def _background_result_config(self, payload: dict[str, Any]) -> Config | None:
+        """后台结果只应用到原项目；项目已切换时刷新当前页面并丢弃旧结果。"""
+        config = self._load_config()
+        current_output = ProjectAssetsRepository.from_config(config).output_folder
+        if Path(payload["project_output"]).resolve() != Path(current_output).resolve():
+            self.task_elapsed_label.hide()
+            self.overview_status_label.setText(Localizer.get().workbench_ready)
+            self.refresh_from_config(config)
+            return None
+        return config
+
     def _on_analysis_success(self, payload: dict[str, Any]) -> None:
         """处理分析成功。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._analysis_running = False
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         result: AnalysisResult = payload["result"]
         mode = payload["mode"]
         card_id = payload.get("card_id", "")
-        config = self._load_config()
         config.renpy_workbench_last_analysis_scope = result.scope
         self._analysis_source_summary = Localizer.get().workbench_latest_analysis_source.format(source_summary=result.source_summary)
 
@@ -1392,7 +1683,9 @@ class RenpyWorkbenchPage(Base, QWidget):
         elif card_id:
             self._selected_character_id = card_id
         self.refresh_from_config(config)
-        self.overview_status_label.setText(Localizer.get().workbench_ai_drafts_ready_review_them_right_before)
+        completion = Localizer.get().workbench_progress_complete.format(count=len(result.character_drafts), worlds=int(bool(result.worldbook_draft)))
+        self.overview_status_label.setText(completion)
+        self.info(f"[Workbench] {completion}")
         InfoBar.success(
             Localizer.get().complete,
             Localizer.get().workbench_ai_draft_generation_complete,
@@ -1401,16 +1694,26 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _on_analysis_failed(self, payload: dict[str, Any]) -> None:
         """处理分析失败。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._analysis_running = False
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         mode = payload.get("mode", "")
         raw_response = normalize_text(payload.get("raw_response", ""))
         message = normalize_text(payload.get("message", Localizer.get().workbench_ai_analysis_failed))
         if mode == "worldbook" or "世界观" in message:
             self._last_worldbook_raw = raw_response
+            self.worldbook_raw_toggle.setChecked(bool(raw_response))
         else:
             self._last_character_raw = raw_response
-        self.refresh_from_config(self._get_config_snapshot())
+            self.character_raw_toggle.setChecked(bool(raw_response))
+        self.refresh_from_config(config)
+        if raw_response and mode != "worldbook" and "世界观" not in message:
+            self.character_detail_stack.setCurrentIndex(1)
         self.overview_status_label.setText(message)
+        self.error(f"[Workbench] {message}")
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _merge_candidates_into_cards(
@@ -1454,33 +1757,49 @@ class RenpyWorkbenchPage(Base, QWidget):
         """启动角色同步。"""
         if self._sync_running:
             return
+        self._flush_pending_edits()
+        config = copy.deepcopy(self._get_config_snapshot())
+        project_output = ProjectAssetsRepository.from_config(config).output_folder
         self._sync_running = True
         self._refresh_action_state()
-        self.overview_status_label.setText(Localizer.get().workbench_syncing_character_candidates)
+        self._begin_task_status(Localizer.get().workbench_syncing_character_candidates)
 
         def task() -> None:
             try:
-                config = self._load_config()
                 items, source_summary = self.analysis_service.load_scope_items(config, ANALYSIS_SCOPE_CURRENT)
                 candidates = self.character_scanner.build_candidates(config, items, self.analysis_service.resolve_project_root(config))
                 candidate_cards = [candidate.as_card_seed() for candidate in candidates]
                 merged_cards, added = self._merge_candidates_into_cards(config, candidate_cards)
                 self.signals.sync_success.emit(
                     {
+                        "project_output": project_output,
                         "drafts": merged_cards,
                         "added": added,
                         "source_summary": source_summary,
                     }
                 )
             except Exception as exc:
-                self.signals.sync_failed.emit(str(exc))
+                self.signals.sync_failed.emit({
+                    "project_output": project_output,
+                    "message": str(exc),
+                })
 
-        threading.Thread(target = task, daemon = True).start()
+        try:
+            threading.Thread(target = task, daemon = True).start()
+        except Exception:
+            self._task_elapsed_timer.stop()
+            self._sync_running = False
+            self._refresh_action_state()
+            raise
 
     def _on_sync_success(self, payload: dict[str, Any]) -> None:
         """同步成功回调。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._sync_running = False
-        config = self._load_config()
+        config = self._background_result_config(payload)
+        if config is None:
+            return
         merged_drafts, _ = self._merge_candidates_into_cards(
             config,
             payload["drafts"],
@@ -1498,17 +1817,26 @@ class RenpyWorkbenchPage(Base, QWidget):
         added = payload.get("added", 0)
         sync_result = Localizer.get().workbench_character_sync_complete_new_drafts_ready_review.format(added=added)
         self.overview_status_label.setText(sync_result)
+        self.info(f"[Workbench] {sync_result}")
         InfoBar.success(Localizer.get().complete, sync_result, parent = self)
 
-    def _on_sync_failed(self, message: str) -> None:
+    def _on_sync_failed(self, payload: dict[str, Any]) -> None:
         """同步失败回调。"""
+        self._task_elapsed_timer.stop()
+        self._update_task_elapsed()
         self._sync_running = False
-        self._refresh_action_state()
+        config = self._background_result_config(payload)
+        if config is None:
+            return
+        message = str(payload["message"])
+        self._refresh_action_state(config)
         self.overview_status_label.setText(message)
+        self.error(f"[Workbench] {message}")
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 
     def _apply_worldbook_draft(self) -> None:
         """应用世界观草稿。"""
+        self._flush_pending_edits()
         config = self._get_config_snapshot()
         draft = normalize_worldbook(getattr(config, "renpy_workbench_generated_worldbook_draft", {}))
         if any(draft.values()) is False:
@@ -1535,6 +1863,7 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _apply_current_character_draft(self) -> None:
         """应用当前角色草稿。"""
+        self._flush_pending_edits()
         if self._selected_character_id == "":
             InfoBar.warning(
                 Localizer.get().notice,
@@ -1586,6 +1915,7 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _apply_all_drafts(self) -> None:
         """应用全部草稿。"""
+        self._flush_pending_edits()
         config = self._get_config_snapshot()
         if self._apply_drafts_to_config(config) is False:
             InfoBar.warning(

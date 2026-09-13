@@ -1,8 +1,6 @@
 import os
 import re
 
-import pytest
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QCoreApplication, QEvent
@@ -18,12 +16,12 @@ from qfluentwidgets import (
 )
 
 import frontend.Setting.ChangelogDialog as changelog_dialog_module
-from frontend.AppFluentWindow import AppFluentWindow
 from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from frontend.Setting.ChangelogDialog import ChangelogDialog
 from frontend.Setting.UpdateDetailsDialog import UpdateDetailsDialog
 from module.Localizer.Localizer import Localizer
+from widget.ThemeTokens import DARK, LIGHT, current_qfluent_accent_seed
 
 
 APP = QApplication.instance() or QApplication([])
@@ -162,22 +160,19 @@ def _contrast(fg: QColor, bg: QColor) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
-def test_primary_button_accent_contrast_is_tracked() -> None:
-    """记录主按钮配色的实际对比度，明确哪一侧是已知取舍。
-
-    qfluentwidgets 给主按钮的文字色是固定的：浅色主题白字、深色主题黑字，能不能过
-    AA 完全取决于主色明度。深色主题必须守住 4.5:1。浅色主题是产品定的取舍——品牌
-    橘棕 #BCA483 配白字只有 2.39:1，为保留品牌调性接受不达标，这里钉住这个数值，
-    以后主色再动会失败，好让人重新做一次决定而不是悄悄劣化。
-    """
+def test_primary_button_default_accent_contrast_is_tracked() -> None:
+    """The QFluent primary state uses the WinUI accent with readable text."""
     previous_theme = qconfig.theme
-    setThemeColor(AppFluentWindow.APP_THEME_COLOR)
+    previous_color = QColor(qconfig.get(qconfig.themeColor))
     try:
-        setTheme(Theme.DARK)
-        assert _contrast(ThemeColor.PRIMARY.color(), QColor("black")) >= 4.5
-
-        setTheme(Theme.LIGHT)
-        light_contrast = _contrast(ThemeColor.PRIMARY.color(), QColor("white"))
-        assert light_contrast == pytest.approx(2.39, abs=0.01)
+        for theme, palette, foreground in (
+            (Theme.DARK, DARK, QColor("black")),
+            (Theme.LIGHT, LIGHT, QColor("white")),
+        ):
+            setTheme(theme)
+            setThemeColor(current_qfluent_accent_seed())
+            assert ThemeColor.PRIMARY.color().name() == QColor(palette.accent).name()
+            assert _contrast(ThemeColor.PRIMARY.color(), foreground) >= 4.5
     finally:
+        setThemeColor(previous_color)
         setTheme(previous_theme)

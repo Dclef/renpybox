@@ -62,8 +62,8 @@ def test_remaining_asset_and_engineering_tools_use_english_copy(monkeypatch) -> 
         assert "Batch Corrections" in texts
         assert "Name Extraction" in texts
         assert "HTML Import / Conversion" in texts
-        assert pages[0].game_dir_edit.placeholderText() == (
-            "Select the game folder containing .rpy files"
+        assert pages[1].game_dir_edit.placeholderText() == (
+            "Select game/tl/<language> or a folder containing generated .rpy files"
         )
         assert pages[2].summary_label.text() == "Not previewed"
         assert pages[6].excel_column_combo.currentText() == "Translation"

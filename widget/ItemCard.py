@@ -24,9 +24,6 @@ from qfluentwidgets import (
     qconfig,
 )
 
-from widget.Separator import Separator
-
-
 class TwoLineElideLabel(QLabel):
     """最多显示两行，并在第二行末尾省略长文本。"""
 
@@ -86,7 +83,7 @@ class ItemCard(CardWidget):
         super().__init__(parent)
         self.setProperty("toolCard", True)
         self.setProperty("pressed", False)
-        self.setFixedWidth(260)
+        self.setMinimumWidth(260)
         self.setFixedHeight(132)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # 圆角与交互状态由 ThemeHelper 中的 QSS 统一绘制。
@@ -97,8 +94,8 @@ class ItemCard(CardWidget):
         self.setToolTip(description)
 
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(16, 14, 12, 14)
-        self.root.setSpacing(8)
+        self.root.setContentsMargins(14, 12, 14, 12)
+        self.root.setSpacing(6)
 
         self.title_container = QWidget(self)
         self.title_container.setToolTip(description)
@@ -136,7 +133,7 @@ class ItemCard(CardWidget):
         self.title_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         title_layout.addWidget(self.title_button)
 
-        self.root.addWidget(Separator(self))
+        self.root.addSpacing(0)
 
         self.description_label = TwoLineElideLabel(description, self)
         self.description_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

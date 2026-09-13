@@ -8,6 +8,7 @@ from __future__ import annotations
 from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Renpy.renpy_tl_core import (
+    has_replace_only_marker,
     TlBlock,
     TlBlockKind,
     TlDocument,
@@ -48,14 +49,32 @@ class RenpyTlItemExtractor(Base):
                 continue
 
             stmt_by_line = {s.line_no: s for s in block.statements}
+            # 一个翻译块中的语句序号对所有条目都是固定的，预先计算一次，
+            # 避免构建每条缓存记录时重复扫描整个块。
+            statement_ordinals: dict[int, int] = {}
+            ordinal = 0
+            for statement in block.statements:
+                statement_ordinals[statement.line_no] = ordinal
+                if statement.stmt_kind.value in {"TEMPLATE", "TARGET"}:
+                    ordinal += 1
             for template_line, target_line in mapping.items():
                 template_stmt = stmt_by_line.get(template_line)
                 target_stmt = stmt_by_line.get(target_line)
                 if template_stmt is None or target_stmt is None:
                     continue
 
-                item = self._build_cache_item(block, template_stmt, target_stmt, rel_path)
+                item = self._build_cache_item(
+                    block,
+                    template_stmt,
+                    target_stmt,
+                    rel_path,
+                    statement_ordinal=statement_ordinals.get(template_line),
+                )
                 if item is not None:
+                    if block.kind == TlBlockKind.STRINGS and has_replace_only_marker(doc.lines, template_line - 1):
+                        extra = item.get_extra_field()
+                        extra["renpy"]["replace_only"] = True
+                        item.set_extra_field(extra)
                     items.append(item)
 
         # 保持稳定排序
@@ -68,6 +87,7 @@ class RenpyTlItemExtractor(Base):
         template_stmt: TlStatement,
         target_stmt: TlStatement,
         rel_path: str,
+        statement_ordinal: int | None = None,
     ) -> CacheItem | None:
         slots = self._select_slots(block, template_stmt)
         if not slots:
@@ -103,6 +123,7 @@ class RenpyTlItemExtractor(Base):
             template_stmt,
             target_stmt,
             slots,
+            statement_ordinal=statement_ordinal,
         )
 
         return CacheItem.from_dict(
@@ -133,6 +154,7 @@ class RenpyTlItemExtractor(Base):
         template_stmt: TlStatement,
         target_stmt: TlStatement,
         slots: list[TlSlot],
+        statement_ordinal: int | None = None,
     ) -> dict:
         return {
             "renpy": {
@@ -148,7 +170,7 @@ class RenpyTlItemExtractor(Base):
                     "target_line": target_stmt.line_no,
                     "statement_ordinal": tl_statement_ordinal(
                         block, template_stmt.line_no
-                    ),
+                    ) if statement_ordinal is None else statement_ordinal,
                 },
                 "slots": [{"role": s.role, "lit_index": s.lit_index} for s in slots],
                 "digest": {

@@ -21,7 +21,11 @@ class PlatformGroupCard(FlowCard):
         self.icon_widget.setFixedSize(26, 26)
         self.icon_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.head_hbox.insertWidget(0, self.icon_widget)
-        qconfig.themeChanged.connect(lambda _theme: self.icon_widget.update())
+        qconfig.themeChanged.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, _theme) -> None:
+        # 使用对象槽函数，使卡片销毁时自动断开主题信号。
+        self.icon_widget.update()
 
     def set_count_visible(self) -> None:
         """组内没有接口时隐藏整张卡片。"""

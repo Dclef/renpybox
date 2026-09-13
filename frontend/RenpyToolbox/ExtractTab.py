@@ -29,6 +29,7 @@ from module.Text.SkipRules import should_skip_text
 from module.Renpy.json_handler import JsonExporter, JsonImporter
 from module.Renpy import renpy_extract as rx
 from module.Extract.RenpyExtractor import RenpyExtractor
+from widget.ThemeHelper import set_semantic_status, set_text_role
 
 
 
@@ -87,7 +88,7 @@ class ExtractTab(Base, QWidget):
         layout.addLayout(row2)
 
         tip = QLabel(Localizer.get().extract_json_exported_json_stores_all_rpy_text_one)
-        tip.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(tip, pixel_size=11)
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -103,7 +104,7 @@ class ExtractTab(Base, QWidget):
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel(Localizer.get().ready)
-        self.status_label.setStyleSheet("color: gray;")
+        set_text_role(self.status_label)
         layout.addWidget(self.status_label)
 
         return card
@@ -125,7 +126,7 @@ class ExtractTab(Base, QWidget):
         layout.addLayout(row)
 
         tip = QLabel(Localizer.get().extract_json_translate_exported_json_then_import_tl_folder)
-        tip.setStyleSheet("color: gray; font-size: 11px;")
+        set_text_role(tip, pixel_size=11)
         tip.setWordWrap(True)
         layout.addWidget(tip)
 
@@ -260,12 +261,12 @@ class ExtractTab(Base, QWidget):
     def _begin(self, msg: str):
         self.progress_bar.setValue(0)
         self.status_label.setText(msg)
-        self.status_label.setStyleSheet("color: #0078d4;")
+        set_semantic_status(self.status_label, "info")
 
     def _end(self):
         self.progress_bar.setValue(100)
         self.status_label.setText(Localizer.get().complete)
-        self.status_label.setStyleSheet("color: green;")
+        set_semantic_status(self.status_label, "success")
 
     # UI 不再承载日志
     def _log(self, message: str):

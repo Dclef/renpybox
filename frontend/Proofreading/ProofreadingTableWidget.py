@@ -12,14 +12,25 @@ from qfluentwidgets import IconWidget
 from qfluentwidgets import PillToolButton
 from qfluentwidgets import RoundMenu
 from qfluentwidgets import TableWidget
+from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
+from qfluentwidgets import setCustomStyleSheet
 
 from base.Base import Base
 from frontend.Proofreading.TextEditDialog import TextEditDialog
 from module.Cache.CacheItem import CacheItem
 from module.Localizer.Localizer import Localizer
 from module.ResultChecker import WarningType
+
+class _RowWidgetDelegate(TableItemDelegate):
+    def updateEditorGeometry(self, editor, option, index) -> None:
+        # 状态和操作控件铺满单元格，不能按调整前的控件高度计算居中位置。
+        if index.column() in (ProofreadingTableWidget.COL_STATUS, ProofreadingTableWidget.COL_ACTION):
+            editor.setGeometry(option.rect)
+        else:
+            super().updateEditorGeometry(editor, option, index)
+
 
 class ProofreadingTableWidget(TableWidget):
     """校对任务专用表格组件"""
@@ -38,7 +49,6 @@ class ProofreadingTableWidget(TableWidget):
 
     COL_WIDTH_STATUS = 60
     COL_WIDTH_ACTION = 60
-    SYMBOL_NEWLINE = " ↵ "
 
     ITEM_ROLE = Qt.UserRole + 1
 
@@ -51,6 +61,7 @@ class ProofreadingTableWidget(TableWidget):
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
 
+        self.setItemDelegate(_RowWidgetDelegate(self))
         self.setColumnCount(4)
         self.setHorizontalHeaderLabels([
             Localizer.get().proofreading_page_col_src,
@@ -64,11 +75,15 @@ class ProofreadingTableWidget(TableWidget):
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.setBorderVisible(False)
+        # 取消组件样式内置的 35px 行高，才能按双语文本的实际换行高度布局。
+        row_style = "QTableView::item { height: -1px; }"
+        setCustomStyleSheet(self, row_style, row_style)
 
-        self.setWordWrap(False)
+        self.setWordWrap(True)
         self.setTextElideMode(Qt.ElideRight)
-        self.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.verticalHeader().setDefaultSectionSize(40)
+        self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.verticalHeader().setMinimumSectionSize(42)
+        self.verticalHeader().setDefaultSectionSize(42)
 
         header = self.horizontalHeader()
         header.setSectionResizeMode(self.COL_SRC, QHeaderView.Stretch)
@@ -78,11 +93,21 @@ class ProofreadingTableWidget(TableWidget):
         self.setColumnWidth(self.COL_STATUS, self.COL_WIDTH_STATUS)
         self.setColumnWidth(self.COL_ACTION, self.COL_WIDTH_ACTION)
 
+        self._row_resize_timer = QTimer(self)
+        self._row_resize_timer.setSingleShot(True)
+        self._row_resize_timer.timeout.connect(self._resize_bilingual_rows)
+        header.sectionResized.connect(lambda *_: self._row_resize_timer.start(0))
+
         self._readonly = False
         self._loading_rows: set[int] = set()
 
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.itemSelectionChanged.connect(self._on_item_selection_changed)
+
+    def _resize_bilingual_rows(self) -> None:
+        """换行改变行高后同步单元格控件位置，避免图标停留在旧行坐标。"""
+        self.resizeRowsToContents()
+        self.doItemsLayout()
 
     def set_items(self, items: list[CacheItem], warning_map: dict[int, list[WarningType]]) -> None:
         self.blockSignals(True)
@@ -105,6 +130,7 @@ class ProofreadingTableWidget(TableWidget):
 
         self.setUpdatesEnabled(True)
         self.blockSignals(False)
+        self._row_resize_timer.start(0)
 
     def _clear_cell_widgets(self) -> None:
         for row in range(self.rowCount()):
@@ -118,7 +144,7 @@ class ProofreadingTableWidget(TableWidget):
         src_text = item.get_src()
         dst_text = item.get_dst()
 
-        src_display = src_text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", self.SYMBOL_NEWLINE)
+        src_display = src_text.replace("\r\n", "\n").replace("\r", "\n")
         src_item = QTableWidgetItem(src_display)
         src_item.setFlags(src_item.flags() & ~Qt.ItemIsEditable)
         src_item.setData(self.ITEM_ROLE, item)
@@ -126,7 +152,7 @@ class ProofreadingTableWidget(TableWidget):
         src_item.setToolTip(src_text)
         self.setItem(row, self.COL_SRC, src_item)
 
-        dst_display = dst_text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", self.SYMBOL_NEWLINE)
+        dst_display = dst_text.replace("\r\n", "\n").replace("\r", "\n")
         dst_item = QTableWidgetItem(dst_display)
         dst_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         dst_item.setToolTip(dst_text)
@@ -139,7 +165,7 @@ class ProofreadingTableWidget(TableWidget):
 
     def _create_status_widget(self, row: int, item: CacheItem, warnings: list[WarningType]) -> None:
         widget = QWidget()
-        widget.setFixedHeight(40)
+        widget.setMinimumHeight(42)
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -323,7 +349,7 @@ class ProofreadingTableWidget(TableWidget):
         self.blockSignals(True)
         dst_cell = self.item(row, self.COL_DST)
         if dst_cell:
-            dst_display = new_dst.replace("\r\n", "\n").replace("\r", "\n").replace("\n", self.SYMBOL_NEWLINE)
+            dst_display = new_dst.replace("\r\n", "\n").replace("\r", "\n")
             dst_cell.setText(dst_display)
             dst_cell.setToolTip(new_dst)
         self.blockSignals(False)

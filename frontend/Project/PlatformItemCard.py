@@ -167,7 +167,10 @@ class PlatformItemCard(CardWidget):
         if self._is_active:
             foreground = get_theme_active_card_foreground_color()
             self.name_label.setTextColor(foreground, foreground)
-            self.model_label.setTextColor(foreground, foreground)
+            self.model_label.setTextColor(
+                QColor("#64748B"),
+                QColor("#94A3B8"),
+            )
             self.status_label.setText("●")
             self.status_label.setTextColor(
                 get_theme_active_card_indicator_color(),
@@ -183,7 +186,7 @@ class PlatformItemCard(CardWidget):
 
     def _update_format_badge_color(self) -> None:
         if self._is_active:
-            fg = get_theme_active_card_foreground_color()
+            fg = get_theme_active_card_indicator_color()
             self.format_badge.setTextColor(fg, fg)
         elif isDarkTheme():
             self.format_badge.setTextColor(QColor(180, 180, 180), QColor(180, 180, 180))

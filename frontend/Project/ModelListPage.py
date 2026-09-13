@@ -10,7 +10,6 @@ from PyQt5.QtWidgets import QVBoxLayout
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import MessageBoxBase
-from qfluentwidgets import PillPushButton
 from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import SingleDirectionScrollArea
 
@@ -19,6 +18,7 @@ from module.Secret.SecretStore import SecretStore
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from widget.FlowCard import FlowCard
+from widget.QuietPillButton import QuietPillButton
 
 class ModelListPage(MessageBoxBase, Base):
 
@@ -29,7 +29,7 @@ class ModelListPage(MessageBoxBase, Base):
         self.id: int = id
         self.filter: str = ""
         self.models: list[str] = None
-        self.model_buttons: list[PillPushButton] = []
+        self.model_buttons: list[QuietPillButton] = []
         self.no_match_label: CaptionLabel | None = None
 
         # 载入并保存默认配置
@@ -64,7 +64,7 @@ class ModelListPage(MessageBoxBase, Base):
         self.vbox.addStretch(1)
 
     # 点击事件
-    def clicked(self, widget: PillPushButton) -> None:
+    def clicked(self, widget: QuietPillButton) -> None:
         config = Config().load()
         platform = config.get_platform(self.id)
         platform["model"] = widget.text().strip()
@@ -132,7 +132,7 @@ class ModelListPage(MessageBoxBase, Base):
         if not self.model_buttons:
             widget.flow_layout.isTight = True
             for model in self.models:
-                pilled_button = PillPushButton(model)
+                pilled_button = QuietPillButton(model)
                 pilled_button.setFixedWidth(432)
                 pilled_button.clicked.connect(partial(self.clicked, pilled_button))
                 widget.add_widget(pilled_button)

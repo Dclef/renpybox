@@ -13,6 +13,7 @@ from qfluentwidgets import (
     RoundMenu,
     SingleDirectionScrollArea,
     StrongBodyLabel,
+    TitleLabel,
 )
 
 from base.Base import Base
@@ -29,6 +30,7 @@ from module.Secret.SecretStore import (
     LEGACY_CREDENTIAL_ID_FIELD,
     SecretStore,
 )
+from widget.ThemeHelper import mark_app_page
 
 
 PLATFORM_GROUPS = ("local", "machine", "online", "custom")
@@ -77,6 +79,7 @@ class PlatformPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
         self.window = window
         self.item_cards: dict[int, PlatformItemCard] = {}
         self.item_groups: dict[int, str] = {}
@@ -94,6 +97,21 @@ class PlatformPage(QWidget, Base):
         # 设置主容器
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(24, 24, 24, 24)  # 左、上、右、下
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        title = TitleLabel(Localizer.get().app_platform_page, header)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
+        header_layout.addWidget(
+            CaptionLabel(Localizer.get().platform_page_header_description, header)
+        )
+        self.root.addWidget(header)
 
         self.content = QWidget(self)
         self.vbox = QVBoxLayout(self.content)

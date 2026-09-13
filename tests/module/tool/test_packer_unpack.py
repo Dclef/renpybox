@@ -7,6 +7,25 @@ from module.Tool.Packer import Packer
 from module.Tool.rpatool_core import RenPyArchive
 
 
+@pytest.mark.parametrize(
+    ("major", "preferred_name"),
+    [(7, "UnRen-legacy.bat"), (8, "UnRen-current.bat")],
+)
+def test_select_unren_prefers_game_local_script_for_detected_version(
+    tmp_path, monkeypatch, major, preferred_name
+) -> None:
+    """按 Ren'Py 主版本优先使用游戏目录自带的匹配脚本。"""
+    (tmp_path / "UnRen-legacy.bat").write_text("legacy", encoding="utf-8")
+    (tmp_path / "UnRen-current.bat").write_text("current", encoding="utf-8")
+    packer = Packer()
+    monkeypatch.setattr(packer, "_detect_renpy_major", lambda _root: major)
+
+    scripts, detected = packer._select_unren_bats(tmp_path)
+
+    assert detected == major
+    assert scripts[0].name == preferred_name
+
+
 def test_unpack_rpa_files_uses_direct_result_without_fallback(monkeypatch) -> None:
     packer = Packer()
     stages = []
@@ -156,3 +175,28 @@ def test_builtin_unpackers_reject_paths_outside_output(tmp_path, script_name) ->
         safe_output_path(str(output_dir), "../outside.txt")
 
     assert not (tmp_path / "outside.txt").exists()
+
+
+def test_unren_rpatool_handles_single_archive_after_loader_reindex(tmp_path) -> None:
+    """单个归档被 Ren'Py 重建索引后仍应使用新列表最后一项。"""
+    script_path = Path(__file__).resolve().parents[3] / "resource" / "tools" / "unren_rpatool.py"
+    module = runpy.run_path(str(script_path))
+    archive_path = tmp_path / "archive.rpa"
+    archive_path.write_bytes(b"RPA")
+
+    class ConfigStub:
+        archives = []
+        searchpath = []
+        basedir = ""
+
+    class LoaderStub:
+        archives = []
+
+        def index_archives(self):
+            self.archives = [("archive", {"script.rpyc": [(0, 0)]})]
+
+    archive = module["RenPyArchive"](
+        str(archive_path), 1, ConfigStub(), LoaderStub()
+    )
+
+    assert archive.list() == ["script.rpyc"]

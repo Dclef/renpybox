@@ -1,12 +1,15 @@
 import time
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QRectF
 from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QFont
 from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QSizePolicy
 
-from qfluentwidgets import isDarkTheme
+from widget.ThemeHelper import get_theme_accent_color
 
 class WaveformWidget(QLabel):
 
@@ -49,10 +52,9 @@ class WaveformWidget(QLabel):
         self.update()
 
     def paintEvent(self, event):
-        # 初始化画笔
+        # 用原生几何图形绘制吞吐柱条，避免 Unicode 方块依赖字体回退。
         painter = QPainter(self)
-        painter.setFont(self.font)
-        painter.setPen(Qt.GlobalColor.white if isDarkTheme() else Qt.GlobalColor.black)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # 归一化以增大波形起伏
         min_val = min(self.history)
@@ -64,21 +66,28 @@ class WaveformWidget(QLabel):
         else:
             values = [(v - min_val) / (max_val - min_val) for v in self.history]
 
-        # 生成文本
-        lines = []
-        for value in reversed(values):
-            lines.append("▨" * int(value * (self.matrix_height - 1) + 1))
+        accent = QColor(get_theme_accent_color())
+        has_throughput = max_val > 0
+        if not has_throughput:
+            # 空闲时保留一条低对比度基线，不制造虚假的吞吐数据。
+            baseline = QColor(accent)
+            baseline.setAlpha(56)
+            painter.setPen(baseline)
+            painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+            return
 
-        # 绘制文本
-        x = self.max_width - self.point_size
-        for line in lines:
-            y = self.max_height
-
-            for point in line:
-                painter.drawText(x, y, point)
-                y = y - self.point_size
-
-            x = x - self.point_size
+        accent.setAlpha(218)
+        painter.setBrush(accent)
+        painter.setPen(Qt.NoPen)
+        count = max(1, self.matrix_width)
+        slot_width = self.width() / count
+        gap = min(2.0, max(0.5, slot_width * 0.24))
+        for index, value in enumerate(values[-count:]):
+            bar_height = max(2.0, (self.height() - 4) * value)
+            x = index * slot_width + gap / 2
+            width = max(1.0, slot_width - gap)
+            y = self.height() - bar_height
+            painter.drawRoundedRect(QRectF(x, y, width, bar_height), 1.5, 1.5)
 
     # 重复最后的数据
     def repeat(self):
@@ -100,5 +109,7 @@ class WaveformWidget(QLabel):
         self.matrix_height = height
         self.max_width = self.matrix_width * self.point_size
         self.max_height = self.matrix_height * self.point_size
-        self.setFixedSize(self.max_width, self.max_height)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(self.max_height)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.history = [0 for i in range(self.matrix_width)]

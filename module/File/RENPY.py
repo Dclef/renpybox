@@ -91,6 +91,7 @@ class RENPY(Base):
         extractor = RenpyTlItemExtractor()
 
         report: list[dict] = []
+        hook_languages: set[str] = set()
         errors: list[str] = []
         for rel_path, group_items in grouped.items():
             source_path = self._resolve_source_path(rel_path)
@@ -162,6 +163,9 @@ class RENPY(Base):
                     console=False,
                 )
 
+            from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER
+            if any(line.strip() == f"# {RENPYBOX_REPLACE_ONLY_MARKER}" for line in lines):
+                hook_languages.update(block.lang for block in parse_tl_document(lines).blocks)
             result_doc = parse_tl_document(lines)
             result_items = extractor.extract(result_doc, rel_path)
             unapplied_items = self.find_unapplied_translations(
@@ -213,6 +217,34 @@ class RENPY(Base):
                 pass
         if errors:
             raise RuntimeError("Ren'Py 写回未完整完成：" + "；".join(errors))
+        if len(hook_languages) == 1:
+            from module.Extract.ReplaceGenerator import generate_replace_from_miss
+            generate_replace_from_miss(self.output_path, hook_languages.pop(), tl_dir=self.output_path)
+
+    def refresh_replace_markers(self, items: List[CacheItem]) -> None:
+        """给旧缓存补充替换来源标记，保留条目身份和未保存的译文。"""
+        grouped: Dict[str, List[CacheItem]] = {}
+        for item in items:
+            if item.get_file_type() == CacheItem.FileType.RENPY:
+                grouped.setdefault(item.get_file_path(), []).append(item)
+        extractor = RenpyTlItemExtractor()
+        for rel_path, cached_items in grouped.items():
+            source_path = self._resolve_source_path(rel_path)
+            if not source_path.is_file():
+                continue
+            doc = parse_tl_document(source_path.read_text(encoding="utf-8" ).splitlines())
+            marked = {
+                item.get_extra_field()["renpy"]["digest"]["template_raw_sha1"]
+                for item in extractor.extract(doc, rel_path)
+                if item.get_extra_field()["renpy"].get("replace_only")
+            }
+            for item in cached_items:
+                extra = item.get_extra_field()
+                if not isinstance(extra, dict) or not isinstance(extra.get("renpy"), dict):
+                    continue
+                renpy = extra["renpy"]
+                renpy["replace_only"] = renpy.get("digest", {}).get("template_raw_sha1") in marked
+                item.set_extra_field(extra)
 
     def build_items_for_writeback(
         self,

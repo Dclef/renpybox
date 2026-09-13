@@ -8,6 +8,7 @@ from pathlib import Path
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtWidgets import (
     QGraphicsOpacityEffect,
+    QBoxLayout,
     QHBoxLayout,
     QSizePolicy,
     QVBoxLayout,
@@ -45,7 +46,7 @@ from module.Renpy.ProjectPaths import (
     resolve_translation_output,
 )
 from widget.ItemCard import ItemCard
-from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget
+from widget.ThemeHelper import mark_toolbox_scroll_area, mark_toolbox_widget, set_text_role
 
 
 class RenpyToolboxPage(Base, QWidget):
@@ -62,6 +63,8 @@ class RenpyToolboxPage(Base, QWidget):
         self._spec_by_key = {spec.key: spec for spec in TOOL_SPECS}
         self._cards: dict[str, ItemCard] = {}
         self._section_titles: dict[str, StrongBodyLabel] = {}
+        self._section_headers: dict[str, QWidget] = {}
+        self._section_count_labels: dict[str, CaptionLabel] = {}
         self._section_containers: dict[str, QWidget] = {}
         self._flow_layouts: dict[str, FlowLayout] = {}
         self._resize_timer = QTimer(self)
@@ -72,15 +75,39 @@ class RenpyToolboxPage(Base, QWidget):
         self._init_ui()
 
     def _init_ui(self) -> None:
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setMaximumWidth(1400)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+        self.main_layout = QVBoxLayout(self.workspace)
+        self.main_layout.setSpacing(16)
         self.main_layout.setContentsMargins(24, 24, 24, 24)
 
-        header_layout = QHBoxLayout()
+        header_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.header_layout = header_layout
         header_layout.setSpacing(16)
-        self.title = TitleLabel(Localizer.get().app_renpy_toolbox_page, self)
-        header_layout.addWidget(self.title)
-        header_layout.addStretch(1)
+        header_text = QWidget(self)
+        header_text_layout = QVBoxLayout(header_text)
+        header_text_layout.setContentsMargins(0, 0, 0, 0)
+        header_text_layout.setSpacing(2)
+        self.title = TitleLabel(Localizer.get().app_renpy_toolbox_page, header_text)
+        title_font = self.title.font()
+        title_font.setPixelSize(18)
+        title_font.setBold(True)
+        self.title.setFont(title_font)
+        header_text_layout.addWidget(self.title)
+        self.header_description = CaptionLabel(
+            Localizer.get().toolbox_page_header_description,
+            header_text,
+        )
+        self.header_description.setWordWrap(True)
+        set_text_role(self.header_description)
+        header_text_layout.addWidget(self.header_description)
+        header_layout.addWidget(header_text, 1)
 
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText(Localizer.get().toolbox_search_tools)
@@ -102,7 +129,7 @@ class RenpyToolboxPage(Base, QWidget):
         mark_toolbox_widget(scroll_widget, "toolboxScroll")
         self.scroll_layout = QVBoxLayout(scroll_widget)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout.setSpacing(18)
+        self.scroll_layout.setSpacing(20)
 
         for group in GROUP_TITLES:
             self._create_flow_section(group, get_group_title(group))
@@ -146,8 +173,17 @@ class RenpyToolboxPage(Base, QWidget):
         self.scroll_layout.addWidget(self.empty_state, 1)
 
     def _create_flow_section(self, group: str, title: str) -> None:
-        title_label = StrongBodyLabel(title, self)
-        self.scroll_layout.addWidget(title_label)
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
+        title_label = StrongBodyLabel(title, header)
+        header_layout.addWidget(title_label)
+        header_layout.addStretch(1)
+        count_label = CaptionLabel("", header)
+        count_label.setObjectName("toolboxGroupCount")
+        header_layout.addWidget(count_label)
+        self.scroll_layout.addWidget(header)
 
         container = QWidget(self)
         mark_toolbox_widget(container, "toolboxFlow")
@@ -158,6 +194,8 @@ class RenpyToolboxPage(Base, QWidget):
         self.scroll_layout.addWidget(container)
 
         self._section_titles[group] = title_label
+        self._section_headers[group] = header
+        self._section_count_labels[group] = count_label
         self._section_containers[group] = container
         self._flow_layouts[group] = layout
 
@@ -193,11 +231,25 @@ class RenpyToolboxPage(Base, QWidget):
                 clicked=lambda widget, current=spec: self._open_tool(current, widget),
             )
             card._open_tooltip = Localizer.get().onekey_open.format(title=title)
+            title_font = card.title_label.font()
+            title_font.setPixelSize(14)
+            title_font.setBold(True)
+            card.title_label.setFont(title_font)
+            card.title_label.setWordWrap(True)
             card._project_requirement = Localizer.get().toolbox_select_game_folder_first
             card.project_requirement_label.setText(card._project_requirement)
             card.set_project_ready(project_ready or not spec.requires_project)
             self._flow_layouts[spec.group].addWidget(card)
             self._cards[spec.key] = card
+
+        strings = Localizer.get()
+        for group, count_label in self._section_count_labels.items():
+            count = sum(
+                1
+                for key, spec in self._spec_by_key.items()
+                if spec.group == group and key in self._cards
+            )
+            count_label.setText(strings.toolbox_group_count.format(COUNT=count))
 
         self._filter_cards(self.search_edit.text())
 
@@ -227,6 +279,7 @@ class RenpyToolboxPage(Base, QWidget):
         self.empty_state.setVisible(not any(card_visible.values()))
 
         for group, visible in group_visible.items():
+            self._section_headers[group].setVisible(visible)
             self._section_titles[group].setVisible(visible)
             self._section_containers[group].setVisible(visible)
 
@@ -248,6 +301,11 @@ class RenpyToolboxPage(Base, QWidget):
 
     def resizeEvent(self, event: QEvent) -> None:
         super().resizeEvent(event)
+        narrow = self.width() < 720
+        self.header_layout.setDirection(
+            QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight
+        )
+        self.search_edit.setMaximumWidth(16777215 if narrow else 320)
         self._resize_timer.start()
 
     def _update_card_widths(self) -> None:

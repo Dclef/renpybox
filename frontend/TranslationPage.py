@@ -4,7 +4,7 @@ import threading
 import copy
 from typing import Callable
 
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QTime
 from PyQt5.QtCore import QTimer
@@ -12,28 +12,33 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
 from PyQt5.QtWidgets import QHBoxLayout
+from PyQt5.QtWidgets import QGridLayout
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QFrame
+from PyQt5.QtWidgets import QSizePolicy
 from PyQt5.QtWidgets import QVBoxLayout
+from PyQt5.QtWidgets import QProgressBar
 
 from qfluentwidgets import Action
 from qfluentwidgets import InfoBar
 from qfluentwidgets import TimeEdit
 from qfluentwidgets import CardWidget
 from qfluentwidgets import FluentIcon
-from qfluentwidgets import FlowLayout
 from qfluentwidgets import MessageBox
 from qfluentwidgets import MessageBoxBase
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import ProgressRing
+from qfluentwidgets import IconWidget
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import SubtitleLabel
 from qfluentwidgets import StrongBodyLabel
-from qfluentwidgets import LargeTitleLabel
+from qfluentwidgets import PushButton
 from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
+from qfluentwidgets import SingleDirectionScrollArea
 
 from base.Base import Base
-from base.compat import StrEnum
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator, QualityTaskType
@@ -48,10 +53,10 @@ from module.Renpy.ProjectPaths import (
     read_run_manifest,
     resolve_translation_output,
 )
-from widget.Separator import Separator
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
-
+from widget.ThemeHelper import mark_app_page, set_semantic_status, set_text_role
+from widget.ThemeTokens import current_palette
 
 def restore_resumable_translation_paths(config: Config) -> Config:
     """Bind a resume request to the cache selected by the last-run manifest."""
@@ -78,57 +83,177 @@ def restore_resumable_translation_paths(config: Config) -> Config:
 
 class DashboardCard(CardWidget):
 
-    def __init__(self, parent: QWidget, title: str, value: str, unit: str, init: Callable = None, clicked: Callable = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget,
+        title: str,
+        value: str,
+        unit: str,
+        init: Callable = None,
+        clicked: Callable = None,
+        icon=None,
+        accent: str = "primary",
+        trend: str = "",
+    ) -> None:
         super().__init__(parent)
 
-        # 设置容器
-        self.setBorderRadius(4)
+        # 保留旧卡片的公开字段，同时允许监控看板使用 HTML 原型的速览卡结构。
+        self.setBorderRadius(8)
+        self.setObjectName("translationKpiCard" if icon is not None else "translationMetricCard")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self._is_kpi = icon is not None
+        self._accent = accent
+        self.setFixedHeight(88 if self._is_kpi else 96)
+
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(16, 16, 16, 16) # 左、上、右、下
+        self.root.setContentsMargins(14, 11, 14, 10)
+        self.root.setSpacing(3)
 
-        self.title_label = SubtitleLabel(title, self)
-        self.root.addWidget(self.title_label)
-
-        # 添加分割线
-        self.root.addWidget(Separator(self))
-
-        # 添加控件
-        self.body_hbox_container = QWidget(self)
-        self.body_hbox = QHBoxLayout(self.body_hbox_container)
-        self.body_hbox.setSpacing(0)
-        self.body_hbox.setContentsMargins(0, 0, 0, 0)
-
-        self.unit_vbox_container = QWidget(self)
-        self.unit_vbox = QVBoxLayout(self.unit_vbox_container)
-        self.unit_vbox.setSpacing(0)
-        self.unit_vbox.setContentsMargins(0, 0, 0, 0)
-
-        self.unit_label = StrongBodyLabel(unit, self)
-        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        self.unit_vbox.addSpacing(20)
-        self.unit_vbox.addWidget(self.unit_label)
-
-        self.value_label = LargeTitleLabel(value, self)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
-
-        self.body_hbox.addStretch(1)
-        self.body_hbox.addWidget(self.value_label, 1)
-        self.body_hbox.addSpacing(6)
-        self.body_hbox.addWidget(self.unit_vbox_container)
-        self.body_hbox.addStretch(1)
-        self.root.addWidget(self.body_hbox_container, 1)
+        if self._is_kpi:
+            self._build_kpi(icon, title, value, unit, trend)
+        else:
+            self._build_legacy(title, value, unit)
 
         if callable(init):
             init(self)
 
         if callable(clicked):
-            self.clicked.connect(lambda : clicked(self))
+            self.clicked.connect(lambda: clicked(self))
+
+    def _build_legacy(self, title: str, value: str, unit: str) -> None:
+        """构建旧指标卡，供历史调用方继续使用。"""
+        self.title_label = CaptionLabel(title, self)
+        set_text_role(self.title_label)
+        self.root.addWidget(self.title_label)
+
+        self.body_hbox_container = QWidget(self)
+        self.body_hbox = QHBoxLayout(self.body_hbox_container)
+        self.body_hbox.setSpacing(4)
+        self.body_hbox.setContentsMargins(0, 0, 0, 0)
+        self.value_label = SubtitleLabel(value, self)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.unit_label = CaptionLabel(unit, self)
+        set_text_role(self.unit_label)
+        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
+        self.body_hbox.addWidget(self.value_label)
+        self.body_hbox.addWidget(self.unit_label)
+        self.body_hbox.addStretch(1)
+        self.root.addStretch(1)
+        self.root.addWidget(self.body_hbox_container)
+        self.detail_label = CaptionLabel("", self)
+        set_text_role(self.detail_label)
+        self.detail_label.setVisible(False)
+        self.root.addWidget(self.detail_label)
+
+    def _build_kpi(self, icon, title: str, value: str, unit: str, trend: str) -> None:
+        body = QWidget(self)
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+        self.icon_box = QFrame(body)
+        self.icon_box.setObjectName(f"translationKpiIcon_{self._accent}")
+        self.icon_box.setFixedSize(38, 38)
+        icon_layout = QHBoxLayout(self.icon_box)
+        icon_layout.setContentsMargins(9, 9, 9, 9)
+        self.icon_widget = IconWidget(self.icon_box)
+        self.icon_widget.setIcon(icon)
+        icon_layout.addWidget(self.icon_widget)
+        body_layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        content = QWidget(body)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(1)
+        label_row = QHBoxLayout()
+        label_row.setContentsMargins(0, 0, 0, 0)
+        label_row.setSpacing(5)
+        self.title_label = CaptionLabel(title, content)
+        set_text_role(self.title_label)
+        label_row.addWidget(self.title_label)
+        self.trend_label = QLabel(trend, content)
+        self.trend_label.setObjectName(f"translationKpiTrend_{self._accent}")
+        self.trend_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trend_label.setVisible(bool(trend))
+        label_row.addWidget(self.trend_label, 0, Qt.AlignmentFlag.AlignRight)
+        content_layout.addLayout(label_row)
+
+        self.body_hbox_container = QWidget(content)
+        self.body_hbox = QHBoxLayout(self.body_hbox_container)
+        self.body_hbox.setContentsMargins(0, 0, 0, 0)
+        self.body_hbox.setSpacing(4)
+        self.value_label = SubtitleLabel(value, self.body_hbox_container)
+        value_font = self.value_label.font()
+        value_font.setPixelSize(20)
+        value_font.setBold(True)
+        self.value_label.setFont(value_font)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self.unit_label = CaptionLabel(unit, self.body_hbox_container)
+        set_text_role(self.unit_label)
+        self.unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
+        self.body_hbox.addWidget(self.value_label)
+        self.body_hbox.addWidget(self.unit_label)
+        self.body_hbox.addStretch(1)
+        content_layout.addWidget(self.body_hbox_container)
+        self.detail_label = CaptionLabel("", content)
+        set_text_role(self.detail_label)
+        self.detail_label.setVisible(False)
+        content_layout.addWidget(self.detail_label)
+        self.progress_bar = QProgressBar(content)
+        self.progress_bar.setObjectName(f"translationKpiProgress_{self._accent}")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(3)
+        self.progress_bar.setVisible(False)
+        content_layout.addWidget(self.progress_bar)
+        body_layout.addWidget(content, 1)
+        self.root.addWidget(body)
+        self._apply_kpi_fallback_style()
+
+    def _apply_kpi_fallback_style(self) -> None:
+        """在未加载全局 QSS 的测试或嵌入场景下保持卡片可读。"""
+        palette = current_palette()
+        box, color, border = palette.accent_surface, palette.info, palette.border
+        self.icon_box.setStyleSheet(
+            f"background-color: {box}; border: 1px solid {border}; border-radius: 6px;"
+        )
+        self.trend_label.setStyleSheet(
+            f"color: {color}; background-color: {box}; border: 1px solid {border};"
+            " border-radius: 4px; padding: 1px 5px; font-size: 10px;"
+        )
+        self.progress_bar.setStyleSheet(
+            f"QProgressBar {{ border: none; background: {palette.divider}; border-radius: 2px; }}"
+            f"QProgressBar::chunk {{ background: {palette.accent}; border-radius: 2px; }}"
+        )
+
+    def set_progress(self, percent: float) -> None:
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.setValue(max(0, min(100, int(round(percent * 100)))))
+            self.progress_bar.setVisible(True)
+
+    def set_trend(self, trend: str) -> None:
+        if hasattr(self, "trend_label"):
+            self.trend_label.setText(trend)
+            self.trend_label.setVisible(bool(trend))
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if self._is_kpi and event.type() in (
+            QEvent.Type.PaletteChange,
+            QEvent.Type.StyleChange,
+        ):
+            self._apply_kpi_fallback_style()
 
     def set_unit(self, unit: str) -> None:
         self.unit_label.setText(unit)
 
     def set_value(self, value: str) -> None:
         self.value_label.setText(value)
+
+    def set_detail(self, detail: str) -> None:
+        self.detail_label.setText(detail)
+        self.detail_label.setVisible(bool(detail))
 
 class TimerMessageBox(MessageBoxBase):
 
@@ -169,13 +294,10 @@ class TranslationPage(QWidget, Base):
     runtime_status_updated = pyqtSignal(object, object)
     token_estimate_done = pyqtSignal(object, object)
 
-    class TokenDisplayMode(StrEnum):
-        INPUT = "INPUT"
-        OUTPUT = "OUTPUT"
-
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         # 初始化
         self.data = {}
@@ -190,16 +312,39 @@ class TranslationPage(QWidget, Base):
 
         # 载入并保存默认配置
         config = Config().load().save()
+        self._config_snapshot = config
 
-        # 设置主容器
-        self.container = QVBoxLayout(self)
-        self.container.setSpacing(8)
-        self.container.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.workspace = QWidget(self)
+        self.workspace.setObjectName("translationWorkspace")
+        self.workspace.setMaximumWidth(1400)
+        self.workspace.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(self.workspace, 1)
+
+        # 监控正文在短窗口内可滚动，底部操作栏始终留在可视区域。
+        workspace_layout = QVBoxLayout(self.workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        self.content_scroll = SingleDirectionScrollArea(orient = Qt.Orientation.Vertical)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.enableTransparentBackground()
+        content = QWidget(self.content_scroll)
+        mark_app_page(content)
+        self.content_scroll.setWidget(content)
+        workspace_layout.addWidget(self.content_scroll, 1)
+
+        # 设置正文容器
+        self.container = QVBoxLayout(content)
+        self.container.setSpacing(12)
+        self.container.setContentsMargins(24, 18, 24, 18) # 左、上、右、下
 
         # 添加控件
         self.add_widget_head(self.container, config, window)
         self.add_widget_body(self.container, config, window)
-        self.add_widget_foot(self.container, config, window)
+        self.add_widget_foot(workspace_layout, config, window)
 
         # 注册事件
         self.subscribe(Base.Event.PLATFORM_TEST_DONE, self.update_button_status)
@@ -213,11 +358,33 @@ class TranslationPage(QWidget, Base):
         self.runtime_status_updated.connect(self.update_button_status)
         self.token_estimate_done.connect(self._on_token_estimate_done)
         self._token_estimate_running = False
+        self._peak_speed = 0.0
+        self._peak_speed_start_time = 0
 
         # 定时器
         self.ui_update_timer = QTimer(self)
         self.ui_update_timer.timeout.connect(self.update_ui_tick)
         self.ui_update_timer.start(500)
+
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "kpi_layout"):
+            self._update_dashboard_layout()
+
+    def _update_dashboard_layout(self) -> None:
+        """在窄窗口中将速览卡改为两列，避免英文状态被裁切。"""
+        compact = self.width() < 1000
+        for index, card in enumerate(self._kpi_cards):
+            self.kpi_layout.removeWidget(card)
+            self.kpi_layout.addWidget(card, index // 2 if compact else 0, index % 2 if compact else index)
+        if hasattr(self, "footer_backup_label"):
+            self.footer_backup_label.setVisible(not compact)
+        if hasattr(self, "throughput_card"):
+            stacked = self.width() < 820
+            self.flow_layout.removeWidget(self.progress_card)
+            self.flow_layout.removeWidget(self.throughput_card)
+            self.flow_layout.addWidget(self.progress_card, 0, 0, 1, 3 if stacked else 1, Qt.AlignTop)
+            self.flow_layout.addWidget(self.throughput_card, 1 if stacked else 0, 0 if stacked else 1, 1, 3 if stacked else 2, Qt.AlignTop)
 
     # 页面显示事件
     def showEvent(self, event) -> None:
@@ -237,6 +404,7 @@ class TranslationPage(QWidget, Base):
         self.update_token(self.data)
         self.update_task(self.data)
         self.update_status(self.data)
+        self._update_dashboard_details()
 
     # 更新按钮状态事件
     def update_button_status(self, event: str, data: dict) -> None:
@@ -261,22 +429,18 @@ class TranslationPage(QWidget, Base):
             self.action_stop.setEnabled(False)
             # 空闲状态下，如果有缓存数据也允许导出
             self.action_export.setEnabled(has_cache_data)
-            self.action_reinject_cache.setEnabled(has_cache_data)
         elif Engine.get().get_status() == Engine.Status.TESTING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(True)
             self.action_export.setEnabled(True)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.STOPPING:
             self.action_start.setEnabled(False)
             self.action_stop.setEnabled(False)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
         elif Engine.get().get_status() == Engine.Status.QUALITY:
             # 润色/校对与初译共享同一引擎锁，期间禁止启动或导出初译任务。
             self.action_start.setEnabled(False)
@@ -288,7 +452,6 @@ class TranslationPage(QWidget, Base):
             )
             self.action_stop.setEnabled(not cancel_requested)
             self.action_export.setEnabled(False)
-            self.action_reinject_cache.setEnabled(False)
 
         if Engine.get().get_status() == Engine.Status.IDLE and data.get('status') == Base.TranslationStatus.TRANSLATING:
             self.action_continue.setEnabled(True)
@@ -299,12 +462,26 @@ class TranslationPage(QWidget, Base):
 
     # 翻译更新事件
     def translation_update(self, event: str, data: dict) -> None:
-        if isinstance(data, dict) and "quality_task" in data:
-            # 质量任务只更新自己的分区，不能覆盖初译的行数与 Token 统计。
+        if isinstance(data, dict):
+            # 进度事件可能只携带 phase/message；合并更新，避免覆盖已有计时与行数。
             self.data = {**self.data, **data}
-            self.runtime_status_updated.emit(event, self.data)
+            message = data.get("message")
+            if data.get("phase") == "preparing" and isinstance(message, str) and message:
+                show = getattr(self, "indeterminate_show", None)
+                if callable(show):
+                    show(message)
+            elif "line" in data or "total_line" in data:
+                hide = getattr(self, "indeterminate_hide", None)
+                if callable(hide):
+                    hide()
+            if "quality_task" in data:
+                # 质量任务只更新自己的分区，并通知按钮状态同步。
+                self.runtime_status_updated.emit(event, self.data)
         else:
-            self.data = data
+            self.data = {}
+        refresh = getattr(self, "_update_dashboard_details", None)
+        if callable(refresh):
+            refresh()
 
     # 翻译停止完成事件
     def translation_stop_done(self, event: str, data: dict) -> None:
@@ -409,25 +586,40 @@ class TranslationPage(QWidget, Base):
         ):
             return None
 
-        display_mode = getattr(self, "token_display_mode", self.TokenDisplayMode.OUTPUT)
-        if display_mode == self.TokenDisplayMode.OUTPUT:
-            token = self.data.get("total_output_tokens", 0)
-        else:
-            token = self.data.get("total_input_tokens", 0)
-            if token == 0:
-                token = self.data.get("total_tokens", 0) - self.data.get("total_output_tokens", 0)
-        if token < 1000:
-            self.token.set_unit("Token")
-            self.token.set_value(f"{token}")
-        elif token < 1000 * 1000:
-            self.token.set_unit("KToken")
-            self.token.set_value(f"{(token / 1000):.2f}")
-        else:
-            self.token.set_unit("MToken")
-            self.token.set_value(f"{(token / 1000 / 1000):.2f}")
+        output_tokens = max(0, int(self.data.get("total_output_tokens", 0) or 0))
+        input_tokens = max(0, int(self.data.get("total_input_tokens", 0) or 0))
+        if input_tokens == 0:
+            input_tokens = max(
+                0,
+                int(self.data.get("total_tokens", 0) or 0) - output_tokens,
+            )
 
-        speed = self.data.get("total_output_tokens", 0) / max(1, time.time() - self.data.get("start_time", 0))
+        def update_card(card: DashboardCard, token: int) -> None:
+            if token < 1000:
+                card.set_unit("Token")
+                card.set_value(f"{token}")
+            elif token < 1000 * 1000:
+                card.set_unit("KToken")
+                card.set_value(f"{(token / 1000):.2f}")
+            else:
+                card.set_unit("MToken")
+                card.set_value(f"{(token / 1000 / 1000):.2f}")
+
+        update_card(self.output_token, output_tokens)
+        update_card(self.input_token, input_tokens)
+
+        start_time = self.data.get("start_time", 0)
+        if start_time != self._peak_speed_start_time:
+            self._peak_speed_start_time = start_time
+            self._peak_speed = 0.0
+        speed = self.data.get("total_output_tokens", 0) / max(1, time.time() - start_time)
+        self._peak_speed = max(self._peak_speed, speed)
         self.waveform.add_value(speed)
+        self.waveform_peak_label.setText(
+            Localizer.get().translation_page_peak_speed.format(
+                SPEED=f"{self._peak_speed:.2f}"
+            )
+        )
         if speed < 1000:
             self.speed.set_unit("T/S")
             self.speed.set_value(f"{speed:.2f}")
@@ -435,35 +627,325 @@ class TranslationPage(QWidget, Base):
             self.speed.set_unit("KT/S")
             self.speed.set_value(f"{(speed / 1000):.2f}")
 
+    def _update_header_description(self) -> None:
+        """用当前配置和引擎状态组成标题栏摘要，不复制原型演示任务。"""
+        label = getattr(self, "header_description_label", None)
+        if label is None:
+            return
+        config = getattr(self, "_config_snapshot", None) or Config().load()
+        source = self._language_code(getattr(config, "source_language", ""))
+        target = self._language_code(getattr(config, "target_language", ""))
+        running = Engine.get().get_running_task_count()
+        maximum = max(0, int(getattr(config, "max_workers", 0) or 0))
+        template = getattr(
+            Localizer.get(),
+            "translation_page_header_summary",
+            Localizer.get().translation_page_header_description,
+        )
+        label.setText(
+            template.format(
+                SOURCE=source,
+                TARGET=target,
+                RUNNING=running,
+                MAX=maximum,
+            )
+        )
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        """将秒数格式化为本地化的紧凑时长。"""
+        seconds = max(0, int(seconds or 0))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        strings = Localizer.get()
+        if hours:
+            return strings.translation_page_duration_hms.format(H=hours, M=minutes, S=seconds)
+        if minutes:
+            return strings.translation_page_duration_ms.format(M=minutes, S=seconds)
+        return strings.translation_page_duration_s.format(S=seconds)
+
+    @staticmethod
+    def _format_token_count(value: int) -> str:
+        value = max(0, int(value or 0))
+        if value < 1000:
+            return str(value)
+        if value < 1_000_000:
+            return f"{value / 1000:.2f}K"
+        return f"{value / 1_000_000:.2f}M"
+
+    @staticmethod
+    def _language_code(value: object) -> str:
+        code = getattr(value, "value", value)
+        return str(code or "").strip() or "-"
+
+    def _update_dashboard_details(self) -> None:
+        """刷新 Hero 底部摘要、两个原型指标卡及实时流水空态。"""
+        if not hasattr(self, "elapsed_label"):
+            return
+        self._update_header_description()
+        self._update_stream_feed_header()
+        total_time = max(0, int(self.data.get("time", 0) or 0))
+        if Engine.get().get_status() == Engine.Status.TRANSLATING:
+            start_time = self.data.get("start_time", 0)
+            if start_time:
+                total_time = max(0, int(time.time() - start_time))
+        line = max(0, int(self.data.get("line", 0) or 0))
+        total_line = max(0, int(self.data.get("total_line", 0) or 0))
+        remaining = max(0, total_line - line)
+        percent = line / max(1, total_line) if total_line else 0.0
+        remaining_time = max(0, int(total_time / max(1, line) * remaining))
+        strings = Localizer.get()
+        self.elapsed_label.setText(
+            strings.translation_page_elapsed.format(TIME=self._format_duration(total_time))
+        )
+        self.remaining_label.setText(
+            strings.translation_page_remaining.format(TIME=self._format_duration(remaining_time))
+        )
+
+        self.progress_kpi_card.set_value(f"{percent * 100:.1f}%")
+        self.progress_kpi_card.set_trend(f"{percent * 100:.1f}%")
+        self.progress_kpi_card.set_detail(
+            strings.translation_page_lines_detail.format(
+                LINE=line,
+                TOTAL=total_line,
+            )
+        )
+        self.progress_kpi_card.set_progress(percent)
+
+        output_tokens = max(0, int(self.data.get("total_output_tokens", 0) or 0))
+        speed = output_tokens / max(1, total_time)
+        self.speed_kpi_card.set_value(f"{speed:.2f}")
+        self.speed_kpi_card.set_trend(
+            strings.translation_page_trend_live if speed > 0 else strings.translation_page_trend_idle
+        )
+        self.speed_kpi_card.set_detail(
+            strings.translation_page_peak_speed.format(
+                SPEED=f"{getattr(self, '_peak_speed', 0.0):.2f}",
+            )
+        )
+
+        input_tokens = max(0, int(self.data.get("total_input_tokens", 0) or 0))
+        self.output_token.set_detail(
+            strings.translation_page_output_token_detail.format(
+                OUTPUT=self._format_token_count(output_tokens),
+            )
+        )
+        self.input_token.set_detail(
+            strings.translation_page_input_token_detail.format(
+                INPUT=self._format_token_count(input_tokens),
+            )
+        )
+        self.output_token.set_trend(
+            strings.translation_page_trend_total if output_tokens else strings.translation_page_trend_idle
+        )
+        self.input_token.set_trend(
+            strings.translation_page_trend_total if input_tokens else strings.translation_page_trend_idle
+        )
+        running = Engine.get().get_running_task_count()
+        maximum = max(0, int(getattr(getattr(self, "_config_snapshot", None), "max_workers", 0) or 0))
+        failed = max(0, int(self.data.get("failed_line_count", 0) or 0))
+        self.task.title_label.setText(strings.translation_page_thread_title)
+        self.task.set_value(str(running))
+        self.task.set_unit(strings.translation_page_thread_unit)
+        self.task.set_detail(
+            strings.translation_page_thread_detail.format(
+                RUNNING=running,
+                MAX=maximum,
+                FAILED=failed,
+            )
+        )
+        self.task.set_trend(
+            strings.translation_page_trend_healthy if failed == 0 else str(failed)
+        )
+        self._update_progress_pills(percent, line, total_line)
+        self._update_throughput_stats(speed, total_time)
+        self._refresh_stream_feed()
+
+    def _update_progress_pills(self, percent: float, line: int, total_line: int) -> None:
+        """刷新进度环下方的语义状态标签。"""
+        strings = Localizer.get()
+        pending_percent = max(0.0, 1.0 - percent) if total_line else 0.0
+        self.hero_translated_pill.setText(
+            strings.translation_page_translated_percent.format(
+                PERCENT=percent * 100,
+            )
+        )
+        self.hero_pending_pill.setText(
+            strings.translation_page_pending_percent.format(
+                PERCENT=pending_percent * 100,
+            )
+        )
+        cache_count = max(
+            0,
+            int(
+                self.data.get(
+                    "cached_line_count",
+                    self.data.get("cache_line_count", self.data.get("cache_count", 0)),
+                )
+                or 0
+            ),
+        )
+        cache_hit_rate = self.data.get("cache_hit_rate")
+        try:
+            cache_percent = float(cache_hit_rate) * 100
+        except (TypeError, ValueError):
+            cache_percent = cache_count / total_line * 100 if cache_count and total_line else None
+        if cache_percent is None:
+            self.hero_cache_pill.setText(strings.translation_page_cache_unavailable)
+        else:
+            self.hero_cache_pill.setText(
+                strings.translation_page_cache_percent.format(
+                    PERCENT=cache_percent,
+                )
+            )
+
+    def _update_throughput_stats(self, speed: float, total_time: int) -> None:
+        """刷新吞吐卡下方的统计值，未知字段保持占位符。"""
+        if not getattr(self, "throughput_stat_values", None):
+            return
+        batch_count = self.data.get("batch_count", self.data.get("processed_batches"))
+        cache_hit = self.data.get("cache_hit_rate")
+        latency = self.data.get("latency_ms", self.data.get("average_latency_ms"))
+        try:
+            cache_hit_text = f"{float(cache_hit) * 100:.1f}%" if cache_hit is not None else "—"
+        except (TypeError, ValueError):
+            cache_hit_text = "—"
+        values = [
+            f"{speed:.2f} T/s" if total_time or speed else "—",
+            str(batch_count) if batch_count is not None else "—",
+            cache_hit_text,
+            f"{latency} ms" if latency is not None else "—",
+        ]
+        for label, value in zip(self.throughput_stat_values, values):
+            label.setText(value)
+
+    def _refresh_stream_feed(self) -> None:
+        """展示引擎明确提供的最近流水；没有数据时保持真实空态。"""
+        items = self.data.get("recent_items", [])
+        if not isinstance(items, list):
+            items = []
+        items = [item for item in items if isinstance(item, dict)]
+        signature = repr(items[-5:])
+        if signature == getattr(self, "_stream_feed_signature", None):
+            return
+        self._stream_feed_signature = signature
+        while self.feed_items_layout.count():
+            item = self.feed_items_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None and widget is not self.feed_empty_label:
+                widget.deleteLater()
+        if not items:
+            self.feed_empty_label.setVisible(True)
+            self.feed_items_layout.addWidget(self.feed_empty_label)
+            return
+        self.feed_empty_label.setVisible(False)
+        for item in items[-5:][::-1]:
+            row = QFrame(self.feed_items_container)
+            row.setObjectName("translationFeedItem")
+            row.setMinimumHeight(34)
+            row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 4, 10, 4)
+            row_layout.setSpacing(12)
+
+            timestamp = str(item.get("timestamp", item.get("time", "--:--:--")) or "--:--:--")
+            time_label = CaptionLabel(timestamp, row)
+            set_text_role(time_label)
+            time_label.setFixedWidth(82)
+            file_name = str(item.get("file", item.get("file_path", "")) or "")
+            item_id = str(item.get("id", "") or "")
+            time_label.setToolTip(" · ".join(value for value in (item_id, file_name) if value))
+            row_layout.addWidget(time_label)
+
+            source_label = CaptionLabel(str(item.get("source", "")), row)
+            set_text_role(source_label)
+            source_label.setTextFormat(Qt.PlainText)
+            source_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            source_label.setWordWrap(True)
+            source_label.setToolTip(source_label.text())
+            row_layout.addWidget(source_label, 1)
+
+            target_label = CaptionLabel(str(item.get("target", "")), row)
+            set_text_role(target_label)
+            target_label.setTextFormat(Qt.PlainText)
+            target_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            target_label.setWordWrap(True)
+            status = str(item.get("status", "") or "")
+            latency = item.get("latency_ms", item.get("latency"))
+            details = " · ".join(
+                value
+                for value in (status, f"{latency} ms" if latency is not None else "")
+                if value
+            )
+            target_label.setToolTip("\n\n".join(value for value in (target_label.text(), details) if value))
+            row_layout.addWidget(target_label, 1)
+            self.feed_items_layout.addWidget(row)
+        self.feed_items_layout.addStretch(1)
+
+    def _update_stream_feed_header(self) -> None:
+        """根据当前任务语言刷新流水表头。"""
+        if not hasattr(self, "feed_source_header"):
+            return
+        strings = Localizer.get()
+        config = getattr(self, "_config_snapshot", None)
+        source = self._language_code(getattr(config, "source_language", ""))
+        target = self._language_code(getattr(config, "target_language", ""))
+        self.feed_time_header.setText(strings.translation_page_feed_time)
+        self.feed_source_header.setText(
+            strings.translation_page_feed_source.format(LANGUAGE=source.upper())
+        )
+        self.feed_target_header.setText(
+            strings.translation_page_feed_target.format(LANGUAGE=target.upper())
+        )
+
+    def _open_proofreading_page(self, window: FluentWindow) -> None:
+        """复用工具箱中的校对页，避免新增导航路由。"""
+        toolbox = getattr(window, "renpy_toolbox_page", None)
+        if toolbox is not None and hasattr(toolbox, "get_tool_page"):
+            try:
+                window.navigate_to_page(toolbox.get_tool_page("proofreading"))
+                return
+            except Exception:
+                pass
+        page = window.findChild(QWidget, "proofreading_page") if hasattr(window, "findChild") else None
+        if page is not None:
+            window.navigate_to_page(page)
+
     # 更新进度环
     def update_status(self, data: dict) -> None:
         if Engine.get().get_status() == Engine.Status.STOPPING:
-            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
-            self.ring.setValue(int(percent * 10000))
-            self.ring.setFormat(f"{Localizer.get().translation_page_status_stopping}\n{percent * 100:.2f}%")
+            line = max(0, int(self.data.get("line", 0) or 0))
+            total_line = max(0, int(self.data.get("total_line", 0) or 0))
+            percent = min(1.0, max(0.0, line / max(1, total_line)))
+            self._set_ring_progress(percent, line, total_line)
         elif Engine.get().get_status() == Engine.Status.TRANSLATING:
-            percent = min(1.0, max(0.0, self.data.get("line", 0) / max(1, self.data.get("total_line", 0))))
-            self.ring.setValue(int(percent * 10000))
-            self.ring.setFormat(f"{Localizer.get().translation_page_status_translating}\n{percent * 100:.2f}%")
+            line = max(0, int(self.data.get("line", 0) or 0))
+            total_line = max(0, int(self.data.get("total_line", 0) or 0))
+            percent = min(1.0, max(0.0, line / max(1, total_line)))
+            self._set_ring_progress(percent, line, total_line)
         elif Engine.get().get_status() == Engine.Status.QUALITY:
             quality = self.data.get("quality_task", {})
             completed = quality.get("completed_count", 0) if isinstance(quality, dict) else 0
             total = quality.get("total_count", 0) if isinstance(quality, dict) else 0
             percent = completed / max(1, total)
-            self.ring.setValue(int(percent * 10000))
-            quality_label = self._quality_status_label(quality)
-            self.ring.setFormat(f"{quality_label}\n{percent * 100:.2f}%")
+            self._set_ring_progress(percent, completed, total)
         else:
             # 空闲状态：如果有缓存数据，显示缓存的进度
-            line = self.data.get("line", 0)
-            total_line = self.data.get("total_line", 0)
+            line = max(0, int(self.data.get("line", 0) or 0))
+            total_line = max(0, int(self.data.get("total_line", 0) or 0))
             if line > 0 and total_line > 0:
                 percent = min(1.0, max(0.0, line / total_line))
-                self.ring.setValue(int(percent * 10000))
-                self.ring.setFormat(f"{Localizer.get().translation_page_status_idle}\n{line}/{total_line}")
+                self._set_ring_progress(percent, line, total_line)
             else:
-                self.ring.setValue(0)
-                self.ring.setFormat(Localizer.get().translation_page_status_idle)
+                self._set_ring_progress(0.0, 0, 0)
+
+    def _set_ring_progress(self, percent: float, completed: int, total: int) -> None:
+        """以原型的百分比和完成/总数双行格式更新进度环。"""
+        percent = min(1.0, max(0.0, float(percent)))
+        completed = max(0, int(completed or 0))
+        total = max(0, int(total or 0))
+        self.ring.setValue(int(percent * 10000))
+        self.ring.setFormat(f"{percent * 100:.1f}%\n{completed:,} / {total:,}")
 
     @staticmethod
     def _quality_status_label(quality: object) -> str:
@@ -504,64 +986,314 @@ class TranslationPage(QWidget, Base):
 
     # 头部
     def add_widget_head(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+        del config
         self.head_hbox_container = QWidget(self)
+        self.head_hbox_container.setObjectName("translationPageHeader")
         self.head_hbox = QHBoxLayout(self.head_hbox_container)
+        self.head_hbox.setContentsMargins(0, 0, 0, 0)
+        self.head_hbox.setSpacing(12)
+
+        header_text = QWidget(self.head_hbox_container)
+        header_layout = QVBoxLayout(header_text)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(2)
+        title = StrongBodyLabel(Localizer.get().translation_page_header_title, header_text)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
+        self.header_description_label = CaptionLabel("", header_text)
+        self.header_description_label.setWordWrap(True)
+        set_text_role(self.header_description_label)
+        header_layout.addWidget(self.header_description_label)
+        self.head_hbox.addWidget(header_text, 1)
+
+        header_actions = QHBoxLayout()
+        header_actions.setContentsMargins(0, 0, 0, 0)
+        header_actions.setSpacing(8)
+        self.open_proofreading_button = PushButton(
+            FluentIcon.DOCUMENT,
+            Localizer.get().translation_page_open_proofreading,
+            self.head_hbox_container,
+        )
+        self.open_proofreading_button.setFixedHeight(32)
+        self.open_proofreading_button.clicked.connect(
+            lambda: self._open_proofreading_page(window)
+        )
+        header_actions.addWidget(self.open_proofreading_button)
+        self.head_hbox.addLayout(header_actions)
         parent.addWidget(self.head_hbox_container)
-
-        # 波形图
-        self.waveform = WaveformWidget()
-        self.waveform.set_matrix_size(100, 20)
-
-        waveform_vbox_container = QWidget()
-        waveform_vbox = QVBoxLayout(waveform_vbox_container)
-        waveform_vbox.addStretch(1)
-        waveform_vbox.addWidget(self.waveform)
-
-        # 进度环
-        self.ring = ProgressRing()
-        self.ring.setRange(0, 10000)
-        self.ring.setValue(0)
-        self.ring.setTextVisible(True)
-        self.ring.setStrokeWidth(12)
-        self.ring.setFixedSize(140, 140)
-        self.ring.setFormat(Localizer.get().translation_page_status_idle)
-
-        ring_vbox_container = QWidget()
-        ring_vbox = QVBoxLayout(ring_vbox_container)
-        ring_vbox.addStretch(1)
-        ring_vbox.addWidget(self.ring)
-
-        # 添加控件
-        self.head_hbox.addWidget(ring_vbox_container)
-        self.head_hbox.addSpacing(8)
-        self.head_hbox.addStretch(1)
-        self.head_hbox.addWidget(waveform_vbox_container)
-        self.head_hbox.addStretch(1)
+        self._update_header_description()
 
     # 中部
     def add_widget_body(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+        del config, window
+        strings = Localizer.get()
+
+        self.kpi_strip = QWidget(self)
+        self.kpi_strip.setObjectName("translationKpiStrip")
+        kpi_layout = QGridLayout(self.kpi_strip)
+        kpi_layout.setContentsMargins(0, 0, 0, 0)
+        kpi_layout.setSpacing(12)
+        self.kpi_layout = kpi_layout
+
+        self.progress_kpi_card = DashboardCard(
+            self.kpi_strip,
+            strings.translation_page_kpi_progress,
+            "0.0%",
+            "",
+            icon=FluentIcon.COMPLETED,
+            accent="primary",
+        )
+        self.speed_kpi_card = DashboardCard(
+            self.kpi_strip,
+            strings.translation_page_kpi_throughput,
+            "0.00",
+            "T/s",
+            icon=FluentIcon.SPEED_HIGH,
+            accent="success",
+        )
+        # 进度和吞吐已经在下方主面板完整展示，顶部只保留令牌与线程摘要。
+        self.progress_kpi_card.hide()
+        self.speed_kpi_card.hide()
         self.flow_container = QWidget(self)
-        self.flow_layout = FlowLayout(self.flow_container, needAni = False)
-        self.flow_layout.setSpacing(8)
+        self.flow_container.setObjectName("translationDashboardGrid")
+        self.flow_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.flow_layout = QGridLayout(self.flow_container)
+        self.flow_layout.setHorizontalSpacing(14)
+        self.flow_layout.setVerticalSpacing(14)
         self.flow_layout.setContentsMargins(0, 0, 0, 0)
+        self.flow_layout.setColumnMinimumWidth(0, 280)
+        self.flow_layout.setColumnStretch(1, 1)
+        self.flow_layout.setColumnStretch(2, 1)
 
-        self.add_time_card(self.flow_layout, config, window)
-        self.add_remaining_time_card(self.flow_layout, config, window)
-        self.add_line_card(self.flow_layout, config, window)
-        self.add_remaining_line_card(self.flow_layout, config, window)
-        self.add_speed_card(self.flow_layout, config, window)
-        self.add_token_card(self.flow_layout, config, window)
-        self.add_task_card(self.flow_layout, config, window)
+        hero_card = CardWidget(self.flow_container)
+        self.progress_card = hero_card
+        hero_card.setObjectName("translationProgressCard")
+        hero_card.setFixedHeight(248)
+        hero_layout = QVBoxLayout(hero_card)
+        hero_layout.setContentsMargins(16, 14, 16, 14)
+        hero_layout.setSpacing(6)
+        hero_title = CaptionLabel(
+            Localizer.get().translation_page_progress_title,
+            hero_card,
+        )
+        set_text_role(hero_title)
+        hero_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hero_layout.addWidget(hero_title)
+        self.ring = ProgressRing(hero_card)
+        self.ring.setRange(0, 10000)
+        self.ring.setValue(0)
+        self.ring.setTextVisible(True)
+        self.ring.setStrokeWidth(8)
+        self.ring.setFixedSize(122, 122)
+        self.ring.setFormat(Localizer.get().translation_page_progress_empty)
+        ring_container = QWidget(hero_card)
+        ring_layout = QHBoxLayout(ring_container)
+        ring_layout.setContentsMargins(0, 0, 0, 0)
+        ring_layout.addStretch(1)
+        ring_layout.addWidget(self.ring)
+        ring_layout.addStretch(1)
+        hero_layout.addWidget(ring_container, 1)
 
+        breakdown = QHBoxLayout()
+        breakdown.setContentsMargins(0, 0, 0, 0)
+        breakdown.setSpacing(5)
+        self.hero_translated_pill = self._make_status_pill(
+            strings.translation_page_translated_percent.format(PERCENT=0)
+        )
+        self.hero_cache_pill = self._make_status_pill(
+            strings.translation_page_cache_unavailable
+        )
+        self.hero_cache_pill.setToolTip(strings.translation_page_cache_help)
+        self.hero_pending_pill = self._make_status_pill(
+            strings.translation_page_pending_percent.format(PERCENT=0)
+        )
+        breakdown.addWidget(self.hero_translated_pill, 1)
+        breakdown.addWidget(self.hero_cache_pill, 1)
+        breakdown.addWidget(self.hero_pending_pill, 1)
+        hero_layout.addLayout(breakdown)
+
+        hero_meta = QHBoxLayout()
+        hero_meta.setContentsMargins(0, 6, 0, 0)
+        self.elapsed_label = CaptionLabel("", hero_card)
+        set_text_role(self.elapsed_label)
+        self.remaining_label = CaptionLabel("", hero_card)
+        self.remaining_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        set_semantic_status(self.remaining_label, "info")
+        hero_meta.addWidget(self.elapsed_label)
+        hero_meta.addStretch(1)
+        hero_meta.addWidget(self.remaining_label)
+        hero_layout.addLayout(hero_meta)
+
+        # 右侧吞吐卡只绘制真实运行速率，并补充可用的运行统计。
+        throughput_card = CardWidget(self.flow_container)
+        self.throughput_card = throughput_card
+        throughput_card.setObjectName("translationThroughputCard")
+        throughput_card.setFixedHeight(248)
+        throughput_layout = QVBoxLayout(throughput_card)
+        throughput_layout.setContentsMargins(16, 14, 16, 14)
+        throughput_layout.setSpacing(6)
+        throughput_header = QHBoxLayout()
+        throughput_header.setContentsMargins(0, 0, 0, 0)
+        throughput_title = CaptionLabel(
+            Localizer.get().translation_page_throughput_title,
+            throughput_card,
+        )
+        set_text_role(throughput_title)
+        throughput_header.addWidget(throughput_title)
+        throughput_header.addStretch(1)
+        self.waveform_peak_label = CaptionLabel(
+            Localizer.get().translation_page_peak_speed.format(SPEED="0.00"),
+            throughput_card,
+        )
+        set_semantic_status(self.waveform_peak_label, "info")
+        throughput_header.addWidget(self.waveform_peak_label)
+        throughput_layout.addLayout(throughput_header)
+        self.waveform = WaveformWidget(throughput_card)
+        self.waveform.set_matrix_size(80, 8)
+        throughput_layout.addWidget(self.waveform)
+
+        stats_layout = QHBoxLayout()
+        stats_layout.setContentsMargins(0, 4, 0, 0)
+        stats_layout.setSpacing(6)
+        self.throughput_stat_values = []
+        for label in (
+            strings.translation_page_stat_average,
+            strings.translation_page_stat_batches,
+            strings.translation_page_stat_cache_hit,
+            strings.translation_page_stat_latency,
+        ):
+            stat = QFrame(throughput_card)
+            stat.setObjectName("translationThroughputStat")
+            if label == strings.translation_page_stat_cache_hit:
+                stat.setToolTip(strings.translation_page_cache_help)
+            stat_layout = QVBoxLayout(stat)
+            stat_layout.setContentsMargins(8, 5, 8, 5)
+            stat_layout.setSpacing(1)
+            stat_label = CaptionLabel(label, stat)
+            stat_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            stat_label.setWordWrap(True)
+            set_text_role(stat_label)
+            stat_value = StrongBodyLabel("—", stat)
+            value_font = stat_value.font()
+            value_font.setPixelSize(13)
+            stat_value.setFont(value_font)
+            stat_layout.addWidget(stat_label)
+            stat_layout.addWidget(stat_value)
+            stats_layout.addWidget(stat, 1)
+            self.throughput_stat_values.append(stat_value)
+        throughput_layout.addLayout(stats_layout)
+
+        # 旧的七个字段仍由同一套更新逻辑维护，但顶部只放不重复的摘要卡。
+        self.add_time_card(None, None, None)
+        self.add_remaining_time_card(None, None, None)
+        self.add_line_card(None, None, None)
+        self.add_remaining_line_card(None, None, None)
+        self.add_speed_card(None, None, None)
+        self.add_token_card(None, None, None)
+        self.add_task_card(None, None, None)
+        for card in (
+            self.time,
+            self.remaining_time,
+            self.line_card,
+            self.remaining_line,
+            self.speed,
+        ):
+            card.hide()
+
+        self._kpi_cards = (
+            self.output_token,
+            self.input_token,
+            self.task,
+        )
+
+        # 实际数据指标与原型的两列主网格对齐。
+        self.flow_layout.addWidget(hero_card, 0, 0, 1, 1, Qt.AlignmentFlag.AlignTop)
+        self.flow_layout.addWidget(throughput_card, 0, 1, 1, 2, Qt.AlignmentFlag.AlignTop)
+
+        self.stream_feed_card = CardWidget(self.flow_container)
+        self.stream_feed_card.setObjectName("translationStreamFeedCard")
+        self.stream_feed_card.setMinimumHeight(168)
+        self.stream_feed_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        feed_layout = QVBoxLayout(self.stream_feed_card)
+        feed_layout.setContentsMargins(14, 12, 14, 12)
+        feed_layout.setSpacing(8)
+        feed_header = QHBoxLayout()
+        feed_header.setContentsMargins(0, 0, 0, 0)
+        feed_header.addWidget(
+            CaptionLabel(Localizer.get().translation_page_feed_title, self.stream_feed_card)
+        )
+        feed_header.addStretch(1)
+        self.feed_mode_label = CaptionLabel(
+            Localizer.get().translation_page_feed_mode,
+            self.stream_feed_card,
+        )
+        set_text_role(self.feed_mode_label)
+        feed_header.addWidget(self.feed_mode_label)
+        feed_layout.addLayout(feed_header)
+
+        self.feed_columns_header = QFrame(self.stream_feed_card)
+        self.feed_columns_header.setObjectName("translationFeedHeader")
+        columns_layout = QHBoxLayout(self.feed_columns_header)
+        columns_layout.setContentsMargins(10, 3, 10, 3)
+        columns_layout.setSpacing(12)
+        self.feed_time_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_time_header.setFixedWidth(82)
+        self.feed_source_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_target_header = CaptionLabel("", self.feed_columns_header)
+        self.feed_source_header.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.feed_target_header.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        for header in (
+            self.feed_time_header,
+            self.feed_source_header,
+            self.feed_target_header,
+        ):
+            set_text_role(header)
+        columns_layout.addWidget(self.feed_time_header)
+        columns_layout.addWidget(self.feed_source_header, 1)
+        columns_layout.addWidget(self.feed_target_header, 1)
+        feed_layout.addWidget(self.feed_columns_header)
+        self.feed_items_container = QWidget(self.stream_feed_card)
+        # 表头和流水共享可用宽度，行高由换行后的文本决定。
+        self.feed_items_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.feed_items_layout = QVBoxLayout(self.feed_items_container)
+        self.feed_items_layout.setContentsMargins(0, 0, 0, 0)
+        self.feed_items_layout.setSpacing(6)
+        self.feed_empty_label = CaptionLabel(
+            Localizer.get().translation_page_feed_empty,
+            self.feed_items_container,
+        )
+        set_text_role(self.feed_empty_label)
+        self.feed_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.feed_items_layout.addWidget(self.feed_empty_label)
+        feed_layout.addWidget(self.feed_items_container, 1)
+        self.flow_layout.addWidget(self.stream_feed_card, 2, 0, 1, 3)
+
+        parent.addWidget(self.kpi_strip)
         self.container.addWidget(self.flow_container, 1)
+        self._update_dashboard_layout()
+        self._update_dashboard_details()
+
+    @staticmethod
+    def _make_status_pill(text: str) -> CaptionLabel:
+        """创建进度环下方的紧凑状态标签。"""
+        label = CaptionLabel(text)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setObjectName("translationStatusPill")
+        set_semantic_status(label, "info")
+        return label
 
     # 底部
     def add_widget_foot(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
         self.command_bar_card = CommandBarCard()
+        self.command_bar_card.setObjectName("translationFooterBar")
+        self.command_bar_card.setFixedHeight(58)
         parent.addWidget(self.command_bar_card)
 
-        # 第一行：主控制命令
-        self.command_bar_card.set_minimum_width(640)
+        # 单层操作栏：按核心控制、异常恢复、产物工具分组。
+        self.command_bar_card.set_minimum_width(0)
         self.add_command_bar_action_start(self.command_bar_card, config, window)
         self.add_command_bar_action_stop(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
@@ -569,6 +1301,8 @@ class TranslationPage(QWidget, Base):
         self.add_command_bar_action_retry_failed(self.command_bar_card, config, window)
         self.command_bar_card.add_separator()
         self.add_command_bar_action_export(self.command_bar_card, config, window)
+        self.add_command_bar_action_estimate(self.command_bar_card, config, window)
+        self.add_command_bar_action_timer(self.command_bar_card, config, window)
 
         # 添加信息条
         self.indeterminate = IndeterminateProgressRing()
@@ -576,169 +1310,113 @@ class TranslationPage(QWidget, Base):
         self.indeterminate.setStrokeWidth(3)
         self.indeterminate.hide()
         self.info_label = CaptionLabel(Localizer.get().translation_page_indeterminate_saving, self)
-        self.info_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
+        set_text_role(self.info_label)
         self.info_label.hide()
 
-        self.command_bar_card.add_stretch(1)
+        # 剩余空间交给命令栏，避免操作按钮全部被挤进更多菜单。
+        self.command_bar_card.hbox.setStretch(0, 1)
+        self.footer_backup_label = CaptionLabel(
+            Localizer.get().translation_page_footer_backup,
+            self.command_bar_card,
+        )
+        set_text_role(self.footer_backup_label)
+        self.command_bar_card.add_widget(self.footer_backup_label)
+        self.command_bar_card.add_spacing(10)
         self.command_bar_card.add_widget(self.info_label)
         self.command_bar_card.add_spacing(4)
         self.command_bar_card.add_widget(self.indeterminate)
 
-        # 第二行：工具命令（直接展开，不折叠入 ...）
-        self.command_bar_card2 = CommandBarCard()
-        parent.addWidget(self.command_bar_card2)
-        self.command_bar_card2.set_minimum_width(640)
-        self.add_command_bar_action_reinject_cache(self.command_bar_card2, config, window)
-        self.command_bar_card2.add_separator()
-        self.add_command_bar_action_estimate(self.command_bar_card2, config, window)
-        self.add_command_bar_action_timer(self.command_bar_card2, config, window)
-
     # 累计时间
-    def add_time_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_time_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.time = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_time,
             value = Localizer.get().none,
             unit = "",
         )
-        self.time.setFixedSize(204, 204)
-        parent.addWidget(self.time)
+        if parent is not None:
+            parent.addWidget(self.time)
 
     # 剩余时间
-    def add_remaining_time_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_remaining_time_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.remaining_time = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_remaining_time,
             value = Localizer.get().none,
             unit = "",
         )
-        self.remaining_time.setFixedSize(204, 204)
-        parent.addWidget(self.remaining_time)
+        if parent is not None:
+            parent.addWidget(self.remaining_time)
 
     # 翻译行数
-    def add_line_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_line_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.line_card = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_line,
             value = Localizer.get().none,
             unit = "",
         )
-        self.line_card.setFixedSize(204, 204)
-        parent.addWidget(self.line_card)
+        if parent is not None:
+            parent.addWidget(self.line_card)
 
     # 剩余行数
-    def add_remaining_line_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_remaining_line_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.remaining_line = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_remaining_line,
             value = Localizer.get().none,
             unit = "",
         )
-        self.remaining_line.setFixedSize(204, 204)
-        parent.addWidget(self.remaining_line)
+        if parent is not None:
+            parent.addWidget(self.remaining_line)
 
     # 平均速度
-    def add_speed_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_speed_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.speed = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_speed,
             value = Localizer.get().none,
             unit = "",
         )
-        self.speed.setFixedSize(204, 204)
-        parent.addWidget(self.speed)
+        if parent is not None:
+            parent.addWidget(self.speed)
 
     # 累计消耗
-    def add_token_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
-        self.token_display_mode = self.TokenDisplayMode.OUTPUT
-
-        def on_token_card_clicked(card: DashboardCard) -> None:
-            if self.token_display_mode == self.TokenDisplayMode.OUTPUT:
-                self.token_display_mode = self.TokenDisplayMode.INPUT
-                card.title_label.setText(Localizer.get().translation_page_card_token_input)
-            else:
-                self.token_display_mode = self.TokenDisplayMode.OUTPUT
-                card.title_label.setText(Localizer.get().translation_page_card_token_output)
-
-            self._animate_token_card_switch()
-
-        self.token = DashboardCard(
+    def add_token_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
+        self.output_token = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_token_output,
             value = Localizer.get().none,
             unit = "",
-            clicked = on_token_card_clicked,
+            icon = FluentIcon.CALORIES,
+            accent = "warning",
         )
-        self.token.setFixedSize(204, 204)
-        self.token.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.token.installEventFilter(ToolTipFilter(self.token, 300, ToolTipPosition.TOP))
-        self.token.setToolTip(Localizer.get().translation_page_card_token_tooltip)
-        parent.addWidget(self.token)
-
-    def _animate_token_card_switch(self) -> None:
-        from PyQt5.QtCore import QEasingCurve
-        from PyQt5.QtCore import QPropertyAnimation
-        from PyQt5.QtWidgets import QGraphicsOpacityEffect
-
-        value_label = self.token.value_label
-        unit_label = self.token.unit_label
-
-        if not hasattr(self, "_token_value_opacity_effect") or self._token_value_opacity_effect is None:
-            self._token_value_opacity_effect = QGraphicsOpacityEffect(value_label)
-            value_label.setGraphicsEffect(self._token_value_opacity_effect)
-
-        if not hasattr(self, "_token_unit_opacity_effect") or self._token_unit_opacity_effect is None:
-            self._token_unit_opacity_effect = QGraphicsOpacityEffect(unit_label)
-            unit_label.setGraphicsEffect(self._token_unit_opacity_effect)
-
-        fade_out = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
-        fade_out.setDuration(100)
-        fade_out.setStartValue(1.0)
-        fade_out.setEndValue(0.3)
-        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_out_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
-        fade_out_unit.setDuration(100)
-        fade_out_unit.setStartValue(1.0)
-        fade_out_unit.setEndValue(0.3)
-        fade_out_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_in = QPropertyAnimation(self._token_value_opacity_effect, b"opacity")
-        fade_in.setDuration(100)
-        fade_in.setStartValue(0.3)
-        fade_in.setEndValue(1.0)
-        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        fade_in_unit = QPropertyAnimation(self._token_unit_opacity_effect, b"opacity")
-        fade_in_unit.setDuration(100)
-        fade_in_unit.setStartValue(0.3)
-        fade_in_unit.setEndValue(1.0)
-        fade_in_unit.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        def on_fade_out_finished() -> None:
-            self.update_token(self.data)
-            fade_in.start()
-            fade_in_unit.start()
-
-        fade_out.finished.connect(on_fade_out_finished)
-        fade_out.start()
-        fade_out_unit.start()
-
-        self._token_fade_out_anim = fade_out
-        self._token_fade_out_unit_anim = fade_out_unit
-        self._token_fade_in_anim = fade_in
-        self._token_fade_in_unit_anim = fade_in_unit
+        self.input_token = DashboardCard(
+            parent = self,
+            title = Localizer.get().translation_page_card_token_input,
+            value = Localizer.get().none,
+            unit = "",
+            icon = FluentIcon.CALORIES,
+            accent = "warning",
+        )
+        # 兼容旧调用方：token 代表输出令牌卡。
+        self.token = self.output_token
+        if parent is not None:
+            parent.addWidget(self.output_token)
+            parent.addWidget(self.input_token)
 
     # 并行任务
-    def add_task_card(self, parent: QLayout, config: Config, window: FluentWindow) -> None:
+    def add_task_card(self, parent: QLayout | None, config: Config | None, window: FluentWindow | None) -> None:
         self.task = DashboardCard(
             parent = self,
             title = Localizer.get().translation_page_card_task,
             value = Localizer.get().none,
             unit = "",
+            icon = FluentIcon.PEOPLE,
+            accent = "cyan",
         )
-        self.task.setFixedSize(204, 204)
-        parent.addWidget(self.task)
+        if parent is not None:
+            parent.addWidget(self.task)
 
     def _request_translation_start(
         self,
@@ -960,14 +1638,10 @@ class TranslationPage(QWidget, Base):
         )
         self.action_retry_failed.setEnabled(False)
 
-    # 导出已完成的内容
+    # 将当前译文写入配置的输出目录
     def add_command_bar_action_export(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
         def triggered() -> None:
             self.emit(Base.Event.TRANSLATION_MANUAL_EXPORT, {})
-            self.emit(Base.Event.APP_TOAST_SHOW, {
-                "type": Base.ToastType.SUCCESS,
-                "message": Localizer.get().task_success,
-            })
 
         self.action_export = parent.add_action(
             Action(FluentIcon.SHARE, Localizer.get().translation_page_export, parent, triggered = triggered),
@@ -975,32 +1649,6 @@ class TranslationPage(QWidget, Base):
         self.action_export.installEventFilter(ToolTipFilter(self.action_export, 300, ToolTipPosition.TOP))
         self.action_export.setToolTip(Localizer.get().translation_page_export_tooltip)
         self.action_export.setEnabled(False)
-
-    # 从缓存重新注入
-    def add_command_bar_action_reinject_cache(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
-        def triggered() -> None:
-            message_box = MessageBox(
-                Localizer.get().alert,
-                Localizer.get().translation_page_reinject_cache_confirm,
-                window,
-            )
-            message_box.yesButton.setText(Localizer.get().confirm)
-            message_box.cancelButton.setText(Localizer.get().cancel)
-
-            if not message_box.exec():
-                return
-
-            current_config = Config().load()
-            self.emit(Base.Event.TRANSLATION_CACHE_REINJECT, {
-                "output_folder": current_config.output_folder,
-            })
-
-        self.action_reinject_cache = parent.add_action(
-            Action(FluentIcon.SYNC, Localizer.get().translation_page_reinject_cache, parent, triggered = triggered),
-        )
-        self.action_reinject_cache.installEventFilter(ToolTipFilter(self.action_reinject_cache, 300, ToolTipPosition.TOP))
-        self.action_reinject_cache.setToolTip(Localizer.get().translation_page_reinject_cache_tooltip)
-        self.action_reinject_cache.setEnabled(False)
 
     def add_command_bar_action_estimate(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
 

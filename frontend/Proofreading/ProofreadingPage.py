@@ -3,19 +3,25 @@ import threading
 import time
 
 from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QShowEvent
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import QLayout
+from PyQt5.QtWidgets import QHBoxLayout
 from PyQt5.QtWidgets import QVBoxLayout
 from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import Action
 from qfluentwidgets import CaptionLabel
+from qfluentwidgets import CardWidget
+from qfluentwidgets import CheckBox
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import IndeterminateProgressRing
+from qfluentwidgets import TitleLabel
 from qfluentwidgets import MessageBox
+from qfluentwidgets import SearchLineEdit
 from qfluentwidgets import ToolTipFilter
 from qfluentwidgets import ToolTipPosition
 
@@ -44,24 +50,27 @@ from module.Renpy.ProjectPaths import (
     translation_output_candidates,
 )
 from widget.CommandBarCard import CommandBarCard
+from widget.QuietPillButton import QuietPillButton
 from widget.SearchCard import SearchCard
+from widget.ThemeHelper import mark_app_page
 
 class ProofreadingPage(QWidget, Base):
     """校对任务主页面"""
 
     @staticmethod
     def _cache_load_error_message(error: BaseException) -> str:
-        """将缓存载入异常转换为不泄露路径/凭据的中文提示。"""
+        """将缓存载入异常转换为不泄露路径或凭据的本地化提示。"""
+        strings = Localizer.get()
         if isinstance(error, CacheLoadError):
             text = str(error).casefold()
             if "incomplete" in text or "不存在" in text or "no cache" in text:
-                return "未找到完整翻译缓存，请先完成一键翻译或检查输出目录"
+                return strings.proofreading_page_cache_missing
             if "invalid" in text or "corrupt" in text or "schema" in text:
-                return "翻译缓存格式损坏，请重新执行翻译后再进行校对"
-            return "无法载入翻译缓存，请确认项目路径和输出目录一致"
+                return strings.proofreading_page_cache_invalid
+            return strings.proofreading_page_cache_mismatch
         if isinstance(error, (FileNotFoundError, PermissionError, OSError)):
-            return "无法访问翻译缓存，请检查目录权限和磁盘空间"
-        return "校对缓存载入失败，请检查项目路径后重试"
+            return strings.proofreading_page_cache_access_denied
+        return strings.proofreading_page_cache_load_error
 
     items_loaded = pyqtSignal(list)
     translate_done = pyqtSignal(object, bool)
@@ -76,6 +85,7 @@ class ProofreadingPage(QWidget, Base):
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
         self.setObjectName(text.replace(" ", "-"))
+        mark_app_page(self)
 
         self.window = window
         self.items: list[CacheItem] = []
@@ -93,6 +103,10 @@ class ProofreadingPage(QWidget, Base):
         self.search_match_indices: list[int] = []
         self.search_current_match: int = -1
         self._warning_check_id: int = 0
+        # 批量更新结束后统一刷新筛选，避免编辑回调中销毁当前行控件。
+        self._filter_refresh_timer = QTimer(self)
+        self._filter_refresh_timer.setSingleShot(True)
+        self._filter_refresh_timer.timeout.connect(self._apply_filter)
         self._batch_retranslate_item_ids: set[int] = set()
         self._batch_retranslate_success: int = 0
         self._batch_retranslate_failed: int = 0
@@ -103,6 +117,23 @@ class ProofreadingPage(QWidget, Base):
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
         self.root.setContentsMargins(24, 24, 24, 24)
+
+        header = QWidget(self)
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setSpacing(2)
+        title = TitleLabel(Localizer.get().app_proofreading_page, header)
+        title_font = title.font()
+        title_font.setPixelSize(18)
+        title.setFont(title_font)
+        header_layout.addWidget(title)
+        header_description = CaptionLabel(
+            Localizer.get().proofreading_page_header_description,
+            header,
+        )
+        header_description.setWordWrap(True)
+        header_layout.addWidget(header_description)
+        self.root.addWidget(header)
 
         self.add_widget_body(self.root, window)
         self.add_widget_foot(self.root, window)
@@ -128,7 +159,53 @@ class ProofreadingPage(QWidget, Base):
         self._indeterminate_hide_timer: QTimer | None = None
 
     def add_widget_body(self, parent: QLayout, window: FluentWindow) -> None:
-        self.table_widget = ProofreadingTableWidget()
+        # 原型使用单层内容面板承载筛选条和双语表格，数据表本身保持现有四列契约。
+        self.table_surface = CardWidget(self)
+        self.table_surface.setObjectName("proofreadingSurface")
+        surface_layout = QVBoxLayout(self.table_surface)
+        surface_layout.setContentsMargins(0, 0, 0, 0)
+        surface_layout.setSpacing(0)
+
+        self.inline_filter_bar = QWidget(self.table_surface)
+        self.inline_filter_bar.setObjectName("proofreadingFilterBar")
+        filter_layout = QHBoxLayout(self.inline_filter_bar)
+        filter_layout.setContentsMargins(12, 8, 12, 8)
+        filter_layout.setSpacing(8)
+        self.inline_scope_label = CaptionLabel(
+            Localizer.get().proofreading_page_current_view,
+            self.inline_filter_bar,
+        )
+        filter_layout.addWidget(self.inline_scope_label)
+
+        self.inline_filter_button = QuietPillButton(
+            Localizer.get().proofreading_page_filter,
+            self.inline_filter_bar,
+        )
+        self.inline_filter_button.setIcon(FluentIcon.FILTER)
+        self.inline_filter_button.clicked.connect(self._on_filter_clicked)
+        filter_layout.addWidget(self.inline_filter_button)
+
+        self.only_issues_check = CheckBox(Localizer.get().proofreading_page_only_issues, self.inline_filter_bar)
+        self.only_issues_check.toggled.connect(self._apply_filter)
+        filter_layout.addWidget(self.only_issues_check)
+
+        self.inline_search_edit = SearchLineEdit(self.inline_filter_bar)
+        self.inline_search_edit.setPlaceholderText(Localizer.get().proofreading_page_search_placeholder)
+        self.inline_search_edit.setToolTip(Localizer.get().proofreading_page_search_help)
+        self.inline_search_edit.setMinimumWidth(120)
+        self.inline_search_edit.returnPressed.connect(self._on_inline_search_submitted)
+        filter_layout.addWidget(self.inline_search_edit, 1)
+
+        self.inline_search_button = QuietPillButton(
+            Localizer.get().proofreading_page_search,
+            self.inline_filter_bar,
+        )
+        self.inline_search_button.setIcon(FluentIcon.SEARCH)
+        self.inline_search_button.clicked.connect(self._on_inline_search_submitted)
+        filter_layout.addWidget(self.inline_search_button)
+        surface_layout.addWidget(self.inline_filter_bar)
+
+        self.table_widget = ProofreadingTableWidget(self.table_surface)
         self.table_widget.cell_edited.connect(self._on_cell_edited)
         self.table_widget.retranslate_clicked.connect(self._on_retranslate_clicked)
         self.table_widget.confirm_translations_clicked.connect(self._on_confirm_translations_clicked)
@@ -137,7 +214,8 @@ class ProofreadingPage(QWidget, Base):
         self.table_widget.selected_items_changed.connect(self._on_selected_items_changed)
         self.table_widget.set_items([], {})
 
-        parent.addWidget(self.table_widget, 1)
+        surface_layout.addWidget(self.table_widget, 1)
+        parent.addWidget(self.table_surface, 1)
 
     def add_widget_foot(self, parent: QLayout, window: FluentWindow) -> None:
         self.search_card = SearchCard(self)
@@ -152,7 +230,8 @@ class ProofreadingPage(QWidget, Base):
         self.command_bar_card = CommandBarCard()
         parent.addWidget(self.command_bar_card)
 
-        self.command_bar_card.set_minimum_width(640)
+        self.command_bar_card.set_minimum_width(0)
+        self.command_bar_card.hbox.setStretch(0, 1)
 
         self.btn_load = self.command_bar_card.add_action(
             Action(FluentIcon.DOWNLOAD, Localizer.get().proofreading_page_load, triggered = self._on_load_clicked)
@@ -236,8 +315,7 @@ class ProofreadingPage(QWidget, Base):
 
         self.pagination_bar = PaginationBar()
         self.pagination_bar.page_changed.connect(self._on_page_changed)
-        self.command_bar_card.add_widget_to_command_bar(self.pagination_bar)
-        self.command_bar_card.add_stretch(1)
+        parent.addWidget(self.pagination_bar, 0, Qt.AlignCenter)
 
         self.info_label = CaptionLabel("", self)
         self.info_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
@@ -330,6 +408,8 @@ class ProofreadingPage(QWidget, Base):
                     self.items_loaded.emit([])
                     return
 
+                from module.File.RENPY import RENPY
+                RENPY(self.config).refresh_replace_markers(items)
                 self.items = items
                 self._translation_progress = cache_manager.get_project().get_progress()
                 self.quality_report = build_translation_quality_report(
@@ -397,7 +477,7 @@ class ProofreadingPage(QWidget, Base):
 
         warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
         glossary_terms = self.filter_options.get(FilterDialog.KEY_GLOSSARY_TERMS)
-        if warning_types is not None or glossary_terms is not None:
+        if warning_types is not None or glossary_terms is not None or self.only_issues_check.isChecked():
             self._apply_filter()
 
     def _on_items_loaded_ui(self, items: list[CacheItem]) -> None:
@@ -436,6 +516,18 @@ class ProofreadingPage(QWidget, Base):
             and any(Base.is_item_proofreadable(item.get_status()) for item in selected_items)
         )
         self.btn_quality_report.setEnabled(can_operate)
+        self.inline_filter_button.setEnabled(has_items)
+        self.inline_search_button.setEnabled(has_items)
+        self.inline_search_edit.setEnabled(has_items)
+
+    def _on_inline_search_submitted(self) -> None:
+        """常驻搜索按普通文本定位，重复提交跳到下一处。"""
+        keyword = self.inline_search_edit.text().strip()
+        self.search_card.get_line_edit().setText(keyword)
+        if keyword and keyword == self.search_keyword and not self.search_is_regex and self.search_match_indices:
+            self._on_search_next_clicked()
+        else:
+            self._do_search(use_regex=False)
 
     def _on_filter_clicked(self) -> None:
         if not self.items:
@@ -457,6 +549,7 @@ class ProofreadingPage(QWidget, Base):
             self._apply_filter()
 
     def _apply_filter(self) -> None:
+        self._filter_refresh_timer.stop()
         warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
         statuses = self.filter_options.get(FilterDialog.KEY_STATUSES)
         file_paths = self.filter_options.get(FilterDialog.KEY_FILE_PATHS)
@@ -465,6 +558,8 @@ class ProofreadingPage(QWidget, Base):
         filtered = []
         for item in self.items:
             if item.get_status() in (Base.TranslationStatus.EXCLUDED, Base.TranslationStatus.DUPLICATED):
+                continue
+            if self.only_issues_check.isChecked() and not self.warning_map.get(id(item)):
                 continue
 
             if warning_types is not None:
@@ -486,7 +581,7 @@ class ProofreadingPage(QWidget, Base):
             if statuses is not None and item.get_status() not in statuses:
                 continue
 
-            if file_paths is not None and item.get_file_path() not in file_paths:
+            if file_paths is not None and FilterDialog.file_group_key(item) not in file_paths:
                 continue
 
             filtered.append(item)
@@ -514,15 +609,17 @@ class ProofreadingPage(QWidget, Base):
         self.search_card.setVisible(False)
         self.command_bar_card.setVisible(True)
 
-    def _do_search(self) -> None:
+    def _do_search(self, *, use_regex: bool | None = None) -> None:
         keyword = self.search_card.get_keyword()
         if not keyword:
+            self.search_keyword = ""
+            self.search_is_regex = False
             self.search_match_indices = []
             self.search_current_match = -1
             self.search_card.clear_match_info()
             return
 
-        is_regex = self.search_card.is_regex_mode()
+        is_regex = self.search_card.is_regex_mode() if use_regex is None else use_regex
         if is_regex:
             is_valid, error_msg = self.search_card.validate_regex()
             if not is_valid:
@@ -656,6 +753,8 @@ class ProofreadingPage(QWidget, Base):
         row = self.table_widget.find_row_by_item(item)
         if row >= 0:
             self.table_widget.update_row_status(row, warnings)
+        if self.only_issues_check.isChecked() or self.filter_options:
+            self._filter_refresh_timer.start(0)
 
     def _on_copy_src_clicked(self, item: CacheItem) -> None:
         clipboard = QApplication.clipboard()
@@ -1163,12 +1262,13 @@ class ProofreadingPage(QWidget, Base):
                 cache_manager.set_items(items)
                 output_folder = self._cache_output_folder or config.output_folder
                 cache_manager.load_project_from_file(output_folder, strict = True)
-                cache_manager.save_to_file(
+                saved = cache_manager.save_to_file(
                     project = cache_manager.get_project(),
                     items = items,
-                    output_folder = output_folder
+                    output_folder = output_folder,
+                    strict = True,
                 )
-                self.save_done.emit(True)
+                self.save_done.emit(saved is True)
             except Exception as e:
                 self.error(f"{Localizer.get().proofreading_page_save_failed}", e)
                 self.save_done.emit(False)

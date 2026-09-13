@@ -14,6 +14,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
+from module.Extract.ReplaceGenerator import generate_replace_from_miss
 from module.Renpy.ProjectPaths import RenpyProjectPaths, write_run_manifest
 from module.Project.ProjectStore import ProjectStore
 from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
@@ -21,6 +22,7 @@ from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from frontend.RenpyToolbox.OneKeyNameService import OneKeyNameService
 
 
 def configure_tl_translation_mode(config):
@@ -738,6 +740,34 @@ class ExtractionWorker(QThread):
             self.unified_extractor.set_progress_callback(None)
 
 
+class CharacterScanWorker(QThread):
+    """后台扫描角色名和变量引用，避免抽取完成后阻塞界面线程。"""
+
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, game_dir: str, tl_name: str, *, force: bool = False):
+        super().__init__()
+        self.game_dir = game_dir
+        self.tl_name = tl_name
+        self.force = force
+
+    def run(self) -> None:
+        LogManager.get().info(
+            f"开始后台扫描角色名和变量引用: game={self.game_dir}, language={self.tl_name}"
+        )
+        try:
+            OneKeyNameService.get().extract_character_names(
+                self.game_dir,
+                self.tl_name,
+                force=self.force,
+            )
+            LogManager.get().info("后台角色名和变量引用扫描完成")
+            self.finished.emit(True, "角色名和变量引用扫描完成")
+        except Exception as exc:
+            LogManager.get().warning(f"角色名扫描失败：{exc}")
+            self.finished.emit(False, str(exc))
+
+
 class ApplyTranslationWorker(QThread):
     """后台执行“应用翻译到游戏”，避免大批量文件操作阻塞 UI。
 
@@ -808,6 +838,39 @@ class ApplyTranslationWorker(QThread):
         finally:
             self.unified_extractor.set_progress_callback(None)
 
+    def _refresh_replace_fallback(self, target, language: str) -> dict:
+        self.progress.emit(
+            Localizer.localize(
+                "正在生成 replace_text 兜底...",
+                "Generating the replace_text fallback...",
+            ),
+            98,
+        )
+        try:
+            output_path, count = generate_replace_from_miss(target, language)
+            return {
+                "replace_path": str(output_path) if output_path is not None else "",
+                "replace_count": count,
+            }
+        except Exception as exc:
+            LogManager.get().error(f"生成 replace_text 兜底失败: {exc}")
+            return {"replace_error": str(exc)}
+
+    @staticmethod
+    def _fallback_message(message: str, payload: dict) -> str:
+        if payload.get("replace_error"):
+            return message + Localizer.localize(
+                "；replace_text 兜底生成失败，可稍后在 Agent 中重试",
+                "; the replace_text fallback failed and can be retried later in Agent",
+            )
+        replace_count = int(payload.get("replace_count", 0) or 0)
+        if replace_count > 0:
+            return message + Localizer.localize(
+                "；已为 {count} 条补充抽取译文生成运行时兜底补丁",
+                "; generated a runtime fallback patch for {count} supplemental translations",
+            ).format(count=replace_count)
+        return message
+
     def _run_incremental(self):
         merge_result = self.unified_extractor.merge_incremental_folder(
             self.game_dir,
@@ -862,10 +925,15 @@ class ApplyTranslationWorker(QThread):
             remember_run=True,
         )
         self.config.save()
+        payload = {"main_output": str(self.main_output)}
+        payload.update(self._refresh_replace_fallback(self.game_dir, self.tl_name))
         self.finished.emit(
             True,
-            Localizer.get().onekey_incremental_translation_applied,
-            {"main_output": str(self.main_output)},
+            self._fallback_message(
+                Localizer.get().onekey_incremental_translation_applied,
+                payload,
+            ),
+            payload,
         )
 
     def _run_full(self):
@@ -888,8 +956,19 @@ class ApplyTranslationWorker(QThread):
                 remember_run=False,
             )
             self.config.save()
+        payload = {"count": success_count}
+        if self.project_root and self.project_language:
+            payload.update(
+                self._refresh_replace_fallback(
+                    self.project_root,
+                    self.project_language,
+                )
+            )
         self.finished.emit(
             True,
-            Localizer.get().onekey_applied_translation_files_game_folder_you_can.format(success_count=success_count),
-            {"count": success_count},
+            self._fallback_message(
+                Localizer.get().onekey_applied_translation_files_game_folder_you_can.format(success_count=success_count),
+                payload,
+            ),
+            payload,
         )

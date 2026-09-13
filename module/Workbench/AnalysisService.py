@@ -11,6 +11,7 @@ from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
 from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
 from module.File.FileManager import FileManager
@@ -61,6 +62,13 @@ class WorkbenchAnalysisService(Base):
     def __init__(self) -> None:
         super().__init__()
         self.scanner = CharacterScanner()
+        self.progress_callback = None
+
+    def _report_progress(self, message: str) -> None:
+        """记录分析阶段，并把同一信息交给界面显示。"""
+        self.info(f"[Workbench] {message}")
+        if self.progress_callback is not None:
+            self.progress_callback(message)
 
     def ensure_analysis_ready(
         self,
@@ -97,6 +105,7 @@ class WorkbenchAnalysisService(Base):
         """生成世界观和角色卡草稿。"""
         scope = normalize_analysis_scope(scope)
         platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
+        self._report_progress(Localizer.get().workbench_progress_loading)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         worldbook_draft, worldbook_raw = self.generate_worldbook_draft(
@@ -132,6 +141,7 @@ class WorkbenchAnalysisService(Base):
         """仅生成世界观草稿。"""
         scope = normalize_analysis_scope(scope)
         platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
+        self._report_progress(Localizer.get().workbench_progress_loading)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         worldbook_draft, worldbook_raw = self.generate_worldbook_draft(
@@ -161,6 +171,7 @@ class WorkbenchAnalysisService(Base):
         """生成角色卡草稿，可选单角色。"""
         scope = normalize_analysis_scope(scope)
         platform = self.ensure_analysis_ready(config, engine_reserved = engine_reserved)
+        self._report_progress(Localizer.get().workbench_progress_loading)
         items, source_summary = self.load_scope_items(config, scope)
         candidates = self.scanner.build_candidates(config, items, self.resolve_project_root(config))
         if normalize_text(card_id) != "":
@@ -464,6 +475,7 @@ class WorkbenchAnalysisService(Base):
             ]
         )
 
+        self._report_progress(Localizer.get().workbench_progress_worldbook)
         raw = self.request_json_text(config, platform, prompt, round_index = 0)
         try:
             parsed = repair.loads(raw)
@@ -473,6 +485,7 @@ class WorkbenchAnalysisService(Base):
         if not isinstance(parsed, dict):
             raise AnalysisServiceError("世界观草稿解析失败：模型返回的不是 JSON 对象。", raw_response = raw)
 
+        self._report_progress(Localizer.get().workbench_progress_worldbook_done)
         return normalize_worldbook(parsed), raw
 
     def generate_character_drafts(
@@ -488,12 +501,18 @@ class WorkbenchAnalysisService(Base):
         drafts: list[dict[str, Any]] = []
         raws: list[str] = []
         if not candidates:
+            self._report_progress(Localizer.get().workbench_progress_no_characters)
             return drafts, raws
 
         chunk_size = 8
         for offset in range(0, len(candidates), chunk_size):
             chunk = candidates[offset: offset + chunk_size]
             prompt = self.build_character_prompt(scope, chunk, normalized_world)
+            self._report_progress(Localizer.get().workbench_progress_characters.format(
+                batch=offset // chunk_size + 1,
+                total=(len(candidates) + chunk_size - 1) // chunk_size,
+                names=Localizer.get().list_separator.join(candidate.name for candidate in chunk),
+            ))
             raw = self.request_json_text(config, platform, prompt, round_index = offset // chunk_size)
             raws.append(raw)
             try:
@@ -505,6 +524,7 @@ class WorkbenchAnalysisService(Base):
                 raise AnalysisServiceError("角色卡草稿解析失败：模型返回的不是 JSON 数组。", raw_response = raw)
 
             drafts.extend(self.normalize_character_drafts_from_response(parsed, chunk))
+            self._report_progress(Localizer.get().workbench_progress_characters_done.format(count=len(drafts)))
 
         return drafts, raws
 
