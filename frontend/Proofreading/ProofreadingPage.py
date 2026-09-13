@@ -103,6 +103,10 @@ class ProofreadingPage(QWidget, Base):
         self.search_match_indices: list[int] = []
         self.search_current_match: int = -1
         self._warning_check_id: int = 0
+        # 批量更新结束后统一刷新筛选，避免编辑回调中销毁当前行控件。
+        self._filter_refresh_timer = QTimer(self)
+        self._filter_refresh_timer.setSingleShot(True)
+        self._filter_refresh_timer.timeout.connect(self._apply_filter)
         self._batch_retranslate_item_ids: set[int] = set()
         self._batch_retranslate_success: int = 0
         self._batch_retranslate_failed: int = 0
@@ -187,6 +191,7 @@ class ProofreadingPage(QWidget, Base):
 
         self.inline_search_edit = SearchLineEdit(self.inline_filter_bar)
         self.inline_search_edit.setPlaceholderText(Localizer.get().proofreading_page_search_placeholder)
+        self.inline_search_edit.setToolTip(Localizer.get().proofreading_page_search_help)
         self.inline_search_edit.setMinimumWidth(120)
         self.inline_search_edit.returnPressed.connect(self._on_inline_search_submitted)
         filter_layout.addWidget(self.inline_search_edit, 1)
@@ -514,9 +519,13 @@ class ProofreadingPage(QWidget, Base):
         self.inline_search_edit.setEnabled(has_items)
 
     def _on_inline_search_submitted(self) -> None:
-        """将页内搜索词交给现有搜索卡，复用正则、跳转和分页逻辑。"""
-        self.search_card.get_line_edit().setText(self.inline_search_edit.text())
-        self._do_search()
+        """常驻搜索按普通文本定位，重复提交跳到下一处。"""
+        keyword = self.inline_search_edit.text().strip()
+        self.search_card.get_line_edit().setText(keyword)
+        if keyword and keyword == self.search_keyword and not self.search_is_regex and self.search_match_indices:
+            self._on_search_next_clicked()
+        else:
+            self._do_search(use_regex=False)
 
     def _on_filter_clicked(self) -> None:
         if not self.items:
@@ -538,6 +547,7 @@ class ProofreadingPage(QWidget, Base):
             self._apply_filter()
 
     def _apply_filter(self) -> None:
+        self._filter_refresh_timer.stop()
         warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
         statuses = self.filter_options.get(FilterDialog.KEY_STATUSES)
         file_paths = self.filter_options.get(FilterDialog.KEY_FILE_PATHS)
@@ -597,15 +607,17 @@ class ProofreadingPage(QWidget, Base):
         self.search_card.setVisible(False)
         self.command_bar_card.setVisible(True)
 
-    def _do_search(self) -> None:
+    def _do_search(self, *, use_regex: bool | None = None) -> None:
         keyword = self.search_card.get_keyword()
         if not keyword:
+            self.search_keyword = ""
+            self.search_is_regex = False
             self.search_match_indices = []
             self.search_current_match = -1
             self.search_card.clear_match_info()
             return
 
-        is_regex = self.search_card.is_regex_mode()
+        is_regex = self.search_card.is_regex_mode() if use_regex is None else use_regex
         if is_regex:
             is_valid, error_msg = self.search_card.validate_regex()
             if not is_valid:
@@ -739,6 +751,8 @@ class ProofreadingPage(QWidget, Base):
         row = self.table_widget.find_row_by_item(item)
         if row >= 0:
             self.table_widget.update_row_status(row, warnings)
+        if self.only_issues_check.isChecked() or self.filter_options:
+            self._filter_refresh_timer.start(0)
 
     def _on_copy_src_clicked(self, item: CacheItem) -> None:
         clipboard = QApplication.clipboard()
@@ -1246,12 +1260,13 @@ class ProofreadingPage(QWidget, Base):
                 cache_manager.set_items(items)
                 output_folder = self._cache_output_folder or config.output_folder
                 cache_manager.load_project_from_file(output_folder, strict = True)
-                cache_manager.save_to_file(
+                saved = cache_manager.save_to_file(
                     project = cache_manager.get_project(),
                     items = items,
-                    output_folder = output_folder
+                    output_folder = output_folder,
+                    strict = True,
                 )
-                self.save_done.emit(True)
+                self.save_done.emit(saved is True)
             except Exception as e:
                 self.error(f"{Localizer.get().proofreading_page_save_failed}", e)
                 self.save_done.emit(False)

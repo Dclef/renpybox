@@ -137,6 +137,7 @@ class LocalizerEN(LocalizerZH):
     translation_page_footer_backup: str = "Automatic snapshot backup enabled"
     proofreading_page_header_description: str = "Compare source and translation side by side. Double-click to edit, then save and export."
     proofreading_page_search_placeholder: str = "Search source or translation"
+    proofreading_page_search_help: str = "Search source or translation as plain text. Press Enter or Search again for the next match."
     proofreading_page_only_issues: str = "Issues only"
     project_page_header_description: str = "Bind a Ren'Py project and configure translation input and output folders"
     app_settings_page_header_description: str = "Manage language, updates, sound, and application display options"

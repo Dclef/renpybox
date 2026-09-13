@@ -1425,13 +1425,14 @@ class RenpyWorkbenchPage(Base, QWidget):
 
     def _add_character_card(self) -> None:
         """新增空白角色卡。"""
+        self._flush_pending_edits()
         config = self._get_config_snapshot()
         cards = normalize_character_cards(getattr(config, "renpy_workbench_character_cards", []))
         card = create_default_character_card(Localizer.get().workbench_character.format(len_cards=len(cards) + 1))
         cards.append(card)
         config.renpy_workbench_character_cards = cards
         self._save_config(config)
-        self._prepare_character_view("applied", card["id"])
+        self._prepare_character_view("applied", card["id"], clear_search=True)
         self.refresh_from_config(config)
 
     def _delete_current_character(self) -> None:

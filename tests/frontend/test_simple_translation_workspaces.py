@@ -257,3 +257,122 @@ def test_bilingual_row_actions_follow_wrapped_rows(monkeypatch, theme):
         window.deleteLater()
         setTheme(previous_theme)
         APP.setStyleSheet(previous_style)
+
+
+
+def test_new_character_is_visible_and_keeps_pending_edits(monkeypatch):
+    """搜索旧角色后新增，必须保留旧角色编辑并直接显示新角色。"""
+    config = Config()
+    config.platforms = []
+    card = create_default_character_card("Alice")
+    config.renpy_workbench_character_cards = [card]
+    monkeypatch.setattr(Config, "load", lambda *args, **kwargs: config)
+    monkeypatch.setattr(RenpyWorkbenchPage, "_load_config", lambda self: config)
+    monkeypatch.setattr(RenpyWorkbenchPage, "_save_config", lambda *args: None)
+    page = RenpyWorkbenchPage("workbench")
+    try:
+        page.character_search_edit.setText("Alice")
+        page.character_widgets["identity"].setPlainText("尚未触发自动保存的身份")
+        page._add_character_card()
+        assert config.renpy_workbench_character_cards[0]["identity"] == "尚未触发自动保存的身份"
+        assert page.character_search_edit.text() == ""
+        assert page._selected_character_id == config.renpy_workbench_character_cards[-1]["id"]
+        assert not page.character_list.currentItem().isHidden()
+    finally:
+        page.close()
+        page.deleteLater()
+
+
+def test_inline_search_advances_literal_matches_and_clears_state(monkeypatch):
+    """常驻搜索忽略高级搜索的正则开关，回车继续定位下一处，清空后不残留旧词。"""
+    monkeypatch.setattr(Config, "load", lambda *args, **kwargs: Config())
+    window = QWidget()
+    page = ProofreadingPage("proofreading", window)
+    page.items = page.filtered_items = [CacheItem(src=s) for s in ("Hello [name]", "No variable", "Goodbye [name]")]
+    page.table_widget.set_items(page.items, {})
+    page.search_card.regex_btn.setChecked(True)
+    page.search_card._on_regex_toggle()
+    try:
+        page.inline_search_edit.setText("[name]")
+        page._on_inline_search_submitted()
+        assert page.search_match_indices == [0, 2]
+        assert page.search_current_match == 0
+        page._on_inline_search_submitted()
+        assert page.search_current_match == 1
+        assert page.table_widget.get_selected_items() == [page.items[2]]
+        assert page.search_card.isHidden()
+        page._on_inline_search_submitted()
+        assert page.search_current_match == 0
+        page.inline_search_edit.clear()
+        page._on_inline_search_submitted()
+        assert page.search_keyword == ""
+        assert page.search_match_indices == []
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_corrected_translation_leaves_issue_filter(monkeypatch):
+    """修正占位符后自动更新问题列表，译文仍保留在完整缓存中。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda *args, **kwargs: config)
+    window = QWidget()
+    page = ProofreadingPage("proofreading", window)
+    page.config = config
+    item = CacheItem(src="Hello [name]", dst="你好", status=Base.TranslationStatus.TRANSLATED)
+    page.items = [item]
+    page.warning_map = {id(item): [WarningType.TEXT_PRESERVE]}
+    import importlib
+    module = importlib.import_module("frontend.Proofreading.ProofreadingPage")
+    monkeypatch.setattr(module.ResultChecker, "check_single_item", lambda self, current: [])
+    try:
+        page.only_issues_check.setChecked(True)
+        assert page.filtered_items == [item]
+        page._on_cell_edited(item, "你好 [name]")
+        QTest.qWait(20)
+        assert page.filtered_items == []
+        assert page.items == [item]
+        assert item.get_dst() == "你好 [name]"
+        page.only_issues_check.setChecked(False)
+        assert page.filtered_items == [item]
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize("save_fails", [True, False])
+def test_proofreading_export_requires_persisted_edits(monkeypatch, tmp_path, save_fails):
+    """缓存实际写入失败必须提示失败并阻止导出，成功时可重新读出修改。"""
+    from module.Cache.CacheManager import CacheManager
+    config = Config(cache_use_sqlite=False, output_folder=str(tmp_path))
+    monkeypatch.setattr(Config, "load", lambda *args, **kwargs: config)
+    manager = CacheManager(service=False)
+    old = CacheItem(src="Hello", dst="旧译文", status=Base.TranslationStatus.TRANSLATED)
+    manager.save_to_file(manager.get_project(), [old], str(tmp_path), strict=True)
+    import importlib
+    module = importlib.import_module("frontend.Proofreading.ProofreadingPage")
+    monkeypatch.setattr(module.threading, "Thread", lambda *, target, daemon: SimpleNamespace(start=target))
+    if save_fails:
+        def fail_write(*args, **kwargs):
+            raise OSError("模拟磁盘写入失败")
+        monkeypatch.setattr(CacheManager, "_save_translation_run_to_json", fail_write)
+    window = QWidget()
+    page = ProofreadingPage("proofreading", window)
+    page.config = config
+    page.items = [CacheItem(src="Hello", dst="新译文", status=Base.TranslationStatus.TRANSLATED)]
+    exports, results = [], []
+    monkeypatch.setattr(page, "export_data", lambda: exports.append(True))
+    monkeypatch.setattr(page, "indeterminate_show", lambda *args: None)
+    monkeypatch.setattr(page, "indeterminate_hide", lambda: None)
+    page.save_done.connect(results.append)
+    page._pending_export = True
+    try:
+        page.save_data()
+        assert results == [not save_fails]
+        assert exports == ([] if save_fails else [True])
+        reloaded = CacheManager(service=False)
+        reloaded.load_from_file(str(tmp_path), strict=True)
+        assert reloaded.get_items()[0].get_dst() == ("旧译文" if save_fails else "新译文")
+    finally:
+        window.close()
+        window.deleteLater()
