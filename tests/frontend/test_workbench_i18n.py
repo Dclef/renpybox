@@ -142,7 +142,7 @@ def test_workbench_english_static_dynamic_and_feedback_copy(monkeypatch) -> None
         assert page.btn_open_glossary.text() == "Open Local Glossary"
         assert page.btn_apply_all.text() == "Apply All & Enable"
         assert page.character_search_edit.placeholderText() == (
-            "Search names, aliases, or keywords"
+        "Search names, translations, or aliases"
         )
         assert page.worldbook_enable.text() == "Inject Worldbuilding Context"
         assert page.character_cards_enable.text() == "Inject Character Card Context"

@@ -30,6 +30,7 @@ from qfluentwidgets import (
     CardWidget,
     CheckBox,
     FluentIcon as FIF,
+    FlowLayout,
     InfoBar,
     LineEdit,
     ListWidget,
@@ -38,6 +39,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     SearchLineEdit,
+    SegmentedWidget,
     SingleDirectionScrollArea,
     StrongBodyLabel,
     TitleLabel,
@@ -230,23 +232,14 @@ class RenpyWorkbenchPage(Base, QWidget):
             row.setDirection(direction)
         for splitter, widths in (
             (self.worldbook_splitter, [640, 420]),
-            (self.character_splitter, [220, 480, 270]),
+            (self.character_splitter, [240, 820]),
         ):
             splitter.setOrientation(Qt.Vertical if compact else Qt.Horizontal)
             splitter.setSizes(
                 [splitter.widget(index).sizeHint().height() for index in range(splitter.count())]
                 if compact else widths
             )
-        columns = 2 if compact else 3
-        buttons = (
-            self.btn_character_batch, self.btn_character_current, self.btn_character_apply,
-            self.btn_character_add, self.btn_character_delete,
-        )
-        for index, button in enumerate(buttons):
-            self.character_actions.removeWidget(button)
-            self.character_actions.addWidget(button, index // columns, index % columns)
         for column in range(3):
-            self.character_actions.setColumnStretch(column, 1 if column < columns else 0)
             self.preview_grid.setColumnStretch(column, 0 if compact and column else (13 if column == 2 else 10))
         for index, (label, edit) in enumerate(zip(
             self.preview_labels,
@@ -377,7 +370,6 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_apply_all.clicked.connect(self._apply_all_drafts)
         action_row.addWidget(self.btn_generate_current)
         action_row.addWidget(self.btn_generate_full)
-        action_row.addWidget(self.btn_sync_characters)
         action_row.addStretch(1)
         action_layout.addLayout(action_row)
 
@@ -481,6 +473,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         official_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         official_form.setHorizontalSpacing(14)
         official_form.setVerticalSpacing(12)
+        self.worldbook_extra_fields = QWidget(official_card)
+        extra_form = QFormLayout(self.worldbook_extra_fields)
+        extra_form.setContentsMargins(0, 0, 0, 0)
+        extra_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        extra_form.setVerticalSpacing(12)
         self.worldbook_widgets: dict[str, QWidget] = {}
         worldbook_specs = [
             ("project_name", Localizer.get().workbench_project_name, False),
@@ -496,14 +493,20 @@ class RenpyWorkbenchPage(Base, QWidget):
         for field, label, multiline in worldbook_specs:
             if multiline:
                 widget = PlainTextEdit(self)
-                widget.setMinimumHeight(88)
+                widget.setFixedHeight(88)
                 widget.textChanged.connect(lambda name = field: self._on_worldbook_field_changed(name))
             else:
                 widget = LineEdit(self)
                 widget.textChanged.connect(lambda text, name = field: self._on_worldbook_field_changed(name))
             self.worldbook_widgets[field] = widget
-            official_form.addRow(BodyLabel(label), widget)
+            form = official_form if field in {"project_name", "genre", "setting_summary", "tone_style"} else extra_form
+            form.addRow(BodyLabel(label), widget)
         official_layout.addLayout(official_form)
+        self.worldbook_more_toggle = CheckBox(Localizer.get().workbench_more_settings, official_card)
+        self.worldbook_more_toggle.toggled.connect(self.worldbook_extra_fields.setVisible)
+        official_layout.addWidget(self.worldbook_more_toggle)
+        official_layout.addWidget(self.worldbook_extra_fields)
+        self.worldbook_extra_fields.hide()
         splitter.addWidget(official_card)
 
         draft_card, draft_layout = self._create_card(
@@ -528,8 +531,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.worldbook_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears)
         draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.worldbook_draft_preview)
-        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
+        self.worldbook_raw_toggle = CheckBox(Localizer.get().workbench_raw_response_error_preview)
+        self.worldbook_raw_toggle.toggled.connect(self.worldbook_raw_preview.setVisible)
+        draft_layout.addWidget(self.worldbook_raw_toggle)
         draft_layout.addWidget(self.worldbook_raw_preview)
+        self.worldbook_raw_preview.hide()
         splitter.addWidget(draft_card)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -553,7 +559,7 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.character_cards_enable.stateChanged.connect(self._on_character_cards_toggle_changed)
         header_layout.addWidget(self.character_cards_enable)
 
-        action_row = QGridLayout()
+        action_row = FlowLayout()
         self.character_actions = action_row
         action_row.setSpacing(10)
         self.btn_character_batch = PushButton(Localizer.get().workbench_generate_all_character_cards)
@@ -566,11 +572,11 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.btn_character_add.clicked.connect(self._add_character_card)
         self.btn_character_delete = PushButton(Localizer.get().workbench_delete_current_character)
         self.btn_character_delete.clicked.connect(self._delete_current_character)
-        action_row.addWidget(self.btn_character_batch, 0, 0)
-        action_row.addWidget(self.btn_character_current, 0, 1)
-        action_row.addWidget(self.btn_character_apply, 0, 2)
-        action_row.addWidget(self.btn_character_add, 1, 0)
-        action_row.addWidget(self.btn_character_delete, 1, 1)
+        action_row.addWidget(self.btn_character_batch)
+        action_row.addWidget(self.btn_character_current)
+        action_row.addWidget(self.btn_character_apply)
+        action_row.addWidget(self.btn_character_add)
+        action_row.addWidget(self.btn_character_delete)
         header_layout.addLayout(action_row)
         layout.addWidget(header_card)
 
@@ -585,6 +591,7 @@ class RenpyWorkbenchPage(Base, QWidget):
             Localizer.get().workbench_synced_character_candidates_added_here_review,
         )
         roster_card.setMinimumWidth(160)
+        roster_layout.addWidget(self.btn_sync_characters)
         self.character_search_edit = SearchLineEdit(self)
         self.character_search_edit.setPlaceholderText(Localizer.get().workbench_search_characters)
         self.character_search_edit.textChanged.connect(self._apply_character_filters)
@@ -619,7 +626,30 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.character_list.setMinimumHeight(160)
         self.character_list.currentItemChanged.connect(self._on_character_item_changed)
         roster_layout.addWidget(self.character_list, 1)
+        self.character_empty_label = CaptionLabel(Localizer.get().workbench_character_empty, roster_card)
+        self.character_empty_label.setWordWrap(True)
+        roster_layout.addWidget(self.character_empty_label)
         splitter.addWidget(roster_card)
+
+        details = QWidget(splitter)
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        self.character_detail_tabs = SegmentedWidget(details)
+        self.character_detail_stack = QStackedWidget(details)
+        for index, (key, title) in enumerate((
+            ("editor", Localizer.get().workbench_character_details),
+            ("draft", Localizer.get().workbench_character_draft_preview),
+        )):
+            self.character_detail_tabs.addItem(
+                key, title,
+                onClick=lambda checked=False, current=index: self.character_detail_stack.setCurrentIndex(current),
+            )
+        self.character_detail_tabs.setCurrentItem("editor")
+        self.character_detail_stack.currentChanged.connect(
+            lambda index: self.character_detail_tabs.setCurrentItem(("editor", "draft")[index])
+        )
+        details_layout.addWidget(self.character_detail_tabs)
+        details_layout.addWidget(self.character_detail_stack, 1)
 
         editor_card, editor_layout = self._create_card(
             Localizer.get().workbench_approved_character_card,
@@ -627,11 +657,16 @@ class RenpyWorkbenchPage(Base, QWidget):
         )
         editor_card.setMinimumWidth(220)
         editor_form = QFormLayout()
-        editor_form.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        editor_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         editor_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
         editor_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         editor_form.setHorizontalSpacing(14)
         editor_form.setVerticalSpacing(12)
+        self.character_extra_fields = QWidget(editor_card)
+        extra_form = QFormLayout(self.character_extra_fields)
+        extra_form.setContentsMargins(0, 0, 0, 0)
+        extra_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        extra_form.setVerticalSpacing(12)
         self.character_widgets: dict[str, QWidget] = {}
         char_specs = [
             ("name", Localizer.get().workbench_character_name, False),
@@ -648,13 +683,14 @@ class RenpyWorkbenchPage(Base, QWidget):
         for field, label, multiline in char_specs:
             if multiline:
                 widget = PlainTextEdit(self)
-                widget.setMinimumHeight(78)
+                widget.setFixedHeight(64)
                 widget.textChanged.connect(lambda name = field: self._on_character_field_changed(name))
             else:
                 widget = LineEdit(self)
                 widget.textChanged.connect(lambda text, name = field: self._on_character_field_changed(name))
             self.character_widgets[field] = widget
-            editor_form.addRow(BodyLabel(label), widget)
+            form = extra_form if field in {"aliases", "match_keywords", "relationship_notes", "sample_lines"} else editor_form
+            form.addRow(BodyLabel(label), widget)
 
         toggle_box = QWidget(self)
         toggle_layout = QVBoxLayout(toggle_box)
@@ -670,7 +706,12 @@ class RenpyWorkbenchPage(Base, QWidget):
 
         editor_layout.addWidget(toggle_box)
         editor_layout.addLayout(editor_form)
-        splitter.addWidget(editor_card)
+        self.character_more_toggle = CheckBox(Localizer.get().workbench_more_character_details, editor_card)
+        self.character_more_toggle.toggled.connect(self.character_extra_fields.setVisible)
+        editor_layout.addWidget(self.character_more_toggle)
+        editor_layout.addWidget(self.character_extra_fields)
+        self.character_extra_fields.hide()
+        self.character_detail_stack.addWidget(editor_card)
 
         draft_card, draft_layout = self._create_card(
             Localizer.get().workbench_character_draft_preview,
@@ -681,15 +722,18 @@ class RenpyWorkbenchPage(Base, QWidget):
         self.character_raw_preview = self._create_preview_edit(Localizer.get().workbench_if_parsing_fails_raw_model_response_appears_2)
         draft_layout.addWidget(BodyLabel(Localizer.get().workbench_structured_draft))
         draft_layout.addWidget(self.character_draft_preview)
-        draft_layout.addWidget(BodyLabel(Localizer.get().workbench_raw_response_error_preview))
+        self.character_raw_toggle = CheckBox(Localizer.get().workbench_raw_response_error_preview)
+        self.character_raw_toggle.toggled.connect(self.character_raw_preview.setVisible)
+        draft_layout.addWidget(self.character_raw_toggle)
         draft_layout.addWidget(self.character_raw_preview)
-        splitter.addWidget(draft_card)
+        self.character_raw_preview.hide()
+        self.character_detail_stack.addWidget(draft_card)
+        splitter.addWidget(details)
 
         splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 3)
-        # 对齐原型的 220px / flexible / 270px 三栏首屏布局。
-        splitter.setSizes([220, 480, 270])
+        splitter.setStretchFactor(1, 7)
+        # 左侧查找角色，右侧切换资料与草稿，避免三个编辑区同时争抢宽度。
+        splitter.setSizes([240, 820])
         layout.addWidget(splitter, 1)
         return panel
 
@@ -966,11 +1010,14 @@ class RenpyWorkbenchPage(Base, QWidget):
         """切换角色列表筛选。"""
         if mode not in self.character_filter_buttons:
             mode = "all"
+        self._flush_pending_edits()
         self._character_filter_mode = mode
         button = self.character_filter_buttons.get(mode)
         if button is not None:
             button.setChecked(True)
         self._apply_character_filters()
+        # 列表仍选中同一角色时不会发出选中信号，也需要切到对应的资料或草稿。
+        self._refresh_character_editor(self._get_config_snapshot())
 
     def _prepare_character_view(
         self,
@@ -999,14 +1046,19 @@ class RenpyWorkbenchPage(Base, QWidget):
         for row in range(self.character_list.count()):
             item = self.character_list.item(row)
             card_id = normalize_text(item.data(Qt.ItemDataRole.UserRole))
-            card = self._visible_cards_by_id.get(card_id, {})
+            # 正式资料和待审核草稿都可检索，避免新草稿的译名被旧资料遮蔽。
             search_text = "\n".join(
-                [
+                value
+                for card in (
+                    self._formal_cards_by_id.get(card_id, {}),
+                    self._draft_cards_by_id.get(card_id, {}),
+                )
+                for value in (
                     normalize_text(card.get("name", "")),
                     normalize_text(card.get("name_translation", "")),
                     *normalize_text_list(card.get("aliases", [])),
                     *normalize_text_list(card.get("match_keywords", [])),
-                ]
+                )
             ).casefold()
             matches_mode = (
                 self._character_filter_mode == "all"
@@ -1030,6 +1082,11 @@ class RenpyWorkbenchPage(Base, QWidget):
                 total=self.character_list.count(),
             )
         )
+        self.character_empty_label.setText(
+            Localizer.get().workbench_character_empty
+            if self.character_list.count() == 0 else Localizer.get().workbench_character_no_match
+        )
+        self.character_empty_label.setVisible(not visible_items)
         current = self.character_list.currentItem()
         if current is not None and current.isHidden() is False:
             return
@@ -1115,6 +1172,10 @@ class RenpyWorkbenchPage(Base, QWidget):
     def _refresh_character_editor(self, config: Config) -> None:
         """根据当前选中角色刷新编辑器。"""
         current = self._formal_cards_by_id.get(self._selected_character_id)
+        show_draft = self._selected_character_id in self._draft_cards_by_id and (
+            current is None or self._character_filter_mode == "pending"
+        )
+        self.character_detail_stack.setCurrentIndex(1 if show_draft else 0)
         if current is None:
             self._clear_character_editor()
             self._refresh_character_draft_view(config)
@@ -1599,9 +1660,13 @@ class RenpyWorkbenchPage(Base, QWidget):
         message = normalize_text(payload.get("message", Localizer.get().workbench_ai_analysis_failed))
         if mode == "worldbook" or "世界观" in message:
             self._last_worldbook_raw = raw_response
+            self.worldbook_raw_toggle.setChecked(bool(raw_response))
         else:
             self._last_character_raw = raw_response
+            self.character_raw_toggle.setChecked(bool(raw_response))
         self.refresh_from_config(config)
+        if raw_response and mode != "worldbook" and "世界观" not in message:
+            self.character_detail_stack.setCurrentIndex(1)
         self.overview_status_label.setText(message)
         InfoBar.error(Localizer.get().error, message, parent = self, duration = 5000)
 

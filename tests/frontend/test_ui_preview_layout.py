@@ -475,7 +475,8 @@ def test_translation_dashboard_renders_runtime_metrics_and_feed(monkeypatch) -> 
         "25.0%",
         "140.5 ms",
     ]
-    assert page.hero_cache_pill.text() == "缓存 25.0%"
+    assert page.hero_cache_pill.text() == "已有 25.0%"
+    assert page.hero_cache_pill.toolTip() == Localizer.get().translation_page_cache_help
     assert not page.feed_empty_label.isVisible()
     assert page.feed_items_layout.count() == 2
     assert page.output_token.detail_label.text() == "累计输出 120"
@@ -483,6 +484,49 @@ def test_translation_dashboard_renders_runtime_metrics_and_feed(monkeypatch) -> 
 
     page.deleteLater()
     window.close()
+
+
+@pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
+def test_translation_feed_fills_card_and_wraps_long_text(monkeypatch, language) -> None:
+    """有流水时，宽窄切换仍应填满卡片、对齐列并显示完整的换行内容。"""
+    config = Config()
+    monkeypatch.setattr(Config, "load", lambda self, path=None: config)
+    monkeypatch.setattr(Config, "save", lambda self: self)
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", language)
+    window = QWidget()
+    page = TranslationPage("translation_page", window)
+    source = "A long source sentence that must fit its column. " * 8
+    target = "这是一段需要随窗口宽度换行的译文，不能覆盖原文列或被截断。" * 5
+    page.data = {"recent_items": [
+        {"timestamp": "04:03:28", "source": source, "target": target, "status": "TRANSLATED"},
+        {"timestamp": "04:03:29", "source": "Take care of yourself, human.", "target": "你自己保重吧，人类。"},
+    ]}
+    page._refresh_stream_feed()
+    try:
+        for width in (1400, 680, 1024, 1400):
+            window.resize(width, 740)
+            page.setGeometry(window.rect())
+            window.show()
+            QTest.qWait(50)
+            assert page.feed_columns_header.width() == page.feed_items_container.width()
+            assert page.content_scroll.horizontalScrollBar().maximum() == 0
+            for index in range(2):
+                row = page.feed_items_layout.itemAt(index).widget()
+                assert row.width() == page.feed_items_container.width()
+                for column in (1, 2):
+                    label = row.layout().itemAt(column).widget()
+                    header = page.feed_columns_header.layout().itemAt(column).widget()
+                    assert abs(label.x() - header.x()) <= 1
+                    assert abs(label.width() - header.width()) <= 1
+                    assert label.wordWrap()
+                    assert row.height() >= label.heightForWidth(label.width()) + 8
+            long_row = page.feed_items_layout.itemAt(1).widget()
+            assert long_row.layout().itemAt(1).widget().toolTip() == source
+            assert target in long_row.layout().itemAt(2).widget().toolTip()
+    finally:
+        page.ui_update_timer.stop()
+        window.close()
+        window.deleteLater()
 
 
 @pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])

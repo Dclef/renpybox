@@ -665,3 +665,31 @@ def test_legacy_snapshot_uses_explicit_legacy_identity_alias() -> None:
 
     assert provider["id"] == 8
     assert provider["api_key"] == ["current-key"]
+
+
+@pytest.mark.parametrize("use_sqlite", [True, False])
+def test_zero_existing_translation_ratio_still_saves_and_resumes(tmp_path, monkeypatch, use_sqlite):
+    """已有译文占比为零时，自动保存仍能恢复译文、进度及最近流水。"""
+    config = Config(cache_use_sqlite=use_sqlite)
+    monkeypatch.setattr(Config, "load", lambda *args, **kwargs: config)
+    translator = _translator()
+    translator.extras = translator._new_progress_extras(2)
+    translator.cache_manager.items = [
+        CacheItem(src="Hello", dst="你好", status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="Goodbye", status=Base.TranslationStatus.UNTRANSLATED),
+    ]
+    recent = [{"source": "Hello", "target": "你好"}]
+    translator.extras = translator._merge_task_result_into_progress({"row_count": 1, "recent_items": recent})
+    assert translator.extras["cache_hit_rate"] == 0
+    translator.cache_manager.get_project().set_progress(translator.extras)
+    translator.cache_manager.require_save_to_file(str(tmp_path))
+    assert translator.cache_manager._run_pending_save(now=translator.cache_manager.last_require_time + CacheManager.SAVE_INTERVAL)
+
+    resumed = _translator()
+    resumed.cache_manager.load_from_file(str(tmp_path))
+    assert resumed.cache_manager.get_items()[0].get_dst() == "你好"
+    progress = resumed._resume_progress_extras()
+    assert progress["line"] == 1
+    assert progress["total_line"] == 2
+    assert progress["cache_hit_rate"] == 0
+    assert progress["recent_items"] == recent
