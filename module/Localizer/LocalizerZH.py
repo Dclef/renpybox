@@ -1592,6 +1592,8 @@ class LocalizerZH():
     )
     onekey_start_translation_2: str = '开始翻译 →'
     onekey_extraction_completed_character_names_variable_references_scanned: str = '提取完成，已自动扫描角色名和变量引用'
+    onekey_character_scan_in_background: str = '正在后台扫描角色名和变量引用，完成后会提示。'
+    onekey_character_scan_failed: str = '角色名扫描未完成：{message}'
     onekey_extraction_failed: str = '✗ 提取遇到问题'
     onekey_error_select_extract_again_if_still_fails: str = (
         '错误信息：{msg}\n\n建议先点"重新抽取"。如仍失败，可跳过直接翻译，或检查路径/权限后再试。'
@@ -1698,9 +1700,9 @@ class LocalizerZH():
     pack_unpack_select_game_folder_project_root_launcher_exe: str = '选择 game 目录（或根目录/启动程序 .exe）'
     pack_unpack_overwrite_existing_rpy_files_unrpyc_clobber: str = '覆盖已存在的 .rpy (unrpyc --clobber)'
     pack_unpack_direct_decompilation_unren_uses_game_s_python: str = '直接反编译（UnRen：使用游戏自带 python，无需启动游戏）'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = '优先使用 UnRen 执行反编译，失败再尝试 unrpyc'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc: str = '优先使用匹配版本的 unrpyc，失败再用 UnRen 兜底'
     pack_unpack_decompile: str = '反编译'
-    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = '优先使用 UnRen 反编译，失败再尝试 unrpyc v2'
+    pack_unpack_try_unren_first_then_fall_back_unrpyc_2: str = '优先使用匹配版本的 unrpyc，失败再用 UnRen 兜底'
     pack_unpack_clean_rpyc_files: str = '清理 RPYC 文件'
     pack_unpack_delete_rpyc_files_have_matching_decompiled_rpy: str = '删除 game 目录内已成功反编译的 RPYC 文件'
     pack_unpack_select_game_folder: str = '选择 game 目录'
@@ -1735,6 +1737,7 @@ class LocalizerZH():
     pack_unpack_cancelling_after_current_part_finishes_writing: str = '正在取消，当前分包写完后停止...'
     pack_unpack_no_rpa_files_found_external_tools_unren: str = '未找到 RPA 文件，或外部工具/UnRen 不可用'
     pack_unpack_decompiling_unren: str = '正在使用 UnRen 反编译…'
+    pack_unpack_decompiling_unrpyc: str = '正在使用匹配版本的 unrpyc 反编译…'
     pack_unpack_decompilation_complete_generated_rpy_files: str = '反编译完成，已生成 .rpy 文件'
     pack_unpack_unren_failed: str = '（UnRen 失败：{unren_error}）'
     pack_unpack_skipped_file_s_without_matching_rpy_files: str = '，跳过 {skipped} 个未找到同名 .rpy 的文件'

@@ -22,6 +22,7 @@ from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from frontend.RenpyToolbox.OneKeyNameService import OneKeyNameService
 
 
 def configure_tl_translation_mode(config):
@@ -737,6 +738,34 @@ class ExtractionWorker(QThread):
             )
         finally:
             self.unified_extractor.set_progress_callback(None)
+
+
+class CharacterScanWorker(QThread):
+    """后台扫描角色名和变量引用，避免抽取完成后阻塞界面线程。"""
+
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, game_dir: str, tl_name: str, *, force: bool = False):
+        super().__init__()
+        self.game_dir = game_dir
+        self.tl_name = tl_name
+        self.force = force
+
+    def run(self) -> None:
+        LogManager.get().info(
+            f"开始后台扫描角色名和变量引用: game={self.game_dir}, language={self.tl_name}"
+        )
+        try:
+            OneKeyNameService.get().extract_character_names(
+                self.game_dir,
+                self.tl_name,
+                force=self.force,
+            )
+            LogManager.get().info("后台角色名和变量引用扫描完成")
+            self.finished.emit(True, "角色名和变量引用扫描完成")
+        except Exception as exc:
+            LogManager.get().warning(f"角色名扫描失败：{exc}")
+            self.finished.emit(False, str(exc))
 
 
 class ApplyTranslationWorker(QThread):

@@ -73,6 +73,7 @@ from frontend.TranslationPage import TranslationPage
 from frontend.RenpyToolbox.OneKeyNameService import OneKeyNameService
 from frontend.RenpyToolbox.OneKeyWorkers import (
     ApplyTranslationWorker,
+    CharacterScanWorker,
     _cache_item_identity as _cache_item_identity,
     _numbered_disk_identity as _numbered_disk_identity,
     ExtractionWorker,
@@ -107,6 +108,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.extraction_worker = None
         self._extraction_generation = 0
         self._preprocess_worker = None
+        self._character_scan_worker = None
         self.has_old_translation = False  # 是否检测到旧翻译
         self.incremental_mode = False     # 是否使用增量抽取
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
@@ -1903,14 +1905,10 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_merge_btn.setVisible(False)
             self.step2_merge_btn.setEnabled(False)
             
-            # 自动执行角色名和禁翻表扫描（仅第一次执行，避免重复卡顿）
-            self._extract_character_names()
+            # 抽取完成后的角色扫描放到后台，避免在 100% 后冻结界面。
+            self._start_character_scan_worker(game_dir, tl_name)
             
-            InfoBar.success(
-                Localizer.get().extract_json_success,
-                Localizer.get().onekey_extraction_completed_character_names_variable_references_scanned,
-                parent=self,
-            )
+            # 角色名扫描在后台线程完成后再提示，避免抽取进度到 100% 后界面假死。
             self._continue_agent_start_after_extraction()
         else:
             self.step2_status.setText(
@@ -1957,6 +1955,43 @@ class YiJianFanyiPage(Base, QWidget):
             self.tl_folder_edit.text().strip(),
             force=force,
         )
+
+    def _start_character_scan_worker(self, game_dir: str, tl_name: str, *, force: bool = False) -> None:
+        """启动后台角色扫描，并将结果提示回界面。"""
+        if self._character_scan_worker and self._character_scan_worker.isRunning():
+            return
+        worker = CharacterScanWorker(game_dir, tl_name, force=force)
+        self._character_scan_worker = worker
+        worker.finished.connect(
+            lambda success, message, source=worker: self._on_character_scan_finished(
+                success,
+                message,
+                source,
+            )
+        )
+        self.step2_desc.setText(
+            self.step2_desc.text()
+            + "\n"
+            + Localizer.get().onekey_character_scan_in_background
+        )
+        worker.start()
+
+    def _on_character_scan_finished(self, success: bool, message: str, worker) -> None:
+        """处理后台角色扫描结束，不影响已完成的抽取结果。"""
+        # 保留线程对象到页面销毁，避免 queued signal 处理时线程尚未完全退出就被回收。
+        if success:
+            InfoBar.success(
+                Localizer.get().extract_json_success,
+                Localizer.get().onekey_extraction_completed_character_names_variable_references_scanned,
+                parent=self,
+            )
+        else:
+            LogManager.get().warning(f"角色名扫描未完成：{message}")
+            InfoBar.warning(
+                Localizer.get().notice,
+                Localizer.get().onekey_character_scan_failed.format(message=message),
+                parent=self,
+            )
 
     def _go_step3(self):
         self.current_step = 3
