@@ -3,6 +3,7 @@ import threading
 import time
 
 from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QShowEvent
@@ -14,6 +15,7 @@ from PyQt5.QtWidgets import QWidget
 from qfluentwidgets import Action
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import CardWidget
+from qfluentwidgets import CheckBox
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import IndeterminateProgressRing
@@ -179,10 +181,13 @@ class ProofreadingPage(QWidget, Base):
         self.inline_filter_button.clicked.connect(self._on_filter_clicked)
         filter_layout.addWidget(self.inline_filter_button)
 
+        self.only_issues_check = CheckBox(Localizer.get().proofreading_page_only_issues, self.inline_filter_bar)
+        self.only_issues_check.toggled.connect(self._apply_filter)
+        filter_layout.addWidget(self.only_issues_check)
+
         self.inline_search_edit = SearchLineEdit(self.inline_filter_bar)
-        self.inline_search_edit.setPlaceholderText(Localizer.get().placeholder)
+        self.inline_search_edit.setPlaceholderText(Localizer.get().proofreading_page_search_placeholder)
         self.inline_search_edit.setMinimumWidth(120)
-        self.inline_search_edit.setMaximumWidth(280)
         self.inline_search_edit.returnPressed.connect(self._on_inline_search_submitted)
         filter_layout.addWidget(self.inline_search_edit, 1)
 
@@ -220,7 +225,8 @@ class ProofreadingPage(QWidget, Base):
         self.command_bar_card = CommandBarCard()
         parent.addWidget(self.command_bar_card)
 
-        self.command_bar_card.set_minimum_width(640)
+        self.command_bar_card.set_minimum_width(0)
+        self.command_bar_card.hbox.setStretch(0, 1)
 
         self.btn_load = self.command_bar_card.add_action(
             Action(FluentIcon.DOWNLOAD, Localizer.get().proofreading_page_load, triggered = self._on_load_clicked)
@@ -304,8 +310,7 @@ class ProofreadingPage(QWidget, Base):
 
         self.pagination_bar = PaginationBar()
         self.pagination_bar.page_changed.connect(self._on_page_changed)
-        self.command_bar_card.add_widget_to_command_bar(self.pagination_bar)
-        self.command_bar_card.add_stretch(1)
+        parent.addWidget(self.pagination_bar, 0, Qt.AlignCenter)
 
         self.info_label = CaptionLabel("", self)
         self.info_label.setTextColor(QColor(96, 96, 96), QColor(160, 160, 160))
@@ -465,7 +470,7 @@ class ProofreadingPage(QWidget, Base):
 
         warning_types = self.filter_options.get(FilterDialog.KEY_WARNING_TYPES)
         glossary_terms = self.filter_options.get(FilterDialog.KEY_GLOSSARY_TERMS)
-        if warning_types is not None or glossary_terms is not None:
+        if warning_types is not None or glossary_terms is not None or self.only_issues_check.isChecked():
             self._apply_filter()
 
     def _on_items_loaded_ui(self, items: list[CacheItem]) -> None:
@@ -541,6 +546,8 @@ class ProofreadingPage(QWidget, Base):
         filtered = []
         for item in self.items:
             if item.get_status() in (Base.TranslationStatus.EXCLUDED, Base.TranslationStatus.DUPLICATED):
+                continue
+            if self.only_issues_check.isChecked() and not self.warning_map.get(id(item)):
                 continue
 
             if warning_types is not None:
