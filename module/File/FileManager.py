@@ -137,6 +137,10 @@ class FileManager(Base):
 
             paths: list[str] = []
             input_folder: str = self.config.input_folder
+            self.emit(Base.Event.TRANSLATION_UPDATE, {
+                "phase": "preparing",
+                "message": "正在扫描翻译输入目录…",
+            })
             if os.path.isfile(input_folder):
                 paths = [input_folder]
             elif os.path.isdir(input_folder):
@@ -152,6 +156,11 @@ class FileManager(Base):
             # 避免停止按钮之后仍长时间占用事件线程和磁盘。
             if self._is_stop_requested():
                 return project, items
+
+            self.emit(Base.Event.TRANSLATION_UPDATE, {
+                "phase": "preparing",
+                "message": f"正在解析翻译输入文件…（{len(paths)} 个文件）",
+            })
 
             paths_by_extension: dict[str, list[str]] = {}
             for path in paths:

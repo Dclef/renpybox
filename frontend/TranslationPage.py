@@ -465,6 +465,15 @@ class TranslationPage(QWidget, Base):
         if isinstance(data, dict):
             # 进度事件可能只携带 phase/message；合并更新，避免覆盖已有计时与行数。
             self.data = {**self.data, **data}
+            message = data.get("message")
+            if data.get("phase") == "preparing" and isinstance(message, str) and message:
+                show = getattr(self, "indeterminate_show", None)
+                if callable(show):
+                    show(message)
+            elif "line" in data or "total_line" in data:
+                hide = getattr(self, "indeterminate_hide", None)
+                if callable(hide):
+                    hide()
             if "quality_task" in data:
                 # 质量任务只更新自己的分区，并通知按钮状态同步。
                 self.runtime_status_updated.emit(event, self.data)

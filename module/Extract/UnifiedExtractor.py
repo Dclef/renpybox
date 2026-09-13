@@ -111,6 +111,9 @@ class UnifiedExtractor:
     # Escape-aware old/new line match. Uses backreference so text like "Don't" won't be truncated.
     OLD_LINE_RE = re.compile(r'^\s*old\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$', re.MULTILINE)
     NEW_LINE_RE = re.compile(r'^\s*new\s+(["\'])(?P<text>(?:\\.|(?!\1).)*?)\1\s*$', re.MULTILINE)
+    TRANSLATE_HEADER_RE = re.compile(
+        r'^\s*translate\s+\S+(?:\s+(?P<label>.+?))?\s*:\s*$'
+    )
     BUILTIN_UI_DIRS = {"base_box"}
     BUILTIN_UI_FILES = {
         "common_box.rpy",
@@ -224,6 +227,75 @@ class UnifiedExtractor:
                     self.logger.debug(f"跳过内置 UI 文件: {rpy_file}")
                 continue
             yield rpy_file
+
+    def _fast_scan_strings_file(
+        self, rpy_file: Path
+    ) -> Optional[Tuple[Set[str], Dict[str, str]]]:
+        """快速扫描只有 ``translate <lang> strings`` 块的文件。
+
+        这类补充抽取文件通常很大，完整 AST 解析会在长文件上产生明显的
+        CPU 和内存开销。字符串块只需要 old/new 配对即可完成增量比较，
+        因此使用线性扫描；发现编号翻译块时返回 ``None``，交回 AST 解析以
+        保留严格的块身份校验。
+        """
+        try:
+            lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return None
+
+        in_strings = False
+        saw_strings = False
+        originals: Set[str] = set()
+        translations: Dict[str, str] = {}
+        index = 0
+        while index < len(lines):
+            header = self.TRANSLATE_HEADER_RE.match(lines[index])
+            if header:
+                label = (header.group("label") or "").strip()
+                if label.casefold() != "strings":
+                    return None
+                in_strings = True
+                saw_strings = True
+                index += 1
+                continue
+            if not in_strings:
+                index += 1
+                continue
+
+            old_match = self.OLD_LINE_RE.match(lines[index])
+            if old_match:
+                old_text = self._decode_rpy_string(
+                    old_match.group(1), old_match.group("text")
+                )
+                originals.add(old_text)
+                next_index = index + 1
+                while next_index < len(lines):
+                    probe = lines[next_index].strip()
+                    if not probe or probe.startswith("#"):
+                        next_index += 1
+                        continue
+                    break
+                if next_index < len(lines):
+                    new_match = self.NEW_LINE_RE.match(lines[next_index])
+                    if new_match:
+                        new_text = self._decode_rpy_string(
+                            new_match.group(1), new_match.group("text")
+                        )
+                        if new_text and new_text != old_text:
+                            translations[old_text] = new_text
+                        index = next_index + 1
+                        continue
+                    if lines[next_index].lstrip().startswith("new "):
+                        # 多行/三引号字符串交给 AST，避免快速路径漏掉条目。
+                        return None
+            elif lines[index].lstrip().startswith("old "):
+                # 多行/三引号字符串交给 AST，避免快速路径漏掉条目。
+                return None
+            index += 1
+
+        if not saw_strings:
+            return None
+        return originals, translations
 
     def _deploy_builtin_ui_pack(self, tl_dir: Path, tl_name: str) -> int:
         """将内置 base_box（UI 文本翻译）注入到 tl 目录，避免后续重复翻译 UI。
@@ -1455,10 +1527,12 @@ class UnifiedExtractor:
             # comments from decompiled line numbers here: decompilation can shift
             # lines relative to Ren'Py's official anchors and create a two-run
             # fingerprint oscillation. The fresh extraction is authoritative.
+            self._emit_progress("正在扫描已有翻译块...", 12)
             existing_block_fingerprints = self._collect_numbered_block_fingerprints(tl_dir)
             existing_block_keys = set(existing_block_fingerprints)
 
             # 旧译文始终按当前磁盘模板身份收集；新快照只负责判定是否变化。
+            self._emit_progress("正在读取已有译文...", 15)
             existing_translations = self._get_existing_translations(tl_dir)
             translated_count = len(existing_translations)
             result.preserved_count = translated_count
@@ -1467,6 +1541,7 @@ class UnifiedExtractor:
             
             # 2. strings 按原文全局去重；带编号的翻译块按文件与块标签判断。
             #    编号块中的相同原文属于不同语句，不能因为别处翻译过就跳过。
+            self._emit_progress("正在扫描已有 strings 原文...", 18)
             block_originals: Set[str] = set()
             all_current_string_originals = self._get_string_originals(
                 tl_dir, block_originals=block_originals
@@ -2798,6 +2873,11 @@ class UnifiedExtractor:
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
+            fast_result = self._fast_scan_strings_file(rpy_file)
+            if fast_result is not None:
+                fast_originals, _fast_translations = fast_result
+                originals.update(fast_originals)
+                continue
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 doc = parse_tl_document(content.splitlines())
@@ -2848,6 +2928,11 @@ class UnifiedExtractor:
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
+            fast_result = self._fast_scan_strings_file(rpy_file)
+            if fast_result is not None:
+                _fast_originals, fast_translations = fast_result
+                translations.update(fast_translations)
+                continue
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 doc = parse_tl_document(content.splitlines())
@@ -2918,6 +3003,9 @@ class UnifiedExtractor:
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
+            if self._fast_scan_strings_file(rpy_file) is not None:
+                # 纯 strings 文件没有编号翻译块，跳过高开销 AST 解析。
+                continue
             try:
                 rel_path = rpy_file.relative_to(tl_dir).as_posix()
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
@@ -3287,7 +3375,23 @@ class UnifiedExtractor:
         )
         selected_menu_strings = selected_originals.intersection(menu_locations)
 
-        for rpy_file in self._iter_rpy_files(source_dir):
+        source_files = list(self._iter_rpy_files(source_dir))
+        total_source_files = len(source_files)
+        for file_index, rpy_file in enumerate(source_files, 1):
+            if (
+                callable(getattr(self, "_progress_callback", None))
+                and total_source_files
+                and (
+                    file_index == 1
+                    or file_index == total_source_files
+                    or file_index % max(1, total_source_files // 20) == 0
+                )
+            ):
+                percent = 70 + int(file_index * 5 / total_source_files)
+                self._emit_progress(
+                    f"正在分离新增/待翻译内容…（{file_index}/{total_source_files} 个文件）",
+                    min(75, percent),
+                )
             # AST 优先
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
@@ -3414,6 +3518,8 @@ class UnifiedExtractor:
                 self.logger.warning(f"处理文件失败 {rpy_file}: {e}")
 
         if game_dir is not None:
+            if callable(getattr(self, "_progress_callback", None)):
+                self._emit_progress("正在补充源码位置…", 75)
             for original in sorted(selected_menu_strings):
                 relative_path = menu_locations[original]
                 target_file = target_dir / relative_path
@@ -3455,6 +3561,9 @@ class UnifiedExtractor:
     ) -> int:
         """为增量 old/new 条目补充源文件和行号注释。"""
         added = 0
+        # 同一源文件通常包含数百至数千条字符串。先建立一次“原文 ->
+        # 行号”索引，避免为每个 old 条目重复读取并扫描整个源码文件。
+        source_line_cache: dict[Path, dict[str, int]] = {}
         for target_file in self._iter_rpy_files(target_dir):
             try:
                 relative_path = target_file.relative_to(target_dir)
@@ -3466,6 +3575,10 @@ class UnifiedExtractor:
                 ).splitlines()
             except Exception:
                 continue
+            source_lines = source_line_cache.get(source_file)
+            if source_lines is None:
+                source_lines = self._build_source_text_line_index(source_file)
+                source_line_cache[source_file] = source_lines
             output: List[str] = []
             changed = False
             for line in lines:
@@ -3478,7 +3591,7 @@ class UnifiedExtractor:
                         original = self._decode_literal_value(
                             old_match.group(1), old_match.group("text")
                         )
-                        source_line = self._find_source_text_line(source_file, original)
+                        source_line = source_lines.get(original)
                         if source_line is not None:
                             output.append(
                                 f"    # game/{relative_path.as_posix()}:{source_line}"
@@ -3491,6 +3604,34 @@ class UnifiedExtractor:
                     "\n".join(output).rstrip() + "\n", encoding="utf-8"
                 )
         return added
+
+    @staticmethod
+    def _build_source_text_line_index(source_file: Path) -> dict[str, int]:
+        """一次扫描源码文件，返回可用于位置注释的字符串行号。"""
+        try:
+            lines = source_file.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+        except Exception:
+            return {}
+
+        index: dict[str, int] = {}
+        for line_no, line in enumerate(lines, 1):
+            for literal in scan_quoted_literals(line):
+                index.setdefault(literal.value, line_no)
+
+        # 跨行相邻字符串字面量需要按合并后的逻辑行补充索引，行号仍指向
+        # 第一行，保持原有位置注释语义。
+        try:
+            from module.Renpy.renpy_extract import merge_string_literal_continuations
+
+            merged = merge_string_literal_continuations(lines)
+        except Exception:
+            merged = []
+        for merged_line, start_index in merged:
+            for literal in scan_quoted_literals(merged_line):
+                index.setdefault(literal.value, start_index + 1)
+        return index
 
     @staticmethod
     def _find_source_menu_line(source_file: Path, original: str) -> Optional[int]:
@@ -4114,6 +4255,11 @@ class UnifiedExtractor:
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
+            fast_result = self._fast_scan_strings_file(rpy_file)
+            if fast_result is not None:
+                _fast_originals, fast_translations = fast_result
+                translations.strings.update(fast_translations)
+                continue
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
                 doc = parse_tl_document(content.splitlines())
