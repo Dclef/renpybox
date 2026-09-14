@@ -305,6 +305,7 @@ class TaskRequester(Base):
         self.current_round = current_round
         self.thinking_level = self.resolve_thinking_level(self.platform.get("thinking"))
         self.last_error_message = ""
+        self.last_request_metrics: dict[str, object] = {}
         self._agent_requester = None
 
     def request_tools(
@@ -624,7 +625,46 @@ class TaskRequester(Base):
         *,
         response_shape: ResponseShape = "none",
     ) -> tuple[bool, str, str, int, int]:
+        request_started_at = time.perf_counter()
+        self.last_request_metrics = {
+            "logical_request_count": 1,
+            "provider_attempt_count": 0,
+            "http_attempt_count": 0,
+            "http_error_count": 0,
+            "http_429_count": 0,
+            "http_5xx_count": 0,
+            "transport_error_count": 0,
+            "logical_failure_count": 0,
+            "cancelled_request_count": 0,
+            "http_observation_supported": False,
+            "http_observed_logical_count": 0,
+            "logical_request_ms_samples": [],
+            "http_headers_ms_samples": [],
+            "first_content_ms_samples": [],
+        }
         self.last_error_message = ""
+
+        def mark_outcome(*, failed: bool = False, cancelled: bool = False) -> None:
+            if failed:
+                self.last_request_metrics["logical_failure_count"] = int(
+                    self.last_request_metrics.get("logical_failure_count", 0)
+                ) + 1
+            if cancelled:
+                self.last_request_metrics["cancelled_request_count"] = int(
+                    self.last_request_metrics.get("cancelled_request_count", 0)
+                ) + 1
+
+        def finish_result(
+            result: tuple[bool, str, str, int, int],
+            *,
+            failed: bool = False,
+            cancelled: bool = False,
+        ) -> tuple[bool, str, str, int, int]:
+            mark_outcome(failed=failed, cancelled=cancelled)
+            self.last_request_metrics["logical_request_ms_samples"] = [
+                round((time.perf_counter() - request_started_at) * 1000, 3)
+            ]
+            return result
 
         # 添加请求入口日志
         self.debug(f"[API-REQUEST] 准备请求: model={self.platform.get('model')}, "
@@ -649,7 +689,7 @@ class TaskRequester(Base):
                     f"{reserved_output} output > {context_window}"
                 )
                 self.warning(self.last_error_message)
-                return True, None, None, None, None
+                return finish_result((True, None, None, None, None), failed=True)
         
         args: dict[str, float] = {}
         if self.platform.get('top_p_custom_enable') == True:
@@ -692,38 +732,45 @@ class TaskRequester(Base):
             # If user has requested a stop, abort new requests immediately
             if __class__.is_cancel_requested():
                 self.debug("[API-REQUEST] 用户请求停止，中断请求")
-                return True, None, None, None, None
+                return finish_result((True, None, None, None, None), cancelled=True)
 
             self.debug(f"[API-REQUEST] 尝试 {attempt}/{__class__.MAX_REQUEST_RETRY}")
             try:
-                last_result = dispatch()
+                provider_started_at = time.perf_counter()
+                self.last_request_metrics["provider_attempt_count"] = int(self.last_request_metrics.get("provider_attempt_count", 0)) + 1
+                try:
+                    last_result = dispatch()
+                finally:
+                    self.last_request_metrics["provider_ms"] = self.last_request_metrics.get("provider_ms", 0) + (time.perf_counter() - provider_started_at) * 1000
+                    self.last_request_metrics["logical_request_ms_samples"] = [round((time.perf_counter() - request_started_at) * 1000, 3)]
             except openai.BadRequestError as e:
                 self.last_error_message = str(e)
                 self.error(f"{Localizer.get().log_task_fail}", e)
                 self.warning("[API-REQUEST] 请求参数错误，不再重试")
-                return True, None, None, None, None
+                return finish_result((True, None, None, None, None), failed=True)
             skip = last_result[0]
             if skip is False:
                 self.last_error_message = ""
                 self.debug("[API-REQUEST] 请求成功")
-                return last_result
+                return finish_result(last_result)
 
             # 取消造成的连接关闭不应进入退避重试，也不应把用户主动停止
             # 记录成普通请求失败。
             if __class__.is_cancel_requested():
-                return True, None, None, None, None
+                return finish_result((True, None, None, None, None), cancelled=True)
 
             if attempt < __class__.MAX_REQUEST_RETRY:
                 delay = min(2 ** (attempt - 1), 5)
+                self.last_request_metrics["retry_wait_ms"] = self.last_request_metrics.get("retry_wait_ms", 0) + delay * 1000
                 self.debug(f"[API-REQUEST] 请求失败，{delay}秒后重试")
                 deadline = time.monotonic() + delay
                 while time.monotonic() < deadline:
                     if __class__.is_cancel_requested():
-                        return True, None, None, None, None
+                        return finish_result((True, None, None, None, None), cancelled=True)
                     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
         self.warning("[API-REQUEST] 请求失败，已达最大重试次数")
-        return last_result
+        return finish_result(last_result, failed=True)
 
     def _recover_closed_cached_client(
         self,

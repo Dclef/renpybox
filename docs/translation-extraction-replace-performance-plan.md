@@ -424,7 +424,7 @@ token_limit = max(64, token_threshold * 16)
 | 官方进程控制 | `RenpyExtractor.official_extract` 使用 Popen，0.5 秒轮询、900 秒默认超时、取消并转发末尾输出；主版本探针优先 | 只终止直接进程；静默时无心跳；输出仍累计，末尾内容可能重复上报；回调异常时进程收尾不完整；探针失败仍猜测版本 |
 | 增量 70% 分离 | 简单 strings 逐行筛选、行内取消和心跳；混合 TL 仍整体解析 | 文件列表仍全量枚举排序，混合 TL 整体 AST 内不能取消，无统一累计阶段指标 |
 | Hook 索引和缓存 | `ReplaceRuntime.RUNTIME_SOURCE` 的前缀树同时索引静态原文和动态锚点；初始化预编译；同起点最长、非级联；旧 Hook 之后缓存自身结果 | 复杂多插值、短词边界、跨标签和共享锚点仍需规模验收；缓存约束是字符成本，不是精确内存字节 |
-| Hook 分片与迁移 | schema 2、约 256 KiB 分组、SHA-256 文件名；旧格式读取兼容；本次修复入口失败保留旧分片 | 运行时读取分片未核验内容哈希；大 Hook 复用预览仍以默认内联脚本比较，可能重复判断过期 |
+| Hook 分片与迁移 | schema 2、约 256 KiB 分组、SHA-256 文件名；生成端和运行时均校验分片内容哈希；旧格式读取兼容；本次修复入口失败保留旧分片 | 大 Hook 复用预览仍以默认内联脚本比较，可能重复判断过期；哈希失败只拒绝加载，仍需在真实游戏副本验证错误提示可见性 |
 | Hook 规则诊断 | 本次生成 `.diagnostics.json`，统计数量/体积/复杂模板原因并保留最多 100 个样本；报告包含入口哈希；输入扫描排除工具分片和默认报告 | 诊断不改变匹配、不证明原生 TL 覆盖；复杂模板最坏耗时尚无全面解决；报告失败时需根据入口哈希辨认旧报告 |
 | UI 与应用 | 已有后台角色扫描、事务应用和增量缓存迁移；本次旧 TL 递归计数和应用前枚举也移入后台 | 同步路径解析、配置落盘、顶层目录非空检查、步骤二源码状态检查仍在；不能声称所有 UI 磁盘操作已移出 |
 | 限流和心跳基础 | `TaskLimiter` 使用锁与单调时钟；现有 `EventTelemetry` 测量约 1 秒 UI 心跳并记录 ≥50 ms 漂移 | limiter 仍在任务提交层；缺抽取阶段关联、主线程栈以及 100 ms 心跳压力验收 |
@@ -444,7 +444,7 @@ token_limit = max(64, token_threshold * 16)
 
 | 优先级 | 待做任务 | 涉及模块 | 可验证的完成条件 |
 | --- | --- | --- | --- |
-| P1 | 预算拆分已落地，接着验证均衡档有效吞吐与质量 | `Config`、`BasicSettingsPage`、`CacheManager`、`TaskRequester`、preflight | 固定语料对照 10 行旧预算、10 行/1,024、20 行/1,024；记录真实有效条/分钟、延迟和重试；核对后端 tokenizer、思考 token 与输出限制 |
+| P1 | 预算拆分与吞吐观测已落地，接着用真实语料验证均衡档质量 | `Config`、`BasicSettingsPage`、`TaskRequester`、`TranslationMetrics`、preflight | 运行报告记录有效条/分钟、P50/P95、排队/重试/保存耗时；仍需固定真实语料对照并核对后端 tokenizer、思考 token 与输出限制 |
 | P1 | 实际 HTTP 尝试限流与统一重试 | `TaskRequester`、`TaskLimiter`、各 SDK 路径 | 429、网络重试、拆分、Sakura 修复和 DeepLX 逐条均计额度；只保留可观察的一层重试；遵守 Retry-After；取消可打断等待；已成功项不重译 |
 | P1 | 阶段/请求计时与可取消的进程收尾 | `RenpyExtractor`、`UnifiedExtractor`、`TranslatorTask`、`EventTelemetry` | 抽取 run ID 和阶段耗时/真实读取量；无输出进程每秒报告存活；超时/取消/回调异常都回收进程及子孙；首 token、完整响应、等待/重试分别计时，不拿任务数充当 HTTP 数 |
 | P1 | 按出现位置建立覆盖证据，复用已有 TL 生成真正缺失的 fallback | `renpy_extract`、`UnifiedExtractor`、`ReplaceGenerator` | 保存文件/行/语句类别/官方身份/排除理由；同文官方对白与未覆盖 UI 并存；TL 子串包含不再吞掉未知路径；已有合适译文无需再次请求 API |

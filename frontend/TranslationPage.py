@@ -818,6 +818,44 @@ class TranslationPage(QWidget, Base):
         ]
         for label, value in zip(self.throughput_stat_values, values):
             label.setText(value)
+        metrics = self.data.get("throughput") or {}
+        titles = getattr(self, "throughput_stat_labels", [])
+        strings = Localizer.get()
+        if metrics.get("schema_version") == 1:
+            self.throughput_stat_values[0].setText(strings.translation_page_effective_rate.format(
+                RATE=float(metrics.get("effective_items_per_minute", 0)),
+            ))
+            latency_p95 = metrics.get("logical_request_ms_p95")
+            self.throughput_stat_values[3].setText(f"{latency_p95:.1f} ms" if latency_p95 is not None else "—")
+            if titles:
+                titles[0].setText(strings.translation_page_stat_effective)
+                titles[3].setText(strings.translation_page_stat_request_p95)
+            def milliseconds(key):
+                value = metrics.get(key)
+                return f"{float(value):.1f}" if value is not None else "—"
+            detail = strings.translation_page_timing_help.format(
+                COUNT=metrics.get("effective_item_count", 0),
+                REQUESTS=metrics.get("logical_request_count", 0),
+                HTTP=metrics.get("http_attempt_count", 0) if metrics.get("http_observation_complete") else "—",
+                P50=milliseconds("logical_request_ms_p50"),
+                FIRST=milliseconds("first_content_ms_p50"),
+                SLOT=milliseconds("slot_wait_ms"),
+                RATE=milliseconds("rate_wait_ms"),
+                PROVIDER=milliseconds("provider_ms"),
+                RETRY=milliseconds("retry_wait_ms"),
+                LOCAL=milliseconds("task_local_ms"),
+                CHECK=milliseconds("decode_check_ms"),
+                SAVE=milliseconds("cache_save_ms"),
+                LIMIT=metrics.get("sample_limit", 2048),
+            )
+            for label in self.throughput_stat_values:
+                label.setToolTip(detail)
+        else:
+            if titles:
+                titles[0].setText(strings.translation_page_stat_average)
+                titles[3].setText(strings.translation_page_stat_latency)
+            for label in self.throughput_stat_values:
+                label.setToolTip("")
 
     def _refresh_stream_feed(self) -> None:
         """展示引擎明确提供的最近流水；没有数据时保持真实空态。"""
@@ -1159,6 +1197,7 @@ class TranslationPage(QWidget, Base):
         stats_layout.setContentsMargins(0, 4, 0, 0)
         stats_layout.setSpacing(6)
         self.throughput_stat_values = []
+        self.throughput_stat_labels = []
         for label in (
             strings.translation_page_stat_average,
             strings.translation_page_stat_batches,
@@ -1173,6 +1212,7 @@ class TranslationPage(QWidget, Base):
             stat_layout.setContentsMargins(8, 5, 8, 5)
             stat_layout.setSpacing(1)
             stat_label = CaptionLabel(label, stat)
+            self.throughput_stat_labels.append(stat_label)
             stat_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             stat_label.setWordWrap(True)
             set_text_role(stat_label)

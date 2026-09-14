@@ -2505,10 +2505,14 @@ def render_replace_script(
     if sharded and external_data:
         lines.append(f"    _renpybox_data_files = {[name for name, _ in payloads]!r}")
         lines.append("    _renpybox_records = []")
+        lines.append("    import hashlib as _renpybox_hashlib")
         lines.append("    for _renpybox_data_file in _renpybox_data_files:")
         lines.append(f"        _renpybox_resource = getattr(config, 'tl_directory', 'tl') + '/' + {language or 'chinese'!r} + '/{REPLACE_DATA_DIR}/' + _renpybox_data_file")
         lines.append("        with renpy.file(_renpybox_resource) as _renpybox_stream:")
-        lines.append("            _renpybox_records.extend(_renpybox_json.loads(_renpybox_stream.read().decode('ascii')))")
+        lines.append("            _renpybox_payload_text = _renpybox_stream.read().decode('ascii')")
+        lines.append("        if _renpybox_hashlib.sha256(_renpybox_payload_text.encode('ascii')).hexdigest() != _renpybox_data_file[:-5]:")
+        lines.append("            raise ValueError('RenpyBox replace data checksum mismatch: ' + _renpybox_data_file)")
+        lines.append("        _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_text))")
     elif sharded:
         payload_values = [payload for _, payload in payloads]
         lines.append(f"    _renpybox_payloads = {payload_values!r}")
