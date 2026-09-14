@@ -2,6 +2,7 @@ import os
 import time
 import json
 import threading
+from collections.abc import Callable
 
 from base.Base import Base
 from module.Config import Config
@@ -73,6 +74,7 @@ class CacheManager(Base):
         self.require_flag: bool = False
         self.require_path: str = ""
         self.last_require_time: float = 0
+        self._save_observer: Callable[[dict[str, int | float]], None] | None = None
 
         # 启动定时任务
         if service == True:
@@ -164,6 +166,54 @@ class CacheManager(Base):
 
     # 保存缓存到文件
     def save_to_file(
+        self,
+        project: CacheProject,
+        items: list[CacheItem],
+        output_folder: str,
+        *,
+        strict: bool = False,
+    ) -> bool:
+        # Snapshot the owner before waiting for any cache lock. An old save must
+        # not report into a new run if the observer changes while it is blocked.
+        observer = self._save_observer
+        started = time.perf_counter()
+        succeeded = False
+        try:
+            result = self._save_to_file_impl(
+                project,
+                items,
+                output_folder,
+                strict = strict,
+            )
+            succeeded = result is True
+            return result
+        finally:
+            elapsed_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+            if observer is not None:
+                try:
+                    observer({
+                        "cache_save_count": 1,
+                        "cache_save_error_count": 0 if succeeded else 1,
+                        "cache_save_ms": elapsed_ms,
+                    })
+                except Exception:
+                    # Metrics must not interfere with persistence or replace a
+                    # strict save's original exception.
+                    pass
+
+    def set_save_observer(
+        self,
+        observer: Callable[[dict[str, int | float]], None] | None,
+    ) -> None:
+        """Observe save costs without retaining samples or cache contents.
+
+        The callback can run on an autosave thread while its outer cache lock
+        is held. It must only update its own collector and never call back into
+        CacheManager or wait for a translation worker.
+        """
+        self._save_observer = observer
+
+    def _save_to_file_impl(
         self,
         project: CacheProject,
         items: list[CacheItem],

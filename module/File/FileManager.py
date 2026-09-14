@@ -150,7 +150,7 @@ class FileManager(Base):
                         break
                     # Runtime rule payloads are generated artifacts, not new
                     # translation input (their JSON arrays are not MESSAGEJSON).
-                    dirs[:] = [name for name in dirs if name != ".renpybox_replace"]
+                    dirs[:] = [name for name in dirs if name not in (".renpybox_replace", ".renpybox_metrics")]
                     for file in files:
                         if self._is_stop_requested():
                             break
@@ -171,7 +171,7 @@ class FileManager(Base):
                 if self._is_stop_requested():
                     return project, items
                 candidate = Path(path)
-                if ".renpybox_replace" in candidate.parts:
+                if any(part in (".renpybox_replace", ".renpybox_metrics") for part in candidate.parts):
                     continue
                 if candidate.name in ("replace_text_auto.diagnostics.json", "replace_text.diagnostics.json"):
                     continue

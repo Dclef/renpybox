@@ -144,3 +144,12 @@ def test_empty_hook_keeps_shards_when_entry_removal_fails(previous_hook, monkeyp
 
     assert output.with_suffix(failed_suffix).exists()
     assert all(path.read_bytes() == payload for path, payload in previous_data.items())
+
+
+def test_runtime_rejects_tampered_external_shard(previous_hook):
+    output, _old_pairs = previous_hook
+    shard = next((output.parent / generator.REPLACE_DATA_DIR).glob("*.json"))
+    shard.write_text(shard.read_text(encoding="ascii") + " ", encoding="ascii")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        _run_hook(output, "Old field 3: 27")

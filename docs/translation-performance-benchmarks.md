@@ -466,3 +466,5 @@ python -m pytest -q tests/module/test_translation_batch_budgets.py tests/module/
 ```
 
 完整验证结果记录在主文档第 9.4 节。未运行真实 API 和实际游戏。
+
+请求分段计时、有效吞吐定义和三档对照步骤见[吞吐观测实施文档](translation-throughput-observability-plan.md)。
