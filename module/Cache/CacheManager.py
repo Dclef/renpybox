@@ -689,12 +689,18 @@ class CacheManager(Base):
         return count
 
     # 生成缓存数据条目片段
-    def generate_item_chunks(self, line_threshold: int, preceding_lines_threshold: int) -> list[list[CacheItem]]:
+    def generate_item_chunks(
+        self,
+        line_threshold: int,
+        preceding_lines_threshold: int,
+        *,
+        source_token_limit: int | None = None,
+    ) -> list[list[CacheItem]]:
         # 行数上限：line_threshold 是用户设置的"每批最多 N 行"
         line_limit = max(1, line_threshold)
         # Token 上限：按行数阈值乘以经验系数推算；单行平均约 30-50 token，
         # 乘 16 使短文本不会因 token 超限而过度切分。
-        token_limit = max(64, line_threshold * 16)
+        token_limit = self._batch_source_token_limit(line_limit, source_token_limit)
 
         skip: int = 0
         line_length: int = 0
@@ -746,6 +752,72 @@ class CacheManager(Base):
             skip = 0
 
         return chunks, preceding_chunks
+
+    @staticmethod
+    def _batch_source_token_limit(line_limit: int, source_token_limit: int | None) -> int:
+        if source_token_limit is not None and int(source_token_limit) > 0:
+            return int(source_token_limit)
+        return max(64, line_limit * 16)
+
+    def iter_item_chunks(
+        self,
+        line_threshold: int,
+        preceding_lines_threshold: int,
+        cancel_checker=None,
+        *,
+        source_token_limit: int | None = None,
+    ):
+        """Yield chunks incrementally with a bounded per-file context queue."""
+        line_limit = max(1, int(line_threshold))
+        token_limit = self._batch_source_token_limit(line_limit, source_token_limit)
+        context_limit = max(0, int(preceding_lines_threshold))
+        context: dict[str, list[CacheItem]] = {}
+        chunk: list[CacheItem] = []
+        preceding: list[CacheItem] = []
+        lines = tokens = 0
+
+        def remember(item: CacheItem) -> None:
+            if context_limit <= 0:
+                return
+            if item.get_status() == Base.TranslationStatus.EXCLUDED:
+                return
+            src = (item.get_src() or '').strip()
+            if not src or not src.endswith(__class__.END_LINE_PUNCTUATION):
+                return
+            key = str(item.get_file_path() or '')
+            values = context.setdefault(key, [])
+            values.append(item)
+            del values[:-context_limit]
+
+        for item in self.items:
+            if cancel_checker is not None and cancel_checker():
+                return
+            if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
+                remember(item)
+                continue
+            src = item.get_src()
+            if not src or not src.strip():
+                item.set_dst('')
+                item.set_status(Base.TranslationStatus.TRANSLATED)
+                continue
+            item_lines = sum(1 for line in src.splitlines() if line.strip())
+            item_tokens = item.get_token_count()
+            if chunk and (
+                lines + item_lines > line_limit
+                or tokens + item_tokens > token_limit
+                or item.get_file_path() != chunk[-1].get_file_path()
+            ):
+                yield chunk, preceding
+                chunk, lines, tokens = [], 0, 0
+                preceding = list(context.get(str(item.get_file_path() or ''), []))
+            elif not chunk:
+                preceding = list(context.get(str(item.get_file_path() or ''), []))
+            chunk.append(item)
+            lines += item_lines
+            tokens += item_tokens
+            remember(item)
+        if chunk:
+            yield chunk, preceding
 
     # 生成参考上文数据条目片段
     def generate_preceding_chunks(self, chunk: list[CacheItem], start: int, skip: int, preceding_lines_threshold: int) -> list[list[CacheItem]]:

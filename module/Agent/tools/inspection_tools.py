@@ -465,6 +465,7 @@ def _old_new_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
             language=plan.language,
             use_translate_python=True,
             wrap_existing=True,
+            external_data=True,
         )
         hook_matches = bool(
             hook_exists

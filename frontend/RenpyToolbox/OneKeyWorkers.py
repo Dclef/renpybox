@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QCoreApplication, QThread, pyqtSignal
 
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
@@ -687,9 +687,14 @@ class ExtractionWorker(QThread):
         self.exe_path = exe_path
         self.incremental = incremental  # 增量模式：保留已有翻译
         self.output_to_separate_folder = output_to_separate_folder  # 增量输出到单独文件夹
+
+    def cancel(self):
+        self.requestInterruption()
         
     def run(self):
         try:
+            if hasattr(self.unified_extractor, "set_cancel_callback"):
+                self.unified_extractor.set_cancel_callback(self.isInterruptionRequested)
             # 设置进度回调
             self.unified_extractor.set_progress_callback(
                 lambda msg, pct: self.progress.emit(
@@ -738,6 +743,40 @@ class ExtractionWorker(QThread):
             )
         finally:
             self.unified_extractor.set_progress_callback(None)
+            if hasattr(self.unified_extractor, "set_cancel_callback"):
+                self.unified_extractor.set_cancel_callback(None)
+
+
+class TranslationFileScanWorker(QThread):
+    """Enumerate translation files without blocking the GUI event loop."""
+
+    def __init__(self, directory, *, collect_files=False):
+        # The application owns running threads even if their page is destroyed.
+        super().__init__(QCoreApplication.instance())
+        self.directory = Path(directory)
+        self.collect_files = collect_files
+        self.files = []
+        self.file_count = 0
+        self.error = ""
+
+    def run(self):
+        try:
+            def fail(error):
+                raise error
+
+            for directory, _subdirs, names in os.walk(self.directory, onerror=fail):
+                if self.isInterruptionRequested():
+                    return
+                for name in names:
+                    if self.isInterruptionRequested():
+                        return
+                    if not os.path.normcase(name).endswith(".rpy"):
+                        continue
+                    self.file_count += 1
+                    if self.collect_files:
+                        self.files.append(Path(directory) / name)
+        except OSError as exc:
+            self.error = str(exc)
 
 
 class CharacterScanWorker(QThread):

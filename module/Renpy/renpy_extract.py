@@ -8,7 +8,8 @@ import pathlib
 import ast
 
 from module.Text.SkipRules import is_path_like, is_resource_name, should_skip_text
-from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER
+from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER, scan_quoted_literals
+from module.File.AtomicWrite import atomic_write_text
 from utils.call_game_python import is_python2_from_game_dir
 from utils.string_tool import remove_upprintable_chars, EncodeBracketContent, EncodeBrackets, replace_all_blank, \
     replace_unescaped_quotes
@@ -17,6 +18,7 @@ from base.LogManager import LogManager
 log = LogManager.get()
 
 extract_threads = []
+MAX_EXTRACT_WORKERS = 8
 
 # ========== 新增：特殊模式正则表达式 ==========
 # renpy.notify() 调用中的文本
@@ -66,9 +68,81 @@ def contains_cjk(s):
 lock = threading.Lock()
 
 num = 0
-get_extracted_threads = []
-get_extracted_lock = threading.Lock()
-get_extracted_set_list = []
+
+class ExtractionCancelled(RuntimeError):
+    pass
+
+
+def _check_cancel(should_stop):
+    if should_stop and should_stop():
+        raise ExtractionCancelled("抽取已取消")
+
+
+def _source_files(source_root, should_stop=None):
+    """Prune generated translation trees before traversing source files."""
+    root = pathlib.Path(source_root)
+    for directory, directories, files in os.walk(root):
+        _check_cancel(should_stop)
+        directories[:] = sorted(
+            name for name in directories
+            if name.lower() not in {"tl", "miss", "_filtered_suspicious", "base_box"}
+            and not name.startswith(("_temp_extract_", "_tl_backup", "."))
+        )
+        for name in sorted(files):
+            if not name.endswith(".rpy"):
+                continue
+            if name.startswith(("replace_text_auto", "miss_ready_replace", "zz_renpybox_")):
+                continue
+            yield root / pathlib.Path(directory).relative_to(root) / name
+
+
+def source_occurrence_kinds(lines):
+    """Only classify unambiguous say statements as dialogue; retain other uses."""
+    result = {}
+    non_dialogue_scopes = []
+    for line, _ in merge_string_literal_continuations(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        while non_dialogue_scopes and indent <= non_dialogue_scopes[-1]:
+            non_dialogue_scopes.pop()
+        if re.match(r"^(?:screen\b|(?:init\s+(?:-?\d+\s+)?)?python\b).*:\s*$", stripped):
+            non_dialogue_scopes.append(indent)
+        literals = scan_quoted_literals(line)
+        if not literals:
+            continue
+        prefix = line[:literals[0].start_col].strip()
+        suffix = line[literals[0].end_col:].strip()
+        is_say = not non_dialogue_scopes and len(literals) == 1 and not suffix and (
+            not prefix or re.fullmatch(r"(?:[A-Za-z_]\w*\s+)*[A-Za-z_]\w*", prefix)
+        ) and prefix.split(" ", 1)[0] not in {
+            "text", "textbutton", "label", "image", "scene", "show", "hide",
+            "play", "queue", "voice", "call", "jump", "define", "default",
+            "transform", "style", "screen", "contains", "add", "use", "key",
+            "old", "new", "input", "tooltip", "caption", "prompt", "hint",
+        }
+        for literal in literals:
+            result.setdefault(literal.value, set()).add("dialogue" if is_say else "other")
+    return result
+
+
+def _tl_coverage(lines):
+    strings, dialogue = set(), set()
+    in_dialogue = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("translate ") and stripped.endswith(":"):
+            in_dialogue = not stripped.endswith(" strings:")
+        elif stripped.startswith("old "):
+            literals = scan_quoted_literals(line)
+            if literals:
+                strings.add(literals[0].value)
+        elif in_dialogue and stripped.startswith("#"):
+            literals = scan_quoted_literals(line)
+            if literals:
+                dialogue.add(literals[-1].value)
+    return strings, dialogue
 
 # 常见 UI 文本白名单（短词也强制保留）
 UI_KEYWORDS = {
@@ -244,9 +318,7 @@ class ExtractTlThread(threading.Thread):
             f.writelines(_lines)
             f.close()
             extracted = None
-        get_extracted_lock.acquire()
-        get_extracted_set_list.append((self.p, extracted))
-        get_extracted_lock.release()
+        self.extracted = extracted
 
 
 DUPLICATE_ACTION_COMMENT = "comment"
@@ -353,6 +425,8 @@ def remove_repeat_extracted_from_tl(
     is_py2,
     cross_file_dedup=True,
     duplicate_action=DUPLICATE_ACTION_COMMENT,
+    should_stop=None,
+    progress_callback=None,
 ):
     """
     去除 tl 目录中的重复翻译条目
@@ -368,15 +442,11 @@ def remove_repeat_extracted_from_tl(
     if p[len(p) - 1] != '/' and p[len(p) - 1] != '\\':
         p = p + '/'
     paths = os.walk(p, topdown=False)
-    global get_extracted_threads
-    global get_extracted_set_list
-    global get_extracted_lock
-    cnt = 0
-    get_extracted_set_list.clear()
     
     # 收集所有 rpy 文件路径
     rpy_files = []
     for path, dir_lst, file_lst in paths:
+        _check_cancel(should_stop)
         for file_name in file_lst:
             i = os.path.join(path, file_name)
             if not file_name.endswith("rpy"):
@@ -389,26 +459,11 @@ def remove_repeat_extracted_from_tl(
     # 第一步只做单文件去重。这里的 extracted 结果只会写入一个从未被消费的
     # 全局列表，重新运行完整源码提取会在大文件上产生大量无效开销。
     # 注意：这一步会修改文件内容，必须先执行
-    for file_path in rpy_files:
-        t = ExtractTlThread(
-            file_path,
-            is_py2,
-            is_remove_repeat_only=True,
-            duplicate_action=duplicate_action,
-        )
-        get_extracted_threads.append(t)
-        cnt = cnt + 1
-        t.start()
-    
-    while True:
-        threads_len = len(get_extracted_threads)
-        if threads_len > 0:
-            for t in get_extracted_threads:
-                if t.is_alive():
-                    t.join()
-                get_extracted_threads.remove(t)
-        else:
-            break
+    for file_index, file_path in enumerate(rpy_files, 1):
+        _check_cancel(should_stop)
+        if progress_callback and (file_index == 1 or file_index % 100 == 0):
+            progress_callback(f"清理补充翻译 {file_index}/{len(rpy_files)}: {file_path}")
+        remove_repeat_for_file(file_path, duplicate_action=duplicate_action)
 
     # 第二步：收集所有文件中的 old/new 对，用于跨文件去重
     # 同时收集 dialogue 块中的原文，用于删除 strings 中的冗余
@@ -417,6 +472,7 @@ def remove_repeat_extracted_from_tl(
     
     if cross_file_dedup:
         for file_path in rpy_files:
+            _check_cancel(should_stop)
             try:
                 with io.open(file_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
@@ -481,6 +537,7 @@ def remove_repeat_extracted_from_tl(
         
         # 执行跨文件去重删除
         for file_path, duplicate_entries in duplicates_to_process.items():
+            _check_cancel(should_stop)
             try:
                 with io.open(file_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
@@ -515,7 +572,6 @@ def remove_repeat_extracted_from_tl(
             except Exception as e:
                 log.warning(f'跨文件去重失败 {file_path}: {e}')
     
-    get_extracted_set_list.clear()
     return
 
 def get_remove_consecutive_empty_lines(lines):
@@ -687,15 +743,18 @@ def _escape_rpy_string_for_write(value: str) -> str:
     )
 
 
-def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True, duplicate_action=DUPLICATE_ACTION_COMMENT):
+def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2, skip_translate_block=False, remove_duplicates=True, duplicate_action=DUPLICATE_ACTION_COMMENT, *, source_content=None, should_stop=None):
+    _check_cancel(should_stop)
     if remove_duplicates:
         remove_repeat_for_file(p, duplicate_action=duplicate_action)
     e = set()
     # 仅去重路径需要写权限；静态补充抽取只读取游戏源码，必须兼容只读文件。
     open_mode = 'r+' if remove_duplicates else 'r'
-    f = io.open(p, open_mode, encoding='utf-8')
-    _read = f.read()
-    f.close()
+    if source_content is None:
+        with io.open(p, open_mode, encoding='utf-8') as f:
+            _read = f.read()
+    else:
+        _read = source_content
     # print(_read)
     _read_line = _read.split('\n')
     # 合并 Python 相邻字符串字面量，避免把跨行书写的一句长文本拆成多段。
@@ -708,6 +767,8 @@ def ExtractFromFile(p, is_open_filter, filter_length, is_skip_underline, is_py2,
     translate_block_indent = 0
     p_content = ''
     for index, line_content in enumerate(_read_line):
+        if index % 256 == 0:
+            _check_cancel(should_stop)
         indent_level = len(line_content) - len(line_content.lstrip(' '))
         # show_lang 属性是原语言教学辅助文本（本构建不显示），剔除其引号
         # 内容，避免把法语等原文拆成多余翻译候选。
@@ -958,8 +1019,7 @@ def CreateEmptyFileIfNotExsit(p):
                 open(target, 'w').close()
 
 
-def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty, is_skip_underline, is_py2):
-    # Load Text Preserve config
+def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty, is_skip_underline, is_py2, *, should_stop=None, progress_callback=None, official_coverage=True):
     from module.Config import Config
     config = Config().load()
     preserve_set = set()
@@ -970,70 +1030,56 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
             elif isinstance(item, str):
                 preserve_set.add(item.strip())
 
-    if (p[len(p) - 1] != '/' and p[len(p) - 1] != '\\'):
-        p = p + '/'
-    index = p.rfind('tl\\')
-    if index == -1:
-        index = p.rfind('tl/')
-    if (index == -1):
-        log.warning(p + ' no tl found!')
-        return
-    index2 = p.find('\\', index + 3)
-    if index2 == -1:
-        index2 = p.find('/', index + 3)
-    if (index2 == -1):
-        log.warning(p + ' no tl found2!')
-        return
-    tl = p[index + 3:index2]
-    tl_lower = tl.lower()
-    paths = os.walk(p, topdown=False)
-    for path, dir_lst, file_lst in paths:
-        for file_name in file_lst:
-            i = os.path.join(path, file_name)
-            if (file_name.endswith("rpy") == False):
-                continue
-            if is_builtin_ui_file(i, p):
-                continue
-            rel_path = os.path.relpath(i, p)
-            rel_norm = rel_path.replace("\\", "/").lstrip("/")
-            first_part = rel_norm.split("/", 1)[0].strip().lower() if rel_norm else ""
-            if first_part == "tl" or first_part == tl_lower:
-                continue
-            target = os.path.normpath(os.path.join(p, '..', '..', rel_path))
-            if os.path.isfile(target) == False:
-                log.warning(target + " not exists skip!")
-                continue
+    tl_dir = pathlib.Path(p)
+    source_root = tl_dir.parent.parent
+    tl = tl_dir.name
+    extractedSet = set(extractedSet)
+    dialogue_by_file = {}
+    for tl_file in sorted(tl_dir.rglob("*.rpy")):
+        _check_cancel(should_stop)
+        try:
+            strings, dialogue = _tl_coverage(tl_file.read_text(encoding="utf-8").splitlines())
+            extractedSet.update(strings)
+            if official_coverage:
+                dialogue_by_file[tl_file.relative_to(tl_dir).as_posix()] = dialogue
+        except (OSError, UnicodeError) as exc:
+            log.warning(f"读取翻译覆盖失败 {tl_file}: {exc}")
 
-            e = ExtractFromFile(target, is_open_filter, filter_length, is_skip_underline, is_py2, True)
-            eDiff = e - extractedSet
-            
-            # Filter preserved text
-            if preserve_set:
-                eDiff = {x for x in eDiff if x.strip() not in preserve_set}
-            
-            # 使用统一的 should_skip_text 进行最终过滤（逻辑）
-            eDiff = {x for x in eDiff if not should_skip_text(x)}
-            
-            if len(eDiff) > 0:
-                f = io.open(i, 'a+', encoding='utf-8')
-                f.write('\ntranslate ' + tl + ' strings:\n\n')
-                for j in eDiff:
-                    if not j.startswith('_p("""') and not j.endswith('""")'):
-                        j = '"' + _escape_rpy_string_for_write(j) + '"'
-                    if not is_gen_empty:
-                        writeData = (
-                            f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
-                            '    old ' + j + '\n    new ' + j + '\n'
-                        )
-                    else:
-                        writeData = (
-                            f'    # {RENPYBOX_REPLACE_ONLY_MARKER}\n'
-                            '    old ' + j + '\n    new ' + '""' + '\n'
-                        )
-                    f.write(writeData + '\n')
-                f.close()
-            extractedSet = e | extractedSet
-            log.info(target + ' extract success!')
+    for file_index, source_file in enumerate(_source_files(source_root, should_stop), 1):
+        _check_cancel(should_stop)
+        relative = source_file.relative_to(source_root)
+        if relative.parts and relative.parts[0].lower() == tl.lower():
+            continue
+        target_file = tl_dir / relative
+        if is_builtin_ui_file(str(source_file)):
+            continue
+        source_content = source_file.read_text(encoding="utf-8", errors="replace")
+        extracted = ExtractFromFile(
+            str(source_file), is_open_filter, filter_length, is_skip_underline,
+            is_py2, True, remove_duplicates=False,
+            source_content=source_content, should_stop=should_stop,
+        )
+        dialogue = dialogue_by_file.get(relative.as_posix(), set())
+        occurrences = source_occurrence_kinds(source_content.splitlines()) if dialogue else {}
+        entries = sorted(
+            text for text in extracted - extractedSet
+            if text.strip() not in preserve_set and not should_skip_text(text)
+            and not (text in dialogue and occurrences.get(text) == {"dialogue"})
+        )
+        if entries:
+            original_content = target_file.read_text(encoding="utf-8") if target_file.exists() else ""
+            output = [original_content.rstrip(), f"\ntranslate {tl} strings:\n"]
+            for text in entries:
+                literal = text if text.startswith('_p("""') and text.endswith('""")') else '"' + _escape_rpy_string_for_write(text) + '"'
+                new_literal = '""' if is_gen_empty else literal
+                output.append(f"    # {RENPYBOX_REPLACE_ONLY_MARKER}\n    old {literal}\n    new {new_literal}\n")
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            _check_cancel(should_stop)
+            atomic_write_text(target_file, "\n".join(output).lstrip("\n") + "\n")
+            target_file.with_suffix(".rpyc").unlink(missing_ok=True)
+            extractedSet.update(entries)
+        if progress_callback and (file_index == 1 or file_index % 25 == 0):
+            progress_callback(f"补充抽取 {file_index} 个文件: {relative.as_posix()}")
 
 
 def GetHeaderPath(p):
@@ -1108,7 +1154,7 @@ def ExtractWriteFile(p, tl_name, is_open_filter, filter_length, is_gen_empty, gl
     return global_e
 
 
-def collect_static_menu_strings(game_dir):
+def collect_static_menu_strings(game_dir, *, should_stop=None):
     """收集菜单选项文本，并优先保留首次出现的真实源码位置。"""
     from pathlib import Path
 
@@ -1123,7 +1169,7 @@ def collect_static_menu_strings(game_dir):
     )
     if not source_root.is_dir():
         return result
-    for source_file in sorted(source_root.rglob("*.rpy"), key=lambda item: item.as_posix()):
+    for source_file in _source_files(source_root, should_stop):
         relative = source_file.relative_to(source_root)
         if relative.parts and relative.parts[0].lower() == "tl":
             continue
@@ -1319,7 +1365,7 @@ def _merge_adjacent_literals_in_line(line):
     return result
 
 
-def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False):
+def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False, *, should_stop=None):
     """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
     from pathlib import Path
 
@@ -1330,8 +1376,9 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
         return candidates
 
     is_py2 = is_python2_from_game_dir(str(source_root))
-    menu_map = collect_static_menu_strings(game_dir)
-    for source_file in sorted(source_root.rglob("*.rpy"), key=lambda item: item.as_posix()):
+    menu_map = collect_static_menu_strings(game_dir, should_stop=should_stop)
+    non_dialogue = set()
+    for source_file in _source_files(source_root, should_stop):
         try:
             relative = source_file.relative_to(source_root)
         except ValueError:
@@ -1340,17 +1387,21 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
             continue
         try:
             # 源码扫描不可调用带写入前处理的旧接口，避免修改游戏原文。
+            source_content = source_file.read_text(encoding="utf-8", errors="replace")
             extracted_texts = ExtractFromFile(
                 str(source_file), is_open_filter, filter_length, is_skip_underline,
                 is_py2, True, False,
+                source_content=source_content, should_stop=should_stop,
             )
+        except ExtractionCancelled:
+            raise
         except Exception:
             continue
         texts = set()
         screen_label_texts = set()
         try:
             merged_lines = merge_string_literal_continuations(
-                source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                source_content.splitlines()
             )
             for line, _start_index in merged_lines:
                 line_texts = _collect_static_line_texts(line)
@@ -1367,46 +1418,41 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
         # displayables. They are nevertheless normal Ren'Py string literals and
         # belong in standard old/new TL blocks.
         texts.intersection_update(extracted_texts | screen_label_texts)
+        occurrence_kinds = source_occurrence_kinds(source_content.splitlines())
         # 菜单选项必须使用 strings 翻译；即使同文先作为对话出现，也应以
         # 真实菜单位置为准，并保留简短选项文本。
         for text in sorted(texts):
             text = text.replace('\\"', '"').replace("\\'", "'")
             if text and not should_skip_text(text):
-                candidates.setdefault(text, relative.as_posix())
+                if text not in candidates or (
+                    text not in non_dialogue and occurrence_kinds.get(text) != {"dialogue"}
+                ):
+                    candidates[text] = relative.as_posix()
+                if occurrence_kinds.get(text) != {"dialogue"}:
+                    non_dialogue.add(text)
     candidates.update(menu_map)
     return candidates
 
 
-def ExtractAllFilesInDir(dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline):
+def ExtractAllFilesInDir(
+    dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline,
+    should_stop=None, progress_callback=None, official_coverage=True,
+):
+    _check_cancel(should_stop)
     is_py2 = is_python2_from_game_dir(dirName + '/../../../')
-    CreateEmptyFileIfNotExsit(dirName)
-    WriteExtracted(dirName, set(), is_open_filter, filter_length, is_gen_empty, is_skip_underline, is_py2)
+    pathlib.Path(dirName).mkdir(parents=True, exist_ok=True)
+    WriteExtracted(
+        dirName, set(), is_open_filter, filter_length, is_gen_empty, is_skip_underline,
+        is_py2, should_stop=should_stop, progress_callback=progress_callback,
+        official_coverage=official_coverage,
+    )
     log.info('start removing repeated extraction, please waiting...')
-    remove_repeat_extracted_from_tl(dirName, is_py2)
-    cnt = 0
-    get_extracted_set_list.clear()
-    p = dirName
-    if p[len(p) - 1] != '/' and p[len(p) - 1] != '\\':
-        p = p + '/'
-    paths = os.walk(p, topdown=False)
-    for path, dir_lst, file_lst in paths:
-        for file_name in file_lst:
-            i = os.path.join(path, file_name)
-            if file_name.endswith("rpy") == False:
-                continue
-            if is_builtin_ui_file(i, p):
-                continue
-            t = ExtractTlThread(i, is_py2, True)
-            get_extracted_threads.append(t)
-            cnt = cnt + 1
-            t.start()
-    while True:
-        threads_len = len(get_extracted_threads)
-        if threads_len > 0:
-            for t in get_extracted_threads:
-                if t.is_alive():
-                    t.join()
-                get_extracted_threads.remove(t)
-        else:
-            break
-    get_extracted_set_list.clear()
+    _check_cancel(should_stop)
+    remove_repeat_extracted_from_tl(
+        dirName,
+        is_py2,
+        should_stop=should_stop,
+        progress_callback=progress_callback,
+    )
+    if progress_callback:
+        progress_callback("补充抽取去重完成")

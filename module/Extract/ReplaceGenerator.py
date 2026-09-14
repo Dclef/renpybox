@@ -38,6 +38,7 @@ from module.Text.SkipRules import (
     RE_UPPERCASE_ACRONYM_CANDIDATE,
     should_skip_text,
 )
+from module.File.AtomicWrite import atomic_write_text
 
 Pair = Tuple[str, str]
 
@@ -2307,6 +2308,178 @@ def _build_interpolated_replace_rule(original: str, translation: str) -> tuple[s
     return "".join(pattern_parts), "".join(replacement_parts)
 
 
+REPLACE_SCHEMA_VERSION = 2
+REPLACE_SHARD_BYTES = 256 * 1024
+REPLACE_DATA_DIR = ".renpybox_replace"
+REPLACE_DIAGNOSTICS_SUFFIX = ".diagnostics.json"
+REPLACE_DIAGNOSTICS_SAMPLE_LIMIT = 100
+
+REPLACE_DIAGNOSTIC_REASONS = {
+    "no_anchor": "没有固定字面量；每段文本都必须检查此动态规则。",
+    "short_anchor": "最长固定锚点不足 4 个字符，可能命中大量无关文本。",
+    "shared_anchor": "多条动态规则共享最长锚点；命中该锚点会检查整个候选组。",
+    "multiple_interpolations": "含多个插值；值中出现分隔字面量时可能产生边界歧义。",
+    "adjacent_interpolations": "相邻插值没有固定分隔，渲染后无法唯一恢复各字段边界。",
+    "repeated_placeholder": "同一插值重复出现，匹配时要求捕获值一致。",
+    "ambiguous_pattern": "不同模板生成相同匹配模式，渲染文本无法区分来源；按规则优先级选择。",
+}
+
+
+def _replace_records(pairs: Sequence[Pair]) -> list:
+    records = []
+    for original, translation in sorted(dict(pairs).items(), key=lambda pair: (-len(pair[0]), pair[0])):
+        if not original or not translation or original == translation:
+            continue
+        rule = _build_interpolated_replace_rule(original, translation)
+        literals = []
+        if rule is not None:
+            cursor = 0
+            for match in RE_RENPY_INTERPOLATION.finditer(original):
+                if match.start() > cursor:
+                    literals.append(original[cursor:match.start()])
+                cursor = match.end()
+            if cursor < len(original):
+                literals.append(original[cursor:])
+        records.append([original, translation, rule[0] if rule else None, rule[1] if rule else None, literals])
+    return records
+
+
+def _replace_payloads(records: list) -> list[tuple[str, str]]:
+    import hashlib
+    payloads, batch, size = [], [], 2
+    def append_batch():
+        payload = json.dumps(batch, ensure_ascii=True, separators=(",", ":"))
+        payloads.append((hashlib.sha256(payload.encode("ascii")).hexdigest() + ".json", payload))
+    for record in records:
+        encoded = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+        if batch and size + len(encoded) + 1 > REPLACE_SHARD_BYTES:
+            append_batch()
+            batch, size = [], 2
+        batch.append(record)
+        size += len(encoded) + 1
+    if batch:
+        append_batch()
+    return payloads
+
+
+def _build_replace_diagnostics(records, payloads, script, language):
+    """Summarize matching risks without changing rules or retaining unbounded samples."""
+    import hashlib
+    from collections import Counter
+
+    anchors = Counter()
+    patterns = Counter()
+    for _source, _target, pattern, _replacement, literals in records:
+        if pattern is not None:
+            patterns[pattern] += 1
+            if literals:
+                anchors[max(literals, key=len)] += 1
+
+    reason_counts = Counter()
+    samples = []
+    issue_count = max_interpolations = 0
+    for priority, (source, target, pattern, _replacement, literals) in enumerate(records):
+        if pattern is None:
+            continue
+        matches = list(RE_RENPY_INTERPOLATION.finditer(source))
+        interpolation_count = len(matches)
+        max_interpolations = max(max_interpolations, interpolation_count)
+        anchor = max(literals, key=len) if literals else ""
+        reasons = []
+        if not anchor:
+            reasons.append("no_anchor")
+        elif len(anchor) < 4:
+            reasons.append("short_anchor")
+        if anchor and anchors[anchor] > 1:
+            reasons.append("shared_anchor")
+        if interpolation_count > 1:
+            reasons.append("multiple_interpolations")
+        if any(first.end() == second.start() for first, second in zip(matches, matches[1:])):
+            reasons.append("adjacent_interpolations")
+        if len({match.group(1) for match in matches}) < interpolation_count:
+            reasons.append("repeated_placeholder")
+        if patterns[pattern] > 1:
+            reasons.append("ambiguous_pattern")
+        reason_counts.update(reasons)
+        if reasons:
+            issue_count += 1
+            if len(samples) < REPLACE_DIAGNOSTICS_SAMPLE_LIMIT:
+                samples.append({
+                    "priority": priority,
+                    "source_preview": source[:240],
+                    "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                    "source_chars": len(source),
+                    "translation_chars": len(target),
+                    "interpolations": interpolation_count,
+                    "anchor_preview": anchor[:120],
+                    "anchor_chars": len(anchor),
+                    "anchor_rules": anchors[anchor] if anchor else 0,
+                    "matching_pattern_rules": patterns[pattern],
+                    "reasons": reasons,
+                })
+
+    dynamic_count = sum(patterns.values())
+    script_bytes = len(script.encode("utf-8"))
+    payload_bytes = sum(len(payload.encode("ascii")) for _name, payload in payloads)
+    external_data_bytes = payload_bytes if len(payloads) > 1 else 0
+    return {
+        "meta": {
+            "format": "renpybox-replace-diagnostics",
+            "schema_version": 1,
+            "replace_schema_version": REPLACE_SCHEMA_VERSION,
+            "language": language,
+            "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+            "external_data_files": [name for name, _payload in payloads] if len(payloads) > 1 else [],
+        },
+        "summary": {
+            "rule_count": len(records),
+            "static_rule_count": len(records) - dynamic_count,
+            "dynamic_rule_count": dynamic_count,
+            "no_anchor_rule_count": reason_counts["no_anchor"],
+            "multi_interpolation_rule_count": reason_counts["multiple_interpolations"],
+            "shared_anchor_rule_count": reason_counts["shared_anchor"],
+            "shared_anchor_group_count": sum(count > 1 for count in anchors.values()),
+            "max_anchor_group_size": max(anchors.values(), default=0),
+            "ambiguous_pattern_group_count": sum(count > 1 for count in patterns.values()),
+            "max_source_chars": max((len(row[0]) for row in records), default=0),
+            "max_translation_chars": max((len(row[1]) for row in records), default=0),
+            "max_pattern_chars": max((len(pattern) for pattern in patterns), default=0),
+            "max_interpolations": max_interpolations,
+            "script_bytes": script_bytes,
+            "payload_bytes": payload_bytes,
+            "external_data_bytes": external_data_bytes,
+            "total_hook_bytes": script_bytes + external_data_bytes,
+            "external_data_file_count": len(payloads) if len(payloads) > 1 else 0,
+            "flagged_rule_count": issue_count,
+            "sampled_rule_count": len(samples),
+            "omitted_rule_count": issue_count - len(samples),
+        },
+        "reason_counts": {reason: reason_counts[reason] for reason in REPLACE_DIAGNOSTIC_REASONS},
+        "reason_descriptions": REPLACE_DIAGNOSTIC_REASONS,
+        "samples": samples,
+    }
+
+
+def _write_replace_diagnostics(output, records, payloads, script, language):
+    report_path = output.with_suffix(REPLACE_DIAGNOSTICS_SUFFIX)
+    try:
+        report = _build_replace_diagnostics(records, payloads, script, language)
+        atomic_write_text(
+            report_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        summary = report["summary"]
+        LogManager.get().info(
+            f"Hook 诊断: {summary['static_rule_count']} 条静态，"
+            f"{summary['dynamic_rule_count']} 条动态，"
+            f"{summary['flagged_rule_count']} 条需检查；报告: {report_path}"
+        )
+    except Exception as exc:
+        # Diagnostics are optional: a report failure cannot invalidate a hook
+        # that has already been committed. The hash identifies stale reports.
+        LogManager.get().warning(f"Hook 已更新，但诊断报告写入失败 {report_path}: {exc}")
+
+
 def render_replace_script(
     pairs: Sequence[Pair],
     *,
@@ -2317,109 +2490,120 @@ def render_replace_script(
     language: str | None = "chinese",
     use_translate_python: bool = True,
     wrap_existing: bool = True,
+    external_data: bool = False,
 ) -> str:
-    """Render a Ren'Py script that defines a ``replace_text`` hook."""
-
-    normalized_pairs = sorted(dict(pairs).items(), key=lambda item: (-len(item[0]), item[0]))
-    block_header = (
-        f"translate {language} python:"
-        if use_translate_python and language
-        else "init python:"
-    )
-    lines: List[str] = [
-        "# Auto-generated replace_text hook",
-        "# 用于替换官方抽取无法覆盖的文本",
-        "",
-        block_header,
-        "",
-    ]
-
-    uses_regex = any(
-        _build_interpolated_replace_rule(original, translation) is not None
-        for original, translation in normalized_pairs
-    )
-
-    if wrap_existing:
-        lines.append(f"    {previous_name} = getattr(config, \"replace_text\", None)")
-        lines.append("    _renpybox_seen_hooks = set()")
-        lines.append(f"    while getattr({previous_name}, \"_renpybox_auto_hook\", False):")
-        lines.append(f"        if id({previous_name}) in _renpybox_seen_hooks:")
-        lines.append(f"            {previous_name} = None")
-        lines.append("            break")
-        lines.append(f"        _renpybox_seen_hooks.add(id({previous_name}))")
-        lines.append(
-            f"        _renpybox_next_hook = getattr({previous_name}, \"_renpybox_previous\", None)"
-        )
-        lines.append(f"        if _renpybox_next_hook is {previous_name}:")
-        lines.append(f"            {previous_name} = None")
-        lines.append("            break")
-        lines.append(f"        {previous_name} = _renpybox_next_hook")
-        lines.append("")
-
-    function_args = (
-        f"{target_name}, _renpybox_previous={previous_name}"
-        if wrap_existing
-        else target_name
-    )
-    lines.extend([
-        f"    def {function_name}({function_args}):",
-        "",
-        f"        if not isinstance({target_name}, str):",
-        f"            return {target_name}",
-        "",
-    ])
-
-    if uses_regex:
-        # Ren'Py 的 translate python 上下文可能不会把外层导入暴露给钩子函数。
-        lines.extend(["        import re", ""])
-
+    """Render an indexed, single-pass hook with versioned rule data."""
+    from module.Extract.ReplaceRuntime import RUNTIME_SOURCE
+    records = _replace_records(pairs)
+    payloads = _replace_payloads(records)
+    sharded = len(payloads) > 1
+    header = f"translate {language} python:" if use_translate_python and language else "init python:"
+    lines = ["# Auto-generated replace_text hook", "# -*- coding: utf-8 -*-",
+             f"# renpybox-replace-schema: {REPLACE_SCHEMA_VERSION}", "", header, ""]
+    lines.extend("    " + line if line else "" for line in RUNTIME_SOURCE.strip().splitlines())
+    lines.extend(["", "    import json as _renpybox_json"])
+    if sharded and external_data:
+        lines.append(f"    _renpybox_data_files = {[name for name, _ in payloads]!r}")
+        lines.append("    _renpybox_records = []")
+        lines.append("    for _renpybox_data_file in _renpybox_data_files:")
+        lines.append(f"        _renpybox_resource = getattr(config, 'tl_directory', 'tl') + '/' + {language or 'chinese'!r} + '/{REPLACE_DATA_DIR}/' + _renpybox_data_file")
+        lines.append("        with renpy.file(_renpybox_resource) as _renpybox_stream:")
+        lines.append("            _renpybox_records.extend(_renpybox_json.loads(_renpybox_stream.read().decode('ascii')))")
+    elif sharded:
+        payload_values = [payload for _, payload in payloads]
+        lines.append(f"    _renpybox_payloads = {payload_values!r}")
+        lines.append("    _renpybox_records = []")
+        lines.append("    for _renpybox_payload_part in _renpybox_payloads:")
+        lines.append("        _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_part))")
+    else:
+        payload = payloads[0][1] if payloads else "[]"
+        lines.append(f"    _renpybox_payload = {payload!r}")
+        lines.append("    _renpybox_records = _renpybox_json.loads(_renpybox_payload)")
+    lines.extend(["    _renpybox_transform = _renpybox_build_transform(_renpybox_records)",
+                  "    del _renpybox_records"])
+    lines.append(f"    {previous_name} = getattr(config, 'replace_text', None)" if wrap_existing else f"    {previous_name} = None")
     if wrap_existing:
         lines.extend([
-            f"        if callable(_renpybox_previous) and _renpybox_previous is not {function_name}:",
-            f"            {target_name} = _renpybox_previous({target_name})",
-            f"            if not isinstance({target_name}, str):",
-            f"                return {target_name}",
-            "",
+            "    _renpybox_seen_hooks = set()",
+            f'    while getattr({previous_name}, "_renpybox_auto_hook", False):',
+            f"        if id({previous_name}) in _renpybox_seen_hooks:",
+            f"            {previous_name} = None",
+            "            break",
+            f"        _renpybox_seen_hooks.add(id({previous_name}))",
+            f'        _renpybox_next_hook = getattr({previous_name}, "_renpybox_previous", None)',
+            f"        if _renpybox_next_hook is {previous_name}:",
+            f"            {previous_name} = None",
+            "            break",
+            f"        {previous_name} = _renpybox_next_hook",
         ])
-
-    if normalized_pairs:
-        for original, translation in normalized_pairs:
-            rule = _build_interpolated_replace_rule(original, translation)
-            if rule is None:
-                escaped_old = _escape_string(original)
-                escaped_new = _escape_string(translation)
-                lines.append(f'        {target_name} = {target_name}.replace("{escaped_old}", "{escaped_new}")')
-            else:
-                pattern, replacement = rule
-                lines.append(
-                    f'        {target_name} = re.sub("{_escape_string(pattern)}", '
-                    f'"{_escape_string(replacement)}", {target_name})'
-                )
-    else:
-        lines.append("        pass")
-    lines.append("")
-
-    lines.append(f"        return {target_name}")
-
+    lines.extend([
+        "",
+        f"    def {function_name}({target_name}, _renpybox_previous={previous_name}, _transform=_renpybox_transform):",
+        "        if callable(_renpybox_previous):",
+        f"            {target_name} = _renpybox_previous({target_name})",
+        f"        return _transform({target_name})",
+        f"    {function_name}._renpybox_transform = _renpybox_transform",
+    ])
     if assign_to_config:
-        lines.append("")
-        lines.append(f"    {function_name}._renpybox_auto_hook = True")
-        lines.append(f"    {function_name}._renpybox_previous = {previous_name}")
-        lines.append(f"    config.replace_text = {function_name}")
-
-    lines.append("")
-    return "\n".join(lines)
+        lines.extend([f"    {function_name}._renpybox_auto_hook = True",
+                      f"    {function_name}._renpybox_previous = {previous_name}",
+                      f"    config.replace_text = {function_name}"])
+    return "\n".join(lines) + "\n"
 
 def read_generated_replace_pairs(path: Path, originals: Set[str]) -> List[Pair]:
     """从自动钩子恢复指定补漏条目；只解析字面量，不执行游戏脚本。"""
     if not path.is_file() or not originals:
         return []
     text = path.read_text(encoding="utf-8")
-    if not text.startswith("# Auto-generated replace_text hook"):
+    if not text.lstrip("\ufeff").startswith((
+        "# Auto-generated replace_text hook",
+        "# -*- coding: utf-8 -*-\n# Auto-generated replace_text hook",
+    )):
         return []
     text = re.sub(r"(?m)^translate \w+ python:$|^init python:$", "if True:", text)
     tree = ast.parse(text)
     pairs: dict[str, str] = {}
+    if f"# renpybox-replace-schema: {REPLACE_SCHEMA_VERSION}" in text:
+        records = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+                continue
+            name = node.targets[0].id
+            if name == "_renpybox_payload":
+                records.extend(json.loads(ast.literal_eval(node.value)))
+            elif name == "_renpybox_payloads":
+                for payload in ast.literal_eval(node.value):
+                    records.extend(json.loads(payload))
+            elif name == "_renpybox_data_files":
+                import hashlib
+                for filename in ast.literal_eval(node.value):
+                    if not isinstance(filename, str) or not re.fullmatch(r"[0-9a-f]{64}\.json", filename):
+                        raise ValueError("Invalid replace data filename")
+                    payload = (path.parent / REPLACE_DATA_DIR / filename).read_text(encoding="ascii")
+                    if hashlib.sha256(payload.encode("ascii")).hexdigest() != filename[:-5]:
+                        raise ValueError("Replace data checksum mismatch")
+                    records.extend(json.loads(payload))
+        for record in records:
+            if not isinstance(record, list) or len(record) != 5 or not all(isinstance(v, str) for v in record[:2]):
+                raise ValueError("Invalid replace data record")
+            if record[0] in originals:
+                pairs[record[0]] = record[1]
+        return list(pairs.items())
+    for line in text.splitlines():
+        marker = line.strip()
+        if not marker.startswith("# renpybox-pair:"):
+            continue
+        try:
+            value = json.loads(marker.split(":", 1)[1].strip())
+        except Exception:
+            continue
+        if (
+            isinstance(value, list)
+            and len(value) == 2
+            and all(isinstance(item, str) for item in value)
+            and value[0] in originals
+        ):
+            pairs[value[0]] = value[1]
     patterns = {}
     for original in originals:
         rule = _build_interpolated_replace_rule(original, original)
@@ -2442,14 +2626,42 @@ def read_generated_replace_pairs(path: Path, originals: Set[str]) -> List[Pair]:
     return list(pairs.items())
 
 
+def _cleanup_replace_shards(output_path: Path, expected_files: Set[str]) -> None:
+    data_dir = output_path.parent / REPLACE_DATA_DIR
+    if not data_dir.is_dir():
+        return
+    for stale in data_dir.glob("*.json"):
+        if (
+            re.fullmatch(r"[0-9a-f]{64}\.json", stale.name)
+            and stale.name not in expected_files
+        ):
+            stale.unlink(missing_ok=True)
+
+
 def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwargs) -> Path:
     """Write a rendered replace hook to ``output_path`` and return the path."""
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+    kwargs["external_data"] = True
     script = render_replace_script(pairs, **kwargs)
-    output.write_text(script, encoding="utf-8")
+    records = _replace_records(pairs)
+    payloads = _replace_payloads(records)
+    data_dir = output.parent / REPLACE_DATA_DIR
+    expected_files = set()
+    if len(payloads) > 1:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        expected_files = {filename for filename, _ in payloads}
+        for filename, payload in payloads:
+            data_path = data_dir / filename
+            if not data_path.is_file() or data_path.read_text(encoding="ascii") != payload:
+                atomic_write_text(data_path, payload, encoding="ascii", newline="\n")
+    # The current entry point must retain its data until its replacement is
+    # committed, including when the new rules fit in a single inline payload.
+    atomic_write_text(output, script, encoding="utf-8", newline="\n")
     output.with_suffix(".rpyc").unlink(missing_ok=True)
+    _cleanup_replace_shards(output, expected_files)
+    _write_replace_diagnostics(output, records, payloads, script, kwargs.get("language", "chinese"))
     return output
 
 
@@ -2468,6 +2680,11 @@ def generate_replace_from_miss(target_path: str | Path, tl_name: str, *, tl_dir:
     if not plan.pairs:
         plan.output_path.unlink(missing_ok=True)
         plan.output_path.with_suffix(".rpyc").unlink(missing_ok=True)
+        _cleanup_replace_shards(plan.output_path, set())
+        try:
+            plan.output_path.with_suffix(REPLACE_DIAGNOSTICS_SUFFIX).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"Hook 已移除，但诊断报告清理失败: {exc}")
         logger.info("未找到可生成 Hook 的补充抽取或独立补漏译文")
         return None, 0
 
