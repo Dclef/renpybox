@@ -73,6 +73,7 @@
 - [x] 对话区视觉美化：用户气泡消息、Markdown 排版、顶栏设置弹层与空态卡片
 - [x] 翻译完成后可把标记的源码补充抽取译文生成运行时替换补丁，官方 old/new 保持原生翻译
 - [ ] 大文本翻译抽取与 replace_text 性能改造（见 [详细计划](translation-extraction-replace-performance-plan.md)）
+- [x] 翻译请求吞吐观测与三档批量对照入口（见 [吞吐观测实施文档](translation-throughput-observability-plan.md)；真实 API 对照待固定游戏语料）
 - [x] 可只读检查项目翻译阶段、缓存、工作台资产和质量状态，并建议下一步
 - [x] 长会话按完整回合限制历史上下文，累计流式回复与确认后状态提示保持稳定
 

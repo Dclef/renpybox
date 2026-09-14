@@ -19,6 +19,7 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskLimiter import TaskLimiter
 from module.Engine.TaskRequester import TaskRequester
+from module.Engine.TranslationMetrics import TranslationMetrics
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import (
@@ -960,11 +961,22 @@ class Translator(Base):
     ) -> dict[str, object]:
         """在线程池工作线程中绑定本轮取消令牌并执行任务。"""
         TaskRequester.bind_run_cancel_event(cancel_event)
+        metrics = getattr(task, "_throughput_metrics", None)
+        if metrics is not None:
+            metrics.record_stages(executor_queue_ms=max(0, (time.perf_counter() - task._submitted_at) * 1000))
+        result = None
         try:
             if self._should_stop_requested(run_id, cancel_event):
-                return {"cancelled": True}
-            return task.start(current_round)
+                result = {
+                    "cancelled": True,
+                    "request_metrics": {"cancelled_request_count": 1},
+                }
+                return result
+            result = task.start(current_round)
+            return result
         finally:
+            if metrics is not None and isinstance(result, dict):
+                metrics.record_task(result)
             TaskRequester.unbind_run_cancel_event()
 
     def _new_progress_extras(self, total_line: int, *, cached_line_count: int = 0) -> dict:
@@ -998,6 +1010,7 @@ class Translator(Base):
                 else 0.0
             ),
             "recent_items": [],
+            "throughput": {},
             "time": 0,
         }
 
@@ -1051,6 +1064,9 @@ class Translator(Base):
         extras.setdefault("latency_ms", 0.0)
         extras.setdefault("average_latency_ms", extras["latency_ms"])
         extras.setdefault("recent_items", [])
+        # Detailed metrics always describe this session, even when overall
+        # progress and token usage are restored from an older run.
+        extras["throughput"] = {}
 
         return extras
 
@@ -1130,6 +1146,7 @@ class Translator(Base):
                 else 0.0
             ),
             "recent_items": recent_items,
+            "throughput": self._throughput_metrics.snapshot() if getattr(self, "_throughput_metrics", None) is not None else {},
             "time": time.time() - start_time,
         }
 
@@ -1216,6 +1233,10 @@ class Translator(Base):
     ) -> None:
         run_request_id = self._request_id_for_run(run_id)
         self._bind_run_context(run_id, cancel_event)
+        run_metrics = None
+        metrics_output = ""
+        metrics_settings = {}
+        metrics_status = "failed"
         try:
             data = data if isinstance(data, dict) else {}
             status = data.get("status", Base.TranslationStatus.UNTRANSLATED)
@@ -1351,6 +1372,21 @@ class Translator(Base):
                         total_untranslated,
                         cached_line_count = cached_line_count,
                     )
+
+            # A fresh collector on every start/resume; workers capture this
+            # object so late results cannot be attributed to the next session.
+            run_metrics = TranslationMetrics()
+            self._throughput_metrics = run_metrics
+            metrics_output = self.config.output_folder
+            metrics_settings = {
+                "max_batch_lines": self.config.token_threshold,
+                "max_batch_source_tokens": getattr(self.config, "max_batch_source_tokens", 0),
+                "max_output_tokens": TaskRequester.resolve_output_token_limit(self.config, self.platform),
+                "max_workers": max_workers,
+                "rpm_threshold": rpm_threshold,
+            }
+            self.cache_manager.set_save_observer(run_metrics.record_cache_save)
+            self.extras["throughput"] = run_metrics.snapshot()
 
             # 更新翻译进度
             self.cache_manager.get_project().set_progress(self.extras)
@@ -1493,20 +1529,27 @@ class Translator(Base):
                                 stopping = True
                                 break
 
-                            if not task_limiter.acquire(
+                            slot_started = time.perf_counter()
+                            acquired = task_limiter.acquire(
                                 lambda: self._should_stop_requested(run_id, cancel_event)
-                            ):
+                            )
+                            run_metrics.record_stages(slot_wait_ms=(time.perf_counter() - slot_started) * 1000)
+                            if not acquired:
                                 stopping = True
                                 break
 
-                            if not task_limiter.wait(
+                            rate_started = time.perf_counter()
+                            allowed = task_limiter.wait(
                                 lambda: self._should_stop_requested(run_id, cancel_event)
-                            ):
+                            )
+                            run_metrics.record_stages(rate_wait_ms=(time.perf_counter() - rate_started) * 1000)
+                            if not allowed:
                                 task_limiter.release()
                                 stopping = True
                                 break
 
                             try:
+                                prepare_started = time.perf_counter()
                                 # Only scalar round settings change here. The task
                                 # constructs its isolated runtime config once.
                                 task_config = copy.copy(self.config)
@@ -1522,6 +1565,9 @@ class Translator(Base):
                                         current_run_id, current_cancel_event, candidates
                                     ),
                                 )
+                                run_metrics.record_stages(task_prepare_ms=(time.perf_counter() - prepare_started) * 1000)
+                                task._throughput_metrics = run_metrics
+                                task._submitted_at = time.perf_counter()
                                 future = executor.submit(
                                     self._run_translation_task,
                                     task,
@@ -1663,6 +1709,10 @@ class Translator(Base):
                 return None
 
             # 只有当前运行才能释放状态并通知完成，迟到旧线程不得影响新任务。
+            metrics_status = (
+                "completed" if self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED) == 0
+                else "incomplete"
+            )
             if self._is_translation_run_current(run_id):
                 Engine.get().release_status(Engine.Status.TRANSLATING)
                 self.emit(Base.Event.TRANSLATION_DONE, {
@@ -1690,6 +1740,24 @@ class Translator(Base):
                     "error": type(e).__name__,
                 })
         finally:
+            if run_metrics is not None:
+                if self._should_stop_requested(run_id, cancel_event):
+                    metrics_status = "stopped_partial"
+                try:
+                    report = run_metrics.write_report(metrics_output, status=metrics_status, settings=metrics_settings)
+                    if self._is_translation_run_current(run_id):
+                        with self.data_lock:
+                            self.extras["throughput"] = run_metrics.snapshot()
+                        self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
+                    summary = run_metrics.snapshot()
+                    self.info(
+                        f"[THROUGHPUT] {summary['effective_item_count']} 条有效译文，"
+                        f"{summary['effective_items_per_minute']:.1f} 条/分钟；"
+                        f"逻辑请求 {summary['logical_request_count']} / HTTP 尝试 {summary['http_attempt_count']}；"
+                        f"报告：{report}"
+                    )
+                except Exception as exc:
+                    self.warning(f"[THROUGHPUT] 保存运行报告失败：{type(exc).__name__}")
             self._unbind_run_context()
             current_thread = threading.current_thread()
             with self.data_lock:
@@ -1808,6 +1876,7 @@ class Translator(Base):
                 break
             task_config = self.task_context.to_runtime_config(self.config)
             try:
+                prepare_started = time.perf_counter()
                 task = TranslatorTask(
                     self.task_context,
                     self.platform,
@@ -1821,7 +1890,12 @@ class Translator(Base):
                         candidates,
                     ),
                 )
-                task.start(round_index)
+                metrics = getattr(self, "_throughput_metrics", None)
+                if metrics is not None:
+                    metrics.record_stages(task_prepare_ms=(time.perf_counter() - prepare_started) * 1000)
+                    task._throughput_metrics = metrics
+                    task._submitted_at = time.perf_counter()
+                self._run_translation_task(task, round_index, run_id, cancel_event)
             except Exception as exc:
                 self.warning(f"[VERIFY] 第二次翻译请求失败: {exc}")
                 continue
