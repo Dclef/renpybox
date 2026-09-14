@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QVBoxLayout
 from qfluentwidgets import FluentWindow
 from qfluentwidgets import CaptionLabel
 from qfluentwidgets import PlainTextEdit
+from qfluentwidgets import PushButton
 from qfluentwidgets import SingleDirectionScrollArea
 from qfluentwidgets import TitleLabel
 
@@ -63,6 +64,17 @@ class BasicSettingsPage(QWidget, Base):
         self.add_widget_max_workers(scroll_area_vbox, config, window)
         self.add_widget_rpm_threshold(scroll_area_vbox, config, window)
         self.add_widget_token_threshold(scroll_area_vbox, config, window)
+        self.add_widget_max_batch_source_tokens(scroll_area_vbox, config, window)
+        self.add_widget_max_output_tokens(scroll_area_vbox, config, window)
+        self.balanced_throughput_button = PushButton(
+            Localizer.get().basic_settings_page_balanced_throughput_button,
+            self,
+        )
+        self.balanced_throughput_button.setToolTip(
+            Localizer.get().basic_settings_page_balanced_throughput_tooltip
+        )
+        self.balanced_throughput_button.clicked.connect(self._apply_balanced_throughput)
+        scroll_area_vbox.addWidget(self.balanced_throughput_button)
         self.add_widget_request_timeout(scroll_area_vbox, config, window)
         self.add_widget_max_round(scroll_area_vbox, config, window)
         # 自定义提示词（可选）
@@ -116,6 +128,7 @@ class BasicSettingsPage(QWidget, Base):
     def add_widget_token_threshold(self, parent: QLayout, config: Config, window: FluentWindow)-> None:
 
         def init(widget: SpinCard) -> None:
+            self._token_threshold_spin = widget.get_spin_box()
             widget.get_spin_box().setRange(0, 9999999)
             widget.get_spin_box().setValue(config.token_threshold)
 
@@ -132,6 +145,67 @@ class BasicSettingsPage(QWidget, Base):
                 value_changed = value_changed,
             )
         )
+
+    # 每批原文 token 阈值（0 表示按任务行数自动推导）
+    def add_widget_max_batch_source_tokens(
+        self, parent: QLayout, config: Config, window: FluentWindow
+    ) -> None:
+
+        def init(widget: SpinCard) -> None:
+            self._max_batch_source_tokens_spin = widget.get_spin_box()
+            widget.get_spin_box().setRange(0, 9999999)
+            widget.get_spin_box().setValue(config.max_batch_source_tokens)
+
+        def value_changed(widget: SpinCard) -> None:
+            config = Config().load()
+            config.max_batch_source_tokens = widget.get_spin_box().value()
+            config.save()
+
+        parent.addWidget(
+            SpinCard(
+                title=Localizer.get().basic_settings_page_max_batch_source_tokens_title,
+                description=Localizer.get().basic_settings_page_max_batch_source_tokens_content,
+                init=init,
+                value_changed=value_changed,
+            )
+        )
+
+    def add_widget_max_output_tokens(
+        self, parent: QLayout, config: Config, window: FluentWindow
+    ) -> None:
+
+        def init(widget: SpinCard) -> None:
+            self._max_output_tokens_spin = widget.get_spin_box()
+            widget.get_spin_box().setRange(0, 9999999)
+            widget.get_spin_box().setValue(config.max_output_tokens)
+
+        def value_changed(widget: SpinCard) -> None:
+            config = Config().load()
+            config.max_output_tokens = widget.get_spin_box().value()
+            config.save()
+
+        parent.addWidget(
+            SpinCard(
+                title=Localizer.get().basic_settings_page_max_output_tokens_title,
+                description=Localizer.get().basic_settings_page_max_output_tokens_content,
+                init=init,
+                value_changed=value_changed,
+            )
+        )
+
+    def _apply_balanced_throughput(self) -> None:
+        config = Config().load()
+        config.token_threshold = 20
+        config.max_batch_source_tokens = 1024
+        config.max_output_tokens = 0
+        config.save()
+        for field in ("token_threshold", "max_batch_source_tokens", "max_output_tokens"):
+            spin = getattr(self, f"_{field}_spin")
+            blocked = spin.blockSignals(True)
+            try:
+                spin.setValue(getattr(config, field))
+            finally:
+                spin.blockSignals(blocked)
 
     # 请求超时时间
     def add_widget_request_timeout(self, parent: QLayout, config: Config, window: FluentWindow)-> None:

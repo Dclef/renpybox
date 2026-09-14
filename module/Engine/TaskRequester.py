@@ -36,6 +36,27 @@ ResponseShape = Literal["none", "json_object"]
 
 class TaskRequester(Base):
 
+    @classmethod
+    def resolve_output_token_limit(cls, config, platform) -> int:
+        """Resolve translation output independently from the source batch budget."""
+        default = cls.DEFAULT_MAX_OUTPUT_TOKENS
+        if (
+            platform.get("api_format") == Base.APIFormat.GOOGLE
+            and cls.RE_GEMINI_2_5_FLASH.search(str(platform.get("model") or ""))
+        ):
+            default = cls.GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS
+        configured = int(getattr(config, "max_output_tokens", 0) or 0)
+        budget = configured if configured > 0 else max(default, int(config.token_threshold))
+        # Respect explicitly supplied model metadata; do not guess limits from names.
+        for key in ("max_output_tokens", "max_completion_tokens", "output_token_limit"):
+            limit = platform.get(key)
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+                budget = min(budget, limit)
+        return budget
+
+    def _output_token_limit(self) -> int:
+        return self.resolve_output_token_limit(self.config, self.platform)
+
     # 密钥索引
     API_KEY_INDEX: int = 0
     MAX_REQUEST_RETRY: int = 3
@@ -609,6 +630,26 @@ class TaskRequester(Base):
         self.debug(f"[API-REQUEST] 准备请求: model={self.platform.get('model')}, "
                    f"api_format={self.platform.get('api_format')}, "
                    f"messages={len(messages)}, round={self.current_round+1}")
+
+        # The complete generated messages include source, context and assets.
+        # Check a known context window before entering network retries. A failed
+        # batch remains untranslated and can be split by the next translation round.
+        from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
+        context_window = TranslationPreflightService._context_window(self.platform)
+        if context_window > 0 and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+            from module.Cache.CacheItem import CacheItem
+            estimated_input = 3 + sum(
+                CacheItem(src=str(message.get("content") or "")).get_token_count() + 8
+                for message in messages
+            )
+            reserved_output = self._output_token_limit()
+            if estimated_input + reserved_output > context_window:
+                self.last_error_message = (
+                    f"BATCH_EXCEEDS_CONTEXT_WINDOW: {estimated_input} input + "
+                    f"{reserved_output} output > {context_window}"
+                )
+                self.warning(self.last_error_message)
+                return True, None, None, None, None
         
         args: dict[str, float] = {}
         if self.platform.get('top_p_custom_enable') == True:
@@ -731,7 +772,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
-            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
+            "max_tokens": self._output_token_limit(),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)"
             }
@@ -838,7 +879,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
-            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
+            "max_tokens": self._output_token_limit(),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)"
             }
@@ -852,7 +893,7 @@ class TaskRequester(Base):
             __class__.RE_O_SERIES.search(model) is not None
         ):
             args.pop("max_tokens", None)
-            args["max_completion_tokens"] = max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold)
+            args["max_completion_tokens"] = self._output_token_limit()
 
         extra_body: dict[str, Any] = {}
 
@@ -1019,9 +1060,7 @@ class TaskRequester(Base):
         # Gemini 2.5 Flash 在长文本批次下容易命中 4096 输出上限导致截断。
         # 这里提高默认上限，降低 JSONLINE 行数不匹配（如 2/9）的重试概率。
         model = str(self.platform.get("model") or "")
-        max_output_tokens = max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold)
-        if __class__.RE_GEMINI_2_5_FLASH.search(model) is not None:
-            max_output_tokens = max(__class__.GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS, self.config.token_threshold)
+        max_output_tokens = self._output_token_limit()
 
         args: dict = args | {
             "max_output_tokens": max_output_tokens,
@@ -1278,7 +1317,7 @@ class TaskRequester(Base):
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": non_system_messages,
-            "max_tokens": max(__class__.DEFAULT_MAX_OUTPUT_TOKENS, self.config.token_threshold),
+            "max_tokens": self._output_token_limit(),
             "extra_headers": {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox"
             }

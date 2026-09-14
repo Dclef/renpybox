@@ -751,7 +751,7 @@ class Translator(Base):
             legacy_bootstrap = legacy_bootstrap,
         )
 
-    def _run_asset_preflight(self, context: TranslationTaskContext, data: dict) -> None:
+    def _run_asset_preflight(self, context: TranslationTaskContext, data: dict, current_config=None) -> None:
         builder = PromptBuilder(context)
         fixed_prompt = "\n\n".join(
             section
@@ -765,7 +765,9 @@ class Translator(Base):
             context.assets,
             fixed_prompt = fixed_prompt,
             provider = context.runtime_provider,
-            reserved_output_tokens = TaskRequester.DEFAULT_MAX_OUTPUT_TOKENS,
+            reserved_output_tokens = TaskRequester.resolve_output_token_limit(
+                context.to_runtime_config(current_config), context.runtime_provider,
+            ),
         )
         if not result.can_start:
             raise ValueError(
@@ -830,7 +832,7 @@ class Translator(Base):
                     runtime_provider = runtime_provider,
                 )
 
-            self._run_asset_preflight(context, data)
+            self._run_asset_preflight(context, data, current_config)
             self._raise_if_stop_requested()
             return context
 
@@ -853,7 +855,7 @@ class Translator(Base):
 
         assets = self._load_project_assets(current_config)
         context = self._build_task_context(current_config, assets, current_platform)
-        self._run_asset_preflight(context, data)
+        self._run_asset_preflight(context, data, current_config)
         self._raise_if_stop_requested()
         cached_line_count = sum(
             1
@@ -1397,6 +1399,9 @@ class Translator(Base):
 
             # 自适应批大小是本次运行的局部状态，不写回任务快照或 Config。
             initial_token_threshold = max(1, int(self.config.token_threshold))
+            initial_source_token_limit = max(
+                0, int(getattr(self.config, "max_batch_source_tokens", 0))
+            )
 
             # 开始循环
             for current_round in range(self.config.max_round):
@@ -1425,45 +1430,24 @@ class Translator(Base):
                     1,
                     int(initial_token_threshold / (2 ** current_round)),
                 )
+                round_source_token_limit = (
+                    max(1, initial_source_token_limit // (2 ** current_round))
+                    if initial_source_token_limit > 0 else None
+                )
 
                 # 生成缓存数据条目片段
                 chunk_line_threshold = round_token_threshold
                 if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
                     chunk_line_threshold = 1
-                chunks, precedings = self.cache_manager.generate_item_chunks(
+                chunks = self.cache_manager.iter_item_chunks(
                     chunk_line_threshold,
                     self.config.preceding_lines_threshold,
+                    cancel_checker=lambda: self._should_stop_requested(run_id, cancel_event),
+                    source_token_limit=round_source_token_limit,
                 )
 
                 # 第四轮开始才禁用参考上文（多保留一轮上下文以提升重试译文质量）
-                if current_round >= 3:
-                    precedings = [[] for _ in range(len(precedings))]
-
-                # 生成翻译任务
                 self.print("")
-                tasks: list[TranslatorTask] = []
-                with ProgressBar(transient = False) as progress:
-                    pid = progress.new()
-                    for items, precedings in zip(chunks, precedings):
-                        progress.update(pid, advance = 1, total = len(chunks))
-                        task_config = self.task_context.to_runtime_config(self.config)
-                        task_config.token_threshold = round_token_threshold
-                        tasks.append(TranslatorTask(
-                            self.task_context,
-                            self.platform,
-                            local_flag,
-                            items,
-                            precedings,
-                            runtime_config = task_config,
-                            candidate_sink = lambda candidates, current_run_id = run_id, current_cancel_event = cancel_event: self._merge_analysis_candidates_for_run(
-                                current_run_id,
-                                current_cancel_event,
-                                candidates,
-                            ),
-                        ))
-
-                # 打印日志
-                self.info(Localizer.get().translator_task_generation_log.replace("{COUNT}", str(len(chunks))))
 
                 # 输出开始翻译的日志
                 self.print("")
@@ -1482,6 +1466,14 @@ class Translator(Base):
                     self.print("")
 
                 # 开始执行翻译任务
+                self.info(
+                    f"[BATCH] 每批最多 {chunk_line_threshold} 行，原文预算 "
+                    f"{round_source_token_limit or max(64, chunk_line_threshold * 16)} token，"
+                    f"输出预算 {TaskRequester.resolve_output_token_limit(self.config, self.platform)} token，"
+                    f"并发 {max_workers}"
+                )
+                submitted_batches = submitted_items = 0
+                round_started = time.monotonic()
                 task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold, max_concurrency = max_workers)
                 with ProgressBar(transient = True) as progress:
                     pid = progress.new()
@@ -1494,7 +1486,7 @@ class Translator(Base):
 
                     stopping = False
                     try:
-                        for task in tasks:
+                        for items, precedings in chunks:
                             # 检测是否需要停止任务
                             # 目的是绕过限流器，快速结束所有剩余任务
                             if Engine.get().get_status() == Engine.Status.STOPPING:
@@ -1515,6 +1507,21 @@ class Translator(Base):
                                 break
 
                             try:
+                                # Only scalar round settings change here. The task
+                                # constructs its isolated runtime config once.
+                                task_config = copy.copy(self.config)
+                                task_config.token_threshold = round_token_threshold
+                                task = TranslatorTask(
+                                    self.task_context,
+                                    self.platform,
+                                    local_flag,
+                                    items,
+                                    [] if current_round >= 3 else precedings,
+                                    runtime_config=task_config,
+                                    candidate_sink=lambda candidates, current_run_id=run_id, current_cancel_event=cancel_event: self._merge_analysis_candidates_for_run(
+                                        current_run_id, current_cancel_event, candidates
+                                    ),
+                                )
                                 future = executor.submit(
                                     self._run_translation_task,
                                     task,
@@ -1526,7 +1533,12 @@ class Translator(Base):
                                 task_limiter.release()
                                 stopping = True
                                 break
+                            except Exception:
+                                task_limiter.release()
+                                raise
                             future.add_done_callback(task_limiter.release)
+                            submitted_batches += 1
+                            submitted_items += len(items)
                             future.add_done_callback(
                                 lambda future, current_run_id = run_id, current_cancel_event = cancel_event: self.task_done_callback(
                                     future,
@@ -1553,6 +1565,13 @@ class Translator(Base):
                             with self.data_lock:
                                 if self._active_executor is executor:
                                     self._active_executor = None
+
+                if submitted_batches:
+                    self.info(
+                        f"[BATCH] 本轮提交 {submitted_batches} 批 / {submitted_items} 条，"
+                        f"平均 {submitted_items / submitted_batches:.1f} 条/批，"
+                        f"经过 {time.monotonic() - round_started:.1f} 秒（含准备、请求和重试）"
+                    )
 
                 # 停止信号可能恰好在 shutdown 后到达，离开线程池后再检查一次，
                 # 避免继续进入结果判断、缓存写入等昂贵阶段。

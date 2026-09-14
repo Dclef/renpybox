@@ -754,6 +754,12 @@ class LocalizerEN(LocalizerZH):
     )
     basic_settings_page_token_threshold_title: str = "Task Line Limit"
     basic_settings_page_token_threshold_content: str = "Maximum lines per task (5-15 recommended, fewer lines = more stable)"
+    basic_settings_page_max_batch_source_tokens_title: str = "Max Source Tokens per Batch"
+    basic_settings_page_max_batch_source_tokens_content: str = "Source token budget, excluding prompts and preceding context; 0 derives from the line limit as before. Oversized items are sent individually"
+    basic_settings_page_max_output_tokens_title: str = "Max Output Tokens per Request"
+    basic_settings_page_max_output_tokens_content: str = "Token budget for the model response; 0 uses the provider default. Retries keep this budget"
+    basic_settings_page_balanced_throughput_button: str = "Apply balanced throughput: 20 lines / 1024 source tokens / automatic output"
+    basic_settings_page_balanced_throughput_tooltip: str = "Set batch lines, source and output token budgets; concurrency, timeout and quality checks retain their current settings"
     basic_settings_page_request_timeout_title: str = "Request Timeout"
     basic_settings_page_request_timeout_content: str = (
         "The maximum time (seconds) to wait for the model's response when making a request"
