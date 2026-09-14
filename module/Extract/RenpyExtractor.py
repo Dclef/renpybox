@@ -50,6 +50,9 @@ class RenpyExtractor:
         *,
         generate_empty: bool = False,
         force: bool = False,
+        timeout_seconds: float = 900.0,
+        should_stop: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> Path:
         """Run Ren'Py's built-in translate command to populate tl/<lang>/.
 
@@ -105,27 +108,67 @@ class RenpyExtractor:
             moved_files = self._temporarily_hide_tool_files(tl_dir)
 
             self.logger.info(f"执行官方抽取: {' '.join(command)}")
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=str(project),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
+            output_text = ""
+            deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+            while True:
+                if should_stop is not None and should_stop():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    raise RuntimeError("官方抽取已取消")
+                if time.monotonic() >= deadline:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    raise TimeoutError(
+                        f"官方抽取超时（{int(timeout_seconds)} 秒），最后输出：{output_text[-1000:]}"
+                    )
+                try:
+                    stdout, _ = process.communicate(timeout=0.5)
+                    if stdout:
+                        output_text = stdout
+                        if progress_callback:
+                            progress_callback(stdout[-500:])
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    partial = exc.output or exc.stdout
+                    if partial:
+                        if isinstance(partial, bytes):
+                            partial = partial.decode("utf-8", errors="replace")
+                        output_text = partial
+                        if progress_callback:
+                            progress_callback(str(partial)[-500:])
+            result_stdout = output_text
+            result_returncode = process.returncode
         finally:
             self._restore_hidden_files(moved_files)
-        if result.stdout:
-            self.logger.info(result.stdout.strip())
-        if result.returncode != 0:
+        if result_stdout:
+            self.logger.info(result_stdout.strip())
+        if result_returncode != 0:
             # 提供更详细的错误信息
-            error_msg = f"官方抽取失败，退出码 {result.returncode}"
-            if result.stdout:
+            error_msg = f"官方抽取失败，退出码 {result_returncode}"
+            if result_stdout:
                 # 检查是否是已存在翻译的错误
-                if "already exists" in result.stdout:
+                if "already exists" in result_stdout:
                     error_msg = "官方抽取失败：检测到重复的翻译条目。请尝试删除 tl 文件夹后重试。"
                 else:
                     # 截取最后几行错误信息
-                    lines = result.stdout.strip().split('\n')
+                    lines = result_stdout.strip().split('\n')
                     last_lines = lines[-5:] if len(lines) > 5 else lines
                     error_msg += f"\n{chr(10).join(last_lines)}"
             raise RuntimeError(error_msg)

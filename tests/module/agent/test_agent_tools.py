@@ -223,7 +223,8 @@ def test_old_new_optimization_uses_confirmed_project_and_writes_hook(tmp_path) -
     assert result.data["old_new_count"] == 1
     output = tl_dir / "replace_text_auto.rpy"
     assert output.is_file()
-    assert '.replace("Choice", "选项")' in output.read_text(encoding="utf-8")
+    from module.Extract.ReplaceGenerator import read_generated_replace_pairs
+    assert read_generated_replace_pairs(output, {"Choice"}) == [("Choice", "选项")]
 
     second_context = old_new_replace_confirmation_context(config_loader=lambda: config)
     second = optimize_old_new_translations(

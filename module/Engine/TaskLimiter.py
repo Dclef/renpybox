@@ -11,17 +11,19 @@ class TaskLimiter:
         self.max_capacity = self._calculate_max_capacity()
         self.rate_per_second = self._calculate_stricter_rate()
         self.current_capacity = self.max_capacity
-        self.last_request_time = time.time()
+        self.last_request_time = time.monotonic()
+        self.lock = threading.Lock()
 
         # 并发控制
         self.semaphore = threading.BoundedSemaphore(max_concurrency) if max_concurrency > 0 else None
 
     # 计算最大容量
     def _calculate_max_capacity(self) -> float:
-        return min(
+        rate = min(
             self.rps if self.rps > 0 else float("inf"),
             self.rpm / 60 if self.rpm > 0 else float("inf"),
         )
+        return max(1.0, rate)
 
     # 计算每秒恢复的请求额度
     def _calculate_stricter_rate(self) -> float:
@@ -47,31 +49,18 @@ class TaskLimiter:
 
     # 等待直到有足够的请求额度
     def wait(self, stop_checker: Optional[Callable[[], bool]] = None) -> bool:
-        current_time = time.time()
-        elapsed_time = current_time - self.last_request_time
-
-        # 恢复额度
-        self.current_capacity = self.current_capacity + elapsed_time * self.rate_per_second
-        self.current_capacity = min(self.current_capacity, self.max_capacity)
-
-        # 如果额度不足，等待
-        if self.current_capacity < 1:
-            wait_time = (1 - self.current_capacity) / self.rate_per_second
-
-            # 分段等待以支持中断
-            while wait_time > 0:
-                if stop_checker is not None and stop_checker():
-                    return False
-
-                sleep_time = min(wait_time, 0.25)
-                time.sleep(sleep_time)
-                wait_time -= sleep_time
-
-            self.current_capacity = 1
-
-        # 扣减配额
-        self.current_capacity = self.current_capacity - 1
-
-        # 更新最后请求时间
-        self.last_request_time = time.time()
-        return True
+        while True:
+            if stop_checker is not None and stop_checker():
+                return False
+            with self.lock:
+                now = time.monotonic()
+                self.current_capacity = min(
+                    self.max_capacity,
+                    self.current_capacity + (now - self.last_request_time) * self.rate_per_second,
+                )
+                self.last_request_time = now
+                if self.current_capacity >= 1:
+                    self.current_capacity -= 1
+                    return True
+                wait_time = (1 - self.current_capacity) / self.rate_per_second
+            time.sleep(min(wait_time, 0.25))
