@@ -83,6 +83,38 @@ class _DecompileWorkerStub:
         self.finished.emit(result)
 
 
+class _GameStatusWorkerStub:
+    started: list["_GameStatusWorkerStub"] = []
+
+    def __init__(self, game_dir: str, tl_name: str):
+        self.result_ready = _SignalStub()
+        self.finished = _SignalStub()
+        self.game_dir = game_dir
+        self.tl_name = tl_name
+        self.running = False
+        self.interrupted = False
+
+    def start(self) -> None:
+        self.running = True
+        self.started.append(self)
+
+    def isRunning(self) -> bool:
+        return self.running
+
+    def requestInterruption(self) -> None:
+        self.interrupted = True
+
+    def isInterruptionRequested(self) -> bool:
+        return self.interrupted
+
+    def deleteLater(self) -> None:
+        pass
+
+    def complete(self, status: str, message: str) -> None:
+        self.running = False
+        self.result_ready.emit({"status": status, "message": message})
+
+
 class _ExtractionWorkerStub:
     started: list["_ExtractionWorkerStub"] = []
 
@@ -123,11 +155,13 @@ def _patch_workers(monkeypatch) -> None:
     for worker_type in (
         _UnpackWorkerStub,
         _DecompileWorkerStub,
+        _GameStatusWorkerStub,
         _ExtractionWorkerStub,
     ):
         worker_type.started.clear()
     monkeypatch.setattr(page_module, "UnpackWorker", _UnpackWorkerStub)
     monkeypatch.setattr(page_module, "DecompileWorker", _DecompileWorkerStub)
+    monkeypatch.setattr(page_module, "GameStatusWorker", _GameStatusWorkerStub)
     monkeypatch.setattr(page_module, "ExtractionWorker", _ExtractionWorkerStub)
 
 
@@ -215,12 +249,6 @@ def test_go_step2_starts_unpack_in_background_then_extracts(monkeypatch, tmp_pat
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    statuses = iter([("need_unpack", "有 RPA"), ("ready", "有 RPY")])
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: next(statuses),
-    )
     _patch_workers(monkeypatch)
     messages = _quiet_info_bars(monkeypatch)
 
@@ -229,6 +257,9 @@ def test_go_step2_starts_unpack_in_background_then_extracts(monkeypatch, tmp_pat
         page._go_step2()
         generation = page._extraction_generation
 
+        assert len(_GameStatusWorkerStub.started) == 1
+        assert _UnpackWorkerStub.started == []
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         assert len(_UnpackWorkerStub.started) == 1
         assert _ExtractionWorkerStub.started == []
         unpack = _UnpackWorkerStub.started[0]
@@ -238,6 +269,8 @@ def test_go_step2_starts_unpack_in_background_then_extracts(monkeypatch, tmp_pat
 
         unpack.complete(_success("已解包"))
 
+        assert len(_GameStatusWorkerStub.started) == 2
+        _GameStatusWorkerStub.started[1].complete("ready", "有 RPY")
         assert page._extraction_generation == generation
         assert len(_ExtractionWorkerStub.started) == 1
         extraction = _ExtractionWorkerStub.started[0]
@@ -254,18 +287,6 @@ def test_go_step2_chains_unpack_decompile_and_extract(monkeypatch, tmp_path) -> 
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    statuses = iter(
-        [
-            ("need_unpack", "有 RPA"),
-            ("need_decompile", "有 RPYC"),
-            ("ready", "有 RPY"),
-        ]
-    )
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: next(statuses),
-    )
     _patch_workers(monkeypatch)
     _quiet_info_bars(monkeypatch)
 
@@ -273,8 +294,10 @@ def test_go_step2_chains_unpack_decompile_and_extract(monkeypatch, tmp_path) -> 
     try:
         page._go_step2()
         generation = page._extraction_generation
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         _UnpackWorkerStub.started[0].complete(_success("已解包"))
 
+        _GameStatusWorkerStub.started[1].complete("need_decompile", "有 RPYC")
         assert len(_DecompileWorkerStub.started) == 1
         assert _ExtractionWorkerStub.started == []
         decompile = _DecompileWorkerStub.started[0]
@@ -285,6 +308,7 @@ def test_go_step2_chains_unpack_decompile_and_extract(monkeypatch, tmp_path) -> 
 
         decompile.complete(_success("反编译完成"))
 
+        _GameStatusWorkerStub.started[2].complete("ready", "有 RPY")
         assert page._extraction_generation == generation
         assert len(_ExtractionWorkerStub.started) == 1
     finally:
@@ -296,17 +320,13 @@ def test_go_step2_shows_manual_fallback_when_unpack_fails(monkeypatch, tmp_path)
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: ("need_unpack", "有 RPA"),
-    )
     _patch_workers(monkeypatch)
     messages = _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         _UnpackWorkerStub.started[0].complete(_failure("boom"))
 
         assert _ExtractionWorkerStub.started == []
@@ -325,17 +345,13 @@ def test_go_step2_shows_retry_when_decompile_fails(monkeypatch, tmp_path) -> Non
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: ("need_decompile", "有 RPYC"),
-    )
     _patch_workers(monkeypatch)
     messages = _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
+        _GameStatusWorkerStub.started[0].complete("need_decompile", "有 RPYC")
         _DecompileWorkerStub.started[0].complete(_failure("boom"))
 
         assert _ExtractionWorkerStub.started == []
@@ -352,20 +368,16 @@ def test_go_step2_fails_when_unpack_leaves_no_scripts(monkeypatch, tmp_path) -> 
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    statuses = iter([("need_unpack", "有 RPA"), ("empty", "没有脚本")])
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: next(statuses),
-    )
     _patch_workers(monkeypatch)
     messages = _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         _UnpackWorkerStub.started[0].complete(_success("已解包"))
 
+        _GameStatusWorkerStub.started[1].complete("empty", "没有脚本")
         assert _ExtractionWorkerStub.started == []
         assert not page.step2_unpack_btn.isHidden()
         assert not page.step2_retry_btn.isHidden()
@@ -381,24 +393,130 @@ def test_old_preprocess_result_is_ignored_after_page_leaves(monkeypatch, tmp_pat
     (root / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: ("need_unpack", "有 RPA"),
-    )
     _patch_workers(monkeypatch)
     _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
-        unpack = _UnpackWorkerStub.started[0]
+        status_worker = _GameStatusWorkerStub.started[0]
         page.hideEvent(QHideEvent())
-        unpack.complete(_success("旧项目已解包"))
+        assert status_worker.interrupted is True
+        status_worker.complete("need_unpack", "有 RPA")
 
+        assert _UnpackWorkerStub.started == []
         assert _DecompileWorkerStub.started == []
         assert _ExtractionWorkerStub.started == []
     finally:
+        page.deleteLater()
+
+
+def test_status_scan_is_cancelled_when_language_changes(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
+    _patch_workers(monkeypatch)
+    _quiet_info_bars(monkeypatch)
+
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        status_worker = _GameStatusWorkerStub.started[0]
+        page.tl_folder_edit.setText("japanese")
+        assert status_worker.interrupted is True
+        status_worker.complete("need_unpack", "旧项目结果")
+
+        assert _UnpackWorkerStub.started == []
+        assert _ExtractionWorkerStub.started == []
+    finally:
+        page.deleteLater()
+
+
+def test_cancel_status_scan_restores_retry_state(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
+    _patch_workers(monkeypatch)
+    _quiet_info_bars(monkeypatch)
+
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        status_worker = _GameStatusWorkerStub.started[0]
+        page._cancel_extraction()
+
+        assert status_worker.interrupted is True
+        assert page.step2_cancel_btn.isEnabled() is False
+        status_worker.complete("cancelled", "")
+
+        assert page.step2_page.progress_ring.isHidden()
+        assert page.step2_cancel_btn.isHidden()
+        assert page.step2_cancel_btn.isEnabled() is True
+        assert not page.step2_retry_btn.isHidden()
+        assert not page.step2_skip_btn.isHidden()
+    finally:
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("navigate", ["previous", "indicator"])
+def test_navigation_waits_for_status_scan(monkeypatch, tmp_path, navigate) -> None:
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
+    _patch_workers(monkeypatch)
+    messages = _quiet_info_bars(monkeypatch)
+
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        status_worker = _GameStatusWorkerStub.started[0]
+        if navigate == "previous":
+            page._go_previous_step(2)
+        else:
+            page._on_step_indicator_clicked(1)
+
+        assert page.current_step == 2
+        assert status_worker.interrupted is False
+        assert messages == ["warning"]
+    finally:
+        page.hideEvent(QHideEvent())
+        page.deleteLater()
+
+
+def test_late_status_result_from_replaced_worker_is_ignored(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    paths = RenpyProjectPaths.from_path(root, "chinese")
+    assert paths is not None
+    monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
+    _patch_workers(monkeypatch)
+    _quiet_info_bars(monkeypatch)
+
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        first = _GameStatusWorkerStub.started[0]
+        first.running = False
+        context = {
+            "game_dir": str(root),
+            "language": "chinese",
+            "project_key": paths.project_key,
+            "exe_path": root,
+            "incremental": False,
+        }
+        page._start_status_scan(page._extraction_generation, context)
+        second = _GameStatusWorkerStub.started[1]
+
+        first.complete("need_unpack", "旧扫描结果")
+        assert _UnpackWorkerStub.started == []
+        second.complete("ready", "当前扫描结果")
+        assert len(_ExtractionWorkerStub.started) == 1
+    finally:
+        page.hideEvent(QHideEvent())
         page.deleteLater()
 
 
@@ -413,17 +531,13 @@ def test_old_preprocess_result_is_ignored_after_config_switch(monkeypatch, tmp_p
         "load",
         lambda self, path=None: current["config"],
     )
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: ("need_unpack", "有 RPA"),
-    )
     _patch_workers(monkeypatch)
     _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         unpack = _UnpackWorkerStub.started[0]
         current["config"] = _config_for(other)
         unpack.complete(_success("旧项目已解包"))
@@ -444,17 +558,13 @@ def test_old_preprocess_result_is_ignored_after_page_project_switch(
     (other / "game").mkdir(parents=True)
     config = _config_for(root)
     monkeypatch.setattr(page_module.Config, "load", lambda self, path=None: config)
-    monkeypatch.setattr(
-        YiJianFanyiPage,
-        "_detect_game_status",
-        lambda self, game_dir: ("need_unpack", "有 RPA"),
-    )
     _patch_workers(monkeypatch)
     _quiet_info_bars(monkeypatch)
 
     page = _make_page(root)
     try:
         page._go_step2()
+        _GameStatusWorkerStub.started[0].complete("need_unpack", "有 RPA")
         unpack = _UnpackWorkerStub.started[0]
         page.game_dir = str(other)
         page.game_path = str(other)

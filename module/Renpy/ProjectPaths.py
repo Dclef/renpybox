@@ -343,20 +343,46 @@ class RenpyProjectPaths:
         return None
 
 
-def source_script_counts(paths: RenpyProjectPaths) -> tuple[int, int]:
+def source_script_counts(
+    paths: RenpyProjectPaths,
+    *,
+    cancel_check=None,
+) -> tuple[int, int]:
     """统计翻译目录之外可处理的 RPY/RPYC 源脚本。"""
 
-    def is_source(item: Path) -> bool:
-        try:
-            item.relative_to(paths.tl_root)
-            return False
-        except ValueError:
-            return True
-
-    rpy_count = sum(1 for item in paths.game_dir.rglob("*.rpy") if is_source(item))
-    rpyc_count = sum(
-        1 for item in paths.game_dir.rglob("*.rpyc") if is_source(item)
-    )
+    # 以前分别对 game 目录做两次 rglob，并在结果阶段才排除 tl；
+    # 大型项目会因此完整遍历翻译目录两遍。一次 top-down walk 即可在
+    # 进入 tl 之前剪枝，同时保留对任意嵌套源码目录的统计语义。
+    game_dir = paths.game_dir
+    # 兼容体检兜底使用的轻量路径对象；正式路径始终提供 tl_root。
+    tl_root = getattr(paths, "tl_root", game_dir / "tl")
+    tl_root_key = _key(tl_root)
+    rpy_count = 0
+    rpyc_count = 0
+    try:
+        walker = os.walk(str(game_dir), topdown = True)
+        for current, dirnames, filenames in walker:
+            if cancel_check is not None and cancel_check():
+                return rpy_count, rpyc_count
+            current_key = _key(Path(current))
+            # tl_root 可能尚未创建；只有 walk 到该目录时才需要剪枝。
+            if current_key == tl_root_key:
+                dirnames[:] = []
+                continue
+            # 目录名由 os.walk 返回，避免为每个文件构造 Path；后缀比较
+            # 使用大小写不敏感形式，与 Windows 下的文件语义一致。
+            for name in filenames:
+                if cancel_check is not None and cancel_check():
+                    return rpy_count, rpyc_count
+                suffix = Path(name).suffix.casefold()
+                if suffix == ".rpy":
+                    rpy_count += 1
+                elif suffix == ".rpyc":
+                    rpyc_count += 1
+    except OSError:
+        # 与 Path.rglob 在根目录不可读时的容错保持一致：返回已统计结果，
+        # 不让状态检测因单个损坏/无权限目录直接阻塞向导。
+        pass
     return rpy_count, rpyc_count
 
 
