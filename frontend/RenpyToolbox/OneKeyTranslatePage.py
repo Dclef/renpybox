@@ -57,7 +57,6 @@ from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    source_script_counts,
 )
 from module.Project.ProjectStore import ProjectStore
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
@@ -74,6 +73,7 @@ from frontend.RenpyToolbox.OneKeyNameService import OneKeyNameService
 from frontend.RenpyToolbox.OneKeyWorkers import (
     ApplyTranslationWorker,
     CharacterScanWorker,
+    GameStatusWorker,
     TranslationFileScanWorker,
     _cache_item_identity as _cache_item_identity,
     _numbered_disk_identity as _numbered_disk_identity,
@@ -83,6 +83,7 @@ from frontend.RenpyToolbox.OneKeyWorkers import (
     configure_main_translation_paths,
     _remember_translation_run,
     configure_tl_translation_mode,
+    detect_game_status,
     merge_incremental_translation_cache as merge_incremental_translation_cache,
     preserve_incremental_translation_cache,
     resolve_translation_apply_paths,
@@ -109,6 +110,7 @@ class YiJianFanyiPage(Base, QWidget):
         self.extraction_worker = None
         self._extraction_generation = 0
         self._preprocess_worker = None
+        self._status_scan_worker = None
         self._character_scan_worker = None
         self._old_translation_scan_worker = None
         self._old_translation_scan_request = None
@@ -450,6 +452,8 @@ class YiJianFanyiPage(Base, QWidget):
         if (
             self._preprocess_worker and self._preprocess_worker.isRunning()
         ) or (
+            self._status_scan_worker and self._status_scan_worker.isRunning()
+        ) or (
             self.extraction_worker and self.extraction_worker.isRunning()
         ):
             InfoBar.warning(
@@ -775,6 +779,15 @@ class YiJianFanyiPage(Base, QWidget):
     
     def _on_path_text_changed(self, text):
         """路径输入框文本变化时验证"""
+        if self.current_step == 2 and any(
+            worker is not None and worker.isRunning()
+            for worker in (
+                self._status_scan_worker,
+                self._preprocess_worker,
+                self.extraction_worker,
+            )
+        ):
+            self._invalidate_step2_run()
         self._apply_path_generation += 1
         self._invalidate_old_translation_scan()
         self.skip_extract_btn.setVisible(False)
@@ -970,6 +983,15 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _on_tl_name_changed(self, text):
         """TL 文件夹名变化时重新检测旧翻译并同步配置"""
+        if self.current_step == 2 and any(
+            worker is not None and worker.isRunning()
+            for worker in (
+                self._status_scan_worker,
+                self._preprocess_worker,
+                self.extraction_worker,
+            )
+        ):
+            self._invalidate_step2_run()
         self._apply_path_generation += 1
         if self.game_dir:
             self._check_old_translation(self.game_dir)
@@ -1063,10 +1085,23 @@ class YiJianFanyiPage(Base, QWidget):
         self._go_step2()
 
     def _cancel_extraction(self):
-        worker = self.extraction_worker
-        if worker is None or not worker.isRunning():
+        workers = (
+            self.extraction_worker,
+            self._preprocess_worker,
+            self._status_scan_worker,
+        )
+        running = [
+            worker
+            for worker in workers
+            if worker is not None and worker.isRunning()
+        ]
+        if not running:
             return
-        worker.cancel()
+        for worker in running:
+            if hasattr(worker, "cancel"):
+                worker.cancel()
+            elif hasattr(worker, "requestInterruption"):
+                worker.requestInterruption()
         self.step2_cancel_btn.setEnabled(False)
         self.step2_status.setText(Localizer.localize("正在取消抽取...", "Cancelling extraction..."))
 
@@ -1500,27 +1535,10 @@ class YiJianFanyiPage(Base, QWidget):
             - 'mixed': 混合状态
             - 'empty': 无可用文件
         """
-        
-        paths = RenpyProjectPaths.from_path(
+        return detect_game_status(
             game_dir,
             self.tl_folder_edit.text().strip() or "chinese",
         )
-        if paths is None or not paths.game_dir.exists():
-            return 'empty', Localizer.get().onekey_game_folder_not_found
-
-        rpy_count, rpyc_count = source_script_counts(paths)
-        rpa_count = len(list(paths.game_dir.glob("*.rpa")))
-        
-        if rpa_count > 0 and rpy_count == 0 and rpyc_count == 0:
-            return 'need_unpack', Localizer.get().onekey_found_rpa_archives_must_unpacked.format(rpa_count=rpa_count)
-        
-        if rpyc_count > 0:
-            return 'need_decompile', Localizer.get().onekey_found_rpyc_files_must_decompiled.format(rpyc_count=rpyc_count)
-        
-        if rpy_count > 0:
-            return 'ready', Localizer.get().onekey_found_rpy_files_ready_extraction.format(rpy_count=rpy_count)
-        
-        return 'empty', Localizer.get().onekey_no_extractable_files_found
 
     def _show_step2_unpack_failure(self, message: str) -> None:
         """解包失败后的统一界面状态：可重试、可跳过、可转手动解包页。"""
@@ -1591,6 +1609,99 @@ class YiJianFanyiPage(Base, QWidget):
     ) -> None:
         if self._step2_context_is_current(generation, context):
             self.step2_status.setText(message or "")
+
+    def _start_status_scan(
+        self,
+        generation: int,
+        context: dict,
+        failure_kind: str | None = None,
+    ) -> None:
+        """在后台扫描脚本状态，避免解包/反编译完成回调阻塞界面。"""
+        if not self._step2_context_is_current(generation, context):
+            return
+
+        current_worker = self._status_scan_worker
+        if current_worker is not None:
+            if current_worker.isRunning():
+                return
+            self._status_scan_worker = None
+
+        self.step2_status.setText(Localizer.get().onekey_checking_game_files)
+        worker = GameStatusWorker(
+            context["game_dir"],
+            context["language"],
+        )
+        self._status_scan_worker = worker
+        self.destroyed.connect(worker.requestInterruption)
+        worker.result_ready.connect(
+            lambda result, current=generation, snapshot=context, kind=failure_kind, source=worker: self._on_status_scan_finished(
+                result,
+                current,
+                snapshot,
+                kind,
+                source,
+            )
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_status_scan_finished(
+        self,
+        result,
+        generation: int,
+        context: dict,
+        failure_kind: str | None,
+        worker,
+    ) -> None:
+        """只在主线程消费当前项目的状态扫描结果。"""
+        if self._status_scan_worker is not worker:
+            return
+        self._status_scan_worker = None
+        if not self._step2_context_is_current(generation, context):
+            return
+        if hasattr(worker, "isInterruptionRequested") and worker.isInterruptionRequested():
+            self.step2_page.progress_ring.setVisible(False)
+            self.step2_cancel_btn.setVisible(False)
+            self.step2_cancel_btn.setEnabled(True)
+            self.step2_status.setText(Localizer.get().pack_unpack_cancelled)
+            self.step2_desc.setText(Localizer.get().pack_unpack_cancelled)
+            self.step2_retry_btn.setVisible(True)
+            self.step2_retry_btn.setEnabled(True)
+            self.step2_skip_btn.setVisible(True)
+            self.step2_skip_btn.setEnabled(True)
+            return
+
+        payload = result if isinstance(result, dict) else {}
+        status = str(payload.get("status", "error") or "error")
+        status_message = str(payload.get("message", "") or "")
+        if failure_kind == "unpack" and status in ("need_unpack", "empty"):
+            self._show_step2_unpack_failure(
+                Localizer.get().onekey_unpack_complete_no_scripts.format(
+                    unpack_msg=status_message,
+                )
+            )
+            return
+        if failure_kind == "decompile" and status in (
+            "need_decompile",
+            "need_unpack",
+            "empty",
+        ):
+            self._show_step2_decompile_failure(status_message)
+            return
+        if status == "error":
+            self.step2_page.progress_ring.setVisible(False)
+            self.step2_status.setText(Localizer.get().onekey_game_files_not_found)
+            self.step2_desc.setText(status_message or Localizer.get().onekey_no_extractable_files_found)
+            self.step2_retry_btn.setVisible(True)
+            self.step2_retry_btn.setEnabled(True)
+            return
+
+        self._continue_step2(
+            generation,
+            context,
+            status,
+            status_message,
+        )
 
     def _start_unpack_worker(self, generation: int, context: dict) -> None:
         paths = RenpyProjectPaths.from_path(
@@ -1669,18 +1780,9 @@ class YiJianFanyiPage(Base, QWidget):
             )
             return
 
-        status, status_message = self._detect_game_status(context["game_dir"])
-        if status in ("need_unpack", "empty"):
-            self._show_step2_unpack_failure(
-                Localizer.get().onekey_unpack_complete_no_scripts.format(
-                    unpack_msg=message,
-                )
-            )
-            return
-
         self.step2_desc.setText(message)
         self.step2_page.progress_bar.setValue(20)
-        self._continue_step2(generation, context, status, status_message)
+        self._start_status_scan(generation, context, failure_kind="unpack")
 
     def _on_auto_decompile_finished(
         self,
@@ -1700,14 +1802,9 @@ class YiJianFanyiPage(Base, QWidget):
             self._show_step2_decompile_failure(message)
             return
 
-        status, status_message = self._detect_game_status(context["game_dir"])
-        if status in ("need_decompile", "need_unpack", "empty"):
-            self._show_step2_decompile_failure(status_message or message)
-            return
-
         self.step2_desc.setText(message)
         self.step2_page.progress_bar.setValue(20)
-        self._continue_step2(generation, context, status, status_message)
+        self._start_status_scan(generation, context, failure_kind="decompile")
 
     def _go_step2(self):
         """进入步骤2并开始提取"""
@@ -1715,6 +1812,9 @@ class YiJianFanyiPage(Base, QWidget):
         if (
             self._preprocess_worker
             and self._preprocess_worker.isRunning()
+        ) or (
+            self._status_scan_worker
+            and self._status_scan_worker.isRunning()
         ) or (
             self.extraction_worker
             and self.extraction_worker.isRunning()
@@ -1795,7 +1895,8 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         if status is None:
-            status, status_msg = self._detect_game_status(context["game_dir"])
+            self._start_status_scan(generation, context)
+            return
         status_msg = str(status_msg or "")
 
         if status == 'need_unpack':
@@ -2176,6 +2277,11 @@ class YiJianFanyiPage(Base, QWidget):
                 and self._preprocess_worker.isRunning()
             )
             or
+            (
+                getattr(self, "_status_scan_worker", None)
+                and self._status_scan_worker.isRunning()
+            )
+            or
             (self.extraction_worker and self.extraction_worker.isRunning())
             or engine.get_status() != Engine.Status.IDLE
             or engine.has_stop_barrier()
@@ -2214,6 +2320,17 @@ class YiJianFanyiPage(Base, QWidget):
         """让仍在后台运行的旧步骤 2 结果失效。"""
         self._extraction_generation += 1
         self._start_translation_after_extraction = False
+        for worker in (
+            self._status_scan_worker,
+            self._preprocess_worker,
+            self.extraction_worker,
+        ):
+            if worker is None or not worker.isRunning():
+                continue
+            if hasattr(worker, "cancel"):
+                worker.cancel()
+            elif hasattr(worker, "requestInterruption"):
+                worker.requestInterruption()
 
     def hideEvent(self, event):
         """页面离开后不允许旧预处理结果继续启动后续任务。"""
@@ -2704,6 +2821,9 @@ class YiJianFanyiPage(Base, QWidget):
         if (
             self._preprocess_worker
             and self._preprocess_worker.isRunning()
+        ) or (
+            self._status_scan_worker
+            and self._status_scan_worker.isRunning()
         ) or (
             self.extraction_worker
             and self.extraction_worker.isRunning()

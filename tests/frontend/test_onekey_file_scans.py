@@ -70,6 +70,61 @@ def hold_scan(monkeypatch):
     return entered, release, caller_threads
 
 
+def test_game_status_scan_keeps_gui_responsive(tmp_path, monkeypatch):
+    from frontend.RenpyToolbox.OneKeyWorkers import GameStatusWorker
+
+    root = tmp_path / "project"
+    game = root / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    pass\n", encoding="utf-8")
+    entered, release, threads = hold_scan(monkeypatch)
+    results = []
+    worker = GameStatusWorker(str(root), "chinese")
+    worker.result_ready.connect(results.append)
+    try:
+        worker.start()
+        assert entered.wait(2)
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        wait_until(lambda: bool(heartbeat))
+        assert threads[0] != threading.get_ident()
+        release.set()
+        wait_until(lambda: bool(results))
+        assert len(results) == 1
+        assert results[0]["status"] == "ready"
+    finally:
+        release.set()
+        if worker.isRunning():
+            worker.requestInterruption()
+        assert worker.wait(5000)
+        worker.deleteLater()
+
+
+def test_game_status_scan_can_be_cancelled_without_result(tmp_path, monkeypatch):
+    from frontend.RenpyToolbox.OneKeyWorkers import GameStatusWorker
+
+    root = tmp_path / "project"
+    (root / "game").mkdir(parents=True)
+    entered, release, _threads = hold_scan(monkeypatch)
+    results = []
+    worker = GameStatusWorker(str(root), "chinese")
+    worker.result_ready.connect(results.append)
+    try:
+        worker.start()
+        assert entered.wait(2)
+        worker.requestInterruption()
+        release.set()
+        assert worker.wait(5000)
+        APP.processEvents()
+        assert results == [{"status": "cancelled", "message": ""}]
+    finally:
+        release.set()
+        if worker.isRunning():
+            worker.requestInterruption()
+            assert worker.wait(5000)
+        worker.deleteLater()
+
+
 def test_old_translation_count_keeps_gui_responsive(scan_page, monkeypatch):
     page, root = scan_page
     tl = root / "game" / "tl" / "chinese"
