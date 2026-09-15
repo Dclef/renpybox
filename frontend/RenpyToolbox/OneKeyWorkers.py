@@ -15,7 +15,11 @@ from PyQt5.QtCore import QCoreApplication, QThread, pyqtSignal
 from base.BaseLanguage import BaseLanguage
 from module.Cache.CacheManager import CacheManager
 from module.Extract.ReplaceGenerator import generate_replace_from_miss
-from module.Renpy.ProjectPaths import RenpyProjectPaths, write_run_manifest
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    source_script_counts,
+    write_run_manifest,
+)
 from module.Project.ProjectStore import ProjectStore
 from module.Renpy.renpy_tl_core import parse_tl_document, tl_block_kind_name
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
@@ -672,6 +676,86 @@ def _localize_merge_failure(message: str) -> str:
     if text.startswith("未找到增量目录:"):
         return "The incremental translation folder was not found."
     return Localizer.get().onekey_incremental_translation_merge_failed
+
+
+def detect_game_status(
+    game_dir: str,
+    tl_name: str,
+    *,
+    cancel_check=None,
+) -> tuple[str, str]:
+    """只使用路径快照检测游戏脚本状态，供后台线程调用。"""
+    paths = RenpyProjectPaths.from_path(game_dir, tl_name)
+    if paths is None or not paths.game_dir.exists():
+        return "empty", Localizer.get().onekey_game_folder_not_found
+
+    rpy_count, rpyc_count = source_script_counts(
+        paths,
+        cancel_check=cancel_check,
+    )
+    rpa_count = len(list(paths.game_dir.glob("*.rpa")))
+
+    if rpa_count > 0 and rpy_count == 0 and rpyc_count == 0:
+        return (
+            "need_unpack",
+            Localizer.get().onekey_found_rpa_archives_must_unpacked.format(
+                rpa_count=rpa_count
+            ),
+        )
+    if rpyc_count > 0:
+        return (
+            "need_decompile",
+            Localizer.get().onekey_found_rpyc_files_must_decompiled.format(
+                rpyc_count=rpyc_count
+            ),
+        )
+    if rpy_count > 0:
+        return (
+            "ready",
+            Localizer.get().onekey_found_rpy_files_ready_extraction.format(
+                rpy_count=rpy_count
+            ),
+        )
+    return "empty", Localizer.get().onekey_no_extractable_files_found
+
+
+class GameStatusWorker(QThread):
+    """后台检测游戏脚本状态，避免递归扫描占用界面线程。"""
+
+    result_ready = pyqtSignal(object)  # 结果字典：status/message
+
+    def __init__(self, game_dir: str, tl_name: str):
+        # 页面关闭后线程仍由应用持有，避免 QThread 在扫描期间被销毁。
+        super().__init__(QCoreApplication.instance())
+        self.game_dir = str(game_dir)
+        self.tl_name = str(tl_name)
+
+    def run(self) -> None:
+        if self.isInterruptionRequested():
+            self.result_ready.emit({"status": "cancelled", "message": ""})
+            return
+        try:
+            status, message = detect_game_status(
+                self.game_dir,
+                self.tl_name,
+                cancel_check=self.isInterruptionRequested,
+            )
+        except Exception as exc:
+            if self.isInterruptionRequested():
+                self.result_ready.emit({"status": "cancelled", "message": ""})
+                return
+            LogManager.get().error(f"检测游戏脚本状态失败: {exc}")
+            self.result_ready.emit(
+                {
+                    "status": "error",
+                    "message": str(exc),
+                }
+            )
+            return
+        if self.isInterruptionRequested():
+            self.result_ready.emit({"status": "cancelled", "message": ""})
+            return
+        self.result_ready.emit({"status": status, "message": message})
 
 
 # Worker Thread for Extraction

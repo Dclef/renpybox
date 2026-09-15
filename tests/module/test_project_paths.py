@@ -8,6 +8,7 @@ from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     read_run_manifest,
     resolve_translation_output,
+    source_script_counts,
     translation_output_candidates,
     write_run_manifest,
 )
@@ -350,3 +351,44 @@ def test_explicit_tl_input_wins_over_existing_stale_tl_field(tmp_path):
     assert paths is not None
     assert paths.project_root == current.resolve()
     assert paths.language == "japanese"
+
+
+def test_source_script_counts_walks_game_once_and_prunes_translation_tree(
+    tmp_path,
+    monkeypatch,
+):
+    """脚本统计只遍历一次，并且不进入 game/tl 翻译目录。"""
+    project = tmp_path / "project"
+    game = project / "game"
+    (game / "tl" / "chinese").mkdir(parents=True)
+    (game / "scripts" / "chapter").mkdir(parents=True)
+    (game / "scene.rpy").write_text("label start:\n    pass\n", encoding="utf-8")
+    (game / "compiled.rpyc").write_bytes(b"compiled")
+    (game / "scripts" / "chapter" / "extra.RPY").write_text(
+        "label extra:\n    pass\n",
+        encoding="utf-8",
+    )
+    (game / "tl" / "chinese" / "translated.rpy").write_text(
+        "translate chinese start:\n    pass\n",
+        encoding="utf-8",
+    )
+    (game / "tl" / "chinese" / "compiled.RPYC").write_bytes(b"compiled")
+
+    paths = RenpyProjectPaths.from_path(project)
+    assert paths is not None
+
+    import module.Renpy.ProjectPaths as project_paths_module
+
+    calls = []
+    real_walk = project_paths_module.os.walk
+
+    def counted_walk(*args, **kwargs):
+        calls.append((args, kwargs))
+        yield from real_walk(*args, **kwargs)
+
+    monkeypatch.setattr(project_paths_module.os, "walk", counted_walk)
+
+    assert source_script_counts(paths) == (2, 1)
+    assert len(calls) == 1
+    assert calls[0][0][0] == str(paths.game_dir)
+    assert calls[0][1]["topdown"] is True
