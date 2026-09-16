@@ -23,7 +23,7 @@ from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
 from module.Tool.Packer import Packer, PackerUnpackError
-from module.Tool.RenpyDecompiler import RenpyDecompiler, remove_decompiled_rpyc
+from module.Tool.RenpyDecompiler import RenpyDecompiler
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 EXE_SUFFIX = ".exe"
@@ -219,8 +219,6 @@ class DecompileWorker(QThread):
                 overwrite=self.overwrite,
                 output_callback=lambda line: self.progress.emit(f"unrpyc：{line}"),
             )
-            removed = remove_decompiled_rpyc(game_dir)
-            LogManager.get().info(f"反编译后已清理 {removed} 个同名 .rpyc")
             self.finished.emit({
                 "level": "success",
                 "title": Localizer.get().local_glossary_completed,
@@ -247,8 +245,6 @@ class DecompileWorker(QThread):
                     ),
                 )
                 if ok:
-                    removed = remove_decompiled_rpyc(game_dir)
-                    LogManager.get().info(f"反编译后已清理 {removed} 个同名 .rpyc")
                     self.finished.emit({
                         "level": "success",
                         "title": Localizer.get().local_glossary_completed,
