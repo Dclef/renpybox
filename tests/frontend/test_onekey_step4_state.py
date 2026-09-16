@@ -512,3 +512,70 @@ def test_stale_extraction_generation_is_ignored():
         "旧任务完成",
         generation=1,
     )
+
+
+def test_cancelled_extraction_closes_step2_busy_state():
+    ring_visibility = []
+    cancel_visibility = []
+    cancel_enabled = []
+    status_texts = []
+    description_texts = []
+    retry_visibility = []
+    retry_enabled = []
+    skip_visibility = []
+    skip_enabled = []
+    next_visibility = []
+    next_enabled = []
+    merge_visibility = []
+    merge_enabled = []
+    page = SimpleNamespace(
+        _extraction_generation=1,
+        extraction_worker=None,
+        step2_page=SimpleNamespace(
+            progress_ring=SimpleNamespace(setVisible=ring_visibility.append),
+        ),
+        step2_cancel_btn=SimpleNamespace(
+            setVisible=cancel_visibility.append,
+            setEnabled=cancel_enabled.append,
+        ),
+        step2_status=SimpleNamespace(setText=status_texts.append),
+        step2_desc=SimpleNamespace(setText=description_texts.append),
+        step2_retry_btn=SimpleNamespace(
+            setVisible=retry_visibility.append,
+            setEnabled=retry_enabled.append,
+        ),
+        step2_skip_btn=SimpleNamespace(
+            setVisible=skip_visibility.append,
+            setEnabled=skip_enabled.append,
+        ),
+        step2_next_btn=SimpleNamespace(
+            setVisible=next_visibility.append,
+            setEnabled=next_enabled.append,
+        ),
+        step2_merge_btn=SimpleNamespace(
+            setVisible=merge_visibility.append,
+            setEnabled=merge_enabled.append,
+        ),
+    )
+
+    YiJianFanyiPage._on_extract_finished(
+        page,
+        False,
+        "抽取已取消",
+        result=SimpleNamespace(cancelled=True),
+        generation=1,
+    )
+
+    assert ring_visibility[-1] is False
+    assert cancel_visibility[-1] is False
+    assert cancel_enabled[-1] is True
+    assert status_texts[-1] == page_module.Localizer.get().pack_unpack_cancelled
+    assert description_texts[-1] == status_texts[-1]
+    assert retry_visibility[-1] is True
+    assert retry_enabled[-1] is True
+    assert skip_visibility[-1] is True
+    assert skip_enabled[-1] is True
+    assert next_visibility[-1] is False
+    assert next_enabled[-1] is False
+    assert merge_visibility[-1] is False
+    assert merge_enabled[-1] is False
