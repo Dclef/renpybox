@@ -206,6 +206,10 @@ class Config():
     renpy_tl_folder: str = ""
     extract_use_official: bool = True
     extract_use_custom: bool = True
+    # 补充抽取模式：off=仅官方抽取（不跑补充抽取）；
+    # precise=projz 式定向精准扫（默认，低误报）；
+    # aggressive=旧宽扫描（任意引号+宽松英文行，覆盖广但易误抽）。
+    extract_supplement_mode: str = "precise"
     extract_skip_hook_files: bool = True
     extract_export_excel: bool = False
     extract_split_names: bool = True
