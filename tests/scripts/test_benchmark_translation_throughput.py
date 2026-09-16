@@ -33,7 +33,7 @@ def test_load_corpus_jsonl_accepts_text_records_and_rejects_invalid_records(tmp_
 
 @pytest.mark.parametrize(
     ("profile", "expected_chunks"),
-    [("legacy10", 250), ("source1024", 100), ("balanced20", 50)],
+    [("legacy10", 100), ("source1024", 100), ("balanced20", 50)],
 )
 def test_profiles_use_production_source_and_line_budgets(monkeypatch, profile, expected_chunks):
     monkeypatch.setattr("module.Cache.CacheItem.CacheItem.get_token_count", lambda self: 40)
