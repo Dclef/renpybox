@@ -24,6 +24,8 @@ class CacheManager(Base):
     # SQLite 缓存文件名
     CACHE_DB_NAME = "cache.db"
     RESET_JOURNAL_NAME = "reset.journal.json"
+    # 大项目切分任务时周期性让出时间片，避免后台准备线程压住 Qt 主线程。
+    PREPARE_YIELD_INTERVAL = 512
 
     # 结尾标点符号
     END_LINE_PUNCTUATION = (
@@ -647,9 +649,15 @@ class CacheManager(Base):
         project_temp = f"{project_path}.reset.tmp"
         journal_path = os.path.join(cache_path, __class__.RESET_JOURNAL_NAME)
         journal_temp = f"{journal_path}.tmp"
+        item_payloads = []
+        for index, item in enumerate(items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
+            item_payloads.append(item.asdict())
+
         payload = {
             "project": project.asdict(),
-            "items": [item.asdict() for item in items],
+            "items": item_payloads,
         }
         try:
             with open(journal_temp, "w", encoding = "utf-8") as writer:
@@ -720,7 +728,13 @@ class CacheManager(Base):
 
     # 获取缓存数据数量（根据翻译状态）
     def get_item_count_by_status(self, status: int) -> int:
-        return len([item for item in self.items if item.get_status() == status])
+        count = 0
+        for index, item in enumerate(self.items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
+            if item.get_status() == status:
+                count += 1
+        return count
 
     # 重置原译相同的条目（用于重新翻译被AI安全规则阻止的内容）
     def reset_same_translation_items(self) -> int:
@@ -748,8 +762,7 @@ class CacheManager(Base):
     ) -> list[list[CacheItem]]:
         # 行数上限：line_threshold 是用户设置的"每批最多 N 行"
         line_limit = max(1, line_threshold)
-        # Token 上限：按行数阈值乘以经验系数推算；单行平均约 30-50 token，
-        # 乘 16 使短文本不会因 token 超限而过度切分。
+        # Token 上限：0/None 表示只按行数切分，避免短批次拖慢吞吐。
         token_limit = self._batch_source_token_limit(line_limit, source_token_limit)
 
         skip: int = 0
@@ -780,7 +793,10 @@ class CacheManager(Base):
             # 如果 行数超限 或 Token 超限 或 数据来源跨文件，则结束此片段
             elif (
                 line_length + current_line_length > line_limit
-                or token_length + current_token_length > token_limit
+                or (
+                    token_limit is not None
+                    and token_length + current_token_length > token_limit
+                )
                 or item.get_file_path() != chunk[-1].get_file_path()
             ):
                 chunks.append(chunk)
@@ -804,10 +820,11 @@ class CacheManager(Base):
         return chunks, preceding_chunks
 
     @staticmethod
-    def _batch_source_token_limit(line_limit: int, source_token_limit: int | None) -> int:
-        if source_token_limit is not None and int(source_token_limit) > 0:
-            return int(source_token_limit)
-        return max(64, line_limit * 16)
+    def _batch_source_token_limit(line_limit: int, source_token_limit: int | None) -> int | None:
+        if source_token_limit is None:
+            return None
+        source_token_limit = int(source_token_limit)
+        return source_token_limit if source_token_limit > 0 else None
 
     def iter_item_chunks(
         self,
@@ -839,7 +856,9 @@ class CacheManager(Base):
             values.append(item)
             del values[:-context_limit]
 
-        for item in self.items:
+        for index, item in enumerate(self.items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
             if cancel_checker is not None and cancel_checker():
                 return
             if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
@@ -854,7 +873,10 @@ class CacheManager(Base):
             item_tokens = item.get_token_count()
             if chunk and (
                 lines + item_lines > line_limit
-                or tokens + item_tokens > token_limit
+                or (
+                    token_limit is not None
+                    and tokens + item_tokens > token_limit
+                )
                 or item.get_file_path() != chunk[-1].get_file_path()
             ):
                 yield chunk, preceding

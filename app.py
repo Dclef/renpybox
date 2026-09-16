@@ -25,6 +25,7 @@ if str(application_path) not in sys.path:
     sys.path.insert(0, str(application_path))
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QColor
 from PyQt5.QtGui import QFont
 from PyQt5.QtGui import QIcon
@@ -224,9 +225,30 @@ if __name__ == "__main__":
         from frontend.AppFluentWindow import AppFluentWindow
 
         app_fluent_window = AppFluentWindow()
+        if splash is not None:
+            splash.showMessage(
+                "正在渲染主界面…",
+                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                QColor("#24466C"),
+            )
+            app.processEvents()
         app_fluent_window.show()
         if splash is not None:
-            splash.finish(app_fluent_window)
+            splash_finish_started = time.monotonic()
+
+            def finish_startup_splash() -> None:
+                # app.exec() 启动后再判断窗口是否真正曝光；只在 show()
+                # 后同步 processEvents()，Windows 仍可能先关闭启动图再绘制主窗。
+                handle = app_fluent_window.windowHandle()
+                exposed = bool(handle is not None and handle.isExposed())
+                timed_out = time.monotonic() - splash_finish_started >= 4.0
+                if not exposed and not timed_out:
+                    QTimer.singleShot(100, finish_startup_splash)
+                    return
+                splash.finish(app_fluent_window)
+                splash.deleteLater()
+
+            QTimer.singleShot(100, finish_startup_splash)
 
     # 进入事件循环，等待用户操作
     sys.exit(app.exec())
