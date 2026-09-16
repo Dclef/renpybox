@@ -1,14 +1,9 @@
+import importlib
 import json
 import re
 import threading
 import time
 from typing import Any, Iterable, Literal
-
-import anthropic
-import httpx
-import openai
-from google import genai
-from google.genai import types
 
 from base.Base import Base
 from module.Secret.SecretStore import SecretStore
@@ -32,6 +27,30 @@ class ThinkingLevel(StrEnum):
 
 
 ResponseShape = Literal["none", "json_object"]
+
+
+class _LazyModule:
+    """首次使用时再导入供应商 SDK，避免打开应用时阻塞主线程。"""
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+        self._module: Any | None = None
+
+    def _load(self) -> Any:
+        if self._module is None:
+            self._module = importlib.import_module(self._module_name)
+        return self._module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._load(), name)
+
+
+# 保留模块级名称，兼容现有测试的 monkeypatch 路径；真实导入延迟到请求阶段。
+anthropic = _LazyModule("anthropic")
+httpx = _LazyModule("httpx")
+openai = _LazyModule("openai")
+genai = _LazyModule("google.genai")
+types = _LazyModule("google.genai.types")
 
 
 class TaskRequester(Base):

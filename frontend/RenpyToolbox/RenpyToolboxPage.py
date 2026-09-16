@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
@@ -60,6 +61,7 @@ class RenpyToolboxPage(Base, QWidget):
 
         self.window = parent
         self._page_cache: dict[str, QWidget] = {}
+        self._tool_pages_preloaded = False
         self._spec_by_key = {spec.key: spec for spec in TOOL_SPECS}
         self._cards: dict[str, ItemCard] = {}
         self._section_titles: dict[str, StrongBodyLabel] = {}
@@ -378,6 +380,27 @@ class RenpyToolboxPage(Base, QWidget):
             self._page_cache[key] = page
         return page
 
+    def preload_tool_pages(self) -> None:
+        """在启动页阶段预构造工具页，避免首次点击时阻塞主界面。"""
+        if self._tool_pages_preloaded:
+            return
+
+        self._tool_pages_preloaded = True
+        for spec in TOOL_SPECS:
+            # 没有页面类的入口只是动作卡，由处理函数直接执行。
+            if spec.page_cls is None and not spec.lazy_import:
+                continue
+            try:
+                page = self.get_tool_page(spec.key)
+                stacked = getattr(self.window, "stackedWidget", None)
+                if stacked is not None and stacked.indexOf(page) < 0:
+                    stacked.addWidget(page)
+            except Exception as exc:
+                # 单个可选工具不可用时不阻断主窗口，用户点击时仍可重试。
+                LogManager.get().warning(
+                    f"[STARTUP] 工具页预加载失败（{spec.key}）：{exc}"
+                )
+
     def _open_tool(self, spec: ToolSpec, card: ItemCard | None = None) -> None:
         try:
             if spec.requires_project and not self._has_project():
@@ -458,39 +481,69 @@ class RenpyToolboxPage(Base, QWidget):
                 return False
 
             cache_dir = Path(output_folder) / "cache"
-            items_file = cache_dir / "items.json"
-            sqlite_file = cache_dir / "cache.db"
-
-            if items_file.exists():
-                with items_file.open("r", encoding="utf-8") as file:
-                    items = json.load(file)
-
-                def is_untranslated(item) -> bool:
-                    if not isinstance(item, dict):
-                        return False
-                    status = item.get("status", 0)
-                    if status == 0 or str(status).upper() == "UNTRANSLATED":
-                        return True
-                    try:
-                        return (
-                            Base.normalize_translation_status(status)
-                            == Base.TranslationStatus.UNTRANSLATED
-                        )
-                    except (TypeError, ValueError):
-                        return False
-
-                if any(is_untranslated(item) for item in items):
+            cache_manager = CacheManager(service=False)
+            try:
+                cache_manager.load_project_from_file(output_folder, strict=True)
+                project = cache_manager.get_project()
+                status = project.get_status()
+                if status == Base.TranslationStatus.TRANSLATING:
                     return True
-
-            if sqlite_file.exists():
-                cache_manager = CacheManager(service=False)
-                cache_manager.load_items_from_file(output_folder)
-                return any(
-                    item.get_status() == Base.TranslationStatus.UNTRANSLATED
-                    for item in cache_manager.get_items()
-                )
-            return False
+                if status == Base.TranslationStatus.TRANSLATED:
+                    return False
+                progress = project.get_progress() or {}
+                line = int(progress.get("line", 0) or 0)
+                total = int(progress.get("total_line", 0) or 0)
+                return 0 < line < total
+            except Exception:
+                # 旧缓存可能没有 project 记录；仅这种兼容路径才扫描 items。
+                return self._legacy_cache_has_pending_translation(cache_dir)
         except Exception:
+            return False
+
+    def _legacy_cache_has_pending_translation(self, cache_dir: Path) -> bool:
+        """兼容旧缓存：按需扫描条目状态，不在启动期构造完整 CacheItem。"""
+        items_file = cache_dir / "items.json"
+        if items_file.exists():
+            try:
+                with items_file.open("r", encoding="utf-8-sig") as file:
+                    payload = json.load(file)
+                if not isinstance(payload, list):
+                    return False
+                return any(self._is_untranslated_payload(item) for item in payload)
+            except Exception:
+                return False
+
+        sqlite_file = cache_dir / "cache.db"
+        if not sqlite_file.exists():
+            return False
+        try:
+            uri = f"{sqlite_file.resolve().as_uri()}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=0.1) as connection:
+                has_items = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items'"
+                ).fetchone()
+                if has_items is None:
+                    return False
+                for (raw_data,) in connection.execute("SELECT data FROM items"):
+                    if self._is_untranslated_payload(json.loads(raw_data)):
+                        return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _is_untranslated_payload(item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        status = item.get("status", 0)
+        if status == 0 or str(status).upper() == "UNTRANSLATED":
+            return True
+        try:
+            return (
+                Base.normalize_translation_status(status)
+                == Base.TranslationStatus.UNTRANSLATED
+            )
+        except (TypeError, ValueError):
             return False
 
     def showEvent(self, event: QEvent) -> None:

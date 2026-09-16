@@ -1,3 +1,4 @@
+import concurrent.futures
 import threading
 import time
 from types import SimpleNamespace
@@ -44,6 +45,8 @@ def _translator_stub() -> Translator:
     translator._translation_run_id = 0
     translator._active_request_id = ""
     translator._active_run_cancel_event = None
+    translator._active_task_run_id = None
+    translator._active_task_count = 0
     translator._run_context = threading.local()
     translator._stop_watcher = None
     translator._stop_watcher_lock = threading.Lock()
@@ -432,3 +435,46 @@ def test_rpm_only_configuration_uses_bounded_worker_count(monkeypatch) -> None:
 
     assert max_workers == 8
     assert rpm == 120
+
+
+def test_running_task_count_uses_current_run_futures_only() -> None:
+    translator = _translator_stub()
+    translator._translation_run_id = 2
+    translator._active_task_run_id = 1
+    translator._active_task_count = 99
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    previous_translator = getattr(engine, "translator", None)
+    release = threading.Event()
+    stale_thread = threading.Thread(
+        target = lambda: release.wait(2),
+        name = "ENGINE_STALE_TRANSLATION",
+    )
+
+    try:
+        engine.translator = translator
+        engine.set_status(Engine.Status.TRANSLATING)
+        stale_thread.start()
+
+        assert engine.get_running_task_count() == 0
+
+        future = concurrent.futures.Future()
+        translator._track_active_future(future, 2)
+        assert engine.get_running_task_count() == 1
+
+        translator._finish_active_future(1)
+        assert engine.get_running_task_count() == 1
+
+        future.set_result({})
+        assert engine.get_running_task_count() == 0
+    finally:
+        release.set()
+        stale_thread.join(2)
+        if previous_translator is None:
+            try:
+                delattr(engine, "translator")
+            except AttributeError:
+                pass
+        else:
+            engine.translator = previous_translator
+        engine.set_status(previous_status)

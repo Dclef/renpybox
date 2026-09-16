@@ -1,5 +1,6 @@
 import os
 import signal
+from collections.abc import Callable
 
 from PyQt5.QtCore import QEvent
 from PyQt5.QtCore import Qt
@@ -7,9 +8,13 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QVBoxLayout
+from PyQt5.QtWidgets import QSplashScreen
 from PyQt5.QtWidgets import QWidget
+from qfluentwidgets import BodyLabel
 from qfluentwidgets import FluentIcon
 from qfluentwidgets import FluentWindow
+from qfluentwidgets import IndeterminateProgressRing
 from qfluentwidgets import MessageBox
 from qfluentwidgets import NavigationItemPosition
 from qfluentwidgets import NavigationPushButton
@@ -26,16 +31,12 @@ from base.PathHelper import get_resource_path
 from base.Version import Version
 from base.VersionManager import VersionManager
 from frontend.AppSettingsPage import AppSettingsPage
-from frontend.Agent.AgentPage import AgentPage
-from frontend.Project.PlatformPage import PlatformPage
 from frontend.Project.ProjectPage import ProjectPage
 from frontend.Setting.BasicSettingsPage import BasicSettingsPage
 from frontend.Setting.CustomPromptPage import CustomPromptPage
 from frontend.Setting.ExpertSettingsPage import ExpertSettingsPage
 from frontend.Setting.ChangelogDialog import ChangelogDialog
-from frontend.Workbench.RenpyWorkbenchPage import RenpyWorkbenchPage
 from frontend.TranslationPage import TranslationPage
-from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from widget.ThemeHelper import get_navigation_stylesheet
@@ -45,6 +46,77 @@ from widget.ThemeTokens import (
     current_palette,
     current_qfluent_accent_seed,
 )
+
+
+class LazyPage(QWidget):
+    """延迟创建重页面，避免默认进入翻译任务时同步阻塞主窗口。"""
+
+    def __init__(
+        self,
+        object_name: str,
+        title: str,
+        loader: Callable[[], QWidget],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self._loader = loader
+        self._page: QWidget | None = None
+        self._loading = False
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(24, 24, 24, 24)
+        self._layout.setSpacing(12)
+
+        self._ring = IndeterminateProgressRing(self)
+        self._ring.setFixedSize(28, 28)
+        self._ring.setStrokeWidth(4)
+        self._label = BodyLabel(f"{title} · {Localizer.get().proofreading_page_indeterminate_loading}", self)
+        self._layout.addStretch(1)
+        self._layout.addWidget(self._ring, 0, Qt.AlignmentFlag.AlignCenter)
+        self._layout.addWidget(self._label, 0, Qt.AlignmentFlag.AlignCenter)
+        self._layout.addStretch(1)
+
+    def showEvent(self, event: QEvent) -> None:
+        super().showEvent(event)
+        if self._page is None and not self._loading:
+            QTimer.singleShot(0, self.ensure_loaded)
+
+    def ensure_loaded(self) -> QWidget:
+        if self._page is not None:
+            return self._page
+
+        self._loading = True
+        page = self._loader()
+        self._page = page
+        self._loading = False
+
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+        self._ring.hide()
+        self._label.hide()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self._layout.addWidget(page, 1)
+        return page
+
+    def get_tool_page(self, key: str) -> QWidget:
+        """仅工具箱占位需要转发工具页获取，避免 getattr 误触发整页加载。"""
+        page = self.ensure_loaded()
+        getter = getattr(page, "get_tool_page", None)
+        if not callable(getter):
+            raise AttributeError("当前页面不支持工具页获取")
+        return getter(key)
+
+    def refresh_from_config(self) -> None:
+        page = self.ensure_loaded()
+        refresh = getattr(page, "refresh_from_config", None)
+        if callable(refresh):
+            refresh()
 
 
 class AppFluentWindow(FluentWindow, Base):
@@ -113,6 +185,7 @@ class AppFluentWindow(FluentWindow, Base):
         self._configure_navigation()
 
         # 添加页面
+        self._update_startup_splash("正在注册主界面页面…")
         self.add_pages()
         self._apply_shell_theme()
 
@@ -131,6 +204,20 @@ class AppFluentWindow(FluentWindow, Base):
 
         # 升级后的第一次启动仅展示当前版本日志；首次安装保持静默。
         self._schedule_post_update_changelog()
+
+    @staticmethod
+    def _update_startup_splash(message: str) -> None:
+        """在启动图上显示当前预热阶段，避免长时间等待看起来像卡死。"""
+        for widget in QApplication.topLevelWidgets():
+            if not isinstance(widget, QSplashScreen):
+                continue
+            widget.showMessage(
+                message,
+                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                QColor("#24466C"),
+            )
+            QApplication.processEvents()
+            return
 
     def play_startup_sound(self) -> None:
         config = Config().load()
@@ -270,11 +357,14 @@ class AppFluentWindow(FluentWindow, Base):
         panel.setStyleSheet(get_navigation_stylesheet())
 
         self.titleBar.setStyleSheet(
-            f"FluentTitleBar {{ background-color: {palette.chrome}; "
-            f"border-bottom: 1px solid {palette.divider}; }}"
-            f"QLabel#titleLabel {{ color: {palette.text_primary}; "
-            "font-size: 12px; font-weight: 600; }}"
+            f"background-color: {palette.chrome}; "
+            f"border-bottom: 1px solid {palette.divider};"
         )
+        title_label = getattr(self.titleBar, "titleLabel", None)
+        if title_label is not None:
+            title_label.setStyleSheet(
+                f"color: {palette.text_primary}; font-size: 12px; font-weight: 600;"
+            )
 
         light_text = QColor(LIGHT.text_primary)
         dark_text = QColor(DARK.text_primary)
@@ -372,11 +462,15 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 开始添加页面
     def add_pages(self) -> None:
+        self._update_startup_splash("正在预热翻译页面和项目缓存…")
         self.add_task_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
+        self._update_startup_splash("正在注册项目和接口页面…")
         self.add_project_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
+        self._update_startup_splash("正在预加载 Ren'Py 工具页面…")
         self.add_renpy_pages()
+        self._update_startup_splash("正在注册工作台和设置页面…")
         self.add_workbench_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
         self.add_setting_pages()
@@ -417,8 +511,9 @@ class AppFluentWindow(FluentWindow, Base):
         )
 
         # 接口管理
+        self.platform_page = self._create_platform_page()
         self.addSubInterface(
-            PlatformPage("platform_page", self),
+            self.platform_page,
             FluentIcon.IOT,
             Localizer.get().app_platform_page,
             NavigationItemPosition.SCROLL
@@ -427,7 +522,8 @@ class AppFluentWindow(FluentWindow, Base):
     # 添加 Ren'Py 页面
     def add_renpy_pages(self) -> None:
         # Ren'Py 百宝箱（统一的工具箱）
-        self.renpy_toolbox_page = RenpyToolboxPage("renpy_toolbox_page", self)
+        self.renpy_toolbox_page = self._create_renpy_toolbox_page()
+        self.renpy_toolbox_page.preload_tool_pages()
         self.addSubInterface(
             self.renpy_toolbox_page,
             FluentIcon.GAME,
@@ -437,7 +533,7 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 添加角色 / 世界观工作台页面
     def add_workbench_pages(self) -> None:
-        self.renpy_workbench_page = RenpyWorkbenchPage("renpy_workbench_page", self)
+        self.renpy_workbench_page = self._create_renpy_workbench_page()
         self.addSubInterface(
             self.renpy_workbench_page,
             FluentIcon.PEOPLE,
@@ -449,6 +545,7 @@ class AppFluentWindow(FluentWindow, Base):
     def add_task_pages(self) -> None:
         # 开始翻译
         self.translation_page = TranslationPage("translation_page", self)
+        self.translation_page.preload_project_status()
         self.addSubInterface(
             self.translation_page,
             FluentIcon.PLAY,
@@ -457,13 +554,33 @@ class AppFluentWindow(FluentWindow, Base):
         )
 
         # Agent 助手
-        self.agent_page = AgentPage("agent_page", self)
+        self.agent_page = self._create_agent_page()
         self.addSubInterface(
             self.agent_page,
             FluentIcon.ROBOT,
             Localizer.get().app_agent_page,
             NavigationItemPosition.SCROLL,
         )
+
+    def _create_agent_page(self) -> QWidget:
+        from frontend.Agent.AgentPage import AgentPage
+
+        return AgentPage("agent_page", self)
+
+    def _create_platform_page(self) -> QWidget:
+        from frontend.Project.PlatformPage import PlatformPage
+
+        return PlatformPage("platform_page", self)
+
+    def _create_renpy_toolbox_page(self) -> QWidget:
+        from frontend.RenpyToolbox.RenpyToolboxPage import RenpyToolboxPage
+
+        return RenpyToolboxPage("renpy_toolbox_page", self)
+
+    def _create_renpy_workbench_page(self) -> QWidget:
+        from frontend.Workbench.RenpyWorkbenchPage import RenpyWorkbenchPage
+
+        return RenpyWorkbenchPage("renpy_workbench_page", self)
 
     # 添加设置类页面
     def add_setting_pages(self) -> None:

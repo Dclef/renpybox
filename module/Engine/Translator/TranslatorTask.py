@@ -163,13 +163,62 @@ class TranslatorTask(Base):
         """逻辑请求耗时包含内部重试；HTTP 尝试另由请求层观察。"""
         started_at = time.perf_counter()
         try:
-            return requester.request(messages, **kwargs)
+            result = requester.request(messages, **kwargs)
+            return self._fill_missing_usage_tokens(messages, result)
         finally:
             self._request_count += 1
             self._latency_ms += (time.perf_counter() - started_at) * 1000
             metrics = getattr(requester, "last_request_metrics", None)
             if isinstance(metrics, dict):
                 merge_request_metrics(self._request_metrics, metrics)
+
+    @classmethod
+    def _estimate_text_tokens(cls, text: object) -> int:
+        text = str(text or "")
+        if text == "":
+            return 0
+        return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+    @classmethod
+    def _estimate_messages_tokens(cls, messages: list[dict[str, object]]) -> int:
+        total = 0
+        for message in messages or []:
+            total += cls._estimate_text_tokens(message.get("role", ""))
+            total += cls._estimate_text_tokens(message.get("content", ""))
+            total += 4
+        return total
+
+    @classmethod
+    def _fill_missing_usage_tokens(
+        cls,
+        messages: list[dict[str, object]],
+        result: tuple[object, object, object, object, object],
+    ) -> tuple[object, object, object, object, object]:
+        """兼容不返回 usage 的流式兼容接口，避免监控页 token 长期为 0。"""
+        if not isinstance(result, tuple) or len(result) != 5:
+            return result
+        skip, response_think, response_result, input_tokens, output_tokens = result
+        if skip:
+            return result
+
+        try:
+            input_value = int(input_tokens or 0)
+        except (TypeError, ValueError):
+            input_value = 0
+        try:
+            output_value = int(output_tokens or 0)
+        except (TypeError, ValueError):
+            output_value = 0
+
+        if input_value > 0 and output_value > 0:
+            return result
+
+        if input_value <= 0:
+            input_value = cls._estimate_messages_tokens(messages)
+        if output_value <= 0:
+            output_value = cls._estimate_text_tokens(response_result) + cls._estimate_text_tokens(response_think)
+
+        return skip, response_think, response_result, input_value, output_value
 
     def _recent_items(self) -> list[dict[str, object]]:
         """生成监控页展示的最近处理条目。"""

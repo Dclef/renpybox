@@ -204,6 +204,32 @@ def test_sqlite_full_cache_save_persists_project_and_items_together(tmp_path) ->
     assert [item.get_src() for item in db.get_items()] == ["atomic item"]
 
 
+def test_sqlite_full_cache_save_streams_items_in_one_pass(tmp_path) -> None:
+    class OnePassItems:
+        def __init__(self) -> None:
+            self.iterated = False
+
+        def __iter__(self):
+            if self.iterated:
+                raise AssertionError("缓存条目被重复遍历")
+            self.iterated = True
+            for index in range(3):
+                yield CacheItem(src = f"source {index}")
+
+    db = CacheDB(str(tmp_path / "cache.db"))
+    items = OnePassItems()
+
+    db.set_translation_cache(CacheProject(id = "streamed"), items)
+
+    assert items.iterated is True
+    assert [item.get_src() for item in db.get_items()] == [
+        "source 0",
+        "source 1",
+        "source 2",
+    ]
+    assert db.get_items_digest() == CacheDB.items_digest(db.get_items())
+
+
 def test_cache_manager_in_memory_reset_keeps_assets_and_replaces_items() -> None:
     manager = CacheManager(service = False)
     manager.set_project(_project_with_run_data())
