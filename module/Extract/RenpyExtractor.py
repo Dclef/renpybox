@@ -108,53 +108,31 @@ class RenpyExtractor:
             moved_files = self._temporarily_hide_tool_files(tl_dir)
 
             self.logger.info(f"执行官方抽取: {' '.join(command)}")
-            process = subprocess.Popen(
-                command,
-                cwd=str(project),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            from utils.process_runner import (
+                ProcessRunnerCancelledError,
+                ProcessRunnerTimeoutError,
+                run_process,
             )
-            output_text = ""
-            deadline = time.monotonic() + max(1.0, float(timeout_seconds))
-            while True:
-                if should_stop is not None and should_stop():
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
-                    raise RuntimeError("官方抽取已取消")
-                if time.monotonic() >= deadline:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=5)
-                    raise TimeoutError(
-                        f"官方抽取超时（{int(timeout_seconds)} 秒），最后输出：{output_text[-1000:]}"
-                    )
-                try:
-                    stdout, _ = process.communicate(timeout=0.5)
-                    if stdout:
-                        output_text = stdout
-                        if progress_callback:
-                            progress_callback(stdout[-500:])
-                    break
-                except subprocess.TimeoutExpired as exc:
-                    partial = exc.output or exc.stdout
-                    if partial:
-                        if isinstance(partial, bytes):
-                            partial = partial.decode("utf-8", errors="replace")
-                        output_text = partial
-                        if progress_callback:
-                            progress_callback(str(partial)[-500:])
-            result_stdout = output_text
-            result_returncode = process.returncode
+
+            def _official_output_cb(line: str) -> None:
+                if progress_callback and line.strip():
+                    progress_callback(line[-500:])
+
+            try:
+                result = run_process(
+                    command,
+                    cwd=str(project),
+                    timeout=max(1.0, float(timeout_seconds)),
+                    cancel_check=should_stop,
+                    output_callback=_official_output_cb,
+                )
+            except ProcessRunnerCancelledError:
+                raise RuntimeError("官方抽取已取消")
+            except ProcessRunnerTimeoutError as exc:
+                raise TimeoutError(str(exc)) from exc
+
+            result_stdout = result.stdout or ""
+            result_returncode = result.returncode
         finally:
             self._restore_hidden_files(moved_files)
         if result_stdout:
@@ -682,14 +660,11 @@ class RenpyExtractor:
             return
 
         try:
-            process.terminate()
+            from utils.process_runner import ProcessRunner
+            runner = ProcessRunner()
+            runner._kill_process_tree(process)
         except Exception:
-            return
-
-        try:
-            process.wait(timeout = 2)
-        except Exception:
-            return
+            pass
 
     # 工具生成的脚本/中间文件，不应该被提取或翻译
     HOOK_FILES = {

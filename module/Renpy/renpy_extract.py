@@ -44,6 +44,162 @@ RE_RELAXED_FUNCTION_CALL_PREFIX = re.compile(r'[A-Za-z_][A-Za-z0-9_\.]*\($')
 RE_SHOW_LANG_ATTR = re.compile(r'show_lang\s*=\s*(["\'])(?:\\.|(?!\1).)*\1')
 # ============================================
 
+
+
+# “这个位置一定是显示文本”的组件，不扫任意引号。
+# 组件: text / textbutton / label 的第一个引号参数（支持三引号、u 前缀、转义、续行）。
+RE_PRECISE_UI = re.compile(
+    r"""(?x)
+    \b(?:text|textbutton|label)\s+[uU]?(
+    \"\"\"(?:\\.|\\\n|\"{1,2}|[^\\"])*?\"\"\"
+    |'''(?:\\.|\\\n|\'{1,2}|[^\\'])*?'''
+    |"(?:\\.|\\\n|[^\\"])*"
+    |'(?:\\.|\\\n|[^\\'])*'
+    )\s*
+    """
+)
+# 组件: renpy.input("prompt")
+RE_PRECISE_INPUT = re.compile(
+    r"""(?x)
+    \brenpy\.input\s*\(\s*[uU]?(
+    \"\"\"(?:\\.|\\\n|\"{1,2}|[^\\"])*?\"\"\"
+    |'''(?:\\.|\\\n|\'{1,2}|[^\\'])*?'''
+    |"(?:\\.|\\\n|[^\\"])*"
+    |'(?:\\.|\\\n|[^\\'])*'
+    )\s*\)
+    """
+)
+# 组件: 菜单选项 "caption"（可选参数/if 条件），行尾必须是冒号。
+# 与 collect_static_menu_strings 一致，但这里用于行内精准提取。
+RE_PRECISE_MENU_CHOICE = re.compile(
+    r'^\s*(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)'
+    r'(?P=quote)\s*(?:\([^)]*\))?\s*(?:if\s+.+?)?\s*:\s*(?:#.*)?$'
+)
+
+# 标点/数字/符号集合：剥掉后为空则说明没有实质可翻译文本（projz is_translatable 思路）
+_PRECISE_NOISE_CHARS = set(
+    '1234567890+-*=_(&^%$#@!`~<,>.?/:;"\'|\\}]{['
+    '【】“”、；：？《，》。！￥（）—\t \a\r\n\b\f\v\0…·'
+)
+
+
+def _precise_is_translatable(text: str) -> bool:
+    """剥掉标点数字后仍存在实质字符才视为可翻译（projz is_translatable 的移植）。"""
+    if not text:
+        return False
+    s = text.strip()
+    if s.startswith('[') and s.endswith(']'):
+        return False
+    has_real = False
+    for ch in s:
+        if ch not in _PRECISE_NOISE_CHARS:
+            has_real = True
+            break
+    if not has_real:
+        return False
+    # 剥光噪音字符后为空也不翻译
+    stripped = ''.join(ch for ch in s if ch not in _PRECISE_NOISE_CHARS).strip()
+    return bool(stripped)
+
+
+def _precise_unquote(raw: str) -> str | None:
+    """把带引号的字面量解码成文本；失败返回 None。
+
+    优先 ast.literal_eval（正确处理转义与三引号），失败则做简单去引号。
+    """
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    # 处理续行符
+    s = s.replace('\\\n', '')
+    try:
+        value = ast.literal_eval(s)
+        if isinstance(value, str):
+            return value
+    except Exception:
+        pass
+    # 简单去引号兜底
+    if len(s) >= 2 and s[0] in '"\'' and s[-1] == s[0]:
+        inner = s[1:-1]
+        inner = inner.replace('\\' + s[0], s[0]).replace('\\\\', '\\')
+        return inner
+    return None
+
+
+def extract_precise_from_lines(lines, *, filter_length: int = 4) -> set[str]:
+    """projz 式精准补充扫描：只收集定向 UI/输入/菜单文本。
+
+    - text / textbutton / label 的首个引号参数
+    - renpy.input(...) 的首个引号参数
+    - 菜单选项行 "caption": （带可选参数/if 条件）
+    - renpy.notify("...")
+
+    不扫任意函数参数、不扫字典字段、不做宽松英文行补抓——
+    这些漏网文本由运行时 replace_text 补漏流程兜底。
+    """
+    results: set[str] = set()
+
+    def _maybe_add(text: str) -> None:
+        if text is None:
+            return
+        t = text.strip()
+        if not t:
+            return
+        if not _precise_is_translatable(t):
+            return
+        if should_skip_text(t):
+            return
+        if is_path_or_dir_string(t) or is_resource_name(t):
+            return
+        # 技术插值 [var.attr] 不是静态文本
+        if re.search(r'\[\s*\w+\.\w+.*?\]', t):
+            return
+        results.add(t)
+
+    for line_content, _start in merge_string_literal_continuations(lines):
+        stripped = line_content.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        # 剔除 show_lang 属性（原语言教学辅助文本，不显示）
+        if 'show_lang=' in line_content:
+            line_content = RE_SHOW_LANG_ATTR.sub('', line_content)
+            stripped = line_content.strip()
+            if not stripped:
+                continue
+
+        # 1) 菜单选项（整行匹配，行尾必须是冒号）
+        menu_match = RE_PRECISE_MENU_CHOICE.match(line_content)
+        if menu_match:
+            _maybe_add(_precise_unquote(menu_match.group('quote') + menu_match.group('text') + menu_match.group('quote')))
+
+        # 2) text / textbutton / label
+        for m in RE_PRECISE_UI.finditer(line_content):
+            _maybe_add(_precise_unquote(m.group(1)))
+
+        # 3) renpy.input(...)
+        for m in RE_PRECISE_INPUT.finditer(line_content):
+            _maybe_add(_precise_unquote(m.group(1)))
+
+        # 4) renpy.notify(...)
+        for m in RE_RENPY_NOTIFY.finditer(line_content):
+            _maybe_add(_precise_unquote('"' + m.group(1) + '"'))
+
+    return results
+
+
+def extract_precise_from_file(p, filter_length: int = 4, *, source_content=None, should_stop=None):
+    """读取单个 .rpy 文件并做精准补充扫描。"""
+    _check_cancel(should_stop)
+    if source_content is None:
+        with io.open(p, 'r', encoding='utf-8') as f:
+            source_content = f.read()
+    return extract_precise_from_lines(source_content.split('\n'), filter_length=filter_length)
+
+
+# ========== 精准扫描结束 ==========
+
 # 检测字符串是否包含中文字符（或其他CJK字符）
 def contains_cjk(s):
     """检测字符串是否包含中日韩文字符"""
@@ -1019,7 +1175,7 @@ def CreateEmptyFileIfNotExsit(p):
                 open(target, 'w').close()
 
 
-def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty, is_skip_underline, is_py2, *, should_stop=None, progress_callback=None, official_coverage=True):
+def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty, is_skip_underline, is_py2, *, should_stop=None, progress_callback=None, official_coverage=True, precise=False):
     from module.Config import Config
     config = Config().load()
     preserve_set = set()
@@ -1054,11 +1210,18 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
         if is_builtin_ui_file(str(source_file)):
             continue
         source_content = source_file.read_text(encoding="utf-8", errors="replace")
-        extracted = ExtractFromFile(
-            str(source_file), is_open_filter, filter_length, is_skip_underline,
-            is_py2, True, remove_duplicates=False,
-            source_content=source_content, should_stop=should_stop,
-        )
+        if precise:
+            # projz 式精准补充：只收集定向 UI/输入/菜单/notify 文本
+            extracted = extract_precise_from_lines(
+                source_content.splitlines(),
+                filter_length=filter_length,
+            )
+        else:
+            extracted = ExtractFromFile(
+                str(source_file), is_open_filter, filter_length, is_skip_underline,
+                is_py2, True, remove_duplicates=False,
+                source_content=source_content, should_stop=should_stop,
+            )
         dialogue = dialogue_by_file.get(relative.as_posix(), set())
         occurrences = source_occurrence_kinds(source_content.splitlines()) if dialogue else {}
         entries = sorted(
@@ -1365,8 +1528,12 @@ def _merge_adjacent_literals_in_line(line):
     return result
 
 
-def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False, *, should_stop=None):
-    """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。"""
+def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4, is_skip_underline=False, *, should_stop=None, precise=False):
+    """收集可写入 translate strings 的静态源码文本，同文仅保留排序后的首次出现。
+
+    precise=True 时使用 projz 式定向精准扫描，只抓 text/textbutton/label/
+    renpy.input/菜单/notify，不再宽扫任意引号，显著降低误抽。
+    """
     from pathlib import Path
 
     root = Path(game_dir)
@@ -1388,11 +1555,17 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
         try:
             # 源码扫描不可调用带写入前处理的旧接口，避免修改游戏原文。
             source_content = source_file.read_text(encoding="utf-8", errors="replace")
-            extracted_texts = ExtractFromFile(
-                str(source_file), is_open_filter, filter_length, is_skip_underline,
-                is_py2, True, False,
-                source_content=source_content, should_stop=should_stop,
-            )
+            if precise:
+                extracted_texts = extract_precise_from_lines(
+                    source_content.splitlines(),
+                    filter_length=filter_length,
+                )
+            else:
+                extracted_texts = ExtractFromFile(
+                    str(source_file), is_open_filter, filter_length, is_skip_underline,
+                    is_py2, True, False,
+                    source_content=source_content, should_stop=should_stop,
+                )
         except ExtractionCancelled:
             raise
         except Exception:
@@ -1436,7 +1609,7 @@ def collect_static_source_strings(game_dir, is_open_filter=True, filter_length=4
 
 def ExtractAllFilesInDir(
     dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline,
-    should_stop=None, progress_callback=None, official_coverage=True,
+    should_stop=None, progress_callback=None, official_coverage=True, precise=False,
 ):
     _check_cancel(should_stop)
     is_py2 = is_python2_from_game_dir(dirName + '/../../../')
@@ -1444,7 +1617,7 @@ def ExtractAllFilesInDir(
     WriteExtracted(
         dirName, set(), is_open_filter, filter_length, is_gen_empty, is_skip_underline,
         is_py2, should_stop=should_stop, progress_callback=progress_callback,
-        official_coverage=official_coverage,
+        official_coverage=official_coverage, precise=precise,
     )
     log.info('start removing repeated extraction, please waiting...')
     _check_cancel(should_stop)

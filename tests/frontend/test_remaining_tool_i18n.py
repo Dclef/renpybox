@@ -61,7 +61,7 @@ def test_remaining_asset_and_engineering_tools_use_english_copy(monkeypatch) -> 
         assert "Honorific Variable Bridge" in texts
         assert "Batch Corrections" in texts
         assert "Name Extraction" in texts
-        assert "HTML Import / Conversion" in texts
+        assert "Web / AI Translation Wizard" in texts
         assert pages[1].game_dir_edit.placeholderText() == (
             "Select game/tl/<language> or a folder containing generated .rpy files"
         )
