@@ -13,6 +13,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from update_integrity import validate_installed_files
 from update_path_policy import (
     safe_target,
     safe_target_cached,
@@ -164,6 +165,7 @@ def _copy2_with_retry(src: Path, dst: Path, *, retries: int = 5, delay_sec: floa
             # 仅在首次尝试时创建目录
             if i == 0:
                 dst.parent.mkdir(parents=True, exist_ok=True)
+            _ensure_writable(dst)
             shutil.copy2(src, dst)
             return
         except Exception as exc:
@@ -390,12 +392,29 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 
 
 def _ensure_writable(path: Path) -> None:
-    """PyInstaller 产物偶见只读属性，替换前先清掉，否则 os.replace 会失败。"""
-    try:
-        if path.exists() and not os.access(path, os.W_OK):
-            os.chmod(path, stat_module.S_IWRITE)
-    except Exception:
-        pass
+    """清除旧安装文件阻碍覆盖的属性，兼容历史包的隐藏、系统及只读标记。"""
+    if not path.exists():
+        return
+    if os.name == "nt":
+        attributes = path.stat().st_file_attributes
+        blocked = (
+            stat_module.FILE_ATTRIBUTE_READONLY
+            | stat_module.FILE_ATTRIBUTE_HIDDEN
+            | stat_module.FILE_ATTRIBUTE_SYSTEM
+        )
+        if attributes & blocked:
+            import ctypes
+            from ctypes import wintypes
+
+            # chmod 只能清除只读；隐藏/系统文件仍会让 copy2 报权限错误。
+            set_attributes = ctypes.WinDLL("kernel32", use_last_error=True).SetFileAttributesW
+            set_attributes.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+            set_attributes.restype = wintypes.BOOL
+            writable = attributes & ~blocked
+            if not set_attributes(str(path), writable or stat_module.FILE_ATTRIBUTE_NORMAL):
+                raise ctypes.WinError(ctypes.get_last_error())
+    elif not os.access(path, os.W_OK):
+        os.chmod(path, stat_module.S_IWRITE)
 
 
 def _cleanup_old_executables(install_dir: Path) -> None:
@@ -728,6 +747,12 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
     if _zip_toplevel_has(zip_path, PATCH_META_NAME):
         patch_meta = _read_patch_meta(zip_path)
         _validate_patch_base_manifest(install_dir.resolve(), patch_meta)
+        if exe_name not in patch_meta["manifest"]["files"]:
+            raise RuntimeError(f"增量包缺少主程序清单：{exe_name}")
+        # 下载后、主程序退出后再次检查；已提交的补丁文件允许在恢复时重放。
+        validate_installed_files(
+            install_dir, patch_meta["manifest"], replaced=tuple(patch_meta["files"])
+        )
         _cleanup_old_executables(install_dir)
         try:
             log_dir.mkdir(parents = True, exist_ok = True)

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import importlib
 import sys
 from pathlib import Path
@@ -415,7 +416,8 @@ def _release_with_assets(*asset_names: str, version: str = "v2.0.0") -> dict:
     }
 
 
-def test_select_download_asset_always_uses_full_package(monkeypatch) -> None:
+def test_select_download_asset_uses_full_package_in_source_mode(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
     latest = _release_with_assets(
         "RenpyBox_v2.0.0.zip",
         "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
@@ -454,3 +456,39 @@ def test_select_download_asset_rejects_missing_versioned_full_zip(monkeypatch) -
 
     with pytest.raises(RuntimeError, match="RenpyBox_v2.0.0.zip"):
         VersionManager._select_download_asset(latest)
+
+
+@pytest.mark.parametrize("state", ["intact", "missing", "modified", "bad_manifest", "old_version", "journal", "large_patch"])
+def test_patch_selection_requires_complete_matching_installation(monkeypatch, tmp_path, state):
+    from base.Version import Version
+    from buildtools.update_assets import build_manifest
+
+    install = tmp_path / "install"
+    install.mkdir()
+    exe = install / "RenpyBox.exe"
+    exe.write_bytes(b"EXE")
+    dependency = install / "dependency.dll"
+    dependency.write_bytes(b"dependency")
+    manifest = build_manifest(install, "v1.0.0")
+    if state == "missing":
+        dependency.unlink()
+    elif state == "modified":
+        dependency.write_bytes(b"DEPENDENCY")
+    elif state == "bad_manifest":
+        manifest["files"]["dependency.dll"] = {}
+    elif state == "old_version":
+        manifest["version"] = "v0.9.0"
+    elif state == "journal":
+        (install / "_update_journal.json").write_text("{}", encoding="utf-8")
+    (install / "_update_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(Version, "CURRENT", "v1.0.0")
+    latest = _release_with_assets(
+        "RenpyBox_v2.0.0.zip", "RenpyBox_v2.0.0.from-v1.0.0.patch.zip",
+    )
+    latest["assets"][0]["size"] = 100
+    latest["assets"][1]["size"] = 100 if state == "large_patch" else 10
+    selected = VersionManager._select_download_asset(latest)
+    expected = latest["assets"][1 if state == "intact" else 0]
+    assert selected == expected
