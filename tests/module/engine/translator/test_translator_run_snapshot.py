@@ -96,6 +96,24 @@ def test_translation_progress_merges_runtime_metrics() -> None:
     assert progress["recent_items"] == [{"id": "#4"}]
 
 
+def test_task_usage_fallback_estimates_missing_stream_usage() -> None:
+    from module.Engine.Translator.TranslatorTask import TranslatorTask
+
+    messages = [{"role": "user", "content": "Translate this line"}]
+
+    result = TranslatorTask._fill_missing_usage_tokens(
+        messages,
+        (False, "", "翻译结果", 0, 0),
+    )
+
+    assert result[3] > 0
+    assert result[4] > 0
+    assert TranslatorTask._fill_missing_usage_tokens(
+        messages,
+        (False, "", "翻译结果", 11, 7),
+    )[3:] == (11, 7)
+
+
 def test_verify_uppercase_untranslated_only_excludes_double_unchanged(
     tmp_path, monkeypatch
 ) -> None:

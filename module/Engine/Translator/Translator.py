@@ -8,7 +8,6 @@ import time
 import webbrowser
 from itertools import zip_longest
 
-import httpx
 from rich.progress import TaskID
 
 from base.Base import Base
@@ -18,7 +17,7 @@ from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskLimiter import TaskLimiter
-from module.Engine.TaskRequester import TaskRequester
+from module.Engine.TaskRequester import TaskRequester, httpx
 from module.Engine.TranslationMetrics import TranslationMetrics
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
@@ -28,7 +27,6 @@ from module.Engine.Translator.TranslationTaskContext import (
     TranslationTaskContext,
 )
 from module.Engine.Translator.TranslatorTask import TranslatorTask
-from module.File.FileManager import FileManager
 from module.Filter.LanguageFilter import LanguageFilter
 from module.Filter.RuleFilter import RuleFilter
 from module.Localizer.Localizer import Localizer
@@ -57,6 +55,8 @@ class Translator(Base):
     STOP_WAIT_POLL: float = 0.1
     # watcher 超时后的残留线程清理也必须有上限，避免全局取消标记永久保留。
     CANCEL_CLEANUP_TIMEOUT: float = 30.0
+    # 大项目初始化会连续处理十万级条目；周期性让出 GIL，避免 UI 刷新被挤住。
+    PREPARE_YIELD_INTERVAL: int = 512
 
     def __init__(self) -> None:
         super().__init__()
@@ -79,7 +79,10 @@ class Translator(Base):
         self._translation_run_id: int = 0
         self._active_request_id: str = ""
         self._active_run_cancel_event: threading.Event | None = None
+        self._active_task_run_id: int | None = None
+        self._active_task_count: int = 0
         self._run_context = threading.local()
+        Engine.get().translator = self
 
         # 注册事件
         self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
@@ -282,6 +285,55 @@ class Translator(Base):
         except Exception:
             pass
 
+    def get_active_task_count(self) -> int:
+        """返回当前翻译 run 的活动任务数，忽略旧 run 残留线程。"""
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != getattr(
+                self,
+                "_translation_run_id",
+                0,
+            ):
+                return 0
+            return max(0, int(getattr(self, "_active_task_count", 0) or 0))
+
+    def _active_task_run_key(self, run_id: int | None) -> int:
+        if run_id is not None:
+            return run_id
+        return int(getattr(self, "_translation_run_id", 0) or 0)
+
+    def _reset_active_task_count(self, run_id: int | None) -> None:
+        with self.data_lock:
+            self._active_task_run_id = self._active_task_run_key(run_id)
+            self._active_task_count = 0
+
+    def _track_active_future(
+        self,
+        future: concurrent.futures.Future,
+        run_id: int | None,
+    ) -> None:
+        active_run_id = self._active_task_run_key(run_id)
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != active_run_id:
+                self._active_task_run_id = active_run_id
+                self._active_task_count = 0
+            self._active_task_count = (
+                max(0, int(getattr(self, "_active_task_count", 0) or 0)) + 1
+            )
+        future.add_done_callback(
+            lambda _future, current_run_id = active_run_id: self._finish_active_future(
+                current_run_id
+            )
+        )
+
+    def _finish_active_future(self, run_id: int) -> None:
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != run_id:
+                return
+            self._active_task_count = max(
+                0,
+                int(getattr(self, "_active_task_count", 0) or 0) - 1,
+            )
+
     def _is_translation_run_current(self, run_id: int | None) -> bool:
         """判断回调/线程是否仍属于当前翻译代次。"""
         if run_id is None:
@@ -339,6 +391,20 @@ class Translator(Base):
         if self._should_stop_requested():
             raise TranslationCancelled()
 
+    def _yield_prepare_slice(
+        self,
+        index: int,
+        run_id: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """大项目准备阶段分片让出执行权，保持 Qt 主线程可刷新。"""
+        if index <= 0 or index % __class__.PREPARE_YIELD_INTERVAL != 0:
+            return not self._should_stop_requested(run_id, cancel_event)
+        if self._should_stop_requested(run_id, cancel_event):
+            return False
+        time.sleep(0)
+        return not self._should_stop_requested(run_id, cancel_event)
+
     # 翻译开始事件
     def translation_start(self, event: str, data: dict) -> None:
         data = data if isinstance(data, dict) else {}
@@ -376,6 +442,8 @@ class Translator(Base):
                 self._active_request_id = request_id
                 run_cancel_event = threading.Event()
                 self._active_run_cancel_event = run_cancel_event
+                self._active_task_run_id = run_id
+                self._active_task_count = 0
                 self._translation_run_initialized = False
                 self._active_cache_output_folder = ""
                 thread = threading.Thread(
@@ -493,6 +561,8 @@ class Translator(Base):
 
             self.info(f"[REINJECT] 从缓存写入译文文件：{output_folder} (items={len(items)})")
             try:
+                from module.File.FileManager import FileManager
+
                 FileManager(config).write_to_path(items)
             except Exception as exc:
                 # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
@@ -842,6 +912,8 @@ class Translator(Base):
             "phase": "preparing",
             "message": "正在读取翻译输入目录…",
         })
+        from module.File.FileManager import FileManager
+
         fresh_project, items = FileManager(current_config).read_from_path()
         self.info(f"[INIT] 输入目录读取完成: 条目 {len(items)} 行")
         self._raise_if_stop_requested()
@@ -858,21 +930,23 @@ class Translator(Base):
         context = self._build_task_context(current_config, assets, current_platform)
         self._run_asset_preflight(context, data, current_config)
         self._raise_if_stop_requested()
-        cached_line_count = sum(
-            1
-            for item in items
-            if Base.is_item_completed(item.get_status())
-        )
+        cached_line_count = 0
+        untranslated_line_count = 0
+        for index, item in enumerate(items, 1):
+            if not self._yield_prepare_slice(index):
+                raise TranslationCancelled()
+            status = item.get_status()
+            if Base.is_item_completed(status):
+                cached_line_count += 1
+            elif status == Base.TranslationStatus.UNTRANSLATED:
+                untranslated_line_count += 1
         progress = self._new_progress_extras(
-            sum(
-                1
-                for item in items
-                if item.get_status() == Base.TranslationStatus.UNTRANSLATED
-            ),
+            untranslated_line_count,
             cached_line_count = cached_line_count,
         )
         self._raise_if_stop_requested()
         self.emit(Base.Event.TRANSLATION_UPDATE, {
+            **progress,
             "phase": "preparing",
             "message": "正在写入翻译缓存…",
         })
@@ -1257,6 +1331,8 @@ class Translator(Base):
             elif engine_status != Engine.Status.TRANSLATING:
                 return None
 
+            self._reset_active_task_count(run_id)
+
             # 预处理提示（解析/生成任务阶段）
             self.emit(Base.Event.TRANSLATION_UPDATE, {
                 "phase": "preparing",
@@ -1502,10 +1578,15 @@ class Translator(Base):
                     self.print("")
 
                 # 开始执行翻译任务
+                source_budget = (
+                    f"{round_source_token_limit} token"
+                    if round_source_token_limit
+                    else "自动（仅按行数切分）"
+                )
                 self.info(
                     f"[BATCH] 每批最多 {chunk_line_threshold} 行，原文预算 "
-                    f"{round_source_token_limit or max(64, chunk_line_threshold * 16)} token，"
-                    f"输出预算 {TaskRequester.resolve_output_token_limit(self.config, self.platform)} token，"
+                    f"{source_budget}，输出预算 "
+                    f"{TaskRequester.resolve_output_token_limit(self.config, self.platform)} token，"
                     f"并发 {max_workers}"
                 )
                 submitted_batches = submitted_items = 0
@@ -1575,6 +1656,7 @@ class Translator(Base):
                                     run_id,
                                     cancel_event,
                                 )
+                                self._track_active_future(future, run_id)
                             except RuntimeError:
                                 task_limiter.release()
                                 stopping = True
@@ -1822,7 +1904,9 @@ class Translator(Base):
         """Complete unchanged cached items explicitly allowed by validation."""
         checker = ResponseChecker(self.config, items)
         accepted = 0
-        for item in items:
+        for index, item in enumerate(items, 1):
+            if not self._yield_prepare_slice(index):
+                return accepted
             if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
                 continue
             src = str(item.get_src() or "")
@@ -1958,8 +2042,8 @@ class Translator(Base):
         count: int = 0
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if RuleFilter.filter(item.get_src()) == True:
@@ -1979,8 +2063,8 @@ class Translator(Base):
         count: int = 0
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if LanguageFilter.filter(item.get_src(), self.config.source_language) == True:
@@ -2001,8 +2085,8 @@ class Translator(Base):
         items_kvjson: list[CacheItem] = []
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if item.get_file_type() == CacheItem.FileType.KVJSON:
@@ -2079,6 +2163,8 @@ class Translator(Base):
         # 写回失败时 write_to_path 会抛出，但兜底注入仍要按写回报告尝试一次，
         # 之后再把原始异常抛给调用方，保证失败不会被静默吞掉。
         try:
+            from module.File.FileManager import FileManager
+
             FileManager(self.config).write_to_path(items)
         except Exception:
             self._auto_reinject_on_writeback_fail(items)
@@ -2129,6 +2215,8 @@ class Translator(Base):
             cache_manager = CacheManager(service = False)
             cache_manager.load_items_from_file(self.config.output_folder)
             reinject_items = cache_manager.get_items()
+            from module.File.FileManager import FileManager
+
             FileManager(reinject_config).write_to_path(reinject_items)
             self.info(f"[REINJECT] 自动注入完成：{self.config.output_folder}")
         except Exception as exc:
