@@ -331,7 +331,7 @@ TOOL_SPECS = (
         ENGINEER,
         object_name="html-import",
         icon=ToolIcon.HTML,
-        keywords=("html", "txt", "excel", "导入", "导出", "convert"),
+        keywords=("html", "txt", "excel", "翻译", "向导", "网页", "AI", "translate", "wizard"),
         lazy_import="frontend.RenpyToolbox.HtmlImportPage:HtmlImportPage",
     ),
     ToolSpec(

@@ -647,6 +647,32 @@ class YiJianFanyiPage(Base, QWidget):
         )
         options_layout.addWidget(self.verify_uppercase_chk)
 
+        # 补充抽取模式：off=仅官方；precise=定向精准扫（默认，低误报）；aggressive=旧宽扫描
+        supplement_row = QHBoxLayout()
+        supplement_row.setContentsMargins(0, 0, 0, 0)
+        supplement_row.setSpacing(8)
+        supplement_row.addWidget(CaptionLabel(Localizer.get().onekey_supplement_mode))
+        self.supplement_mode_combo = ComboBox()
+        self.supplement_mode_combo.addItem(
+            Localizer.get().onekey_supplement_mode_off, userData="off"
+        )
+        self.supplement_mode_combo.addItem(
+            Localizer.get().onekey_supplement_mode_precise, userData="precise"
+        )
+        self.supplement_mode_combo.addItem(
+            Localizer.get().onekey_supplement_mode_aggressive, userData="aggressive"
+        )
+        _mode = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower()
+        _mode_index = {"off": 0, "precise": 1, "aggressive": 2}.get(_mode, 1)
+        self.supplement_mode_combo.setCurrentIndex(_mode_index)
+        self.supplement_mode_combo.setToolTip(Localizer.get().onekey_supplement_mode_tooltip)
+        self.supplement_mode_combo.currentIndexChanged.connect(
+            self._on_supplement_mode_changed
+        )
+        supplement_row.addWidget(self.supplement_mode_combo)
+        supplement_row.addStretch(1)
+        options_layout.addLayout(supplement_row)
+
         self.clear_declined_btn = PushButton(
             Localizer.get().onekey_clear_skipped_candidates,
             icon=FluentIcon.DELETE,
@@ -855,6 +881,16 @@ class YiJianFanyiPage(Base, QWidget):
         from module.Config import Config
         config = Config().load()
         config.onekey_inject_base_box = bool(state)
+        config.save()
+
+    def _on_supplement_mode_changed(self, _index: int) -> None:
+        """保存补充抽取模式（off / precise / aggressive），off 同时关闭 extract_use_custom。"""
+        from module.Config import Config
+        config = Config().load()
+        mode = self.supplement_mode_combo.currentData() or "precise"
+        config.extract_supplement_mode = mode
+        # off 表示“仅官方抽取”，同步关闭补充抽取总开关；其余模式确保补充开启。
+        config.extract_use_custom = mode != "off"
         config.save()
 
     def _sync_game_dir_to_config(self, game_dir):

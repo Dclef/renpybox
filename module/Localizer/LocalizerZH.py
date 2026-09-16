@@ -1480,6 +1480,15 @@ class LocalizerZH():
         '自动注入预置的 UI 翻译（开始、保存、设置等）。\n如果你已有自定义 UI 翻译，请取消勾选。'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = '对未翻译的大写缩写做二次确认（会额外消耗额度）'
+    onekey_supplement_mode: str = '补充抽取模式:'
+    onekey_supplement_mode_off: str = '仅官方抽取'
+    onekey_supplement_mode_precise: str = '精准（低误报）'
+    onekey_supplement_mode_aggressive: str = '宽扫描（高覆盖）'
+    onekey_supplement_mode_tooltip: str = (
+        '仅官方：不跑补充抽取，只保留官方 translate 结果；\n'
+        '精准：只抓 text/textbutton/label/renpy.input/菜单/notify，几乎零误报；\n'
+        '宽扫描：扫描任意引号文本，覆盖更广但可能误抽代码字符串'
+    )
     onekey_clear_skipped_candidates: str = '清除判定不译清单'
     onekey_click_extract_text_begin_existing_translations_preserved: str = '直接点击“开始提取文本”即可，完成后进入翻译。如果已有翻译，默认会保留。'
     onekey_skip_extraction_translate: str = '跳过抽取，直接翻译 →'
@@ -2179,8 +2188,8 @@ class LocalizerZH():
     toolbox_tool_formatter_description: str = '格式化 .rpy 文件'
     toolbox_tool_android_build_title: str = '安卓打包'
     toolbox_tool_android_build_description: str = '安装 SDK、生成签名并构建 APK'
-    toolbox_tool_html_import_title: str = 'HTML 导入'
-    toolbox_tool_html_import_description: str = '在 HTML、TXT 与 Excel 之间转换翻译文本'
+    toolbox_tool_html_import_title: str = '网页 / AI 翻译向导'
+    toolbox_tool_html_import_description: str = '把 TL 目录变成 TXT，交给 AI 或网页翻译，再一键回填'
     toolbox_tool_game_mod_title: str = '游戏模组注入'
     toolbox_tool_game_mod_description: str = '注入画廊解锁、修改器等通用模组'
 

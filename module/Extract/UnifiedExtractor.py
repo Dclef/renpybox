@@ -1474,17 +1474,30 @@ class UnifiedExtractor:
                 tl_dir.mkdir(parents=True, exist_ok=True)
                 # ExtractAllFilesInDir(dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline)
                 # 放宽长度过滤，减少 UI 短词漏提取
+                _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
                 self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
                     str(tl_dir), True, 4, False, True,
                     should_stop=self._is_cancelled,
                     progress_callback=lambda message: self._emit_progress(str(message), 50),
                     official_coverage=self.official_extraction_status == "succeeded",
+                    precise=_precise,
                 )
             else:
                 self.logger.info("根据配置跳过补充抽取阶段")
-            
+
             # 4. 静态补充抽取：把官方/自定义流程仍可能漏掉的源码文本写入标准 TL。
-            self._append_static_supplement_entries(game_dir, tl_dir, tl_name)
+            # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
+            if allow_custom:
+                _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                _static_candidates = self._call_with_optional_callbacks(
+                    rx.collect_static_source_strings, game_dir,
+                    should_stop=self._is_cancelled, precise=_precise_static,
+                )
+                self._append_static_supplement_entries(
+                    game_dir, tl_dir, tl_name, candidates=_static_candidates,
+                )
+            else:
+                self.logger.info("根据配置跳过静态补充抽取阶段")
 
             # 5. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
@@ -1687,11 +1700,13 @@ class UnifiedExtractor:
                     if allow_custom:
                         self._emit_progress("正在执行补充抽取...", 50)
                         try:
+                            _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
                             self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
                                 str(tl_dir), True, 4, False, True,
                                 should_stop=self._is_cancelled,
                                 progress_callback=lambda message: self._emit_progress(str(message), 50),
                                 official_coverage=official_succeeded,
+                                precise=_precise,
                             )
                         except Exception as e:
                             self._check_cancel()
@@ -1715,19 +1730,25 @@ class UnifiedExtractor:
                     _relocate_dir(temp_backup_dir, tl_dir, remove_src=True)
                 
                 # 静态源码文本必须写入标准 TL，不交给 replace_text。
-                static_candidates = self._call_with_optional_callbacks(
-                    rx.collect_static_source_strings, game_dir, should_stop=self._is_cancelled
-                )
-                menu_candidates = set(self._call_with_optional_callbacks(
-                    rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
-                ))
-                static_added = self._append_static_supplement_entries(
-                    game_dir,
-                    temp_tl_dir,
-                    tl_name,
-                    candidates=static_candidates,
-                    menu_candidates=menu_candidates,
-                )
+                # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
+                if allow_custom:
+                    _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                    static_candidates = self._call_with_optional_callbacks(
+                        rx.collect_static_source_strings, game_dir,
+                        should_stop=self._is_cancelled, precise=_precise_static,
+                    )
+                    menu_candidates = set(self._call_with_optional_callbacks(
+                        rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
+                    ))
+                    static_added = self._append_static_supplement_entries(
+                        game_dir,
+                        temp_tl_dir,
+                        tl_name,
+                        candidates=static_candidates,
+                        menu_candidates=menu_candidates,
+                    )
+                else:
+                    static_added = 0
                 # 6. strings 与编号翻译块分别计算增量。
                 extracted_block_originals: Set[str] = set()
                 new_extracted_string_originals = self._get_string_originals(

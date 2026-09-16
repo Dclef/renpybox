@@ -1544,6 +1544,15 @@ class LocalizerEN(LocalizerZH):
         ' if the game already has custom UI translations.'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = 'Review untranslated uppercase abbreviations (uses additional quota)'
+    onekey_supplement_mode: str = 'Supplemental extraction:'
+    onekey_supplement_mode_off: str = 'Official only'
+    onekey_supplement_mode_precise: str = 'Precise (low false positives)'
+    onekey_supplement_mode_aggressive: str = 'Broad (high coverage)'
+    onekey_supplement_mode_tooltip: str = (
+        'Official only: skip supplemental extraction, keep only official translate results.\n'
+        'Precise: only captures text/textbutton/label/renpy.input/menu/notify, almost zero false positives.\n'
+        'Broad: scans any quoted text, wider coverage but may capture code strings.'
+    )
     onekey_clear_skipped_candidates: str = 'Clear skipped candidates'
     onekey_click_extract_text_begin_existing_translations_preserved: str = 'Click Extract Text to begin. Existing translations are preserved by default.'
     onekey_skip_extraction_translate: str = 'Skip extraction and translate →'
@@ -2280,8 +2289,8 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_formatter_description: str = 'Format .rpy files'
     toolbox_tool_android_build_title: str = 'Android Build'
     toolbox_tool_android_build_description: str = 'Install the SDK, generate signing keys, and build an APK'
-    toolbox_tool_html_import_title: str = 'HTML Import'
-    toolbox_tool_html_import_description: str = 'Convert translation text among HTML, TXT, and Excel'
+    toolbox_tool_html_import_title: str = 'Web / AI Translation Wizard'
+    toolbox_tool_html_import_description: str = 'Turn a TL folder into TXT, translate it with AI or web, then write it back'
     toolbox_tool_game_mod_title: str = 'Game Mod Injection'
     toolbox_tool_game_mod_description: str = 'Inject common mods such as gallery unlockers and utilities'
 

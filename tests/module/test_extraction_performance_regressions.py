@@ -24,7 +24,10 @@ def config_for_extraction(monkeypatch, *, official=True, custom=True):
 
 
 def test_supplement_skips_only_dialogue_occurrences_and_keeps_source_readonly(tmp_path, monkeypatch):
-    config_for_extraction(monkeypatch)
+    config = config_for_extraction(monkeypatch)
+    # 该用例断言“任意函数调用里的同文文本”也能被补充抽取兜底——属于宽扫描语义，
+    # 精准模式（默认）不会抓 custom_display(...)，因此显式切到 aggressive。
+    config.extract_supplement_mode = "aggressive"
     source = tmp_path / "game" / "script.rpy"
     source.parent.mkdir()
     source.write_text(
@@ -65,7 +68,10 @@ def test_supplement_skips_only_dialogue_occurrences_and_keeps_source_readonly(tm
 
 
 def test_failed_official_extract_keeps_broad_incremental_candidates(tmp_path, monkeypatch):
-    config_for_extraction(monkeypatch)
+    config = config_for_extraction(monkeypatch)
+    # 该用例断言“任意函数调用里的文本”也能被补充抽取兜底——属于宽扫描语义，
+    # 精准模式（默认）不会抓 unknown_display，因此显式切到 aggressive。
+    config.extract_supplement_mode = "aggressive"
     source = tmp_path / "game" / "script.rpy"
     source.parent.mkdir()
     source.write_text('python:\n    unknown_display("A previously unknown display.")\n', encoding="utf-8")
