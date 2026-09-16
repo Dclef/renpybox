@@ -19,6 +19,7 @@
 - RenpyBox：PyQt + Fluent UI 打造的 Ren'Py 本地化工具箱，提取、翻译、修复、打包于一体的Ren'Py 专用翻译解决方案
 - 目标用户：视觉小说开发者、同人翻译组、Ren'Py翻译者
 - **建议使用[硅基流动](https://cloud.siliconflow.cn/i/Cvmvkm5d) 进行翻译**
+<img width="1600" height="1000" alt="Snipaste_2026-09-17_01-37-49" src="https://github.com/user-attachments/assets/e3a0afb2-90bf-4b84-8929-46f749651532" />
 
 
 ## 特别说明 ⚠️
