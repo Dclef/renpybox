@@ -35,10 +35,10 @@ def test_balanced_throughput_button_only_changes_three_budgets(tmp_path, monkeyp
         page.balanced_throughput_button.click()
         app.processEvents()
         after = dataclasses.asdict(Config().load())
-        expected = dict(before, token_threshold=20, max_batch_source_tokens=1024, max_output_tokens=0)
+        expected = dict(before, token_threshold=20, max_batch_source_tokens=0, max_output_tokens=0)
         assert after == expected
         assert page._token_threshold_spin.value() == 20
-        assert page._max_batch_source_tokens_spin.value() == 1024
+        assert page._max_batch_source_tokens_spin.value() == 0
         assert page._max_output_tokens_spin.value() == 0
 
         page._max_batch_source_tokens_spin.setValue(2048)

@@ -195,8 +195,10 @@ def test_unren_rpatool_handles_single_archive_after_loader_reindex(tmp_path) -> 
         def index_archives(self):
             self.archives = [("archive", {"script.rpyc": [(0, 0)]})]
 
+    config = ConfigStub()
     archive = module["RenPyArchive"](
-        str(archive_path), 1, ConfigStub(), LoaderStub()
+        str(archive_path), 1, config, LoaderStub()
     )
 
     assert archive.list() == ["script.rpyc"]
+    assert config.archives == [str(archive_path.with_suffix(""))]
