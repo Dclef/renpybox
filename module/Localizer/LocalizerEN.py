@@ -114,7 +114,11 @@ class LocalizerEN(LocalizerZH):
     translation_page_stat_average: str = "Average"
     translation_page_stat_batches: str = "Batches"
     translation_page_stat_cache_hit: str = "Existing translations"
-    translation_page_stat_latency: str = "Latency"
+    translation_page_stat_latency: str = "Mean request time"
+    translation_page_stat_effective: str = "Effective throughput"
+    translation_page_stat_request_p95: str = "Request P95"
+    translation_page_effective_rate: str = "{RATE:.1f} items/min"
+    translation_page_timing_help: str = "New valid translations: {COUNT} (excludes cached, excluded and unchanged items)\nLogical requests: {REQUESTS}; observed HTTP attempts: {HTTP}\nRequest P50: {P50} ms; first content P50: {FIRST} ms\nTotal slot / rate wait: {SLOT} / {RATE} ms\nTotal provider calls / app retry wait: {PROVIDER} / {RETRY} ms\nTotal local processing: {LOCAL} ms (includes decoding/checks: {CHECK} ms)\nTotal cache saves: {SAVE} ms\nPercentiles use the latest {LIMIT} samples; concurrent durations overlap. Provider time includes SDK retries."
     translation_page_open_proofreading: str = "Open Parallel Proofreading"
     translation_page_export_preparing: str = "The translation is still preparing. Try writing the translation files again shortly."
     translation_page_elapsed: str = "Elapsed: {TIME}"
@@ -754,6 +758,12 @@ class LocalizerEN(LocalizerZH):
     )
     basic_settings_page_token_threshold_title: str = "Task Line Limit"
     basic_settings_page_token_threshold_content: str = "Maximum lines per task (5-15 recommended, fewer lines = more stable)"
+    basic_settings_page_max_batch_source_tokens_title: str = "Max Source Tokens per Batch"
+    basic_settings_page_max_batch_source_tokens_content: str = "Source token budget, excluding prompts and preceding context; 0 derives from the line limit as before. Oversized items are sent individually"
+    basic_settings_page_max_output_tokens_title: str = "Max Output Tokens per Request"
+    basic_settings_page_max_output_tokens_content: str = "Token budget for the model response; 0 uses the provider default. Retries keep this budget"
+    basic_settings_page_balanced_throughput_button: str = "Apply balanced throughput: 20 lines / 1024 source tokens / automatic output"
+    basic_settings_page_balanced_throughput_tooltip: str = "Set batch lines, source and output token budgets; concurrency, timeout and quality checks retain their current settings"
     basic_settings_page_request_timeout_title: str = "Request Timeout"
     basic_settings_page_request_timeout_content: str = (
         "The maximum time (seconds) to wait for the model's response when making a request"
@@ -1534,6 +1544,15 @@ class LocalizerEN(LocalizerZH):
         ' if the game already has custom UI translations.'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = 'Review untranslated uppercase abbreviations (uses additional quota)'
+    onekey_supplement_mode: str = 'Supplemental extraction:'
+    onekey_supplement_mode_off: str = 'Official only'
+    onekey_supplement_mode_precise: str = 'Precise (low false positives)'
+    onekey_supplement_mode_aggressive: str = 'Broad (high coverage)'
+    onekey_supplement_mode_tooltip: str = (
+        'Official only: skip supplemental extraction, keep only official translate results.\n'
+        'Precise: only captures text/textbutton/label/renpy.input/menu/notify, almost zero false positives.\n'
+        'Broad: scans any quoted text, wider coverage but may capture code strings.'
+    )
     onekey_clear_skipped_candidates: str = 'Clear skipped candidates'
     onekey_click_extract_text_begin_existing_translations_preserved: str = 'Click Extract Text to begin. Existing translations are preserved by default.'
     onekey_skip_extraction_translate: str = 'Skip extraction and translate →'
@@ -2270,8 +2289,8 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_formatter_description: str = 'Format .rpy files'
     toolbox_tool_android_build_title: str = 'Android Build'
     toolbox_tool_android_build_description: str = 'Install the SDK, generate signing keys, and build an APK'
-    toolbox_tool_html_import_title: str = 'HTML Import'
-    toolbox_tool_html_import_description: str = 'Convert translation text among HTML, TXT, and Excel'
+    toolbox_tool_html_import_title: str = 'Web / AI Translation Wizard'
+    toolbox_tool_html_import_description: str = 'Turn a TL folder into TXT, translate it with AI or web, then write it back'
     toolbox_tool_game_mod_title: str = 'Game Mod Injection'
     toolbox_tool_game_mod_description: str = 'Inject common mods such as gallery unlockers and utilities'
 

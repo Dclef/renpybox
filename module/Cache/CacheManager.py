@@ -2,6 +2,7 @@ import os
 import time
 import json
 import threading
+from collections.abc import Callable
 
 from base.Base import Base
 from module.Config import Config
@@ -23,6 +24,8 @@ class CacheManager(Base):
     # SQLite 缓存文件名
     CACHE_DB_NAME = "cache.db"
     RESET_JOURNAL_NAME = "reset.journal.json"
+    # 大项目切分任务时周期性让出时间片，避免后台准备线程压住 Qt 主线程。
+    PREPARE_YIELD_INTERVAL = 512
 
     # 结尾标点符号
     END_LINE_PUNCTUATION = (
@@ -73,6 +76,7 @@ class CacheManager(Base):
         self.require_flag: bool = False
         self.require_path: str = ""
         self.last_require_time: float = 0
+        self._save_observer: Callable[[dict[str, int | float]], None] | None = None
 
         # 启动定时任务
         if service == True:
@@ -164,6 +168,54 @@ class CacheManager(Base):
 
     # 保存缓存到文件
     def save_to_file(
+        self,
+        project: CacheProject,
+        items: list[CacheItem],
+        output_folder: str,
+        *,
+        strict: bool = False,
+    ) -> bool:
+        # Snapshot the owner before waiting for any cache lock. An old save must
+        # not report into a new run if the observer changes while it is blocked.
+        observer = self._save_observer
+        started = time.perf_counter()
+        succeeded = False
+        try:
+            result = self._save_to_file_impl(
+                project,
+                items,
+                output_folder,
+                strict = strict,
+            )
+            succeeded = result is True
+            return result
+        finally:
+            elapsed_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+            if observer is not None:
+                try:
+                    observer({
+                        "cache_save_count": 1,
+                        "cache_save_error_count": 0 if succeeded else 1,
+                        "cache_save_ms": elapsed_ms,
+                    })
+                except Exception:
+                    # Metrics must not interfere with persistence or replace a
+                    # strict save's original exception.
+                    pass
+
+    def set_save_observer(
+        self,
+        observer: Callable[[dict[str, int | float]], None] | None,
+    ) -> None:
+        """Observe save costs without retaining samples or cache contents.
+
+        The callback can run on an autosave thread while its outer cache lock
+        is held. It must only update its own collector and never call back into
+        CacheManager or wait for a translation worker.
+        """
+        self._save_observer = observer
+
+    def _save_to_file_impl(
         self,
         project: CacheProject,
         items: list[CacheItem],
@@ -597,9 +649,15 @@ class CacheManager(Base):
         project_temp = f"{project_path}.reset.tmp"
         journal_path = os.path.join(cache_path, __class__.RESET_JOURNAL_NAME)
         journal_temp = f"{journal_path}.tmp"
+        item_payloads = []
+        for index, item in enumerate(items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
+            item_payloads.append(item.asdict())
+
         payload = {
             "project": project.asdict(),
-            "items": [item.asdict() for item in items],
+            "items": item_payloads,
         }
         try:
             with open(journal_temp, "w", encoding = "utf-8") as writer:
@@ -670,7 +728,13 @@ class CacheManager(Base):
 
     # 获取缓存数据数量（根据翻译状态）
     def get_item_count_by_status(self, status: int) -> int:
-        return len([item for item in self.items if item.get_status() == status])
+        count = 0
+        for index, item in enumerate(self.items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
+            if item.get_status() == status:
+                count += 1
+        return count
 
     # 重置原译相同的条目（用于重新翻译被AI安全规则阻止的内容）
     def reset_same_translation_items(self) -> int:
@@ -689,12 +753,17 @@ class CacheManager(Base):
         return count
 
     # 生成缓存数据条目片段
-    def generate_item_chunks(self, line_threshold: int, preceding_lines_threshold: int) -> list[list[CacheItem]]:
+    def generate_item_chunks(
+        self,
+        line_threshold: int,
+        preceding_lines_threshold: int,
+        *,
+        source_token_limit: int | None = None,
+    ) -> list[list[CacheItem]]:
         # 行数上限：line_threshold 是用户设置的"每批最多 N 行"
         line_limit = max(1, line_threshold)
-        # Token 上限：按行数阈值乘以经验系数推算；单行平均约 30-50 token，
-        # 乘 16 使短文本不会因 token 超限而过度切分。
-        token_limit = max(64, line_threshold * 16)
+        # Token 上限：0/None 表示只按行数切分，避免短批次拖慢吞吐。
+        token_limit = self._batch_source_token_limit(line_limit, source_token_limit)
 
         skip: int = 0
         line_length: int = 0
@@ -724,7 +793,10 @@ class CacheManager(Base):
             # 如果 行数超限 或 Token 超限 或 数据来源跨文件，则结束此片段
             elif (
                 line_length + current_line_length > line_limit
-                or token_length + current_token_length > token_limit
+                or (
+                    token_limit is not None
+                    and token_length + current_token_length > token_limit
+                )
                 or item.get_file_path() != chunk[-1].get_file_path()
             ):
                 chunks.append(chunk)
@@ -746,6 +818,78 @@ class CacheManager(Base):
             skip = 0
 
         return chunks, preceding_chunks
+
+    @staticmethod
+    def _batch_source_token_limit(line_limit: int, source_token_limit: int | None) -> int | None:
+        if source_token_limit is None:
+            return None
+        source_token_limit = int(source_token_limit)
+        return source_token_limit if source_token_limit > 0 else None
+
+    def iter_item_chunks(
+        self,
+        line_threshold: int,
+        preceding_lines_threshold: int,
+        cancel_checker=None,
+        *,
+        source_token_limit: int | None = None,
+    ):
+        """Yield chunks incrementally with a bounded per-file context queue."""
+        line_limit = max(1, int(line_threshold))
+        token_limit = self._batch_source_token_limit(line_limit, source_token_limit)
+        context_limit = max(0, int(preceding_lines_threshold))
+        context: dict[str, list[CacheItem]] = {}
+        chunk: list[CacheItem] = []
+        preceding: list[CacheItem] = []
+        lines = tokens = 0
+
+        def remember(item: CacheItem) -> None:
+            if context_limit <= 0:
+                return
+            if item.get_status() == Base.TranslationStatus.EXCLUDED:
+                return
+            src = (item.get_src() or '').strip()
+            if not src or not src.endswith(__class__.END_LINE_PUNCTUATION):
+                return
+            key = str(item.get_file_path() or '')
+            values = context.setdefault(key, [])
+            values.append(item)
+            del values[:-context_limit]
+
+        for index, item in enumerate(self.items, 1):
+            if index % __class__.PREPARE_YIELD_INTERVAL == 0:
+                time.sleep(0)
+            if cancel_checker is not None and cancel_checker():
+                return
+            if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
+                remember(item)
+                continue
+            src = item.get_src()
+            if not src or not src.strip():
+                item.set_dst('')
+                item.set_status(Base.TranslationStatus.TRANSLATED)
+                continue
+            item_lines = sum(1 for line in src.splitlines() if line.strip())
+            item_tokens = item.get_token_count()
+            if chunk and (
+                lines + item_lines > line_limit
+                or (
+                    token_limit is not None
+                    and tokens + item_tokens > token_limit
+                )
+                or item.get_file_path() != chunk[-1].get_file_path()
+            ):
+                yield chunk, preceding
+                chunk, lines, tokens = [], 0, 0
+                preceding = list(context.get(str(item.get_file_path() or ''), []))
+            elif not chunk:
+                preceding = list(context.get(str(item.get_file_path() or ''), []))
+            chunk.append(item)
+            lines += item_lines
+            tokens += item_tokens
+            remember(item)
+        if chunk:
+            yield chunk, preceding
 
     # 生成参考上文数据条目片段
     def generate_preceding_chunks(self, chunk: list[CacheItem], start: int, skip: int, preceding_lines_threshold: int) -> list[list[CacheItem]]:

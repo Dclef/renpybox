@@ -50,6 +50,9 @@ class RenpyExtractor:
         *,
         generate_empty: bool = False,
         force: bool = False,
+        timeout_seconds: float = 900.0,
+        should_stop: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> Path:
         """Run Ren'Py's built-in translate command to populate tl/<lang>/.
 
@@ -105,27 +108,45 @@ class RenpyExtractor:
             moved_files = self._temporarily_hide_tool_files(tl_dir)
 
             self.logger.info(f"执行官方抽取: {' '.join(command)}")
-            result = subprocess.run(
-                command,
-                cwd=str(project),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+            from utils.process_runner import (
+                ProcessRunnerCancelledError,
+                ProcessRunnerTimeoutError,
+                run_process,
             )
+
+            def _official_output_cb(line: str) -> None:
+                if progress_callback and line.strip():
+                    progress_callback(line[-500:])
+
+            try:
+                result = run_process(
+                    command,
+                    cwd=str(project),
+                    timeout=max(1.0, float(timeout_seconds)),
+                    cancel_check=should_stop,
+                    output_callback=_official_output_cb,
+                )
+            except ProcessRunnerCancelledError:
+                raise RuntimeError("官方抽取已取消")
+            except ProcessRunnerTimeoutError as exc:
+                raise TimeoutError(str(exc)) from exc
+
+            result_stdout = result.stdout or ""
+            result_returncode = result.returncode
         finally:
             self._restore_hidden_files(moved_files)
-        if result.stdout:
-            self.logger.info(result.stdout.strip())
-        if result.returncode != 0:
+        if result_stdout:
+            self.logger.info(result_stdout.strip())
+        if result_returncode != 0:
             # 提供更详细的错误信息
-            error_msg = f"官方抽取失败，退出码 {result.returncode}"
-            if result.stdout:
+            error_msg = f"官方抽取失败，退出码 {result_returncode}"
+            if result_stdout:
                 # 检查是否是已存在翻译的错误
-                if "already exists" in result.stdout:
+                if "already exists" in result_stdout:
                     error_msg = "官方抽取失败：检测到重复的翻译条目。请尝试删除 tl 文件夹后重试。"
                 else:
                     # 截取最后几行错误信息
-                    lines = result.stdout.strip().split('\n')
+                    lines = result_stdout.strip().split('\n')
                     last_lines = lines[-5:] if len(lines) > 5 else lines
                     error_msg += f"\n{chr(10).join(last_lines)}"
             raise RuntimeError(error_msg)
@@ -639,14 +660,11 @@ class RenpyExtractor:
             return
 
         try:
-            process.terminate()
+            from utils.process_runner import ProcessRunner
+            runner = ProcessRunner()
+            runner._kill_process_tree(process)
         except Exception:
-            return
-
-        try:
-            process.wait(timeout = 2)
-        except Exception:
-            return
+            pass
 
     # 工具生成的脚本/中间文件，不应该被提取或翻译
     HOOK_FILES = {

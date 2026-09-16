@@ -4,6 +4,7 @@ from module.Extract.ReplaceGenerator import (
     build_old_new_replace_plan,
     collect_translated_old_new_pairs,
     generate_replace_from_miss,
+    read_generated_replace_pairs,
 )
 from module.File.RENPYHOOK import RENPYHOOK
 from module.Config import Config
@@ -52,9 +53,7 @@ def test_old_new_replace_plan_keeps_runtime_suffix_and_uses_longest_first(tmp_pa
     assert not stale_rpyc.exists()
     script = output_path.read_text(encoding="utf-8")
     assert '.replace("Native", "原生")' not in script
-    assert script.index('.replace("Open Door", "打开门")') < script.index(
-        '.replace("Open", "打开")'
-    )
+    assert read_generated_replace_pairs(output_path, {"Open Door", "Open", "Guide"}) == list(plan.pairs)
 
 
 def test_old_new_replace_skips_conflicts_and_non_active_work_files(tmp_path) -> None:
@@ -158,8 +157,7 @@ def test_hook_write_combines_marked_old_new_with_supplement_items(tmp_path) -> N
 
     script = (tl_dir / "replace_text_auto.rpy").read_text(encoding="utf-8")
     assert '.replace("Native", "原生")' not in script
-    assert '.replace("Choice", "选项")' in script
-    assert '.replace("Guide", "攻略")' in script
+    assert dict(read_generated_replace_pairs(tl_dir / "replace_text_auto.rpy", {"Choice", "Guide"})) == {"Choice": "选项", "Guide": "攻略"}
 
 
 def test_generated_hook_pairs_are_read_for_marked_target_entries(tmp_path):

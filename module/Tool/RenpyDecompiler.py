@@ -260,39 +260,14 @@ class RenpyDecompiler:
         command.append(str(game_dir))
 
         self.logger.info(f"Running unrpyc: {' '.join(command)}")
-        creationflags = 0
-        if os.name == "nt":
-            try:
-                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-            except Exception:
-                creationflags = 0
-        process = subprocess.Popen(
+        from utils.process_runner import run_process
+
+        result = run_process(
             command,
             cwd=str(root_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            bufsize=1,
-            creationflags=creationflags,
+            output_callback=output_callback,
         )
-        lines: list[str] = []
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip()
-                if not line:
-                    continue
-                lines.append(line)
-                if output_callback:
-                    output_callback(line)
-        returncode = process.wait()
-        return subprocess.CompletedProcess(
-            command,
-            returncode,
-            "\n".join(lines),
-            None,
-        )
+        return result
 
     def _restore_common_from_backup(self, root_dir: Path, backup_zip: Path, *, keep_backup: bool) -> None:
         """Restore renpy/common using the backup zip."""
