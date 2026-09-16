@@ -462,15 +462,15 @@ class AppFluentWindow(FluentWindow, Base):
 
     # 开始添加页面
     def add_pages(self) -> None:
-        self._update_startup_splash("正在预热翻译页面和项目缓存…")
+        AppFluentWindow._update_startup_splash("正在预热翻译页面和项目缓存…")
         self.add_task_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
-        self._update_startup_splash("正在注册项目和接口页面…")
+        AppFluentWindow._update_startup_splash("正在注册项目和接口页面…")
         self.add_project_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
-        self._update_startup_splash("正在预加载 Ren'Py 工具页面…")
+        AppFluentWindow._update_startup_splash("正在预加载 Ren'Py 工具页面…")
         self.add_renpy_pages()
-        self._update_startup_splash("正在注册工作台和设置页面…")
+        AppFluentWindow._update_startup_splash("正在注册工作台和设置页面…")
         self.add_workbench_pages()
         self.navigationInterface.addSeparator(NavigationItemPosition.SCROLL)
         self.add_setting_pages()

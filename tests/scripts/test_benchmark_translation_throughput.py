@@ -101,4 +101,3 @@ def test_execute_counts_quality_passed_unique_sources(monkeypatch):
     assert result["request_metrics"]["logical_request_ms"] == 4
     assert "api_key" not in result
     assert "secret" not in result["request_metrics"]
-
