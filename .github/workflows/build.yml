@@ -53,6 +53,30 @@ jobs:
         shell: cmd
         run: python buildtools\update_assets.py manifest --dist dist\RenpyBox --version ${{ steps.check_version.outputs.version }} --zip RenpyBox_${{ steps.check_version.outputs.version }}.zip
 
+      - name: Generate Incremental Patch
+        id: incremental_patch
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.check_version.outputs.version }}
+        run: |
+          $version = $env:RELEASE_VERSION
+          $previous = gh release view --repo $env:GITHUB_REPOSITORY --json tagName,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "读取上一正式版失败，保留全量发布" }
+          $previousVersion = $previous.tagName -replace '^RenpyBox_', ''
+          if ($previousVersion -notmatch '^v\d+\.\d+\.\d+(\.\d+)?$') { exit 0 }
+          if ([version]$previousVersion.TrimStart('v') -ge [version]$version.TrimStart('v')) { exit 0 }
+          $previousName = "RenpyBox_$previousVersion.zip"
+          if (-not ($previous.assets | Where-Object { $_.name -eq $previousName })) { exit 0 }
+          gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $previousName --dir previous-release
+          if ($LASTEXITCODE -ne 0) { throw "下载增量基线失败，保留全量发布" }
+          $patchName = "RenpyBox_$version.from-$previousVersion.patch.zip"
+          python buildtools/update_assets.py patch --dist dist/RenpyBox --version $version --prev-zip "previous-release/$previousName" --prev-version $previousVersion --out $patchName
+          if ($LASTEXITCODE -ne 0) { throw "增量重建校验失败，保留全量发布" }
+          if ((Get-Item -LiteralPath $patchName).Length -ge (Get-Item -LiteralPath "RenpyBox_$version.zip").Length) { exit 0 }
+          "file=$patchName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -60,6 +84,8 @@ jobs:
           name: RenpyBox_${{ steps.check_version.outputs.version }}
           draft: true
           prerelease: false
-          files: RenpyBox_${{ steps.check_version.outputs.version }}.zip
+          files: |
+            RenpyBox_${{ steps.check_version.outputs.version }}.zip
+            ${{ steps.incremental_patch.outputs.file }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
