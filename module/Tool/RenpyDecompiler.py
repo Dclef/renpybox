@@ -90,7 +90,7 @@ class RenpyDecompiler:
 
         python_exe = Path(python_path)
         python_major = self._detect_embedded_python_major(python_exe)
-        variant = "unrpyc_python_v1" if python_major == 2 else "unrpyc_python_v2"
+        variant = self._resource_variant_for_python_major(python_major)
         self._configure_resource_variant(variant)
 
         renpy_common = root_dir / "renpy" / "common"
@@ -100,7 +100,8 @@ class RenpyDecompiler:
         backup_zip = root_dir / "common_backup.zip"
 
         self.logger.info(
-            f"Start decompiling {exe_path} (unrpyc={self.resource_variant.removeprefix('unrpyc_python_')})"
+            f"Start decompiling {exe_path} (Python {python_major}, "
+            f"unrpyc={self.resource_variant.removeprefix('unrpyc_python_')})"
         )
         unrpyc_error: Exception | None = None
         unrpyc_output: str | None = None
@@ -146,6 +147,18 @@ class RenpyDecompiler:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _resource_variant_for_python_major(python_major: int | None) -> str:
+        """严格按游戏内置 Python 主版本选择 unrpyc 资源。"""
+        if python_major == 2:
+            return "unrpyc_python_v1"
+        if python_major == 3:
+            return "unrpyc_python_v2"
+        raise RuntimeError(
+            "无法识别游戏内置 Python 主版本（仅支持 Python 2/3），已停止反编译；"
+            "不会启动游戏。"
+        )
+
     def _configure_resource_variant(self, variant: str) -> None:
         """根据游戏 Python 主版本切换对应的 unrpyc 资源。"""
         resource_dir = self.resource_root / variant

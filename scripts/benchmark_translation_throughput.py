@@ -33,7 +33,7 @@ from module.Engine.Translator.TranslatorTask import TranslatorTask
 PROFILES: tuple[tuple[str, int, int], ...] = (
     ("legacy10", 10, 0),
     ("source1024", 10, 1024),
-    ("balanced20", 20, 1024),
+    ("balanced20", 20, 0),
 )
 _PROFILE_MAP = {name: (name, lines, source) for name, lines, source in PROFILES}
 _SAFE_METRIC_KEYS = frozenset({

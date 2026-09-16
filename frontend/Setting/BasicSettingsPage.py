@@ -196,7 +196,7 @@ class BasicSettingsPage(QWidget, Base):
     def _apply_balanced_throughput(self) -> None:
         config = Config().load()
         config.token_threshold = 20
-        config.max_batch_source_tokens = 1024
+        config.max_batch_source_tokens = 0
         config.max_output_tokens = 0
         config.save()
         for field in ("token_threshold", "max_batch_source_tokens", "max_output_tokens"):

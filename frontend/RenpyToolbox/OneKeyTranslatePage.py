@@ -77,6 +77,7 @@ from frontend.RenpyToolbox.OneKeyWorkers import (
     TranslationFileScanWorker,
     _cache_item_identity as _cache_item_identity,
     _numbered_disk_identity as _numbered_disk_identity,
+    _localize_extractor_progress as _localize_extractor_progress,
     ExtractionWorker,
     apply_translation_files_transactionally as apply_translation_files_transactionally,
     configure_incremental_translation_paths,
@@ -1579,6 +1580,8 @@ class YiJianFanyiPage(Base, QWidget):
     def _show_step2_unpack_failure(self, message: str) -> None:
         """解包失败后的统一界面状态：可重试、可跳过、可转手动解包页。"""
         self.step2_page.progress_ring.setVisible(False)
+        self.step2_cancel_btn.setVisible(False)
+        self.step2_cancel_btn.setEnabled(True)
         self.step2_status.setText(
             Localizer.get().onekey_unpack_failed
         )
@@ -1598,6 +1601,8 @@ class YiJianFanyiPage(Base, QWidget):
     def _show_step2_decompile_failure(self, message: str) -> None:
         """反编译失败后的统一界面状态。"""
         self.step2_page.progress_ring.setVisible(False)
+        self.step2_cancel_btn.setVisible(False)
+        self.step2_cancel_btn.setEnabled(True)
         self.step2_status.setText(Localizer.get().onekey_decompilation_failed)
         self.step2_desc.setText(
             Localizer.get().onekey_possible_causes_game_uses_encryption_obfuscation_ren.format(
@@ -1613,6 +1618,23 @@ class YiJianFanyiPage(Base, QWidget):
             Localizer.get().onekey_decompilation_failed_check_game_files,
             parent=self,
         )
+
+    def _show_step2_cancelled(self) -> None:
+        """取消步骤二后立即收口界面，避免停留在旧的处理中状态。"""
+        self.step2_page.progress_ring.setVisible(False)
+        self.step2_cancel_btn.setVisible(False)
+        self.step2_cancel_btn.setEnabled(True)
+        cancelled = Localizer.get().pack_unpack_cancelled
+        self.step2_status.setText(cancelled)
+        self.step2_desc.setText(cancelled)
+        self.step2_retry_btn.setVisible(True)
+        self.step2_retry_btn.setEnabled(True)
+        self.step2_skip_btn.setVisible(True)
+        self.step2_skip_btn.setEnabled(True)
+        self.step2_next_btn.setVisible(False)
+        self.step2_next_btn.setEnabled(False)
+        self.step2_merge_btn.setVisible(False)
+        self.step2_merge_btn.setEnabled(False)
 
     def _step2_context_is_current(self, generation: int, context: dict) -> bool:
         """确认回调仍属于当前页面、当前配置中的同一项目和语言。"""
@@ -1807,6 +1829,9 @@ class YiJianFanyiPage(Base, QWidget):
             self._preprocess_worker = None
         if not self._step2_context_is_current(generation, context):
             return
+        if worker.isInterruptionRequested():
+            self._show_step2_cancelled()
+            return
 
         result = result if isinstance(result, dict) else {}
         message = str(result.get("message", "") or "")
@@ -1830,6 +1855,9 @@ class YiJianFanyiPage(Base, QWidget):
         if self._preprocess_worker is worker:
             self._preprocess_worker = None
         if not self._step2_context_is_current(generation, context):
+            return
+        if worker.isInterruptionRequested():
+            self._show_step2_cancelled()
             return
 
         result = result if isinstance(result, dict) else {}
@@ -2029,6 +2057,19 @@ class YiJianFanyiPage(Base, QWidget):
         if generation is not None and generation != self._extraction_generation:
             return
 
+        cancelled = bool(getattr(result, "cancelled", False))
+        worker = self.extraction_worker
+        if (
+            not cancelled
+            and result is None
+            and worker is not None
+            and hasattr(worker, "isInterruptionRequested")
+        ):
+            cancelled = worker.isInterruptionRequested()
+        if cancelled:
+            YiJianFanyiPage._show_step2_cancelled(self)
+            return
+
         game_dir = self.game_dir
         tl_name = self.tl_folder_edit.text().strip() or "chinese"
         if isinstance(context, dict):
@@ -2045,6 +2086,9 @@ class YiJianFanyiPage(Base, QWidget):
                 self._start_translation_after_extraction = False
                 self.extraction_worker = None
                 self.step2_page.progress_ring.setVisible(False)
+                if hasattr(self, "step2_cancel_btn"):
+                    self.step2_cancel_btn.setVisible(False)
+                    self.step2_cancel_btn.setEnabled(True)
                 self.step2_status.setText(
                     Localizer.get().onekey_project_changed_extract_again
                 )

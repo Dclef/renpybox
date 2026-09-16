@@ -118,12 +118,25 @@ class RenpyExtractor:
                 if progress_callback and line.strip():
                     progress_callback(line[-500:])
 
+            started_at = time.monotonic()
+            next_heartbeat = started_at + 5.0
+
+            def _official_cancel_check() -> bool:
+                nonlocal next_heartbeat
+                now = time.monotonic()
+                if progress_callback is not None and now >= next_heartbeat:
+                    progress_callback(
+                        f"官方抽取仍在运行，已用 {int(now - started_at)} 秒"
+                    )
+                    next_heartbeat = now + 5.0
+                return should_stop is not None and should_stop()
+
             try:
                 result = run_process(
                     command,
                     cwd=str(project),
                     timeout=max(1.0, float(timeout_seconds)),
-                    cancel_check=should_stop,
+                    cancel_check=_official_cancel_check,
                     output_callback=_official_output_cb,
                 )
             except ProcessRunnerCancelledError:
