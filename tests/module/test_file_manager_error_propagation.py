@@ -5,6 +5,22 @@ from module.Config import Config
 from module.File.FileManager import FileManager
 
 
+def test_runtime_hook_payloads_do_not_enter_translation_input(tmp_path, monkeypatch):
+    monkeypatch.setattr(FileManager, "_is_stop_requested", lambda self: False)
+    (tmp_path / "scene.rpy").write_text(
+        'translate chinese strings:\n    old "Visible text"\n    new ""\n',
+        encoding="utf-8",
+    )
+    shards = tmp_path / ".renpybox_replace"
+    shards.mkdir()
+    # Neither malformed nor valid runtime payloads should reach any parser.
+    (shards / "payload.json").write_text("not translation json", encoding="utf-8")
+    (tmp_path / "replace_text_auto.diagnostics.json").write_text("diagnostic only", encoding="utf-8")
+    config = Config(input_folder=str(tmp_path), output_folder=str(tmp_path / "output"))
+    _project, items = FileManager(config).read_from_path()
+    assert [item.get_src() for item in items] == ["Visible text"]
+
+
 def test_writeback_reports_errors_after_running_remaining_writers(monkeypatch):
     calls: list[str] = []
     writer_names = (

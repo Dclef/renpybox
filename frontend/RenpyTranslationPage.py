@@ -19,6 +19,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     LineEdit,
     CheckBox,
+    ComboBox,
     CardWidget,
     SubtitleLabel,
     BodyLabel,
@@ -171,7 +172,16 @@ class RenpyTranslationPage(QWidget):
         self.chk_custom.setToolTip(Localizer.get().extract_tl_use_custom_ast_parsing_extract_text_missed)
         self.chk_custom.stateChanged.connect(self._refresh_option_state)
         extract_row.addWidget(self.chk_custom)
-        
+
+        # 补充抽取模式：precise=定向精准扫（默认，低误报）；aggressive=旧宽扫描（任意引号）
+        self.cmb_supplement_mode = ComboBox()
+        self.cmb_supplement_mode.addItem(Localizer.get().onekey_supplement_mode_precise, userData="precise")
+        self.cmb_supplement_mode.addItem(Localizer.get().onekey_supplement_mode_aggressive, userData="aggressive")
+        _mode = str(getattr(self.config, "extract_supplement_mode", "precise") or "precise").lower()
+        self.cmb_supplement_mode.setCurrentIndex(1 if _mode == "aggressive" else 0)
+        self.cmb_supplement_mode.setToolTip(Localizer.get().onekey_supplement_mode_tooltip)
+        extract_row.addWidget(self.cmb_supplement_mode)
+
         extract_row.addStretch(1)
         adv_layout.addLayout(extract_row)
 
@@ -367,6 +377,10 @@ class RenpyTranslationPage(QWidget):
             ProjectStore.get().set_game_folder(self.config, game_dir)
             self.config.extract_use_official = use_official
             self.config.extract_use_custom = use_custom
+            if hasattr(self, 'cmb_supplement_mode'):
+                self.config.extract_supplement_mode = (
+                    "aggressive" if self.cmb_supplement_mode.currentIndex() == 1 else "precise"
+                )
             if hasattr(self, 'chk_skip_hooks'):
                 self.config.extract_skip_hook_files = self.chk_skip_hooks.isChecked()
             if hasattr(self, 'chk_filter_bool_expr'):

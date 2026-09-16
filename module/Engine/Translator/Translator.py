@@ -8,7 +8,6 @@ import time
 import webbrowser
 from itertools import zip_longest
 
-import httpx
 from rich.progress import TaskID
 
 from base.Base import Base
@@ -18,7 +17,8 @@ from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskLimiter import TaskLimiter
-from module.Engine.TaskRequester import TaskRequester
+from module.Engine.TaskRequester import TaskRequester, httpx
+from module.Engine.TranslationMetrics import TranslationMetrics
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import (
@@ -27,7 +27,6 @@ from module.Engine.Translator.TranslationTaskContext import (
     TranslationTaskContext,
 )
 from module.Engine.Translator.TranslatorTask import TranslatorTask
-from module.File.FileManager import FileManager
 from module.Filter.LanguageFilter import LanguageFilter
 from module.Filter.RuleFilter import RuleFilter
 from module.Localizer.Localizer import Localizer
@@ -56,6 +55,8 @@ class Translator(Base):
     STOP_WAIT_POLL: float = 0.1
     # watcher 超时后的残留线程清理也必须有上限，避免全局取消标记永久保留。
     CANCEL_CLEANUP_TIMEOUT: float = 30.0
+    # 大项目初始化会连续处理十万级条目；周期性让出 GIL，避免 UI 刷新被挤住。
+    PREPARE_YIELD_INTERVAL: int = 512
 
     def __init__(self) -> None:
         super().__init__()
@@ -78,7 +79,10 @@ class Translator(Base):
         self._translation_run_id: int = 0
         self._active_request_id: str = ""
         self._active_run_cancel_event: threading.Event | None = None
+        self._active_task_run_id: int | None = None
+        self._active_task_count: int = 0
         self._run_context = threading.local()
+        Engine.get().translator = self
 
         # 注册事件
         self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
@@ -281,6 +285,55 @@ class Translator(Base):
         except Exception:
             pass
 
+    def get_active_task_count(self) -> int:
+        """返回当前翻译 run 的活动任务数，忽略旧 run 残留线程。"""
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != getattr(
+                self,
+                "_translation_run_id",
+                0,
+            ):
+                return 0
+            return max(0, int(getattr(self, "_active_task_count", 0) or 0))
+
+    def _active_task_run_key(self, run_id: int | None) -> int:
+        if run_id is not None:
+            return run_id
+        return int(getattr(self, "_translation_run_id", 0) or 0)
+
+    def _reset_active_task_count(self, run_id: int | None) -> None:
+        with self.data_lock:
+            self._active_task_run_id = self._active_task_run_key(run_id)
+            self._active_task_count = 0
+
+    def _track_active_future(
+        self,
+        future: concurrent.futures.Future,
+        run_id: int | None,
+    ) -> None:
+        active_run_id = self._active_task_run_key(run_id)
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != active_run_id:
+                self._active_task_run_id = active_run_id
+                self._active_task_count = 0
+            self._active_task_count = (
+                max(0, int(getattr(self, "_active_task_count", 0) or 0)) + 1
+            )
+        future.add_done_callback(
+            lambda _future, current_run_id = active_run_id: self._finish_active_future(
+                current_run_id
+            )
+        )
+
+    def _finish_active_future(self, run_id: int) -> None:
+        with self.data_lock:
+            if getattr(self, "_active_task_run_id", None) != run_id:
+                return
+            self._active_task_count = max(
+                0,
+                int(getattr(self, "_active_task_count", 0) or 0) - 1,
+            )
+
     def _is_translation_run_current(self, run_id: int | None) -> bool:
         """判断回调/线程是否仍属于当前翻译代次。"""
         if run_id is None:
@@ -338,6 +391,20 @@ class Translator(Base):
         if self._should_stop_requested():
             raise TranslationCancelled()
 
+    def _yield_prepare_slice(
+        self,
+        index: int,
+        run_id: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """大项目准备阶段分片让出执行权，保持 Qt 主线程可刷新。"""
+        if index <= 0 or index % __class__.PREPARE_YIELD_INTERVAL != 0:
+            return not self._should_stop_requested(run_id, cancel_event)
+        if self._should_stop_requested(run_id, cancel_event):
+            return False
+        time.sleep(0)
+        return not self._should_stop_requested(run_id, cancel_event)
+
     # 翻译开始事件
     def translation_start(self, event: str, data: dict) -> None:
         data = data if isinstance(data, dict) else {}
@@ -375,6 +442,8 @@ class Translator(Base):
                 self._active_request_id = request_id
                 run_cancel_event = threading.Event()
                 self._active_run_cancel_event = run_cancel_event
+                self._active_task_run_id = run_id
+                self._active_task_count = 0
                 self._translation_run_initialized = False
                 self._active_cache_output_folder = ""
                 thread = threading.Thread(
@@ -492,6 +561,8 @@ class Translator(Base):
 
             self.info(f"[REINJECT] 从缓存写入译文文件：{output_folder} (items={len(items)})")
             try:
+                from module.File.FileManager import FileManager
+
                 FileManager(config).write_to_path(items)
             except Exception as exc:
                 # 写回失败会抛出，子线程里必须自行提示，否则用户只能在日志里看到。
@@ -751,7 +822,7 @@ class Translator(Base):
             legacy_bootstrap = legacy_bootstrap,
         )
 
-    def _run_asset_preflight(self, context: TranslationTaskContext, data: dict) -> None:
+    def _run_asset_preflight(self, context: TranslationTaskContext, data: dict, current_config=None) -> None:
         builder = PromptBuilder(context)
         fixed_prompt = "\n\n".join(
             section
@@ -765,7 +836,9 @@ class Translator(Base):
             context.assets,
             fixed_prompt = fixed_prompt,
             provider = context.runtime_provider,
-            reserved_output_tokens = TaskRequester.DEFAULT_MAX_OUTPUT_TOKENS,
+            reserved_output_tokens = TaskRequester.resolve_output_token_limit(
+                context.to_runtime_config(current_config), context.runtime_provider,
+            ),
         )
         if not result.can_start:
             raise ValueError(
@@ -830,7 +903,7 @@ class Translator(Base):
                     runtime_provider = runtime_provider,
                 )
 
-            self._run_asset_preflight(context, data)
+            self._run_asset_preflight(context, data, current_config)
             self._raise_if_stop_requested()
             return context
 
@@ -839,6 +912,8 @@ class Translator(Base):
             "phase": "preparing",
             "message": "正在读取翻译输入目录…",
         })
+        from module.File.FileManager import FileManager
+
         fresh_project, items = FileManager(current_config).read_from_path()
         self.info(f"[INIT] 输入目录读取完成: 条目 {len(items)} 行")
         self._raise_if_stop_requested()
@@ -853,23 +928,25 @@ class Translator(Base):
 
         assets = self._load_project_assets(current_config)
         context = self._build_task_context(current_config, assets, current_platform)
-        self._run_asset_preflight(context, data)
+        self._run_asset_preflight(context, data, current_config)
         self._raise_if_stop_requested()
-        cached_line_count = sum(
-            1
-            for item in items
-            if Base.is_item_completed(item.get_status())
-        )
+        cached_line_count = 0
+        untranslated_line_count = 0
+        for index, item in enumerate(items, 1):
+            if not self._yield_prepare_slice(index):
+                raise TranslationCancelled()
+            status = item.get_status()
+            if Base.is_item_completed(status):
+                cached_line_count += 1
+            elif status == Base.TranslationStatus.UNTRANSLATED:
+                untranslated_line_count += 1
         progress = self._new_progress_extras(
-            sum(
-                1
-                for item in items
-                if item.get_status() == Base.TranslationStatus.UNTRANSLATED
-            ),
+            untranslated_line_count,
             cached_line_count = cached_line_count,
         )
         self._raise_if_stop_requested()
         self.emit(Base.Event.TRANSLATION_UPDATE, {
+            **progress,
             "phase": "preparing",
             "message": "正在写入翻译缓存…",
         })
@@ -958,11 +1035,22 @@ class Translator(Base):
     ) -> dict[str, object]:
         """在线程池工作线程中绑定本轮取消令牌并执行任务。"""
         TaskRequester.bind_run_cancel_event(cancel_event)
+        metrics = getattr(task, "_throughput_metrics", None)
+        if metrics is not None:
+            metrics.record_stages(executor_queue_ms=max(0, (time.perf_counter() - task._submitted_at) * 1000))
+        result = None
         try:
             if self._should_stop_requested(run_id, cancel_event):
-                return {"cancelled": True}
-            return task.start(current_round)
+                result = {
+                    "cancelled": True,
+                    "request_metrics": {"cancelled_request_count": 1},
+                }
+                return result
+            result = task.start(current_round)
+            return result
         finally:
+            if metrics is not None and isinstance(result, dict):
+                metrics.record_task(result)
             TaskRequester.unbind_run_cancel_event()
 
     def _new_progress_extras(self, total_line: int, *, cached_line_count: int = 0) -> dict:
@@ -996,6 +1084,7 @@ class Translator(Base):
                 else 0.0
             ),
             "recent_items": [],
+            "throughput": {},
             "time": 0,
         }
 
@@ -1049,6 +1138,9 @@ class Translator(Base):
         extras.setdefault("latency_ms", 0.0)
         extras.setdefault("average_latency_ms", extras["latency_ms"])
         extras.setdefault("recent_items", [])
+        # Detailed metrics always describe this session, even when overall
+        # progress and token usage are restored from an older run.
+        extras["throughput"] = {}
 
         return extras
 
@@ -1128,6 +1220,7 @@ class Translator(Base):
                 else 0.0
             ),
             "recent_items": recent_items,
+            "throughput": self._throughput_metrics.snapshot() if getattr(self, "_throughput_metrics", None) is not None else {},
             "time": time.time() - start_time,
         }
 
@@ -1214,6 +1307,10 @@ class Translator(Base):
     ) -> None:
         run_request_id = self._request_id_for_run(run_id)
         self._bind_run_context(run_id, cancel_event)
+        run_metrics = None
+        metrics_output = ""
+        metrics_settings = {}
+        metrics_status = "failed"
         try:
             data = data if isinstance(data, dict) else {}
             status = data.get("status", Base.TranslationStatus.UNTRANSLATED)
@@ -1233,6 +1330,8 @@ class Translator(Base):
                 Engine.get().set_status(Engine.Status.TRANSLATING)
             elif engine_status != Engine.Status.TRANSLATING:
                 return None
+
+            self._reset_active_task_count(run_id)
 
             # 预处理提示（解析/生成任务阶段）
             self.emit(Base.Event.TRANSLATION_UPDATE, {
@@ -1350,6 +1449,21 @@ class Translator(Base):
                         cached_line_count = cached_line_count,
                     )
 
+            # A fresh collector on every start/resume; workers capture this
+            # object so late results cannot be attributed to the next session.
+            run_metrics = TranslationMetrics()
+            self._throughput_metrics = run_metrics
+            metrics_output = self.config.output_folder
+            metrics_settings = {
+                "max_batch_lines": self.config.token_threshold,
+                "max_batch_source_tokens": getattr(self.config, "max_batch_source_tokens", 0),
+                "max_output_tokens": TaskRequester.resolve_output_token_limit(self.config, self.platform),
+                "max_workers": max_workers,
+                "rpm_threshold": rpm_threshold,
+            }
+            self.cache_manager.set_save_observer(run_metrics.record_cache_save)
+            self.extras["throughput"] = run_metrics.snapshot()
+
             # 更新翻译进度
             self.cache_manager.get_project().set_progress(self.extras)
             self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATING)
@@ -1397,6 +1511,9 @@ class Translator(Base):
 
             # 自适应批大小是本次运行的局部状态，不写回任务快照或 Config。
             initial_token_threshold = max(1, int(self.config.token_threshold))
+            initial_source_token_limit = max(
+                0, int(getattr(self.config, "max_batch_source_tokens", 0))
+            )
 
             # 开始循环
             for current_round in range(self.config.max_round):
@@ -1425,45 +1542,24 @@ class Translator(Base):
                     1,
                     int(initial_token_threshold / (2 ** current_round)),
                 )
+                round_source_token_limit = (
+                    max(1, initial_source_token_limit // (2 ** current_round))
+                    if initial_source_token_limit > 0 else None
+                )
 
                 # 生成缓存数据条目片段
                 chunk_line_threshold = round_token_threshold
                 if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
                     chunk_line_threshold = 1
-                chunks, precedings = self.cache_manager.generate_item_chunks(
+                chunks = self.cache_manager.iter_item_chunks(
                     chunk_line_threshold,
                     self.config.preceding_lines_threshold,
+                    cancel_checker=lambda: self._should_stop_requested(run_id, cancel_event),
+                    source_token_limit=round_source_token_limit,
                 )
 
                 # 第四轮开始才禁用参考上文（多保留一轮上下文以提升重试译文质量）
-                if current_round >= 3:
-                    precedings = [[] for _ in range(len(precedings))]
-
-                # 生成翻译任务
                 self.print("")
-                tasks: list[TranslatorTask] = []
-                with ProgressBar(transient = False) as progress:
-                    pid = progress.new()
-                    for items, precedings in zip(chunks, precedings):
-                        progress.update(pid, advance = 1, total = len(chunks))
-                        task_config = self.task_context.to_runtime_config(self.config)
-                        task_config.token_threshold = round_token_threshold
-                        tasks.append(TranslatorTask(
-                            self.task_context,
-                            self.platform,
-                            local_flag,
-                            items,
-                            precedings,
-                            runtime_config = task_config,
-                            candidate_sink = lambda candidates, current_run_id = run_id, current_cancel_event = cancel_event: self._merge_analysis_candidates_for_run(
-                                current_run_id,
-                                current_cancel_event,
-                                candidates,
-                            ),
-                        ))
-
-                # 打印日志
-                self.info(Localizer.get().translator_task_generation_log.replace("{COUNT}", str(len(chunks))))
 
                 # 输出开始翻译的日志
                 self.print("")
@@ -1482,6 +1578,19 @@ class Translator(Base):
                     self.print("")
 
                 # 开始执行翻译任务
+                source_budget = (
+                    f"{round_source_token_limit} token"
+                    if round_source_token_limit
+                    else "自动（仅按行数切分）"
+                )
+                self.info(
+                    f"[BATCH] 每批最多 {chunk_line_threshold} 行，原文预算 "
+                    f"{source_budget}，输出预算 "
+                    f"{TaskRequester.resolve_output_token_limit(self.config, self.platform)} token，"
+                    f"并发 {max_workers}"
+                )
+                submitted_batches = submitted_items = 0
+                round_started = time.monotonic()
                 task_limiter = TaskLimiter(rps = max_workers, rpm = rpm_threshold, max_concurrency = max_workers)
                 with ProgressBar(transient = True) as progress:
                     pid = progress.new()
@@ -1494,27 +1603,52 @@ class Translator(Base):
 
                     stopping = False
                     try:
-                        for task in tasks:
+                        for items, precedings in chunks:
                             # 检测是否需要停止任务
                             # 目的是绕过限流器，快速结束所有剩余任务
                             if Engine.get().get_status() == Engine.Status.STOPPING:
                                 stopping = True
                                 break
 
-                            if not task_limiter.acquire(
+                            slot_started = time.perf_counter()
+                            acquired = task_limiter.acquire(
                                 lambda: self._should_stop_requested(run_id, cancel_event)
-                            ):
+                            )
+                            run_metrics.record_stages(slot_wait_ms=(time.perf_counter() - slot_started) * 1000)
+                            if not acquired:
                                 stopping = True
                                 break
 
-                            if not task_limiter.wait(
+                            rate_started = time.perf_counter()
+                            allowed = task_limiter.wait(
                                 lambda: self._should_stop_requested(run_id, cancel_event)
-                            ):
+                            )
+                            run_metrics.record_stages(rate_wait_ms=(time.perf_counter() - rate_started) * 1000)
+                            if not allowed:
                                 task_limiter.release()
                                 stopping = True
                                 break
 
                             try:
+                                prepare_started = time.perf_counter()
+                                # Only scalar round settings change here. The task
+                                # constructs its isolated runtime config once.
+                                task_config = copy.copy(self.config)
+                                task_config.token_threshold = round_token_threshold
+                                task = TranslatorTask(
+                                    self.task_context,
+                                    self.platform,
+                                    local_flag,
+                                    items,
+                                    [] if current_round >= 3 else precedings,
+                                    runtime_config=task_config,
+                                    candidate_sink=lambda candidates, current_run_id=run_id, current_cancel_event=cancel_event: self._merge_analysis_candidates_for_run(
+                                        current_run_id, current_cancel_event, candidates
+                                    ),
+                                )
+                                run_metrics.record_stages(task_prepare_ms=(time.perf_counter() - prepare_started) * 1000)
+                                task._throughput_metrics = run_metrics
+                                task._submitted_at = time.perf_counter()
                                 future = executor.submit(
                                     self._run_translation_task,
                                     task,
@@ -1522,11 +1656,17 @@ class Translator(Base):
                                     run_id,
                                     cancel_event,
                                 )
+                                self._track_active_future(future, run_id)
                             except RuntimeError:
                                 task_limiter.release()
                                 stopping = True
                                 break
+                            except Exception:
+                                task_limiter.release()
+                                raise
                             future.add_done_callback(task_limiter.release)
+                            submitted_batches += 1
+                            submitted_items += len(items)
                             future.add_done_callback(
                                 lambda future, current_run_id = run_id, current_cancel_event = cancel_event: self.task_done_callback(
                                     future,
@@ -1553,6 +1693,13 @@ class Translator(Base):
                             with self.data_lock:
                                 if self._active_executor is executor:
                                     self._active_executor = None
+
+                if submitted_batches:
+                    self.info(
+                        f"[BATCH] 本轮提交 {submitted_batches} 批 / {submitted_items} 条，"
+                        f"平均 {submitted_items / submitted_batches:.1f} 条/批，"
+                        f"经过 {time.monotonic() - round_started:.1f} 秒（含准备、请求和重试）"
+                    )
 
                 # 停止信号可能恰好在 shutdown 后到达，离开线程池后再检查一次，
                 # 避免继续进入结果判断、缓存写入等昂贵阶段。
@@ -1644,6 +1791,10 @@ class Translator(Base):
                 return None
 
             # 只有当前运行才能释放状态并通知完成，迟到旧线程不得影响新任务。
+            metrics_status = (
+                "completed" if self.cache_manager.get_item_count_by_status(Base.TranslationStatus.UNTRANSLATED) == 0
+                else "incomplete"
+            )
             if self._is_translation_run_current(run_id):
                 Engine.get().release_status(Engine.Status.TRANSLATING)
                 self.emit(Base.Event.TRANSLATION_DONE, {
@@ -1671,6 +1822,24 @@ class Translator(Base):
                     "error": type(e).__name__,
                 })
         finally:
+            if run_metrics is not None:
+                if self._should_stop_requested(run_id, cancel_event):
+                    metrics_status = "stopped_partial"
+                try:
+                    report = run_metrics.write_report(metrics_output, status=metrics_status, settings=metrics_settings)
+                    if self._is_translation_run_current(run_id):
+                        with self.data_lock:
+                            self.extras["throughput"] = run_metrics.snapshot()
+                        self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
+                    summary = run_metrics.snapshot()
+                    self.info(
+                        f"[THROUGHPUT] {summary['effective_item_count']} 条有效译文，"
+                        f"{summary['effective_items_per_minute']:.1f} 条/分钟；"
+                        f"逻辑请求 {summary['logical_request_count']} / HTTP 尝试 {summary['http_attempt_count']}；"
+                        f"报告：{report}"
+                    )
+                except Exception as exc:
+                    self.warning(f"[THROUGHPUT] 保存运行报告失败：{type(exc).__name__}")
             self._unbind_run_context()
             current_thread = threading.current_thread()
             with self.data_lock:
@@ -1735,7 +1904,9 @@ class Translator(Base):
         """Complete unchanged cached items explicitly allowed by validation."""
         checker = ResponseChecker(self.config, items)
         accepted = 0
-        for item in items:
+        for index, item in enumerate(items, 1):
+            if not self._yield_prepare_slice(index):
+                return accepted
             if item.get_status() != Base.TranslationStatus.UNTRANSLATED:
                 continue
             src = str(item.get_src() or "")
@@ -1789,6 +1960,7 @@ class Translator(Base):
                 break
             task_config = self.task_context.to_runtime_config(self.config)
             try:
+                prepare_started = time.perf_counter()
                 task = TranslatorTask(
                     self.task_context,
                     self.platform,
@@ -1802,7 +1974,12 @@ class Translator(Base):
                         candidates,
                     ),
                 )
-                task.start(round_index)
+                metrics = getattr(self, "_throughput_metrics", None)
+                if metrics is not None:
+                    metrics.record_stages(task_prepare_ms=(time.perf_counter() - prepare_started) * 1000)
+                    task._throughput_metrics = metrics
+                    task._submitted_at = time.perf_counter()
+                self._run_translation_task(task, round_index, run_id, cancel_event)
             except Exception as exc:
                 self.warning(f"[VERIFY] 第二次翻译请求失败: {exc}")
                 continue
@@ -1865,8 +2042,8 @@ class Translator(Base):
         count: int = 0
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if RuleFilter.filter(item.get_src()) == True:
@@ -1886,8 +2063,8 @@ class Translator(Base):
         count: int = 0
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if LanguageFilter.filter(item.get_src(), self.config.source_language) == True:
@@ -1908,8 +2085,8 @@ class Translator(Base):
         items_kvjson: list[CacheItem] = []
         with ProgressBar(transient = False) as progress:
             pid = progress.new()
-            for item in items:
-                if self._should_stop_requested():
+            for index, item in enumerate(items, 1):
+                if not self._yield_prepare_slice(index):
                     return None
                 progress.update(pid, advance = 1, total = len(items))
                 if item.get_file_type() == CacheItem.FileType.KVJSON:
@@ -1986,6 +2163,8 @@ class Translator(Base):
         # 写回失败时 write_to_path 会抛出，但兜底注入仍要按写回报告尝试一次，
         # 之后再把原始异常抛给调用方，保证失败不会被静默吞掉。
         try:
+            from module.File.FileManager import FileManager
+
             FileManager(self.config).write_to_path(items)
         except Exception:
             self._auto_reinject_on_writeback_fail(items)
@@ -2036,6 +2215,8 @@ class Translator(Base):
             cache_manager = CacheManager(service = False)
             cache_manager.load_items_from_file(self.config.output_folder)
             reinject_items = cache_manager.get_items()
+            from module.File.FileManager import FileManager
+
             FileManager(reinject_config).write_to_path(reinject_items)
             self.info(f"[REINJECT] 自动注入完成：{self.config.output_folder}")
         except Exception as exc:

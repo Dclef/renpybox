@@ -142,8 +142,9 @@ class RENPYHOOK(Base):
                 use_translate_python=True,
                 wrap_existing=True,
             )
-        elif output_path.exists():
-            output_path.unlink()
+        else:
+            output_path.unlink(missing_ok=True)
+            output_path.with_suffix(".rpyc").unlink(missing_ok=True)
 
         self._update_manifest_result(manifest_path, target_items, output_path, len(pairs))
         self._write_report(target_items, output_path, len(pairs))

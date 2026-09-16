@@ -1,5 +1,6 @@
 import os
 import platform
+import subprocess
 
 
 def is_64_bit():
@@ -7,6 +8,7 @@ def is_64_bit():
 
 
 def get_python_path_from_game_dir(game_dir):
+    game_dir = str(game_dir).rstrip('/\\') + '/'
     lib_list_64 = ['windows-x86_64', 'py2-windows-x86_64', 'py3-windows-x86_64']
     lib_list_86 = ['windows-i686', 'py2-windows-i686', 'py3-windows-i686']
     python_path = None
@@ -43,19 +45,51 @@ def is_python2_with_python_dir(python_dir):
     return is_py2
 
 
+def detect_python_major(python_path):
+    """Probe the embedded interpreter instead of relying only on its name."""
+    if not python_path or not os.path.isfile(python_path):
+        return None
+    try:
+        result = subprocess.run(
+            [python_path, '-c', 'import sys; print(sys.version_info[0])'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+        )
+        value = (result.stdout or '').strip()
+        if result.returncode == 0 and value in ('2', '3'):
+            return int(value)
+    except Exception:
+        return None
+    return None
+
+
+def detect_python_major_from_game_dir(game_dir):
+    return detect_python_major(get_python_path_from_game_dir(game_dir))
+
+
 def is_python2_from_game_dir(game_dir):
     try:
-        python_dir = os.path.dirname(get_python_path_from_game_dir(game_dir))
+        python_path = get_python_path_from_game_dir(game_dir)
+        major = detect_python_major(python_path)
+        if major in (2, 3):
+            return major == 2
+        python_dir = os.path.dirname(python_path)
     except Exception:
-        return True
+        return None
     return is_python2_with_python_dir(python_dir)
 
 
 def is_python2_from_game_path(game_path):
     try:
-        python_dir = os.path.dirname(get_python_path_from_game_path(game_path))
+        python_path = get_python_path_from_game_path(game_path)
+        major = detect_python_major(python_path)
+        if major in (2, 3):
+            return major == 2
+        python_dir = os.path.dirname(python_path)
     except Exception:
-        return True
+        return None
     return is_python2_with_python_dir(python_dir)
 
 

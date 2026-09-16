@@ -41,9 +41,7 @@ from qfluentwidgets import SingleDirectionScrollArea
 from base.Base import Base
 from module.Config import Config
 from module.Engine.Engine import Engine
-from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator, QualityTaskType
 from module.Cache.CacheManager import CacheManager
-from module.File.FileManager import FileManager
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
 from module.Localizer.Localizer import Localizer
@@ -57,6 +55,23 @@ from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_app_page, set_semantic_status, set_text_role
 from widget.ThemeTokens import current_palette
+
+
+QUALITY_TASK_POLISHER = "POLISHER"
+QUALITY_TASK_PROOFREADER = "PROOFREADER"
+
+
+class QualityTaskCoordinator:
+    """延迟导入质量任务模块，避免翻译页启动时加载模型 SDK。"""
+
+    @staticmethod
+    def get():
+        from module.Engine.Quality.QualityTaskCoordinator import (
+            QualityTaskCoordinator as RuntimeQualityTaskCoordinator,
+        )
+
+        return RuntimeQualityTaskCoordinator.get()
+
 
 def restore_resumable_translation_paths(config: Config) -> Config:
     """Bind a resume request to the cache selected by the last-run manifest."""
@@ -293,6 +308,7 @@ class TranslationPage(QWidget, Base):
 
     runtime_status_updated = pyqtSignal(object, object)
     token_estimate_done = pyqtSignal(object, object)
+    translation_start_prepare_done = pyqtSignal(object, object, object)
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
@@ -357,9 +373,15 @@ class TranslationPage(QWidget, Base):
         self.subscribe(Base.Event.PROJECT_STATUS_CHECK_DONE, self.update_button_status)
         self.runtime_status_updated.connect(self.update_button_status)
         self.token_estimate_done.connect(self._on_token_estimate_done)
+        self.translation_start_prepare_done.connect(self._on_translation_start_prepare_done)
         self._token_estimate_running = False
+        self._translation_start_prepare_running = False
+        self._translation_start_prepare_window = None
+        self._project_status_loaded_once = False
+        self._project_status_dirty = False
         self._peak_speed = 0.0
         self._peak_speed_start_time = 0
+        self.subscribe(Base.Event.PROJECT_CHANGED, self._on_project_changed)
 
         # 定时器
         self.ui_update_timer = QTimer(self)
@@ -390,12 +412,49 @@ class TranslationPage(QWidget, Base):
     def showEvent(self, event) -> None:
         super().showEvent(event)
 
-        # 重置 frontend 状态
-        self.action_continue.setEnabled(False)
-        self.action_retry_failed.setEnabled(False)
+        self.update_button_status(Base.Event.PROJECT_STATUS_CHECK_DONE, self.data)
 
-        # 触发事件
-        self.emit(Base.Event.PROJECT_STATUS, {})
+        if not self._project_status_loaded_once or self._project_status_dirty:
+            self._project_status_dirty = False
+            self.emit(Base.Event.PROJECT_STATUS, {})
+
+    def _on_project_changed(self, event: str, data: dict) -> None:
+        """项目切换后下次显示再刷新，避免首屏显示时重复读缓存。"""
+        self._project_status_loaded_once = False
+        self._project_status_dirty = True
+
+    def preload_project_status(self) -> None:
+        """在启动页阶段同步读取项目状态，避免主界面显示后再卡顿。"""
+        payload = self._read_project_status_payload({})
+        self._project_status_loaded_once = True
+        self._project_status_dirty = False
+        self.update_button_status(Base.Event.PROJECT_STATUS_CHECK_DONE, payload)
+
+    def _read_project_status_payload(self, data: dict) -> dict:
+        try:
+            if Engine.get().get_status() != Engine.Status.IDLE:
+                return {"status": Base.TranslationStatus.UNTRANSLATED}
+
+            output_folder = ""
+            translator = getattr(Engine.get(), "translator", None)
+            resolver = getattr(translator, "_resolve_project_status_output_folder", None)
+            if callable(resolver):
+                output_folder = resolver(data)
+            else:
+                resolved = resolve_translation_output(Config().load())
+                output_folder = str(resolved) if resolved is not None else ""
+
+            cache_manager = CacheManager(service = False)
+            cache_manager.load_project_from_file(output_folder)
+            status = cache_manager.get_project().get_status()
+            extras = cache_manager.get_project().get_progress() or {}
+            payload = {"status": status}
+            if isinstance(extras, dict):
+                payload.update(extras)
+            return payload
+        except Exception as exc:
+            self.warning("[STARTUP] 预读翻译缓存状态失败", exc)
+            return {"status": Base.TranslationStatus.UNTRANSLATED}
 
     # 更新 frontend 定时器
     def update_ui_tick(self) -> None:
@@ -417,15 +476,20 @@ class TranslationPage(QWidget, Base):
 
         # 如果是项目状态检查完成事件，更新缓存的进度数据
         if event == Base.Event.PROJECT_STATUS_CHECK_DONE:
+            self._project_status_loaded_once = True
+            self._project_status_dirty = False
             # 状态检查返回的是完整 progress，必须合并 Token 统计，
             # 否则重新打开页面后 Token 会被清零。
             if isinstance(data, dict):
                 self.data = {**self.data, **data}
             self.update_status(self.data)
 
+        preparing_start = bool(getattr(self, "_translation_start_prepare_running", False))
+
         if Engine.get().get_status() == Engine.Status.IDLE:
-            self.indeterminate_hide()
-            self.action_start.setEnabled(True)
+            if not preparing_start:
+                self.indeterminate_hide()
+            self.action_start.setEnabled(not preparing_start)
             self.action_stop.setEnabled(False)
             # 空闲状态下，如果有缓存数据也允许导出
             self.action_export.setEnabled(has_cache_data)
@@ -818,6 +882,44 @@ class TranslationPage(QWidget, Base):
         ]
         for label, value in zip(self.throughput_stat_values, values):
             label.setText(value)
+        metrics = self.data.get("throughput") or {}
+        titles = getattr(self, "throughput_stat_labels", [])
+        strings = Localizer.get()
+        if metrics.get("schema_version") == 1:
+            self.throughput_stat_values[0].setText(strings.translation_page_effective_rate.format(
+                RATE=float(metrics.get("effective_items_per_minute", 0)),
+            ))
+            latency_p95 = metrics.get("logical_request_ms_p95")
+            self.throughput_stat_values[3].setText(f"{latency_p95:.1f} ms" if latency_p95 is not None else "—")
+            if titles:
+                titles[0].setText(strings.translation_page_stat_effective)
+                titles[3].setText(strings.translation_page_stat_request_p95)
+            def milliseconds(key):
+                value = metrics.get(key)
+                return f"{float(value):.1f}" if value is not None else "—"
+            detail = strings.translation_page_timing_help.format(
+                COUNT=metrics.get("effective_item_count", 0),
+                REQUESTS=metrics.get("logical_request_count", 0),
+                HTTP=metrics.get("http_attempt_count", 0) if metrics.get("http_observation_complete") else "—",
+                P50=milliseconds("logical_request_ms_p50"),
+                FIRST=milliseconds("first_content_ms_p50"),
+                SLOT=milliseconds("slot_wait_ms"),
+                RATE=milliseconds("rate_wait_ms"),
+                PROVIDER=milliseconds("provider_ms"),
+                RETRY=milliseconds("retry_wait_ms"),
+                LOCAL=milliseconds("task_local_ms"),
+                CHECK=milliseconds("decode_check_ms"),
+                SAVE=milliseconds("cache_save_ms"),
+                LIMIT=metrics.get("sample_limit", 2048),
+            )
+            for label in self.throughput_stat_values:
+                label.setToolTip(detail)
+        else:
+            if titles:
+                titles[0].setText(strings.translation_page_stat_average)
+                titles[3].setText(strings.translation_page_stat_latency)
+            for label in self.throughput_stat_values:
+                label.setToolTip("")
 
     def _refresh_stream_feed(self) -> None:
         """展示引擎明确提供的最近流水；没有数据时保持真实空态。"""
@@ -953,18 +1055,17 @@ class TranslationPage(QWidget, Base):
         strings = Localizer.get()
         quality_data = quality if isinstance(quality, dict) else {}
         task_type = quality_data.get("task_type")
-        if isinstance(task_type, QualityTaskType):
-            task_type = task_type.value
+        task_type = getattr(task_type, "value", task_type)
         cancelling = bool(quality_data.get("cancel_requested", False))
 
-        if task_type == QualityTaskType.POLISHER.value:
+        if task_type == QUALITY_TASK_POLISHER:
             key = (
                 "translation_page_status_stopping_polishing"
                 if cancelling
                 else "translation_page_status_polishing"
             )
             fallback = "正在停止 AI 润色" if cancelling else "AI 润色中"
-        elif task_type == QualityTaskType.PROOFREADER.value:
+        elif task_type == QUALITY_TASK_PROOFREADER:
             key = (
                 "translation_page_status_stopping_proofreading"
                 if cancelling
@@ -1159,6 +1260,7 @@ class TranslationPage(QWidget, Base):
         stats_layout.setContentsMargins(0, 4, 0, 0)
         stats_layout.setSpacing(6)
         self.throughput_stat_values = []
+        self.throughput_stat_labels = []
         for label in (
             strings.translation_page_stat_average,
             strings.translation_page_stat_batches,
@@ -1173,6 +1275,7 @@ class TranslationPage(QWidget, Base):
             stat_layout.setContentsMargins(8, 5, 8, 5)
             stat_layout.setSpacing(1)
             stat_label = CaptionLabel(label, stat)
+            self.throughput_stat_labels.append(stat_label)
             stat_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             stat_label.setWordWrap(True)
             set_text_role(stat_label)
@@ -1424,6 +1527,29 @@ class TranslationPage(QWidget, Base):
         window: FluentWindow,
         request_id: str = "",
     ) -> bool:
+        if bool(getattr(self, "_translation_start_prepare_running", False)):
+            return False
+
+        if not TranslationPage._can_request_translation_start(self, window):
+            return False
+
+        if TranslationPage._should_prepare_translation_start_async(self):
+            TranslationPage._begin_translation_start_prepare(self, status, window, request_id)
+            return True
+
+        try:
+            payload, preflight = TranslationPage._prepare_translation_start_payload(self, status, request_id)
+        except Exception as exc:
+            InfoBar.error(
+                Localizer.get().alert,
+                Localizer.get().translation_page_preflight_load_error.replace("{ERROR}", str(exc)),
+                parent = window,
+                duration = 5000,
+            )
+            return False
+        return TranslationPage._dispatch_translation_start_payload(self, payload, preflight, window)
+
+    def _can_request_translation_start(self, window: FluentWindow) -> bool:
         engine = Engine.get()
         if (
             engine.get_status() != Engine.Status.IDLE
@@ -1436,7 +1562,65 @@ class TranslationPage(QWidget, Base):
                 parent=window,
             )
             return False
+        return True
 
+    def _should_prepare_translation_start_async(self) -> bool:
+        return isinstance(self, QWidget)
+
+    def _begin_translation_start_prepare(
+        self,
+        status: Base.TranslationStatus,
+        window: FluentWindow,
+        request_id: str = "",
+    ) -> None:
+        self._translation_start_prepare_running = True
+        self._translation_start_prepare_window = window
+        if hasattr(self, "action_start"):
+            self.action_start.setEnabled(False)
+        if hasattr(self, "action_stop"):
+            self.action_stop.setEnabled(False)
+        self.indeterminate_show(
+            Localizer.localize("正在准备翻译任务…", "Preparing the translation task...")
+        )
+
+        def task() -> None:
+            try:
+                payload, preflight = self._prepare_translation_start_payload(status, request_id)
+                self.translation_start_prepare_done.emit(payload, preflight, "")
+            except Exception as exc:
+                self.translation_start_prepare_done.emit(None, None, str(exc))
+
+        threading.Thread(
+            target = task,
+            name = "REN_TRANSLATION_START_PREPARE",
+            daemon = True,
+        ).start()
+
+    def _on_translation_start_prepare_done(self, payload, preflight, error: str) -> None:
+        self._translation_start_prepare_running = False
+        window = self._translation_start_prepare_window
+        self._translation_start_prepare_window = None
+        if error:
+            self.indeterminate_hide()
+            InfoBar.error(
+                Localizer.get().alert,
+                Localizer.get().translation_page_preflight_load_error.replace("{ERROR}", str(error)),
+                parent = window,
+                duration = 5000,
+            )
+            self.update_button_status(Base.Event.TRANSLATION_UPDATE, self.data)
+            return
+
+        started = self._dispatch_translation_start_payload(payload, preflight, window)
+        if not started:
+            self.indeterminate_hide()
+            self.update_button_status(Base.Event.TRANSLATION_UPDATE, self.data)
+
+    def _prepare_translation_start_payload(
+        self,
+        status: Base.TranslationStatus,
+        request_id: str = "",
+    ) -> tuple[dict, object]:
         # 在发出事件前冻结完整配置快照。翻译线程可能稍后才真正开始，
         # 此期间用户切换项目/平台时不能让本轮任务读取到新的全局路径。
         config = Config().load()
@@ -1449,20 +1633,34 @@ class TranslationPage(QWidget, Base):
         # 使用 Config 实例时才附加快照，保持兼容而不牺牲正式流程隔离。
         if isinstance(config, Config):
             payload["config"] = copy.deepcopy(config)
+        preflight = None
+        if status == Base.TranslationStatus.UNTRANSLATED:
+            state = ProjectAssetsRepository.from_config(config).load(config)
+            preflight = TranslationPreflightService.check(state.assets)
+            if not preflight.should_prompt_for_missing_assets:
+                payload["preflight_confirmed"] = True
+        return payload, preflight
+
+    def _dispatch_translation_start_payload(
+        self,
+        payload: dict | None,
+        preflight: object,
+        window: FluentWindow,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        if not TranslationPage._can_request_translation_start(self, window):
+            return False
+
+        status = payload.get("status")
         if status == Base.TranslationStatus.UNTRANSLATED:
             try:
-                state = ProjectAssetsRepository.from_config(config).load(config)
-                preflight = TranslationPreflightService.check(state.assets)
-            except Exception as exc:
-                InfoBar.error(
-                    Localizer.get().alert,
-                    Localizer.get().translation_page_preflight_load_error.replace("{ERROR}", str(exc)),
-                    parent = window,
-                    duration = 5000,
-                )
-                return False
+                should_prompt = bool(preflight.should_prompt_for_missing_assets)
+            except Exception:
+                should_prompt = False
 
-            if preflight.should_prompt_for_missing_assets:
+            if should_prompt:
                 message_box = MessageBox(
                     Localizer.get().translation_page_preflight_missing_assets_title,
                     Localizer.get().translation_page_preflight_missing_assets_content,
@@ -1564,8 +1762,9 @@ class TranslationPage(QWidget, Base):
         message_box.cancelButton.setText(Localizer.get().cancel)
 
         if message_box.exec():
+            self.action_stop.setEnabled(False)
             self.indeterminate_show(Localizer.get().translation_page_indeterminate_stoping)
-            self.emit(Base.Event.TRANSLATION_STOP, {})
+            QTimer.singleShot(0, lambda: self.emit(Base.Event.TRANSLATION_STOP, {}))
 
     # 继续翻译
     def add_command_bar_action_continue(self, parent: CommandBarCard, config: Config, window: FluentWindow) -> None:
@@ -1722,6 +1921,8 @@ class TranslationPage(QWidget, Base):
                 pass
 
         # 首次翻译尚未产生缓存时，直接按统一输入目录预读。
+        from module.File.FileManager import FileManager
+
         _, items = FileManager(config).read_from_path()
         return items
 
