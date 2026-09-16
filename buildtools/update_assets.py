@@ -258,6 +258,24 @@ def cmd_patch(args: argparse.Namespace) -> int:
     try:
         prev_payload = extract_prev_zip(prev_zip, extract_root)
         stats = build_patch(dist_dir, args.version, prev_payload, args.prev_version, out_zip)
+        # 在解压出的旧版副本上实际应用补丁，确认能重建完整目标后才交给发布流程。
+        import updater
+        from update_integrity import validate_installed_files
+
+        target_manifest = build_manifest(dist_dir, args.version)
+        verification_zip = extract_root / "verification.patch.zip"
+        import shutil
+
+        shutil.copy2(out_zip, verification_zip)
+        try:
+            updater.apply_update(
+                pid=0, zip_path=verification_zip, install_dir=prev_payload,
+                release_url=None, restart=False, exe_name="RenpyBox.exe",
+            )
+            validate_installed_files(prev_payload, target_manifest)
+        except Exception:
+            out_zip.unlink(missing_ok=True)
+            raise
     finally:
         import shutil
 

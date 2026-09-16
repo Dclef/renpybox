@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -19,6 +20,7 @@ from base.AppPaths import get_app_paths
 from base.Version import Version
 from base.compat import Self, StrEnum
 from module.Localizer.Localizer import Localizer
+from update_integrity import validate_installed_files
 
 
 class _DownloadCancelled(Exception):
@@ -132,6 +134,29 @@ class VersionManager(Base):
         return latest
 
     @classmethod
+    def _installed_manifest_version(cls) -> str | None:
+        """只有完整且与当前程序版本一致的安装才能使用增量包。"""
+        if not getattr(sys, "frozen", False):
+            return None
+        try:
+            exe = Path(sys.executable).resolve()
+            manifest = json.loads(
+                (exe.parent / "_update_manifest.json").read_text(encoding="utf-8")
+            )
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("format") != "renpybox-update-manifest/1"
+                or manifest.get("version") != Version.CURRENT
+                or exe.name not in manifest.get("files", {})
+                or (exe.parent / "_update_journal.json").exists()
+            ):
+                return None
+            validate_installed_files(exe.parent, manifest)
+            return manifest["version"]
+        except (OSError, ValueError, TypeError, RuntimeError):
+            return None
+
+    @classmethod
     def _select_download_asset(cls, latest: dict) -> dict:
         assets = latest.get("assets", [])
         if not isinstance(assets, list) or not assets:
@@ -156,6 +181,15 @@ class VersionManager(Base):
         target_asset = assets_by_name.get(full_name)
         if target_asset is None:
             raise RuntimeError(f"Expected release asset not found: RenpyBox_{version}.zip")
+        # 无匹配补丁时不扫描磁盘；损坏、缺文件或中断过的安装直接走全量修复。
+        patch_name = f"RenpyBox_{version}.from-{Version.CURRENT}.patch.zip".casefold()
+        patch_asset = assets_by_name.get(patch_name)
+        if (
+            patch_asset is not None
+            and 0 < cls._safe_int(patch_asset.get("size")) < cls._safe_int(target_asset.get("size"))
+            and cls._installed_manifest_version() is not None
+        ):
+            return copy.deepcopy(patch_asset)
         return copy.deepcopy(target_asset)
 
     @classmethod

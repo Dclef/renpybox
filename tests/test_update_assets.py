@@ -69,13 +69,14 @@ def _build_patch_for(tmp_path: Path, v1: Path, v2: Path) -> Path:
     return patch_zip
 
 
-def test_build_workflow_publishes_only_full_package() -> None:
+def test_build_workflow_keeps_full_package_and_verified_patch() -> None:
     workflow = (
         Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
     ).read_text(encoding="utf-8")
-    assert "Generate Incremental Patch" not in workflow
-    assert "Collect Release Files" not in workflow
-    assert "files: RenpyBox_${{ steps.check_version.outputs.version }}.zip" in workflow
+    assert "Generate Incremental Patch" in workflow
+    assert "RenpyBox_${{ steps.check_version.outputs.version }}.zip" in workflow
+    assert "${{ steps.incremental_patch.outputs.file }}" in workflow
+    assert 'if ($LASTEXITCODE -ne 0) { throw "增量重建校验失败' in workflow
 
 
 def test_build_manifest_covers_all_files(tmp_path: Path) -> None:
@@ -498,3 +499,57 @@ def test_full_update_without_manifest_skips_install_state(tmp_path: Path) -> Non
         exe_name = "RenpyBox.exe",
     )
     assert not (install_dir / MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_patch_rejects_damaged_unchanged_dependency(tmp_path: Path, damage: str) -> None:
+    """补丁不携带的依赖必须完整，不能更新成功后才暴露启动缺文件。"""
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    install = tmp_path / "install"
+    _install_from(v1, install, manifest=build_manifest(v1, "v1.0.0"))
+    patch = _build_patch_for(tmp_path, v1, v2)
+    dependency = install / "_internal" / "data.bin"
+    if damage == "missing":
+        dependency.unlink()
+    else:
+        dependency.write_bytes(b"z" * dependency.stat().st_size)
+    with pytest.raises(RuntimeError, match="全量更新"):
+        updater.apply_update(
+            pid=0, zip_path=patch, install_dir=install,
+            release_url=None, restart=False, exe_name="RenpyBox.exe",
+        )
+    assert (install / "_internal" / "base.py").read_bytes() == (v1 / "_internal" / "base.py").read_bytes()
+    assert not (install / updater.JOURNAL_NAME).exists()
+    assert patch.is_file()
+
+
+def test_patch_command_verifies_reconstructed_installation(tmp_path: Path) -> None:
+    from buildtools.update_assets import main
+
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    full = _make_full_zip(v1, tmp_path / "v1.zip", "v1.0.0")
+    patch = tmp_path / "v2.patch.zip"
+    assert main([
+        "patch", "--dist", str(v2), "--version", "v2.0.0",
+        "--prev-zip", str(full), "--prev-version", "v1.0.0", "--out", str(patch),
+    ]) == 0
+    assert validate_patch_zip(patch, "v2.0.0")["base_version"] == "v1.0.0"
+
+
+def test_patch_command_discards_failed_reconstruction(tmp_path: Path, monkeypatch) -> None:
+    from buildtools.update_assets import main
+
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    full = _make_full_zip(v1, tmp_path / "v1.zip", "v1.0.0")
+    patch = tmp_path / "v2.patch.zip"
+    # 模拟应用器遗漏文件，即使未报错也不能发布校验不一致的补丁。
+    monkeypatch.setattr(updater, "apply_update", lambda **kwargs: None)
+    with pytest.raises(RuntimeError, match="校验失败"):
+        main([
+            "patch", "--dist", str(v2), "--version", "v2.0.0",
+            "--prev-zip", str(full), "--prev-version", "v1.0.0", "--out", str(patch),
+        ])
+    assert not patch.exists()
