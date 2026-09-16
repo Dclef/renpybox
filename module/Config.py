@@ -111,6 +111,10 @@ class Config():
 
     # BasicSettingsPage
     token_threshold: int = 10
+    # 独立的每批原文 token 上限；0 表示沿用旧的“行数 × 16”推导方式。
+    max_batch_source_tokens: int = 1024
+    # 0 使用后端默认输出预算，不随任务行数或重试批次收缩。
+    max_output_tokens: int = 0
     # 默认使用固定并发；用户仍可手动设置 0，表示按接口槽位自动探测。
     max_workers: int = 16
     rpm_threshold: int = 0
@@ -202,6 +206,10 @@ class Config():
     renpy_tl_folder: str = ""
     extract_use_official: bool = True
     extract_use_custom: bool = True
+    # 补充抽取模式：off=仅官方抽取（不跑补充抽取）；
+    # precise=projz 式定向精准扫（默认，低误报）；
+    # aggressive=旧宽扫描（任意引号+宽松英文行，覆盖广但易误抽）。
+    extract_supplement_mode: str = "precise"
     extract_skip_hook_files: bool = True
     extract_export_excel: bool = False
     extract_split_names: bool = True
@@ -357,6 +365,17 @@ class Config():
         config.setdefault("last_seen_version", "")
         config.setdefault("agent_platform", -1)
         config.setdefault("max_workers", 16)
+        config.setdefault("max_batch_source_tokens", 0)
+        config.setdefault("max_output_tokens", 0)
+
+        for budget_key in ("max_batch_source_tokens", "max_output_tokens"):
+            budget_value = config.get(budget_key)
+            if (
+                not isinstance(budget_value, int)
+                or isinstance(budget_value, bool)
+                or budget_value < 0
+            ):
+                config[budget_key] = 0
 
         if not isinstance(config.get("last_seen_version"), str):
             config["last_seen_version"] = ""

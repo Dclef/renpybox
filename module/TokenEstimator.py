@@ -77,7 +77,8 @@ class TokenEstimator:
             not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
         ):
             line_limit = 1
-        token_limit = max(64, self.config.token_threshold * 16)
+        source_budget = max(0, int(getattr(self.config, "max_batch_source_tokens", 0)))
+        token_limit = source_budget or max(64, line_limit * 16)
         batches = self._estimate_batches(untranslated, line_limit, token_limit)
         batch_count = len(batches)
 

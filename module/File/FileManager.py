@@ -2,6 +2,7 @@ import copy
 import os
 import random
 from datetime import datetime
+from pathlib import Path
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
@@ -144,9 +145,12 @@ class FileManager(Base):
             if os.path.isfile(input_folder):
                 paths = [input_folder]
             elif os.path.isdir(input_folder):
-                for root, _, files in os.walk(input_folder):
+                for root, dirs, files in os.walk(input_folder):
                     if self._is_stop_requested():
                         break
+                    # Runtime rule payloads are generated artifacts, not new
+                    # translation input (their JSON arrays are not MESSAGEJSON).
+                    dirs[:] = [name for name in dirs if name not in (".renpybox_replace", ".renpybox_metrics")]
                     for file in files:
                         if self._is_stop_requested():
                             break
@@ -166,6 +170,11 @@ class FileManager(Base):
             for path in paths:
                 if self._is_stop_requested():
                     return project, items
+                candidate = Path(path)
+                if any(part in (".renpybox_replace", ".renpybox_metrics") for part in candidate.parts):
+                    continue
+                if candidate.name in ("replace_text_auto.diagnostics.json", "replace_text.diagnostics.json"):
+                    continue
                 extension = os.path.splitext(path)[1].lower()
                 paths_by_extension.setdefault(extension, []).append(path)
 

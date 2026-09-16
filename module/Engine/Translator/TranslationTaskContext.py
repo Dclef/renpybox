@@ -765,6 +765,8 @@ _PROCESSING_FIELDS = (
     "text_preserve_enable",
     "token_estimation_output_ratio",
     "token_threshold",
+    "max_batch_source_tokens",
+    "max_output_tokens",
     "traditional_chinese_enable",
     "write_translated_name_fields_to_file",
 )
@@ -1060,8 +1062,8 @@ class TranslationTaskContext:
                     setattr(runtime, key, _thaw(value))
 
         if current_config is not None:
-            # 停止后继续翻译时，任务行数、并发和 RPM 使用当前设置。
-            for key in ("token_threshold", "max_workers", "rpm_threshold"):
+            # 停止后继续翻译时，任务批量、并发和 RPM 使用当前设置。
+            for key in ("token_threshold", "max_batch_source_tokens", "max_output_tokens", "max_workers", "rpm_threshold"):
                 if key in current_data:
                     setattr(runtime, key, deepcopy(current_data[key]))
 

@@ -81,7 +81,21 @@ class Engine():
         return self.try_set_status(expected, __class__.Status.IDLE)
 
     def get_running_task_count(self) -> int:
-        return sum(1 for t in threading.enumerate() if t.name.startswith(__class__.TASK_PREFIX))
+        with self.lock:
+            status = self.status
+
+        if status not in (__class__.Status.TRANSLATING, __class__.Status.STOPPING):
+            return 0
+
+        translator = getattr(self, "translator", None)
+        counter = getattr(translator, "get_active_task_count", None)
+        if not callable(counter):
+            return 0
+
+        try:
+            return max(0, int(counter()))
+        except Exception:
+            return 0
 
     def try_begin_single_task(self) -> bool:
         """在空闲状态登记单条重译；允许同一批次并行提交多条。"""

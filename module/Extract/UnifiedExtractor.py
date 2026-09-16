@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import inspect
 import json
 import re
 import shutil
@@ -132,6 +133,7 @@ class UnifiedExtractor:
         self.logger = LogManager.get()
         self.renpy_extractor = renpy_extractor or RenpyExtractor()
         self._progress_callback: Optional[Callable[[str, int], None]] = None
+        self._cancel_callback: Optional[Callable[[], bool]] = None
         self._last_suspicious_manifest: Optional[Path] = None
         self._last_suspicious_removed_count: int = 0
         # 内置 UI 文件跳过日志每个文件仅记录一次，避免多次全目录扫描时刷屏
@@ -152,6 +154,47 @@ class UnifiedExtractor:
     def set_progress_callback(self, callback: Optional[Callable[[str, int], None]]):
         """设置进度回调 (message, percent)"""
         self._progress_callback = callback
+
+    def set_cancel_callback(self, callback: Optional[Callable[[], bool]]):
+        """Register a cooperative cancellation callback for extraction."""
+        self._cancel_callback = callback
+
+    def _is_cancelled(self) -> bool:
+        callback = getattr(self, "_cancel_callback", None)
+        try:
+            return bool(callback and callback())
+        except Exception:
+            return False
+
+    def _run_official_extract(self, exe_path, tl_name, *, generate_empty=False, force=True):
+        """Call extractors from old and new plugin versions safely."""
+        kwargs = {
+            "generate_empty": generate_empty,
+            "force": force,
+            "should_stop": self._is_cancelled,
+            "progress_callback": lambda message: self._emit_progress(str(message), 30),
+        }
+        return self._call_with_optional_callbacks(
+            self.renpy_extractor.official_extract, str(exe_path), tl_name, **kwargs
+        )
+
+    @staticmethod
+    def _call_with_optional_callbacks(function, *args, **kwargs):
+        try:
+            parameters = inspect.signature(function).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+            kwargs = {
+                key: value for key, value in kwargs.items()
+                if key not in {"should_stop", "progress_callback", "official_coverage", "source_game_dir"}
+            }
+        if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+        return function(*args, **kwargs)
+
+    def _check_cancel(self):
+        if self._is_cancelled():
+            raise rx.ExtractionCancelled("抽取已取消")
 
     def extract_json(self, game_dir: Path, output_dir: Path) -> ExtractionResult:
         """
@@ -177,6 +220,7 @@ class UnifiedExtractor:
             return ExtractionResult(success=False, message=str(e))
     
     def _emit_progress(self, message: str, percent: int):
+        self._check_cancel()
         self.logger.info(f"[{percent}%] {message}")
         callback = getattr(self, "_progress_callback", None)
         if callback:
@@ -207,6 +251,7 @@ class UnifiedExtractor:
             key=lambda path: path.relative_to(tl_dir).as_posix().casefold(),
         )
         for rpy_file in files:
+            self._check_cancel()
             try:
                 rel_parts = [part.lower() for part in rpy_file.relative_to(tl_dir).parts[:-1]]
                 if any(part in self.INTERNAL_TL_DIRS for part in rel_parts):
@@ -249,6 +294,8 @@ class UnifiedExtractor:
         translations: Dict[str, str] = {}
         index = 0
         while index < len(lines):
+            if index % 1024 == 0:
+                self._check_cancel()
             header = self.TRANSLATE_HEADER_RE.match(lines[index])
             if header:
                 label = (header.group("label") or "").strip()
@@ -1404,13 +1451,17 @@ class UnifiedExtractor:
             backup_path = self._backup_tl_dir(game_dir, tl_name)
             
             # 2. 官方抽取
+            self.official_extraction_status = "not_run"
             if allow_official:
                 self._emit_progress("正在执行官方抽取...", 20)
                 try:
-                    self.renpy_extractor.official_extract(
-                        str(exe_path), tl_name, generate_empty=False, force=True
-                    )
+                    self._run_official_extract(exe_path, tl_name)
+                    self.official_extraction_status = "succeeded"
                 except Exception as e:
+                    self._check_cancel()
+                    self.official_extraction_status = "failed"
+                    if not allow_custom:
+                        raise
                     self.logger.warning(f"官方抽取失败: {e}，将仅使用补充抽取")
             elif use_official and not exe_path:
                 self.logger.warning("未提供可执行文件，已跳过官方抽取")
@@ -1423,12 +1474,30 @@ class UnifiedExtractor:
                 tl_dir.mkdir(parents=True, exist_ok=True)
                 # ExtractAllFilesInDir(dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline)
                 # 放宽长度过滤，减少 UI 短词漏提取
-                rx.ExtractAllFilesInDir(str(tl_dir), True, 4, False, True)
+                _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
+                    str(tl_dir), True, 4, False, True,
+                    should_stop=self._is_cancelled,
+                    progress_callback=lambda message: self._emit_progress(str(message), 50),
+                    official_coverage=self.official_extraction_status == "succeeded",
+                    precise=_precise,
+                )
             else:
                 self.logger.info("根据配置跳过补充抽取阶段")
-            
+
             # 4. 静态补充抽取：把官方/自定义流程仍可能漏掉的源码文本写入标准 TL。
-            self._append_static_supplement_entries(game_dir, tl_dir, tl_name)
+            # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
+            if allow_custom:
+                _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                _static_candidates = self._call_with_optional_callbacks(
+                    rx.collect_static_source_strings, game_dir,
+                    should_stop=self._is_cancelled, precise=_precise_static,
+                )
+                self._append_static_supplement_entries(
+                    game_dir, tl_dir, tl_name, candidates=_static_candidates,
+                )
+            else:
+                self.logger.info("根据配置跳过静态补充抽取阶段")
 
             # 5. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
@@ -1505,6 +1574,7 @@ class UnifiedExtractor:
         game_dir = Path(game_dir)
         tl_dir = game_dir / "game" / "tl" / tl_name
         result.tl_dir = tl_dir
+        self._recover_stale_incremental_state(game_dir, tl_name)
         self._warn_if_writeback_report(tl_dir)
         
         # 新增内容的输出目录
@@ -1571,6 +1641,9 @@ class UnifiedExtractor:
             temp_tl_dir = temp_extract_dir / "game" / "tl" / tl_name
             temp_tl_dir.parent.mkdir(parents=True, exist_ok=True)
             temp_backup_dir = temp_extract_dir / "_tl_backup"
+            incremental_backup_dir = temp_extract_dir / "_incremental_backup"
+            incremental_output_started = False
+            incremental_output_complete = False
             # 崩溃恢复日志：移动 tl 前写入，结束时清除。
             self._write_incremental_journal(game_dir, tl_name, temp_extract_dir, tl_dir)
             
@@ -1602,14 +1675,20 @@ class UnifiedExtractor:
                 try:
                     # 5. 官方抽取（写入到 tl_dir）
                     official_string_originals: Set[str] = set()
+                    official_succeeded = False
+                    self.official_extraction_status = "not_run"
                     if allow_official:
                         self._emit_progress("正在执行官方抽取...", 30)
                         try:
-                            self.renpy_extractor.official_extract(
-                                str(exe_path), tl_name, generate_empty=False, force=True
-                            )
+                            self._run_official_extract(exe_path, tl_name)
                             official_string_originals = self._get_string_originals(tl_dir)
+                            official_succeeded = True
+                            self.official_extraction_status = "succeeded"
                         except Exception as e:
+                            self._check_cancel()
+                            self.official_extraction_status = "failed"
+                            if not allow_custom:
+                                raise
                             self.logger.warning(f"官方抽取失败: {e}")
                     else:
                         if use_official and not exe_path:
@@ -1621,9 +1700,17 @@ class UnifiedExtractor:
                     if allow_custom:
                         self._emit_progress("正在执行补充抽取...", 50)
                         try:
-                            rx.ExtractAllFilesInDir(str(tl_dir), True, 4, False, True)
+                            _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                            self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
+                                str(tl_dir), True, 4, False, True,
+                                should_stop=self._is_cancelled,
+                                progress_callback=lambda message: self._emit_progress(str(message), 50),
+                                official_coverage=official_succeeded,
+                                precise=_precise,
+                            )
                         except Exception as e:
-                            self.logger.warning(f"补充抽取失败: {e}")
+                            self._check_cancel()
+                            raise RuntimeError(f"补充抽取失败: {e}") from e
                     else:
                         self.logger.info("增量抽取：根据配置跳过补充抽取阶段")
 
@@ -1643,15 +1730,25 @@ class UnifiedExtractor:
                     _relocate_dir(temp_backup_dir, tl_dir, remove_src=True)
                 
                 # 静态源码文本必须写入标准 TL，不交给 replace_text。
-                static_candidates = rx.collect_static_source_strings(game_dir)
-                menu_candidates = set(rx.collect_static_menu_strings(game_dir))
-                static_added = self._append_static_supplement_entries(
-                    game_dir,
-                    temp_tl_dir,
-                    tl_name,
-                    candidates=static_candidates,
-                    menu_candidates=menu_candidates,
-                )
+                # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
+                if allow_custom:
+                    _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                    static_candidates = self._call_with_optional_callbacks(
+                        rx.collect_static_source_strings, game_dir,
+                        should_stop=self._is_cancelled, precise=_precise_static,
+                    )
+                    menu_candidates = set(self._call_with_optional_callbacks(
+                        rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
+                    ))
+                    static_added = self._append_static_supplement_entries(
+                        game_dir,
+                        temp_tl_dir,
+                        tl_name,
+                        candidates=static_candidates,
+                        menu_candidates=menu_candidates,
+                    )
+                else:
+                    static_added = 0
                 # 6. strings 与编号翻译块分别计算增量。
                 extracted_block_originals: Set[str] = set()
                 new_extracted_string_originals = self._get_string_originals(
@@ -1666,7 +1763,8 @@ class UnifiedExtractor:
                     menu_candidates=menu_candidates,
                     # 官方抽取未运行时无可信集合，传 None 走全量差集，
                     # 否则空集交集会把补充抽取结果全部丢弃。
-                    trusted_originals=official_string_originals if allow_official else None,
+                    trusted_originals=official_string_originals if official_succeeded else None,
+                    source_game_dir=game_dir,
                 )
                 # 历史判定不译的候选不再重复提出。
                 declined_candidates = load_declined_candidates(game_dir, tl_name)
@@ -1719,7 +1817,8 @@ class UnifiedExtractor:
                     # 8a. 将新增内容输出到单独文件夹
                     self._emit_progress("正在分离新增/待翻译内容...", 70)
                     if incremental_dir.exists():
-                        shutil.rmtree(str(incremental_dir))
+                        shutil.move(str(incremental_dir), str(incremental_backup_dir))
+                    incremental_output_started = True
                     incremental_dir.mkdir(parents=True, exist_ok=True)
                     
                     self._extract_new_entries_to_folder(
@@ -1833,14 +1932,22 @@ class UnifiedExtractor:
                     self.logger.debug("跳过 base_box 注入（配置已关闭）")
                 
                 self._emit_progress("增量抽取完成", 100)
+                incremental_output_complete = True
 
             finally:
-                # 清理临时目录
-                if temp_extract_dir.exists():
-                    shutil.rmtree(str(temp_extract_dir), ignore_errors=True)
+                if incremental_output_started and not incremental_output_complete:
+                    if incremental_dir.exists():
+                        shutil.rmtree(str(incremental_dir))
+                    if incremental_backup_dir.exists():
+                        shutil.move(str(incremental_backup_dir), str(incremental_dir))
+                # Failed recovery must never delete the only copy of the user's TL.
                 if not temp_backup_dir.exists():
+                    if temp_extract_dir.exists():
+                        shutil.rmtree(str(temp_extract_dir), ignore_errors=True)
                     # 备份已成功放回 tl，恢复日志不再需要。
                     self._clear_incremental_journal(game_dir, tl_name)
+                else:
+                    self.logger.error(f"原翻译仍在恢复备份中，已保留: {temp_backup_dir}")
             
         except Exception as e:
             import traceback
@@ -2549,9 +2656,9 @@ class UnifiedExtractor:
                 in_block = False
                 continue
             if stripped.startswith("#"):
-                match = re.search(r'"((?:\\.|[^"])*)"', stripped)
-                if match:
-                    originals.add(match.group(1).replace('\\"', '"').replace("\\'", "'"))
+                literals = scan_quoted_literals(stripped)
+                if literals:
+                    originals.add(literals[-1].value)
         return originals
 
     def _repair_block_comments_from_source(self, game_dir: Path, tl_dir: Path) -> int:
@@ -2640,17 +2747,16 @@ class UnifiedExtractor:
         tl_dir: Path,
         menu_candidates: Optional[Set[str]] = None,
         trusted_originals: Optional[Set[str]] = None,
+        source_game_dir: Optional[Path] = None,
     ) -> Set[str]:
         """选择真实增量任务，同时保留与对话同文的菜单 strings。"""
-        if trusted_originals is None:
-            selected = extracted_originals - existing_string_originals - block_originals
-        else:
-            selected = (
-                extracted_originals & trusted_originals
-            ) - existing_string_originals - block_originals
+        # An official set is positive coverage evidence, not an exhaustive list
+        # of displayable text: unknown/custom renderers still need supplements.
+        selected = extracted_originals - existing_string_originals - block_originals
         if menu_candidates is None:
             menu_candidates = set(rx.collect_static_menu_strings(tl_dir.parents[2]))
         file_block_cache: Dict[Path, Set[str]] = {}
+        source_kinds_cache: Dict[Path, dict] = {}
 
         # 对话块通常表示文本已有翻译，但菜单选项仍需要独立的 strings 条目，
         # 因此不能仅凭同文对话块就把菜单文本排除出增量任务。
@@ -2666,7 +2772,17 @@ class UnifiedExtractor:
                 file_blocks = self._get_file_block_originals(target_file)
                 file_block_cache[target_file] = file_blocks
             if self._is_covered_by_file_block(original, file_blocks):
-                continue
+                source_root = source_game_dir / "game" if source_game_dir else tl_dir.parents[1]
+                source_file = source_root / relative_path
+                if source_file not in source_kinds_cache:
+                    try:
+                        source_kinds_cache[source_file] = rx.source_occurrence_kinds(
+                            source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                        )
+                    except (OSError, UnicodeError):
+                        source_kinds_cache[source_file] = {}
+                if source_kinds_cache[source_file].get(original) == {"dialogue"}:
+                    continue
             selected.add(original)
         return selected
 
@@ -2739,9 +2855,13 @@ class UnifiedExtractor:
     ) -> int:
         """把静态漏抽文本写入其首次出现的标准翻译文件。"""
         if candidates is None:
-            candidates = rx.collect_static_source_strings(game_dir)
+            candidates = self._call_with_optional_callbacks(
+                rx.collect_static_source_strings, game_dir, should_stop=self._is_cancelled
+            )
         if menu_candidates is None:
-            menu_candidates = set(rx.collect_static_menu_strings(game_dir))
+            menu_candidates = set(self._call_with_optional_callbacks(
+                rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
+            ))
         if not candidates:
             return 0
 
@@ -2750,38 +2870,63 @@ class UnifiedExtractor:
         existing = self._get_string_originals(tl_dir)
         declined = load_declined_candidates(game_dir, tl_name)
         added = 0
+        file_block_cache: dict[Path, Set[str]] = {}
+        source_line_cache: dict[Path, dict[str, int]] = {}
+        source_kinds_cache: dict[Path, dict] = {}
+        grouped: dict[Path, list[tuple[str, str]]] = {}
         for original, relative_path in candidates.items():
+            self._check_cancel()
             if original in existing or original in declined:
                 continue
 
             target_file = tl_dir / relative_path
+            source_file = game_dir / "game" / relative_path
+            if target_file not in file_block_cache:
+                file_block_cache[target_file] = self._get_file_block_originals(target_file)
+            if source_file not in source_kinds_cache:
+                try:
+                    source_lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                except (OSError, UnicodeError):
+                    source_lines = []
+                source_kinds_cache[source_file] = rx.source_occurrence_kinds(source_lines)
+                source_line_cache[source_file] = self._source_text_line_index(source_lines)
             # 非菜单静态文本若已由同文件对话块覆盖则跳过；菜单必须保留 strings。
             if (
                 original not in menu_candidates
+                and getattr(self, "official_extraction_status", "succeeded") == "succeeded"
+                and source_kinds_cache[source_file].get(original) == {"dialogue"}
                 and self._is_covered_by_file_block(
-                    original, self._get_file_block_originals(target_file)
+                    original,
+                    file_block_cache[target_file],
                 )
             ):
                 continue
+            grouped.setdefault(target_file, []).append((original, relative_path))
+
+        for target_file, entries in grouped.items():
+            self._check_cancel()
             target_file.parent.mkdir(parents=True, exist_ok=True)
-            escaped = self._escape_rpy_string(original)
-            source_file = (game_dir / "game" / relative_path)
-            source_line = self._find_source_text_line(source_file, original)
-            location_comment = (
-                f"    # game/{relative_path}:{source_line}\n"
-                if source_line is not None
-                else ""
-            )
-            with target_file.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    f"\ntranslate {tl_name} strings:\n\n"
-                    f"    # {RENPYBOX_REPLACE_ONLY_MARKER}\n"
-                    f"{location_comment}"
-                    f'    old "{escaped}"\n'
-                    f'    new "{escaped}"\n'
+            source_file = game_dir / "game" / entries[0][1]
+            index = source_line_cache[source_file]
+            lines = [f"\ntranslate {tl_name} strings:\n"]
+            for original, relative_path in entries:
+                escaped = self._escape_rpy_string(original)
+                source_line = index.get(original)
+                location_comment = (
+                    f"    # game/{relative_path}:{source_line}\n"
+                    if source_line is not None else ""
                 )
-            existing.add(original)
-            added += 1
+                lines.extend([
+                    f"\n    # {RENPYBOX_REPLACE_ONLY_MARKER}\n",
+                    location_comment,
+                    f'    old "{escaped}"\n',
+                    f'    new "{escaped}"\n',
+                ])
+                existing.add(original)
+                added += 1
+            content = target_file.read_text(encoding="utf-8") if target_file.exists() else ""
+            atomic_write_text(target_file, content + "".join(lines))
+            target_file.with_suffix(".rpyc").unlink(missing_ok=True)
 
         if added:
             self.logger.info(f"标准补充抽取：已添加 {added} 条静态翻译条目")
@@ -3355,6 +3500,55 @@ class UnifiedExtractor:
 
         return selections
 
+    def _select_strings_only_lines(self, lines, selected_originals, tl_name):
+        """Select simple strings blocks without AST or CacheItem allocation."""
+        selected = []
+        comments = []
+        saw_header = False
+        index = 0
+        last_progress = time.monotonic()
+        while index < len(lines):
+            if index % 1024 == 0:
+                self._check_cancel()
+                now = time.monotonic()
+                if now - last_progress >= 1.0 and callable(getattr(self, "_progress_callback", None)):
+                    self._emit_progress(f"正在分离 strings: {index}/{len(lines)} 行，已选择 {len(selected)} 行", 70)
+                    last_progress = now
+            line = lines[index]
+            header = self.TRANSLATE_HEADER_RE.match(line)
+            if header:
+                if (header.group("label") or "").strip().casefold() != "strings":
+                    return None
+                saw_header = True
+                comments = []
+                index += 1
+                continue
+            if not line.strip() or line.lstrip().startswith("#"):
+                if saw_header and line.lstrip().startswith("#"):
+                    comments.append(line)
+                index += 1
+                continue
+            old = self.OLD_LINE_RE.match(line)
+            if not saw_header or old is None:
+                return None
+            next_index = index + 1
+            while next_index < len(lines) and (
+                not lines[next_index].strip() or lines[next_index].lstrip().startswith("#")
+            ):
+                next_index += 1
+            if next_index >= len(lines) or not self.NEW_LINE_RE.match(lines[next_index]):
+                return None
+            original = self._decode_rpy_string(old.group(1), old.group("text"))
+            if original in selected_originals:
+                selected.extend(comments)
+                selected.extend(lines[index:next_index + 1])
+                selected.append("")
+            comments = []
+            index = next_index + 1
+        if not saw_header:
+            return None
+        return [f"translate {tl_name} strings:"] + selected if selected else []
+
     def _extract_new_entries_to_folder(
         self,
         source_dir: Path,
@@ -3371,37 +3565,51 @@ class UnifiedExtractor:
 
         extractor = RenpyTlItemExtractor()
         menu_locations = (
-            rx.collect_static_menu_strings(game_dir) if game_dir is not None else {}
+            self._call_with_optional_callbacks(
+                rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
+            ) if game_dir is not None else {}
         )
         selected_menu_strings = selected_originals.intersection(menu_locations)
+        selected_non_menu_strings = selected_originals - selected_menu_strings
 
         source_files = list(self._iter_rpy_files(source_dir))
         total_source_files = len(source_files)
         for file_index, rpy_file in enumerate(source_files, 1):
+            self._check_cancel()
             if (
                 callable(getattr(self, "_progress_callback", None))
                 and total_source_files
                 and (
                     file_index == 1
                     or file_index == total_source_files
-                    or file_index % max(1, total_source_files // 20) == 0
+                    or file_index % 25 == 0
                 )
             ):
                 percent = 70 + int(file_index * 5 / total_source_files)
                 self._emit_progress(
-                    f"正在分离新增/待翻译内容…（{file_index}/{total_source_files} 个文件）",
+                    f"正在分离新增/待翻译内容…（{file_index}/{total_source_files}，{rpy_file.name}，{rpy_file.stat().st_size} bytes）",
                     min(75, percent),
                 )
-            # AST 优先
+            rel_path = rpy_file.relative_to(source_dir).as_posix()
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
-                lines = content.splitlines()
+            except Exception:
+                continue
+            lines = content.splitlines()
+            simple_selection = self._select_strings_only_lines(lines, selected_non_menu_strings, tl_name)
+            if simple_selection is not None:
+                if simple_selection:
+                    target_file = target_dir / Path(rel_path)
+                    output = ["# 增量抽取 - 新增/待翻译内容", f"# 来源: {rpy_file.name}", ""]
+                    atomic_write_text(target_file, "\n".join(output + simple_selection).rstrip() + "\n")
+                continue
+            # AST 优先
+            try:
                 doc = parse_tl_document(lines)
                 items = extractor.extract(doc, str(rpy_file))
                 if not items:
                     continue
 
-                rel_path = rpy_file.relative_to(source_dir).as_posix()
                 selected_items = []
                 for item in items:
                     extra = item.get_extra_field()
@@ -3449,24 +3657,26 @@ class UnifiedExtractor:
                         output_lines.append("")
 
                 text = "\n".join(output_lines).rstrip() + "\n"
-                target_file.write_text(text, encoding="utf-8")
+                atomic_write_text(target_file, text)
                 continue
+            except rx.ExtractionCancelled:
+                raise
             except Exception as e:
                 self.logger.warning(f"AST 增量提取失败 {rpy_file}: {e}")
 
             # 回退旧正则逻辑
             try:
-                content = rpy_file.read_text(encoding='utf-8', errors='replace')
-                lines = content.split('\n')
 
                 new_entries: List[Tuple[str, str]] = []  # (old_text, new_text)
 
                 i = 0
                 while i < len(lines):
+                    if i % 1024 == 0:
+                        self._check_cancel()
                     line = lines[i]
                     old_match = self.OLD_LINE_RE.match(line)
                     if old_match:
-                        old_text = old_match.group("text").replace('\\"', '"').replace("\\'", "'")
+                        old_text = self._decode_rpy_string(old_match.group(1), old_match.group("text"))
                         new_text = ""
 
                         j = i + 1
@@ -3478,7 +3688,7 @@ class UnifiedExtractor:
                             new_line = lines[j]
                             new_match = self.NEW_LINE_RE.match(new_line)
                             if new_match:
-                                new_text = new_match.group("text")
+                                new_text = self._decode_rpy_string(new_match.group(1), new_match.group("text"))
 
                         # 只提取被选中的原文
                         if (
@@ -3512,47 +3722,44 @@ class UnifiedExtractor:
                         output_lines.append(f'    new "{escaped_new}"')
                         output_lines.append("")
 
-                    target_file.write_text('\n'.join(output_lines), encoding='utf-8')
+                    atomic_write_text(target_file, '\n'.join(output_lines))
 
+            except rx.ExtractionCancelled:
+                raise
             except Exception as e:
                 self.logger.warning(f"处理文件失败 {rpy_file}: {e}")
 
         if game_dir is not None:
             if callable(getattr(self, "_progress_callback", None)):
                 self._emit_progress("正在补充源码位置…", 75)
+            menu_entries_by_file = {}
             for original in sorted(selected_menu_strings):
-                relative_path = menu_locations[original]
+                menu_entries_by_file.setdefault(menu_locations[original], []).append(original)
+            header_re = re.compile(rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$")
+            for relative_path, originals in menu_entries_by_file.items():
+                self._check_cancel()
                 target_file = target_dir / relative_path
-                target_file.parent.mkdir(parents=True, exist_ok=True)
                 source_file = game_dir / "game" / relative_path
-                source_line = self._find_source_menu_line(source_file, original)
-                escaped = self._escape_rpy_string(original)
-                entry_lines = []
-                if source_line is not None:
-                    entry_lines.append(f"    # game/{relative_path}:{source_line}")
-                entry_lines.extend([f'    old "{escaped}"', f'    new "{escaped}"', ""])
-
+                source_index = self._build_source_menu_line_index(source_file)
                 if target_file.exists():
-                    lines = target_file.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).splitlines()
+                    lines = target_file.read_text(encoding="utf-8").splitlines()
                 else:
                     lines = [
                         "# 增量抽取 - 新增/待翻译内容",
                         f"# 来源: {Path(relative_path).name}",
                         "",
                     ]
-                header_re = re.compile(
-                    rf"^\s*translate\s+{re.escape(tl_name)}\s+strings\s*:\s*$"
-                )
                 if not any(header_re.match(line) for line in lines):
                     if lines and lines[-1].strip():
                         lines.append("")
                     lines.extend([f"translate {tl_name} strings:", ""])
-                lines.extend(entry_lines)
-                target_file.write_text(
-                    "\n".join(lines).rstrip() + "\n", encoding="utf-8"
-                )
+                for original in originals:
+                    escaped = self._escape_rpy_string(original)
+                    source_line = source_index.get(original)
+                    if source_line is not None:
+                        lines.append(f"    # game/{relative_path}:{source_line}")
+                    lines.extend([f'    old "{escaped}"', f'    new "{escaped}"', ""])
+                atomic_write_text(target_file, "\n".join(lines).rstrip() + "\n")
 
             self._annotate_incremental_string_locations(game_dir, target_dir)
 
@@ -3615,6 +3822,11 @@ class UnifiedExtractor:
         except Exception:
             return {}
 
+        return UnifiedExtractor._source_text_line_index(lines)
+
+    @staticmethod
+    def _source_text_line_index(lines: List[str]) -> dict[str, int]:
+
         index: dict[str, int] = {}
         for line_no, line in enumerate(lines, 1):
             for literal in scan_quoted_literals(line):
@@ -3635,26 +3847,28 @@ class UnifiedExtractor:
 
     @staticmethod
     def _find_source_menu_line(source_file: Path, original: str) -> Optional[int]:
+        return UnifiedExtractor._build_source_menu_line_index(source_file).get(original)
+
+    @staticmethod
+    def _build_source_menu_line_index(source_file: Path) -> Dict[str, int]:
         menu_choice_re = re.compile(
-            r'^\s*"(?P<text>(?:\\.|[^"\\])*)"\s*(?:\([^)]*\))?\s*:\s*(?:#.*)?$'
+            r'^\s*(?P<quote>["\'])(?P<text>(?:\\.|(?!(?P=quote)).)*)(?P=quote)'
+            r'\s*(?:\([^)]*\))?\s*(?:if\s+.+?)?\s*:\s*(?:#.*)?$'
         )
         try:
             lines = source_file.read_text(
                 encoding="utf-8", errors="replace"
             ).splitlines()
         except Exception:
-            return None
+            return {}
+        index: Dict[str, int] = {}
         for line_no, line in enumerate(lines, 1):
             match = menu_choice_re.match(line)
             if not match:
                 continue
-            try:
-                value = ast.literal_eval(f'"{match.group("text")}"')
-            except Exception:
-                value = match.group("text").replace('\\"', '"').replace("\\'", "'")
-            if value == original:
-                return line_no
-        return None
+            value = UnifiedExtractor._decode_rpy_string(match.group("quote"), match.group("text"))
+            index.setdefault(value, line_no)
+        return index
 
     def _merge_new_entries(
         self,
@@ -3993,11 +4207,11 @@ class UnifiedExtractor:
         while backup_path.exists():
             backup_path = game_dir / f"tl_backup_{tl_name}_{timestamp}_{suffix}"
             suffix += 1
+        self._emit_progress("正在备份旧翻译...", 5)
         try:
             shutil.move(str(tl_dir), str(backup_path))
         except Exception as exc:
             raise RuntimeError(f"备份旧翻译失败，已停止抽取: {exc}") from exc
-        self._emit_progress("已备份旧翻译", 5)
         return backup_path
 
     def _incremental_journal_path(self, game_dir: Path, tl_name: str) -> Path:
@@ -4017,13 +4231,12 @@ class UnifiedExtractor:
                 "temp_dir": str(temp_extract_dir),
                 "tl_dir": str(tl_dir),
                 "backup_dir": str(temp_extract_dir / "_tl_backup"),
+                "incremental_dir": str(tl_dir.with_name(tl_name + "_new")),
+                "incremental_backup_dir": str(temp_extract_dir / "_incremental_backup"),
             }
-            self._incremental_journal_path(game_dir, tl_name).write_text(
-                json.dumps(payload, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            atomic_write_text(self._incremental_journal_path(game_dir, tl_name), json.dumps(payload, ensure_ascii=False))
         except Exception as exc:
-            self.logger.warning(f"写入增量恢复日志失败: {exc}")
+            raise RuntimeError(f"写入增量恢复日志失败，未开始抽取: {exc}") from exc
 
     def _clear_incremental_journal(self, game_dir: Path, tl_name: str) -> None:
         try:
@@ -4044,18 +4257,35 @@ class UnifiedExtractor:
                 backup_dir = Path(payload.get("backup_dir", ""))
                 tl_dir = Path(payload.get("tl_dir", ""))
                 temp_dir = Path(payload.get("temp_dir", ""))
+                incremental_dir = Path(payload.get("incremental_dir", str(tl_dir.with_name(tl_name + "_new"))))
+                incremental_backup_dir = Path(payload.get("incremental_backup_dir", str(temp_dir / "_incremental_backup")))
             except Exception as exc:
                 self.logger.warning(f"增量恢复日志损坏，已忽略: {exc}")
                 self._clear_incremental_journal(game_dir, tl_name)
                 return None
 
-            if not backup_dir.is_dir():
+            expected_tl = game_dir / "game" / "tl" / tl_name
+            if (
+                temp_dir.resolve().parent != game_dir.resolve()
+                or not temp_dir.name.startswith(f"_temp_extract_{tl_name}_")
+                or tl_dir.resolve() != expected_tl.resolve()
+                or backup_dir.resolve() != (temp_dir / "_tl_backup").resolve()
+                or incremental_dir.resolve() != expected_tl.with_name(tl_name + "_new").resolve()
+                or incremental_backup_dir.resolve() != (temp_dir / "_incremental_backup").resolve()
+            ):
+                raise RuntimeError(f"增量恢复路径不匹配，已保留恢复日志: {journal}")
+            if not backup_dir.is_dir() and not incremental_backup_dir.is_dir():
                 self._clear_incremental_journal(game_dir, tl_name)
                 return None
             try:
-                if tl_dir.exists():
-                    shutil.rmtree(str(tl_dir), ignore_errors=True)
-                shutil.move(str(backup_dir), str(tl_dir))
+                if backup_dir.is_dir():
+                    if tl_dir.exists():
+                        shutil.rmtree(str(tl_dir))
+                    shutil.move(str(backup_dir), str(tl_dir))
+                if incremental_backup_dir.is_dir():
+                    if incremental_dir.exists():
+                        shutil.rmtree(str(incremental_dir))
+                    shutil.move(str(incremental_backup_dir), str(incremental_dir))
             except Exception as exc:
                 self.logger.error(f"恢复中断的增量备份失败: {exc}")
                 return None
@@ -4070,6 +4300,9 @@ class UnifiedExtractor:
 
         # 无日志的遗留临时目录只清理，不触碰现有 tl（可能是正常结束但清理失败）。
         for temp_dir in sorted(game_dir.glob(f"_temp_extract_{tl_name}_*")):
+            if (temp_dir / "_tl_backup").exists() or (temp_dir / "_incremental_backup").exists():
+                self.logger.warning(f"发现未完成恢复的备份，已保留: {temp_dir}")
+                continue
             try:
                 shutil.rmtree(str(temp_dir), ignore_errors=True)
             except Exception:
@@ -4107,12 +4340,14 @@ class UnifiedExtractor:
 
         # 抽取后统一做一次 old/new 去重，避免同一原文重复导致 Ren'Py 报错。
         try:
-            rx.remove_repeat_extracted_from_tl(
+            self._call_with_optional_callbacks(rx.remove_repeat_extracted_from_tl,
                 str(tl_dir),
                 is_py2=False,
                 duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
+                should_stop=self._is_cancelled,
             )
         except Exception as exc:
+            self._check_cancel()
             self.logger.warning(f"去重失败 {tl_dir}: {exc}")
 
         removed_source = self._remove_source_registered_string_duplicates(

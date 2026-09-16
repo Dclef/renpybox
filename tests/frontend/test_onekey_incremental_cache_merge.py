@@ -984,7 +984,8 @@ def test_apply_worker_incremental_merges_off_thread_and_cleans_staging(
     assert fallback.exists()
     fallback_text = fallback.read_text(encoding="utf-8")
     assert '.replace("AlreadyThere", "已有")' not in fallback_text
-    assert '.replace("BrandNewSmoke", "烟雾测试")' in fallback_text
+    from module.Extract.ReplaceGenerator import read_generated_replace_pairs
+    assert read_generated_replace_pairs(tl / "replace_text_auto.rpy", {"BrandNewSmoke"}) == [("BrandNewSmoke", "烟雾测试")]
     assert result["payload"]["replace_count"] == 1
     assert not staging.exists(), "staging dir must be removed after apply"
     assert not output.exists(), "incremental output dir must be removed after apply"
@@ -1033,5 +1034,6 @@ def test_apply_worker_full_generates_replace_fallback(tmp_path) -> None:
     assert result["success"] is True
     fallback = input_dir / "replace_text_auto.rpy"
     assert fallback.is_file()
-    assert '.replace("Choice", "选项")' in fallback.read_text(encoding="utf-8")
+    from module.Extract.ReplaceGenerator import read_generated_replace_pairs
+    assert read_generated_replace_pairs(fallback, {"Choice"}) == [("Choice", "选项")]
     assert result["payload"]["replace_count"] == 1

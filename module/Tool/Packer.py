@@ -14,9 +14,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
-from queue import Empty, Queue
-from threading import Thread
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -244,69 +241,23 @@ class Packer:
             return None
         if not unren_bat.is_file():
             return None
-        process = None
         try:
-            process = subprocess.Popen(
+            from utils.process_runner import (
+                ProcessRunnerCancelledError,
+                ProcessRunnerTimeoutError,
+                run_process,
+            )
+
+            result = run_process(
                 ["cmd.exe", "/c", str(unren_bat), str(game_root), lang, "--auto"],
                 cwd=str(game_root),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                bufsize=1,
-                creationflags=self._creationflags_no_window(),
+                timeout=timeout_s,
+                output_callback=output_callback,
+                input_text=f"{options}\n",
             )
-            if process.stdin is not None:
-                process.stdin.write(f"{options}\n")
-                process.stdin.close()
-
-            lines: list[str] = []
-            output_queue: Queue[str | None] = Queue()
-
-            def read_output() -> None:
-                if process is None or process.stdout is None:
-                    output_queue.put(None)
-                    return
-                for raw_line in process.stdout:
-                    output_queue.put(raw_line.rstrip())
-                output_queue.put(None)
-
-            Thread(target=read_output, daemon=True).start()
-            deadline = time.monotonic() + timeout_s if timeout_s else None
-            output_closed = False
-            while not output_closed:
-                remaining = None if deadline is None else max(0.05, deadline - time.monotonic())
-                try:
-                    line = output_queue.get(timeout=remaining)
-                except Empty as exc:
-                    process.kill()
-                    process.wait()
-                    raise subprocess.TimeoutExpired(
-                        ["cmd.exe", "/c", str(unren_bat)], timeout_s
-                    ) from exc
-                if line is None:
-                    output_closed = True
-                    continue
-                if not line:
-                    continue
-                lines.append(line)
-                if output_callback:
-                    output_callback(line)
-
-            returncode = process.wait()
-            return subprocess.CompletedProcess(
-                process.args,
-                returncode,
-                "\n".join(lines),
-                None,
-            )
+            return result
         except Exception as exc:
             self.logger.warning(f"UnRen 启动失败: {exc}")
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait()
             return None
 
     def unpack_all_unren_bat(
@@ -431,43 +382,33 @@ class Packer:
         archive_candidates = self.find_rpa_files(str(game_path))
         total_archives = len(archive_candidates)
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-
         lines: List[str] = []
         unpacked = 0
-        result = None
+
+        def _direct_output_cb(line: str) -> None:
+            nonlocal unpacked
+            line = line.strip()
+            if not line:
+                return
+            lines.append(line)
+            if re.search(r"(?i)\bUnpacking\b", line):
+                unpacked += 1
+                bar = self._format_progress_bar(unpacked, total_archives) if total_archives else ""
+                if bar:
+                    self.logger.info(f"进度 {bar} {line}")
+                else:
+                    self.logger.info(f"{line} (已解包 {unpacked})")
+            elif "There are no archives" in line:
+                self.logger.info("未找到归档文件")
+
         try:
-            result = subprocess.Popen(
+            from utils.process_runner import run_process
+
+            result = run_process(
                 cmd,
                 cwd=str(game_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                env=env,
-                creationflags=self._creationflags_no_window(),
+                output_callback=_direct_output_cb,
             )
-
-            if result.stdout:
-                for raw_line in result.stdout:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    lines.append(line)
-
-                    if re.search(r"(?i)\bUnpacking\b", line):
-                        unpacked += 1
-                        bar = self._format_progress_bar(unpacked, total_archives) if total_archives else ""
-                        if bar:
-                            self.logger.info(f"进度 {bar} {line}")
-                        else:
-                            self.logger.info(f"{line} (已解包 {unpacked})")
-                    elif "There are no archives" in line:
-                        self.logger.info("未找到归档文件")
-            if result:
-                result.wait()
         finally:
             # 清理 UnRen 执行后可能产生的缓存目录（与 UnRen 行为一致）
             try:
@@ -536,16 +477,11 @@ class Packer:
         script_path = Path(get_resource_path("resource", "tools", "unren_rpatool.py"))
         if not python_exe or not script_path.is_file():
             raise PackerUnpackError("UNSAFE_INDEX", "无法安全读取 RPA 索引，已拒绝解包")
-        result = subprocess.run(
+        from utils.process_runner import run_process
+
+        result = run_process(
             [str(python_exe), str(script_path), "--validate-only", str(game_path)],
             cwd=str(game_path),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            creationflags=self._creationflags_no_window(),
             timeout=120,
         )
         if result.returncode != 0:
@@ -670,6 +606,31 @@ class Packer:
             "message": "未找到可解包的 RPA 文件，或所有解包方式均失败",
         }
 
+    def _unpack_archive_in_process(self, archive_path: Path, out_dir: Path) -> int:
+        """进程内解包单个 RPA（rpatool 库模式）。
+
+        与上游 shiz/rpatool 一致：RenPyArchive 本身就是纯 Python 库，
+        无需子进程。进程内执行彻底消除 CLI 输出塞满管道导致的死锁面。
+        支持读取 RPA-2.0 / RPA-3.0 / RPA-3.2。
+        """
+        archive = RenPyArchive(str(archive_path))
+        written = 0
+        try:
+            for name in archive.list():
+                if not self._is_safe_archive_name(name):
+                    raise PackerUnpackError("UNSAFE_PATH", f"RPA 包含不安全路径: {name}")
+                target = out_dir / str(name).replace("\\", "/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                data = archive.read(name)
+                with open(target, "wb") as fh:
+                    fh.write(data)
+                written += 1
+        finally:
+            if archive.handle is not None:
+                archive.handle.close()
+                archive.handle = None
+        return written
+
     def unpack_all(
         self,
         game_dir: str,
@@ -682,7 +643,8 @@ class Packer:
         Unpack all .rpa files in the given `game_dir`.
 
         Strategy:
-        - Prefer external tools when possible: `unrpa` CLI or bundled `rpatool`.
+        - Prefer in-process rpatool_core library (no subprocess at all);
+        - Fall back to external tools: `unrpa` CLI or bundled `rpatool` CLI.
 
         Returns:
             (unpacked_count, messages)
@@ -710,32 +672,35 @@ class Packer:
         for index, rpa in enumerate(files, start=1):
             out_dir = Path(output_root) if output_root else (Path(game_dir) / "unpacked_rpa" / rpa.stem)
             out_dir.mkdir(parents=True, exist_ok=True)
+            bar = self._format_progress_bar(index, total_files)
             try:
-                bar = self._format_progress_bar(index, total_files)
+                # 第一通道：进程内 rpatool 库，零子进程、零管道死锁面
+                self._unpack_archive_in_process(rpa, out_dir)
+                unpacked += 1
+                self.logger.info(f"进度 {bar} 解包(进程内): {rpa.name}")
+                continue
+            except Exception as exc:
+                self.logger.warning(f"进程内解包失败 {rpa.name}，回退外部 CLI: {exc}")
+            try:
                 self.logger.info(f"进度 {bar} 解包: {rpa.name}")
                 if unrpa:
                     cmd = [unrpa, "-mp", str(out_dir), str(rpa)]
-                    subprocess.run(
-                        cmd,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        creationflags=self._creationflags_no_window(),
-                    )
                 else:
                     cmd = [sys.executable, str(rpatool), "-x", "-o", str(out_dir), str(rpa)]
-                    subprocess.run(
-                        cmd,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        creationflags=self._creationflags_no_window(),
-                    )
+
+                from utils.process_runner import run_process
+
+                result = run_process(
+                    cmd,
+                    cwd=str(game_dir),
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stdout or f"退出码 {result.returncode}")
                 unpacked += 1
                 self.logger.info(f"完成: {rpa.name}")
-            except subprocess.CalledProcessError as e:
-                output = e.stdout.decode(errors='ignore') if getattr(e, 'stdout', None) else str(e)
-                msg = f"解包失败 {rpa}: {output.strip()}"
+            except Exception as e:
+                output = getattr(e, "stdout", None) or str(e)
+                msg = f"解包失败 {rpa}: {str(output).strip()}"
                 msgs.append(msg)
                 self.logger.error(msg)
 

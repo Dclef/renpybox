@@ -19,6 +19,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
+from module.Engine.TranslationMetrics import merge_request_metrics
 from module.Engine.Translator.TranslationTaskContext import TranslationTaskContext
 from module.Localizer.Localizer import Localizer
 from module.PromptBuilder import PromptBuilder
@@ -135,6 +136,23 @@ class TranslatorTask(Base):
         self.response_checker = ResponseChecker(self.config, items)
         self._request_count = 0
         self._latency_ms = 0.0
+        self._request_metrics: dict = {}
+        self._decode_check_ms = 0.0
+        self._initially_translated = {id(item) for item in items if item.get_status() == Base.TranslationStatus.TRANSLATED}
+
+    def _decode_response(self, *args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return ResponseDecoder().decode_result(*args, **kwargs)
+        finally:
+            self._decode_check_ms += (time.perf_counter() - started) * 1000
+
+    def _check_response(self, checker, *args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return checker.check(*args, **kwargs)
+        finally:
+            self._decode_check_ms += (time.perf_counter() - started) * 1000
 
     def _request_with_metrics(
         self,
@@ -142,13 +160,65 @@ class TranslatorTask(Base):
         messages: list[dict[str, object]],
         **kwargs: object,
     ) -> tuple[object, object, object, object, object]:
-        """记录每次远程请求的次数和耗时。"""
+        """逻辑请求耗时包含内部重试；HTTP 尝试另由请求层观察。"""
         started_at = time.perf_counter()
         try:
-            return requester.request(messages, **kwargs)
+            result = requester.request(messages, **kwargs)
+            return self._fill_missing_usage_tokens(messages, result)
         finally:
             self._request_count += 1
             self._latency_ms += (time.perf_counter() - started_at) * 1000
+            metrics = getattr(requester, "last_request_metrics", None)
+            if isinstance(metrics, dict):
+                merge_request_metrics(self._request_metrics, metrics)
+
+    @classmethod
+    def _estimate_text_tokens(cls, text: object) -> int:
+        text = str(text or "")
+        if text == "":
+            return 0
+        return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+    @classmethod
+    def _estimate_messages_tokens(cls, messages: list[dict[str, object]]) -> int:
+        total = 0
+        for message in messages or []:
+            total += cls._estimate_text_tokens(message.get("role", ""))
+            total += cls._estimate_text_tokens(message.get("content", ""))
+            total += 4
+        return total
+
+    @classmethod
+    def _fill_missing_usage_tokens(
+        cls,
+        messages: list[dict[str, object]],
+        result: tuple[object, object, object, object, object],
+    ) -> tuple[object, object, object, object, object]:
+        """兼容不返回 usage 的流式兼容接口，避免监控页 token 长期为 0。"""
+        if not isinstance(result, tuple) or len(result) != 5:
+            return result
+        skip, response_think, response_result, input_tokens, output_tokens = result
+        if skip:
+            return result
+
+        try:
+            input_value = int(input_tokens or 0)
+        except (TypeError, ValueError):
+            input_value = 0
+        try:
+            output_value = int(output_tokens or 0)
+        except (TypeError, ValueError):
+            output_value = 0
+
+        if input_value > 0 and output_value > 0:
+            return result
+
+        if input_value <= 0:
+            input_value = cls._estimate_messages_tokens(messages)
+        if output_value <= 0:
+            output_value = cls._estimate_text_tokens(response_result) + cls._estimate_text_tokens(response_think)
+
+        return skip, response_think, response_result, input_value, output_value
 
     def _recent_items(self) -> list[dict[str, object]]:
         """生成监控页展示的最近处理条目。"""
@@ -184,6 +254,20 @@ class TranslatorTask(Base):
         result["request_count"] = self._request_count
         result["latency_ms"] = round(self._latency_ms, 1)
         result["recent_items"] = self._recent_items()
+        result["request_metrics"] = dict(self._request_metrics)
+        result["decode_check_ms"] = self._decode_check_ms
+        elapsed = (time.perf_counter() - getattr(self, "_task_started_at", time.perf_counter())) * 1000
+        result["task_local_ms"] = max(0, elapsed - self._latency_ms)
+        # Exclusions, empty/pre-filtered rows, and unchanged source aren't useful
+        # new translations. Identities stay in memory; reports contain only counts.
+        result["effective_item_ids"] = list({
+            id(item) for item in self.items
+            if id(item) not in self._initially_translated
+            and self._request_count > 0
+            and item.get_status() == Base.TranslationStatus.TRANSLATED
+            and str(item.get_dst() or "").strip()
+            and str(item.get_dst() or "").strip() != str(item.get_src() or "").strip()
+        })
         return result
 
     def should_use_single_line_translation(self) -> bool:
@@ -403,8 +487,7 @@ class TranslatorTask(Base):
                 response_result = response_result,
             ), extra_log
 
-        decoder = ResponseDecoder()
-        decode_result = decoder.decode_result(response_result, 1, allow_plain_text_single = True)
+        decode_result = self._decode_response(response_result, 1, allow_plain_text_single = True)
         if decode_result.glossarys != []:
             glossarys = decode_result.glossarys.copy()
         else:
@@ -424,7 +507,7 @@ class TranslatorTask(Base):
             ), extra_log
 
         dst = decode_result.dsts[0]
-        check = ResponseChecker(self.config, [item]).check([src], [dst], item.get_text_type())[0]
+        check = self._check_response(ResponseChecker(self.config, [item]), [src], [dst], item.get_text_type())[0]
         return SingleLineTranslationOutcome(
             dst = dst,
             check = check,
@@ -444,6 +527,7 @@ class TranslatorTask(Base):
         """
         启动翻译任务，包含异常捕获确保线程不会静默死亡
         """
+        self._task_started_at = time.perf_counter()
         self.info(f"[TASK-START] 任务启动: items={len(self.items)}, round={current_round+1}, "
                   f"model={self.platform.get('model', 'unknown')}")
         try:
@@ -653,7 +737,7 @@ class TranslatorTask(Base):
             return self._cancelled_result()
 
         # 解析并按 request_index 对齐。严格协议失败时返回空记录，整批进入重试。
-        decode_result = ResponseDecoder().decode_result(
+        decode_result = self._decode_response(
             response_result,
             expected_count = len(srcs),
             structured = structured_response,
@@ -682,7 +766,7 @@ class TranslatorTask(Base):
             if TaskRequester.is_cancel_requested():
                 return self._cancelled_result()
             if retry_skip == False and isinstance(retry_result, str):
-                retry_decode_result = ResponseDecoder().decode_result(
+                retry_decode_result = self._decode_response(
                     retry_result,
                     expected_count = len(srcs),
                 )
@@ -707,7 +791,7 @@ class TranslatorTask(Base):
             decode_retry_reason = "INDEX_ALIGNMENT"
         else:
             # TODO - 当前逻辑下任务不会跨文件，所以一个任务的 TextType 都是一样的，有效，但是十分的 UGLY
-            checks = self.response_checker.check(
+            checks = self._check_response(self.response_checker,
                 srcs,
                 dsts,
                 self.items[0].get_text_type(),

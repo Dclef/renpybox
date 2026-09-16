@@ -106,6 +106,45 @@ def test_busy_engine_rejects_start_before_loading_assets(monkeypatch) -> None:
     assert len(warnings) == 1
 
 
+def test_start_preflight_is_scheduled_off_ui_thread(monkeypatch) -> None:
+    engine = Engine.get()
+    monkeypatch.setattr(engine, "get_status", lambda: Engine.Status.IDLE)
+    monkeypatch.setattr(engine, "has_stop_barrier", lambda: False)
+    monkeypatch.setattr(engine, "has_single_tasks", lambda: False)
+    monkeypatch.setattr(
+        TranslationPage,
+        "_should_prepare_translation_start_async",
+        lambda self: True,
+    )
+
+    def fail_sync_prepare(*args, **kwargs):
+        raise AssertionError("start preflight ran synchronously")
+
+    scheduled = []
+    monkeypatch.setattr(
+        TranslationPage,
+        "_prepare_translation_start_payload",
+        fail_sync_prepare,
+    )
+    monkeypatch.setattr(
+        TranslationPage,
+        "_begin_translation_start_prepare",
+        lambda self, status, window, request_id="": scheduled.append((status, request_id)),
+    )
+    page = _PageStub()
+
+    started = TranslationPage._request_translation_start(
+        page,
+        Base.TranslationStatus.UNTRANSLATED,
+        None,
+        request_id="request-current",
+    )
+
+    assert started is True
+    assert scheduled == [(Base.TranslationStatus.UNTRANSLATED, "request-current")]
+    assert page.events == []
+
+
 def test_new_start_marks_successful_asset_preflight_as_confirmed(monkeypatch) -> None:
     assets = ProjectAssets.from_dict({
         "glossary": {
@@ -326,6 +365,62 @@ def test_main_page_stop_cancels_quality_task_without_translation_event(monkeypat
     assert page.events == []
     assert page.data["quality_task"]["cancel_requested"] is True
     assert page.labels == ["正在停止 AI 润色"]
+
+
+def test_main_page_stop_defers_translation_stop_event(monkeypatch) -> None:
+    class ActionStub:
+        def __init__(self) -> None:
+            self.enabled = True
+
+        def setEnabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class ButtonStub:
+        def setText(self, text) -> None:
+            del text
+
+    class MessageBoxStub:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            self.yesButton = ButtonStub()
+            self.cancelButton = ButtonStub()
+
+        def exec(self) -> bool:
+            return True
+
+    scheduled = []
+    strings = SimpleNamespace(
+        alert="提示",
+        translation_page_alert_pause="停止？",
+        confirm="确认",
+        cancel="取消",
+        translation_page_indeterminate_stoping="正在停止",
+    )
+    monkeypatch.setattr(Engine.get(), "get_status", lambda: Engine.Status.TRANSLATING)
+    monkeypatch.setattr("frontend.TranslationPage.Localizer.get", lambda: strings)
+    monkeypatch.setattr("frontend.TranslationPage.MessageBox", MessageBoxStub)
+    monkeypatch.setattr(
+        "frontend.TranslationPage.QTimer.singleShot",
+        lambda _delay, callback: scheduled.append(callback),
+    )
+    page = SimpleNamespace(
+        action_stop=ActionStub(),
+        events=[],
+        labels=[],
+        emit=lambda event, payload: page.events.append((event, payload)),
+        indeterminate_show=lambda label: page.labels.append(label),
+    )
+
+    TranslationPage._on_stop_clicked(page, None)
+
+    assert page.action_stop.enabled is False
+    assert page.labels == ["正在停止"]
+    assert page.events == []
+    assert len(scheduled) == 1
+
+    scheduled[0]()
+
+    assert page.events == [(Base.Event.TRANSLATION_STOP, {})]
 
 
 def test_quality_status_enables_main_page_stop_button(monkeypatch) -> None:

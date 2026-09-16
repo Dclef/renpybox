@@ -113,7 +113,11 @@ class LocalizerZH():
     translation_page_stat_average: str = "均值吞吐"
     translation_page_stat_batches: str = "已处理批次"
     translation_page_stat_cache_hit: str = "已有译文占比"
-    translation_page_stat_latency: str = "平均网络延迟"
+    translation_page_stat_latency: str = "平均请求耗时"
+    translation_page_stat_effective: str = "有效翻译速度"
+    translation_page_stat_request_p95: str = "请求 P95"
+    translation_page_effective_rate: str = "{RATE:.1f} 条/分"
+    translation_page_timing_help: str = "本次有效译文：{COUNT} 条（不含已有、排除和原文回填）\n逻辑请求：{REQUESTS}；观测 HTTP 尝试：{HTTP}\n请求 P50：{P50} ms；首内容 P50：{FIRST} ms\n累计等待空槽 / 限速：{SLOT} / {RATE} ms\n累计后端调用 / 应用退避：{PROVIDER} / {RETRY} ms\n累计任务本地处理：{LOCAL} ms（含解析校验 {CHECK} ms）\n累计缓存保存：{SAVE} ms\n百分位取最近 {LIMIT} 个样本；并发累计耗时会重叠。后端耗时包含 SDK 内部重试。"
     translation_page_open_proofreading: str = "打开平行校对台"
     translation_page_elapsed: str = "已用: {TIME}"
     translation_page_remaining: str = "剩余约: {TIME}"
@@ -737,6 +741,12 @@ class LocalizerZH():
     )
     basic_settings_page_token_threshold_title: str = "任务行数阈值"
     basic_settings_page_token_threshold_content: str = "每个任务所包含的文本的最大行数（建议 5-15 行，行数越少翻译越稳定）"
+    basic_settings_page_max_batch_source_tokens_title: str = "每批原文 Token 上限"
+    basic_settings_page_max_batch_source_tokens_content: str = "每批原文的 Token 预算，不含提示词和参考上文；0 沿用旧配置的行数推导。单条超长文本独立提交"
+    basic_settings_page_max_output_tokens_title: str = "每次请求输出 Token 上限"
+    basic_settings_page_max_output_tokens_content: str = "模型回复的 Token 预算；0 使用接口默认值，重试时保持此预算"
+    basic_settings_page_balanced_throughput_button: str = "应用均衡吞吐：20 行 / 1024 原文 Token / 输出自动"
+    basic_settings_page_balanced_throughput_tooltip: str = "设置批行数、原文 Token 预算和输出预算，并发、超时和质量检查保持当前设置"
     basic_settings_page_request_timeout_title: str = "超时时间阈值"
     basic_settings_page_request_timeout_content: str = (
         "发起请求时等待模型回复的最长时间（秒），超时仍未收到回复，则会判断为任务失败"
@@ -1470,6 +1480,15 @@ class LocalizerZH():
         '自动注入预置的 UI 翻译（开始、保存、设置等）。\n如果你已有自定义 UI 翻译，请取消勾选。'
     )
     onekey_review_untranslated_uppercase_abbreviations_uses_additional_quota: str = '对未翻译的大写缩写做二次确认（会额外消耗额度）'
+    onekey_supplement_mode: str = '补充抽取模式:'
+    onekey_supplement_mode_off: str = '仅官方抽取'
+    onekey_supplement_mode_precise: str = '精准（低误报）'
+    onekey_supplement_mode_aggressive: str = '宽扫描（高覆盖）'
+    onekey_supplement_mode_tooltip: str = (
+        '仅官方：不跑补充抽取，只保留官方 translate 结果；\n'
+        '精准：只抓 text/textbutton/label/renpy.input/菜单/notify，几乎零误报；\n'
+        '宽扫描：扫描任意引号文本，覆盖更广但可能误抽代码字符串'
+    )
     onekey_clear_skipped_candidates: str = '清除判定不译清单'
     onekey_click_extract_text_begin_existing_translations_preserved: str = '直接点击“开始提取文本”即可，完成后进入翻译。如果已有翻译，默认会保留。'
     onekey_skip_extraction_translate: str = '跳过抽取，直接翻译 →'
@@ -2169,8 +2188,8 @@ class LocalizerZH():
     toolbox_tool_formatter_description: str = '格式化 .rpy 文件'
     toolbox_tool_android_build_title: str = '安卓打包'
     toolbox_tool_android_build_description: str = '安装 SDK、生成签名并构建 APK'
-    toolbox_tool_html_import_title: str = 'HTML 导入'
-    toolbox_tool_html_import_description: str = '在 HTML、TXT 与 Excel 之间转换翻译文本'
+    toolbox_tool_html_import_title: str = '网页 / AI 翻译向导'
+    toolbox_tool_html_import_description: str = '把 TL 目录变成 TXT，交给 AI 或网页翻译，再一键回填'
     toolbox_tool_game_mod_title: str = '游戏模组注入'
     toolbox_tool_game_mod_description: str = '注入画廊解锁、修改器等通用模组'
 
