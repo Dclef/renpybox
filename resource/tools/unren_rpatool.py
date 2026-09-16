@@ -213,7 +213,8 @@ def main(argv):
             try:
                 _base, ext = file.rsplit(".", 1)
                 if "." + ext in archive_extensions:
-                    archives.append(path if args.validate_only else file)
+                    # Ren'Py 7 的 config.archives 需要相对归档前缀，验证时也保留文件名。
+                    archives.append(file)
             except Exception:
                 pass
 

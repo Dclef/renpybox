@@ -6,9 +6,11 @@ from module.Config import Config
 from module.Engine.Translator.TranslationTaskContext import TranslationTaskContext
 
 
-def test_new_config_uses_source_budget_but_old_config_keeps_legacy_batching(tmp_path):
-    assert Config().max_batch_source_tokens == 1024
+def test_new_config_uses_line_based_batches_by_default(tmp_path):
+    assert Config().token_threshold == 20
+    assert Config().max_batch_source_tokens == 0
     assert Config().max_output_tokens == 0
+    assert Config().request_timeout == 60
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"config_version": 2, "token_threshold": 10}), encoding="utf-8")
 

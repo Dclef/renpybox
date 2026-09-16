@@ -104,15 +104,15 @@ def test_estimator_preceding_rules_match_cache_manager_punctuation(tmp_path) -> 
 
 
 def test_estimator_independent_source_budget_can_fill_long_text_batches(monkeypatch):
-    # 40 source tokens per item reproduces the documented 10-line/160-token
-    # bottleneck without tying the assertion to a particular encoder version.
+    # 40 source tokens per item keeps the assertion independent from a
+    # particular encoder version.
     items = [CacheItem(src="word " * 40, file_path="story.rpy") for _ in range(1000)]
     monkeypatch.setattr(TokenEstimator, "_count_tokens", lambda _self, text: len(text.split()))
     monkeypatch.setattr(TokenEstimator, "_estimate_batch_prompt_tokens", lambda _self, batches: 0)
     legacy = Config(token_threshold=10, max_batch_source_tokens=0)
-    balanced = Config(token_threshold=20, max_batch_source_tokens=1024)
+    balanced = Config(token_threshold=20, max_batch_source_tokens=0)
 
-    assert TokenEstimator(legacy, {}, items).estimate().batch_count == 250
+    assert TokenEstimator(legacy, {}, items).estimate().batch_count == 100
     assert TokenEstimator(balanced, {}, items).estimate().batch_count == 50
 
 

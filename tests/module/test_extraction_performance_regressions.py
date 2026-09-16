@@ -153,6 +153,41 @@ def test_cancelling_regular_extraction_restores_old_translation(tmp_path, monkey
     extractor.set_cancel_callback(lambda: cancelled)
     result = extractor.extract_regular(tmp_path, "chinese", "game.exe")
     assert not result.success
+    assert result.cancelled is True
+    assert "已自动恢复原翻译目录" in result.message
+    assert (tl_dir / "script.rpy").read_bytes() == previous
+
+
+def test_cancelling_official_failure_is_not_logged_as_error(tmp_path, monkeypatch):
+    config_for_extraction(monkeypatch, custom=False)
+    tl_dir = tmp_path / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    previous = b'translate chinese strings:\n    old "Original"\n    new "Kept"\n'
+    (tl_dir / "script.rpy").write_bytes(previous)
+    cancelled = False
+
+    def official(*_args, **_kwargs):
+        nonlocal cancelled
+        cancelled = True
+        raise RuntimeError("官方抽取已取消")
+
+    extractor = UnifiedExtractor(SimpleNamespace(official_extract=official))
+    info_messages = []
+    error_messages = []
+    extractor.logger = SimpleNamespace(
+        info=info_messages.append,
+        error=error_messages.append,
+        warning=lambda *_args, **_kwargs: None,
+        debug=lambda *_args, **_kwargs: None,
+    )
+    extractor.set_cancel_callback(lambda: cancelled)
+
+    result = extractor.extract_regular(tmp_path, "chinese", "game.exe")
+
+    assert result.success is False
+    assert result.cancelled is True
+    assert error_messages == []
+    assert any("常规抽取已取消" in message for message in info_messages)
     assert (tl_dir / "script.rpy").read_bytes() == previous
 
 

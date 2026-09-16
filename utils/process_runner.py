@@ -66,6 +66,7 @@ class ProcessRunner:
                     stderr=subprocess.DEVNULL,
                     creationflags=self._get_creation_flags(),
                     check=False,
+                    timeout=3,
                 )
             else:
                 # Linux/macOS 使用 killpg 杀进程组

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
 from qfluentwidgets import (
     FluentIcon,
@@ -37,6 +37,107 @@ from module.Project.ProjectStore import ProjectStore
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 
+class RenpyTranslationExtractionWorker(QThread):
+    """在后台执行 TL 抽取，避免长时间扫描阻塞界面。"""
+
+    progress = pyqtSignal(str, int)
+    result_ready = pyqtSignal(object, object)
+    error_ready = pyqtSignal(str)
+
+    def __init__(
+        self,
+        extractor,
+        project_root: Path,
+        tl_name: str,
+        exe_path: Optional[Path],
+        *,
+        use_official: bool,
+        incremental: bool,
+        auto_merge_cleanup: bool,
+    ):
+        super().__init__()
+        self.extractor = extractor
+        self.project_root = project_root
+        self.tl_name = tl_name
+        self.exe_path = exe_path
+        self.use_official = use_official
+        self.incremental = incremental
+        self.auto_merge_cleanup = auto_merge_cleanup
+
+    def run(self) -> None:
+        try:
+            if hasattr(self.extractor, "set_progress_callback"):
+                self.extractor.set_progress_callback(
+                    lambda message, percent: self.progress.emit(str(message), int(percent))
+                )
+
+            if self.incremental:
+                result = self.extractor.extract_incremental(
+                    self.project_root,
+                    self.tl_name,
+                    self.exe_path,
+                    use_official=self.use_official,
+                )
+                merge_result = None
+                if result.success and self.auto_merge_cleanup and result.incremental_dir:
+                    merge_result = self.extractor.merge_incremental_folder(
+                        self.project_root,
+                        self.tl_name,
+                        result.incremental_dir,
+                        clean_duplicates=True,
+                    )
+                self.result_ready.emit(result, merge_result)
+                return
+
+            result = self.extractor.extract_regular(
+                self.project_root,
+                self.tl_name,
+                self.exe_path,
+                use_official=self.use_official,
+            )
+            self.result_ready.emit(result, None)
+        except Exception as exc:
+            LogManager.get().error(f"抽取失败: {exc}")
+            self.error_ready.emit(str(exc))
+        finally:
+            if hasattr(self.extractor, "set_progress_callback"):
+                self.extractor.set_progress_callback(None)
+
+
+class RenpyTranslationMergeWorker(QThread):
+    """在后台合并增量目录，避免重复扫描阻塞界面。"""
+
+    progress = pyqtSignal(str, int)
+    result_ready = pyqtSignal(object)
+    error_ready = pyqtSignal(str)
+
+    def __init__(self, extractor, project_root: Path, tl_name: str, incremental_dir: Path):
+        super().__init__()
+        self.extractor = extractor
+        self.project_root = project_root
+        self.tl_name = tl_name
+        self.incremental_dir = incremental_dir
+
+    def run(self) -> None:
+        try:
+            if hasattr(self.extractor, "set_progress_callback"):
+                self.extractor.set_progress_callback(
+                    lambda message, percent: self.progress.emit(str(message), int(percent))
+                )
+            result = self.extractor.merge_incremental_folder(
+                self.project_root,
+                self.tl_name,
+                self.incremental_dir,
+                clean_duplicates=True,
+            )
+            self.result_ready.emit(result)
+        except Exception as exc:
+            LogManager.get().error(f"合并失败: {exc}")
+            self.error_ready.emit(str(exc))
+        finally:
+            if hasattr(self.extractor, "set_progress_callback"):
+                self.extractor.set_progress_callback(None)
+
 
 
 class RenpyTranslationPage(QWidget):
@@ -50,6 +151,8 @@ class RenpyTranslationPage(QWidget):
         if not self.config.extract_use_official and not self.config.extract_use_custom:
             self.config.extract_use_custom = True
         self.unified_extractor = UnifiedExtractor()
+        self._extract_worker = None
+        self._merge_worker = None
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -307,13 +410,7 @@ class RenpyTranslationPage(QWidget):
 
             tl_name = self.tl_name_edit.text().strip() or "chinese"
             tl_dir = project_root / "game" / "tl" / tl_name
-            if not tl_dir.exists():
-                InfoBar.error(
-                    Localizer.get().error,
-                    Localizer.get().extract_tl_tl_subfolder_not_found.format(tl_dir=tl_dir),
-                    parent=self,
-                )
-                return
+            tl_dir.mkdir(parents=True, exist_ok=True)
 
             def _is_effective_tl_rpy(path: Path) -> bool:
                 name = path.name.lower()
@@ -392,6 +489,8 @@ class RenpyTranslationPage(QWidget):
             # 执行抽取
             self._begin(Localizer.get().extract_tl_extracting_translatable_text)
 
+            auto_merge_cleanup = getattr(self.config, "renpy_incremental_auto_merge_cleanup", True)
+
             if has_existing_tl:
                 self.logger.info("检测到已有翻译，启用增量抽取以保留译文")
                 InfoBar.info(
@@ -399,56 +498,22 @@ class RenpyTranslationPage(QWidget):
                     Localizer.get().extract_tl_existing_tl_files_found_incremental_extraction_preserve,
                     parent=self,
                 )
-                result = self.unified_extractor.extract_incremental(
-                    project_root,
-                    tl_name,
-                    exe_path,
-                    use_official=use_official
-                )
-                if (
-                    result.success
-                    and getattr(self.config, "renpy_incremental_auto_merge_cleanup", True)
-                    and result.incremental_dir
-                ):
-                    merge_result = self.unified_extractor.merge_incremental_folder(
-                        project_root,
-                        tl_name,
-                        result.incremental_dir,
-                        clean_duplicates=True,
-                    )
-                    if merge_result.success:
-                        InfoBar.success(
-                            Localizer.get().extract_tl_automatic_merge_complete,
-                            Localizer.get().extract_tl_incremental_results_merged,
-                            parent=self,
-                        )
-                    else:
-                        InfoBar.warning(
-                            Localizer.get().extract_tl_automatic_merge_failed,
-                            Localizer.get().extract_tl_incremental_results_merge_failed,
-                            parent=self,
-                        )
-            else:
-                result = self.unified_extractor.extract_regular(
-                    project_root,
-                    tl_name,
-                    exe_path,
-                    use_official=use_official
-                )
-
-            self._end(result.success)
-            
-            if result.success:
-                InfoBar.success(
-                    Localizer.get().extract_tl_extraction_complete,
-                    Localizer.get().extract_tl_translation_extraction_completed,
-                    parent=self,
+                self._start_extract_worker(
+                    project_root=project_root,
+                    tl_name=tl_name,
+                    exe_path=exe_path,
+                    use_official=use_official,
+                    incremental=True,
+                    auto_merge_cleanup=auto_merge_cleanup,
                 )
             else:
-                InfoBar.error(
-                    Localizer.get().extract_tl_extraction_failed,
-                    Localizer.get().extract_tl_translation_extraction_failed,
-                    parent=self,
+                self._start_extract_worker(
+                    project_root=project_root,
+                    tl_name=tl_name,
+                    exe_path=exe_path,
+                    use_official=use_official,
+                    incremental=False,
+                    auto_merge_cleanup=auto_merge_cleanup,
                 )
 
         except Exception as e:
@@ -456,35 +521,117 @@ class RenpyTranslationPage(QWidget):
             InfoBar.error(Localizer.get().error, str(e), parent=self)
             self._end(False)
 
+    def _start_extract_worker(
+        self,
+        *,
+        project_root: Path,
+        tl_name: str,
+        exe_path: Optional[Path],
+        use_official: bool,
+        incremental: bool,
+        auto_merge_cleanup: bool,
+    ) -> None:
+        worker = RenpyTranslationExtractionWorker(
+            self.unified_extractor,
+            project_root,
+            tl_name,
+            exe_path,
+            use_official=use_official,
+            incremental=incremental,
+            auto_merge_cleanup=auto_merge_cleanup,
+        )
+        self._extract_worker = worker
+        worker.progress.connect(self._on_worker_progress)
+        worker.result_ready.connect(self._on_extract_result)
+        worker.error_ready.connect(self._on_extract_error)
+        worker.start()
+
+    def _on_worker_progress(self, _message: str, percent: int) -> None:
+        self.progress_bar.setValue(max(0, min(100, int(percent))))
+
+    def _on_extract_result(self, result, merge_result) -> None:
+        self._extract_worker = None
+        success = bool(getattr(result, "success", False))
+        self._end(success)
+
+        if merge_result is not None:
+            if getattr(merge_result, "success", False):
+                InfoBar.success(
+                    Localizer.get().extract_tl_automatic_merge_complete,
+                    Localizer.get().extract_tl_incremental_results_merged,
+                    parent=self,
+                )
+            else:
+                InfoBar.warning(
+                    Localizer.get().extract_tl_automatic_merge_failed,
+                    Localizer.get().extract_tl_incremental_results_merge_failed,
+                    parent=self,
+                )
+
+        if success:
+            InfoBar.success(
+                Localizer.get().extract_tl_extraction_complete,
+                Localizer.get().extract_tl_translation_extraction_completed,
+                parent=self,
+            )
+        else:
+            InfoBar.error(
+                Localizer.get().extract_tl_extraction_failed,
+                Localizer.get().extract_tl_translation_extraction_failed,
+                parent=self,
+            )
+
+    def _on_extract_error(self, message: str) -> None:
+        self._extract_worker = None
+        InfoBar.error(Localizer.get().error, message, parent=self)
+        self._end(False)
+
     def _merge_incremental_now(self):
         """合并增量目录并清理重复"""
         try:
             _, tl, project_root = self._resolve_paths()
             incremental_dir = project_root / "game" / "tl" / f"{tl}_new"
             self._begin(Localizer.get().extract_tl_merging_incremental_translations)
-            result = self.unified_extractor.merge_incremental_folder(
-                project_root,
-                tl,
-                incremental_dir,
-                clean_duplicates=True,
-            )
-            self._end(result.success)
-            if result.success:
-                InfoBar.success(
-                    Localizer.get().extract_tl_merge_complete,
-                    Localizer.get().extract_tl_incremental_results_merged,
-                    parent=self,
-                )
-            else:
-                InfoBar.warning(
-                    Localizer.get().onekey_merge_failed,
-                    Localizer.get().extract_tl_incremental_results_merge_failed,
-                    parent=self,
-                )
+            self._start_merge_worker(project_root, tl, incremental_dir)
         except Exception as e:
             self.logger.error(f"合并失败: {e}")
             InfoBar.error(Localizer.get().error, str(e), parent=self)
             self._end(False)
+
+    def _start_merge_worker(self, project_root: Path, tl_name: str, incremental_dir: Path) -> None:
+        worker = RenpyTranslationMergeWorker(
+            self.unified_extractor,
+            project_root,
+            tl_name,
+            incremental_dir,
+        )
+        self._merge_worker = worker
+        worker.progress.connect(self._on_worker_progress)
+        worker.result_ready.connect(self._on_merge_result)
+        worker.error_ready.connect(self._on_merge_error)
+        worker.start()
+
+    def _on_merge_result(self, result) -> None:
+        self._merge_worker = None
+        success = bool(getattr(result, "success", False))
+        self._end(success)
+        if success:
+            InfoBar.success(
+                Localizer.get().extract_tl_merge_complete,
+                Localizer.get().extract_tl_incremental_results_merged,
+                parent=self,
+            )
+        else:
+            InfoBar.warning(
+                Localizer.get().onekey_merge_failed,
+                Localizer.get().extract_tl_incremental_results_merge_failed,
+                parent=self,
+            )
+
+    def _on_merge_error(self, message: str) -> None:
+        self._merge_worker = None
+        InfoBar.error(Localizer.get().error, message, parent=self)
+        self._end(False)
 
     def _get_filtered_backup_root(self) -> Path:
         _, tl, project_root = self._resolve_paths()
@@ -610,10 +757,18 @@ class RenpyTranslationPage(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.extract_btn.setEnabled(False)
+        if hasattr(self, "merge_cleanup_btn"):
+            self.merge_cleanup_btn.setEnabled(False)
+        if hasattr(self, "restore_filtered_btn"):
+            self.restore_filtered_btn.setEnabled(False)
 
     def _end(self, ok: bool):
         self.progress_bar.setVisible(False)
         self.extract_btn.setEnabled(True)
+        if hasattr(self, "merge_cleanup_btn"):
+            self.merge_cleanup_btn.setEnabled(True)
+        if hasattr(self, "restore_filtered_btn"):
+            self.restore_filtered_btn.setEnabled(True)
         # 根据选项状态更新可用性
         self._refresh_option_state()
 

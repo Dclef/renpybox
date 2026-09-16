@@ -121,9 +121,9 @@ class AgentRequester:
 
     def _timeout(self) -> int:
         try:
-            return max(1, int(getattr(self.config, "request_timeout", 120)))
+            return max(1, int(getattr(self.config, "request_timeout", 60)))
         except (TypeError, ValueError):
-            return 120
+            return 60
 
     def _client_key(self) -> tuple[str, str, str, int, int]:
         return (

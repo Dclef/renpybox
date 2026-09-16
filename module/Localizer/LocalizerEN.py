@@ -757,16 +757,16 @@ class LocalizerEN(LocalizerZH):
         "Please refer to the API platform's documentation for settings, 0 = unlimited"
     )
     basic_settings_page_token_threshold_title: str = "Task Line Limit"
-    basic_settings_page_token_threshold_content: str = "Maximum lines per task (5-15 recommended, fewer lines = more stable)"
+    basic_settings_page_token_threshold_content: str = "Maximum source lines per task; default is 20. Lower values improve stability, higher values reduce request count."
     basic_settings_page_max_batch_source_tokens_title: str = "Max Source Tokens per Batch"
-    basic_settings_page_max_batch_source_tokens_content: str = "Source token budget, excluding prompts and preceding context; 0 derives from the line limit as before. Oversized items are sent individually"
+    basic_settings_page_max_batch_source_tokens_content: str = "Source token budget, excluding prompts and preceding context; 0 splits only by line count. Oversized items are sent individually"
     basic_settings_page_max_output_tokens_title: str = "Max Output Tokens per Request"
     basic_settings_page_max_output_tokens_content: str = "Token budget for the model response; 0 uses the provider default. Retries keep this budget"
-    basic_settings_page_balanced_throughput_button: str = "Apply balanced throughput: 20 lines / 1024 source tokens / automatic output"
-    basic_settings_page_balanced_throughput_tooltip: str = "Set batch lines, source and output token budgets; concurrency, timeout and quality checks retain their current settings"
+    basic_settings_page_balanced_throughput_button: str = "Restore recommended throughput: 20 lines / automatic source / automatic output"
+    basic_settings_page_balanced_throughput_tooltip: str = "Restore batch lines, source token budget, and output budget. Automatic source splits only by line count; concurrency, timeout, and quality checks keep their current settings"
     basic_settings_page_request_timeout_title: str = "Request Timeout"
     basic_settings_page_request_timeout_content: str = (
-        "The maximum time (seconds) to wait for the model's response when making a request"
+        "Maximum time to wait for a model response (seconds). Default is 60 seconds; timed-out requests release their concurrency slot and enter retry handling."
         "<br>"
         "If no reply is received after the timeout, the task will be considered failed"
     )
@@ -1678,6 +1678,7 @@ class LocalizerEN(LocalizerZH):
     onekey_decompiling_rpyc_files: str = '🔨 Decompiling RPYC files...'
     onekey_running_incremental_extraction: str = '🔄 Running incremental extraction...'
     onekey_extracting: str = 'Extracting...'
+    onekey_official_extraction_running_elapsed: str = 'Running official extraction ({seconds} seconds elapsed)...'
     onekey_extraction_complete: str = '✓ Extraction Complete'
     onekey_new_content_written_existing_translations_left_unchanged: str = (
         '{msg}\n\n💡 New content was written to {name}/.\nExisting translations were left unchanged.'
