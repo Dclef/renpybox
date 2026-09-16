@@ -453,3 +453,63 @@ def test_patch_delete_failure_keeps_old_manifest_and_journal(
     assert installed["version"] == "v2.0.0"
     assert not obsolete.exists()
     assert not list(install_dir.rglob("*.new"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="需要 Windows 文件属性")
+@pytest.mark.parametrize("attributes", [0x2, 0x4, 0x1, 0x7])
+@pytest.mark.parametrize("patch", [False, True], ids=["full", "patch"])
+def test_update_replaces_updater_with_windows_attributes(
+    tmp_path: Path, attributes: int, patch: bool
+) -> None:
+    """使用真实文件属性复现旧发布包更新器被隐藏、系统或只读标记阻挡。"""
+    import ctypes
+    from ctypes import wintypes
+
+    set_attributes = ctypes.WinDLL("kernel32", use_last_error=True).SetFileAttributesW
+    set_attributes.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+    set_attributes.restype = wintypes.BOOL
+    install_dir = tmp_path / "install"
+    target = install_dir / "_internal" / "RenpyBoxUpdater2.exe"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"OLD-UPDATER")
+    (install_dir / "RenpyBox.exe").write_bytes(b"MAIN")
+    (install_dir / updater.MANIFEST_NAME).write_text(
+        json.dumps(build_manifest(install_dir, "v1.0.0")), encoding="utf-8"
+    )
+    payload = {
+        "RenpyBox.exe": b"MAIN",
+        "_internal/RenpyBoxUpdater2.exe": b"NEW-UPDATER",
+    }
+    zip_path = tmp_path / "update.zip"
+    if patch:
+        new_dir = tmp_path / "new"
+        for rel, content in payload.items():
+            path = new_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        build_patch(new_dir, "v2.0.0", install_dir, "v1.0.0", zip_path)
+    else:
+        _build_payload_zip(zip_path, files=payload)
+
+    assert set_attributes(str(target), attributes)
+    try:
+        updater.apply_update(
+            pid=0,
+            zip_path=zip_path,
+            install_dir=install_dir,
+            release_url=None,
+            restart=False,
+            exe_name="RenpyBox.exe",
+        )
+        assert target.read_bytes() == b"NEW-UPDATER"
+        assert not zip_path.exists()
+        assert not (install_dir / "_update_staging").exists()
+        assert not (install_dir / updater.JOURNAL_NAME).exists()
+        if patch:
+            manifest = json.loads(
+                (install_dir / updater.MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            assert manifest["version"] == "v2.0.0"
+    finally:
+        # 即使回归失败也恢复属性，避免测试临时目录清理失败。
+        assert set_attributes(str(target), 0x80)

@@ -54,12 +54,6 @@ if exist dist\RenpyBox\RenpyBoxUpdater.exe (
 if exist dist\RenpyBoxUpdater.exe (
   move /y dist\RenpyBoxUpdater.exe dist\RenpyBox\_internal\RenpyBoxUpdater.exe >nul
 )
-if exist dist\RenpyBox\_internal\RenpyBoxUpdater.exe (
-  attrib +h +s dist\RenpyBox\_internal\RenpyBoxUpdater.exe >nul 2>nul
-)
-if exist dist\RenpyBox\_internal\RenpyBoxUpdater2.exe (
-  attrib +h +s dist\RenpyBox\_internal\RenpyBoxUpdater2.exe >nul 2>nul
-)
 echo Build complete. Output in dist/RenpyBox
 if defined CI goto :eof
 if defined GITHUB_ACTIONS goto :eof
