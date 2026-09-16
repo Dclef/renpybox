@@ -637,6 +637,12 @@ _EXTRACTOR_PROGRESS_EN = {
 
 def _localize_extractor_progress(message: str, fallback: str) -> str:
     text = str(message)
+    heartbeat_prefix = "官方抽取仍在运行，已用 "
+    if text.startswith(heartbeat_prefix) and text.endswith(" 秒"):
+        seconds = text[len(heartbeat_prefix):-2].strip()
+        return Localizer.get().onekey_official_extraction_running_elapsed.format(
+            seconds=seconds
+        )
     if text.startswith("正在写入合并文件 "):
         detail = text.removeprefix("正在写入合并文件 ").removesuffix("...")
         return Localizer.localize(text, f"Writing merged file {detail}...")
@@ -646,9 +652,13 @@ def _localize_extractor_progress(message: str, fallback: str) -> str:
 def _localize_extraction_result(result, incremental: bool) -> str:
     message = str(getattr(result, "message", "") or "")
     if Localizer.get_app_language() != BaseLanguage.Enum.EN:
+        if getattr(result, "cancelled", False):
+            return Localizer.get().pack_unpack_cancelled
         return message or (
             "增量抽取完成" if incremental else "文本提取完成"
         )
+    if getattr(result, "cancelled", False):
+        return Localizer.get().pack_unpack_cancelled
     if result.success:
         if incremental:
             incremental_dir = getattr(result, "incremental_dir", None)
@@ -807,7 +817,7 @@ class ExtractionWorker(QThread):
                     use_official=bool(self.exe_path)
                 )
             
-            if not result.success and result.message:
+            if not result.success and result.message and not getattr(result, "cancelled", False):
                 LogManager.get().error(f"文本提取失败: {result.message}")
             self.finished.emit(
                 result.success, _localize_extraction_result(result, self.incremental), result

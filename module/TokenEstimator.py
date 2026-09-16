@@ -78,7 +78,7 @@ class TokenEstimator:
         ):
             line_limit = 1
         source_budget = max(0, int(getattr(self.config, "max_batch_source_tokens", 0)))
-        token_limit = source_budget or max(64, line_limit * 16)
+        token_limit = source_budget or None
         batches = self._estimate_batches(untranslated, line_limit, token_limit)
         batch_count = len(batches)
 
@@ -237,7 +237,7 @@ class TokenEstimator:
         self,
         items: list[CacheItem],
         line_limit: int,
-        token_limit: int,
+        token_limit: int | None,
     ) -> list[list[CacheItem]]:
         batches: list[list[CacheItem]] = []
         current: list[CacheItem] = []
@@ -251,7 +251,10 @@ class TokenEstimator:
 
             if current_lines > 0 and (
                 current_lines + item_lines > line_limit
-                or current_tokens + item_tokens > token_limit
+                or (
+                    token_limit is not None
+                    and current_tokens + item_tokens > token_limit
+                )
                 or item.get_file_path() != current[-1].get_file_path()
             ):
                 batches.append(current)

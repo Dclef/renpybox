@@ -95,7 +95,18 @@ def is_python2_from_game_path(game_path):
 
 def get_py_path(game_path):
     base_name = os.path.splitext(game_path)[0]
-    return base_name + '.py'
+    py_path = base_name + '.py'
+    if os.path.isfile(py_path):
+        return py_path
+
+    # 部分 Ren'Py 发行包有 Game-32.exe/Game-64.exe，但启动脚本仍叫 Game.py。
+    lower_name = base_name.lower()
+    for suffix in ('-32', '-64'):
+        if lower_name.endswith(suffix):
+            fallback = base_name[:-len(suffix)] + '.py'
+            if os.path.isfile(fallback):
+                return fallback
+    return py_path
 
 
 def get_game_path_from_game_dir(game_dir):

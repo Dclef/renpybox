@@ -234,6 +234,49 @@ def test_extraction_worker_preserves_details_without_leaking_chinese(
     assert re.search(r"[\u4e00-\u9fff]", finished[0][1]) is None
 
 
+def test_extraction_worker_reports_cancellation_without_error_text(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
+
+    class ExtractorStub:
+        def set_progress_callback(self, callback) -> None:
+            self.callback = callback
+
+        def extract_regular(self, *args, **kwargs):
+            return SimpleNamespace(
+                success=False,
+                cancelled=True,
+                message="抽取已取消；已自动恢复原翻译目录",
+                total_files=0,
+                incremental_dir=None,
+                preserved_count=0,
+            )
+
+    finished = []
+    worker = page_module.ExtractionWorker(
+        ExtractorStub(), "game", "chinese", None
+    )
+    worker.finished.connect(
+        lambda success, message, result: finished.append((success, message, result))
+    )
+
+    worker.run()
+
+    assert finished[0][0] is False
+    assert finished[0][1] == "Cancelled"
+    assert re.search(r"[\u4e00-\u9fff]", finished[0][1]) is None
+
+
+def test_official_extraction_heartbeat_is_localized(monkeypatch) -> None:
+    monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
+
+    assert page_module._localize_extractor_progress(
+        "官方抽取仍在运行，已用 12 秒",
+        "Extracting text...",
+    ) == "Running official extraction (12 seconds elapsed)..."
+
+
 def test_incremental_merge_failure_keeps_recovery_state_in_english(
     monkeypatch,
 ) -> None:

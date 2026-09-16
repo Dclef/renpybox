@@ -68,6 +68,7 @@ class ExtractionResult:
     total_files: int = 0
     incremental_dir: Optional[Path] = None  # 增量抽取的新增内容目录
     preserved_count: int = 0  # 保留的已有翻译数量
+    cancelled: bool = False  # 用户主动取消，区别于抽取失败
 
 
 @dataclass
@@ -1457,6 +1458,8 @@ class UnifiedExtractor:
                 try:
                     self._run_official_extract(exe_path, tl_name)
                     self.official_extraction_status = "succeeded"
+                except rx.ExtractionCancelled:
+                    raise
                 except Exception as e:
                     self._check_cancel()
                     self.official_extraction_status = "failed"
@@ -1530,16 +1533,22 @@ class UnifiedExtractor:
             self._emit_progress("抽取完成", 100)
             
         except Exception as e:
-            import traceback
-            self.logger.error(traceback.format_exc())
+            cancelled = isinstance(e, rx.ExtractionCancelled) or self._is_cancelled()
+            if cancelled:
+                self.logger.info("常规抽取已取消")
+            else:
+                import traceback
+                self.logger.error(traceback.format_exc())
             result.success = False
+            result.cancelled = cancelled
             if backup_path is not None and backup_path.is_dir():
                 # 抽取失败必须把原 tl 恢复回去，避免游戏 TL 处于半生成状态。
                 try:
                     if tl_dir.exists():
                         shutil.rmtree(str(tl_dir), ignore_errors=True)
                     shutil.move(str(backup_path), str(tl_dir))
-                    self.logger.info(f"常规抽取失败，已恢复原翻译目录: {tl_dir}")
+                    outcome = "已取消" if cancelled else "失败"
+                    self.logger.info(f"常规抽取{outcome}，已恢复原翻译目录: {tl_dir}")
                     result.message = f"{e}；已自动恢复原翻译目录"
                 except Exception as restore_exc:
                     self.logger.error(f"恢复原翻译目录失败: {restore_exc}")
@@ -1684,6 +1693,8 @@ class UnifiedExtractor:
                             official_string_originals = self._get_string_originals(tl_dir)
                             official_succeeded = True
                             self.official_extraction_status = "succeeded"
+                        except rx.ExtractionCancelled:
+                            raise
                         except Exception as e:
                             self._check_cancel()
                             self.official_extraction_status = "failed"
@@ -1950,9 +1961,14 @@ class UnifiedExtractor:
                     self.logger.error(f"原翻译仍在恢复备份中，已保留: {temp_backup_dir}")
             
         except Exception as e:
-            import traceback
-            self.logger.error(traceback.format_exc())
+            cancelled = isinstance(e, rx.ExtractionCancelled) or self._is_cancelled()
+            if cancelled:
+                self.logger.info("增量抽取已取消")
+            else:
+                import traceback
+                self.logger.error(traceback.format_exc())
             result.success = False
+            result.cancelled = cancelled
             result.message = str(e)
             
         return result

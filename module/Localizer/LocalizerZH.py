@@ -740,16 +740,16 @@ class LocalizerZH():
         ""
     )
     basic_settings_page_token_threshold_title: str = "任务行数阈值"
-    basic_settings_page_token_threshold_content: str = "每个任务所包含的文本的最大行数（建议 5-15 行，行数越少翻译越稳定）"
+    basic_settings_page_token_threshold_content: str = "每个任务所包含的文本最大行数；默认 20 行，降低可提升稳定性，提高可减少请求数"
     basic_settings_page_max_batch_source_tokens_title: str = "每批原文 Token 上限"
-    basic_settings_page_max_batch_source_tokens_content: str = "每批原文的 Token 预算，不含提示词和参考上文；0 沿用旧配置的行数推导。单条超长文本独立提交"
+    basic_settings_page_max_batch_source_tokens_content: str = "每批原文的 Token 预算，不含提示词和参考上文；0 表示仅按行数切分。单条超长文本独立提交"
     basic_settings_page_max_output_tokens_title: str = "每次请求输出 Token 上限"
     basic_settings_page_max_output_tokens_content: str = "模型回复的 Token 预算；0 使用接口默认值，重试时保持此预算"
-    basic_settings_page_balanced_throughput_button: str = "应用均衡吞吐：20 行 / 1024 原文 Token / 输出自动"
-    basic_settings_page_balanced_throughput_tooltip: str = "设置批行数、原文 Token 预算和输出预算，并发、超时和质量检查保持当前设置"
+    basic_settings_page_balanced_throughput_button: str = "恢复推荐吞吐配置：20 行 / 原文自动 / 输出自动"
+    basic_settings_page_balanced_throughput_tooltip: str = "把批行数、原文 Token 预算和输出预算恢复为推荐值；原文自动表示只按行数切分，并发、超时和质量检查保持当前设置"
     basic_settings_page_request_timeout_title: str = "超时时间阈值"
     basic_settings_page_request_timeout_content: str = (
-        "发起请求时等待模型回复的最长时间（秒），超时仍未收到回复，则会判断为任务失败"
+        "发起请求时等待模型回复的最长时间（秒）；默认 60 秒，超时后释放并发槽并进入失败重试"
         ""
         ""
     )
@@ -1599,6 +1599,7 @@ class LocalizerZH():
     onekey_decompiling_rpyc_files: str = '🔨 正在反编译 RPYC 文件...'
     onekey_running_incremental_extraction: str = '🔄 增量抽取中...'
     onekey_extracting: str = '正在提取...'
+    onekey_official_extraction_running_elapsed: str = '正在执行官方抽取，已运行 {seconds} 秒...'
     onekey_extraction_complete: str = '✓ 提取完成'
     onekey_new_content_written_existing_translations_left_unchanged: str = (
         '{msg}\n\n💡 新增内容已输出到单独文件夹：{name}/\n原有翻译保持不变，可分别处理新增内容。'

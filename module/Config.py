@@ -110,15 +110,15 @@ class Config():
     scale_factor: str = ""
 
     # BasicSettingsPage
-    token_threshold: int = 10
-    # 独立的每批原文 token 上限；0 表示沿用旧的“行数 × 16”推导方式。
-    max_batch_source_tokens: int = 1024
+    token_threshold: int = 20
+    # 独立的每批原文 token 上限；0 表示不额外按原文 token 切分。
+    max_batch_source_tokens: int = 0
     # 0 使用后端默认输出预算，不随任务行数或重试批次收缩。
     max_output_tokens: int = 0
     # 默认使用固定并发；用户仍可手动设置 0，表示按接口槽位自动探测。
     max_workers: int = 16
     rpm_threshold: int = 0
-    request_timeout: int = 120
+    request_timeout: int = 60
     max_round: int = 16
 
     # ExpertSettingsPage
