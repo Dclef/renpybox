@@ -1,4 +1,4 @@
-"""WinUI-inspired theme tokens shared by the application shell and pages."""
+"""Theme tokens shared by the application shell and pages."""
 
 from dataclasses import dataclass
 
@@ -88,7 +88,7 @@ DARK = ThemePalette(
 
 
 # PyQt-Fluent-Widgets 1.11.3 lightens qconfig.themeColor in dark mode. This
-# seed maps its derived PRIMARY color to the WinUI dark accent above.
+# seed maps its derived PRIMARY color to the dark accent above.
 QFLUENT_DARK_ACCENT_SEED = "#2398D4"
 
 

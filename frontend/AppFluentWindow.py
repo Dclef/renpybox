@@ -149,7 +149,7 @@ class AppFluentWindow(FluentWindow, Base):
     def __init__(self) -> None:
         super().__init__()
         self._is_closing = False
-        # 使用稳定的 WinUI 实色表面，避免系统透明度设置改变可读性。
+        # 使用稳定的实色表面，避免系统透明度设置改变可读性。
         self.setMicaEffectEnabled(False)
         self.setCustomBackgroundColor(LIGHT.background, DARK.background)
         # Toast 决策（去重/聚合/级别）在服务内，窗口只负责展示适配
@@ -333,7 +333,7 @@ class AppFluentWindow(FluentWindow, Base):
         self.titleBar.iconLabel.hide()
 
     def _configure_navigation(self) -> None:
-        """Configure the adaptive WinUI-style navigation pane."""
+        """Configure the adaptive navigation pane."""
         navigation = self.navigationInterface
         navigation.setExpandWidth(self.NAVIGATION_EXPAND_WIDTH)
         navigation.setCollapsible(True)

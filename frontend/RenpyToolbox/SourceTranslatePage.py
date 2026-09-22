@@ -37,6 +37,15 @@ from widget.ThemeHelper import (
 )
 
 
+def _make_switch(text: str, checked: bool = False) -> SwitchButton:
+    btn = SwitchButton(text)
+    btn.setOnText(text)
+    btn.setOffText(text)
+    btn.setText(text)
+    btn.setChecked(checked)
+    return btn
+
+
 class SourceTranslatePage(Base, QWidget):
     """直接翻译 game/*.rpy 源码，参数精简，只负责触发 Engine。"""
 
@@ -106,10 +115,10 @@ class SourceTranslatePage(Base, QWidget):
 
         # 模式：目录 / 单文件
         mode_row = QHBoxLayout()
-        self.single_file_switch = SwitchButton(
-            Localizer.localize("单文件模式", "Single File Mode")
+        self.single_file_switch = _make_switch(
+            Localizer.localize("单文件模式", "Single File Mode"),
+            checked=False,
         )
-        self.single_file_switch.setChecked(False)
         self.single_file_switch.checkedChanged.connect(self._on_single_file_changed)
         mode_row.addWidget(self.single_file_switch)
         mode_row.addStretch(1)
@@ -207,13 +216,14 @@ class SourceTranslatePage(Base, QWidget):
 
         # 备份开关
         backup_row = QHBoxLayout()
-        self.backup_switch = SwitchButton(
-            Localizer.localize("自动备份 .bak", "Automatically Back Up .bak")
+        self.backup_switch = _make_switch(
+            Localizer.localize("自动备份 .bak", "Automatically Back Up .bak"),
+            checked=False,
         )
-        self.backup_switch.setChecked(False)
         backup_row.addWidget(self.backup_switch)
-        self.backup_external_switch = SwitchButton(
-            Localizer.localize("备份源码到外部", "Back Up Source Code Externally")
+        self.backup_external_switch = _make_switch(
+            Localizer.localize("备份源码到外部", "Back Up Source Code Externally"),
+            checked=False,
         )
         self.backup_external_switch.checkedChanged.connect(self._on_backup_external_changed)
         backup_row.addWidget(self.backup_external_switch)

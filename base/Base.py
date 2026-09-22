@@ -40,8 +40,14 @@ class Base():
         GOOGLE = "Google"
         ANTHROPIC = "Anthropic"
         SAKURALLM = "SakuraLLM"
-        DEEPL = "DeepL"
-        DEEPLX = "DeepLX"
+        GOOGLEFREE = "GoogleFree"
+        BING = "Bing"
+
+    # 机器翻译格式集合（免 API Key、非 LLM 的传统翻译接口）
+    MACHINE_API_FORMATS = (
+        APIFormat.GOOGLEFREE,
+        APIFormat.BING,
+    )
 
     # 接口格式
     class ToastType(StrEnum):

@@ -41,6 +41,15 @@ from widget.ThemeHelper import (
 )
 
 
+def _make_switch(text: str, checked: bool = False) -> SwitchButton:
+    btn = SwitchButton(text)
+    btn.setOnText(text)
+    btn.setOffText(text)
+    btn.setText(text)
+    btn.setChecked(checked)
+    return btn
+
+
 class HookTranslatePage(Base, QWidget):
     """Runtime EXE hook translation flow for Ren'Py."""
 
@@ -216,19 +225,17 @@ class HookTranslatePage(Base, QWidget):
         box.addLayout(row_target)
 
         row_options = QHBoxLayout()
-        self.backup_switch = SwitchButton(
-            Localizer.localize("写回前自动备份 .bak", "Automatically Back Up .bak Before Writing")
+        self.backup_switch = _make_switch(
+            Localizer.localize("写回前自动备份 .bak", "Automatically Back Up .bak Before Writing"),
+            checked=False,
         )
-        self.backup_switch.setChecked(False)
         row_options.addWidget(self.backup_switch)
-        self.incremental_switch = SwitchButton(
+        self.incremental_switch = _make_switch(
             Localizer.localize(
                 "增量补全（仅追加缺失项）",
                 "Incremental Supplement (Append Missing Entries Only)",
-            )
-        )
-        self.incremental_switch.setChecked(
-            getattr(self.config, "renpy_hook_incremental", True)
+            ),
+            checked=getattr(self.config, "renpy_hook_incremental", True),
         )
         self.incremental_switch.setToolTip(
             Localizer.localize(
@@ -241,12 +248,12 @@ class HookTranslatePage(Base, QWidget):
             )
         )
         row_options.addWidget(self.incremental_switch)
-        self.generate_empty_switch = SwitchButton(
+        self.generate_empty_switch = _make_switch(
             Localizer.localize(
                 "抽取时生成空白译文", "Generate Blank Translations During Extraction"
-            )
+            ),
+            checked=False,
         )
-        self.generate_empty_switch.setChecked(False)
         row_options.addWidget(self.generate_empty_switch)
         row_options.addStretch(1)
         box.addLayout(row_options)

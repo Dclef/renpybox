@@ -32,8 +32,8 @@ EXPECTED_GROUPS = {
     "11_custom_google.json": "custom",
     "12_custom_openai.json": "custom",
     "13_custom_anthropic.json": "custom",
-    "14_deepl.json": "machine",
-    "15_deeplx.json": "machine",
+    "17_googlefree.json": "machine",
+    "19_bing.json": "machine",
 }
 
 
@@ -49,7 +49,7 @@ def test_resolve_group_prefers_valid_explicit_group() -> None:
 
 @pytest.mark.parametrize(
     "api_format",
-    (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX),
+    Base.MACHINE_API_FORMATS,
 )
 def test_infer_group_places_non_llm_formats_in_machine(api_format: Base.APIFormat) -> None:
     assert infer_group({"api_format": api_format}) == "machine"

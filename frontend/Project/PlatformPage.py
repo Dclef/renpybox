@@ -40,7 +40,7 @@ def infer_group(platform: dict) -> str:
     """根据旧接口配置推断展示分组，不修改原配置。"""
     api_format = str(platform.get("api_format", ""))
 
-    if api_format in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+    if api_format in Base.MACHINE_API_FORMATS:
         return "machine"
 
     if api_format == Base.APIFormat.SAKURALLM:
@@ -182,15 +182,6 @@ class PlatformPage(QWidget, Base):
         defaults = self.load_default_platforms()
         existing_formats = {str(item.get("api_format", "")) for item in platforms}
 
-        # 统一旧命名（Deel API / DeepL API）为 DeepL
-        for item in platforms:
-            if str(item.get("api_format", "")) != str(Base.APIFormat.DEEPL):
-                continue
-            name = str(item.get("name", "")).strip()
-            if name in ("Deel API", "DeepL API"):
-                item["name"] = "DeepL"
-                changed = True
-
         # DeepSeek 官方接口已停用旧模型别名；自定义中转保持用户原值。
         for item in platforms:
             api_url = str(item.get("api_url", "")).strip().lower().rstrip("/")
@@ -218,8 +209,8 @@ class PlatformPage(QWidget, Base):
                 item["thinking"] = normalized_thinking
                 changed = True
 
-        # 旧配置中没有 DeepL / DeepLX 时，自动补齐到默认列表
-        for fmt in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+        # 旧配置中没有机翻接口时，自动补齐到默认列表
+        for fmt in Base.MACHINE_API_FORMATS:
             if str(fmt) in existing_formats:
                 continue
             template = next((item for item in defaults if str(item.get("api_format", "")) == str(fmt)), None)
@@ -235,6 +226,10 @@ class PlatformPage(QWidget, Base):
             changed = True
 
         if SecretStore.ensure_platform_identities(platforms) > 0:
+            changed = True
+
+        ids = [item.get("id") for item in platforms if isinstance(item, dict)]
+        if len(ids) != len(set(ids)):
             changed = True
 
         if not changed:

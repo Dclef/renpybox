@@ -1,6 +1,5 @@
 """
-极速翻译器 - 使用 pygtrans (Google) 和 translators (Bing) 实现高速翻译
-模仿 renpy-translator-main 的实现方式
+极速翻译器 - Google 用 pygtrans 批量翻译，其余免费引擎走 translators 库
 """
 
 import os
@@ -26,7 +25,7 @@ from base.LogManager import LogManager
 
 
 class TranslateResponse:
-    """翻译响应对象，兼容 renpy-translator-main 格式"""
+    """翻译响应对象"""
     def __init__(self, ori: str, res: str):
         self.untranslatedText = ori
         self.translatedText = res
@@ -36,7 +35,7 @@ class FastTranslator:
     """
     极速翻译器
     - Google: 使用 pygtrans 库，支持批量翻译
-    - Bing: 使用 translators 库
+    - 其余免费引擎（Bing 等）: 使用 translators 库
     
     支持占位符保护：[me], [mom], {name}, {{sprite}} 等标签在翻译时会被保护
     """
@@ -85,7 +84,14 @@ class FastTranslator:
         
         # 初始化客户端
         if self.engine == 'google' and PYGTRANS_AVAILABLE:
-            self._client = Translate(fmt='text', proxies=proxies, timeout=self._google_timeout, trust_env=True)
+            # ponytail: pygtrans 1.6.2 默认 UA 的 f-string 漏写 f 前缀，固定为文档推荐的稳定 UA
+            self._client = Translate(
+                fmt='text',
+                proxies=proxies,
+                timeout=self._google_timeout,
+                trust_env=True,
+                user_agent="GoogleTranslate/6.18.0.06.376053713 (Linux; U; Android 11; GM1900)",
+            )
         elif not TRANSLATORS_AVAILABLE and self.engine != 'google':
             self.logger.warning(f"translators 库不可用，{self.engine} 引擎可能无法工作")
     
@@ -206,9 +212,9 @@ class FastTranslator:
         # 2. 执行翻译
         if self.engine == 'google' and not self._google_failed:
             translated = self._translate_google(protected_texts, target_code, source_code)
-            # 如果 Google 翻译全部失败（返回原文），尝试 Bing
+            # 如果 Google 翻译全部失败（返回原文），改用免费引擎兜底
             if translated == protected_texts and TRANSLATORS_AVAILABLE:
-                self.logger.warning("Google 翻译失败，自动切换到 Bing 翻译")
+                self.logger.warning("Google 翻译失败，自动切换到免费引擎翻译")
                 self._google_failed = True
                 translated = self._translate_with_translators(
                     protected_texts,
@@ -262,7 +268,7 @@ class FastTranslator:
                 
         except Exception as e:
             self.logger.error(f"Google 批量翻译失败: {e}")
-            # 标记 Google 连接失败，后续自动使用 Bing
+            # 标记 Google 连接失败，后续自动使用免费引擎
             self._google_failed = True
             return texts
     
@@ -275,27 +281,27 @@ class FastTranslator:
         use_engine: str = None,
     ) -> List[str]:
         """
-        使用 translators 库进行翻译（Bing 等）
-        使用多线程并发加速
-        
+        使用 translators 库进行免费翻译
+        多线程并发加速
+
         Args:
-            use_engine: 指定使用的引擎，默认使用 self.engine，如果是 google 则自动切换为 bing
+            use_engine: 指定使用的引擎，默认使用 self.engine，google 会自动切换为 bing
         """
         if not TRANSLATORS_AVAILABLE:
             self.logger.error("translators 库不可用，请安装: pip install translators")
             return texts
-        
-        # 确定使用的引擎 - translators 库不支持 google，先使用 bing 代替，再按候选回退
-        requested_engine = (use_engine or self.engine or "bing").lower()
-        if requested_engine == 'google':
-            requested_engine = 'bing'
+
+        # 确定使用的引擎 - translators 库不支持 google，统一改用 bing
+        # 注意 translators 的引擎名大小写敏感，不能对引擎名整体做 lower() 归一
+        requested_engine = use_engine or self.engine or "bing"
+        if requested_engine.lower() == "google":
+            requested_engine = "bing"
 
         # 分批处理，允许外部指定最大批大小
         batch_size = max(1, int(max_batch_size or 50))
 
-        # 候选引擎：优先用户指定，其次按可用性回退（translators 6.x 部分引擎会标记为 not certified）
-        # 说明：这里仅放入实测更常用、且语言码兼容性较好的引擎作为回退。
-        fallback_engines = ("alibaba", "bing", "sogou", "caiyun")
+        # 候选引擎：优先用户指定，其次按可用性回退
+        fallback_engines = ("bing",)
         engine_candidates = [requested_engine] + [e for e in fallback_engines if e != requested_engine]
 
         best_results: List[str] = texts
@@ -349,18 +355,22 @@ class FastTranslator:
         error_count = 0
         unchanged_count = 0
         first_error: Optional[str] = None
-        
+
+        to_lang = "zh-Hant" if str(target).lower() in ("zh-tw", "zh_tw", "zh-hant") else target
+        from_lang = "zh-Hant" if str(source).lower() in ("zh-tw", "zh_tw", "zh-hant") else source
+
         def translate_single(index: int, text: str) -> tuple:
             try:
                 if not text or not text.strip():
                     return index, text, False, None
-                    
+
                 res = ts.translate_text(
                     text,
                     translator=engine,
-                    from_language=source,
-                    to_language=target,
-                    timeout=15
+                    from_language=from_lang,
+                    to_language=to_lang,
+                    timeout=15,
+                    if_print_warning=False,
                 )
                 
                 if res and res != text:

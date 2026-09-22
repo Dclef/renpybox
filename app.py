@@ -42,6 +42,21 @@ warnings.filterwarnings(
     module = r"requests(\..*)?$",
 )
 
+# 屏蔽未验证 HTTPS 请求警告（常见于开启代理软件时的抓包/中间层连接）
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
+# 部分运行环境的 Python 证书库缺根证书（企业网关/杀软 TLS 拦截），
+# 改用操作系统证书库校验，避免 Google 等接口报 CERTIFICATE_VERIFY_FAILED。
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 # qfluentwidgets 导入时会直接 print Pro 提示，这里在启动阶段静默处理。
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     from qfluentwidgets import Theme

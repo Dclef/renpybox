@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MaExtractor - 集成自“翻译套件”的抽取后处理流程。
+"""MaExtractor - 抽取后处理流程。
 
 该模块在官方/补充抽取结束后运行，用于：
 - 扫描游戏源码中可能需要翻译的字符串（角色名、对白、变量、替换文本）
@@ -8,9 +8,9 @@
 - 生成 replace_text 钩子和角色名 AI 提示词
 
 实现要点：
-- 正则与判定逻辑来自原脚本，替换为项目内的 `filter_extracted_strings` 规则
-- 对 pandas/openpyxl 做兼容处理，缺失依赖时退化为 CSV 输出
-- 保留原脚本的目录结构 (translate/1_待翻译Excel 等)，便于沿用既往工作流
+- 应用统一的 `filter_extracted_strings` 过滤规则
+- pandas/openpyxl 缺失时退化为 CSV 输出
+- 输出目录沿用 translate/1_待翻译Excel 等约定，便于衔接既有工作流
 """
 
 from __future__ import annotations

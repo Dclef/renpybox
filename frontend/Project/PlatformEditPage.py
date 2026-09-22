@@ -95,8 +95,6 @@ class PlatformEditPage(MessageBoxBase, Base):
             Base.APIFormat.GOOGLE,
             Base.APIFormat.ANTHROPIC,
             Base.APIFormat.SAKURALLM,
-            Base.APIFormat.DEEPL,
-            Base.APIFormat.DEEPLX,
         ):
             self.add_widget_api_url(self.vbox, config, window)
 
@@ -106,8 +104,6 @@ class PlatformEditPage(MessageBoxBase, Base):
             Base.APIFormat.GOOGLE,
             Base.APIFormat.ANTHROPIC,
             Base.APIFormat.SAKURALLM,
-            Base.APIFormat.DEEPL,
-            Base.APIFormat.DEEPLX,
         ):
             self.add_widget_api_key(self.vbox, config, window)
 
@@ -117,8 +113,6 @@ class PlatformEditPage(MessageBoxBase, Base):
             Base.APIFormat.GOOGLE,
             Base.APIFormat.ANTHROPIC,
             Base.APIFormat.SAKURALLM,
-            Base.APIFormat.DEEPL,
-            Base.APIFormat.DEEPLX,
         ):
             self.add_widget_model(self.vbox, config, window)
 
