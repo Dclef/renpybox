@@ -182,6 +182,16 @@ class RENPY(Base):
 
             target_path = self.output_path / rel_path
             os.makedirs(target_path.parent, exist_ok=True)
+
+            # 写回前备份（仅本地 .bak）
+            if getattr(self.config, "renpy_backup_original", False):
+                bak_path = target_path.with_suffix(target_path.suffix + ".bak")
+                if target_path.exists() and not bak_path.exists():
+                    try:
+                        bak_path.write_text(target_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                    except Exception:
+                        pass
+
             try:
                 atomic_write_text(
                     target_path,

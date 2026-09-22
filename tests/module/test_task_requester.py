@@ -4,6 +4,7 @@ import openai
 import pytest
 
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from module.Config import Config
 from module.Engine.TaskRequester import TaskRequester, ThinkingLevel
 
@@ -297,3 +298,49 @@ def test_deepseek_thinking_levels(level: ThinkingLevel, expected: dict) -> None:
     args = requester.generate_openai_args([], level, {})
 
     assert args["extra_body"] == expected
+
+
+class _FakeTranslateResponse:
+    def __init__(self, text: str) -> None:
+        self.translatedText = text
+
+
+def _googlefree_requester() -> TaskRequester:
+    config = Config(
+        source_language = BaseLanguage.Enum.EN,
+        target_language = BaseLanguage.Enum.ZH,
+    )
+    platform = {
+        "api_key": ["no_key_required"],
+        "api_url": "",
+        "api_format": Base.APIFormat.GOOGLEFREE,
+        "model": "free",
+        "thinking": False,
+    }
+    return TaskRequester(config, platform, 1)
+
+
+def test_request_googlefree_batch_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    class FakeClient:
+        def translate(self, q, **kwargs):
+            captured["q"] = list(q)
+            captured.update(kwargs)
+            return [_FakeTranslateResponse(f"T:{v}") for v in q]
+
+    requester = _googlefree_requester()
+    monkeypatch.setattr(TaskRequester, "get_client", classmethod(lambda cls, **kwargs: FakeClient()))
+    monkeypatch.setattr(TaskRequester, "is_cancel_requested", classmethod(lambda cls: False))
+
+    messages = [{
+        "role": "user",
+        "content": '```jsonline\n{"0": "hello"}\n{"1": "world"}\n```',
+    }]
+    skip, _, response_result, input_tokens, output_tokens = requester.request_googlefree(messages)
+
+    assert skip is False
+    assert captured == {"q": ["hello", "world"], "source": "en", "target": "zh-CN"}
+    assert "T:hello" in response_result
+    assert "T:world" in response_result
+    assert input_tokens > 0 and output_tokens > 0

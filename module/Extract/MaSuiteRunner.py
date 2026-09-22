@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MaSuiteRunner - 封装“翻译套件”导出流程，供 UI 调用。
+"""MaSuiteRunner - 导出流程封装，供 UI 调用。
 
 功能：
 - 可选执行官方抽取（默认关闭）

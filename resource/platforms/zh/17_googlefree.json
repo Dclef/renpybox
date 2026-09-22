@@ -1,13 +1,13 @@
 {
     "group": "machine",
-    "id": 12,
-    "name": "DeepLX",
-    "api_url": "https://dplx.xi-xu.me",
+    "id": 17,
+    "name": "谷歌翻译 (免费)",
+    "api_url": "",
     "api_key": [
         "no_key_required"
     ],
-    "api_format": "DeepLX",
-    "model": "deeplx-translate",
+    "api_format": "GoogleFree",
+    "model": "free",
     "thinking": false,
     "top_p": 0.95,
     "temperature": 0.95,

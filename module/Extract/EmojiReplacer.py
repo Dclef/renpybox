@@ -14,7 +14,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-# 嵌入的 Emoji 库（与原脚本一致）
+# 内置 Emoji 库
 GRS_EMBEDDED_EMOJIS: List[str] = [
     "🌳", "🌴", "🌵", "🌷", "🌹", "🌺", "🌻", "🌼", "🌾", "🌿", "🍀",
     "🍁", "🍂", "🍃", "🍇", "🍉", "🍊", "🍋", "🍌", "🍎", "🍔",

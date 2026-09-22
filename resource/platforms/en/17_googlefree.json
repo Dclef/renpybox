@@ -1,13 +1,13 @@
 {
     "group": "machine",
-    "id": 11,
-    "name": "DeepL",
-    "api_url": "https://api-free.deepl.com",
+    "id": 17,
+    "name": "Google Translate (Free)",
+    "api_url": "",
     "api_key": [
         "no_key_required"
     ],
-    "api_format": "DeepL",
-    "model": "deepl-v2",
+    "api_format": "GoogleFree",
+    "model": "free",
     "thinking": false,
     "top_p": 0.95,
     "temperature": 0.95,
