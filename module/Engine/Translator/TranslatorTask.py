@@ -275,7 +275,7 @@ class TranslatorTask(Base):
         if getattr(self.config, "single_line_translation_enable", False) != True:
             return False
 
-        return self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+        return self.platform.get("api_format") not in Base.MACHINE_API_FORMATS
 
     @staticmethod
     def _cancelled_result() -> dict[str, object]:
@@ -642,8 +642,8 @@ class TranslatorTask(Base):
         requester = TaskRequester(self.config, self.platform, current_round)
         structured_response = (
             self.config.structured_output_enable
-            and self.platform.get("api_format")
-            not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+            and self.platform.get("api_format") != Base.APIFormat.SAKURALLM
+            and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS
         )
         self.debug("[REQUEST] 发起API请求...")
         skip, response_think, response_result, input_tokens, output_tokens = self._request_with_metrics(

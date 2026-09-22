@@ -90,8 +90,8 @@ def test_unsupported_platform_is_explicit_and_cancel_isolated() -> None:
         {
             "api_key": ["test-key"],
             "api_url": "http://localhost",
-            "api_format": Base.APIFormat.DEEPL,
-            "model": "deep-l",
+            "api_format": Base.APIFormat.GOOGLEFREE,
+            "model": "free",
         },
     )
     result = requester.request_tools([], list(ToolDispatcher().tools.values()))

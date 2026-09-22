@@ -33,6 +33,16 @@ from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
 
+def _make_switch(text: str, checked: bool = False) -> SwitchButton:
+    """创建保持静态文本的 SwitchButton，避免 ON/OFF 状态切换时文字变成 'On'/'Off'。"""
+    btn = SwitchButton(text)
+    btn.setOnText(text)
+    btn.setOffText(text)
+    btn.setText(text)
+    btn.setChecked(checked)
+    return btn
+
+
 class DirectRpyTranslatePage(Base, QWidget):
     """精简版 tl/.rpy 翻译页面，仅负责参数收集并触发 Engine 翻译。"""
 
@@ -141,8 +151,9 @@ class DirectRpyTranslatePage(Base, QWidget):
         self.target_lang_combo.setCurrentIndex(0)
         row_lang.addWidget(self.target_lang_combo, 1)
 
-        self.backup_switch = SwitchButton(Localizer.get().direct_rpy_create_bak_backup_before_writing)
-        self.backup_switch.setChecked(False)
+        self.backup_switch = _make_switch(Localizer.get().direct_rpy_create_bak_backup_before_writing, checked=False)
+        self.auto_write_switch = _make_switch(Localizer.get().direct_rpy_auto_writeback, checked=True)
+        row_lang.addWidget(self.auto_write_switch)
         row_lang.addWidget(self.backup_switch)
         row_lang.addStretch(1)
         box.addLayout(row_lang)
@@ -160,8 +171,11 @@ class DirectRpyTranslatePage(Base, QWidget):
         self.btn_stop = PushButton(Localizer.get().stop, icon=FluentIcon.CANCEL)
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop_translation)
+        self.btn_writeback = PushButton(Localizer.get().direct_rpy_manual_writeback, icon=FluentIcon.SAVE)
+        self.btn_writeback.clicked.connect(self._manual_writeback)
         row.addWidget(self.btn_start)
         row.addWidget(self.btn_stop)
+        row.addWidget(self.btn_writeback)
         row.addStretch(1)
         box.addLayout(row)
 
@@ -191,30 +205,34 @@ class DirectRpyTranslatePage(Base, QWidget):
         if path:
             self.tl_dir_edit.setText(path)
 
-    def _start_translation(self) -> None:
+    def _resolve_input_tl_dir(self) -> Path:
         game_path = self.game_file_edit.text().strip()
         tl_dir_text = self.tl_dir_edit.text().strip()
         tl_name = self.tl_edit.text().strip() or "chinese"
 
+        if tl_dir_text:
+            tl_dir = Path(tl_dir_text)
+            if not tl_dir.exists():
+                raise RuntimeError(Localizer.get().direct_rpy_tl_folder_does_not_exist.format(tl_dir=tl_dir))
+            input_tl_dir = tl_dir / tl_name
+            if not input_tl_dir.exists():
+                raise RuntimeError(Localizer.get().direct_rpy_tl_folder_does_not_exist_2.format(tl_name=tl_name, input_tl_dir=input_tl_dir))
+            return input_tl_dir
+
+        if not game_path:
+            raise RuntimeError(Localizer.get().direct_rpy_select_game_file_tl_folder_first)
+        game = Path(game_path)
+        project_dir = game.parent if game.is_file() else game
+        input_tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
+        if input_tl_dir is None:
+            raise RuntimeError(Localizer.get().direct_rpy_tl_folder_not_found_run_extraction_select.format(tl_name=tl_name))
+        return input_tl_dir
+
+    def _start_translation(self) -> None:
+        tl_name = self.tl_edit.text().strip() or "chinese"
+
         try:
-            tl_dir: Optional[Path] = None
-            input_tl_dir: Optional[Path] = None
-            if tl_dir_text:
-                tl_dir = Path(tl_dir_text)
-                if not tl_dir.exists():
-                    raise RuntimeError(Localizer.get().direct_rpy_tl_folder_does_not_exist.format(tl_dir=tl_dir))
-                # 用户填入的是 tl 根目录，追加语言子目录
-                input_tl_dir = tl_dir / tl_name
-                if not input_tl_dir.exists():
-                    raise RuntimeError(Localizer.get().direct_rpy_tl_folder_does_not_exist_2.format(tl_name=tl_name, input_tl_dir=input_tl_dir))
-            else:
-                if not game_path:
-                    raise RuntimeError(Localizer.get().direct_rpy_select_game_file_tl_folder_first)
-                game = Path(game_path)
-                project_dir = game.parent if game.is_file() else game
-                input_tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
-                if input_tl_dir is None:
-                    raise RuntimeError(Localizer.get().direct_rpy_tl_folder_not_found_run_extraction_select.format(tl_name=tl_name))
+            input_tl_dir = self._resolve_input_tl_dir()
 
             config = Config().load()
             paths = RenpyProjectPaths.from_path(input_tl_dir, tl_name)
@@ -231,6 +249,7 @@ class DirectRpyTranslatePage(Base, QWidget):
                 output_folder = paths.tl_language_dir,
                 mutate = lambda current: (
                     setattr(current, "renpy_backup_original", self.backup_switch.isChecked()),
+                    setattr(current, "auto_write_back", self.auto_write_switch.isChecked()),
                     # 直接翻译 tl/.rpy，必须关闭源码翻译模式。
                     setattr(current, "renpy_source_translate", False),
                     setattr(current, "renpy_hook_translate", False),
@@ -256,6 +275,22 @@ class DirectRpyTranslatePage(Base, QWidget):
             self.logger.error(f"启动翻译失败: {exc}")
             InfoBar.error(Localizer.get().error, str(exc), parent=self)
 
+    def _manual_writeback(self) -> None:
+        try:
+            input_tl_dir = self._resolve_input_tl_dir()
+            cache_dir = input_tl_dir / "cache"
+            db_file = input_tl_dir / "cache.db"
+            if not cache_dir.exists() and not db_file.exists():
+                raise RuntimeError(Localizer.get().direct_rpy_manual_writeback_no_cache)
+
+            self.status_label.setText(Localizer.get().direct_rpy_manual_writeback_started)
+            self.emit(Base.Event.TRANSLATION_CACHE_REINJECT, {
+                "output_folder": str(input_tl_dir),
+            })
+        except Exception as exc:
+            self.logger.error(f"手动写回失败: {exc}")
+            InfoBar.error(Localizer.get().error, str(exc), parent=self)
+
     def _stop_translation(self) -> None:
         self.emit(Base.Event.TRANSLATION_STOP, {})
         self.btn_stop.setEnabled(False)
@@ -276,8 +311,13 @@ class DirectRpyTranslatePage(Base, QWidget):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.progress_bar.setValue(100)
-        self.status_label.setText(Localizer.get().direct_rpy_translation_complete)
-        InfoBar.success(Localizer.get().complete, Localizer.get().direct_rpy_engine_translation_complete, parent=self)
+        auto_written = data.get("auto_write_back", True) if isinstance(data, dict) else True
+        if auto_written:
+            self.status_label.setText(Localizer.get().direct_rpy_translation_complete)
+            InfoBar.success(Localizer.get().complete, Localizer.get().direct_rpy_engine_translation_complete, parent=self)
+        else:
+            self.status_label.setText(f"{Localizer.get().direct_rpy_translation_complete} ({Localizer.get().direct_rpy_manual_writeback})")
+            InfoBar.success(Localizer.get().complete, Localizer.get().direct_rpy_engine_translation_complete_no_writeback, parent=self)
 
     def _on_engine_stop(self, event, data):
         self.btn_start.setEnabled(True)
