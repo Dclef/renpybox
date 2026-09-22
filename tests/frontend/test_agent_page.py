@@ -59,9 +59,9 @@ def test_agent_page_filters_unsupported_platforms_and_saves_selection(monkeypatc
         },
         {
             "id": 2,
-            "name": "DeepL",
-            "api_format": Base.APIFormat.DEEPL,
-            "model": "deepl",
+            "name": "SakuraLLM",
+            "api_format": Base.APIFormat.SAKURALLM,
+            "model": "sakura",
         },
     ]
     saved = []

@@ -312,7 +312,7 @@ class LocalizerZH():
     platform_page_api_test: str = "测试接口"
     platform_page_api_delete: str = "删除接口"
     platform_page_widget_add_title: str = "接口列表"
-    platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic、DeepL、DeepLX 的翻译接口"
+    platform_page_widget_add_content: str = "在此添加和管理兼容 Google、OpenAI、Anthropic 的翻译接口"
     platform_page_header_description: str = "管理翻译接口、模型参数与当前激活通道"
     platform_page_active_hint: str = "当前激活接口：{NAME}"
     platform_page_active_none: str = "尚未设置激活接口"
@@ -321,7 +321,7 @@ class LocalizerZH():
     platform_page_group_local_title: str = "本地模型"
     platform_page_group_local_content: str = "本地部署或运行在局域网中的模型接口"
     platform_page_group_machine_title: str = "传统机翻"
-    platform_page_group_machine_content: str = "DeepL 与 DeepLX 等非 LLM 翻译接口"
+    platform_page_group_machine_content: str = "GoogleFree 等非 LLM 翻译接口"
     platform_page_group_online_title: str = "在线大模型"
     platform_page_group_online_content: str = "各平台提供的在线大模型接口"
     platform_page_group_custom_title: str = "自定义接口"
@@ -1193,6 +1193,11 @@ class LocalizerZH():
     direct_rpy_select_game_exe_project_folder: str = '选择游戏 exe 或项目目录'
     direct_rpy_optional_defaults_game_tl_language: str = '可选，默认尝试 game/tl/<语言>'
     direct_rpy_create_bak_backup_before_writing: str = '写入前自动备份 .bak'
+    direct_rpy_auto_writeback: str = '自动写回文件'
+    direct_rpy_manual_writeback: str = '写回文件'
+    direct_rpy_manual_writeback_no_cache: str = '未找到可写回的缓存数据，请先开始翻译'
+    direct_rpy_manual_writeback_started: str = '正在从缓存写回文件...'
+    direct_rpy_engine_translation_complete_no_writeback: str = '翻译已完成，结果已保存在缓存中。可点击「写回文件」写入 .rpy。'
     direct_rpy_start_translation: str = '开始翻译'
     direct_rpy_select_game_exe_folder: str = '选择游戏 exe 或目录'
     direct_rpy_executable_exe_all_files: str = '可执行文件 (*.exe);;所有文件 (*)'

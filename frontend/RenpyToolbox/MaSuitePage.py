@@ -110,7 +110,7 @@ class MaSuitePage(Base, QWidget):
         tl_row.addStretch(1)
         card_layout.addLayout(tl_row)
 
-        # 模式（老猫套件 v7.5 多模式版）
+        # 抽取模式
         mode_row = QHBoxLayout()
         mode_row.addWidget(BodyLabel(Localizer.get().ma_suite_extraction_mode))
         self.mode_combo = ComboBox()
