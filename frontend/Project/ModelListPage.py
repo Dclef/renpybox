@@ -97,10 +97,8 @@ class ModelListPage(MessageBoxBase, Base):
                 models = client.models.list()
                 items = getattr(models, "data", models)
                 result = [getattr(model, "id", "") for model in items if getattr(model, "id", "")]
-            elif api_format == Base.APIFormat.DEEPL:
-                result = ["deepl-v2"]
-            elif api_format == Base.APIFormat.DEEPLX:
-                result = ["deeplx-translate"]
+            elif api_format in Base.MACHINE_API_FORMATS:
+                result = ["free"]
             else:
                 client = openai.OpenAI(
                     base_url = api_url,

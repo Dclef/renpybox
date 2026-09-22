@@ -314,7 +314,7 @@ class LocalizerEN(LocalizerZH):
     platform_page_api_test: str = "Test API"
     platform_page_api_delete: str = "Delete API"
     platform_page_widget_add_title: str = "API List"
-    platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI, Anthropic, DeepL and DeepLX here"
+    platform_page_widget_add_content: str = "Add and manage translation APIs compatible with Google, OpenAI and Anthropic here"
     platform_page_header_description: str = "Manage translation APIs, model parameters, and the active channel"
     platform_page_active_hint: str = "Active API: {NAME}"
     platform_page_active_none: str = "No active API selected"
@@ -323,7 +323,7 @@ class LocalizerEN(LocalizerZH):
     platform_page_group_local_title: str = "Local Models"
     platform_page_group_local_content: str = "Model APIs deployed locally or on the local network"
     platform_page_group_machine_title: str = "Machine Translation"
-    platform_page_group_machine_content: str = "Non-LLM translation APIs such as DeepL and DeepLX"
+    platform_page_group_machine_content: str = "Non-LLM translation APIs such as GoogleFree"
     platform_page_group_online_title: str = "Online LLMs"
     platform_page_group_online_content: str = "Online large language model APIs provided by various platforms"
     platform_page_group_custom_title: str = "Custom APIs"
@@ -1213,6 +1213,11 @@ class LocalizerEN(LocalizerZH):
     direct_rpy_select_game_exe_project_folder: str = 'Select a game exe or project folder'
     direct_rpy_optional_defaults_game_tl_language: str = 'Optional; defaults to game/tl/<language>'
     direct_rpy_create_bak_backup_before_writing: str = 'Create a .bak Backup Before Writing'
+    direct_rpy_auto_writeback: str = 'Auto Writeback to File'
+    direct_rpy_manual_writeback: str = 'Writeback to File'
+    direct_rpy_manual_writeback_no_cache: str = 'No cache data found to write back. Please start translation first.'
+    direct_rpy_manual_writeback_started: str = 'Writing back to file from cache...'
+    direct_rpy_engine_translation_complete_no_writeback: str = 'Translation completed and saved in cache. Click "Writeback to File" to write into .rpy.'
     direct_rpy_start_translation: str = 'Start Translation'
     direct_rpy_select_game_exe_folder: str = 'Select Game exe or Folder'
     direct_rpy_executable_exe_all_files: str = 'Executable (*.exe);;All Files (*)'

@@ -26,10 +26,7 @@ from utils.string_tool import encode_say_string
 
 
 class RenpyExtractor:
-    """High level wrapper around renpy-translator's extraction workflow.
-
-    Supports both official extraction and EXE runtime hook extraction.
-    """
+    """Ren'Py 抽取入口：支持官方抽取与 EXE 运行时 Hook 抽取。"""
 
     HOOK_RUNTIME = "zz_renpybox_runtime_extract.rpy"
     HOOK_RESULT = "extraction_hooked.json"

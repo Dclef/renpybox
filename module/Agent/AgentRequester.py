@@ -288,9 +288,7 @@ class AgentRequester:
     ) -> AgentRequestResult:
         """执行一次工具请求；传入回调时按 token 增量回报可见文本。"""
         api_format = self._api_format()
-        if api_format in {
-            str(Base.APIFormat.DEEPL).casefold(),
-            str(Base.APIFormat.DEEPLX).casefold(),
+        if api_format in {str(fmt).casefold() for fmt in Base.MACHINE_API_FORMATS} | {
             str(Base.APIFormat.SAKURALLM).casefold(),
         }:
             return AgentRequestResult.failure(
