@@ -73,8 +73,7 @@ class TokenEstimator:
         line_limit = max(1, self.config.token_threshold)
         if (
             getattr(self.config, "single_line_translation_enable", False)
-            and self.platform.get("api_format")
-            not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+            and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS
         ):
             line_limit = 1
         source_budget = max(0, int(getattr(self.config, "max_batch_source_tokens", 0)))
@@ -152,8 +151,7 @@ class TokenEstimator:
                 preceding = self._estimate_preceding_items(batch)
                 single_line = (
                     getattr(working, "single_line_translation_enable", False)
-                    and self.platform.get("api_format")
-                    not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+                    and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS
                 )
 
                 if single_line:

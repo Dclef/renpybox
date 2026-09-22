@@ -161,7 +161,7 @@ def _contrast(fg: QColor, bg: QColor) -> float:
 
 
 def test_primary_button_default_accent_contrast_is_tracked() -> None:
-    """The QFluent primary state uses the WinUI accent with readable text."""
+    """The QFluent primary state uses the accent with readable text."""
     previous_theme = qconfig.theme
     previous_color = QColor(qconfig.get(qconfig.themeColor))
     try:

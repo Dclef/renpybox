@@ -3,8 +3,8 @@
 
 特性：
 - 扫描 game 目录（排除 tl）提取角色名/文本/变量/replace
-- 集成老猫套件 v7.5（多模式版）：外部数据挖掘(.json/.yaml/.yml) + 疯狗模式深度扫描
-- 三档模式（标准 / 外部文件 / 外部+疯狗），行为尽量与原脚本一致
+- 外部数据挖掘(.json/.yaml/.yml) + 疯狗模式深度扫描
+- 三档模式（标准 / 外部文件 / 外部+疯狗）
 - 对比 tl/<lang> 已有 old 翻译，排除重复
 - 输出到 translate_output/{1_Excels,2_RPY_Files}，附 AI_Prompt
 - 可选生成 Emoji/Tag 保护表（译前/译后）
@@ -159,7 +159,7 @@ class HakimiSuiteRunner:
             emoji_dir = base_out / "3_Emoji_Tools"
             emoji_dir.mkdir(parents=True, exist_ok=True)
             emoji_count, pre_path, post_path = generate_emoji_replacement_sheets(tl_dir, emoji_dir)
-            # 兼容原脚本命名：复制一份 Tag_Protection_*
+            # 额外提供 Tag_Protection_* 命名，兼容旧表引用
             try:
                 (emoji_dir / "Tag_Protection_Pre(译前).xlsx").write_bytes(pre_path.read_bytes())
                 (emoji_dir / "Tag_Protection_Post(译后).xlsx").write_bytes(post_path.read_bytes())
@@ -224,7 +224,7 @@ class HakimiSuiteRunner:
         return files
 
     def _filter_strings(self, strings: Sequence[str], *, strict_mode: bool = False) -> Tuple[List[str], List[str]]:
-        """老猫 v7.5 过滤逻辑（含 strict_mode：沙盒/疯狗模式）。"""
+        """过滤逻辑（含 strict_mode：沙盒/疯狗模式）。"""
         filtered_list: List[str] = []
         deleted_list: List[str] = []
 
@@ -303,7 +303,7 @@ class HakimiSuiteRunner:
                 deleted_list.append(original)
                 continue
 
-            # 老猫套件：含汉字（中日共用区段）默认不抽取（避免把已汉化内容当成待翻译）
+            # 含汉字（中日共用区段）默认不抽取（避免把已汉化内容当成待翻译）
             if self._has_chinese(s):
                 deleted_list.append(original)
                 continue

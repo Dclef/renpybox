@@ -217,6 +217,8 @@ class Config():
     renpy_extract_strings: bool = True
     renpy_extract_screens: bool = True
     renpy_backup_original: bool = True
+    # 翻译完成后是否自动写回原文件（关闭后译文仅保留在缓存，需手动写回）
+    auto_write_back: bool = True
     # 源码翻译：引擎读取 .rpy 源码
     renpy_source_translate: bool = False
     renpy_hook_translate: bool = False  # replace_text 补全模式

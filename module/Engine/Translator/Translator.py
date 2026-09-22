@@ -246,17 +246,9 @@ class Translator(Base):
 
     def _clear_cancel_after_workers(
         self,
-        workers: tuple[threading.Thread, ...] = (),
+        workers: tuple[threading.Thread, ...],
     ) -> None:
         """停止超时后有界等待旧工作线程，再清除全局取消标记。"""
-        # 兼容旧测试/外部调用：未传线程列表时退回当前线程快照，仍受期限限制。
-        if not workers:
-            workers = tuple(
-                thread
-                for thread in threading.enumerate()
-                if thread.name.startswith(Engine.TASK_PREFIX)
-            )
-
         deadline = time.monotonic() + __class__.CANCEL_CLEANUP_TIMEOUT
         while any(thread.is_alive() for thread in workers):
             if time.monotonic() >= deadline:
@@ -335,9 +327,8 @@ class Translator(Base):
             )
 
     def _is_translation_run_current(self, run_id: int | None) -> bool:
-        """判断回调/线程是否仍属于当前翻译代次。"""
+        """判断回调/线程是否仍属于当前翻译代次；未绑定代次的线程保守视为当前。"""
         if run_id is None:
-            # 兼容旧测试与外部直接调用 translation_start_task 的入口。
             return True
         with self.data_lock:
             return getattr(self, "_translation_run_id", 0) == run_id
@@ -808,10 +799,9 @@ class Translator(Base):
         legacy_bootstrap: bool = False,
     ) -> TranslationTaskContext:
         prompt = PromptBuilder(config).build_task_prompt_snapshot()
-        if platform.get("api_format") in (
-            Base.APIFormat.SAKURALLM,
-            Base.APIFormat.DEEPL,
-            Base.APIFormat.DEEPLX,
+        if (
+            platform.get("api_format") == Base.APIFormat.SAKURALLM
+            or platform.get("api_format") in Base.MACHINE_API_FORMATS
         ):
             prompt["protocol"] = Config.OUTPUT_PROTOCOL_JSONLINE
 
@@ -1302,8 +1292,8 @@ class Translator(Base):
         self,
         event: str,
         data: dict,
-        run_id: int | None = None,
-        cancel_event: threading.Event | None = None,
+        run_id: int,
+        cancel_event: threading.Event,
     ) -> None:
         run_request_id = self._request_id_for_run(run_id)
         self._bind_run_context(run_id, cancel_event)
@@ -1318,17 +1308,8 @@ class Translator(Base):
             if self._should_stop_requested(run_id, cancel_event):
                 return None
 
-            # 兼容直接调用入口；事件入口已经原子占用 TRANSLATING。
-            engine_status = Engine.get().get_status()
-            if run_id is not None:
-                # 事件入口登记的线程不能在极早停止后重新把 IDLE 占回去。
-                if engine_status != Engine.Status.TRANSLATING:
-                    return None
-            elif engine_status == Engine.Status.IDLE:
-                if Engine.get().has_single_tasks():
-                    return None
-                Engine.get().set_status(Engine.Status.TRANSLATING)
-            elif engine_status != Engine.Status.TRANSLATING:
+            # 事件入口已经原子占用 TRANSLATING；登记的线程不能在极早停止后重新把 IDLE 占回去。
+            if Engine.get().get_status() != Engine.Status.TRANSLATING:
                 return None
 
             self._reset_active_task_count(run_id)
@@ -1549,7 +1530,7 @@ class Translator(Base):
 
                 # 生成缓存数据条目片段
                 chunk_line_threshold = round_token_threshold
-                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS:
                     chunk_line_threshold = 1
                 chunks = self.cache_manager.iter_item_chunks(
                     chunk_line_threshold,
@@ -1570,7 +1551,7 @@ class Translator(Base):
                 self.info(f"{Localizer.get().translator_name} - {self.platform.get('name')}")
                 self.info(f"{Localizer.get().translator_api_url} - {self.platform.get('api_url')}")
                 self.info(f"{Localizer.get().translator_model} - {self.platform.get('model')}")
-                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+                if getattr(self.config, "single_line_translation_enable", False) and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS:
                     self.info("[INIT] 单行翻译模式已启用：每次请求只处理一行文本")
                 self.print("")
                 if self.platform.get("api_format") != Base.APIFormat.SAKURALLM:
@@ -1785,7 +1766,11 @@ class Translator(Base):
                 return None
 
             # 检查结果并写入文件
-            self.check_and_wirte_result(self.cache_manager.get_items())
+            auto_write_back = bool(getattr(self.config, "auto_write_back", True))
+            if auto_write_back:
+                self.check_and_wirte_result(self.cache_manager.get_items())
+            else:
+                self.info("[WRITEBACK] 已跳过自动写回源文件（auto_write_back=False），译文已安全保存在缓存中。")
 
             if self._should_stop_requested():
                 return None
@@ -1801,6 +1786,7 @@ class Translator(Base):
                     "success": True,
                     "run_id": run_id,
                     "request_id": run_request_id,
+                    "auto_write_back": auto_write_back,
                     "output_folder": self.config.output_folder,
                 })
         except Exception as e:

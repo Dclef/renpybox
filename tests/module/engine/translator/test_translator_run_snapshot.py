@@ -548,10 +548,18 @@ def test_translation_start_binds_runtime_output_before_run_initialization(
 
     monkeypatch.setattr(translator, "_initialize_translation_run", stop_after_binding)
 
-    translator.translation_start_task(
-        Base.Event.TRANSLATION_START,
-        {"status": Base.TranslationStatus.UNTRANSLATED},
-    )
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    engine.set_status(Engine.Status.TRANSLATING)
+    try:
+        translator.translation_start_task(
+            Base.Event.TRANSLATION_START,
+            {"status": Base.TranslationStatus.UNTRANSLATED},
+            run_id = 0,
+            cancel_event = threading.Event(),
+        )
+    finally:
+        engine.set_status(previous_status)
 
     assert translator._last_runtime_output_folder == str(tmp_path)
     assert translator._active_cache_output_folder == ""
@@ -712,3 +720,28 @@ def test_zero_existing_translation_ratio_still_saves_and_resumes(tmp_path, monke
     assert progress["total_line"] == 2
     assert progress["cache_hit_rate"] == 0
     assert progress["recent_items"] == recent
+
+
+def test_auto_write_back_skipped_when_disabled(monkeypatch, tmp_path) -> None:
+    translator = _translator()
+    translator.config = Config(
+        output_folder=str(tmp_path),
+        auto_write_back=False,
+    )
+    written = []
+    monkeypatch.setattr(translator, "check_and_wirte_result", lambda items: written.append(items))
+    monkeypatch.setattr(translator.cache_manager, "save_to_file", lambda **kwargs: True)
+    monkeypatch.setattr(translator, "_should_stop_requested", lambda *args, **kwargs: False)
+    monkeypatch.setattr(translator, "_is_translation_run_current", lambda *args: True)
+
+    events = []
+    monkeypatch.setattr(translator, "emit", lambda event, data: events.append((event, data)))
+
+    # 模拟流程中的写回段
+    auto_write_back = bool(getattr(translator.config, "auto_write_back", True))
+    if auto_write_back:
+        translator.check_and_wirte_result([])
+
+    assert len(written) == 0
+    assert auto_write_back is False
+

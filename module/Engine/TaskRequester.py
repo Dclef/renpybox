@@ -1,5 +1,6 @@
 import importlib
 import json
+import os
 import re
 import threading
 import time
@@ -7,7 +8,6 @@ from typing import Any, Iterable, Literal
 
 from base.Base import Base
 from module.Secret.SecretStore import SecretStore
-from base.BaseLanguage import BaseLanguage
 from base.VersionManager import VersionManager
 from base.compat import StrEnum
 from module.Config import Config
@@ -51,6 +51,8 @@ httpx = _LazyModule("httpx")
 openai = _LazyModule("openai")
 genai = _LazyModule("google.genai")
 types = _LazyModule("google.genai.types")
+pygtrans = _LazyModule("pygtrans")
+translators = _LazyModule("translators")
 
 
 class TaskRequester(Base):
@@ -591,19 +593,17 @@ class TaskRequester(Base):
                 ),
                 max_retries = 1,
             )
-        elif format in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
-            client = httpx.Client(
-                timeout = httpx.Timeout(
-                    read = timeout,
-                    pool = 8.00,
-                    write = 8.00,
-                    connect = 8.00,
-                ),
-                follow_redirects = True,
-                headers = {
-                    "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)",
-                },
+        elif format == Base.APIFormat.GOOGLEFREE:
+            client = pygtrans.Translate(
+                fmt = "text",
+                timeout = timeout,
+                trust_env = True,
+                # ponytail: pygtrans 1.6.2 默认 UA 的 f-string 漏写 f 前缀，
+                # 带花括号的非法 UA 会被新版 urllib3 拒绝，这里固定为文档推荐的稳定 UA。
+                user_agent = "GoogleTranslate/6.18.0.06.376053713 (Linux; U; Android 11; GM1900)",
             )
+            # pygtrans 未提供 close()，挂到 session 上以接入统一的客户端清理流程
+            client.close = client.session.close
         else:
             client = openai.OpenAI(
                 base_url = url,
@@ -695,7 +695,7 @@ class TaskRequester(Base):
         # batch remains untranslated and can be split by the next translation round.
         from module.Engine.Translator.TranslationPreflightService import TranslationPreflightService
         context_window = TranslationPreflightService._context_window(self.platform)
-        if context_window > 0 and self.platform.get("api_format") not in (Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX):
+        if context_window > 0 and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS:
             from module.Cache.CacheItem import CacheItem
             estimated_input = 3 + sum(
                 CacheItem(src=str(message.get("content") or "")).get_token_count() + 8
@@ -734,10 +734,10 @@ class TaskRequester(Base):
                 )
             elif self.platform.get('api_format') == Base.APIFormat.ANTHROPIC:
                 return self.request_anthropic(messages, thinking_level, args)
-            elif self.platform.get('api_format') == Base.APIFormat.DEEPL:
-                return self.request_deepl(messages)
-            elif self.platform.get('api_format') == Base.APIFormat.DEEPLX:
-                return self.request_deeplx(messages)
+            elif self.platform.get('api_format') == Base.APIFormat.GOOGLEFREE:
+                return self.request_googlefree(messages)
+            elif self.platform.get('api_format') == Base.APIFormat.BING:
+                return self.request_bing(messages)
             else:
                 return self.request_openai(
                     messages,
@@ -1625,39 +1625,22 @@ class TaskRequester(Base):
             for i, value in enumerate(translations)
         )
 
-    def _get_deepl_language_codes(self) -> tuple[str, str]:
-        source_lang = str(self.config.source_language or "").strip().upper()
-        target_lang = str(self.config.target_language or "").strip().upper()
+    def _get_google_language_codes(self) -> tuple[str | None, str]:
+        """配置语言码 (ZH/EN/JA) 转 Google Translate 语言码 (zh-CN/en/ja)。"""
+        def to_google_code(value: object) -> str:
+            code = str(value or "").strip().upper()
+            if code == "ZH":
+                return "zh-CN"
+            return code.lower()
 
-        if source_lang == "":
-            source_lang = "AUTO"
-        if target_lang == "":
-            target_lang = str(BaseLanguage.Enum.ZH)
+        target_lang = to_google_code(self.config.target_language) or "zh-CN"
+        source_lang = to_google_code(self.config.source_language)
+        return (source_lang or None), target_lang
 
-        return source_lang, target_lang
-
-    def _resolve_deepl_endpoint(self, api_url: str) -> str:
-        base = str(api_url or "").strip().rstrip("/")
-        if base == "":
-            base = "https://api.deepl.com"
-        if base.endswith("/v2/translate"):
-            return base
-        if base.endswith("/v2"):
-            return base + "/translate"
-        return base + "/v2/translate"
-
-    def _resolve_deeplx_endpoint(self, api_url: str) -> str:
-        base = str(api_url or "").strip().rstrip("/")
-        if base == "":
-            base = "https://dplx.xi-xu.me"
-        if base.endswith("/translate"):
-            return base
-        return base + "/translate"
-
-    def request_deepl(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
+    def request_googlefree(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
         srcs = self._extract_translation_inputs(messages)
         if srcs == []:
-            self.warning("DeepL 请求失败：未从提示词中提取到待翻译文本")
+            self.warning("GoogleFree 请求失败：未从提示词中提取到待翻译文本")
             return True, None, None, None, None
         if __class__.is_cancel_requested():
             return True, None, None, None, None
@@ -1674,31 +1657,19 @@ class TaskRequester(Base):
                     timeout = self.config.request_timeout,
                 )
 
-            source_lang, target_lang = self._get_deepl_language_codes()
-            payload: dict[str, Any] = {
-                "text": srcs,
-                "target_lang": target_lang,
-            }
-            if source_lang != "AUTO":
-                payload["source_lang"] = source_lang
+            source_lang, target_lang = self._get_google_language_codes()
 
-            headers = {
-                "Authorization": f"DeepL-Auth-Key {key}",
-                "Content-Type": "application/json",
-            }
-
-            response = client.post(
-                self._resolve_deepl_endpoint(self.platform.get('api_url')),
-                json = payload,
-                headers = headers,
+            # ponytail: pygtrans 内部已处理 429 退避和 100KB 请求体分块，直接整批提交
+            results = client.translate(
+                srcs,
+                source = source_lang,
+                target = target_lang,
             )
-            response.raise_for_status()
-
-            data = response.json()
-            translations = data.get("translations", []) if isinstance(data, dict) else []
-            dsts = [str(item.get("text", "")) for item in translations if isinstance(item, dict)]
+            if not isinstance(results, list):
+                raise ValueError(f"GoogleFree 请求失败: {results}")
+            dsts = [str(item.translatedText) for item in results]
             if len(dsts) != len(srcs):
-                self.warning(f"DeepL 返回数量不匹配: {len(dsts)}/{len(srcs)}")
+                self.warning(f"GoogleFree 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
             self.last_error_message = str(e)
@@ -1710,60 +1681,51 @@ class TaskRequester(Base):
         output_tokens = sum(len(v) for v in dsts)
         return False, "", self._build_translation_jsonline_response(dsts), input_tokens, output_tokens
 
-    def request_deeplx(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
+    def _get_translators_language_codes(self) -> tuple[str, str]:
+        """配置语言码 (ZH/EN/JA) 转 translators 语言码（小写）。"""
+        def to_code(value: object) -> str:
+            code = str(value or "").strip().upper()
+            if code == "ZH":
+                return "zh"
+            return code.lower()
+
+        target_lang = to_code(self.config.target_language) or "zh"
+        source_lang = to_code(self.config.source_language) or "auto"
+        return source_lang, target_lang
+
+    def request_bing(self, messages: list[dict[str, str]]) -> tuple[bool, str, str, int, int]:
         srcs = self._extract_translation_inputs(messages)
         if srcs == []:
-            self.warning("DeepLX 请求失败：未从提示词中提取到待翻译文本")
+            self.warning("Bing 请求失败：未从提示词中提取到待翻译文本")
             return True, None, None, None, None
         if __class__.is_cancel_requested():
             return True, None, None, None, None
 
-        client = None
-        key = None
         try:
-            with __class__.LOCK:
-                key = __class__.get_key(SecretStore.get().resolve_keys(self.platform))
-                client = __class__.get_client(
-                    url = self.platform.get('api_url'),
-                    key = key,
-                    format = self.platform.get('api_format'),
-                    timeout = self.config.request_timeout,
-                )
-
-            source_lang, target_lang = self._get_deepl_language_codes()
-            endpoint = self._resolve_deeplx_endpoint(self.platform.get('api_url'))
-
-            headers = {"Content-Type": "application/json"}
-            if key and key != "no_key_required":
-                headers["Authorization"] = f"Bearer {key}"
+            # 避免 translators 导入时的地理位置检测发起额外网络请求
+            os.environ.setdefault("translators_default_region", "CN")
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:
+                pass
+            source_lang, target_lang = self._get_translators_language_codes()
 
             dsts: list[str] = []
             for text in srcs:
                 if __class__.is_cancel_requested():
                     return True, None, None, None, None
-                payload: dict[str, str] = {
-                    "text": text,
-                    "source_lang": source_lang if source_lang != "" else "AUTO",
-                    "target_lang": target_lang,
-                }
-                response = client.post(endpoint, json = payload, headers = headers)
-                response.raise_for_status()
-
-                data = response.json()
-                if not isinstance(data, dict):
-                    raise ValueError("DeepLX 返回格式错误")
-
-                if int(data.get("code", 500)) != 200:
-                    raise ValueError(str(data.get("message", "DeepLX translation failed")))
-
-                dsts.append(str(data.get("data", "")))
-
-            if len(dsts) != len(srcs):
-                self.warning(f"DeepLX 返回数量不匹配: {len(dsts)}/{len(srcs)}")
-                return True, None, None, None, None
+                # ponytail: translators 库只有单条接口，逐条请求；失败由外层重试/拆批兜底
+                dsts.append(str(translators.translate_text(
+                    text,
+                    translator = "bing",
+                    from_language = source_lang,
+                    to_language = target_lang,
+                    timeout = self.config.request_timeout,
+                    if_print_warning = False,
+                )))
         except Exception as e:
             self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = key)
             self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 

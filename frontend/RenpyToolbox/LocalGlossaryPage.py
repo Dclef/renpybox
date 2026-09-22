@@ -233,8 +233,8 @@ class GlossaryLLMTranslateWorker(QThread):
                 response_shape = (
                     "json_object"
                     if config_for_prompt.structured_output_enable
-                    and self.platform.get("api_format")
-                    not in (Base.APIFormat.SAKURALLM, Base.APIFormat.DEEPL, Base.APIFormat.DEEPLX)
+                    and self.platform.get("api_format") != Base.APIFormat.SAKURALLM
+                    and self.platform.get("api_format") not in Base.MACHINE_API_FORMATS
                     else "none"
                 )
                 skip, _, response_text, _, _ = requester.request(
@@ -942,7 +942,7 @@ class LocalGlossaryPage(Base, QWidget):
             tasks,
             source_lang=source_lang,
             target_lang=target_lang,
-            engine="alibaba",
+            engine="bing",
             parent=self,
         )
         worker.progress.connect(self._on_translate_glossary_progress)
