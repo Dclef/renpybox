@@ -287,6 +287,12 @@ class RenpyTranslationPage(QWidget):
 
         extract_row.addStretch(1)
         adv_layout.addLayout(extract_row)
+        from frontend.RenpyToolbox.RpyExtractionPage import RpySettingsEntry
+        self.rpy_settings = RpySettingsEntry(self.game_dir_edit.text, self.tl_name_edit.text, 'source', self)
+        self.game_rules_btn = self.rpy_settings.button
+        self.game_dir_edit.textChanged.connect(self.rpy_settings.refresh)
+        layout.addWidget(self.rpy_settings)
+
 
         # === 可选 exe ===
         exe_row = QHBoxLayout()
@@ -438,12 +444,17 @@ class RenpyTranslationPage(QWidget):
                         )
                         return
 
+            # 统一方案优先于内置抽取选项；仅自定义不触发寻找 exe 的回退提示。
+            from module.Extract.RpyExtractionSettings import selection_for_path
+            _, rule_mode, _ = selection_for_path(project_root, 'source')
             # 获取选项
             use_official = self.chk_official.isChecked() if hasattr(self, 'chk_official') else self.config.extract_use_official
             use_custom = self.chk_custom.isChecked() if hasattr(self, 'chk_custom') else self.config.extract_use_custom
 
-            if not use_official and not use_custom:
-                use_custom = True  # 至少启用补充抽取
+            if rule_mode == 'custom':
+                use_official = use_custom = False
+            elif not use_official and not use_custom:
+                use_custom = True  # 至少启用内置补充抽取
 
             # 自动查找 exe
             if use_official and not exe_path:
@@ -472,8 +483,9 @@ class RenpyTranslationPage(QWidget):
 
             # 保存配置
             ProjectStore.get().set_game_folder(self.config, game_dir)
-            self.config.extract_use_official = use_official
-            self.config.extract_use_custom = use_custom
+            if rule_mode != 'custom':
+                self.config.extract_use_official = use_official
+                self.config.extract_use_custom = use_custom
             if hasattr(self, 'cmb_supplement_mode'):
                 self.config.extract_supplement_mode = (
                     "aggressive" if self.cmb_supplement_mode.currentIndex() == 1 else "precise"

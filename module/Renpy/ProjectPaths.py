@@ -343,47 +343,81 @@ class RenpyProjectPaths:
         return None
 
 
+@dataclass
+class SourceScriptSummary:
+    """源码统计；取消或读取失败时，部分计数仅用于诊断。"""
+
+    rpy_count: int = 0
+    rpyc_count: int = 0
+    pending_rpyc_count: int = 0
+    first_pending_rpyc: str = ""
+    cancelled: bool = False
+    error: str = ""
+
+
+def source_script_summary(
+    paths: RenpyProjectPaths,
+    *,
+    cancel_check=None,
+) -> SourceScriptSummary:
+    """一次扫描源码区，按同目录文件名配对 RPY/RPYC，保留原始数量。"""
+    game_dir = paths.game_dir
+    tl_root = getattr(paths, "tl_root", game_dir / "tl")
+    excluded = {_key(tl_root), _key(game_dir / "tl")}
+    result = SourceScriptSummary()
+
+    def check_cancelled() -> bool:
+        result.cancelled = bool(cancel_check is not None and cancel_check())
+        return result.cancelled
+
+    def record_error(error: OSError) -> None:
+        # os.walk 默认忽略读取错误；显式记录，避免部分扫描被判断为就绪。
+        if not result.error:
+            result.error = str(error)
+
+    try:
+        for current, dirnames, filenames in os.walk(
+            str(game_dir), topdown=True, onerror=record_error,
+        ):
+            if check_cancelled():
+                return result
+            if _key(Path(current)) in excluded:
+                dirnames[:] = []
+                continue
+            source_names: set[str] = set()
+            compiled_names: list[str] = []
+            for name in filenames:
+                if check_cancelled():
+                    return result
+                stem, suffix = os.path.splitext(name)
+                if suffix.casefold() == ".rpy":
+                    result.rpy_count += 1
+                    source_names.add(os.path.normcase(stem))
+                elif suffix.casefold() == ".rpyc":
+                    result.rpyc_count += 1
+                    compiled_names.append(name)
+            # 在当前目录内匹配，不让其他目录的同名源码抵消待处理文件。
+            for name in compiled_names:
+                if check_cancelled():
+                    return result
+                if os.path.normcase(os.path.splitext(name)[0]) not in source_names:
+                    result.pending_rpyc_count += 1
+                    if not result.first_pending_rpyc:
+                        result.first_pending_rpyc = (Path(current) / name).relative_to(game_dir).as_posix()
+    except OSError as exc:
+        record_error(exc)
+    check_cancelled()
+    return result
+
+
 def source_script_counts(
     paths: RenpyProjectPaths,
     *,
     cancel_check=None,
 ) -> tuple[int, int]:
-    """统计翻译目录之外可处理的 RPY/RPYC 源脚本。"""
-
-    # 以前分别对 game 目录做两次 rglob，并在结果阶段才排除 tl；
-    # 大型项目会因此完整遍历翻译目录两遍。一次 top-down walk 即可在
-    # 进入 tl 之前剪枝，同时保留对任意嵌套源码目录的统计语义。
-    game_dir = paths.game_dir
-    # 兼容体检兜底使用的轻量路径对象；正式路径始终提供 tl_root。
-    tl_root = getattr(paths, "tl_root", game_dir / "tl")
-    tl_root_key = _key(tl_root)
-    rpy_count = 0
-    rpyc_count = 0
-    try:
-        walker = os.walk(str(game_dir), topdown = True)
-        for current, dirnames, filenames in walker:
-            if cancel_check is not None and cancel_check():
-                return rpy_count, rpyc_count
-            current_key = _key(Path(current))
-            # tl_root 可能尚未创建；只有 walk 到该目录时才需要剪枝。
-            if current_key == tl_root_key:
-                dirnames[:] = []
-                continue
-            # 目录名由 os.walk 返回，避免为每个文件构造 Path；后缀比较
-            # 使用大小写不敏感形式，与 Windows 下的文件语义一致。
-            for name in filenames:
-                if cancel_check is not None and cancel_check():
-                    return rpy_count, rpyc_count
-                suffix = Path(name).suffix.casefold()
-                if suffix == ".rpy":
-                    rpy_count += 1
-                elif suffix == ".rpyc":
-                    rpyc_count += 1
-    except OSError:
-        # 与 Path.rglob 在根目录不可读时的容错保持一致：返回已统计结果，
-        # 不让状态检测因单个损坏/无权限目录直接阻塞向导。
-        pass
-    return rpy_count, rpyc_count
+    """兼容展示入口：返回翻译目录之外的原始 RPY/RPYC 数量。"""
+    result = source_script_summary(paths, cancel_check=cancel_check)
+    return result.rpy_count, result.rpyc_count
 
 
 def apply_to_config(

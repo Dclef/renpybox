@@ -612,6 +612,12 @@ class YiJianFanyiPage(Base, QWidget):
         
         layout.addWidget(self.old_translation_card)
 
+        from frontend.RenpyToolbox.RpyExtractionPage import RpySettingsEntry
+        self.rpy_settings = RpySettingsEntry(self.game_path_edit.text, lambda: self.tl_folder_edit.text(), 'source', self)
+        self.game_rules_btn = self.rpy_settings.button
+        self.game_path_edit.textChanged.connect(self.rpy_settings.refresh)
+        layout.addWidget(self.rpy_settings)
+
         # 高级选项
         options_card = CardWidget()
         options_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -673,6 +679,8 @@ class YiJianFanyiPage(Base, QWidget):
         supplement_row.addWidget(self.supplement_mode_combo)
         supplement_row.addStretch(1)
         options_layout.addLayout(supplement_row)
+
+
 
         self.clear_declined_btn = PushButton(
             Localizer.get().onekey_clear_skipped_candidates,
@@ -1717,7 +1725,11 @@ class YiJianFanyiPage(Base, QWidget):
         self._status_scan_worker = None
         if not self._step2_context_is_current(generation, context):
             return
-        if hasattr(worker, "isInterruptionRequested") and worker.isInterruptionRequested():
+        payload = result if isinstance(result, dict) else {}
+        status = str(payload.get("status", "error") or "error")
+        if status == "cancelled" or (
+            hasattr(worker, "isInterruptionRequested") and worker.isInterruptionRequested()
+        ):
             self.step2_page.progress_ring.setVisible(False)
             self.step2_cancel_btn.setVisible(False)
             self.step2_cancel_btn.setEnabled(True)
@@ -1729,8 +1741,10 @@ class YiJianFanyiPage(Base, QWidget):
             self.step2_skip_btn.setEnabled(True)
             return
 
-        payload = result if isinstance(result, dict) else {}
-        status = str(payload.get("status", "error") or "error")
+        LogManager.get().info(
+            f"源码状态复检: generation={generation}, project={context['project_key']}, "
+            f"phase={failure_kind or 'initial'}, status={status}"
+        )
         status_message = str(payload.get("message", "") or "")
         if failure_kind == "unpack" and status in ("need_unpack", "empty"):
             self._show_step2_unpack_failure(
@@ -1744,9 +1758,13 @@ class YiJianFanyiPage(Base, QWidget):
             "need_unpack",
             "empty",
         ):
-            self._show_step2_decompile_failure(status_message)
+            self._show_step2_decompile_failure(
+                Localizer.get().onekey_decompile_outputs_missing.format(status=status_message)
+            )
             return
         if status == "error":
+            self.step2_cancel_btn.setVisible(False)
+            self.step2_cancel_btn.setEnabled(True)
             self.step2_page.progress_ring.setVisible(False)
             self.step2_status.setText(Localizer.get().onekey_game_files_not_found)
             self.step2_desc.setText(status_message or Localizer.get().onekey_no_extractable_files_found)
@@ -2845,10 +2863,12 @@ class YiJianFanyiPage(Base, QWidget):
         input_dir = Path(cfg.input_folder) if cfg.input_folder else None
         output_dir = Path(cfg.output_folder) if cfg.output_folder else None
 
-        if not input_dir or not input_dir.exists():
-            missing.append(
-                Localizer.get().onekey_input_folder_missing_does_not_exist
-            )
+        if input_dir is None:
+            missing.append(Localizer.get().onekey_input_not_configured)
+        elif not input_dir.exists():
+            missing.append(Localizer.get().onekey_input_path_missing.format(path=input_dir))
+        elif not input_dir.is_dir():
+            missing.append(Localizer.get().onekey_input_not_directory.format(path=input_dir))
         if not output_dir:
             missing.append(
                 Localizer.get().onekey_output_folder_not_configured
