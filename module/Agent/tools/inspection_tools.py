@@ -29,7 +29,7 @@ from module.Extract.ReplaceGenerator import (
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    source_script_counts,
+    source_script_summary,
     translation_output_candidates,
 )
 
@@ -49,7 +49,8 @@ PROGRESS_KEYS = (
 
 def _file_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
     rpa_count = sum(1 for _ in paths.game_dir.glob("*.rpa"))
-    rpy_count, rpyc_count = source_script_counts(paths)
+    summary = source_script_summary(paths)
+    rpy_count, rpyc_count = summary.rpy_count, summary.rpyc_count
     tl_file_count = (
         sum(1 for _ in paths.tl_language_dir.rglob("*.rpy"))
         if paths.tl_language_dir.is_dir()
@@ -57,9 +58,11 @@ def _file_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
     )
 
     unpack_required = rpa_count > 0 and rpy_count == 0 and rpyc_count == 0
-    if unpack_required:
+    if summary.error or summary.cancelled:
+        status = "error"
+    elif unpack_required:
         status = "need_unpack"
-    elif rpyc_count > 0:
+    elif summary.pending_rpyc_count > 0:
         status = "need_decompile"
     elif rpy_count > 0:
         status = "ready"
@@ -79,6 +82,10 @@ def _file_summary(paths: RenpyProjectPaths) -> dict[str, Any]:
         "rpa_count": rpa_count,
         "rpy_count": rpy_count,
         "rpyc_count": rpyc_count,
+        "pending_rpyc_count": summary.pending_rpyc_count,
+        "paired_rpyc_count": rpyc_count - summary.pending_rpyc_count,
+        "first_pending_rpyc": summary.first_pending_rpyc,
+        "scan_error": summary.error,
         "tl_file_count": tl_file_count,
     }
 
@@ -557,6 +564,13 @@ def inspect_translation_project(
         return _not_set()
 
     files = _file_summary(paths)
+    if files["status"] == "error":
+        return ToolResult(
+            False,
+            Localizer.get().onekey_script_scan_failed.format(error=files["scan_error"]),
+            code="SOURCE_SCAN_FAILED",
+            data={"files": files},
+        )
     output_path = _translation_output(current, paths)
     cache, cache_project, items = _load_cache(output_path)
     asset_exists, asset_readable, asset_project = _load_asset_project(
