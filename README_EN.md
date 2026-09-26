@@ -66,12 +66,6 @@
   - Missing, corrupted, or previously interrupted installations are automatically repaired with a full package.
   - Incremental packages are verified before release, and user configs and input files are preserved during updates.
 
-- 2026-09-17 v0.7.9:
-  - Pre-warms the main window, translation pages, and toolbox during the splash stage to reduce jank after entering pages.
-  - Project checks before translation moved to the background; large cache writes yield to keep the UI responsive.
-  - Ren'Py extraction, incremental merge, and official extraction run in the background; decompilation picks resources by the game's Python version.
-  - Fixed blank waits after the splash closes early, title-bar style warnings, stale thread statistics, and stale callbacks affecting current progress.
-
 See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
