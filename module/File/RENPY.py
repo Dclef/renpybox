@@ -34,7 +34,10 @@ class RENPY(Base):
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """Parse .rpy files into cache items via AST extraction."""
         items: List[CacheItem] = []
-        extractor = RenpyTlItemExtractor()
+        from module.Extract.RpyExtractionSettings import selection_for_path, context_for_path, ProfileTlExtractor
+        _, mode, profile = selection_for_path(self.input_path, 'tl')
+        _, rule_base = context_for_path(self.input_path, 'tl')
+        extractor = ProfileTlExtractor(mode, profile, cancel=self._is_stop_requested)
         for abs_path in abs_paths:
             # AST 解析可能面对大量脚本；停止时立即放弃后续文件。
             if self._is_stop_requested():
@@ -45,19 +48,32 @@ class RENPY(Base):
                 continue
 
             rel_path = self._relative_to_input(path)
-            if self._should_skip_file(path, rel_path):
+            skip_builtin = self._should_skip_file(path, rel_path)
+            if skip_builtin and mode == 'builtin':
                 self.debug(f"Skip builtin UI file: {rel_path}")
                 continue
+            if mode != 'builtin':
+                from module.Extract.GameExtractionRules import _excluded
+                if any(_excluded(part) for part in Path(rel_path).parts):
+                    continue
+                extractor.mode = 'custom' if skip_builtin else mode
 
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = path.read_text(encoding="utf-8-sig", errors="strict" if mode != "builtin" else "replace")
             except Exception as exc:
+                if mode != 'builtin':
+                    from module.Extract.GameExtractionRules import RuleError
+                    raise RuleError('read', str(exc)) from exc
                 self.error(f"Failed to read {path}", exc)
                 continue
 
             lines = text.splitlines()
             doc = parse_tl_document(lines)
-            items.extend(extractor.extract(doc, rel_path))
+            try:
+                scope_path = path.resolve().relative_to(rule_base).as_posix()
+            except ValueError:
+                scope_path = rel_path
+            items.extend(extractor.extract(doc, rel_path, scope_path=scope_path))
 
             if self._is_stop_requested():
                 break
@@ -88,12 +104,13 @@ class RENPY(Base):
             grouped.setdefault(item.get_file_path(), []).append(item)
 
         writer = RenpyTlLineUpdater()
-        extractor = RenpyTlItemExtractor()
 
         report: list[dict] = []
         hook_languages: set[str] = set()
         errors: list[str] = []
         for rel_path, group_items in grouped.items():
+            from module.Extract.RpyExtractionSettings import RecordedTlExtractor
+            extractor = RecordedTlExtractor(group_items)
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 导出源文件不存在: {source_path}")
