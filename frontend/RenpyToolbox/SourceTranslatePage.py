@@ -98,6 +98,12 @@ class SourceTranslatePage(Base, QWidget):
         scroll_layout.setSpacing(12)
 
         scroll_layout.addWidget(self._create_target_card())
+        from frontend.RenpyToolbox.RpyExtractionPage import RpySettingsEntry
+        self.rpy_settings = RpySettingsEntry(lambda: self.single_file_edit.text() if self.single_file_switch.isChecked() else self.game_dir_edit.text(), lambda: 'chinese', 'source', self)
+        scroll_layout.addWidget(self.rpy_settings)
+        self.game_dir_edit.textChanged.connect(self.rpy_settings.refresh)
+        self.single_file_edit.textChanged.connect(self.rpy_settings.refresh)
+        self.single_file_switch.checkedChanged.connect(self.rpy_settings.refresh)
         scroll_layout.addWidget(self._create_action_card())
         scroll_layout.addStretch(1)
 

@@ -132,6 +132,15 @@ class RENPYSOURCE(Base):
         if preserves and hasattr(parser, "set_text_preserve"):
             parser.set_text_preserve(preserves)
 
+        from module.Extract.RpyExtractionSettings import selection_for_path, scan_source
+        root, mode, profile = selection_for_path(self.input_path, 'source')
+        custom = {}
+        base = root / 'game' if (root / 'game').is_dir() else (self.input_path.parent if self.input_path.is_file() else self.input_path)
+        if mode != 'builtin':
+            scan = scan_source(root, profile, lambda: Engine.get().get_status() == Engine.Status.STOPPING, base=base, paths=abs_paths)
+            for candidate in scan.candidates:
+                custom.setdefault((base / candidate.path).resolve(), []).append(candidate)
+
         total_files = len(abs_paths)
         for index, abs_path in enumerate(abs_paths, start = 1):
             if Engine.get().get_status() == Engine.Status.STOPPING:
@@ -151,10 +160,9 @@ class RENPYSOURCE(Base):
                 continue
 
             rel_path = self._relative_to_input(path)
-            entries = parser.scan_file(path)
-            if not entries:
-                continue
+            entries = parser.scan_file(path) if mode != 'custom' else []
 
+            selected_slots = set()
             entry_occurrences: dict[tuple[int, str], int] = {}
             for entry in entries:
                 text = (entry.text or "").strip()
@@ -166,6 +174,7 @@ class RENPYSOURCE(Base):
                     entry.original_line, entry.text, occurrence
                 )
                 entry_occurrences[occurrence_key] = occurrence + 1
+                selected_slots.add((entry.line_number, literal_slot))
                 items.append(
                     CacheItem.from_dict(
                         {
@@ -186,6 +195,22 @@ class RENPYSOURCE(Base):
                         }
                     )
                 )
+
+            if custom.get(path.resolve()):
+                lines = path.read_text(encoding='utf-8-sig').splitlines()
+                for candidate in custom[path.resolve()]:
+                    line = lines[candidate.line - 1]
+                    literals = list(parser.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+                    slot = next((i for i, m in enumerate(literals) if m.span() == (candidate.start, candidate.end)), None)
+                    if slot is None or (candidate.line, slot) in selected_slots or candidate.text.strip() in preserves:
+                        continue
+                    selected_slots.add((candidate.line, slot))
+                    items.append(CacheItem.from_dict({
+                        'src': candidate.raw_text, 'dst': candidate.raw_text, 'row': candidate.line,
+                        'file_type': CacheItem.FileType.RENPYSOURCE, 'file_path': rel_path,
+                        'text_type': CacheItem.TextType.RENPY, 'status': Base.TranslationStatus.UNTRANSLATED,
+                        'extra_field': {'renpy_source': {'line': candidate.line, 'line_type': 'CUSTOM', 'literal_slot': slot}},
+                    }))
 
         items.sort(key=lambda item: (item.get_file_path(), item.get_row()))
         return items

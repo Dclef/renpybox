@@ -76,6 +76,10 @@ def test_project_inspection_recommends_unpack_for_rpa_only(tmp_path) -> None:
         "rpa_count": 1,
         "rpy_count": 0,
         "rpyc_count": 0,
+        "pending_rpyc_count": 0,
+        "paired_rpyc_count": 0,
+        "first_pending_rpyc": "",
+        "scan_error": "",
         "tl_file_count": 0,
     }
     assert result.data["next_action_code"] == "UNPACK_RPA"
@@ -173,6 +177,7 @@ def test_project_inspection_decompiles_mixed_scripts(
     (game / "archive.rpa").write_bytes(b"rpa")
     (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
     (game / "script.rpyc").write_bytes(b"rpyc")
+    (game / "extra.rpyc").write_bytes(b"rpyc")
     config = _config_for(root)
 
     result = inspect_translation_project(config_loader=lambda: config)
@@ -727,3 +732,17 @@ def test_project_inspection_reports_pending_main_asset_transaction(tmp_path) -> 
     assert result.data["assets"]["readable"] is False
     assert result.data["assets"]["error_code"] == "ASSET_CACHE_UNREADABLE"
     assert result.data["next_action_code"] == "REPAIR_CACHE"
+
+
+def test_project_inspection_preserves_raw_counts_after_decompile(tmp_path):
+    root = tmp_path / "Game"
+    game = root / "game"
+    game.mkdir(parents=True)
+    (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    (game / "script.rpyc").write_bytes(b"compiled")
+    result = inspect_translation_project(config=_config_for(root))
+    assert result.success
+    assert result.data["files"]["status"] == "ready"
+    assert result.data["files"]["rpyc_count"] == 1
+    assert result.data["files"]["pending_rpyc_count"] == 0
+    assert result.data["next_action_code"] != "DECOMPILE_SCRIPTS"

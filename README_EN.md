@@ -50,6 +50,11 @@
 
 ## Recent Updates 📅
 
+- 2026-09-27 v0.7.12:
+  - Added RPY extraction settings with separate source-RPY and TL-RPY profiles for built-in, custom, and combined modes.
+  - Custom extraction is available in one-click, TL, and source translation, with a beginner-friendly default view and optional advanced rule editing.
+  - Improved TL pairing and source write-back safety for custom rules.
+
 - 2026-09-22 v0.7.11:
   - Added Google and Bing free translation engines, no API key required; available in one-click, TL, source-code, and direct-RPY translation as well as the local glossary.
   - The direct-RPY page adds an "auto write-back" switch and a manual write-back button; fixed switch labels losing their text when turned on.
