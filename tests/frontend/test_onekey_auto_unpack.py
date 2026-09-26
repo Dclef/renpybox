@@ -47,6 +47,9 @@ class _UnpackWorkerStub:
     def isRunning(self) -> bool:
         return self.running
 
+    def isInterruptionRequested(self) -> bool:
+        return False
+
     def complete(self, result: dict) -> None:
         self.running = False
         self.finished.emit(result)
@@ -77,6 +80,9 @@ class _DecompileWorkerStub:
 
     def isRunning(self) -> bool:
         return self.running
+
+    def isInterruptionRequested(self) -> bool:
+        return False
 
     def complete(self, result: dict) -> None:
         self.running = False
@@ -572,5 +578,89 @@ def test_old_preprocess_result_is_ignored_after_page_project_switch(
 
         assert _DecompileWorkerStub.started == []
         assert _ExtractionWorkerStub.started == []
+    finally:
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("remaining", [False, True])
+def test_decompile_completion_rescans_real_files(monkeypatch, tmp_path, remaining):
+    """成功回调必须复检磁盘产物，不能通过伪造 ready 跳过配对判断。"""
+    root = tmp_path / "Project"
+    game = root / "game"
+    game.mkdir(parents=True)
+    compiled = game / "script.rpyc"
+    compiled.write_bytes(b"compiled")
+    config = _config_for(root)
+    monkeypatch.setattr(page_module.Config, "load", lambda *args: config)
+    _patch_workers(monkeypatch)
+    _quiet_info_bars(monkeypatch)
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        first = _GameStatusWorkerStub.started[-1]
+        first.complete(*page_module.detect_game_status(str(root), "chinese"))
+        assert len(_DecompileWorkerStub.started) == 1
+        assert _DecompileWorkerStub.started[0].overwrite is False
+        (game / "script.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+        if remaining:
+            (game / "extra.rpyc").write_bytes(b"compiled")
+        _DecompileWorkerStub.started[0].complete(_success("反编译完成"))
+        second = _GameStatusWorkerStub.started[-1]
+        second.complete(*page_module.detect_game_status(str(root), "chinese"))
+        assert len(_ExtractionWorkerStub.started) == (0 if remaining else 1)
+        assert compiled.read_bytes() == b"compiled"
+        if remaining:
+            assert "1" in page.step2_desc.text()
+            assert not page.step2_retry_btn.isHidden()
+    finally:
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("input_kind", ["unset", "missing", "file"])
+def test_step4_explains_invalid_input(monkeypatch, tmp_path, input_kind):
+    from module.Localizer.Localizer import Localizer
+
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    if input_kind == "unset":
+        config.input_folder = ""
+        expected = Localizer.get().onekey_input_not_configured
+    elif input_kind == "file":
+        path = root / "file.txt"
+        path.write_text("text", encoding="utf-8")
+        config.input_folder = str(path)
+        expected = Localizer.get().onekey_input_not_directory.format(path=path)
+    else:
+        expected = Localizer.get().onekey_input_path_missing.format(path=config.input_folder)
+    monkeypatch.setattr(page_module.Config, "load", lambda *args: config)
+    page = _make_page(root)
+    try:
+        assert not page._refresh_step4_ready()
+        assert expected in page.step4_status.text()
+        assert not page.start_trans_btn.isEnabled()
+        if input_kind == "missing":
+            assert not Path(config.input_folder).exists()
+    finally:
+        page.deleteLater()
+
+
+@pytest.mark.parametrize("status", ["cancelled", "error"])
+def test_incomplete_scan_payload_never_starts_extraction(monkeypatch, tmp_path, status):
+    root = tmp_path / "Project"
+    (root / "game").mkdir(parents=True)
+    config = _config_for(root)
+    monkeypatch.setattr(page_module.Config, "load", lambda *args: config)
+    _patch_workers(monkeypatch)
+    _quiet_info_bars(monkeypatch)
+    page = _make_page(root)
+    try:
+        page._go_step2()
+        worker = _GameStatusWorkerStub.started[-1]
+        assert not worker.interrupted
+        worker.complete(status, "扫描未完成")
+        assert _ExtractionWorkerStub.started == []
+        assert page.step2_cancel_btn.isHidden()
+        assert not page.step2_retry_btn.isHidden()
     finally:
         page.deleteLater()
