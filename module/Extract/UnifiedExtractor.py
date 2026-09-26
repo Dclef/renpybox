@@ -24,6 +24,9 @@ from typing import Dict, Optional, Set, Callable, List, Tuple
 from base.PathHelper import get_resource_path
 from base.LogManager import LogManager
 from module.Config import Config
+from module.Localizer.Localizer import Localizer
+from module.Extract.GameExtractionRules import collect_game_rules, RuleError
+from module.Extract.RpyExtractionSettings import selection_for_path
 from module.Extract.RenpyExtractor import RenpyExtractor
 from module.Extract.MaExtractor import MaExtractor
 from module.Extract.JsonExtractor import JsonExtractor
@@ -68,6 +71,11 @@ class ExtractionResult:
     total_files: int = 0
     incremental_dir: Optional[Path] = None  # 增量抽取的新增内容目录
     preserved_count: int = 0  # 保留的已有翻译数量
+    official_status: str = "not_run"
+    game_rule_error: str = ""
+    game_rule_profile: str = ""
+    game_rule_candidates: int = 0
+    game_rule_added: int = 0
     cancelled: bool = False  # 用户主动取消，区别于抽取失败
 
 
@@ -1440,14 +1448,42 @@ class UnifiedExtractor:
         
         try:
             config = Config().load()
-            allow_official = bool(use_official and config.extract_use_official and exe_path)
-            allow_custom = bool(config.extract_use_custom)
+            _, rule_mode, selected_profile = selection_for_path(game_dir, 'source')
+            allow_rules = rule_mode != 'builtin'
+            allow_official = bool(rule_mode != 'custom' and use_official and config.extract_use_official and exe_path)
+            allow_custom = bool(rule_mode != 'custom' and config.extract_use_custom)
+            if rule_mode == 'custom':
+                # 自定义模式只保留结构清理，不追加内置 UI 或其他扫描结果。
+                config.onekey_inject_base_box = False
+                config.extract_export_excel = False
+                config.renpy_filter_suspicious_bool_expr = False
+            self.official_extraction_status = "not_run"
+            rule_candidates = []
+            if allow_rules:
+                self._emit_progress(Localizer.get().game_rules_scanning, 5)
+                try:
+                    rule_profile, rule_candidates = collect_game_rules(game_dir, self._is_cancelled, profile=selected_profile)
+                except RuleError as exc:
+                    if exc.code == "cancelled":
+                        raise rx.ExtractionCancelled(Localizer.get().pack_unpack_cancelled) from exc
+                    result.game_rule_error = exc.code
+                    raise RuntimeError(Localizer.get().game_rules_failed.format(
+                        reason=getattr(Localizer.get(), f"game_rules_error_{exc.code}", exc.code),
+                    )) from exc
+                result.game_rule_profile = rule_profile['name'] if rule_profile else ""
+                result.game_rule_candidates = len({item.text for item in rule_candidates})
 
-            if not allow_official and not allow_custom:
+
+            if not allow_official and not allow_custom and not allow_rules:
                 result.success = False
                 result.message = "常规抽取已被禁用，请启用官方或补充抽取后重试"
                 return result
 
+            rule_texts = {item.text for item in rule_candidates}
+            rule_previous = {
+                old: new for old, new in self._get_existing_string_translations(tl_dir).items()
+                if old in rule_texts
+            } if rule_texts else {}
             # 1. 备份
             backup_path = self._backup_tl_dir(game_dir, tl_name)
             
@@ -1463,7 +1499,7 @@ class UnifiedExtractor:
                 except Exception as e:
                     self._check_cancel()
                     self.official_extraction_status = "failed"
-                    if not allow_custom:
+                    if not allow_custom and not allow_rules:
                         raise
                     self.logger.warning(f"官方抽取失败: {e}，将仅使用补充抽取")
             elif use_official and not exe_path:
@@ -1501,11 +1537,18 @@ class UnifiedExtractor:
                 )
             else:
                 self.logger.info("根据配置跳过静态补充抽取阶段")
+            if allow_rules:
+                result.game_rule_added = self._append_static_supplement_entries(
+                    game_dir, tl_dir, tl_name, candidates={}, menu_candidates=set(),
+                    rule_candidates=rule_candidates,
+                )
 
             # 5. 过滤与清理 + 终极结构导出
             self._post_process(game_dir, tl_name, tl_dir, config, None)
             # 5b. 写入后校验 old 唯一性，避免 Ren'Py 启动报重复翻译错误。
             self._dedupe_string_translations(tl_dir, tl_name)
+            if rule_previous and self._merge_translations(tl_dir, rule_previous):
+                raise RuntimeError("游戏规则已有译文恢复失败")
             # 6. 注入内置 UI 包（common_box/screens_box）
             injected_ui = 0
             if getattr(config, "onekey_inject_base_box", False):
@@ -1558,6 +1601,14 @@ class UnifiedExtractor:
             else:
                 result.message = str(e)
             
+        result.official_status = getattr(self, "official_extraction_status", "not_run")
+        if result.success and result.official_status == "failed":
+            result.message += "\n" + Localizer.get().game_rules_official_failed
+        if result.game_rule_profile:
+            result.message += "\n" + Localizer.get().game_rules_extracted.format(
+                profile=result.game_rule_profile, matched=result.game_rule_candidates,
+                added=result.game_rule_added,
+            )
         return result
 
     def extract_incremental(
@@ -1592,10 +1643,33 @@ class UnifiedExtractor:
         
         try:
             config = Config().load()
-            allow_official = bool(use_official and config.extract_use_official and exe_path)
-            allow_custom = bool(config.extract_use_custom)
+            _, rule_mode, selected_profile = selection_for_path(game_dir, 'source')
+            allow_rules = rule_mode != 'builtin'
+            allow_official = bool(rule_mode != 'custom' and use_official and config.extract_use_official and exe_path)
+            allow_custom = bool(rule_mode != 'custom' and config.extract_use_custom)
+            if rule_mode == 'custom':
+                # 自定义模式只保留结构清理，不追加内置 UI 或其他扫描结果。
+                config.onekey_inject_base_box = False
+                config.extract_export_excel = False
+                config.renpy_filter_suspicious_bool_expr = False
+            self.official_extraction_status = "not_run"
+            rule_candidates = []
+            if allow_rules:
+                self._emit_progress(Localizer.get().game_rules_scanning, 5)
+                try:
+                    rule_profile, rule_candidates = collect_game_rules(game_dir, self._is_cancelled, profile=selected_profile)
+                except RuleError as exc:
+                    if exc.code == "cancelled":
+                        raise rx.ExtractionCancelled(Localizer.get().pack_unpack_cancelled) from exc
+                    result.game_rule_error = exc.code
+                    raise RuntimeError(Localizer.get().game_rules_failed.format(
+                        reason=getattr(Localizer.get(), f"game_rules_error_{exc.code}", exc.code),
+                    )) from exc
+                result.game_rule_profile = rule_profile['name'] if rule_profile else ""
+                result.game_rule_candidates = len({item.text for item in rule_candidates})
 
-            if not allow_official and not allow_custom:
+
+            if not allow_official and not allow_custom and not allow_rules:
                 result.success = False
                 result.message = "增量抽取已被禁用，请启用官方或补充抽取后重试"
                 return result
@@ -1698,7 +1772,7 @@ class UnifiedExtractor:
                         except Exception as e:
                             self._check_cancel()
                             self.official_extraction_status = "failed"
-                            if not allow_custom:
+                            if not allow_custom and not allow_rules:
                                 raise
                             self.logger.warning(f"官方抽取失败: {e}")
                     else:
@@ -1760,6 +1834,15 @@ class UnifiedExtractor:
                     )
                 else:
                     static_added = 0
+                    static_candidates = {}
+                    menu_candidates = set()
+                if allow_rules:
+                    result.game_rule_added = self._append_static_supplement_entries(
+                        game_dir, temp_tl_dir, tl_name, candidates={}, menu_candidates=set(),
+                        rule_candidates=rule_candidates,
+                    )
+                    for item in rule_candidates:
+                        static_candidates.setdefault(item.text, item.path)
                 # 6. strings 与编号翻译块分别计算增量。
                 extracted_block_originals: Set[str] = set()
                 new_extracted_string_originals = self._get_string_originals(
@@ -1776,6 +1859,7 @@ class UnifiedExtractor:
                     # 否则空集交集会把补充抽取结果全部丢弃。
                     trusted_originals=official_string_originals if official_succeeded else None,
                     source_game_dir=game_dir,
+                    rule_originals={item.text for item in rule_candidates},
                 )
                 # 历史判定不译的候选不再重复提出。
                 declined_candidates = load_declined_candidates(game_dir, tl_name)
@@ -1837,7 +1921,7 @@ class UnifiedExtractor:
                         incremental_dir,
                         selected_string_originals,
                         tl_name,
-                        game_dir=game_dir,
+                        game_dir=game_dir if rule_mode != 'custom' else None,
                         selected_block_keys=new_block_keys,
                     )
                     
@@ -1971,6 +2055,14 @@ class UnifiedExtractor:
             result.cancelled = cancelled
             result.message = str(e)
             
+        result.official_status = getattr(self, "official_extraction_status", "not_run")
+        if result.success and result.official_status == "failed":
+            result.message += "\n" + Localizer.get().game_rules_official_failed
+        if result.game_rule_profile:
+            result.message += "\n" + Localizer.get().game_rules_extracted.format(
+                profile=result.game_rule_profile, matched=result.game_rule_candidates,
+                added=result.game_rule_added,
+            )
         return result
 
     def merge_incremental_folder(
@@ -2764,6 +2856,7 @@ class UnifiedExtractor:
         menu_candidates: Optional[Set[str]] = None,
         trusted_originals: Optional[Set[str]] = None,
         source_game_dir: Optional[Path] = None,
+        rule_originals: Optional[Set[str]] = None,
     ) -> Set[str]:
         """选择真实增量任务，同时保留与对话同文的菜单 strings。"""
         # An official set is positive coverage evidence, not an exhaustive list
@@ -2779,7 +2872,7 @@ class UnifiedExtractor:
         for original, relative_path in static_candidates.items():
             if original not in extracted_originals or original in existing_string_originals:
                 continue
-            if original in menu_candidates:
+            if original in menu_candidates or original in (rule_originals or set()):
                 selected.add(original)
                 continue
             target_file = tl_dir / relative_path
@@ -2868,6 +2961,7 @@ class UnifiedExtractor:
         *,
         candidates: Optional[Dict[str, str]] = None,
         menu_candidates: Optional[Set[str]] = None,
+        rule_candidates=None,
     ) -> int:
         """把静态漏抽文本写入其首次出现的标准翻译文件。"""
         if candidates is None:
@@ -2878,12 +2972,20 @@ class UnifiedExtractor:
             menu_candidates = set(self._call_with_optional_callbacks(
                 rx.collect_static_menu_strings, game_dir, should_stop=self._is_cancelled
             ))
+        rule_sources = {}
+        for item in rule_candidates or []:
+            rule_sources.setdefault(item.text, item)
+        candidates = dict(candidates)
+        candidates.update({text: item.path for text, item in rule_sources.items()})
         if not candidates:
             return 0
 
         # 只有全局 old/new 才能覆盖另一个全局字符串。编号翻译块即使原文
         # 相同，也不能阻止菜单或其他静态文本生成 strings 条目。
         existing = self._get_string_originals(tl_dir)
+        if rule_sources:
+            existing.update(self._collect_base_box_old_values(tl_dir))
+            existing.update(self._collect_source_registered_old_values(game_dir, tl_name))
         declined = load_declined_candidates(game_dir, tl_name)
         added = 0
         file_block_cache: dict[Path, Set[str]] = {}
@@ -2908,7 +3010,8 @@ class UnifiedExtractor:
                 source_line_cache[source_file] = self._source_text_line_index(source_lines)
             # 非菜单静态文本若已由同文件对话块覆盖则跳过；菜单必须保留 strings。
             if (
-                original not in menu_candidates
+                original not in rule_sources
+                and original not in menu_candidates
                 and getattr(self, "official_extraction_status", "succeeded") == "succeeded"
                 and source_kinds_cache[source_file].get(original) == {"dialogue"}
                 and self._is_covered_by_file_block(
@@ -2927,7 +3030,7 @@ class UnifiedExtractor:
             lines = [f"\ntranslate {tl_name} strings:\n"]
             for original, relative_path in entries:
                 escaped = self._escape_rpy_string(original)
-                source_line = index.get(original)
+                source_line = rule_sources[original].line if original in rule_sources else index.get(original)
                 location_comment = (
                     f"    # game/{relative_path}:{source_line}\n"
                     if source_line is not None else ""

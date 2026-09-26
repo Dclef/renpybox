@@ -76,6 +76,12 @@ class ToolSpec:
 
 TOOL_SPECS = (
     ToolSpec(
+        "rpy_extraction_settings", "rpy_rules_title", "rpy_rules_description", TRANSLATE,
+        object_name="rpy-extraction-settings", icon=ToolIcon.EXTRACT_TL,
+        keywords=("rpy", "抽取", "正则", "规则", "regex"),
+        lazy_import="frontend.RenpyToolbox.RpyExtractionPage:RpyExtractionPage",
+    ),
+    ToolSpec(
         "continue_translation",
         'toolbox_tool_continue_translation_title',
         'toolbox_tool_continue_translation_description',

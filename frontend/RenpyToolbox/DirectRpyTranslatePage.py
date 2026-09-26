@@ -92,6 +92,12 @@ class DirectRpyTranslatePage(Base, QWidget):
         scroll_layout.setContentsMargins(20, 10, 20, 20)
 
         scroll_layout.addWidget(self._create_target_card())
+        from frontend.RenpyToolbox.RpyExtractionPage import RpySettingsEntry
+        self.rpy_settings = RpySettingsEntry(lambda: self.tl_dir_edit.text().strip() or self.game_file_edit.text(), self.tl_edit.text, 'tl', self)
+        scroll_layout.addWidget(self.rpy_settings)
+        self.game_file_edit.textChanged.connect(self.rpy_settings.refresh)
+        self.tl_dir_edit.textChanged.connect(self.rpy_settings.refresh)
+        self.tl_edit.textChanged.connect(self.rpy_settings.refresh)
         scroll_layout.addWidget(self._create_action_card())
         scroll_layout.addStretch(1)
 
