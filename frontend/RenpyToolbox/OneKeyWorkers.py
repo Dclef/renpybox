@@ -17,7 +17,7 @@ from module.Cache.CacheManager import CacheManager
 from module.Extract.ReplaceGenerator import generate_replace_from_miss
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
-    source_script_counts,
+    source_script_summary,
     write_run_manifest,
 )
 from module.Project.ProjectStore import ProjectStore
@@ -650,6 +650,22 @@ def _localize_extractor_progress(message: str, fallback: str) -> str:
 
 
 def _localize_extraction_result(result, incremental: bool) -> str:
+    message = _localize_extraction_base_result(result, incremental)
+    if getattr(result, "game_rule_error", ""):
+        return Localizer.get().game_rules_failed.format(
+            reason=getattr(Localizer.get(), f"game_rules_error_{result.game_rule_error}", result.game_rule_error),
+        )
+    if Localizer.get_app_language() == BaseLanguage.Enum.EN and result.success and getattr(result, "official_status", "") == "failed":
+        message += "\n" + Localizer.get().game_rules_official_failed
+    if Localizer.get_app_language() == BaseLanguage.Enum.EN and getattr(result, "game_rule_profile", ""):
+        message += "\n" + Localizer.get().game_rules_extracted.format(
+            profile=result.game_rule_profile, matched=result.game_rule_candidates,
+            added=result.game_rule_added,
+        )
+    return message
+
+
+def _localize_extraction_base_result(result, incremental: bool) -> str:
     message = str(getattr(result, "message", "") or "")
     if Localizer.get_app_language() != BaseLanguage.Enum.EN:
         if getattr(result, "cancelled", False):
@@ -699,11 +715,23 @@ def detect_game_status(
     if paths is None or not paths.game_dir.exists():
         return "empty", Localizer.get().onekey_game_folder_not_found
 
-    rpy_count, rpyc_count = source_script_counts(
+    summary = source_script_summary(
         paths,
         cancel_check=cancel_check,
     )
+    if summary.cancelled:
+        return "cancelled", ""
+    if summary.error:
+        LogManager.get().error(f"源码状态扫描未完成: {paths.project_key}: {summary.error}")
+        return "error", Localizer.get().onekey_script_scan_failed.format(error=summary.error)
+    rpy_count, rpyc_count = summary.rpy_count, summary.rpyc_count
     rpa_count = len(list(paths.game_dir.glob("*.rpa")))
+    LogManager.get().info(
+        f"源码状态扫描: project={paths.project_key}, RPA={rpa_count}, "
+        f"RPY={rpy_count}, RPYC={rpyc_count}, "
+        f"paired={rpyc_count - summary.pending_rpyc_count}, "
+        f"pending={summary.pending_rpyc_count}, first_pending={summary.first_pending_rpyc}"
+    )
 
     if rpa_count > 0 and rpy_count == 0 and rpyc_count == 0:
         return (
@@ -712,11 +740,13 @@ def detect_game_status(
                 rpa_count=rpa_count
             ),
         )
-    if rpyc_count > 0:
+    if summary.pending_rpyc_count > 0:
         return (
             "need_decompile",
-            Localizer.get().onekey_found_rpyc_files_must_decompiled.format(
-                rpyc_count=rpyc_count
+            Localizer.get().onekey_script_pairing_status.format(
+                rpy_count=rpy_count, rpyc_count=rpyc_count,
+                paired_count=rpyc_count - summary.pending_rpyc_count,
+                pending_count=summary.pending_rpyc_count,
             ),
         )
     if rpy_count > 0:

@@ -82,7 +82,7 @@ def _add_dir(datas_list, src_dir, dest):
 # 全量收集（datas + binaries + hiddenimports）
 full_collect_packages = [
     'qfluentwidgets', 'rich', 'opencc', 'tiktoken', 'httpx',
-    'openai', 'anthropic', 'translators', 'pygtrans', 'json_repair'
+    'openai', 'anthropic', 'translators', 'pygtrans', 'json_repair', 'regex'
 ]
 
 # 仅收集子模块（减小体积）

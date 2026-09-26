@@ -503,6 +503,10 @@ def _apply_patch_update(
     失败时提示用户改走全量包。
     """
     meta = _read_patch_meta(zip_path)
+    # 用户规则属于可写数据，补丁不能覆盖或删除，即使清单误收录也拒绝。
+    if any(path.split("/", 1)[0].casefold() == "storage"
+           for path in [*meta["files"], *meta.get("deleted", [])]):
+        raise RuntimeError("更新包包含用户 storage 数据，已停止更新")
     _validate_patch_base_manifest(install_dir, meta)
     patch_version = str(meta.get("version") or "")
     patch_files: dict[str, dict] = meta["files"]
@@ -845,7 +849,7 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         running_exe_path_key = os.path.normcase(str(running_exe_path))
         install_root_resolved = install_dir
         install_parent_cache: dict[str, Path] = {}
-        preserve_dirs = {"input", "output", "log"}
+        preserve_dirs = {"input", "output", "log", "storage"}
         manifest_files = (
             embedded_manifest_data.get("files", {})
             if isinstance(embedded_manifest_data, dict)
@@ -859,7 +863,7 @@ def apply_update(*, pid: int, zip_path: Path, install_dir: Path, release_url: st
         skipped_count = 0
 
         for item in payload_dir.iterdir():
-            if item.name in preserve_dirs:
+            if item.name.casefold() in preserve_dirs:
                 continue
 
             if item.is_dir():
