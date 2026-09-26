@@ -513,3 +513,39 @@ def test_update_replaces_updater_with_windows_attributes(
     finally:
         # 即使回归失败也恢复属性，避免测试临时目录清理失败。
         assert set_attributes(str(target), 0x80)
+
+
+def test_full_update_preserves_game_rule_storage(tmp_path):
+    install = tmp_path / "install"
+    storage = install / "storage"
+    storage.mkdir(parents=True)
+    rules_file = storage / "game_extraction_profiles.json"
+    rules_file.write_text('{"keep": "用户规则"}', encoding="utf-8")
+    before = rules_file.read_bytes()
+    payload = tmp_path / "full.zip"
+    _build_payload_zip(payload, files={
+        "RenpyBox.exe": b"MAIN",
+        "storage/game_extraction_profiles.json": b"wrong packaged data",
+    })
+    updater.apply_update(pid=0, zip_path=payload, install_dir=install,
+                         release_url=None, restart=False, exe_name="RenpyBox.exe")
+    assert rules_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_patch_rejects_user_rule_storage_before_changes(tmp_path, monkeypatch, delete):
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    path = storage / "game_extraction_profiles.json"
+    path.write_bytes(b"keep rules")
+    relative = "storage/game_extraction_profiles.json"
+    meta = {"files": {} if delete else {relative: {}}, "deleted": [relative] if delete else []}
+    monkeypatch.setattr(updater, "_read_patch_meta", lambda path: meta)
+    with pytest.raises(RuntimeError, match="storage"):
+        updater._apply_patch_update(
+            zip_path=tmp_path / "patch.zip", install_dir=tmp_path, log_dir=tmp_path / "log",
+            release_url=None, restart=False, exe_name="RenpyBox.exe",
+            wait_pid_sec=0, total_start=time.perf_counter(),
+        )
+    assert path.read_bytes() == b"keep rules"
+    assert not (tmp_path / "_update_staging").exists()
