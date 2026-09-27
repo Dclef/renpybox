@@ -1,4 +1,6 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable
 
 from base.compat import StrEnum, Self
 from base.Base import Base
@@ -124,6 +126,28 @@ class Engine():
         with self.lock:
             return self.single_task_count > 0
 
+    def _translate_single_item_task(self, item: CacheItem, config: Config) -> bool:
+        """执行一条单条翻译并写回条目，返回是否成功。"""
+        # 延迟导入避免循环依赖
+        from module.Engine.Translator.TranslatorTask import TranslatorTask
+
+        platform = config.get_platform(config.activate_platform)
+        if not platform:
+            return False
+
+        expected_state = item.get_translation_state()
+        working_item = CacheItem.from_dict(item.asdict())
+        working_item.reset_translation(clear_dst = False)
+        result = TranslatorTask(config, platform, False, [working_item], []).start(0)
+        translated = (
+            Base.is_item_completed(working_item.get_status())
+            and not bool(result.get("error", False))
+        )
+        return bool(
+            translated
+            and item.commit_translation_from(working_item, expected_state)
+        )
+
     def translate_single_item(
         self,
         item: CacheItem,
@@ -138,28 +162,10 @@ class Engine():
             return False
 
         def task() -> None:
-            # 延迟导入避免循环依赖
-            from module.Engine.Translator.TranslatorTask import TranslatorTask
-
             success = False
 
             try:
-                platform = config.get_platform(config.activate_platform)
-                if not platform:
-                    return
-
-                expected_state = item.get_translation_state()
-                working_item = CacheItem.from_dict(item.asdict())
-                working_item.reset_translation(clear_dst = False)
-                result = TranslatorTask(config, platform, False, [working_item], []).start(0)
-                translated = (
-                    Base.is_item_completed(working_item.get_status())
-                    and not bool(result.get("error", False))
-                )
-                success = translated and item.commit_translation_from(
-                    working_item,
-                    expected_state,
-                )
+                success = self._translate_single_item_task(item, config)
             except Exception as e:
                 LogManager.get().error("Single item translate failed", e)
                 success = False
@@ -180,3 +186,75 @@ class Engine():
                 callback(item, False)
             raise
         return True
+
+    def translate_items(
+        self,
+        items: list[CacheItem],
+        config: Config,
+        callback,
+        *,
+        max_workers: int = 0,
+        should_cancel: Callable[[], bool] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """分批并发执行单条翻译，返回已处理条数。
+
+        ``max_workers<=0`` 时按配置的并发上限取一个保守值。整批在开始前一次性
+        登记，使 ``has_single_tasks()`` 在整批结束前保持为真；``should_cancel``
+        在每批开始前检查一次，取消后未开始的条目不再发起请求。
+        """
+        pending = list(items or [])
+        if len(pending) == 0:
+            return 0
+
+        configured_workers = getattr(config, "max_workers", 0)
+        try:
+            configured_workers = int(configured_workers)
+        except (TypeError, ValueError):
+            configured_workers = 0
+        workers = max(
+            1, min(max_workers if max_workers > 0 else (configured_workers or 4), 8)
+        )
+        workers = min(workers, len(pending))
+
+        # 整批登记一次，避免登记期间主任务插入而只登记了部分条目。
+        with self.lock:
+            accepted = self.status == __class__.Status.IDLE and not self.stop_barrier
+            if accepted:
+                self.single_task_count += len(pending)
+        if not accepted:
+            for item in pending:
+                if callable(callback):
+                    callback(item, False)
+            return 0
+
+        completed = 0
+        try:
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix=f"{Engine.TASK_PREFIX}BATCH",
+            ) as executor:
+                for start in range(0, len(pending), workers):
+                    if should_cancel is not None and should_cancel():
+                        break
+                    # 只提交当前批；取消后仍报告已发出请求的结果，避免漏存已完成译文。
+                    futures = [
+                        (executor.submit(self._translate_single_item_task, item, config), item)
+                        for item in pending[start:start + workers]
+                    ]
+                    for future, item in futures:
+                        success = False
+                        try:
+                            success = bool(future.result())
+                        except Exception as exc:
+                            LogManager.get().error("Batch item translate failed", exc)
+                        self.end_single_task()
+                        completed += 1
+                        if callable(callback):
+                            callback(item, success)
+                        if on_progress is not None:
+                            on_progress(completed, len(pending))
+        finally:
+            for _ in range(len(pending) - completed):
+                self.end_single_task()
+        return completed

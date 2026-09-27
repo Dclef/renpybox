@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 from enum import Enum
-from typing import Literal
+from typing import Literal, Sequence
 
 from module.Cache.CacheItem import CacheItem
 
@@ -150,7 +150,7 @@ PLACEHOLDER = '"{}"'
 RE_TRANSLATE_HEADER = re.compile(
     r"^translate\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+)\s*:\s*$"
 )
-RE_GAME_LOCATION = re.compile(r"^game/.+?:\d+\s*$")
+RE_GAME_LOCATION = re.compile(r"^(?:game/)?[^:]+\.(?:rpy|rpyc):\d+\s*$")
 RENPYBOX_REPLACE_ONLY_MARKER = "renpybox: replace-only"
 
 
@@ -159,7 +159,7 @@ def has_replace_only_marker(lines, old_index: int) -> bool:
     cursor = old_index - 1
     while cursor >= 0:
         stripped = lines[cursor].strip()
-        if not stripped or stripped.startswith("# game/"):
+        if not stripped or (stripped.startswith("#") and RE_GAME_LOCATION.match(stripped[1:].strip()) is not None):
             cursor -= 1
             continue
         return stripped == f"# {RENPYBOX_REPLACE_ONLY_MARKER}"
@@ -490,6 +490,40 @@ def statements_equal(template: TlStatement, target: TlStatement) -> bool:
     return False
 
 
+# 整表 LCS 的时间与内存都是 O(n*m)，超过该单元数就改用带宽受限 DP。
+LCS_MAX_EXACT_CELLS = 1_000_000
+# 带宽之外（块内漂移超过该值）的错位不参与对齐。
+LCS_BAND = 64
+
+
+def _backtrack_lcs(
+    templates: list[TlStatement],
+    targets: list[TlStatement],
+    rows: Sequence[Sequence[int]],
+    lows: Sequence[int],
+    highs: Sequence[int],
+) -> dict[int, int]:
+    """用已算好的 DP 行回溯出模板行号→译文行号。"""
+    mapping: dict[int, int] = {}
+    i = 0
+    j = 0
+    while i < len(templates) and j < len(targets):
+        if statements_equal(templates[i], targets[j]):
+            mapping[templates[i].line_no] = targets[j].line_no
+            i += 1
+            j += 1
+            continue
+
+        if _banded_get(rows[i + 1], lows[i + 1], highs[i + 1], j) >= _banded_get(
+            rows[i], lows[i], highs[i], j + 1
+        ):
+            i += 1
+        else:
+            j += 1
+
+    return mapping
+
+
 def match_tpl_to_target(block: TlBlock) -> dict[int, int]:
     templates = [
         s
@@ -505,6 +539,36 @@ def match_tpl_to_target(block: TlBlock) -> dict[int, int]:
     if not templates or not targets:
         return {}
 
+    # 生成式 TL 的模板与译文严格交替、数量相等，按下标配对即可。结果与整表
+    # DP 一致：回溯遇到相等位置必定取对角线，而对角线长度已达到 LCS 上界
+    # min(n, m)，不存在更长的对齐方式。
+    if len(templates) == len(targets) and all(
+        statements_equal(template, target)
+        for template, target in zip(templates, targets)
+    ):
+        return {
+            template.line_no: target.line_no
+            for template, target in zip(templates, targets)
+        }
+
+    if len(templates) * len(targets) <= LCS_MAX_EXACT_CELLS:
+        return _exact_lcs_mapping(templates, targets)
+    # 超大块：整表会同时打满 CPU 与内存，改为只在插值对角线附近对齐。
+    return _banded_lcs_mapping(templates, targets)
+
+
+def _banded_get(row: Sequence[int], low: int, high: int, column: int) -> int:
+    """读取行内列值；带宽外视为不可达，返回 -1。"""
+    if column < low or column > high:
+        return -1
+    return row[column - low]
+
+
+def _exact_lcs_mapping(
+    templates: list[TlStatement],
+    targets: list[TlStatement],
+) -> dict[int, int]:
+    """整表 LCS 对齐，结果与原实现一致。"""
     dp: list[list[int]] = [[0] * (len(targets) + 1) for _ in range(len(templates) + 1)]
     for i in range(len(templates) - 1, -1, -1):
         for j in range(len(targets) - 1, -1, -1):
@@ -513,22 +577,55 @@ def match_tpl_to_target(block: TlBlock) -> dict[int, int]:
             else:
                 dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
 
-    mapping: dict[int, int] = {}
-    i = 0
-    j = 0
-    while i < len(templates) and j < len(targets):
-        if statements_equal(templates[i], targets[j]):
-            mapping[templates[i].line_no] = targets[j].line_no
-            i += 1
-            j += 1
-            continue
+    return _backtrack_lcs(
+        templates,
+        targets,
+        dp,
+        [0] * (len(templates) + 1),
+        [len(targets)] * (len(templates) + 1),
+    )
 
-        if dp[i + 1][j] >= dp[i][j + 1]:
-            i += 1
-        else:
-            j += 1
 
-    return mapping
+def _banded_lcs_mapping(
+    templates: list[TlStatement],
+    targets: list[TlStatement],
+) -> dict[int, int]:
+    """只对齐插值对角线附近的 LCS，避免超大 translate 块卡死扫描。"""
+    n = len(templates)
+    m = len(targets)
+    # 允许两类漂移：块内模板/译文总量差，以及额外的插入删除。
+    band = LCS_BAND + abs(n - m)
+
+    lows: list[int] = []
+    highs: list[int] = []
+    for i in range(n + 1):
+        center = (i * m) // n
+        lows.append(max(0, center - band))
+        highs.append(min(m, ((i * m + n - 1) // n) + band))
+
+    rows: list[Sequence[int]] = [()] * (n + 1)
+    for i in range(n, -1, -1):
+        low = lows[i]
+        high = highs[i]
+        row = [0] * (high - low + 1)
+        for offset in range(high - low, -1, -1):
+            j = low + offset
+            if i == n or j == m:
+                continue
+
+            diagonal = _banded_get(rows[i + 1], lows[i + 1], highs[i + 1], j + 1)
+            if statements_equal(templates[i], targets[j]):
+                row[offset] = diagonal + 1 if diagonal >= 0 else 0
+                continue
+
+            row[offset] = max(
+                diagonal,
+                _banded_get(rows[i + 1], lows[i + 1], highs[i + 1], j),
+                _banded_get(row, low, high, j + 1),
+            )
+        rows[i] = row
+
+    return _backtrack_lcs(templates, targets, rows, lows, highs)
 
 
 def pair_old_new_lines(block: TlBlock) -> dict[int, int]:

@@ -17,6 +17,12 @@ from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
 APP = QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def isolate_config_file(monkeypatch, tmp_path):
+    """页面信号会保存配置，测试必须写入临时目录。"""
+    monkeypatch.setattr(Config, "CONFIG_PATH", str(tmp_path / "config.json"))
+
+
 class _SignalStub:
     def __init__(self) -> None:
         self.connections = []
@@ -430,6 +436,8 @@ def test_status_scan_is_cancelled_when_language_changes(monkeypatch, tmp_path) -
         page._go_step2()
         status_worker = _GameStatusWorkerStub.started[0]
         page.tl_folder_edit.setText("japanese")
+        assert Path(Config.CONFIG_PATH).parent == tmp_path
+        assert Path(Config.CONFIG_PATH).is_file()
         assert status_worker.interrupted is True
         status_worker.complete("need_unpack", "旧项目结果")
 

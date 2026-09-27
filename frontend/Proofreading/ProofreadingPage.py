@@ -1,6 +1,8 @@
+import os
 import re
 import threading
 import time
+from pathlib import Path
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import Qt
@@ -81,6 +83,9 @@ class ProofreadingPage(QWidget, Base):
     quality_progress_updated = pyqtSignal(object)
     quality_done = pyqtSignal(object)
     engine_status_changed = pyqtSignal()
+    batch_retranslate_progress = pyqtSignal(int, int)
+    batch_retranslate_finished = pyqtSignal(int, int, bool)
+    replace_markers_updated = pyqtSignal(int)
 
     def __init__(self, text: str, window: FluentWindow) -> None:
         super().__init__(window)
@@ -110,6 +115,7 @@ class ProofreadingPage(QWidget, Base):
         self._batch_retranslate_item_ids: set[int] = set()
         self._batch_retranslate_success: int = 0
         self._batch_retranslate_failed: int = 0
+        self._batch_retranslate_cancel: threading.Event | None = None
         self._translation_progress: dict = {}
         self.quality_report: TranslationQualityReport = build_translation_quality_report([])
         self._quality_target_ids: set[int] = set()
@@ -153,6 +159,9 @@ class ProofreadingPage(QWidget, Base):
         self.warnings_check_done.connect(self._on_warnings_check_done_ui)
         self.quality_progress_updated.connect(self._on_quality_progress_ui)
         self.quality_done.connect(self._on_quality_done_ui)
+        self.batch_retranslate_progress.connect(self._on_batch_retranslate_progress_ui)
+        self.batch_retranslate_finished.connect(self._on_batch_retranslate_finished_ui)
+        self.replace_markers_updated.connect(self._on_replace_markers_updated_ui)
         self.engine_status_changed.connect(self._check_engine_status)
 
         self._indeterminate_start_time: float = 0.0
@@ -211,6 +220,7 @@ class ProofreadingPage(QWidget, Base):
         self.table_widget.confirm_translations_clicked.connect(self._on_confirm_translations_clicked)
         self.table_widget.copy_src_clicked.connect(self._on_copy_src_clicked)
         self.table_widget.copy_dst_clicked.connect(self._on_copy_dst_clicked)
+        self.table_widget.locate_requested.connect(self._on_locate_requested)
         self.table_widget.selected_items_changed.connect(self._on_selected_items_changed)
         self.table_widget.set_items([], {})
 
@@ -277,6 +287,12 @@ class ProofreadingPage(QWidget, Base):
             Action(FluentIcon.DELETE, Localizer.get().proofreading_page_batch_reset_translation, triggered = self._on_batch_reset_translation_clicked)
         )
         self.btn_batch_reset.setEnabled(False)
+
+        # 批量重译专用取消：整批任务在后台分批并发执行，停止按钮用于让未开始的条目不再发起请求。
+        self.btn_batch_cancel = self.command_bar_card.add_action(
+            Action(FluentIcon.CANCEL, Localizer.get().proofreading_page_batch_cancel, triggered = self._on_batch_cancel_clicked)
+        )
+        self.btn_batch_cancel.setEnabled(False)
 
         # 质量操作按推荐顺序排列：先看报告，再校对，最后按需润色。
         self.command_bar_card.add_separator()
@@ -408,8 +424,6 @@ class ProofreadingPage(QWidget, Base):
                     self.items_loaded.emit([])
                     return
 
-                from module.File.RENPY import RENPY
-                RENPY(self.config).refresh_replace_markers(items)
                 self.items = items
                 self._translation_progress = cache_manager.get_project().get_progress()
                 self.quality_report = build_translation_quality_report(
@@ -425,6 +439,14 @@ class ProofreadingPage(QWidget, Base):
                 self.items_loaded.emit(items)
                 self._start_warning_check(items, self.result_checker, check_id)
 
+                # 旧缓存的 replace-only 标记刷新需要重新解析 TL 文件，不能阻塞
+                # 校对表首次显示；结果回来后只重算当前筛选页。
+                threading.Thread(
+                    target=self._refresh_replace_markers,
+                    args=(items, self.config, check_id),
+                    daemon=True,
+                ).start()
+
             except Exception as e:
                 self.error(f"{Localizer.get().proofreading_page_load_failed}", e)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -434,6 +456,20 @@ class ProofreadingPage(QWidget, Base):
                 self.items_loaded.emit([])
 
         threading.Thread(target = task, daemon = True).start()
+
+    def _refresh_replace_markers(self, items: list[CacheItem], config: Config, check_id: int) -> None:
+        try:
+            from module.File.RENPY import RENPY
+            RENPY(config).refresh_replace_markers(items)
+        except Exception:
+            # 标记刷新只影响筛选提示，不能让已经加载的校对任务失败。
+            return
+        self.replace_markers_updated.emit(check_id)
+
+    def _on_replace_markers_updated_ui(self, check_id: int) -> None:
+        if check_id != self._warning_check_id:
+            return
+        self._apply_filter()
 
     def _start_warning_check(self, items: list[CacheItem], checker: ResultChecker, check_id: int) -> None:
         def task() -> None:
@@ -804,6 +840,52 @@ class ProofreadingPage(QWidget, Base):
             "message": Localizer.get().proofreading_page_copy_dst_done,
         })
 
+    @staticmethod
+    def _target_line(item: CacheItem) -> int:
+        """返回目标文件中的行号；TL 条目使用 old/new 配对后的译文行。"""
+        extra = item.get_extra_field()
+        meta = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+        pair = meta.get("pair", {}) if isinstance(meta, dict) else {}
+        return int(pair.get("target_line") or item.get_row() or 0)
+
+    def _target_location(self, item: CacheItem) -> tuple[str, int]:
+        """返回译文所在文件的绝对路径与行号；找不到文件时路径为空字符串。"""
+        relative_path = str(item.get_file_path() or "").strip().replace("\\", "/")
+        row = self._target_line(item)
+        if relative_path == "":
+            return "", row
+
+        config = self.config if self.config is not None else Config().load()
+        paths = RenpyProjectPaths.from_config(config)
+
+        bases: list[Path] = []
+        if paths is not None:
+            bases.extend((paths.tl_language_dir, paths.translation_output_dir))
+        output_folder = str(getattr(config, "output_folder", "") or "").strip()
+        if output_folder != "":
+            bases.append(Path(output_folder))
+
+        for base in bases:
+            candidate = base / relative_path
+            if candidate.is_file():
+                return str(candidate), row
+
+        return "", row
+
+    def _on_locate_requested(self, item: CacheItem) -> None:
+        """显示目标文件的具体行及上下文，并高亮译文所在行。"""
+        resolved, row = self._target_location(item)
+        if resolved == "":
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_locate_missing,
+            })
+            return
+
+        from frontend.Proofreading.TargetLocationDialog import TargetLocationDialog
+        dialog = TargetLocationDialog(resolved, row, self)
+        dialog.exec()
+
     def _on_batch_replace_clicked(self) -> None:
         if self.is_readonly or not self.items:
             return
@@ -958,18 +1040,80 @@ class ProofreadingPage(QWidget, Base):
         self._batch_retranslate_item_ids = {id(v) for v in selected_items}
         self._batch_retranslate_success = 0
         self._batch_retranslate_failed = 0
+        cancel_event = threading.Event()
+        self._batch_retranslate_cancel = cancel_event
+        self.btn_batch_retranslate.setEnabled(False)
+        self.btn_batch_cancel.setEnabled(True)
+        self.indeterminate_show(
+            Localizer.get().proofreading_page_batch_retranslate_progress.replace(
+                "{DONE}", "0"
+            ).replace("{TOTAL}", str(len(selected_items))).replace("{SUCCESS}", "0").replace("{FAILURE}", "0")
+        )
 
         for item in selected_items:
             row = self.table_widget.find_row_by_item(item)
             if row >= 0:
                 self.table_widget.set_row_loading(row, True)
 
-            Engine.get().translate_single_item(
-                item = item,
-                config = self.config,
-                callback = lambda i, s: self.translate_done.emit(i, s)
+        def on_progress(done: int, total: int) -> None:
+            self.batch_retranslate_progress.emit(done, total)
+
+        def task() -> None:
+            completed = Engine.get().translate_items(
+                selected_items,
+                self.config,
+                callback = lambda i, s: self.translate_done.emit(i, s),
+                should_cancel = cancel_event.is_set,
+                on_progress = on_progress,
             )
+            self.batch_retranslate_finished.emit(
+                completed,
+                len(selected_items),
+                cancel_event.is_set(),
+            )
+
+        threading.Thread(target = task, daemon = True).start()
+
+    def _on_batch_cancel_clicked(self) -> None:
+        """请求停止批量重译；未开始的条目不再发起请求。"""
+        cancel_event = self._batch_retranslate_cancel
+        if cancel_event is None:
+            return
+
+        cancel_event.set()
+        self.btn_batch_cancel.setEnabled(False)
+        self.emit(Base.Event.APP_TOAST_SHOW, {
+            "type": Base.ToastType.WARNING,
+            "message": Localizer.get().proofreading_page_quality_cancelling,
+        })
+
+    def _on_batch_retranslate_progress_ui(self, done: int, total: int) -> None:
+        self.info_label.setText(
+            Localizer.get().proofreading_page_batch_retranslate_progress.replace(
+                "{DONE}", str(max(0, done))
+            ).replace("{TOTAL}", str(max(0, total))).replace(
+                "{SUCCESS}", str(self._batch_retranslate_success)
+            ).replace("{FAILURE}", str(self._batch_retranslate_failed))
+        )
+
+    def _on_batch_retranslate_finished_ui(self, done: int, total: int, cancelled: bool) -> None:
+        # 未执行的条目（取消后剩余）也要清掉 loading，否则整行一直转圈且菜单保持禁用。
+        for item in self.items:
+            row = self.table_widget.find_row_by_item(item)
+            if row >= 0:
+                self.table_widget.set_row_loading(row, False)
+
+        self._batch_retranslate_item_ids.clear()
+        self._batch_retranslate_cancel = None
+        self.btn_batch_cancel.setEnabled(False)
+        self.indeterminate_hide()
         self._check_engine_status()
+
+        if cancelled:
+            self.emit(Base.Event.APP_TOAST_SHOW, {
+                "type": Base.ToastType.WARNING,
+                "message": Localizer.get().proofreading_page_quality_cancelled,
+            })
 
     def _on_ai_polish_clicked(self) -> None:
         selected_items = [
