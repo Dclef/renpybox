@@ -14,6 +14,16 @@ _PACK_UNPACK_ERROR_ZH = {
 
 class LocalizerZH():
 
+    # 目标行预览
+    target_line_invalid: str = '缓存未记录有效行号，请重新载入文本。'
+    target_line_missing: str = '目标行已不存在，请重新载入文本。'
+    target_line_title: str = '定位目标行'
+    target_line_loading: str = '正在读取目标行…'
+    target_line_open_file: str = '打开文件'
+    target_line_close: str = '关闭'
+    target_line_open_failed: str = '无法打开文件，请检查 .rpy 文件的默认打开程序。'
+    target_line_context: str = '第 {row} 行 · 显示磁盘文件上下文（未导出的修改不会显示）'
+
     # 保留
     switch_language: str = (
         "请选择应用语言，新的语言设置将在下次启动时生效 …"
@@ -438,6 +448,9 @@ class LocalizerZH():
     proofreading_page_copy_src_done: str = "已复制原文到剪贴板"
     proofreading_page_copy_dst: str = "复制译文"
     proofreading_page_copy_dst_done: str = "已复制译文到剪贴板"
+    proofreading_page_locate_target: str = "定位目标位置"
+    proofreading_page_locate_done: str = "已复制位置信息，并在文件管理器中定位该文件"
+    proofreading_page_locate_missing: str = "未能定位到对应译文文件，请先载入翻译缓存"
     proofreading_page_save_success: str = "数据已保存"
     proofreading_page_export_success: str = "导出完成"
     proofreading_page_export_failed: str = "导出失败"
@@ -459,6 +472,8 @@ class LocalizerZH():
     proofreading_page_retranslate_success: str = "翻译完成"
     proofreading_page_batch_replace: str = "批量替换"
     proofreading_page_batch_retranslate: str = "批量重译"
+    proofreading_page_batch_retranslate_progress: str = "批量重译进度 {DONE}/{TOTAL}，成功 {SUCCESS}，失败 {FAILURE}"
+    proofreading_page_batch_cancel: str = "取消批量重译"
     proofreading_page_batch_reset_translation: str = "批量重置"
     proofreading_page_batch_no_selection: str = "请先选择要操作的条目"
     proofreading_page_batch_replace_action: str = "批量替换"

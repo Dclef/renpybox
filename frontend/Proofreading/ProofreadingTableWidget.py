@@ -41,6 +41,7 @@ class ProofreadingTableWidget(TableWidget):
     copy_src_clicked = pyqtSignal(object)
     copy_dst_clicked = pyqtSignal(object)
     selected_items_changed = pyqtSignal(int)
+    locate_requested = pyqtSignal(object)
 
     COL_SRC = 0
     COL_DST = 1
@@ -100,7 +101,10 @@ class ProofreadingTableWidget(TableWidget):
 
         self._readonly = False
         self._loading_rows: set[int] = set()
+        self._warning_map: dict[int, list[WarningType]] = {}
 
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu_requested)
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.itemSelectionChanged.connect(self._on_item_selection_changed)
 
@@ -110,6 +114,7 @@ class ProofreadingTableWidget(TableWidget):
         self.doItemsLayout()
 
     def set_items(self, items: list[CacheItem], warning_map: dict[int, list[WarningType]]) -> None:
+        self._warning_map = dict(warning_map)
         self.blockSignals(True)
         self.setUpdatesEnabled(False)
 
@@ -229,47 +234,75 @@ class ProofreadingTableWidget(TableWidget):
         btn_action.setCheckable(False)
         btn_action.setEnabled(not self._readonly and row not in self._loading_rows)
 
-        def show_menu() -> None:
-            menu = RoundMenu(parent = btn_action)
+        def show_menu(pos = None) -> None:
+            menu = self._build_row_menu(item, warnings)
+            if pos is None:
+                menu.exec(btn_action.mapToGlobal(btn_action.rect().bottomLeft()))
+            else:
+                menu.exec(self.viewport().mapToGlobal(pos))
 
-            menu.addAction(Action(
-                FluentIcon.SYNC,
-                Localizer.get().proofreading_page_retranslate,
-                triggered = lambda checked: self.retranslate_clicked.emit(item)
-            ))
-
-            if WarningType.RETRY_THRESHOLD in warnings and item.get_dst().strip():
-                selected_items = self.get_selected_items()
-                is_batch = len(selected_items) > 1 and any(selected is item for selected in selected_items)
-                targets = selected_items if is_batch else [item]
-                menu.addAction(Action(
-                    FluentIcon.ACCEPT,
-                    (
-                        Localizer.get().proofreading_page_confirm_selected_translations
-                        if is_batch
-                        else Localizer.get().proofreading_page_confirm_translation
-                    ),
-                    triggered = lambda checked: self.confirm_translations_clicked.emit(targets)
-                ))
-
-            menu.addAction(Action(
-                FluentIcon.PASTE,
-                Localizer.get().proofreading_page_copy_src,
-                triggered = lambda checked: self.copy_src_clicked.emit(item)
-            ))
-
-            menu.addAction(Action(
-                FluentIcon.COPY,
-                Localizer.get().proofreading_page_copy_dst,
-                triggered = lambda checked: self.copy_dst_clicked.emit(item)
-            ))
-
-            menu.exec(btn_action.mapToGlobal(btn_action.rect().bottomLeft()))
-
-        btn_action.clicked.connect(show_menu)
+        btn_action.clicked.connect(lambda: show_menu())
         layout.addWidget(btn_action)
 
         self.setCellWidget(row, self.COL_ACTION, widget)
+
+    def _build_row_menu(self, item: CacheItem, warnings: list[WarningType]) -> RoundMenu:
+        """构造行菜单；“...” 按钮和右键共用同一份动作。"""
+        menu = RoundMenu(parent = self)
+
+        menu.addAction(Action(
+            FluentIcon.SYNC,
+            Localizer.get().proofreading_page_retranslate,
+            triggered = lambda checked: self.retranslate_clicked.emit(item)
+        ))
+
+        if WarningType.RETRY_THRESHOLD in warnings and item.get_dst().strip():
+            selected_items = self.get_selected_items()
+            is_batch = len(selected_items) > 1 and any(selected is item for selected in selected_items)
+            targets = selected_items if is_batch else [item]
+            menu.addAction(Action(
+                FluentIcon.ACCEPT,
+                (
+                    Localizer.get().proofreading_page_confirm_selected_translations
+                    if is_batch
+                    else Localizer.get().proofreading_page_confirm_translation
+                ),
+                triggered = lambda checked: self.confirm_translations_clicked.emit(targets)
+            ))
+
+        menu.addAction(Action(
+            FluentIcon.PASTE,
+            Localizer.get().proofreading_page_copy_src,
+            triggered = lambda checked: self.copy_src_clicked.emit(item)
+        ))
+
+        menu.addAction(Action(
+            FluentIcon.COPY,
+            Localizer.get().proofreading_page_copy_dst,
+            triggered = lambda checked: self.copy_dst_clicked.emit(item)
+        ))
+
+        menu.addSeparator()
+        menu.addAction(Action(
+            FluentIcon.SEARCH,
+            Localizer.get().proofreading_page_locate_target,
+            triggered = lambda checked: self.locate_requested.emit(item)
+        ))
+
+        return menu
+
+    def _on_context_menu_requested(self, position) -> None:
+        row_index = self.indexAt(position)
+        if not row_index.isValid():
+            return
+
+        item = self.get_item_at_row(row_index.row())
+        if item is None:
+            return
+
+        self._build_row_menu(item, self._warning_map.get(id(item), [])).exec(
+            self.viewport().mapToGlobal(position)
+        )
 
     def get_item_at_row(self, row: int) -> CacheItem | None:
         src_cell = self.item(row, self.COL_SRC)
