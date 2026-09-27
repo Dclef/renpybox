@@ -3,24 +3,38 @@ Ren'Py 错误修复工具
 检查并修复常见语法错误，支持深度 Lint 检查
 """
 
+import dataclasses
 import io
 import json
 import os
 import re
 import subprocess
+import time
 from collections import Counter
-from typing import List, Dict, Tuple, Optional
+from typing import Callable, List, Dict, Tuple, Optional
 from pathlib import Path
 
 from base.LogManager import LogManager
 from module.Renpy.renpy_tl_core import (
     TlBlockKind,
+    TlDocument,
     TlStmtKind,
     match_tpl_to_target,
     pair_old_new_lines,
     parse_tl_document,
 )
 from utils.call_game_python import get_python_path_from_game_path, get_py_path
+
+
+@dataclasses.dataclass
+class FolderScanResult:
+    """文件夹扫描结果：错误表加本次预算执行情况。"""
+
+    errors: Dict[str, List[Dict]]
+    scanned_files: int
+    total_files: int
+    scanned_bytes: int
+    budget_exhausted: bool
 
 
 class ErrorRepairer:
@@ -405,10 +419,16 @@ class ErrorRepairer:
     def _counter_details(counter: Counter) -> Dict[str, int]:
         return {token: counter[token] for token in sorted(counter)}
 
-    def _iter_translation_pairs(self, lines: List[str]) -> list[dict]:
+    def _iter_translation_pairs(
+        self,
+        lines: List[str],
+        document: Optional[TlDocument] = None,
+    ) -> list[dict]:
         """返回 tl 文档中可可靠配对的模板/译文语句。"""
-        content_lines = [self._split_line_ending(line)[0] for line in lines]
-        document = parse_tl_document(content_lines)
+        if document is None:
+            content_lines = [self._split_line_ending(line)[0] for line in lines]
+            document = parse_tl_document(content_lines)
+
         pairs: list[dict] = []
 
         for block in document.blocks:
@@ -466,10 +486,16 @@ class ErrorRepairer:
             "first_line": first_line,
         }
 
-    def _scan_extra_empty_strings(self, lines: List[str]) -> List[Dict]:
+    def _scan_extra_empty_strings(
+        self,
+        lines: List[str],
+        document: Optional[TlDocument] = None,
+    ) -> List[Dict]:
         """报告简单翻译语句中与其他字面量相邻的多余空字符串。"""
-        content_lines = [self._split_line_ending(line)[0] for line in lines]
-        document = parse_tl_document(content_lines)
+        if document is None:
+            content_lines = [self._split_line_ending(line)[0] for line in lines]
+            document = parse_tl_document(content_lines)
+
         errors: list[Dict] = []
 
         for block in document.blocks:
@@ -611,12 +637,21 @@ class ErrorRepairer:
 
         return output, removed
 
-    def _scan_translation_issues(self, lines: List[str], file_path: str) -> List[Dict]:
+    def _scan_translation_issues(
+        self,
+        lines: List[str],
+        file_path: str,
+        document: Optional[TlDocument] = None,
+    ) -> List[Dict]:
         """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
+        if document is None:
+            content_lines = [self._split_line_ending(line)[0] for line in lines]
+            document = parse_tl_document(content_lines)
+
         errors: list[Dict] = []
         seen_old: dict[tuple, tuple[str, int]] = {}
 
-        for pair in self._iter_translation_pairs(lines):
+        for pair in self._iter_translation_pairs(lines, document):
             source = pair["source"]
             target = pair["target"]
             source_values = pair["source_values"]
@@ -688,7 +723,7 @@ class ErrorRepairer:
                     "target_count": target_linebreaks,
                 })
 
-        errors.extend(self._scan_extra_empty_strings(lines))
+        errors.extend(self._scan_extra_empty_strings(lines, document))
         return errors
 
     def _get_indent_width(self, line: str) -> int:
@@ -766,6 +801,8 @@ class ErrorRepairer:
         check_dialogue_quotes: bool = True,
         encoding: str = "utf-8",
         check_translation_issues: bool = True,
+        *,
+        document: Optional[TlDocument] = None,
     ) -> List[Dict[str, any]]:
         """
         检查单个文件
@@ -777,16 +814,52 @@ class ErrorRepairer:
             check_quotes: 是否检查引号匹配
             encoding: 文件编码
             check_translation_issues: 是否扫描译文占位符、换行、空字符串和重复项
+            document: 调用方已解析好的 TL AST，传入后不再重复解析
 
         Returns:
             错误列表 [{"line": 行号, "type": 错误类型, "message": 错误信息}, ...]
         """
-        errors = []
-
         try:
             with open(file_path, "r", encoding=encoding, errors="ignore") as f:
                 lines = f.readlines()
+        except Exception as e:
+            self.logger.error(f"检查文件失败 {file_path}: {e}")
+            return []
 
+        if document is None:
+            document = parse_tl_document(
+                [self._split_line_ending(line)[0] for line in lines]
+            )
+
+        return self._check_lines(
+            lines,
+            file_path,
+            document,
+            check_syntax=check_syntax,
+            check_indent=check_indent,
+            check_indent_level=check_indent_level,
+            check_quotes=check_quotes,
+            check_dialogue_quotes=check_dialogue_quotes,
+            check_translation_issues=check_translation_issues,
+        )
+
+    def _check_lines(
+        self,
+        lines: List[str],
+        file_path: str,
+        document: TlDocument,
+        *,
+        check_syntax: bool,
+        check_indent: bool,
+        check_indent_level: bool,
+        check_quotes: bool,
+        check_dialogue_quotes: bool,
+        check_translation_issues: bool,
+    ) -> List[Dict[str, any]]:
+        """对已读入的行执行检查；``document`` 由调用方复用，不再重复解析。"""
+        errors = []
+
+        try:
             for line_num, line in enumerate(lines, 1):
                 # 语法检查
                 if check_syntax:
@@ -865,7 +938,7 @@ class ErrorRepairer:
                 errors.extend(self._scan_empty_translate_blocks(lines))
 
             if check_translation_issues:
-                errors.extend(self._scan_translation_issues(lines, file_path))
+                errors.extend(self._scan_translation_issues(lines, file_path, document))
 
         except Exception as e:
             self.logger.error(f"检查文件失败 {file_path}: {e}")
@@ -882,6 +955,11 @@ class ErrorRepairer:
         check_dialogue_quotes: bool = True,
         encoding: str = "utf-8",
         check_translation_issues: bool = True,
+        *,
+        max_files: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+        deadline: Optional[float] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, List[Dict]]:
         """
         批量检查文件夹
@@ -893,41 +971,109 @@ class ErrorRepairer:
             check_quotes: 是否检查引号匹配
             encoding: 文件编码
             check_translation_issues: 是否扫描译文占位符、换行、空字符串和重复项
+            max_files: 最多扫描多少个 .rpy 文件，超出即停止
+            max_bytes: 最多累计读取多少字节，超出即停止
+            deadline: ``time.monotonic`` 绝对值，到点即停止
+            should_cancel: 每次扫描文件前调用，返回 True 即停止
 
         Returns:
             {文件路径: 错误列表}
         """
-        all_errors = {}
+        return self.scan_folder(
+            folder_path,
+            check_syntax=check_syntax,
+            check_indent=check_indent,
+            check_indent_level=check_indent_level,
+            check_quotes=check_quotes,
+            check_dialogue_quotes=check_dialogue_quotes,
+            encoding=encoding,
+            check_translation_issues=check_translation_issues,
+            max_files=max_files,
+            max_bytes=max_bytes,
+            deadline=deadline,
+            should_cancel=should_cancel,
+        ).errors
+
+    def scan_folder(
+        self,
+        folder_path: str,
+        check_syntax: bool = True,
+        check_indent: bool = True,
+        check_indent_level: bool = True,
+        check_quotes: bool = True,
+        check_dialogue_quotes: bool = True,
+        encoding: str = "utf-8",
+        check_translation_issues: bool = True,
+        *,
+        max_files: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+        deadline: Optional[float] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> FolderScanResult:
+        """同 :meth:`check_folder`，另外返回本次扫描覆盖了多少文件与字节。"""
+        all_errors: Dict[str, List[Dict]] = {}
         rpy_files = self.get_rpy_files(folder_path)
+        scanned_bytes = 0
+        scanned_files = 0
+        budget_exhausted = False
+        # 跨文件 old 重复需要跨文件状态；原实现为此把每个文件重读并重新解析一次，
+        # 这里复用同一份 AST，每个文件只读一次、只解析一次。
+        seen_old: dict[tuple, tuple[str, int]] = {}
 
         self.logger.info(f"检查 {len(rpy_files)} 个 .rpy 文件")
 
         for file_path in rpy_files:
-            errors = self.check_file(
+            if should_cancel is not None and should_cancel():
+                budget_exhausted = True
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                budget_exhausted = True
+                break
+            if max_files is not None and scanned_files >= max_files:
+                budget_exhausted = True
+                break
+
+            try:
+                size = file_path.stat().st_size
+            except OSError:
+                size = 0
+            if max_bytes is not None and scanned_bytes + size > max_bytes:
+                budget_exhausted = True
+                break
+            scanned_bytes += size
+
+            try:
+                with open(file_path, "r", encoding=encoding, errors="ignore") as source_file:
+                    lines = source_file.readlines()
+            except Exception as e:
+                self.logger.error(f"检查文件失败 {file_path}: {e}")
+                continue
+
+            document = parse_tl_document(
+                [self._split_line_ending(line)[0] for line in lines]
+            )
+            errors = self._check_lines(
+                lines,
                 str(file_path),
+                document,
                 check_syntax=check_syntax,
                 check_indent=check_indent,
                 check_indent_level=check_indent_level,
                 check_quotes=check_quotes,
                 check_dialogue_quotes=check_dialogue_quotes,
-                encoding=encoding,
                 check_translation_issues=check_translation_issues,
             )
+            scanned_files += 1
 
-            if errors:
-                all_errors[str(file_path)] = errors
-
-        if check_translation_issues:
-            seen_old: dict[tuple, tuple[str, int]] = {}
-            for file_path in rpy_files:
-                try:
-                    with open(file_path, "r", encoding=encoding, errors="ignore") as source_file:
-                        pairs = self._iter_translation_pairs(source_file.readlines())
-                except Exception as e:
-                    self.logger.error(f"检查跨文件重复失败 {file_path}: {e}")
-                    continue
-
-                for pair in pairs:
+            if check_translation_issues:
+                # 同文件扫描可能已经报过同一行的重复；预先收集行号，避免
+                # 每新增一条错误就回扫整份列表（旧实现因此是平方级）。
+                reported_lines = {
+                    error.get("line")
+                    for error in errors
+                    if error.get("type") == "duplicate_old_new"
+                }
+                for pair in self._iter_translation_pairs(lines, document):
                     if not pair["is_old_new"]:
                         continue
                     duplicate_key = (pair["language"], tuple(pair["source_values"]))
@@ -936,22 +1082,31 @@ class ErrorRepairer:
                         seen_old[duplicate_key] = (str(file_path), pair["source"].line_no)
                         continue
 
-                    file_errors = all_errors.setdefault(str(file_path), [])
                     line_number = pair["source"].line_no
-                    already_reported = any(
-                        error.get("type") == "duplicate_old_new"
-                        and error.get("line") == line_number
-                        for error in file_errors
+                    if line_number in reported_lines:
+                        continue
+                    reported_lines.add(line_number)
+                    errors.append(
+                        self._duplicate_old_new_error(pair, first[0], first[1])
                     )
-                    if not already_reported:
-                        file_errors.append(
-                            self._duplicate_old_new_error(pair, first[0], first[1])
-                        )
+
+            if errors:
+                all_errors[str(file_path)] = errors
 
         total_errors = sum(len(errs) for errs in all_errors.values())
+        if budget_exhausted:
+            self.logger.warning(
+                f"检查中断: 已达预算上限，只扫描了 {scanned_files}/{len(rpy_files)} 个文件"
+            )
         self.logger.info(f"检查完成: 发现 {total_errors} 个错误")
 
-        return all_errors
+        return FolderScanResult(
+            errors=all_errors,
+            scanned_files=scanned_files,
+            total_files=len(rpy_files),
+            scanned_bytes=scanned_bytes,
+            budget_exhausted=budget_exhausted,
+        )
 
     def auto_fix_file(
         self,

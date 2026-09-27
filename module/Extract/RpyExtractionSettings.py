@@ -55,10 +55,17 @@ class ProfileTlExtractor(RenpyTlItemExtractor):
         self.deadline = deadline if deadline is not None else time.monotonic() + 300
         self.rules = [(r, compile_rule(r)) for r in (profile or {}).get('rules', []) if r['enabled']]
         self.relative = ''
+        self._active_rules = []
         self.custom_selected = False
 
     def extract(self, doc, rel_path, *, scope_path=None):
         self.relative = scope_path if scope_path is not None else rel_path
+        # 作用域对同一个文件内的所有语句都相同，只判断一次，避免逐语句重复匹配 glob。
+        self._active_rules = [
+            (rule, compiled)
+            for rule, compiled in self.rules
+            if any(_matches_scope(self.relative, glob) for glob in rule['include_globs'])
+        ]
         return super().extract(doc, rel_path)
 
     def _build_cache_item(self, block, template_stmt, target_stmt, rel_path, statement_ordinal=None):
@@ -77,10 +84,8 @@ class ProfileTlExtractor(RenpyTlItemExtractor):
         if self.mode == 'builtin':
             return builtin
         chosen = set()
-        for rule, compiled in self.rules:
+        for rule, compiled in self._active_rules:
             _check_budget(self.cancel, self.deadline)
-            if not any(_matches_scope(self.relative, glob) for glob in rule['include_globs']):
-                continue
             try:
                 for match in compiled.finditer(stmt.code, timeout=0.05):
                     span = match.span(rule['text_group'])

@@ -26,7 +26,7 @@ class AgentService:
     """运行有限轮数、串行工具调用的 Agent 会话。"""
 
     # 会话历史按字符数设置上限；这是近似 token 预算，避免多轮对话无限增长。
-    DEFAULT_MAX_CONTEXT_CHARS = 64_000
+    DEFAULT_MAX_CONTEXT_CHARS = 128_000
 
     def __init__(
         self,
@@ -50,6 +50,8 @@ class AgentService:
         self._project_changed_during_run = False
         self._cancel_event = threading.Event()
         self._run_state_lock = threading.Lock()
+        # 本轮请求绑定的取消事件，供工具在执行期间检查停止信号。
+        self._run_cancel_event: threading.Event | None = None
 
     def cancel(self) -> None:
         with self._run_state_lock:
@@ -74,6 +76,10 @@ class AgentService:
         return self._cancel_event.is_set() or (
             run_cancel_event is not None and run_cancel_event.is_set()
         )
+
+    def _cancel_check(self) -> bool:
+        """供工具在本轮执行期间查询是否已请求停止。"""
+        return self._is_cancelled(self._run_cancel_event)
 
     def _begin_tool_execution(self, run_cancel_event: threading.Event | None) -> bool:
         """原子确定停止与写工具启动的先后；启动后不承诺强制终止。"""
@@ -127,6 +133,7 @@ class AgentService:
         """执行一次已由界面确认的工具，并在执行前复核项目快照。"""
         with self._run_state_lock:
             self._cancel_event.clear()
+        self._run_cancel_event = cancel_event
 
         tool_name = str(name or "")
         tool = self.dispatcher.tools.get(tool_name)
@@ -169,6 +176,7 @@ class AgentService:
                     {},
                     confirmed=True,
                     trusted_context=dict(trusted_context),
+                    cancel_check=self._cancel_check,
                 )
 
         detail = {
@@ -272,6 +280,7 @@ class AgentService:
         self._close_requester()
         with self._run_state_lock:
             self._cancel_event.clear()
+        self._run_cancel_event = cancel_event
         try:
             return self._run(
                 user_text,
@@ -281,6 +290,7 @@ class AgentService:
                 cancel_event=cancel_event,
             )
         finally:
+            self._run_cancel_event = None
             self._close_requester()
 
     def _run(
@@ -462,7 +472,11 @@ class AgentService:
                         "name": call.name,
                         "arguments": call.arguments,
                     })
-                    tool_result = self.dispatcher.execute(call.name, call.arguments)
+                    tool_result = self.dispatcher.execute(
+                        call.name,
+                        call.arguments,
+                        cancel_check=self._cancel_check,
+                    )
                 if call.name == "set_project" and tool_result.success:
                     self._project_changed_during_run = True
                 summary = tool_result.model_message(self.result_limit)

@@ -259,12 +259,26 @@ class RENPY(Base):
             source_path = self._resolve_source_path(rel_path)
             if not source_path.is_file():
                 continue
-            doc = parse_tl_document(source_path.read_text(encoding="utf-8" ).splitlines())
-            marked = {
-                item.get_extra_field()["renpy"]["digest"]["template_raw_sha1"]
-                for item in extractor.extract(doc, rel_path)
-                if item.get_extra_field()["renpy"].get("replace_only")
-            }
+            from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER, parse_tl_header
+
+            text = source_path.read_text(encoding="utf-8")
+            marked = set()
+            if RENPYBOX_REPLACE_ONLY_MARKER in text:
+                # 替换来源只存在于 strings 块；刷新旧缓存不必重建全部对白及配对。
+                strings_lines = []
+                in_strings = False
+                for line in text.splitlines():
+                    header = parse_tl_header(line)
+                    if header is not None:
+                        in_strings = header[1] == "strings"
+                    if in_strings:
+                        strings_lines.append(line)
+                doc = parse_tl_document(strings_lines)
+                marked = {
+                    item.get_extra_field()["renpy"]["digest"]["template_raw_sha1"]
+                    for item in extractor.extract(doc, rel_path)
+                    if item.get_extra_field()["renpy"].get("replace_only")
+                }
             for item in cached_items:
                 extra = item.get_extra_field()
                 if not isinstance(extra, dict) or not isinstance(extra.get("renpy"), dict):
