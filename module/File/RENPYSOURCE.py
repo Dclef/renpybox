@@ -197,9 +197,16 @@ class RENPYSOURCE(Base):
                 )
 
             if custom.get(path.resolve()):
-                lines = path.read_text(encoding='utf-8-sig').splitlines()
+                fallback_lines = None
                 for candidate in custom[path.resolve()]:
-                    line = lines[candidate.line - 1]
+                    # 规则扫描已经保留了命中行，避免为定位槽位再次读取整个文件。
+                    line = candidate.line_text
+                    if not line:
+                        if fallback_lines is None:
+                            fallback_lines = path.read_text(encoding='utf-8-sig').splitlines()
+                        if candidate.line <= 0 or candidate.line > len(fallback_lines):
+                            continue
+                        line = fallback_lines[candidate.line - 1]
                     literals = list(parser.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
                     slot = next((i for i, m in enumerate(literals) if m.span() == (candidate.start, candidate.end)), None)
                     if slot is None or (candidate.line, slot) in selected_slots or candidate.text.strip() in preserves:

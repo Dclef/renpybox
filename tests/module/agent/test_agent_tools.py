@@ -461,6 +461,27 @@ def test_scan_script_errors_only_checks_current_translation_folder(tmp_path) -> 
     assert str(generated) in result.data["errors"]
 
 
+def test_scan_script_errors_stops_when_cancelled(tmp_path) -> None:
+    root = tmp_path / "Game"
+    game = root / "game"
+    translation_dir = game / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    (translation_dir / "script.rpy").write_text("\tnew \"文本\"\n", encoding="utf-8")
+    config = _config_for(root)
+
+    result = scan_script_errors(
+        config_loader=lambda: config,
+        should_cancel=lambda: True,
+    )
+
+    assert result.success is True
+    assert result.data["budget_exhausted"] is True
+    assert result.data["scanned_files"] == 0
+    assert result.data["total_files"] == 1
+
+
+
+
 class _FakeEngine:
     def __init__(self, busy: bool = False) -> None:
         self.busy = busy

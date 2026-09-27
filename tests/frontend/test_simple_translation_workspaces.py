@@ -31,6 +31,18 @@ from widget.ThemeHelper import get_current_stylesheet
 APP = QApplication.instance() or QApplication([])
 
 
+def test_proofreading_target_location_uses_translation_line() -> None:
+    """TL 缓存的 row 是原文行，定位必须跳到 new 译文行。"""
+    item = CacheItem.from_dict({
+        "src": "Hello",
+        "dst": "你好",
+        "row": 5,
+        "file_path": "scene.rpy",
+        "extra_field": {"renpy": {"pair": {"target_line": 17}}},
+    })
+    assert ProofreadingPage._target_line(item) == 17
+
+
 @pytest.fixture(scope="session", autouse=True)
 def layout_fonts():
     """字体随 QApplication 保留，避免延迟销毁的控件引用已卸载字体。"""
@@ -394,3 +406,27 @@ def test_platform_group_disconnects_theme_signal_when_deleted(monkeypatch):
     assert sip.isdeleted(card)
     qconfig.themeChanged.emit(qconfig.theme)
     assert errors == []
+
+
+def test_target_preview_shows_numbered_highlighted_line(tmp_path):
+    from frontend.Proofreading.TargetLocationDialog import TargetLocationDialog, read_line_context
+    source = tmp_path / 'scene.rpy'
+    source.write_text('\n'.join(f'第 {n} 行' for n in range(1, 100001)), encoding='utf-8-sig')
+    context = read_line_context(source, 90000)
+    assert len(context) == 41
+    assert context[20] == (90000, '第 90000 行')
+    assert read_line_context(source, 90000, cancel=lambda: True) == []
+    with pytest.raises(ValueError):
+        read_line_context(source, 100001)
+    dialog = TargetLocationDialog(str(source), 90000)
+    try:
+        for _ in range(100):
+            QTest.qWait(10)
+            if dialog.preview.toPlainText():
+                break
+        assert '90000  第 90000 行' in dialog.preview.toPlainText()
+        assert dialog.preview.textCursor().blockNumber() == 20
+        assert dialog.preview.extraSelections()[0].cursor.blockNumber() == 20
+        assert dialog.preview.document().blockCount() == 41
+    finally:
+        dialog.reject()

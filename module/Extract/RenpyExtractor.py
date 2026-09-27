@@ -355,7 +355,11 @@ class RenpyExtractor:
         candidates = list(directory.glob("*.exe"))
         if not candidates:
             return None
-        candidates.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+        # 优先选择具有启动脚本的程序，避免较大的 EXE 缺少对应 .py 时直接失败。
+        candidates.sort(
+            key=lambda p: (Path(get_py_path(str(p))).is_file(), p.stat().st_size),
+            reverse=True,
+        )
         return candidates[0]
 
     def _remove_empty_translate_blocks(self, tl_dir: Path, tl_name: str) -> int:
