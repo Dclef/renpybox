@@ -172,3 +172,43 @@ def test_reuse_matches_dialogue_context_and_preserves_manual_translation(tmp_pat
     assert 'e "第一幕问候"' in content
     assert 'e "人工新译文"' in content
     assert 'e "菜单问候"' not in content
+
+
+def test_reuse_preserves_both_labels_with_same_source_location(tmp_path):
+    """旧目录有两套标签时，不能先去重再丢掉与新目录对应的译文。"""
+    source, target = tmp_path / "old", tmp_path / "new"
+    source.mkdir()
+    target.mkdir()
+    old_text = (
+        '# game/events7.rpy:3942\n'
+        'translate chinese spell_1:\n'
+        '    # witch "Come back!"\n'
+        '    witch "再回来！"\n\n'
+        '# events7.rpyc:3942\n'
+        'translate chinese spell:\n'
+        '    # witch "Come back!"\n'
+        '    witch "回来！"\n'
+    )
+    source.joinpath('events7.rpy').write_text(old_text, encoding='utf-8')
+    target.joinpath('events7.rpy').write_text(
+        'translate chinese spell:\n'
+        '    # witch "Come back!"\n'
+        '    witch ""\n\n'
+        'translate chinese spell_1:\n'
+        '    # witch "Come back!"\n'
+        '    witch ""\n\n'
+        'translate chinese unrelated:\n'
+        '    # witch "Come back!"\n'
+        '    witch ""\n', encoding='utf-8',
+    )
+    extractor = _extractor()
+    preview = extractor.preview_translation_reuse(source, target)
+    assert preview.reusable_entries == 2
+    assert preview.unmatched_entries == 1
+    result = extractor.reuse_translations(source, target)
+    assert result.applied_entries == 2
+    content = target.joinpath('events7.rpy').read_text(encoding='utf-8')
+    assert 'translate chinese spell:\n    # witch "Come back!"\n    witch "回来！"' in content
+    assert 'translate chinese spell_1:\n    # witch "Come back!"\n    witch "再回来！"' in content
+    assert 'translate chinese unrelated:\n    # witch "Come back!"\n    witch ""' in content
+    assert source.joinpath('events7.rpy').read_text(encoding='utf-8') == old_text

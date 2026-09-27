@@ -8,6 +8,7 @@ from module.Extract.RpyExtractionSettings import context_for_path, ProfileTlExtr
 from module.File.RENPY import RENPY
 from module.File.RENPYSOURCE import RENPYSOURCE
 from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 
 
 def bind(tmp_path, monkeypatch, root, category, pattern, sample, *, mode='custom', base=None):
@@ -120,3 +121,67 @@ def test_tl_scopes_remain_relative_to_language_folder(tmp_path, monkeypatch):
     assert items[0].get_file_path() == 'message.rpy'
     store.unbind(root, 'tl')
     assert store.selection(root, 'tl') == ('builtin', None)
+
+
+def test_selected_source_files_do_not_walk_game(tmp_path, monkeypatch):
+    game = tmp_path / 'game'
+    game.mkdir()
+    selected = game / 'scene.rpy'
+    selected.write_text('e "Hello"', encoding='utf-8')
+    backup = game / 'backup.rpy'
+    backup.write_text('e "Ignored"', encoding='utf-8')
+    outside = tmp_path / 'outside.rpy'
+    outside.write_text('e "Outside"', encoding='utf-8')
+    rule = rules.new_rule()
+    monkeypatch.setattr(rules.os, 'walk', lambda *a, **k: pytest.fail('不应遍历整个 game'))
+    manifest = rules.source_manifest(tmp_path, [rule], paths=[selected, backup, outside])
+    assert [entry[0] for entry in manifest] == ['scene.rpy']
+
+
+def test_tl_scope_matches_once_per_file(monkeypatch):
+    import module.Extract.RpyExtractionSettings as settings
+    rule = rules.new_rule()
+    rule.update(enabled=True, pattern=r'old\s+(?P<text>"Hello")')
+    profile = rules.new_profile('tl')
+    profile['rules'] = [rule]
+    doc = parse_tl_document(['translate chinese strings:'] + ['    old "Hello"', '    new ""'] * 500)
+    calls = []
+    original = settings._matches_scope
+    def counted(path, pattern):
+        calls.append(path)
+        return original(path, pattern)
+    monkeypatch.setattr(settings, '_matches_scope', counted)
+    extractor = ProfileTlExtractor('custom', profile)
+    assert len(extractor.extract(doc, 'scene.rpy')) == 500
+    assert len(calls) == 1
+    assert len(extractor.extract(doc, 'other.txt')) == 0
+
+
+@pytest.mark.parametrize('second_location', [
+    '# game/places/graveyard.rpy:328',
+    '# game/places/graveyard.rpy:347',
+])
+def test_tl_extractor_preserves_distinct_labels_and_writeback(second_location):
+    doc = parse_tl_document([
+        '# places/graveyard.rpyc:328',
+        'translate chinese scene_a:',
+        '    # e "Same line"',
+        '    e "相同对白"',
+        '',
+        second_location,
+        'translate chinese scene_a_1:',
+        '    # e "Same line"',
+        '    e "相同对白"',
+    ])
+    items = RenpyTlItemExtractor().extract(doc, 'places/graveyard.rpy')
+    assert [item.get_src() for item in items] == ['Same line', 'Same line']
+    assert [item.get_extra_field()['renpy']['block']['label'] for item in items] == ['scene_a', 'scene_a_1']
+    # 相同对白的两个剧情位置必须分别写回，不能丢失其中的译文。
+    from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
+    items[0].set_dst('第一次施法')
+    items[1].set_dst('第二次施法')
+    lines = list(doc.lines)
+    applied, _ = RenpyTlLineUpdater().apply_items_to_lines(lines, items)
+    assert applied == 2
+    assert lines[3] == '    e "第一次施法"'
+    assert lines[8] == '    e "第二次施法"'
