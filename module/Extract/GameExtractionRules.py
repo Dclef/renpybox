@@ -241,6 +241,27 @@ def source_manifest(root: Path, rules: list, cancel=None, deadline=None, *, base
     result, seen = [], set()
     def error(exc):
         raise RuleError("read", str(exc))
+
+    def add_file(path: Path) -> None:
+        """校验并加入一个已知文件；增量读取时避免再次遍历整个 game。"""
+        _check_budget(cancel, deadline)
+        try:
+            resolved = path.resolve()
+            relative = resolved.relative_to(game).as_posix()
+        except (OSError, ValueError):
+            return
+        if (not resolved.is_file() or not relative.casefold().endswith('.rpy')
+                or any(_excluded(part) for part in Path(relative).parts)
+                or not any(_matches_scope(relative, g) for r in rules for g in r['include_globs'])):
+            return
+        stat = resolved.stat()
+        result.append((relative, str(resolved), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+
+    if paths is not None:
+        for selected in sorted({Path(p).resolve() for p in paths}, key=lambda item: str(item).casefold()):
+            add_file(selected)
+        return result
+
     for directory, dirs, files in os.walk(game, followlinks=False, onerror=error):
         _check_budget(cancel, deadline)
         current = Path(directory).resolve()
@@ -253,17 +274,7 @@ def source_manifest(root: Path, rules: list, cancel=None, deadline=None, *, base
             _check_budget(cancel, deadline)
             if not name.casefold().endswith('.rpy') or _excluded(name):
                 continue
-            path = Path(directory) / name
-            if paths is not None and path.resolve() not in paths:
-                continue
-            relative = path.relative_to(game).as_posix()
-            if not any(_matches_scope(relative, g) for r in rules for g in r['include_globs']):
-                continue
-            resolved = path.resolve()
-            if not resolved.is_relative_to(game) or any(_excluded(part) for part in resolved.relative_to(game).parts):
-                continue
-            stat = path.stat()
-            result.append((relative, str(resolved), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+            add_file(Path(directory) / name)
     return result
 
 
@@ -381,6 +392,7 @@ class RuleCandidate:
     start: int = 0
     end: int = 0
     raw_text: str = ""
+    line_text: str = ""
 
 
 class RuleScan:
@@ -437,6 +449,8 @@ class RuleScan:
                 path = self.base / relative
                 if str(path.resolve()) != resolved:
                     raise RuleError("stale")
+                active_rules = [(rule, compiled) for rule, compiled in self.compiled
+                                if any(_matches_scope(relative, g) for g in rule['include_globs'])]
                 with path.open('rb') as stream:
                     stream.seek(self.offset)
                     while True:
@@ -467,9 +481,7 @@ class RuleScan:
                                 pass
                         # 跨物理行的容器/调用无法确认相邻字符串边界，首版保守排除。
                         if not skip and not previous_depth and not self.bracket_depth:
-                            for rule, compiled in self.compiled:
-                                if not any(_matches_scope(relative, g) for g in rule['include_globs']):
-                                    continue
+                            for rule, compiled in active_rules:
                                 for text, reason, start, end in literal_matches(rule, compiled, line):
                                     self.raw_matches += 1
                                     if reason:
@@ -480,7 +492,10 @@ class RuleScan:
                                         self.candidate_chars += len(text)
                                         if len(self.candidates) >= MAX_RESULTS or self.candidate_chars > 16 * 1024 * 1024:
                                             raise RuleError("result_limit")
-                                        self.candidates.append(RuleCandidate(text, relative, self.line_number + 1, rule['id'], start, end, line[start + 1:end - 1]))
+                                        self.candidates.append(RuleCandidate(
+                                            text, relative, self.line_number + 1, rule['id'],
+                                            start, end, line[start + 1:end - 1], line.rstrip('\r\n'),
+                                        ))
                         self.bytes_read += len(raw)
                         self.offset, self.line_number = stream.tell(), self.line_number + 1
                 if self.profile.get('category') == 'tl':

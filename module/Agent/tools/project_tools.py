@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from module.Config import Config
@@ -19,6 +20,11 @@ if TYPE_CHECKING:
     from module.Agent.types import ToolResult
 
 ConfigLoader = Callable[[], Config]
+# 译文脚本扫描是纯 CPU 活，翻译任务同时跑时必须先定上限：
+# 否则大项目会长时间占住后台线程，界面看上去像卡死。
+SCAN_MAX_FILES = 400
+SCAN_MAX_BYTES = 64 * 1024 * 1024
+SCAN_DEADLINE_SECONDS = 20.0
 
 
 def _config(config: Config | None, loader: ConfigLoader | None) -> Config:
@@ -163,6 +169,7 @@ def scan_script_errors(
     *,
     config: Config | None = None,
     config_loader: ConfigLoader | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> "ToolResult":
     """扫描当前语言翻译目录中的生成脚本错误，不修改文件。"""
     from module.Agent.types import ToolResult
@@ -171,7 +178,14 @@ def scan_script_errors(
     if paths is None:
         return _not_set()
     translation_dir = paths.tl_language_dir
-    errors = ErrorRepairer().check_folder(str(translation_dir))
+    scan = ErrorRepairer().scan_folder(
+        str(translation_dir),
+        should_cancel=should_cancel,
+        max_files=SCAN_MAX_FILES,
+        max_bytes=SCAN_MAX_BYTES,
+        deadline=time.monotonic() + SCAN_DEADLINE_SECONDS,
+    )
+    errors = scan.errors
     total = sum(len(items) for items in errors.values())
     limited: dict[str, list[dict[str, Any]]] = {}
     remaining = 100
@@ -198,5 +212,8 @@ def scan_script_errors(
             "error_count": total,
             "truncated": total > sum(len(v) for v in limited.values()),
             "translation_dir": str(translation_dir),
+            "scanned_files": scan.scanned_files,
+            "total_files": scan.total_files,
+            "budget_exhausted": scan.budget_exhausted,
         },
     )

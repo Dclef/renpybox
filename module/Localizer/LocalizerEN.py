@@ -15,6 +15,16 @@ _PACK_UNPACK_ERROR_EN = {
 
 class LocalizerEN(LocalizerZH):
 
+    # 目标行预览
+    target_line_invalid: str = 'No valid line number. Reload the text.'
+    target_line_missing: str = 'The target line no longer exists. Reload the text.'
+    target_line_title: str = 'Locate Target Line'
+    target_line_loading: str = 'Loading target line…'
+    target_line_open_file: str = 'Open File'
+    target_line_close: str = 'Close'
+    target_line_open_failed: str = 'Cannot open the file. Check the default application for .rpy files.'
+    target_line_context: str = 'Line {row} · File context on disk (unexported edits are not shown)'
+
     # 保留
     switch_language: str = (
         "请选择应用语言，新的语言设置将在下次启动时生效 …"
@@ -439,6 +449,9 @@ class LocalizerEN(LocalizerZH):
     proofreading_page_copy_src_done: str = "Source copied to clipboard"
     proofreading_page_copy_dst: str = "Copy Translation"
     proofreading_page_copy_dst_done: str = "Translation copied to clipboard"
+    proofreading_page_locate_target: str = "Locate Target Position"
+    proofreading_page_locate_done: str = "Location copied to clipboard and the file selected in the file manager"
+    proofreading_page_locate_missing: str = "Target translation file not found, load the translation cache first"
     proofreading_page_save_success: str = "Data saved"
     proofreading_page_export_success: str = "Export completed"
     proofreading_page_export_failed: str = "Export failed"
@@ -460,6 +473,8 @@ class LocalizerEN(LocalizerZH):
     proofreading_page_retranslate_success: str = "Translation completed"
     proofreading_page_batch_replace: str = "Batch Replace"
     proofreading_page_batch_retranslate: str = "Batch Retranslate"
+    proofreading_page_batch_retranslate_progress: str = "Batch retranslate {DONE}/{TOTAL}, success {SUCCESS}, failure {FAILURE}"
+    proofreading_page_batch_cancel: str = "Cancel Batch Retranslate"
     proofreading_page_batch_reset_translation: str = "Batch Reset"
     proofreading_page_batch_no_selection: str = "Please select entries first"
     proofreading_page_batch_replace_action: str = "Batch Replace"

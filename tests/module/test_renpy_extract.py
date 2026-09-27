@@ -2553,6 +2553,38 @@ def test_runtime_write_incremental_only_appends_missing(tmp_path):
     )
 
 
+def test_official_extract_keeps_compiled_scripts_and_selects_valid_launcher(tmp_path, monkeypatch):
+    import subprocess
+    import module.Extract.RenpyExtractor as extractor_module
+    import utils.process_runner as runner_module
+
+    extractor = extractor_module.RenpyExtractor.__new__(extractor_module.RenpyExtractor)
+    extractor.logger = types.SimpleNamespace(info=lambda *args, **kwargs: None)
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "scene.rpy").write_text("label start:\n    return\n", encoding="utf-8")
+    compiled = game / "scene.rpyc"
+    compiled.write_bytes(b"compiled")
+    (tmp_path / "Game.exe").write_bytes(b"larger executable")
+    (tmp_path / "Game-32.exe").write_bytes(b"exe")
+    launcher = tmp_path / "Game-32.py"
+    launcher.write_text("# 测试启动脚本\n", encoding="utf-8")
+    monkeypatch.setattr(extractor_module, "get_python_path_from_game_path", lambda _: "python.exe")
+    calls = []
+
+    def run_process(command, **kwargs):
+        calls.append(command)
+        assert Path(command[2]) == launcher
+        assert compiled.read_bytes() == b"compiled"
+        assert not list(game.glob("*.renpybox_hidden"))
+        return subprocess.CompletedProcess(command, 0, "")
+
+    monkeypatch.setattr(runner_module, "run_process", run_process)
+    assert extractor.official_extract(tmp_path, "chinese") == game / "tl" / "chinese"
+    assert len(calls) == 1
+    assert compiled.read_bytes() == b"compiled"
+
+
 def test_substring_constants_are_kept_not_dropped():
     """独立常量即使恰是更长常量的子串，也必须保留（不得当作片段丢弃）。"""
     from module.Extract.ReplaceGenerator import _filter_valid_strings

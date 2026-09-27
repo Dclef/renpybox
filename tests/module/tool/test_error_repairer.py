@@ -596,3 +596,71 @@ def test_parse_lint_error_preserves_file_paths_with_spaces() -> None:
     assert error["file"] == "C:\\Games\\My Game\\game\\script.rpy"
     assert error["line"] == 7
     assert error["type"] == "syntax_error"
+
+
+def test_scan_folder_reads_and_parses_each_file_once(tmp_path, monkeypatch) -> None:
+    """每个 .rpy 只读一次、只解析一次：旧实现会各做三次。"""
+    import builtins
+    from pathlib import Path
+
+    repairer = ErrorRepairer()
+    for index in range(3):
+        script = tmp_path / f"script_{index}.rpy"
+        # 行首 Tab 触发 indent 错误，用于确认结果仍然完整。
+        script.write_text("\tnew \"文本 %d\"\n" % index, encoding="utf-8")
+
+    opened: list[Path] = []
+    parsed: list[int] = []
+    real_open = builtins.open
+    original_parse = error_repairer_module.parse_tl_document
+
+    def counting_open(file, *args, **kwargs):
+        opened.append(Path(file))
+        return real_open(file, *args, **kwargs)
+
+    def counting_parse(lines):
+        parsed.append(len(lines))
+        return original_parse(lines)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    monkeypatch.setattr(error_repairer_module, "parse_tl_document", counting_parse)
+
+    result = repairer.scan_folder(str(tmp_path))
+
+    assert result.scanned_files == 3
+    assert result.total_files == 3
+    assert result.budget_exhausted is False
+    assert len(opened) == 3
+    assert parsed == [1, 1, 1]
+    assert sum(
+        1
+        for errors in result.errors.values()
+        for error in errors
+        if error["type"] == "indent"
+    ) == 3
+
+
+def test_scan_folder_stops_at_file_budget(tmp_path) -> None:
+    repairer = ErrorRepairer()
+    for index in range(5):
+        (tmp_path / f"script_{index}.rpy").write_text(
+            "\tnew \"文本 %d\"\n" % index, encoding="utf-8"
+        )
+
+    result = repairer.scan_folder(str(tmp_path), max_files=2)
+
+    assert result.scanned_files == 2
+    assert result.total_files == 5
+    assert result.budget_exhausted is True
+    assert len(result.errors) == 2
+
+
+def test_scan_folder_stops_when_cancelled(tmp_path) -> None:
+    repairer = ErrorRepairer()
+    (tmp_path / "script.rpy").write_text("\tnew \"文本\"\n", encoding="utf-8")
+
+    result = repairer.scan_folder(str(tmp_path), should_cancel=lambda: True)
+
+    assert result.scanned_files == 0
+    assert result.budget_exhausted is True
+    assert result.errors == {}

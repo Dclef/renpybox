@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -21,12 +22,18 @@ def _lazy_tool_handler(
     module_name: str,
     function_name: str,
     config_loader: ConfigLoader,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Callable[..., ToolResult]:
     """延迟加载工具实现，避免打开 Agent 页面时初始化整套翻译依赖。"""
 
     def handler(**arguments: Any) -> ToolResult:
         module = importlib.import_module(f"module.Agent.tools.{module_name}")
         function = getattr(module, function_name)
+        # 只有声明了 ``should_cancel`` 的工具才拿到停止回调，这样长耗时扫描
+        # 能在文件之间中断，而不是必须跑完整轮。
+        cancel_check = arguments.pop("__cancel_check__", None)
+        if cancel_check is not None and "should_cancel" in inspect.signature(function).parameters:
+            arguments["should_cancel"] = cancel_check
         return function(config_loader=config_loader, **arguments)
 
     return handler
@@ -42,9 +49,11 @@ class ToolDispatcher:
         *,
         config_loader: ConfigLoader | None = None,
         engine: Engine | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
         self.engine = engine or Engine.get()
+        self._cancel_check = cancel_check
         self._tools = self._build_tools()
 
     def _build_tools(self) -> dict[str, ToolDef]:
@@ -193,6 +202,7 @@ class ToolDispatcher:
         *,
         confirmed: bool = False,
         trusted_context: dict[str, Any] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> ToolResult:
         localizer = Localizer.get()
         tool = self._tools.get(str(name or ""))
@@ -215,6 +225,8 @@ class ToolDispatcher:
             )
 
         handler_arguments = dict(payload)
+        if cancel_check is not None:
+            handler_arguments["__cancel_check__"] = cancel_check
         if tool.name == "unpack_rpa_files":
             confirmed_game_dir = str((trusted_context or {}).get("game_dir", "")).strip()
             if not confirmed_game_dir:
