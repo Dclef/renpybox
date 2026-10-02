@@ -196,6 +196,94 @@ def test_response_checker_accepts_unchanged_technical_acronym_but_not_ui_command
     ]
 
 
+def test_result_checker_survives_missing_output_folder(tmp_path, monkeypatch) -> None:
+    """输出目录被并发删掉时，质检报告不能整份消失。"""
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    checker = ResultChecker(config, [CacheItem(src="Hello", dst="你好", status=Base.TranslationStatus.TRANSLATED)])
+
+    # 让 makedirs/scandir 抛出真实的 OSError，而不是提前退出。
+    def boom_makedirs(*_args, **_kwargs):
+        raise FileNotFoundError("output folder vanished")
+
+    def boom_scandir(*_args, **_kwargs):
+        raise FileNotFoundError("output folder vanished")
+
+    monkeypatch.setattr("module.ResultChecker.os.makedirs", boom_makedirs)
+    monkeypatch.setattr("module.ResultChecker.os.scandir", boom_scandir)
+
+    ran = []
+    for name in (
+        "check_kana",
+        "check_hangeul",
+        "check_text_preserve",
+        "check_similarity",
+        "check_glossary",
+        "check_mixed_translation",
+        "check_untranslated",
+        "check_retry_count_threshold",
+    ):
+        monkeypatch.setattr(
+            checker,
+            name,
+            (lambda current: lambda *a, **k: ran.append(current))(name),
+        )
+
+    checker.check()
+
+    assert len(ran) == 8
+
+
+def test_result_checker_isolates_one_failing_check(tmp_path, monkeypatch) -> None:
+    """单项检查抛异常时，其余检查必须继续跑完。"""
+    config = Config(
+        source_language=BaseLanguage.Enum.EN,
+        target_language=BaseLanguage.Enum.ZH,
+    )
+    checker = ResultChecker(config, [])
+
+    ran = []
+
+    def make(name, fail=False):
+        def run(*_args, **_kwargs):
+            ran.append(name)
+            if fail:
+                raise RuntimeError(f"{name} boom")
+        return run
+
+    monkeypatch.setattr(checker, "check_kana", make("check_kana", fail=True))
+    for name in (
+        "check_hangeul",
+        "check_text_preserve",
+        "check_similarity",
+        "check_glossary",
+        "check_mixed_translation",
+        "check_untranslated",
+        "check_retry_count_threshold",
+    ):
+        monkeypatch.setattr(checker, name, make(name))
+
+    warnings = []
+    monkeypatch.setattr(checker, "warning", lambda message, *a, **k: warnings.append(message))
+
+    checker.check()
+
+    assert ran == [
+        "check_kana",
+        "check_hangeul",
+        "check_text_preserve",
+        "check_similarity",
+        "check_glossary",
+        "check_mixed_translation",
+        "check_untranslated",
+        "check_retry_count_threshold",
+    ]
+    assert any("check_kana" in message for message in warnings)
+    assert any("1 项检查未完成" in message for message in warnings)
+
+
 def test_quality_report_combines_item_reasons_with_progress_counts() -> None:
     first = CacheItem(
         src = "source one",
