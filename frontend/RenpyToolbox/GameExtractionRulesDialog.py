@@ -15,6 +15,7 @@ from base.Base import Base
 from base.EventManager import EventManager
 from module.Extract.GameExtractionRules import RuleStore, RuleScan, RuleError, new_profile, new_rule, project_key, binding_key
 from module.Localizer.Localizer import Localizer
+from widget.ThemeHelper import mark_app_dialog
 
 
 def error_text(exc):
@@ -55,6 +56,7 @@ class GameExtractionRulesDialog(QDialog):
         l = Localizer.get()
         self.setWindowTitle(l.game_rules_title)
         self.resize(960, 800)
+        mark_app_dialog(self)
         layout = QVBoxLayout(self)
         self.content = QWidget()
         body = QVBoxLayout(self.content)
