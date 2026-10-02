@@ -1728,6 +1728,8 @@ class LocalizerZH():
     onekey_translation_complete_continue_post_processing_apply_game: str = '✔ 翻译已完成，可直接进入「后续处理」应用翻译到游戏。'
     onekey_translate_again: str = '重新翻译'
     onekey_continue_post_processing: str = '进入后续处理 →'
+    onekey_translation_partially_complete_continue_post_processing: str = '⚠ 已达最大翻译轮次，仍有条目未翻译：已译部分可以继续「后续处理」应用，游戏内会残留英文。'
+    onekey_translation_partially_complete_translate_again: str = '提高最大轮次后重新翻译'
     onekey_input_folder_missing_does_not_exist: str = '输入目录未设置或不存在'
     onekey_output_folder_not_configured: str = '输出目录未设置'
     onekey_no_translation_provider_active: str = '未激活翻译接口（请在接口设置启用平台）'
@@ -2347,8 +2349,13 @@ class LocalizerZH():
     # RPY 分类抽取设置
     rpy_rules_title: str = 'RPY 抽取设置'
     rpy_rules_description: str = '分类管理源码和 TL 的内置抽取、自定义正则及使用方案'
-    rpy_rules_source: str = '源码 RPY（一键翻译 / 源码翻译）'
-    rpy_rules_tl: str = 'TL RPY（TL 翻译）'
+    # 分类名按"匹配什么语法"命名，功能名只写在这一对副说明里：
+    # 一键翻译跨两段（读 game/ 抽取 → 写 tl/ 翻译），把功能名塞进分类名会让
+    # 「一键翻译」看起来像「源码翻译」的一种，那是两种性质相反的流程。
+    rpy_rules_source: str = '源码 RPY（读 game/ 目录）'
+    rpy_rules_tl: str = 'TL RPY（读 tl/<语言> 目录）'
+    rpy_rules_source_scope: str = '用于：一键翻译的抽取阶段、源码翻译、翻译抽取到 TL。这三处的读取语法都是 game/*.rpy，共用同一份规则。'
+    rpy_rules_tl_scope: str = '用于：直接翻译 RPY、一键翻译的翻译阶段。这两处的读取语法都是 tl/<语言>/*.rpy，共用同一份规则。'
     rpy_rules_builtin: str = '只用内置'
     rpy_rules_combined: str = '内置＋自定义'
     rpy_rules_custom: str = '仅自定义'
@@ -2356,7 +2363,8 @@ class LocalizerZH():
     rpy_rules_copy_builtin: str = '复制常用规则为自定义'
     rpy_rules_apply: str = '应用设置'
     rpy_rules_no_profile: str = '未选择自定义方案'
-    rpy_rules_current: str = '当前：{mode} · {name}'
+    rpy_rules_current: str = '当前已生效：{mode} · {name}'
+    rpy_rules_pending: str = '未保存：{mode} · {name}（点「应用设置」后生效）'
     rpy_rules_path: str = '选择游戏目录或 RPY 所在目录'
     rpy_rules_language: str = 'TL 语言目录'
     rpy_rules_builtin_description: str = '内置：源码识别对白、菜单与界面文本；TL 识别 old/new 配对与编号对白。内置方案不可修改；可复制常用语法模板后编辑正则。模板不等同于完整语法解析器。\n仅自定义：不追加内置抽取结果。TL 正则匹配 old 原文或去掉 # 的对白原文，写回只修改对应译文。'

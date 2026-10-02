@@ -362,12 +362,19 @@ def merge_incremental_translation_cache(
         return False
 
     main_manager = CacheManager(service = False)
-    main_loaded = False
     try:
         main_manager.load_from_file(str(main_output), strict = True)
-        main_loaded = True
-    except Exception:
-        pass
+    except Exception as exc:
+        # 主缓存严格载入失败时绝不能继续：merged 会只剩增量条目，随后
+        # saver.save_to_file 会把主缓存整个改写成增量子集，主缓存里其余所有
+        # 已完成译文的状态一并消失（.rpy 仍在，但下一轮会重新排队并重复调用
+        # LLM 重复花钱），而调用方随后还会删掉 staging 目录、无法补救。
+        # 这里与增量侧保持同一语义——失败即中止迁移，把"保留增量目录并提示"
+        # 的机会交回 _run_incremental。
+        LogManager.get().error(
+            f"主缓存严格载入失败，已放弃本次缓存迁移（增量目录保留）: {main_output} - {exc}"
+        )
+        return False
 
     merged: dict[tuple, object] = {}
     order: list[tuple] = []
@@ -379,23 +386,22 @@ def merge_incremental_translation_cache(
         for item in incremental_items
         if (block_identity := _cache_item_label_block_identity(item)) is not None
     }
-    if main_loaded:
-        for item in main_manager.get_items():
-            key = _cache_item_identity(item)
-            # 变更编号块的增量缓存是完整块快照。先清除该块的全部旧条目，
-            # 才能同步其中被删除的语句；全局 strings 不参与整块淘汰。
-            if _cache_item_label_block_identity(item) in replaced_label_blocks:
-                continue
-            if key not in merged:
-                order.append(key)
-                merged[key] = item
-            elif _is_strings_cache_item(item):
-                merged[key] = _merge_strings_cache_translation(merged[key], item)
-            else:
-                merged[key] = item
-            location = _cache_item_source_location(item)
-            if location is not None:
-                main_locations[location] = key
+    for item in main_manager.get_items():
+        key = _cache_item_identity(item)
+        # 变更编号块的增量缓存是完整块快照。先清除该块的全部旧条目，
+        # 才能同步其中被删除的语句；全局 strings 不参与整块淘汰。
+        if _cache_item_label_block_identity(item) in replaced_label_blocks:
+            continue
+        if key not in merged:
+            order.append(key)
+            merged[key] = item
+        elif _is_strings_cache_item(item):
+            merged[key] = _merge_strings_cache_translation(merged[key], item)
+        else:
+            merged[key] = item
+        location = _cache_item_source_location(item)
+        if location is not None:
+            main_locations[location] = key
     for item in incremental_items:
         key = _cache_item_identity(item)
         if _cache_item_label_block_identity(item) is not None:
@@ -427,34 +433,33 @@ def merge_incremental_translation_cache(
 
     items = list(merged[key] for key in order)
     project = incremental_manager.get_project()
-    if main_loaded:
-        # 工作台资产属于项目级数据。增量运行可能在主工作台更新前启动，
-        # 因而不能只根据“是否存在”覆盖主缓存；始终按 revision 保留较新快照。
+    # 工作台资产属于项目级数据。增量运行可能在主工作台更新前启动，
+    # 因而不能只根据“是否存在”覆盖主缓存；始终按 revision 保留较新快照。
+    try:
+        incremental_assets = project.get_project_assets()
+        main_assets = main_manager.get_project().get_project_assets()
         try:
-            incremental_assets = project.get_project_assets()
-            main_assets = main_manager.get_project().get_project_assets()
-            try:
-                incremental_revision = int(incremental_assets.get("revision", 0) or 0)
-            except (TypeError, ValueError):
-                incremental_revision = 0
-            try:
-                main_revision = int(main_assets.get("revision", 0) or 0)
-            except (TypeError, ValueError):
-                main_revision = 0
-            # 旧缓存可能没有 revision：只要主缓存有资产而增量没有，
-            # 或两者 revision 相同，就应优先保留稳定主工作台快照。
-            if _project_assets_have_state(main_assets) and (
-                not _project_assets_have_state(incremental_assets)
-                or main_revision >= incremental_revision
-            ):
-                project.set_project_assets(main_assets)
+            incremental_revision = int(incremental_assets.get("revision", 0) or 0)
+        except (TypeError, ValueError):
+            incremental_revision = 0
+        try:
+            main_revision = int(main_assets.get("revision", 0) or 0)
+        except (TypeError, ValueError):
+            main_revision = 0
+        # 旧缓存可能没有 revision：只要主缓存有资产而增量没有，
+        # 或两者 revision 相同，就应优先保留稳定主工作台快照。
+        if _project_assets_have_state(main_assets) and (
+            not _project_assets_have_state(incremental_assets)
+            or main_revision >= incremental_revision
+        ):
+            project.set_project_assets(main_assets)
 
-            # 分析候选没有独立 revision，空快照时仍从主缓存补齐。
-            if not project.get_analysis_candidates().get("items"):
-                project.set_analysis_candidates(main_manager.get_project().get_analysis_candidates())
-        except Exception:
-            # 资产迁移是辅助步骤，异常不能阻断翻译缓存合并。
-            pass
+        # 分析候选没有独立 revision，空快照时仍从主缓存补齐。
+        if not project.get_analysis_candidates().get("items"):
+            project.set_analysis_candidates(main_manager.get_project().get_analysis_candidates())
+    except Exception:
+        # 资产迁移是辅助步骤，异常不能阻断翻译缓存合并。
+        pass
 
     saver = CacheManager(service = False)
     if not saver.save_to_file(project, items, str(main_output), strict = False):

@@ -47,6 +47,11 @@ class TranslationCancelled(RuntimeError):
     """翻译在准备阶段被用户取消。"""
 
 
+# 本机 llama.cpp /slots 探测的固定超时（秒）。与模型请求的 request_timeout 分开：
+# 槽位探测失败只会回落到默认并发，不值得按分钟级超时去等。
+SLOT_PROBE_TIMEOUT: float = 10.0
+
+
 # 翻译器
 class Translator(Base):
 
@@ -1713,8 +1718,10 @@ class Translator(Base):
                     self.print("")
 
                     # 通知
+                    # 已到最大轮次仍有未翻译条目，这是"部分完成"而不是成功，
+                    # 用 SUCCESS 图标会与 translator_fail 的文案互相矛盾。
                     self.emit(Base.Event.APP_TOAST_SHOW, {
-                        "type": Base.ToastType.SUCCESS,
+                        "type": Base.ToastType.WARNING,
                         "message": Localizer.get().translator_fail,
                     })
                     break
@@ -1784,6 +1791,9 @@ class Translator(Base):
                 Engine.get().release_status(Engine.Status.TRANSLATING)
                 self.emit(Base.Event.TRANSLATION_DONE, {
                     "success": True,
+                    # 达到最大轮次而 break 时仍有未翻译条目，必须让下游知道这是
+                    # "部分完成"，否则一键流程会把不完整的一轮记成完成并进入成功态。
+                    "metrics_status": metrics_status,
                     "run_id": run_id,
                     "request_id": run_request_id,
                     "auto_write_back": auto_write_back,
@@ -1861,12 +1871,20 @@ class Translator(Base):
         if max_workers == 0:
             try:
                 response_json = None
-                response = httpx.get(re.sub(r"/v1$", "", self.platform.get("api_url")) + "/slots")
+                # 显式短超时：这是本机 llama.cpp 的槽位探测，不是模型请求。
+                # 沿用 request_timeout（默认 60s）会让服务没起来时整个启动
+                # 线程长时间挂住；也不该不传 timeout 依赖 httpx 的默认值。
+                response = httpx.get(
+                    re.sub(r"/v1$", "", self.platform.get("api_url")) + "/slots",
+                    timeout = SLOT_PROBE_TIMEOUT,
+                )
                 response.raise_for_status()
                 response_json = response.json()
             except Exception as e:
-                self.print("")
-                self.debug("", e)
+                # 槽数探测失败属于可降级情况，但必须留下原因，否则用户只能看到
+                # "并发数不对"却查不到是连不上、返回非 JSON 还是超时。
+                self.print(f"[WORKER] 获取本地槽数失败，继续使用默认并发: {type(e).__name__}: {e}")
+                self.debug(f"[WORKER] 槽数探测异常: {type(e).__name__}: {e}")
             if isinstance(response_json, list) and len(response_json) > 0:
                 max_workers = len(response_json)
 
@@ -2243,6 +2261,27 @@ class Translator(Base):
             # 检查是否为错误返回 (配合 TranslatorTask 的异常捕获)
             if result.get("error"):
                 self.error(f"[CALLBACK] 子任务报告错误: {result.get('error_msg', '未知错误')}")
+                # 子任务的译文仍留在内存 items 里并最终写文件，但这一批的行数、
+                # 失败条数和持久化如果一起丢掉，用户看到的进度会永远停在失败前，
+                # 缓存也不会被标记为需要落盘。失败的行数按 row_count 估算（消息
+                # 构建失败时 TranslatorTask 不给 row_count，保守地不推进行数）。
+                with self.data_lock:
+                    if run_id is not None and self._translation_run_id != run_id:
+                        return
+                    self.extras = self._merge_task_result_into_progress(
+                        {
+                            "row_count": 0,
+                            "failed_line_count": max(
+                                0,
+                                int(result.get("row_count", 0) or 0)
+                                or int(result.get("failed_line_count", 0) or 0),
+                            ),
+                        }
+                    )
+                self.cache_manager.get_project().set_progress(self.extras)
+                self.cache_manager.get_project().set_status(Base.TranslationStatus.TRANSLATING)
+                self.cache_manager.require_save_to_file(self.config.output_folder)
+                self.emit(Base.Event.TRANSLATION_UPDATE, self.extras)
                 return
 
             # 记录数据

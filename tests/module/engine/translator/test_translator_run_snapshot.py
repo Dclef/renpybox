@@ -12,6 +12,7 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets
+from module.Engine.Translator import Translator as translator_module
 from module.Engine.Translator.Translator import Translator
 from module.Renpy.ProjectPaths import RenpyProjectPaths, read_run_manifest, write_run_manifest
 
@@ -744,4 +745,203 @@ def test_auto_write_back_skipped_when_disabled(monkeypatch, tmp_path) -> None:
 
     assert len(written) == 0
     assert auto_write_back is False
+
+
+def test_max_round_break_reports_incomplete_status(monkeypatch, tmp_path) -> None:
+    """达到最大轮次仍有未翻译条目时，必须报"部分完成"而不是成功。"""
+    config = Config(
+        output_folder=str(tmp_path),
+        max_round=1,
+        token_threshold=1,
+    )
+    translator = _translator()
+    translator.config = config
+    translator.platform = _platform(model="m", api_key="k")
+    translator.extras = translator._new_progress_extras(2)
+    translator._translation_run_id = 7
+    translator._run_context = threading.local()
+
+    monkeypatch.setattr(translator, "emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "debug", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "initialize_max_workers", lambda: (1, 0))
+    monkeypatch.setattr(translator, "initialize_local_flag", lambda: False)
+    monkeypatch.setattr(translator, "_should_stop_requested", lambda *args, **kwargs: False)
+    monkeypatch.setattr(translator, "_is_translation_run_current", lambda *args: True)
+    monkeypatch.setattr(translator, "_bind_run_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "_unbind_run_context", lambda: None)
+    monkeypatch.setattr(translator, "_copy_entry_config", lambda data: config)
+    monkeypatch.setattr(translator, "_remember_runtime_manifest", lambda cfg: None)
+    monkeypatch.setattr(translator, "_track_active_future", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "task_done_callback", lambda *args, **kwargs: None)
+    monkeypatch.setattr(translator, "rule_filter", lambda items: None)
+    monkeypatch.setattr(translator, "language_filter", lambda items: None)
+    monkeypatch.setattr(translator, "accept_preserved_untranslated_items", lambda items: 0)
+    monkeypatch.setattr(translator, "mtool_optimizer_preprocess", lambda items: None)
+    monkeypatch.setattr(translator, "mtool_optimizer_postprocess", lambda items: None)
+    monkeypatch.setattr(translator, "check_and_wirte_result", lambda items: None)
+    monkeypatch.setattr(
+        translator,
+        "_verify_uppercase_untranslated",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "save_to_file",
+        lambda **kwargs: True,
+    )
+
+    context = SimpleNamespace(
+        to_runtime_config=lambda _config: config,
+    )
+    monkeypatch.setattr(
+        translator,
+        "_initialize_translation_run",
+        lambda *args, **kwargs: context,
+    )
+    # PromptBuilder 会按 isinstance 判定 task_context 类型，且 translation_start_task
+    # 开头会调用 PromptBuilder.reset()。这里换成不读配置的桩，让本测试只关心
+    # "达到最大轮次"这条分支的上报内容。
+    class _PromptBuilderStub:
+        @classmethod
+        def reset(cls) -> None:
+            return None
+
+        def __init__(self, _context) -> None:
+            pass
+
+        def build_main(self) -> str:
+            return ""
+
+    monkeypatch.setattr(translator_module, "PromptBuilder", _PromptBuilderStub)
+
+    # TranslatorTask 会校验 task_context 必须是真实的 TranslationTaskContext，
+    # 本测试不关心任务内部，只关心达到最大轮次时的上报。
+    class _TaskStub:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._throughput_metrics = None
+            self._submitted_at = 0.0
+
+    monkeypatch.setattr(translator_module, "TranslatorTask", _TaskStub)
+    monkeypatch.setattr(translator, "_get_active_platform", staticmethod(lambda _config: _platform(model="m", api_key="k")))
+    monkeypatch.setattr(translator, "_run_asset_preflight", lambda *args, **kwargs: None)
+
+    engine = Engine.get()
+    previous_status = engine.get_status()
+    engine.set_status(Engine.Status.TRANSLATING)
+    translator._run_translation_task = lambda *args, **kwargs: {
+        "row_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+    def fake_chunks(*args, **kwargs):
+        # 一条永远译不出来的条目：每个轮次都会被重新排队。
+        yield [CacheItem(src="Hello")], []
+
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "iter_item_chunks",
+        lambda *args, **kwargs: fake_chunks(),
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "get_item_count",
+        lambda: 1,
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "get_item_count_by_status",
+        lambda status: 1,
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "get_items",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "set_save_observer",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        translator.cache_manager,
+        "require_flag",
+        False,
+        raising=False,
+    )
+
+    toasts = []
+    done = []
+    monkeypatch.setattr(
+        translator,
+        "emit",
+        lambda event, data: (
+            toasts.append((event, data))
+            if event == Base.Event.APP_TOAST_SHOW
+            else done.append((event, data))
+        ),
+    )
+
+    try:
+        translator.translation_start_task(
+            Base.Event.TRANSLATION_START,
+            {"status": Base.TranslationStatus.UNTRANSLATED},
+            run_id=7,
+            cancel_event=threading.Event(),
+        )
+    finally:
+        engine.set_status(previous_status)
+
+    # 达到最大轮次是 WARNING，不是 SUCCESS。
+    assert toasts, "达到最大轮次必须弹提示"
+    assert [payload["type"] for event, payload in toasts] == [Base.ToastType.WARNING], [
+        payload.get("message") for _, payload in toasts
+    ]
+    done_payload = [payload for event, payload in done if event == Base.Event.TRANSLATION_DONE]
+    assert done_payload
+    assert done_payload[-1]["success"] is True
+    assert done_payload[-1]["metrics_status"] == "incomplete"
+
+
+def test_task_done_callback_error_branch_still_persists_progress(monkeypatch, tmp_path) -> None:
+    """子任务报错也必须推进进度并请求落盘，否则这一批的译文状态全丢。"""
+    translator = _translator()
+    translator.config = Config(output_folder=str(tmp_path))
+    translator.extras = translator._new_progress_extras(5)
+    translator._translation_run_id = 3
+    translator.cache_manager.items = [
+        CacheItem(src="Hello", dst="你好", status=Base.TranslationStatus.TRANSLATED),
+    ]
+    errors = []
+    updates = []
+    translator.error = lambda *args, **kwargs: errors.append(args[0] if args else "")
+    translator.emit = lambda event, data: updates.append((event, data))
+
+    translator.task_done_callback(
+        SimpleNamespace(
+            result=lambda: {
+                "row_count": 2,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "error": True,
+                "error_msg": "消息构建失败",
+                "failed_line_count": 2,
+            }
+        ),
+        None,
+        None,
+        run_id=3,
+        cancel_event=threading.Event(),
+    )
+
+    assert translator.cache_manager.require_flag is True
+    assert translator.cache_manager.require_path == str(tmp_path)
+    assert translator.extras["failed_line_count"] == 2
+    assert translator.extras["processed_batches"] == 1
+    assert any(event == Base.Event.TRANSLATION_UPDATE for event, _ in updates)
+    assert errors
 

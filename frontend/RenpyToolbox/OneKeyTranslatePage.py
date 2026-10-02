@@ -125,6 +125,9 @@ class YiJianFanyiPage(Base, QWidget):
         # 一键翻译结束后，按需串起“自动补全漏翻”流程
         self._onekey_translation_started = False
         self._onekey_translation_completed = False
+        # 本轮因达到最大翻译轮次而 break，仍有未翻译条目：流程没失败，但不能
+        # 对用户显示成"翻译已完成"。
+        self._onekey_translation_incomplete = False
         self._onekey_project_key = ""
         self._onekey_request_id = ""
         self._onekey_run_id = None
@@ -919,6 +922,7 @@ class YiJianFanyiPage(Base, QWidget):
         if paths.project_key != self._onekey_project_key:
             self._onekey_project_key = paths.project_key
             self._onekey_translation_completed = False
+            self._onekey_translation_incomplete = False
             self._reset_auto_hook_state()
             self._incremental_dir = None
             self._incremental_output_dir = None
@@ -2397,6 +2401,7 @@ class YiJianFanyiPage(Base, QWidget):
 
         self._start_translation_after_extraction = True
         self._onekey_translation_completed = False
+        self._onekey_translation_incomplete = False
         try:
             tl_blocked = self.tl_folder_edit.blockSignals(True)
             self.tl_folder_edit.setText(str(language or "chinese").strip() or "chinese")
@@ -2483,6 +2488,7 @@ class YiJianFanyiPage(Base, QWidget):
             # 翻译任务的完成事件误认为本次一键流程。
             self._onekey_translation_started = False
             self._onekey_translation_completed = False
+            self._onekey_translation_incomplete = False
             self._auto_hook_pending = self.auto_hook_supplement_chk.isChecked()
             self._auto_hook_running = False
             self._open_legacy_translation_page()
@@ -2726,6 +2732,7 @@ class YiJianFanyiPage(Base, QWidget):
             return
 
         self._onekey_translation_completed = False
+        self._onekey_translation_incomplete = False
         if getattr(self, "_auto_hook_running", False):
             self._restore_paths_after_auto_hook()
         self._reset_auto_hook_state()
@@ -2739,6 +2746,8 @@ class YiJianFanyiPage(Base, QWidget):
         """监听翻译完成，按需接续 replace_text 补漏。"""
         payload = data if isinstance(data, dict) else {}
         failed = payload.get("success") is False or payload.get("stopped") is True
+        # 达到最大轮次时 success 仍是 True，只能靠 metrics_status 区分"部分完成"。
+        incomplete = not failed and payload.get("metrics_status") == "incomplete"
 
         if getattr(self, "_auto_hook_running", False):
             request_id = str(payload.get("request_id", "") or "")
@@ -2794,6 +2803,7 @@ class YiJianFanyiPage(Base, QWidget):
 
         if self._onekey_translation_started:
             self._onekey_translation_completed = not failed
+            self._onekey_translation_incomplete = incomplete
             self._reset_auto_hook_state()
             self._refresh_step4_state()
 
@@ -2806,6 +2816,7 @@ class YiJianFanyiPage(Base, QWidget):
             if self._auto_hook_running:
                 self._restore_paths_after_auto_hook()
             self._onekey_translation_completed = False
+            self._onekey_translation_incomplete = False
             self._reset_auto_hook_state()
             self._refresh_step4_state()
 
@@ -2834,13 +2845,24 @@ class YiJianFanyiPage(Base, QWidget):
         """刷新第 4 步界面：翻译已完成时给出明确指引，否则走配置检查。"""
         if self._onekey_translation_completed or self._translation_output_completed():
             self._onekey_translation_completed = True
-            self.step4_status.setText(
-                Localizer.get().onekey_translation_complete_continue_post_processing_apply_game
-            )
-            set_semantic_status(self.step4_status, "success")
-            self.start_trans_btn.setText(
-                Localizer.get().onekey_translate_again
-            )
+            # 达到最大轮次的部分完成仍算"流程跑完"，可以进后续处理，但不能再
+            # 用"翻译已完成 / 重新翻译"的成功态文案，那会让用户以为游戏里没有英文。
+            if getattr(self, "_onekey_translation_incomplete", False):
+                self.step4_status.setText(
+                    Localizer.get().onekey_translation_partially_complete_continue_post_processing
+                )
+                set_semantic_status(self.step4_status, "warning")
+                self.start_trans_btn.setText(
+                    Localizer.get().onekey_translation_partially_complete_translate_again
+                )
+            else:
+                self.step4_status.setText(
+                    Localizer.get().onekey_translation_complete_continue_post_processing_apply_game
+                )
+                set_semantic_status(self.step4_status, "success")
+                self.start_trans_btn.setText(
+                    Localizer.get().onekey_translate_again
+                )
             self.start_trans_btn.setEnabled(True)
             self.skip_trans_btn.setText(
                 Localizer.get().onekey_continue_post_processing

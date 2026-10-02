@@ -1809,6 +1809,8 @@ class LocalizerEN(LocalizerZH):
     onekey_translation_complete_continue_post_processing_apply_game: str = '✔ Translation is complete. Continue to Post-processing to apply it to the game.'
     onekey_translate_again: str = 'Translate Again'
     onekey_continue_post_processing: str = 'Continue to Post-processing →'
+    onekey_translation_partially_complete_continue_post_processing: str = '⚠ Maximum rounds reached; some entries are still untranslated. The translated part can be applied via Post-processing, but English will remain in the game.'
+    onekey_translation_partially_complete_translate_again: str = 'Translate Again (raise max rounds)'
     onekey_input_folder_missing_does_not_exist: str = 'The input folder is missing or does not exist'
     onekey_output_folder_not_configured: str = 'The output folder is not configured'
     onekey_no_translation_provider_active: str = 'No translation provider is active'
@@ -2448,8 +2450,14 @@ class LocalizerEN(LocalizerZH):
     # RPY 分类抽取设置
     rpy_rules_title: str = 'RPY extraction settings'
     rpy_rules_description: str = 'Manage built-in extraction and regex profiles for source and TL files'
-    rpy_rules_source: str = 'Source RPY (one-click / source translation)'
-    rpy_rules_tl: str = 'TL RPY (TL translation)'
+    # Category names describe *which syntax* the rules match. Feature names live
+    # only in the two scope notes below: one-click translation spans both stages
+    # (read game/ to extract, write tl/ to translate), so listing it beside source
+    # translation made the two unrelated flows look interchangeable.
+    rpy_rules_source: str = 'Source RPY (reads game/ folder)'
+    rpy_rules_tl: str = 'TL RPY (reads tl/<language> folder)'
+    rpy_rules_source_scope: str = 'Used by: the extraction stage of one-click translation, source translation, and extract-to-TL. All three read game/*.rpy and share one rule set.'
+    rpy_rules_tl_scope: str = 'Used by: direct RPY translation and the translation stage of one-click translation. Both read tl/<language>/*.rpy and share one rule set.'
     rpy_rules_builtin: str = 'Built-in only'
     rpy_rules_combined: str = 'Built-in + custom'
     rpy_rules_custom: str = 'Custom only'
@@ -2457,7 +2465,8 @@ class LocalizerEN(LocalizerZH):
     rpy_rules_copy_builtin: str = 'Copy common rules to a custom profile'
     rpy_rules_apply: str = 'Apply settings'
     rpy_rules_no_profile: str = 'No custom profile selected'
-    rpy_rules_current: str = 'Current: {mode} · {name}'
+    rpy_rules_current: str = 'In effect: {mode} · {name}'
+    rpy_rules_pending: str = 'Not applied: {mode} · {name} (press Apply settings to use it)'
     rpy_rules_path: str = 'Select the game or RPY folder'
     rpy_rules_language: str = 'TL language folder'
     rpy_rules_builtin_description: str = 'Built-in: source dialogue, menus and UI; TL old/new pairs and labelled dialogue. Built-in behavior is read-only. Copy common syntax templates to edit regex rules; templates do not replicate the full parser.\nCustom only adds no built-in results. TL regex matches old lines or source dialogue without #; only paired translations are written.'
