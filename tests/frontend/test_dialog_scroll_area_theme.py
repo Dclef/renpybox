@@ -1,4 +1,4 @@
-"""抽取相关对话框在暗色主题下不应残留系统浅色底（issue #25）。"""
+"""原生对话框在暗色主题下不应残留系统浅色底（issue #25）。"""
 import os
 from collections import Counter
 
@@ -11,6 +11,7 @@ from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import Theme, setTheme, setThemeColor
 
+from frontend.Proofreading.TargetLocationDialog import TargetLocationDialog
 from frontend.RenpyToolbox.GameExtractionRulesDialog import GameExtractionRulesDialog
 from module.Config import Config
 from module.Extract.GameExtractionRules import RuleStore
@@ -94,6 +95,33 @@ def test_rule_editor_labels_stay_readable(tmp_path, monkeypatch, theme, expected
         ) >= 4.5
     finally:
         dialog._dirty = False
+        dialog.close()
+        dialog.deleteLater()
+        APP.processEvents()
+
+
+@pytest.mark.parametrize('theme', [Theme.DARK, Theme.LIGHT])
+def test_target_location_dialog_follows_theme(tmp_path, monkeypatch, theme):
+    """校对定位对话框同样是原生 QDialog，未标记时暗色下整块发白。"""
+    setTheme(theme)
+    setThemeColor('#2398D4')
+    APP.setStyleSheet(get_current_stylesheet())
+    script = tmp_path / 'script.rpy'
+    script.write_text('line one\nline two\n', encoding='utf-8')
+    dialog = TargetLocationDialog(script, 1)
+    dialog.show()
+    for _ in range(4):
+        APP.processEvents()
+    try:
+        colours = _sample(dialog.grab().toImage())
+        sampled = sum(colours.values())
+        leaked = sum(count for name, count in colours.items() if name in SYSTEM_LIGHT)
+        # 亮色主题本来就应该是浅色，只有暗色才算泄漏
+        if theme == Theme.DARK:
+            assert leaked * 100 // sampled == 0, colours.most_common(5)
+        dominant = colours.most_common(1)[0][0]
+        assert (QColor(dominant).lightnessF() > 0.5) == (theme == Theme.LIGHT)
+    finally:
         dialog.close()
         dialog.deleteLater()
         APP.processEvents()

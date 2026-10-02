@@ -7,6 +7,7 @@ from PyQt5.QtGui import QColor, QDesktopServices, QTextCursor, QTextFormat
 from PyQt5.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit, QVBoxLayout
 
 from module.Localizer.Localizer import Localizer
+from widget.ThemeHelper import mark_app_dialog
 
 
 def read_line_context(path, row, cancel=None, radius=20):
@@ -36,6 +37,7 @@ class TargetLocationDialog(QDialog):
 
     def __init__(self, path, row, parent=None):
         super().__init__(parent)
+        mark_app_dialog(self)
         self.setWindowTitle(Localizer.get().target_line_title)
         self.resize(850, 520)
         self._cancel = threading.Event()
