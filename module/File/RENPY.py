@@ -10,7 +10,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
-from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_core import parse_tl_document, validate_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 from module.File.AtomicWrite import atomic_write_text
 
@@ -167,17 +167,17 @@ class RENPY(Base):
                     applied, skipped = applied3, skipped3
                     self.warning(
                         f"RENPY 写回已改用宽松匹配: {rel_path} (applied={applied}, skipped={skipped})",
-                        console=False,
                     )
             if skipped > 0:
+                # 这三条曾经都是 console=False，用户只在日志文件里能看到，于是"已改用宽松匹配"
+                # /"跳过 N 条"/"疑似未生效"三种最需要人工介入的情况全部静默。宽松写回本来就是
+                # 已经出过一次错之后的兜底路径，再藏起来等于让用户对着没变化的游戏猜原因。
                 self.warning(
                     f"RENPY 导出写回跳过 {skipped} 条: {rel_path} (applied={applied})",
-                    console=False,
                 )
             if translated_items > 0 and applied == 0:
                 self.warning(
                     f"RENPY 写回疑似未生效: {rel_path} (translated={translated_items}, applied={applied}, skipped={skipped})",
-                    console=False,
                 )
 
             from module.Renpy.renpy_tl_core import RENPYBOX_REPLACE_ONLY_MARKER
@@ -213,7 +213,7 @@ class RENPY(Base):
                 atomic_write_text(
                     target_path,
                     "\n".join(lines),
-                    validator=lambda value: parse_tl_document(value.splitlines()),
+                    validator=validate_tl_document,
                     allowed_roots=[self.output_path],
                 )
             except Exception as exc:
@@ -244,9 +244,33 @@ class RENPY(Base):
                 pass
         if errors:
             raise RuntimeError("Ren'Py 写回未完整完成：" + "；".join(errors))
-        if len(hook_languages) == 1:
+        if hook_languages:
+            # 每种语言的钩子必须写进各自的 tl/<lang>/，否则同一文件被后一个
+            # 语言覆盖，另一种语言的译文在游戏里就不生效。只在恰好一种语言时
+            # 生成、其余情况静默跳过，会让多语言项目的钩子永远不更新。
             from module.Extract.ReplaceGenerator import generate_replace_from_miss
-            generate_replace_from_miss(self.output_path, hook_languages.pop(), tl_dir=self.output_path)
+            for hook_language in sorted(hook_languages):
+                try:
+                    hook_dir = self._resolve_hook_language_dir(hook_language)
+                    # 钩子目录可能是首次生成：SimpleRpyExtractor.resolve_game_path
+                    # 会对不存在的路径抛 FileNotFoundError，而 hook_dir 又只是
+                    # 一个待写入的目标，先建好目录再生成。
+                    hook_dir.mkdir(parents=True, exist_ok=True)
+                    generate_replace_from_miss(
+                        hook_dir,
+                        hook_language,
+                        tl_dir=self.output_path,
+                        output_dir=hook_dir,
+                    )
+                except Exception as exc:
+                    self.error(
+                        f"生成 {hook_language} 补全钩子失败 {self.output_path}", exc,
+                    )
+                    errors.append(f"生成 {hook_language} 补全钩子失败: {exc}")
+        # 钩子生成放在错误检查之后：钩子失效时译文在游戏里不生效，
+        # 必须与写回失败一样让调用方感知，不能只落一条日志。
+        if errors:
+            raise RuntimeError("Ren'Py 写回未完整完成：" + "；".join(errors))
 
     def refresh_replace_markers(self, items: List[CacheItem]) -> None:
         """给旧缓存补充替换来源标记，保留条目身份和未保存的译文。"""
@@ -514,6 +538,44 @@ class RENPY(Base):
         if isinstance(value, str):
             return value
         return ""
+
+    def _resolve_hook_language_dir(self, language: str) -> Path:
+        """返回 ``language`` 语言的钩子目录。
+
+        ``config.output_folder`` 的语义随入口而变：直接翻译/一键钩子模式下它
+        本身就是 ``tl/<lang>``（见 frontend/RenpyToolbox/DirectRpyTranslatePage.py
+        的 ``apply_resolved(input_folder=paths.tl_language_dir,
+        output_folder=paths.tl_language_dir)``），此时钩子就写在这里；而整棵
+        ``tl/`` 一起写回时，多个语言共用一个 output 目录，若仍全部写向
+        self.output_path，后一种语言会覆盖前一种——游戏里另一种语言的译文就
+        永远不生效。所以按 output 目录是否已在某个 ``tl/<lang>`` 下来分流。
+
+        共享 output 目录时按语言分流，但绝不能凭 ``game/`` 子目录是否存在来
+        推导项目根：RenpyProjectPaths.from_path 对裸目录会凭空造出
+        ``<output>/game/tl/<lang>``，Ren'Py 永远不会加载那个路径，比全都写在
+        一起更糟。这里只沿 output 目录自身向上找 ``tl`` 根。
+        """
+        output = self.output_path
+        # 已在 tl/<lang> 内：单语言模式，保持原样以免写成 tl/<lang>/tl/<lang>/。
+        if output.parent.name.casefold() == "tl":
+            return output
+
+        name = str(language or "").strip()
+        if name == "":
+            return output
+
+        # 向上找真正的 tl 根：output 本身可能就是 tl/<lang>，也可能是 tl/，
+        # 或者是整棵 game 目录 / 项目根。
+        for candidate in (output, *output.parents):
+            if candidate.name.casefold() == "tl":
+                return candidate / name
+            if candidate.name.casefold() == name:
+                return candidate
+
+        # 走不到 tl 根说明 output 是个既不在 tl 下、名字也不是语言的裸目录。
+        # 此时只在 output 下面放一个 tl/<lang>，这是唯一能让 Ren'Py 找到钩子
+        # 的位置；RenpyProjectPaths 的 game_dir 推导只会给出更深的错误路径。
+        return output / "tl" / name
 
     def _relative_to_input(self, path: Path) -> str:
         try:

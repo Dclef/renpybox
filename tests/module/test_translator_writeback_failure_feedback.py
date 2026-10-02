@@ -12,6 +12,7 @@ import types
 import pytest
 
 import module.Engine.Translator.Translator as translator_module
+import module.File.FileManager as file_manager_module
 from base.Base import Base
 from module.Engine.Translator.Translator import Translator
 
@@ -37,7 +38,11 @@ def _make_translator(monkeypatch, *, write_error: Exception | None):
         def check(self):
             calls.append("check")
 
-    monkeypatch.setattr(translator_module, "FileManager", FakeFileManager)
+    # FileManager 在 Translator 里是函数内延迟导入（module/Engine/Translator/
+    # Translator.py 的 check_and_wirte_result / translation_manual_export /
+    # translation_cache_reinject 都写 `from module.File.FileManager import
+    # FileManager`），模块上没有这个属性，必须打真实模块路径才拦得住。
+    monkeypatch.setattr(file_manager_module, "FileManager", FakeFileManager)
     monkeypatch.setattr(translator_module, "ResultChecker", FakeResultChecker)
 
     translator = Translator.__new__(Translator)

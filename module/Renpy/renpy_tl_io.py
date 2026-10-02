@@ -567,9 +567,13 @@ class RenpyTlLineUpdater(Base):
         self._reset_debug_skip()
         applied = 0
         skipped = 0
+        # 宽松写回没有哈希兜底，唯一的护栏就是下面 apply_item_loose 里的三项一致性
+        # 预检。它们各自都会改写 lines，条目若指向同一行，后一条会把前一条的结果
+        # 悄悄盖掉，而 applied 仍然照数报上去——所以在这里显式记下已写过的行。
+        written_targets: dict[int, str] = {}
 
         for item in items:
-            ok = self.apply_item_loose(lines, item)
+            ok = self.apply_item_loose(lines, item, written_targets)
             if ok:
                 applied += 1
             else:
@@ -577,7 +581,9 @@ class RenpyTlLineUpdater(Base):
 
         return applied, skipped
 
-    def apply_item_loose(self, lines: list[str], item: CacheItem) -> bool:
+    def apply_item_loose(
+        self, lines: list[str], item: CacheItem, written_targets: dict[int, str] | None = None
+    ) -> bool:
         extra_raw = item.get_extra_field()
         extra: dict = extra_raw if isinstance(extra_raw, dict) else {}
         renpy: dict = extra.get("renpy", {})
@@ -640,8 +646,70 @@ class RenpyTlLineUpdater(Base):
                 slots_count=len(slots),
             )
 
+        # 以下四项是宽松写回仅有的护栏。宽松路径没有 template_raw_sha1 / ast_key 这类
+        # 强校验，所以"这条 target_line 真的属于这条 item"完全依赖下面的比对；比对不过
+        # 就宁可漏写（跳过后由 find_unapplied_translations 报错），也不能把译文写错行。
+        # digest 缺失时一律放行：老版本 RenpyBox 写下的缓存行没有这些字段，此时"无法校验"
+        # 不等于"校验失败"，宽松写回本来就是最后一道兜底，不能因此整批失效。
         target_raw = lines[target_line - 1]
         target_indent, target_rest = split_indent(target_raw)
+        digest = renpy.get("digest", {})
+        if isinstance(digest, dict):
+            template_rstrip_sha1 = digest.get("template_raw_rstrip_sha1")
+            if isinstance(template_rstrip_sha1, str) and template_rstrip_sha1:
+                template_rstrip_sha1_now = sha1_hex(lines[template_line - 1].rstrip())
+                if template_rstrip_sha1_now != template_rstrip_sha1:
+                    return self._debug_skip(
+                        item,
+                        "template_raw_rstrip_sha1_mismatch",
+                        mode="loose",
+                        template_line=template_line,
+                        expected=self._short_hash(template_rstrip_sha1),
+                        actual=self._short_hash(template_rstrip_sha1_now),
+                    )
+
+            target_skeleton_sha1 = digest.get("target_skeleton_sha1")
+            target_string_count = digest.get("target_string_count")
+            target_literals = scan_quoted_literals(target_rest)
+            checked_skeleton = False
+            if isinstance(target_skeleton_sha1, str) and target_skeleton_sha1:
+                target_skeleton_sha1_now = sha1_hex(
+                    build_line_skeleton(target_rest, target_literals)
+                )
+                if target_skeleton_sha1_now != target_skeleton_sha1:
+                    return self._debug_skip(
+                        item,
+                        "target_skeleton_sha1_mismatch",
+                        mode="loose",
+                        target_line=target_line,
+                        expected=self._short_hash(target_skeleton_sha1),
+                        actual=self._short_hash(target_skeleton_sha1_now),
+                    )
+                checked_skeleton = True
+            # 字面量数量只作为骨架哈希缺失时的兜底：build_line_skeleton 每个字面量都替换成
+            # 同一个 PLACEHOLDER，所以骨架一旦能比对，数量就已经被它蕴含了，再单独比一次
+            # 是永远轮不到的死分支。
+            if not checked_skeleton and isinstance(target_string_count, int) and target_string_count >= 0:
+                if len(target_literals) != target_string_count:
+                    return self._debug_skip(
+                        item,
+                        "target_string_count_mismatch",
+                        mode="loose",
+                        target_line=target_line,
+                        expected=target_string_count,
+                        actual=len(target_literals),
+                    )
+
+        # 同一 target_line 被两条 item 认领：后者会悄悄覆盖前者，而 applied 照数上报。
+        # 按 target_line 排序后先到的那条已经在文件里，后到的只能整条拒收。
+        if written_targets is not None and target_line in written_targets:
+            return self._debug_skip(
+                item,
+                "target_line_already_written",
+                mode="loose",
+                target_line=target_line,
+                kept=written_targets[target_line],
+            )
 
         kind = block.get("kind")
         if kind is None:
@@ -663,6 +731,8 @@ class RenpyTlLineUpdater(Base):
 
         new_code = self._replace_literals_by_index(base_code, replacement_by_index)
         lines[target_line - 1] = f"{target_indent}{new_code}"
+        if written_targets is not None:
+            written_targets[target_line] = f"row={item.get_row()}"
         return True
 
     def _build_replacements(self, item: CacheItem, slots: list) -> dict[int, str]:

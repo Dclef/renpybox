@@ -462,6 +462,81 @@ def parse_tl_document(lines: list[str]) -> TlDocument:
     return TlDocument(lines=lines, blocks=blocks)
 
 
+class TlSyntaxError(ValueError):
+    """TL 文本已无法安全解析，写入前必须拦下。"""
+
+
+def validate_tl_document(text: str) -> TlDocument:
+    """写入前的严格校验：解析新文本并与写入前的解析结果对照。
+
+    ``parse_tl_document`` 对畸形输入是**故意**不抛异常的——它被用在增量抽取等
+    热路径上，遇到半截文件也要继续往下走。但 ``atomic_write_text`` 的
+    ``validator=`` 就是最后一道闸：一旦这里放过一份语法已坏的 TL，Ren'Py 启动时
+    会直接报解析错误，而用户的原文已经在这一步被覆盖了。
+
+    原来这里写的是 ``lambda value: parse_tl_document(value.splitlines())``，
+    它对任何输入都返回一个文档对象，因此这个"校验器"从来不会失败，等于没写。
+    """
+    document = parse_tl_document(text.splitlines())
+    _reject_unparseable_statements(document)
+    return document
+
+
+def _reject_unparseable_statements(document: TlDocument) -> None:
+    """把解析器悄悄放过的问题变成异常。
+
+    ``scan_quoted_literals`` 在遇到未闭合引号时直接 ``return []``
+    （``scan_quoted_literals`` 里的 ``else: # 未闭合引号：视为不可解析``），
+    而空列表和"这行本来就没有字符串"在调用方眼里长得一模一样——结果就是
+    写坏的文件仍被当成"没有可翻译内容"接受，下一轮抽取会把它当成空文件删掉。
+    这里补一个独立扫描来分辨这两种情况。
+    """
+    for block in document.blocks:
+        for statement in block.statements:
+            if statement.stmt_kind in (TlStmtKind.BLANK, TlStmtKind.META):
+                continue
+            if '"' not in statement.code:
+                continue
+            if statement.literals:
+                continue
+            if _has_unterminated_quote(statement.code):
+                raise TlSyntaxError(
+                    f"第 {statement.line_no} 行存在未闭合的双引号，"
+                    f"无法安全解析：{statement.raw_line.strip()!r}"
+                )
+
+
+def _has_unterminated_quote(code: str) -> bool:
+    """判断一行里是否有引号一直开到行尾都没闭合。
+
+    这里必须逐字复刻 ``scan_quoted_literals`` 的转义规则，否则两边对"什么算
+    转义"的判断不一致，校验器就会在解析器已经成功的那行上误报。也不能像
+    ``scan_quoted_literals`` 那样遇到第一个坏引号就整体放弃——那样一行里
+    "前面几个字面量正常、最后半个引号没闭合"会被漏掉。
+    """
+    index = 0
+    length = len(code)
+    while index < length:
+        if code[index] != '"':
+            index += 1
+            continue
+        index += 1
+        closed = False
+        while index < length:
+            char = code[index]
+            if char == "\\" and index + 1 < length:
+                index += 2
+                continue
+            if char == '"':
+                index += 1
+                closed = True
+                break
+            index += 1
+        if not closed:
+            return True
+    return False
+
+
 # ==================== 匹配算法 ====================
 
 def _drop_normalized_speaker(key: str) -> str:

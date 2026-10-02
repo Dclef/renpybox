@@ -591,11 +591,17 @@ class ProofreadingPage(QWidget, Base):
         file_paths = self.filter_options.get(FilterDialog.KEY_FILE_PATHS)
         glossary_terms = self.filter_options.get(FilterDialog.KEY_GLOSSARY_TERMS)
 
+        # 这两个值在整轮循环里不变。原来每个条目都问一次 isChecked()（一次 Python→C++ 调用），
+        # 6 万条真实缓存下光这一项就占掉 GUI 线程的三分之一时间。
+        only_issues = self.only_issues_check.isChecked()
+        excluded_statuses = (Base.TranslationStatus.EXCLUDED, Base.TranslationStatus.DUPLICATED)
+
         filtered = []
         for item in self.items:
-            if item.get_status() in (Base.TranslationStatus.EXCLUDED, Base.TranslationStatus.DUPLICATED):
+            status = item.get_status()
+            if status in excluded_statuses:
                 continue
-            if self.only_issues_check.isChecked() and not self.warning_map.get(id(item)):
+            if only_issues and not self.warning_map.get(id(item)):
                 continue
 
             if warning_types is not None:
@@ -614,7 +620,7 @@ class ProofreadingPage(QWidget, Base):
                 if not any(term in glossary_terms for term in failed_terms):
                     continue
 
-            if statuses is not None and item.get_status() not in statuses:
+            if statuses is not None and status not in statuses:
                 continue
 
             if file_paths is not None and FilterDialog.file_group_key(item) not in file_paths:

@@ -1,5 +1,7 @@
 """Theme helpers for native Qt controls and the application shell."""
 
+import sys
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QAbstractScrollArea, QWidget
@@ -24,7 +26,8 @@ def _build_stylesheet(palette: ThemePalette) -> str:
         QWidget#toolboxScrollViewport,
         QWidget#toolboxFlow,
         QWidget#RenpyTranslationPage,
-        QWidget[appPage="true"] {{
+        QWidget[appPage="true"],
+        QWidget[appDialog="true"] {{
             background-color: {palette.background};
         }}
 
@@ -37,9 +40,52 @@ def _build_stylesheet(palette: ThemePalette) -> str:
         QWidget#toolboxScrollViewport QLabel,
         QWidget#toolboxFlow QLabel,
         QWidget#RenpyTranslationPage QLabel,
-        QWidget[appPage="true"] QLabel {{
+        QWidget[appPage="true"] QLabel,
+        QWidget[appDialog="true"] QLabel {{
             color: {palette.text_primary};
             background: transparent;
+        }}
+
+        /* 独立对话框里的原生 Qt 容器没有 QFluentWidgets 皮肤，在这里统一补齐，
+           未标记的窗口不受影响。 */
+        QWidget[appDialog="true"] QListWidget,
+        QWidget[appDialog="true"] QPlainTextEdit,
+        QWidget[appDialog="true"] QTextEdit {{
+            background-color: {palette.surface};
+            color: {palette.text_primary};
+            border: 1px solid {palette.border};
+            border-radius: 6px;
+        }}
+        QWidget[appDialog="true"] QListWidget::item:selected {{
+            background-color: {palette.accent_surface};
+            color: {palette.text_primary};
+        }}
+        QWidget[appDialog="true"] QScrollArea,
+        QWidget[appDialog="true"] QScrollArea > QWidget#qt_scrollarea_viewport {{
+            background: transparent;
+            border: none;
+        }}
+        /* QScrollArea.setWidget() 会强制打开 autoFillBackground，被托管的页面于是用
+           QPalette::Window 画底（Qt 默认是浅灰），暗色主题下就是一块亮斑，必须压掉。 */
+        QWidget[appDialog="true"] QScrollArea > QWidget > QWidget {{
+            background: transparent;
+            border: none;
+        }}
+        QWidget[appDialog="true"] QTabWidget::pane {{
+            background-color: {palette.surface};
+            border: 1px solid {palette.border};
+            border-radius: 6px;
+        }}
+        QWidget[appDialog="true"] QTabBar::tab {{
+            background-color: {palette.surface_subtle};
+            color: {palette.text_secondary};
+            border: 1px solid {palette.border};
+            border-bottom: none;
+            padding: 6px 14px;
+        }}
+        QWidget[appDialog="true"] QTabBar::tab:selected {{
+            background-color: {palette.surface};
+            color: {palette.text_primary};
         }}
 
         QLabel#translationStatusPill {{
@@ -343,6 +389,36 @@ def mark_toolbox_widget(widget: QWidget | None, prop: str = "toolboxPage") -> No
 
 def mark_app_page(widget: QWidget | None) -> None:
     mark_toolbox_widget(widget, "appPage")
+
+
+def mark_app_dialog(dialog: QWidget | None) -> None:
+    """独立对话框没有 QFluentWidgets 皮肤，标记后由主题样式接管背景与原生控件。
+
+    QFluentWidgets 只给自身控件着色，原生 QDialog 会保留系统浅色底，暗色主题下
+    与白色文字叠加成不可读的界面。
+    """
+    if dialog is None:
+        return
+    mark_toolbox_widget(dialog, "appDialog")
+    apply_native_dark_title_bar(dialog)
+
+
+def apply_native_dark_title_bar(window: QWidget | None) -> None:
+    """让 Windows 原生标题栏跟随当前主题，其他平台或不支持的版本静默跳过。"""
+    if window is None or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        dark = ctypes.c_int(1 if current_palette() is DARK else 0)
+        handle = int(window.winId())
+        for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE，旧版本用 19。
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(  # type: ignore[attr-defined]
+                handle, attribute, ctypes.byref(dark), ctypes.sizeof(dark)
+            ) == 0:
+                break
+    except Exception:
+        pass
 
 
 def mark_toolbox_scroll_area(scroll_area: QAbstractScrollArea | None) -> None:

@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from base.LogManager import LogManager
-from module.Renpy.renpy_tl_core import TlStmtKind, tl_block_kind_name
+from module.Renpy.renpy_tl_core import (
+    TlStmtKind,
+    parse_tl_document,
+    tl_block_kind_name,
+    unescape_tl_string,
+)
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
-from module.Renpy.renpy_tl_core import parse_tl_document
 from module.Text.SkipRules import should_skip_text
 
 
@@ -469,13 +473,8 @@ class SimpleRpyExtractor:
         return entries
 
     def _unescape_string(self, text: str) -> str:
-        """反转义字符串"""
-        return (
-            text
-            .replace("\\n", "\n")
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-        )
+        """反转义字符串（与写入侧 escape_tl_string 对称）"""
+        return unescape_tl_string(text)
 
     def _should_skip(self, text: str) -> bool:
         """判断文本是否应该跳过"""
