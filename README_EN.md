@@ -55,6 +55,7 @@
   - Proofreading filters, similarity checks, and placeholder checks are faster, so large projects no longer stutter repeatedly.
   - Fixed incomplete translations being reported as success, lost progress after a task stops unexpectedly, and one failing check aborting the whole report.
   - Fixed per-language runtime replacement patches overwriting each other, interrupted write-back leaving damaged translations, and silent success on incomplete backfill.
+  - Fixed the extraction-rules dialog and the proofreading target dialog keeping a light background in the dark theme.
   - RPY extraction settings are now grouped by the syntax they read, note which flows share each rule set, and say when a change has not been applied yet.
 
 - 2026-09-27 v0.7.12:
