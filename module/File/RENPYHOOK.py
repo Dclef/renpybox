@@ -126,14 +126,24 @@ class RENPYHOOK(Base):
         manifest_path = self._resolve_manifest_path(target_path)
         tl_name = output_path.parent.name or "chinese"
 
-        supplement_pairs = build_replace_pairs_from_entries(target_items)
+        supplement_pairs, supplement_conflicts = build_replace_pairs_from_entries(
+            target_items,
+            return_conflicts=True,
+        )
         plan = build_old_new_replace_plan(
             target_path,
             tl_name,
             supplement_pairs=supplement_pairs,
             tl_dir=output_path.parent,
+            supplement_conflict_count=supplement_conflicts,
         )
         pairs = list(plan.pairs)
+        if plan.conflict_count:
+            # 冲突条目的译文不可信，静默丢弃会让用户以为已经翻好，必须显式提示。
+            self.warning(
+                f"[SUPPLEMENT] {plan.conflict_count} 条原文对应多个译文，已全部跳过，"
+                "请检查重复条目或补漏清单"
+            )
         if pairs:
             write_replace_script(
                 output_path,

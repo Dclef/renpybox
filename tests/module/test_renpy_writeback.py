@@ -2,6 +2,7 @@ import pytest
 
 from base.Base import Base
 from module.Config import Config
+from module.Extract.ReplaceGenerator import read_generated_replace_pairs
 from module.File.RENPY import RENPY
 
 
@@ -143,3 +144,60 @@ def test_renpy_writeback_normalizes_values_before_unapplied_check(tmp_path):
 
     unapplied = writer.find_unapplied_translations(expected, actual)
     assert unapplied == []
+
+
+def test_renpy_writeback_regenerates_hook_for_every_marked_language(tmp_path):
+    """同一文件里带 replace-only 标记的多种语言都要触发钩子重建。
+
+    旧实现只在 ``len(hook_languages) == 1`` 时生成，多语言文件（Ren'Py 允许一个
+    .rpy 里放多个 translate <lang> 块）会让钩子永远不更新，用户反复写回都看不到
+    效果，而且没有任何报错或告警。
+
+    钩子目录按语言分流。直接翻译页面把 input_folder 与 output_folder 都设成
+    ``paths.tl_language_dir``（见 frontend/RenpyToolbox/DirectRpyTranslatePage.py），
+    此时 output_folder 本身就是 ``tl/<lang>``，钩子留在原地，不能再套一层
+    ``tl/<lang>/tl/<lang>/``；而整棵 ``tl/`` 一起写回时多个语言共用一个 output
+    目录，必须各自写进自己的 ``tl/<lang>/``，否则后一种语言会覆盖前一种。
+    本测试的 output_folder 是裸目录（既不在 tl 下，名字也不是语言名），落到
+    ``output/tl/<lang>/`` 是唯一 Ren'Py 能找到的位置。
+    """
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    source = input_dir / "fictional_multilang.rpy"
+    input_dir.mkdir()
+    source.write_text(
+        'translate chinese strings:\n\n'
+        '    # renpybox: replace-only\n'
+        '    old "Fictional helm"\n'
+        '    new "虚构船舵"\n\n'
+        'translate japanese strings:\n\n'
+        '    # renpybox: replace-only\n'
+        '    old "Fictional sail"\n'
+        '    new "虚構の帆"\n',
+        encoding="utf-8",
+    )
+
+    config = Config()
+    config.input_folder = str(input_dir)
+    config.output_folder = str(output_dir)
+    writer = RENPY(config)
+    items = writer.read_from_path([str(source)])
+    assert len(items) == 2
+
+    writer.write_to_path(items)
+
+    # 钩子失效必须让调用方感知，所以这里能走到断言就说明没有静默跳过。
+    # 一个钩子文件只渲染 translate <language> python: 块，只能承载一种语言，
+    # 所以两种语言各自一个文件，而不是合在一起。
+    chinese_hook = output_dir / "tl" / "chinese" / "replace_text_auto.rpy"
+    japanese_hook = output_dir / "tl" / "japanese" / "replace_text_auto.rpy"
+    assert chinese_hook.exists(), "chinese 钩子未生成"
+    assert japanese_hook.exists(), "japanese 钩子未生成"
+    # 按语言过滤只解决"冲突整条丢弃"，不能反过来让某个钩子混进别的语言，
+    # 也不能让某一种语言的译文在游戏里永远不生效（曾被后一种语言整体覆盖）。
+    assert dict(read_generated_replace_pairs(chinese_hook, {"Fictional helm", "Fictional sail"})) == {
+        "Fictional helm": "虚构船舵",
+    }
+    assert dict(read_generated_replace_pairs(japanese_hook, {"Fictional helm", "Fictional sail"})) == {
+        "Fictional sail": "虚構の帆",
+    }

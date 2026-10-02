@@ -1,15 +1,25 @@
 from pathlib import Path
 from enum import Enum
+from types import SimpleNamespace
 
 import pytest
 
 from module.Extract.UnifiedExtractor import UnifiedExtractor
-from module.Renpy.renpy_tl_core import parse_tl_document
+from module.Renpy.renpy_tl_core import escape_tl_string, parse_tl_document
+from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 
 
 def make_extractor() -> UnifiedExtractor:
     extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    extractor.logger = type("TestLogger", (), {"info": lambda self, message: None})()
+    extractor.logger = type(
+        "TestLogger",
+        (),
+        {
+            "info": lambda self, message: None,
+            "warning": lambda self, message: None,
+            "error": lambda self, message: None,
+        },
+    )()
     return extractor
 
 
@@ -671,6 +681,49 @@ translate chinese strings:
     assert "已翻译的虚构开关" not in output
 
 
+def test_ambiguous_string_translation_is_rejected_instead_of_last_wins(tmp_path):
+    """同一 strings 原文在两个 TL 文件里译文不同时必须整条拒收。
+
+    Ren'Py 的 strings 按源文本全局注册，运行时只认一条译文；last-wins 会让
+    结果取决于文件遍历顺序，用户的其中一份译文被无声覆盖且无处可查。
+    歧义原文也不能被算作"已翻译"，否则它会被增量比较当作完成而永久跳过。
+    """
+    tl_dir = tmp_path / "translations"
+    extractor = make_extractor()
+    write_tl(
+        tl_dir / "menu.rpy",
+        '''translate chinese strings:
+
+    old "Ambiguous line"
+    new "译文甲"
+
+    old "Unanimous line"
+    new "一致译文"
+''',
+    )
+    write_tl(
+        tl_dir / "chapter.rpy",
+        '''translate chinese strings:
+
+    old "Ambiguous line"
+    new "译文乙"
+''',
+    )
+
+    existing = extractor._get_existing_translations(tl_dir)
+
+    assert "Ambiguous line" in existing.ambiguous
+    assert "Ambiguous line" not in existing.strings
+    assert existing.lookup_string("Ambiguous line") is None
+    # 一致的原文仍照常可用。
+    assert existing.lookup_string("Unanimous line") == "一致译文"
+    # 歧义条目不算已翻译，否则增量比较会永久跳过它。
+    assert extractor._get_translated_string_originals(tl_dir) == {"Unanimous line"}
+    assert extractor._get_existing_string_translations(tl_dir) == {
+        "Unanimous line": "一致译文"
+    }
+
+
 def test_numbered_block_translation_does_not_hide_global_string_placeholder(tmp_path):
     tl_dir = tmp_path / "translations"
     extractor = make_extractor()
@@ -1101,6 +1154,53 @@ def test_repeated_text_inside_one_numbered_block_keeps_each_translation(tmp_path
     assert restored.count("第二次回声已确认。") == 1
 
 
+def test_merge_translations_fallback_keeps_comment_between_old_and_new(tmp_path, monkeypatch):
+    """AST 解析失败后的正则兜底不能吃掉 old 与 new 之间的注释。
+
+    旧实现假设 new 紧贴在 old 的下一行（i += 2），中间夹了空行/注释时会把
+    注释当 new 行丢弃，甚至把下一条 old 的内容覆盖掉。
+    """
+    tl_dir = tmp_path / "chinese"
+    path = tl_dir / "plot" / "archive.rpy"
+    write_tl(
+        path,
+        'translate chinese strings:\n\n'
+        '    old "Backslash and quote"\n'
+        '    # 用户手工注释：保留这行\n'
+        '    new ""\n'
+        '\n'
+        '    old "Second entry"\n'
+        '    new ""\n',
+    )
+    extractor = UnifiedExtractor()
+
+    # 让 AST 提取抛错，强制走正则兜底分支。
+    def boom(*_args, **_kwargs):
+        raise ValueError("fictional AST failure")
+
+    monkeypatch.setattr(RenpyTlItemExtractor, "extract", boom)
+
+    failures = extractor._merge_translations(
+        tl_dir,
+        {
+            "Backslash and quote": '说 \\ "引号" 与换行\n第二行',
+            "Second entry": "第二条",
+        },
+    )
+
+    assert failures == []
+    restored = path.read_text(encoding="utf-8")
+    # 注释必须原样保留（旧实现 i += 2 会把它当 new 行吃掉）。
+    assert "# 用户手工注释：保留这行" in restored
+    # 兜底写回必须用 escape_tl_string：先转义反斜杠，换行写成 \n，引号写成 \"。
+    expected = escape_tl_string('说 \\ "引号" 与换行\n第二行')
+    assert f'new "{expected}"' in restored
+    # 兜底只替换 new 行，old 行必须原样保留。
+    assert restored.count('old "Backslash and quote"') == 1
+    assert restored.count('old "Second entry"') == 1
+    assert restored.count("第二条") == 1
+
+
 def test_cross_file_write_failure_preserves_incremental_translation(tmp_path, monkeypatch):
     game_dir = tmp_path / "fictional_game"
     tl_dir = game_dir / "game" / "tl" / "chinese"
@@ -1272,3 +1372,92 @@ def test_regular_extract_restores_tl_on_failure(tmp_path, monkeypatch):
     assert (tl_dir / "old.rpy").read_text(encoding="utf-8").startswith(
         "translate chinese strings:"
     )
+
+
+def test_empty_block_cleanup_failures_are_logged_not_swallowed(tmp_path, monkeypatch):
+    """占位/去重清理步骤失败必须留下日志。
+
+    这两个调用点原来都是裸 ``except: pass``，而同一次调用在
+    ``_deploy_builtin_ui_pack`` 里已经带 warning。差异本身就是 bug：条目已经
+    删掉、文件只剩 ``translate xxx strings:`` 头时，Ren'Py 启动会直接报错，
+    而用户看不到任何线索，只能对着"游戏打不开"猜原因。
+    """
+    tl_dir = tmp_path / "chinese"
+    (tl_dir / "base_box").mkdir(parents=True)
+    (tl_dir / "base_box" / "common_box.rpy").write_text(
+        'translate chinese strings:\n\n    old "Confirm"\n\n', encoding="utf-8"
+    )
+    # base_box 之外的重复条目才会被删掉（base_box 自身被跳过），
+    # removed_total 为 0 时根本不会走到收尾清理。
+    (tl_dir / "ui.rpy").write_text(
+        'translate chinese strings:\n\n    old "Confirm"\n    new ""\n\n',
+        encoding="utf-8",
+    )
+
+    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
+    warnings: list[str] = []
+    extractor.logger = type(
+        "TestLogger",
+        (),
+        {
+            "info": lambda self, message: None,
+            "warning": lambda self, message: warnings.append(message),
+            "error": lambda self, message: None,
+        },
+    )()
+
+    # base_box 里已有 old，才会进入重复清理分支。
+    monkeypatch.setattr(
+        extractor, "_collect_base_box_old_values", lambda _tl_dir: {"Confirm"}
+    )
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("empty block cleanup boom")
+
+    monkeypatch.setattr(extractor, "_remove_empty_translate_blocks", boom)
+
+    assert extractor._remove_placeholder_duplicates_for_base_box(tl_dir, "chinese") == 1
+
+    assert any(
+        "清理占位条目后残留空翻译块失败" in message for message in warnings
+    ), warnings
+
+
+def test_merge_reports_empty_block_and_empty_file_cleanup_failures(tmp_path, monkeypatch):
+    """合并收尾的两处清理失败同样不能静默。
+
+    这两处紧跟 ``_dedupe_string_translations`` 之后：条目刚被删掉，空块和空文件
+    都会让 Ren'Py 读到只剩 strings 头而报错。
+    """
+    extractor = make_extractor()
+    warnings: list[str] = []
+    extractor.logger = type(
+        "TestLogger",
+        (),
+        {
+            "info": lambda self, message: None,
+            "warning": lambda self, message: warnings.append(message),
+            "error": lambda self, message: None,
+        },
+    )()
+    extractor._emit_progress = lambda message, percent: None
+    extractor._dedupe_string_translations = lambda *args, **kwargs: 0
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("cleanup boom")
+
+    monkeypatch.setattr(extractor, "_remove_empty_translate_blocks", boom)
+    monkeypatch.setattr(extractor, "_delete_empty_translation_files", boom)
+
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    stage = game_dir / "game" / "tl" / "chinese_new"
+    stage.mkdir(parents=True)
+
+    extractor.merge_incremental_folder(game_dir, "chinese")
+
+    assert any(
+        "清理去重后残留空翻译块失败" in message for message in warnings
+    ), warnings
+    assert any("删除空翻译文件失败" in message for message in warnings), warnings
