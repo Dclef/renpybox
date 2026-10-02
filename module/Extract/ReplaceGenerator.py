@@ -31,6 +31,7 @@ from module.Renpy.renpy_tl_core import (
     pair_old_new_lines,
     parse_tl_document,
     tl_dir_signature,
+    unescape_tl_string,
 )
 from module.Renpy import renpy_extract as rx
 from module.Text.SkipRules import (
@@ -53,6 +54,12 @@ class OldNewReplacePlan:
     old_new_count: int
     supplement_count: int
     conflict_count: int
+    # 补漏条目内部自相矛盾（同一原文对应多个译文）而被丢弃的原文数量。
+    supplement_conflict_count: int = 0
+    # 本轮是否读到了"候选来源"（带 replace-only 标记的 strings 译文 / 补漏文件）。
+    # 为 False 说明这一轮一条候选都没读到（TL 目录被移走、文件编码炸了、解析抛错），
+    # 与"用户把带标记的译文全删了"是两种完全不同的情况。
+    read_any_candidate: bool = True
 
 
 # 文件名（缺失补丁）
@@ -136,13 +143,21 @@ def collect_translated_old_new_pairs(
     tl_dir: str | Path,
     *,
     marked_only: bool = False,
+    language: str | None = None,
 ) -> tuple[List[Pair], int]:
-    """读取有效 strings 译文；同一原文存在多个译文时保守跳过。"""
+    """读取有效 strings 译文；同一原文存在多个译文时保守跳过。
+
+    ``language`` 限定只收集某个语言的 block。多语言项目里同一原文在
+    ``tl/chinese/`` 与 ``tl/japanese/`` 下各有各的译文，不按语言过滤就会被
+    当成"同一原文多译文"整条丢弃——这正是多语言钩子一直生成不出来的原因。
+    传 ``None`` 保持旧行为（全语言收集，用于跨语言汇总统计）。
+    """
 
     root = Path(tl_dir)
     if not root.is_dir():
         return [], 0
 
+    wanted_language = str(language).strip().casefold() if language else ""
     mapping: dict[str, str] = {}
     conflicts: set[str] = set()
     logger = LogManager.get()
@@ -171,6 +186,8 @@ def collect_translated_old_new_pairs(
 
         for block in document.blocks:
             if block.kind != TlBlockKind.STRINGS:
+                continue
+            if wanted_language and str(block.lang).casefold() != wanted_language:
                 continue
             statements = {statement.line_no: statement for statement in block.statements}
             for old_line, new_line in pair_old_new_lines(block).items():
@@ -210,15 +227,27 @@ def build_old_new_replace_plan(
     *,
     supplement_pairs: Sequence[Pair] | None = None,
     tl_dir: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    supplement_conflict_count: int = 0,
 ) -> OldNewReplacePlan:
-    """合并标记的源码补充译文与补漏译文，并保持原文从长到短。"""
+    """合并标记的源码补充译文与补漏译文，并保持原文从长到短。
+
+    ``tl_dir`` 是译文来源目录，``output_dir`` 是钩子落盘目录。整棵 ``tl/``
+    一起写回时多个语言共用一个来源目录，但一个钩子文件只渲染一种语言，
+    两者的钩子必须分开落盘，所以这里不共用一个参数。
+    """
 
     game_dir = _get_game_dir(target_path)
     language = str(tl_name or "chinese").strip() or "chinese"
+    explicit_tl_dir = tl_dir is not None
     resolved_tl_dir = Path(tl_dir) if tl_dir is not None else game_dir / "tl" / language
+    resolved_output_dir = Path(output_dir) if output_dir is not None else resolved_tl_dir
     old_new_pairs, conflict_count = collect_translated_old_new_pairs(
         resolved_tl_dir,
         marked_only=True,
+        # 钩子渲染成 translate <language> python: 块，只能替换该语言目录里的
+        # 译文；混入其它语言的 old/new 会把同原文不同译文的条目判成冲突。
+        language=language,
     )
     old_new_map = dict(old_new_pairs)
     if supplement_pairs is None:
@@ -239,13 +268,39 @@ def build_old_new_replace_plan(
     pairs = tuple(sorted(combined.items(), key=lambda item: (-len(item[0]), item[0])))
     supplement_count = sum(1 for original in supplement_map if original not in old_new_map)
     return OldNewReplacePlan(
-        output_path=resolved_tl_dir / "replace_text_auto.rpy",
+        output_path=resolved_output_dir / "replace_text_auto.rpy",
         language=language,
         pairs=pairs,
         old_new_count=len(old_new_pairs),
         supplement_count=supplement_count,
-        conflict_count=conflict_count,
+        conflict_count=conflict_count + supplement_conflict_count,
+        read_any_candidate=_tl_dir_was_scanned(
+            resolved_tl_dir, None if explicit_tl_dir else game_dir, language
+        ),
     )
+
+
+def _tl_dir_was_scanned(tl_dir: Path, game_dir: Path | None, language: str) -> bool:
+    """本轮是否成功读到了候选来源目录。
+
+    空计划有两种完全不同的成因，删钩子之前必须分清：
+    * 目录读到了，只是里面没有带标记的译文（用户清空、补漏文件被删）——可以删钩子；
+    * 目录本身就没读到（TL 目录被移动/改名、权限不足）——此时删钩子等于让玩家
+      游戏里正在生效的兜底译文凭空消失，而这轮根本没有任何证据支持"用户不要它了"。
+    读不到就返回 False，调用方一律选择保留旧钩子。
+
+    ``game_dir`` 是 ``tl_dir`` 省略时用来回退的默认路径；调用方显式传了 ``tl_dir``
+    时不应回退——那条路径正是它自己声明的来源，读不到就是读不到。
+    """
+    try:
+        if tl_dir.is_dir():
+            return True
+        if game_dir is not None and (game_dir / "tl" / language).is_dir():
+            return True
+    except OSError as exc:
+        LogManager.get().warning(f"检查 Hook 译文目录失败，按未读到处理 {tl_dir}: {exc}")
+        return False
+    return False
 
 
 def declined_candidates_path(game_dir, tl_name) -> Path:
@@ -2122,9 +2177,9 @@ def sync_miss_rpy_with_glossary(game_dir: str | Path, tl_name: str) -> int:
                 orig_escaped = old_match.group(2)
                 current_trans_escaped = new_match.group(2)
                 
-                # 反转义
-                orig = orig_escaped.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
-                current_trans = current_trans_escaped.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+                # 反转义：与 _escape_string 对称，用统一实现避免顺序写反。
+                orig = unescape_tl_string(orig_escaped)
+                current_trans = unescape_tl_string(current_trans_escaped)
                 
                 # 检查术语库是否有翻译
                 if orig in glossary_map:
@@ -2183,9 +2238,11 @@ def parse_miss_rpy(
             if new_match:
                 orig = old_match.group(1)
                 trans = new_match.group(1)
-                # 反转义
-                orig = orig.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
-                trans = trans.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+                # 反转义：必须与 _escape_string 对称。先还原转义再匹配，
+                # 顺序写反（先 \n 后 \\）会把原文里的字面反斜杠+n 解成换行，
+                # 该 replace 规则就永久匹配不上游戏文本、hook 静默失效。
+                orig = unescape_tl_string(orig)
+                trans = unescape_tl_string(trans)
                 # 只添加已翻译的（原文 != 译文）
                 if orig and trans and orig != trans:
                     pairs.append((orig, trans))
@@ -2196,10 +2253,20 @@ def parse_miss_rpy(
     return pairs
 
 
-def build_replace_pairs_from_entries(entries: Sequence[Any]) -> List[Pair]:
-    """Collect translated replace pairs from dict/cache-item style entries."""
+def build_replace_pairs_from_entries(
+    entries: Sequence[Any],
+    *,
+    return_conflicts: bool = False,
+):
+    """Collect translated replace pairs from dict/cache-item style entries.
+
+    同一原文对应多个译文时必须整条丢弃：Hook 是纯全局子串替换，没有位置信息，
+    last-wins 会让后写的译文静默盖掉前一条，用户看到的译文随条目顺序漂移。
+    这与 collect_translated_old_new_pairs 的冲突处理保持同一套语义。
+    """
 
     mapping: dict[str, str] = {}
+    conflicts: set[str] = set()
     for entry in entries:
         if hasattr(entry, "get_src") and hasattr(entry, "get_dst"):
             original = entry.get_src()
@@ -2214,10 +2281,20 @@ def build_replace_pairs_from_entries(entries: Sequence[Any]) -> List[Pair]:
             continue
         if original == "" or translation == "" or original == translation:
             continue
+        if original in conflicts:
+            continue
 
-        mapping[original] = translation
+        previous = mapping.get(original)
+        if previous is None:
+            mapping[original] = translation
+        elif previous != translation:
+            conflicts.add(original)
+            mapping.pop(original, None)
 
-    return sorted(mapping.items(), key=lambda item: (-len(item[0]), item[0]))
+    pairs = sorted(mapping.items(), key=lambda item: (-len(item[0]), item[0]))
+    if return_conflicts:
+        return pairs, len(conflicts)
+    return pairs
 
 
 def filter_replace_pairs_covered_by_tl(
@@ -2669,7 +2746,36 @@ def write_replace_script(output_path: str | Path, pairs: Sequence[Pair], **kwarg
     return output
 
 
-def generate_replace_from_miss(target_path: str | Path, tl_name: str, *, tl_dir: str | Path | None = None) -> Tuple[Path | None, int]:
+def _existing_hook_rule_count(output_path: Path) -> int:
+    """现有钩子里还有多少条规则；**0 表示确实没有内容，-1 表示数不出来**。
+
+    只读旁证文件，不解析钩子本体：钩子可能把规则分片到
+    ``.renpybox_replace/*.json`` 里，只数主文件会把分片模式误判成空钩子。
+    诊断报告记录的 ``rule_count`` 是渲染当时写入的，比数行数可靠。
+
+    报告缺失或损坏时返回 -1：宁可保留一个可能已过期的钩子，也不要因为
+    "数不清"就把玩家游戏里正在生效的钩子删掉。
+    """
+    if not output_path.is_file():
+        return 0
+    report_path = output_path.with_suffix(REPLACE_DIAGNOSTICS_SUFFIX)
+    if not report_path.is_file():
+        return -1
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        return int(report["summary"]["rule_count"])
+    except Exception as exc:
+        LogManager.get().warning(f"读取 Hook 诊断报告失败，按仍有内容处理 {report_path}: {exc}")
+        return -1
+
+
+def generate_replace_from_miss(
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    tl_dir: str | Path | None = None,
+    output_dir: str | Path | None = None,
+) -> Tuple[Path | None, int]:
     """从标记的源码补充译文和独立补漏译文生成统一 replace 钩子。
     
     读取 miss.rpy 与当前语言目录中带 replace-only 标记的译文，生成
@@ -2679,9 +2785,41 @@ def generate_replace_from_miss(target_path: str | Path, tl_name: str, *, tl_dir:
         (输出路径或 None, 条目数量)
     """
     logger = LogManager.get()
-    plan = build_old_new_replace_plan(target_path, tl_name, tl_dir=tl_dir)
+    plan = build_old_new_replace_plan(
+        target_path, tl_name, tl_dir=tl_dir, output_dir=output_dir
+    )
 
     if not plan.pairs:
+        # 空计划不等于"钩子应该被删掉"。空计划至少有四种成因，只有第一种才该删：
+        #   1. 译文目录读到了，里面确实没有带标记的译文/补漏条目了——用户主动清空，
+        #      删钩子是对的（否则 replace_text 永远命中不了任何规则，却留着几十条死规则）；
+        #   2. 这一轮连译文目录都没读到（TL 目录被移动/改名、权限不足）——钩子里的
+        #      旧条目其实仍然需要，删掉等于让玩家游戏里正在生效的兜底译文全部退回原文；
+        #   3. 读到了候选但全被"同原文多译文"的冲突规则丢弃；
+        #   4. 读到了候选但全被 old == new / 空串之类的规则过滤。
+        # 过去 2/3/4 三种都落到同一个无条件 unlink，一次读取失败就把钩子删了。
+        if not plan.read_any_candidate:
+            kept_count = _existing_hook_rule_count(plan.output_path)
+            logger.warning(
+                f"未找到可生成 Hook 的补充抽取或独立补漏译文：译文目录未读到"
+                f"（现有 replace 钩子保留，仍有 {max(kept_count, 0)} 条）。"
+                "若确认不再需要这些兜底译文，可在补漏页手动清空标记后重试"
+            )
+            return (plan.output_path, max(kept_count, 0)) if plan.output_path.exists() else (None, 0)
+
+        if plan.conflict_count:
+            logger.info(
+                f"未找到可生成 Hook 的补充抽取或独立补漏译文（{plan.conflict_count} 条因原文冲突被丢弃），"
+                "已保留原有 replace 钩子"
+            )
+            return (plan.output_path, 0) if plan.output_path.exists() else (None, 0)
+
+        if not plan.output_path.exists():
+            logger.info("未找到可生成 Hook 的补充抽取或独立补漏译文")
+            return None, 0
+
+        # 目录读到了、候选一条不剩、钩子也还在：用户确实把带标记的译文清空了。
+        logger.info("带标记的译文已全部移除，已移除原有 replace 钩子")
         plan.output_path.unlink(missing_ok=True)
         plan.output_path.with_suffix(".rpyc").unlink(missing_ok=True)
         _cleanup_replace_shards(plan.output_path, set())
@@ -2689,7 +2827,6 @@ def generate_replace_from_miss(target_path: str | Path, tl_name: str, *, tl_dir:
             plan.output_path.with_suffix(REPLACE_DIAGNOSTICS_SUFFIX).unlink(missing_ok=True)
         except OSError as exc:
             logger.warning(f"Hook 已移除，但诊断报告清理失败: {exc}")
-        logger.info("未找到可生成 Hook 的补充抽取或独立补漏译文")
         return None, 0
 
     write_replace_script(

@@ -14,6 +14,7 @@ import ast
 import csv
 import inspect
 import json
+import os
 import re
 import shutil
 import time
@@ -39,6 +40,7 @@ from module.Renpy.renpy_tl_core import (
     escape_tl_string,
     tl_block_kind_name,
     tl_dir_signature,
+    validate_tl_document,
 )
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 from module.Renpy.renpy_tl_core import TlStmtKind
@@ -55,6 +57,43 @@ from module.Extract.ReplaceGenerator import (
 
 # 结果缓存：键为 (tl 目录解析路径, 文件签名)，文件任何变化都会使签名失效，
 # 因此缓存命中不会造成遗漏，仅避免同一轮流程对未变化目录的重复全量解析。
+# 签名把过期项变成不可命中的垃圾，但没人来删除它们：用户每换一个项目就留一份
+# 编号块指纹和 strings 集合（62 个 rpy / 60229 条的量级），长时间使用会把内存
+# 吃满。所以这三个缓存都要有上限。
+_RESULT_CACHE_MAX_ENTRIES = 8
+
+
+def _cache_get(cache: Dict[tuple, object], key: tuple) -> Optional[object]:
+    """读取结果缓存；命中后顺便把它移到末尾，为 LRU 记账。"""
+    try:
+        value = cache.get(key)
+    except TypeError:
+        return None
+    if value is None:
+        return None
+    try:
+        cache.pop(key, None)
+        cache[key] = value
+    except TypeError:
+        pass
+    return value
+
+
+def _cache_put(cache: Dict[tuple, object], key: tuple, value: object) -> None:
+    """写入结果缓存并淘汰最旧的条目。"""
+    try:
+        cache.pop(key, None)
+        cache[key] = value
+    except TypeError:
+        return
+    while len(cache) > _RESULT_CACHE_MAX_ENTRIES:
+        try:
+            oldest = next(iter(cache))
+        except StopIteration:  # pragma: no cover - 循环只删一个元素
+            break
+        cache.pop(oldest, None)
+
+
 _STRING_ORIGINALS_CACHE: Dict[tuple, frozenset] = {}
 _NUMBERED_FINGERPRINTS_CACHE: Dict[tuple, dict] = {}
 _EXISTING_TRANSLATIONS_CACHE: Dict[tuple, tuple] = {}
@@ -104,6 +143,35 @@ class ExistingTranslations:
     block_names: Dict[Tuple[str, str, str, str, int], str] = field(
         default_factory=dict
     )
+    # 同一 strings 原文在多个 TL 文件里对应不同译文的原文集合。
+    # Ren'Py 的 strings 按源文本全局注册，这些条目没有唯一的正确答案，
+    # last-wins 会让写入结果取决于文件遍历顺序，必须整条拒收。
+    ambiguous: Set[str] = field(default_factory=set)
+
+    def record_string(self, src: str, dst: str) -> bool:
+        """登记一条 strings 译文；自相矛盾时拒收并记入 ambiguous。
+
+        返回 False 表示该译文不可用（首次出现且未冲突；或已判定为歧义）。
+        """
+        if not src or not dst or src == dst:
+            return False
+        if src in self.ambiguous:
+            return False
+        previous = self.strings.get(src)
+        if previous is None:
+            self.strings[src] = dst
+            return True
+        if previous == dst:
+            return True
+        self.ambiguous.add(src)
+        self.strings.pop(src, None)
+        return False
+
+    def lookup_string(self, src: str) -> Optional[str]:
+        """取可安全使用的 strings 译文；歧义条目返回 None。"""
+        if src in self.ambiguous:
+            return None
+        return self.strings.get(src)
 
     def __len__(self) -> int:
         return len(self.strings) + len(set(self.blocks) | set(self.block_names))
@@ -145,6 +213,9 @@ class UnifiedExtractor:
         self._cancel_callback: Optional[Callable[[], bool]] = None
         self._last_suspicious_manifest: Optional[Path] = None
         self._last_suspicious_removed_count: int = 0
+        # 保留库/跳过规则过滤同样是物理删除，单独记录以便上层提示可恢复。
+        self._last_preserve_manifest: Optional[Path] = None
+        self._last_preserve_removed_count: int = 0
         # 内置 UI 文件跳过日志每个文件仅记录一次，避免多次全目录扫描时刷屏
         self._logged_ui_skips: set = set()
 
@@ -467,7 +538,7 @@ class UnifiedExtractor:
                             continue
                         cleaned.append(line)
                         prev_empty = is_empty
-                    file_path.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
+                    atomic_write_text(file_path, "\n".join(cleaned).rstrip() + "\n")
                     try:
                         rx.remove_repeat_for_file(str(file_path))
                     except Exception:
@@ -518,7 +589,7 @@ class UnifiedExtractor:
                     i += 1
 
                 if updated:
-                    file_path.write_text("\n".join(lines), encoding="utf-8")
+                    atomic_write_text(file_path, "\n".join(lines))
                 return updated
 
             injected = 0
@@ -715,7 +786,7 @@ class UnifiedExtractor:
                         continue
                     cleaned.append(line)
                     prev_empty = is_empty
-                rpy_file.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
+                atomic_write_text(rpy_file, "\n".join(cleaned).rstrip() + "\n")
 
         if translation_overrides:
             base_dir = tl_dir / "base_box"
@@ -753,15 +824,16 @@ class UnifiedExtractor:
                         continue
                     i += 1
                 if changed:
-                    base_file.write_text(
-                        "\n".join(lines).rstrip() + "\n", encoding="utf-8"
-                    )
+                    atomic_write_text(base_file, "\n".join(lines).rstrip() + "\n")
 
         if removed_total:
             try:
                 self._remove_empty_translate_blocks(tl_dir, tl_name)
-            except Exception:
-                pass
+            except Exception as exc:
+                # 占位条目已经删掉了，文件可能只剩下 translate xxx strings: 头。
+                # Ren'Py 启动时会对非空块报错，玩家的游戏直接打不开，而这里原来
+                # 是裸 except: pass，用户只能看到"游戏坏了"却查不出是哪一步。
+                self.logger.warning(f"清理占位条目后残留空翻译块失败 {tl_dir}: {exc}")
 
         return removed_total
 
@@ -848,7 +920,7 @@ class UnifiedExtractor:
                 output.append(lines[i])
                 i += 1
             if changed:
-                rpy_file.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+                atomic_write_text(rpy_file, "\n".join(output).rstrip() + "\n")
         if removed:
             self._remove_empty_translate_blocks(tl_dir, tl_name)
         return removed
@@ -924,7 +996,7 @@ class UnifiedExtractor:
                 i += 1
 
             if changed:
-                rpy_file.write_text("\n".join(lines), encoding="utf-8")
+                atomic_write_text(rpy_file, "\n".join(lines))
 
         return updated
 
@@ -1004,7 +1076,20 @@ class UnifiedExtractor:
             return None
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        run_dir = tl_dir / self.SUSPICIOUS_BACKUP_DIR / timestamp
+        # 同一轮后处理里保留库过滤和布尔表达式过滤会先后各写一份清单，而时间戳只到
+        # 秒。目录重名会让后写的清单把前一份整个覆盖掉，用户就再也恢复不回来了。
+        # 所以这里必须保证每次备份的 run_dir 唯一。
+        backup_root = tl_dir / self.SUSPICIOUS_BACKUP_DIR
+        run_dir = backup_root / timestamp
+        if run_dir.exists():
+            for suffix in range(1, 100):
+                candidate = backup_root / f"{timestamp}_{suffix}"
+                if not candidate.exists():
+                    run_dir = candidate
+                    break
+            else:
+                run_dir = backup_root / f"{timestamp}_{os.getpid()}"
+        run_dir.mkdir(parents=True, exist_ok=True)
         entries_dir = run_dir / "entries"
         entries_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1075,8 +1160,10 @@ class UnifiedExtractor:
         latest_hint = tl_dir / self.SUSPICIOUS_BACKUP_DIR / "latest_manifest.txt"
         try:
             latest_hint.write_text(str(manifest_path), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:
+            # 这只是给用户看的"最新清单在哪"提示，丢了不影响清单本身；但原来完全
+            # 静默，写失败时用户会以为没有备份目录可恢复。
+            self.logger.warning(f"写入恢复清单提示文件失败 {latest_hint}: {exc}")
 
         return manifest_path
 
@@ -1146,7 +1233,7 @@ class UnifiedExtractor:
                 final_text = "\n".join(final_lines).rstrip()
                 if final_text:
                     final_text += "\n"
-                rpy_file.write_text(final_text, encoding="utf-8")
+                atomic_write_text(rpy_file, final_text)
 
         manifest_path = self._write_suspicious_backup(tl_dir, tl_name, removed_by_file)
         return removed_total, manifest_path
@@ -1367,7 +1454,7 @@ class UnifiedExtractor:
                 i += 1
 
             if changed:
-                rpy_file.write_text("\n".join(new_lines), encoding="utf-8")
+                atomic_write_text(rpy_file, "\n".join(new_lines))
 
         return removed_blocks
 
@@ -1570,7 +1657,16 @@ class UnifiedExtractor:
                     f"，已过滤疑似误提取 {self._last_suspicious_removed_count} 条"
                     "（可在 _filtered_suspicious 勾选恢复）"
                 )
-            result.message = f"常规抽取完成，共 {result.total_files} 个文件{ui_note}{suspicious_note}"
+            preserve_note = ""
+            if self._last_preserve_removed_count:
+                preserve_note = (
+                    f"，保留库/跳过规则过滤删除 {self._last_preserve_removed_count} 条"
+                    "（可在 _filtered_suspicious 勾选恢复）"
+                )
+            result.message = (
+                f"常规抽取完成，共 {result.total_files} 个文件"
+                f"{ui_note}{suspicious_note}{preserve_note}"
+            )
             if backup_path is not None:
                 result.message += f"（旧翻译备份: {backup_path.name}）"
             self._emit_progress("抽取完成", 100)
@@ -1964,6 +2060,12 @@ class UnifiedExtractor:
                             "• 已过滤疑似误提取: "
                             f"{self._last_suspicious_removed_count} 条（_filtered_suspicious 可勾选恢复）"
                         )
+                    if self._last_preserve_removed_count:
+                        msg_lines.append(
+                            "• 保留库/跳过规则过滤已删除: "
+                            f"{self._last_preserve_removed_count} 条"
+                            "（_filtered_suspicious 可勾选恢复）"
+                        )
                     msg_lines.append(f"• 新增内容位置: {incremental_dir.name}/")
                     result.message = "\n".join(msg_lines)
                 else:
@@ -1984,7 +2086,20 @@ class UnifiedExtractor:
                     
                     # 9. 回填翻译
                     self._emit_progress("正在回填已有翻译...", 80)
-                    self._merge_translations(tl_dir, existing_translations)
+                    # _merge_translations 把逐文件失败收在返回值里。这里必须检查：
+                    # 一旦有文件回填失败，用户 TL 里就留着"抽到了原文、但译文没写
+                    # 回去"的半成品；旧代码丢弃返回值后照样报 success=True，用户只
+                    # 会看到游戏里仍是英文，完全无从得知发生过什么。
+                    backfill_failures = self._merge_translations(
+                        tl_dir, existing_translations
+                    )
+                    if backfill_failures:
+                        for failure in backfill_failures:
+                            self.logger.error(f"回填已有翻译失败: {failure}")
+                        detail = "\n".join(backfill_failures[:5])
+                        if len(backfill_failures) > 5:
+                            detail += f"\n（另有 {len(backfill_failures) - 5} 条同类失败）"
+                        raise RuntimeError("回填已有翻译未完整完成：" + detail)
                     
                     # 10. 后处理
                     self._post_process(game_dir, tl_name, tl_dir, config, existing_translations)
@@ -2008,9 +2123,15 @@ class UnifiedExtractor:
                             f"，并过滤疑似误提取 {self._last_suspicious_removed_count} 条"
                             "（可在 _filtered_suspicious 勾选恢复）"
                         )
+                    preserve_note = ""
+                    if self._last_preserve_removed_count:
+                        preserve_note = (
+                            f"，保留库/跳过规则过滤删除 {self._last_preserve_removed_count} 条"
+                            "（可在 _filtered_suspicious 勾选恢复）"
+                        )
                     result.message = (
                         f"增量抽取完成，保留了 {translated_count} 条已有翻译，"
-                        f"新增 {len(new_originals)} 条{suspicious_note}"
+                        f"新增 {len(new_originals)} 条{suspicious_note}{preserve_note}"
                     )
 
                 # 注入内置 UI 包（仅影响主 tl 目录，不影响增量输出目录）
@@ -2351,7 +2472,7 @@ class UnifiedExtractor:
                     atomic_write_text(
                         target_file,
                         "\n".join(target_lines).rstrip() + "\n",
-                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        validator=validate_tl_document,
                         allowed_roots=[tl_dir],
                     )
                     merged_files += 1
@@ -2443,14 +2564,17 @@ class UnifiedExtractor:
                 removed_blocks = self._remove_empty_translate_blocks(tl_dir, tl_name)
                 if removed_blocks:
                     self.logger.info(f"已移除 {removed_blocks} 个空的 translate strings 块")
-            except Exception:
-                pass
+            except Exception as exc:
+                # 去重刚删完条目，残留的空块会让 Ren'Py 启动报错。与 _deploy_builtin_ui_pack
+                # 里同一次调用的处理保持一致，不要在这里静默吞掉。
+                self.logger.warning(f"清理去重后残留空翻译块失败 {tl_dir}: {exc}")
             try:
                 removed_empty = self._delete_empty_translation_files(tl_dir, tl_name)
                 if removed_empty:
                     self.logger.info(f"已删除 {removed_empty} 个空翻译文件")
-            except Exception:
-                pass
+            except Exception as exc:
+                # 空文件同样会让 Ren'Py 读到只剩 strings 头而报错。
+                self.logger.warning(f"删除空翻译文件失败 {tl_dir}: {exc}")
             removed_truncated = self._remove_strings_covered_by_truncated_block_comment(tl_dir)
             if removed_truncated:
                 self.logger.info(
@@ -2702,7 +2826,7 @@ class UnifiedExtractor:
                 atomic_write_text(
                     tl_file,
                     "\n".join(output).rstrip() + "\n",
-                    validator=lambda value: parse_tl_document(value.splitlines()),
+                    validator=validate_tl_document,
                     allowed_roots=[tl_dir],
                 )
                 reordered += 1
@@ -2843,7 +2967,7 @@ class UnifiedExtractor:
                     break
 
             if changed:
-                tl_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+                atomic_write_text(tl_file, "\n".join(lines).rstrip() + "\n")
         return repaired
 
     def _select_incremental_originals(
@@ -2950,7 +3074,7 @@ class UnifiedExtractor:
 
             if indexes:
                 kept = [line for index, line in enumerate(lines) if index not in indexes]
-                rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+                atomic_write_text(rpy_file, "\n".join(kept).rstrip() + "\n")
         return removed
 
     def _append_static_supplement_entries(
@@ -3125,7 +3249,7 @@ class UnifiedExtractor:
         if block_originals is None:
             try:
                 cache_key = (str(tl_dir.resolve()), tl_dir_signature(tl_dir))
-                cached = _STRING_ORIGINALS_CACHE.get(cache_key)
+                cached = _cache_get(_STRING_ORIGINALS_CACHE, cache_key)
                 if cached is not None:
                     return set(cached)
             except Exception:
@@ -3175,7 +3299,7 @@ class UnifiedExtractor:
 
         if block_originals is None and cache_key is not None:
             try:
-                _STRING_ORIGINALS_CACHE[cache_key] = frozenset(originals)
+                _cache_put(_STRING_ORIGINALS_CACHE, cache_key, frozenset(originals))
             except Exception:
                 pass
         return originals
@@ -3185,17 +3309,36 @@ class UnifiedExtractor:
         return set(self._get_existing_string_translations(tl_dir))
 
     def _get_existing_string_translations(self, tl_dir: Path) -> Dict[str, str]:
-        """获取有效的全局 old/new 译文，不包含编号翻译块。"""
+        """获取有效的全局 old/new 译文，不包含编号翻译块。
+
+        同一原文在多个 TL 文件里译文不同时整条拒收（Ren'Py 的 strings 按源
+        文本全局注册，没有唯一正确答案），并由调用方通过
+        _get_existing_translations 拿到 ambiguous 明细。
+        """
         translations: Dict[str, str] = {}
         if not tl_dir.exists():
             return translations
+
+        pending: Dict[str, str] = {}
+        ambiguous: Set[str] = set()
+
+        def record(src: str, dst: str) -> None:
+            if src in ambiguous:
+                return
+            previous = pending.get(src)
+            if previous is None:
+                pending[src] = dst
+            elif previous != dst:
+                ambiguous.add(src)
+                pending.pop(src, None)
 
         extractor = RenpyTlItemExtractor()
         for rpy_file in self._iter_rpy_files(tl_dir):
             fast_result = self._fast_scan_strings_file(rpy_file)
             if fast_result is not None:
                 _fast_originals, fast_translations = fast_result
-                translations.update(fast_translations)
+                for src, dst in fast_translations.items():
+                    record(src, dst)
                 continue
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
@@ -3210,7 +3353,7 @@ class UnifiedExtractor:
                         and item.get_dst()
                         and item.get_dst() != item.get_src()
                     ):
-                        translations[item.get_src()] = item.get_dst()
+                        record(item.get_src(), item.get_dst())
                 continue
             except Exception as exc:
                 self.logger.warning(f"AST strings 译文扫描失败，回退 old/new 扫描 {rpy_file}: {exc}")
@@ -3239,11 +3382,16 @@ class UnifiedExtractor:
                         new_match.group(1), new_match.group("text")
                     )
                     if new_text and new_text != old_text:
-                        translations[old_text] = new_text
+                        record(old_text, new_text)
                     i = j + 1
                     continue
                 i += 1
-        return translations
+        if ambiguous:
+            self.logger.warning(
+                f"{len(ambiguous)} 条 strings 原文在多个 TL 文件中对应不同译文，"
+                "已整条拒收（Ren'Py 按源文本全局注册，无唯一正确答案）"
+            )
+        return pending
 
     def _collect_numbered_block_keys(self, tl_dir: Path) -> Set[Tuple[str, str]]:
         """收集编号翻译块身份：``(相对文件路径, translate 标签)``。"""
@@ -3255,7 +3403,7 @@ class UnifiedExtractor:
         """收集编号块模板指纹；译文变化不影响指纹，原文变化会改变。"""
         try:
             cache_key = (str(tl_dir.resolve()), tl_dir_signature(tl_dir))
-            cached = _NUMBERED_FINGERPRINTS_CACHE.get(cache_key)
+            cached = _cache_get(_NUMBERED_FINGERPRINTS_CACHE, cache_key)
             if cached is not None:
                 return dict(cached)
         except Exception:
@@ -3304,7 +3452,7 @@ class UnifiedExtractor:
                 continue
         if cache_key is not None:
             try:
-                _NUMBERED_FINGERPRINTS_CACHE[cache_key] = dict(fingerprints)
+                _cache_put(_NUMBERED_FINGERPRINTS_CACHE, cache_key, dict(fingerprints))
             except Exception:
                 pass
         return fingerprints
@@ -3442,7 +3590,7 @@ class UnifiedExtractor:
                     atomic_write_text(
                         target_file,
                         "\n".join(target_lines).rstrip() + "\n",
-                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        validator=validate_tl_document,
                         allowed_roots=[target_dir],
                     )
                     replaced += len(operations)
@@ -3926,9 +4074,7 @@ class UnifiedExtractor:
                             changed = True
                 output.append(line)
             if changed:
-                target_file.write_text(
-                    "\n".join(output).rstrip() + "\n", encoding="utf-8"
-                )
+                atomic_write_text(target_file, "\n".join(output).rstrip() + "\n")
         return added
 
     @staticmethod
@@ -4062,7 +4208,7 @@ class UnifiedExtractor:
                         atomic_write_text(
                             target_file,
                             "\n".join(output_lines).rstrip() + "\n",
-                            validator=lambda value: parse_tl_document(value.splitlines()),
+                            validator=validate_tl_document,
                             allowed_roots=[tl_dir],
                         )
                     except Exception as exc:
@@ -4179,7 +4325,7 @@ class UnifiedExtractor:
                     atomic_write_text(
                         target_file,
                         "\n".join(target_lines),
-                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        validator=validate_tl_document,
                         allowed_roots=[tl_dir],
                     )
                 continue
@@ -4439,12 +4585,23 @@ class UnifiedExtractor:
         """后处理：应用保留库过滤 + 清理空文件"""
         self._last_suspicious_manifest = None
         self._last_suspicious_removed_count = 0
+        self._last_preserve_manifest = None
+        self._last_preserve_removed_count = 0
         preserve_set = self._load_preserve_set(config)
         
-        # 应用过滤
+        # 应用过滤。删除是不可逆操作，必须落可恢复清单，并把数量报给上层。
         if preserve_set:
             self._emit_progress("正在应用保留库过滤...", 80)
-            self._filter_tl_files(tl_dir, preserve_set)
+            removed_by_preserve, preserve_manifest = self._filter_tl_files(
+                tl_dir, tl_name, preserve_set
+            )
+            self._last_preserve_removed_count = removed_by_preserve
+            self._last_preserve_manifest = preserve_manifest
+            if removed_by_preserve:
+                self.logger.info(
+                    f"保留库过滤移除了 {removed_by_preserve} 条，"
+                    f"可恢复清单: {preserve_manifest if preserve_manifest else '未生成'}"
+                )
 
         # 过滤疑似误提取的代码布尔表达式（例如 foo == True / bar = false）
         if getattr(config, "renpy_filter_suspicious_bool_expr", True):
@@ -4592,13 +4749,14 @@ class UnifiedExtractor:
         """按 strings 与编号块的真实作用域分别收集有效译文。"""
         try:
             cache_key = (str(tl_dir.resolve()), tl_dir_signature(tl_dir))
-            cached = _EXISTING_TRANSLATIONS_CACHE.get(cache_key)
+            cached = _cache_get(_EXISTING_TRANSLATIONS_CACHE, cache_key)
             if cached is not None:
-                cached_strings, cached_blocks, cached_names = cached
+                cached_strings, cached_blocks, cached_names, cached_ambiguous = cached
                 return ExistingTranslations(
                     strings=dict(cached_strings),
                     blocks=dict(cached_blocks),
                     block_names=dict(cached_names),
+                    ambiguous=set(cached_ambiguous),
                 )
         except Exception:
             cache_key = None
@@ -4612,7 +4770,8 @@ class UnifiedExtractor:
             fast_result = self._fast_scan_strings_file(rpy_file)
             if fast_result is not None:
                 _fast_originals, fast_translations = fast_result
-                translations.strings.update(fast_translations)
+                for src, dst in fast_translations.items():
+                    translations.record_string(src, dst)
                 continue
             try:
                 content = rpy_file.read_text(encoding="utf-8", errors="replace")
@@ -4643,7 +4802,7 @@ class UnifiedExtractor:
                             and dst != src
                             and tl_block_kind_name(block.get("kind")) == "STRINGS"
                         ):
-                            translations.strings[src] = dst
+                            translations.record_string(src, dst)
                 continue
             except Exception as exc:
                 self.logger.warning(f"AST 读取已有翻译失败，回退 old/new 扫描 {rpy_file}: {exc}")
@@ -4682,20 +4841,27 @@ class UnifiedExtractor:
                                     new_text_u = self._decode_rpy_string(
                                         new_match.group(1), new_text
                                     )
-                                    translations.strings[old_text_u] = new_text_u
+                                    translations.record_string(old_text_u, new_text_u)
                                 i = j
                     i += 1
             except Exception as exc:
                 self.logger.warning(f"读取已有 strings 翻译失败 {rpy_file}: {exc}")
         if cache_key is not None:
-            try:
-                _EXISTING_TRANSLATIONS_CACHE[cache_key] = (
+            _cache_put(
+                _EXISTING_TRANSLATIONS_CACHE,
+                cache_key,
+                (
                     dict(translations.strings),
                     dict(translations.blocks),
                     dict(translations.block_names),
-                )
-            except Exception:
-                pass
+                    frozenset(translations.ambiguous),
+                ),
+            )
+        if translations.ambiguous:
+            self.logger.warning(
+                f"{len(translations.ambiguous)} 条 strings 原文在多个 TL 文件中对应不同译文，"
+                "已整条拒收（Ren'Py 按源文本全局注册，无唯一正确答案）"
+            )
         return translations
 
     def preview_translation_reuse(
@@ -4835,7 +5001,7 @@ class UnifiedExtractor:
                         translated = (
                             translations.blocks.get(block_key)
                             if block_key is not None
-                            else translations.strings.get(src)
+                            else translations.lookup_string(src)
                         )
                         if translated is None:
                             result.unmatched_entries += 1
@@ -4867,7 +5033,7 @@ class UnifiedExtractor:
                             atomic_write_text(
                                 rpy_file,
                                 "\n".join(lines),
-                                validator=lambda value: parse_tl_document(value.splitlines()),
+                                validator=validate_tl_document,
                                 allowed_roots=[tl_dir],
                             )
                             result.applied_entries += applied
@@ -4910,11 +5076,12 @@ class UnifiedExtractor:
                     new_text = new_match.group("text")
                     new_text_unescaped = new_text.replace('\\"', '"').replace("\\'", "'")
                     result.target_entries += 1
-                    if old_text_unescaped not in translations.strings:
+                    translated = translations.lookup_string(old_text_unescaped)
+                    if translated is None:
+                        # 歧义原文与无译文都算未匹配：写哪个都是猜。
                         result.unmatched_entries += 1
                     else:
                         result.matched_entries += 1
-                        translated = translations.strings[old_text_unescaped]
                         if not new_text_unescaped or new_text_unescaped == old_text_unescaped:
                             result.reusable_entries += 1
                             if not dry_run:
@@ -4933,7 +5100,7 @@ class UnifiedExtractor:
                     atomic_write_text(
                         rpy_file,
                         "\n".join(lines),
-                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        validator=validate_tl_document,
                         allowed_roots=[tl_dir],
                     )
             except Exception as e:
@@ -4981,11 +5148,13 @@ class UnifiedExtractor:
                         extra = item.get_extra_field()
                         renpy = extra.get("renpy", {}) if isinstance(extra, dict) else {}
                         block = renpy.get("block", {}) if isinstance(renpy, dict) else {}
-                        if (
-                            tl_block_kind_name(block.get("kind")) == "STRINGS"
-                            and src in translations.strings
-                        ):
-                            item.set_dst(translations.strings[src])
+                        reusable_string = (
+                            translations.lookup_string(src)
+                            if tl_block_kind_name(block.get("kind")) == "STRINGS"
+                            else None
+                        )
+                        if reusable_string:
+                            item.set_dst(reusable_string)
                             updated = True
 
                     if updated:
@@ -5003,7 +5172,7 @@ class UnifiedExtractor:
                             atomic_write_text(
                                 rpy_file,
                                 "\n".join(lines),
-                                validator=lambda value: parse_tl_document(value.splitlines()),
+                                validator=validate_tl_document,
                                 allowed_roots=[tl_dir],
                             )
                     continue
@@ -5013,7 +5182,11 @@ class UnifiedExtractor:
             else:
                 ast_error = None
 
-            # 回退旧正则逻辑
+            # 回退旧正则逻辑。
+            # 这段必须与 _apply_translation_reuse 保持同一套正确性：旧的实现
+            # 假设 new 紧贴在 old 的下一行（i += 2），中间夹了空行或注释就会
+            # 把注释当成 new 行丢掉；同时只转义引号、不转义反斜杠，比
+            # escape_tl_string 弱，写出的译文会破坏 Ren'Py 字符串字面量。
             try:
                 content = rpy_file.read_text(encoding="utf-8")
                 lines = content.split("\n")
@@ -5025,23 +5198,44 @@ class UnifiedExtractor:
                     line = lines[i]
                     # 匹配 old
                     match = re.match(r'(\s*)old\s+(["\'])(.+?)\2', line)
-                    if match and i + 1 < len(lines):
+                    if match:
                         indent = match.group(1)
                         old_text = match.group(3)
                         old_text_unescaped = self._decode_rpy_string(
                             match.group(2), old_text
                         )
 
-                        # 检查是否有翻译
-                        if old_text_unescaped in translations.strings:
-                            trans_text = translations.strings[old_text_unescaped]
-                            # 转义
-                            trans_text_escaped = trans_text.replace('"', '\\"')
+                        # 跳过 old 与 new 之间的空行/注释，找到真正的 new。
+                        j = i + 1
+                        while j < len(lines):
+                            probe = lines[j].strip()
+                            if not probe or probe.startswith("#"):
+                                j += 1
+                                continue
+                            break
+                        new_match = (
+                            re.match(r'(\s*)new\s+(["\'])(.*?)\2', lines[j])
+                            if j < len(lines)
+                            else None
+                        )
+
+                        # 检查是否有翻译（歧义条目不在 strings 中，不会命中）
+                        trans_text = (
+                            translations.lookup_string(old_text_unescaped)
+                            if new_match
+                            else None
+                        )
+                        if trans_text:
+                            # 转义：与写入侧 escape_tl_string 对称，先反斜杠再引号。
+                            trans_text_escaped = escape_tl_string(trans_text)
 
                             new_lines.append(line)  # old 行不变
-                            new_lines.append(f'{indent}new "{trans_text_escaped}"')  # 替换 new 行
+                            new_lines.extend(lines[i + 1 : j])  # 原样保留中间的空行/注释
+                            new_lines.append(
+                                f'{indent}new "{trans_text_escaped}"'
+                            )  # 替换 new 行
                             modified = True
-                            i += 2  # 跳过原来的 new 行
+                            i = j + 1  # 跳过原来的 new 行
                             continue
 
                     new_lines.append(line)
@@ -5051,7 +5245,7 @@ class UnifiedExtractor:
                     atomic_write_text(
                         rpy_file,
                         "\n".join(new_lines),
-                        validator=lambda value: parse_tl_document(value.splitlines()),
+                        validator=validate_tl_document,
                         allowed_roots=[tl_dir],
                     )
             except Exception as e:
@@ -5061,8 +5255,20 @@ class UnifiedExtractor:
 
         return failures
 
-    def _filter_tl_files(self, tl_dir: Path, preserve_set: Set[str]):
-        """过滤 tl 文件：移除在 preserve_set 中的条目 或 should_skip_text 的条目"""
+    def _filter_tl_files(
+        self, tl_dir: Path, tl_name: str, preserve_set: Set[str]
+    ) -> Tuple[int, Optional[Path]]:
+        """过滤 tl 文件：移除在 preserve_set 中的条目 或 should_skip_text 的条目。
+
+        这是全流程中唯一"把已翻译内容从磁盘上物理抹掉"的地方：条目一旦删除，
+        译文就只能重新花 LLM 费用再翻一遍。should_skip_text 还是一套针对原文的
+        启发式（`Café`、`No.`、`OK_2`、长小写词都会误判），所以每一次删除都必须
+        留下可恢复的备份与清单，不能只写一句 warning 就把内容丢掉。
+        """
+        removed_total = 0
+        removed_by_file: Dict[str, List[Dict[str, str | int]]] = {}
+        write_failures: List[str] = []
+
         for rpy_file in self._iter_rpy_files(tl_dir):
             try:
                 content = rpy_file.read_text(encoding='utf-8')
@@ -5070,20 +5276,40 @@ class UnifiedExtractor:
                 filtered: List[str] = []
                 modified = False
                 i = 0
+                rel_path = rpy_file.relative_to(tl_dir).as_posix()
 
                 while i < len(lines):
                     line = lines[i]
                     match = self.OLD_LINE_RE.match(line)
                     if match:
-                        old_text = match.group("text").replace('\\"', '"').replace("\\'", "'")
+                        old_text = self._decode_rpy_string(
+                            match.group(1), match.group("text")
+                        )
 
                         next_line = lines[i + 1] if i + 1 < len(lines) else ""
                         new_match = self.NEW_LINE_RE.match(next_line)
 
-                        if (
-                            old_text in preserve_set
-                            or should_skip_text(old_text)
-                        ):
+                        if old_text in preserve_set or should_skip_text(old_text):
+                            reason = (
+                                "preserve_set" if old_text in preserve_set
+                                else "should_skip_text"
+                            )
+                            new_text = (
+                                self._decode_rpy_string(
+                                    new_match.group(1), new_match.group("text")
+                                )
+                                if new_match
+                                else ""
+                            )
+                            removed_by_file.setdefault(rel_path, []).append(
+                                {
+                                    "line": i + 1,
+                                    "old": old_text,
+                                    "new": new_text,
+                                    "reason": reason,
+                                }
+                            )
+                            removed_total += 1
                             modified = True
                             # 跳过 old 行和其后的 new 行
                             i += 2 if new_match else 1
@@ -5103,10 +5329,32 @@ class UnifiedExtractor:
                         final_lines.append(entry)
                         prev_empty = is_empty
 
-                    rpy_file.write_text('\n'.join(final_lines), encoding='utf-8')
+                    # 删除是不可逆的：写入必须原子，失败不能留下半截文件。
+                    atomic_write_text(
+                        rpy_file,
+                        '\n'.join(final_lines),
+                        validator=validate_tl_document,
+                        allowed_roots=[tl_dir],
+                    )
 
-            except Exception:
-                pass
+            except Exception as exc:
+                # 旧实现是裸 except: pass——文件没过滤成也照样报成功，用户以为
+                # 保留库已生效。这里至少要留下痕迹。
+                self.logger.error(f"应用保留库过滤失败 {rpy_file}: {exc}")
+                write_failures.append(f"{rpy_file}: {exc}")
+
+        manifest_path = self._write_suspicious_backup(tl_dir, tl_name, removed_by_file)
+        if removed_total:
+            self.logger.info(
+                f"保留库过滤移除了 {removed_total} 条，可恢复清单: "
+                f"{manifest_path if manifest_path else '未生成'}"
+            )
+        if write_failures:
+            self.logger.error(
+                f"保留库过滤有 {len(write_failures)} 个文件处理失败: "
+                f"{write_failures[0]}"
+            )
+        return removed_total, manifest_path
 
 
 
