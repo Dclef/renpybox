@@ -130,6 +130,28 @@ def test_onekey_dynamic_statuses_use_english(tmp_path, monkeypatch) -> None:
     assert start_texts[-1] == "Translate Again"
     assert skip_texts[-1] == "Continue to Post-processing →"
 
+    # 达到最大轮次但仍有未翻译条目时，不能显示成功态。
+    partial_texts = []
+    partial_start_texts = []
+    partial_page = SimpleNamespace(
+        _onekey_translation_completed=True,
+        _onekey_translation_incomplete=True,
+        _translation_output_completed=lambda: False,
+        step4_status=SimpleNamespace(
+            setText=partial_texts.append,
+            setStyleSheet=lambda value: None,
+        ),
+        start_trans_btn=SimpleNamespace(
+            setText=partial_start_texts.append,
+            setEnabled=lambda value: None,
+        ),
+        skip_trans_btn=SimpleNamespace(setText=start_texts.append),
+    )
+    page_module.YiJianFanyiPage._refresh_step4_state(partial_page)
+    assert "Translation is complete" not in partial_texts[-1]
+    assert "Maximum rounds reached" in partial_texts[-1]
+    assert partial_start_texts[-1] == "Translate Again (raise max rounds)"
+
     page.deleteLater()
 
 
