@@ -230,6 +230,165 @@ def test_sqlite_full_cache_save_streams_items_in_one_pass(tmp_path) -> None:
     assert db.get_items_digest() == CacheDB.items_digest(db.get_items())
 
 
+def test_row_serializer_is_byte_identical_to_asdict() -> None:
+    """行序列化绕开了 asdict() 的 deepcopy，摘要与行内容必须一字节不差。
+
+    ``items_digest`` 被 ``CacheManager._sqlite_items_conflict_with_json`` 当成
+    "这批条目是完整代次" 的标志位使用，只要摘要口径变了，旧库的判定就会翻转。
+    """
+    import hashlib
+    import tempfile
+    from pathlib import Path
+
+    db_path = str(Path(tempfile.mkdtemp()) / "cache.db")
+    items = [
+        CacheItem(
+            src = f"source {index}",
+            dst = f"译文 {index}",
+            extra_field = {"nested": {"deep": [1, 2, {"x": "y"}]}, "n": index},
+            metadata = {"tag": [index] * 3, "flag": True},
+            row = index,
+        )
+        for index in range(6)
+    ]
+    db = CacheDB(db_path)
+    db.set_items(items)
+
+    expected_rows = []
+    expected = hashlib.sha256()
+    expected.update(b"[")
+    for index, item in enumerate(items):
+        data = item.asdict()
+        if index:
+            expected.update(b",")
+        expected.update(CacheDB._digest_json(data).encode("utf-8"))
+        expected_rows.append(CacheDB._row_json(data))
+    expected.update(b"]")
+
+    actual = hashlib.sha256()
+    actual_rows = [row[0] for row in CacheDB._iter_item_rows(items, actual)]
+
+    assert actual_rows == expected_rows
+    assert actual.hexdigest() == expected.hexdigest()
+    assert db.get_items_digest() == expected.hexdigest()
+
+
+def test_row_serializer_reads_every_field_while_holding_the_item_lock() -> None:
+    """序列化必须在条目自己的锁内读完所有字段。
+
+    用一个记录进出状态的假锁替换 ``item.lock``：``__enter__`` 之后、``__exit__``
+    之前 ``active`` 为真，而 ``__getattribute__`` 会记下每个字段是在锁内还是锁外
+    被读取的。这样不需要起线程、没有竞态，删掉 ``with item.lock:`` 就会被抓到。
+    """
+    reads = []
+
+    class _RecordingLock:
+        def __init__(self) -> None:
+            self.active = False
+            self.entered = 0
+
+        def __enter__(self):
+            self.active = True
+            self.entered += 1
+            return self
+
+        def __exit__(self, *_exc):
+            self.active = False
+            return False
+
+    class _ProbedItem(CacheItem):
+        def __getattribute__(self, name):
+            if name in ("src", "dst", "metadata", "extra_field", "status"):
+                lock = object.__getattribute__(self, "lock")
+                reads.append((name, getattr(lock, "active", False)))
+            return object.__getattribute__(self, name)
+
+    item = _ProbedItem(src = "source", dst = "译文", metadata = {"k": "v"})
+    lock = _RecordingLock()
+    item.lock = lock
+    # 构造期 __post_init__ 也会读 status/metadata，丢弃那部分记录。
+    reads.clear()
+
+    rows = [row[0] for row in CacheDB._iter_item_rows([item], _NullDigest())]
+
+    assert rows, "序列化没有产出任何行"
+    assert lock.entered == 1, "序列化必须恰好进入一次条目锁"
+    assert reads, "没有观测到任何字段读取"
+    assert all(active for _name, active in reads), (
+        f"这些字段在锁外被读取，条目可能被并发改写: {[n for n, a in reads if not a]}"
+    )
+
+
+class _NullDigest:
+    def update(self, _data: bytes) -> None:
+        return None
+
+
+def test_from_dict_keeps_every_init_field_and_drops_the_rest() -> None:
+    """字段名集合被缓存成常量之后，from_dict 的过滤语义不能变。
+
+    ``from_dict`` 只把 dataclass 的 init 字段交给 ``__init__``。``lock`` 是
+    init=False（走 default_factory），``dataclasses.fields()`` 却照样把它列
+    出来 —— 收进去就等于给每条缓存留一个 TypeError。其余键要丢掉。
+    集合换成缓存之后这条最容易悄悄坏掉：漏一个字段，读出来的条目就少一段
+    译文，界面上看不出来但保存会丢。
+    """
+    payload = {
+        "src": "source",
+        "dst": "译文",
+        "name_src": "Alice",
+        "name_dst": "爱丽丝",
+        "extra_field": {"tag": []},
+        "tag": "script.txt",
+        "row": 7,
+        "file_type": CacheItem.FileType.RENPY,
+        "file_path": "tl/chinese/script.rpy",
+        "text_type": CacheItem.TextType.RENPY,
+        "status": Base.TranslationStatus.TRANSLATED,
+        "retry_count": 2,
+        "metadata": {"trace_id": "kept"},
+        "unknown_future_key": "老版本不认识，将来认识",
+    }
+
+    item = CacheItem.from_dict(payload)
+
+    assert item.get_src() == "source"
+    assert item.get_dst() == "译文"
+    assert item.get_name_src() == "Alice"
+    assert item.get_name_dst() == "爱丽丝"
+    assert item.get_extra_field() == {"tag": []}
+    assert item.get_tag() == "script.txt"
+    assert item.get_row() == 7
+    assert item.get_file_type() == CacheItem.FileType.RENPY
+    assert item.get_file_path() == "tl/chinese/script.rpy"
+    assert item.get_text_type() == CacheItem.TextType.RENPY
+    assert item.get_status() == Base.TranslationStatus.TRANSLATED
+    assert item.get_retry_count() == 2
+    assert item.get_metadata() == {"trace_id": "kept"}
+    # lock 走 default_factory 拿到真锁，且它绝不在 from_dict 的转发名单里。
+    assert isinstance(item.lock, type(threading.Lock()))
+    assert "lock" not in CacheItem._from_dict_fields()
+    assert not hasattr(item, "unknown_future_key")
+
+
+def test_from_dict_field_set_is_cached_per_class_not_shared_with_subclasses() -> None:
+    """缓存按类存放：子类新增的 init 字段不能被父类的集合吃掉。"""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _ExtendedItem(CacheItem):
+        extra_note: str = ""
+
+    parent_fields = CacheItem._from_dict_fields()
+    child_fields = _ExtendedItem._from_dict_fields()
+
+    assert "extra_note" in child_fields
+    assert "extra_note" not in parent_fields
+    assert _ExtendedItem.from_dict({"src": "s", "extra_note": "note"}).extra_note == "note"
+    # 第二次调用必须命中同一个缓存对象，而不是重新推导。
+    assert _ExtendedItem._from_dict_fields() is child_fields
+
+
 def test_cache_manager_in_memory_reset_keeps_assets_and_replaces_items() -> None:
     manager = CacheManager(service = False)
     manager.set_project(_project_with_run_data())
