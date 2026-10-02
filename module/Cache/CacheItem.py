@@ -14,6 +14,12 @@ from tiktoken_ext import openai_public
 from base.Base import Base
 from module.Text.TextBase import TextBase
 
+# CacheItem.from_dict 的字段名集合缓存，按类存放，延迟到首次调用时填充。
+# 键是类本身而不是模块级常量：测试里存在 CacheItem 的子类（见
+# tests/module/cache/test_translation_cache_foundation.py 里的 _ProbedItem），
+# 用常量会让子类静默丢掉自己新增的字段。
+_FROM_DICT_FIELDS: dict[type, frozenset[str]] = {}
+
 @dataclasses.dataclass
 class CacheItem():
 
@@ -98,8 +104,26 @@ class CacheItem():
     TRANSLATION_RETRY_KEY: ClassVar[str] = "translation_retry"
 
     @classmethod
+    def _from_dict_fields(cls) -> frozenset[str]:
+        """字段名集合，按类缓存，只算一次。
+
+        dataclasses.fields() 每次都会新建一个 tuple，from_dict 里对它的
+        set 推导还要再遍历一遍。大项目读缓存时这一项被调用 6 万次以上
+        （校对页打开一次、保存一次、增量抽取一次），实测 60229 条里单它
+        就占 620ms，而字段名集合在整个进程生命周期内是常量。
+
+        只收 init 字段：dataclasses.fields() 会把 init=False 的 lock 也
+        列出来，而 __init__ 并不接受它，混进去等于埋了一个 TypeError。
+        """
+        cached = _FROM_DICT_FIELDS.get(cls)
+        if cached is None:
+            cached = frozenset(f.name for f in dataclasses.fields(cls) if f.init)
+            _FROM_DICT_FIELDS[cls] = cached
+        return cached
+
+    @classmethod
     def from_dict(cls, data: dict) -> Self:
-        class_fields = {f.name for f in dataclasses.fields(cls)}
+        class_fields = cls._from_dict_fields()
         filtered_data = {k: v for k, v in data.items() if k in class_fields}
         return cls(**filtered_data)
 
