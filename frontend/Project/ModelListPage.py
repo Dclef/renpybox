@@ -1,8 +1,5 @@
 from functools import partial
 
-import openai
-import anthropic
-from google import genai
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget
 from PyQt5.QtWidgets import QLayout
@@ -85,11 +82,18 @@ class ModelListPage(MessageBoxBase, Base):
 
         try:
             if api_format == Base.APIFormat.GOOGLE:
+                # 三个 SDK 只在本方法里用到。放到模块顶层会让
+                # frontend.Project.PlatformPage 的导入（进而整个 AppFluentWindow
+                # 构造）在启动路径上白付约 2.8s——这些页面的构造并不需要模型列表。
+                from google import genai
+
                 client = genai.Client(
                     api_key = api_key,
                 )
                 result = [model.name for model in client.models.list()]
             elif api_format == Base.APIFormat.ANTHROPIC:
+                import anthropic
+
                 client = anthropic.Anthropic(
                     api_key = api_key,
                     base_url = api_url,
@@ -100,6 +104,8 @@ class ModelListPage(MessageBoxBase, Base):
             elif api_format in Base.MACHINE_API_FORMATS:
                 result = ["free"]
             else:
+                import openai
+
                 client = openai.OpenAI(
                     base_url = api_url,
                     api_key = api_key,

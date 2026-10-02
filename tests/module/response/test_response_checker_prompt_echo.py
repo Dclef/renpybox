@@ -15,6 +15,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.PromptBuilder import PromptBuilder
 from module.Response.ResponseChecker import ResponseChecker
+from module.Text.TextHelper import TextHelper
 
 
 PROMPT_ROOT = Path(__file__).resolve().parents[3] / "resource" / "prompt"
@@ -131,6 +132,77 @@ def test_similarity_check_alone_cannot_catch_prompt_echo():
     assert ResponseChecker.has_translation_error_marker(dst) is False
     assert ResponseChecker.has_mixed_language_leakage(src, dst) is False
     assert ResponseChecker.RE_DEGRADATION.search(dst) is None
+
+
+def test_disjoint_characters_short_circuit_skips_the_expensive_measures(monkeypatch):
+    """字符集不相交必须真的跳过 SequenceMatcher 与 2-gram Jaccard。
+
+    真实项目 57564 对里 62% 落在这条支上，整轮从 3.9s 降到 2.0s。
+    只断言返回值是锁不住这个优化的——没有短路时 `SequenceMatcher`
+    与 Jaccard 对不相交的两串本来也返回 0，测试照样绿。这里把两个昂贵
+    度量换成会炸的替身，短路一旦被删掉就会立刻失败。
+    """
+    calls: list[str] = []
+
+    def _boom_sequence(x: str, y: str) -> float:
+        calls.append("sequence")
+        raise AssertionError("字符集不相交时不该再跑 SequenceMatcher")
+
+    def _boom_jaccard(x: str, y: str, n: int = 2) -> float:
+        calls.append("jaccard")
+        raise AssertionError("字符集不相交时不该再跑 2-gram Jaccard")
+
+    monkeypatch.setattr(TextHelper, "check_similarity_by_sequence", _boom_sequence)
+    monkeypatch.setattr(TextHelper, "check_similarity_by_ngram_jaccard", _boom_jaccard)
+
+    src = "A quick brown fox jumps over the lazy dog"
+    dst = "敏捷的棕色狐狸跳过那只懒惰的狗"
+    assert not (set(src) & set(dst))
+    assert 0.3 < len(dst) / len(src) < 3.0
+    assert ResponseChecker.has_high_similarity(src, dst) is False
+    assert calls == []
+
+
+def test_disjoint_characters_short_circuit_still_keeps_similar_texts_caught():
+    """字符集不相交可以提前判 False，但不能吃掉真相似。
+
+    `has_high_similarity` 在长度比之后加了一道 `set(src) & set(dst)` 短路：
+    中日文与英文互不相交的真实数据有 62% 落在这一支。它的正确性依赖
+    "没有公共字符 ⇒ 子串包含 / SequenceMatcher / 2-gram Jaccard 三种算法
+    都必然返回 0"，所以这个测试同时钉住两侧：不相交的一对判 False，
+    只共用一个字符的高相似仍必须判 True。
+    """
+    disjoint_src = "A quick brown fox jumps over the lazy dog"
+    disjoint_dst = "敏捷的棕色狐狸跳过那只懒惰的狗"
+    assert not (set(disjoint_src) & set(disjoint_dst))
+    assert 0.3 < len(disjoint_dst) / len(disjoint_src) < 3.0
+    assert ResponseChecker.has_high_similarity(disjoint_src, disjoint_dst) is False
+
+    # 只共用一个字符 '!'，但整体仍是高相似，必须照旧判 True。
+    near_src = "Open the door quick."
+    near_dst = "Open the door quick!"
+    assert set(near_src) & set(near_dst)
+    assert TextHelper.check_similarity_by_sequence(near_src, near_dst) > 0.90
+    assert ResponseChecker.has_high_similarity(near_src, near_dst) is True
+
+
+def test_disjoint_characters_short_circuit_is_conservative_for_contained_text():
+    """短路必须落在子串包含判定之后，且不能改变单字符短文本的既有结论。
+
+    `src == dst` 的早返回在短路之前，所以 `"?"`/`"."` 这类单字符串
+    仍按"完全一致"判 True；曾试过用 2-gram 交集为空做剪枝，那会把
+    这 354 对真值翻成 False，已被否决。
+    """
+    assert ResponseChecker.has_high_similarity("?", "?") is True
+    assert ResponseChecker.has_high_similarity("...", "...") is True
+
+    # 一方是另一方的子串必然共用字符，短路不得把它误判成不相似。
+    # 这里的子串比例 10/12 已经越过 0.85 门槛，所以命中的是子串分支。
+    contained_src = "hello there"
+    contained_dst = "hello there!"
+    assert set(contained_src) & set(contained_dst)
+    assert len(contained_src) / len(contained_dst) > 0.85
+    assert ResponseChecker.has_high_similarity(contained_src, contained_dst) is True
 
 
 def _make_item(src: str, dst: str) -> CacheItem:

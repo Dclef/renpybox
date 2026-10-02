@@ -1,3 +1,4 @@
+import contextlib
 import os
 import json
 import re
@@ -298,21 +299,41 @@ class ResultChecker(Base):
 
     # 检查
     def check(self) -> None:
-        os.makedirs(self.config.output_folder, exist_ok = True)
-        [
-            os.remove(entry.path)
-            for entry in os.scandir(self.config.output_folder)
-            if entry.is_file() and entry.name.startswith(("结果检查_", "result_check_"))
-        ]
+        # 清理旧报告与列出输出目录都是纯 I/O：输出目录被并发删掉、重命名或
+        # 权限不足时，scandir 只会抛 FileNotFoundError/PermissionError。
+        # 这里是"报告"环节，不是闸门，不该因为清不掉旧文件就丢掉全部检查。
+        with contextlib.suppress(OSError):
+            os.makedirs(self.config.output_folder, exist_ok = True)
+        with contextlib.suppress(OSError):
+            [
+                os.remove(entry.path)
+                for entry in os.scandir(self.config.output_folder)
+                if entry.is_file() and entry.name.startswith(("结果检查_", "result_check_"))
+            ]
 
-        self.check_kana()
-        self.check_hangeul()
-        self.check_text_preserve()
-        self.check_similarity()
-        self.check_glossary()
-        self.check_mixed_translation()  # 新增：检查英文+中文混合翻译错误
-        self.check_untranslated()
-        self.check_retry_count_threshold()
+        # 每个检查独立兜底：check_glossary 还会改写 items 的 dst（术语表自动
+        # 修复），一项抛异常不该让其余七份报告也一起消失。
+        checks = (
+            self.check_kana,
+            self.check_hangeul,
+            self.check_text_preserve,
+            self.check_similarity,
+            self.check_glossary,
+            self.check_mixed_translation,
+            self.check_untranslated,
+            self.check_retry_count_threshold,
+        )
+        failed: list[str] = []
+        for check in checks:
+            try:
+                check()
+            except Exception as e:
+                failed.append(f"{check.__name__}: {type(e).__name__}: {e}")
+                self.warning(f"[ResultChecker] {check.__name__} 执行失败，已跳过: {e}")
+        if failed:
+            self.warning(
+                f"[ResultChecker] {len(failed)} 项检查未完成: " + "; ".join(failed[:3])
+            )
 
     # 假名残留检查
     def check_kana(self) -> None:
