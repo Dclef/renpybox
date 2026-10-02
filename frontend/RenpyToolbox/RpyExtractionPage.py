@@ -7,6 +7,7 @@ from module.Config import Config
 from module.Extract.GameExtractionRules import RuleStore, RuleError, new_profile, new_rule
 from module.Extract.RpyExtractionSettings import context_for_path
 from module.Localizer.Localizer import Localizer
+from widget.ThemeHelper import mark_app_dialog, mark_app_page
 
 
 def starter_profile(category):
@@ -175,6 +176,7 @@ class RpyExtractionPage(QWidget):
     def __init__(self, object_name='rpy-extraction-settings', parent=None):
         super().__init__(parent)
         self.setObjectName(object_name)
+        mark_app_page(self)
         l = Localizer.get()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -227,6 +229,7 @@ def open_rpy_settings(path, language, parent, category='source'):
     dialog = QDialog(parent)
     dialog.setWindowTitle(Localizer.get().rpy_rules_title)
     dialog.resize(760, 440)
+    mark_app_dialog(dialog)
     layout = QVBoxLayout(dialog)
     page = RpyExtractionPage(parent=dialog)
     page.path.setText(str(path or ''))
