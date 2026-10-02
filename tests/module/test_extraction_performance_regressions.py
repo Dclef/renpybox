@@ -1,10 +1,17 @@
+import csv
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from module.Extract.UnifiedExtractor import UnifiedExtractor
+from module.Extract import UnifiedExtractor as unified_extractor_module
+from module.Extract.UnifiedExtractor import (
+    _cache_get,
+    _cache_put,
+    _RESULT_CACHE_MAX_ENTRIES,
+    UnifiedExtractor,
+)
 from module.Renpy import renpy_extract as rx
 from module.Renpy.renpy_tl_core import escape_tl_string
 
@@ -245,9 +252,205 @@ def test_cancelling_incremental_selection_restores_previous_delta(tmp_path, monk
     assert not (delta / "partial.rpy").exists()
 
 
+def test_backfill_failure_must_not_be_reported_as_success(tmp_path, monkeypatch):
+    """H1：_merge_translations 的失败列表不能再被丢弃后照报 success=True。
+
+    旧实现丢弃返回值，用户 TL 里留着"抽到原文但译文没写回去"的半成品，
+    界面却显示抽取成功，游戏里仍是英文。
+    """
+    config = config_for_extraction(monkeypatch)
+    tl_dir = tmp_path / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    previous = (
+        'translate chinese strings:\n'
+        '    old "Kept entry"\n'
+        '    new "保留的译文"\n'
+    )
+    (tl_dir / "script.rpy").write_text(previous, encoding="utf-8")
+
+    def official(*_args, **_kwargs):
+        tl_dir.mkdir(parents=True, exist_ok=True)
+        (tl_dir / "script.rpy").write_text(
+            'translate chinese strings:\n'
+            '    old "Kept entry"\n'
+            '    new "保留的译文"\n'
+            '\n'
+            '    old "Brand new entry"\n'
+            '    new "Brand new entry"\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        UnifiedExtractor,
+        "_merge_translations",
+        lambda *_a, **_k: ["回填翻译失败 script.rpy: synthetic boom"],
+    )
+    extractor = UnifiedExtractor(SimpleNamespace(official_extract=official))
+    result = extractor.extract_incremental(
+        tmp_path, "chinese", "game.exe", output_to_separate_folder=False
+    )
+
+    assert result.success is False
+    assert "回填已有翻译未完整完成" in result.message
+    # 失败时 finally 必须把原 TL 目录从备份移回：用户已有译文一条都不能少
+    # （本轮抽取新增的条目允许留在里面，用户重来一轮即可）。
+    assert (tl_dir / "script.rpy").exists()
+    restored = (tl_dir / "script.rpy").read_text(encoding="utf-8")
+    assert 'old "Kept entry"' in restored
+    assert 'new "保留的译文"' in restored
+
+
+def test_preserve_filter_deletions_are_recoverable(tmp_path):
+    """保留库过滤是物理删除：删掉的条目必须能原样恢复回来。
+
+    旧实现直接 write_text 抹掉 old/new 对，只留一条进度文本，译文只能重新花钱
+    再翻一遍。should_skip_text 还会误判 Café / OK_2 之类的正常文本。
+    """
+    game_dir = tmp_path / "fictional_game"
+    tl_dir = game_dir / "game" / "tl" / "chinese"
+    tl_dir.mkdir(parents=True)
+    target = tl_dir / "script.rpy"
+    target.write_text(
+        'translate chinese strings:\n'
+    '\n'
+    '    old "Alice"\n'
+    '    new "爱丽丝"\n'
+    '\n'
+    '    old "A regular sentence worth translating."\n'
+    '    new "一句值得翻译的普通句子。"\n',
+        encoding="utf-8",
+    )
+
+    extractor = UnifiedExtractor()
+    removed, manifest_path = extractor._filter_tl_files(
+        tl_dir, "chinese", {"Alice"}
+    )
+
+    assert removed == 1
+    surviving = target.read_text(encoding="utf-8")
+    assert 'old "Alice"' not in surviving
+    assert 'old "A regular sentence worth translating."' in surviving
+
+    # 清单里必须记录被删的原文与译文，否则恢复后是空的。
+    assert manifest_path is not None and manifest_path.exists()
+    manifest_text = manifest_path.read_text(encoding="utf-8-sig")
+    assert "Alice" in manifest_text
+    assert "爱丽丝" in manifest_text
+    assert "preserve_set" in manifest_text
+    # 未被删除的条目绝不能进清单。
+    assert "worth translating" not in manifest_text
+
+    # 走真实恢复入口：勾选 restore=1 后应把 Alice 的原文+译文写回同一个文件。
+    rows = list(csv.DictReader(manifest_path.read_text(encoding="utf-8-sig").splitlines()))
+    assert rows and all(row["restore"] == "0" for row in rows)
+    with manifest_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        for row in rows:
+            row["restore"] = "1"
+            writer.writerow(row)
+
+    result = extractor.restore_flagged_suspicious_entries(
+        game_dir, "chinese", manifest_path
+    )
+
+    assert result.success is True
+    recovered = target.read_text(encoding="utf-8")
+    assert 'old "Alice"' in recovered
+    assert 'new "爱丽丝"' in recovered
+
+
+def test_preserve_filter_reports_failed_file_instead_of_silent_pass(tmp_path, monkeypatch):
+    """单个文件过滤失败不能再被裸 except 吞掉。"""
+    tl_dir = tmp_path / "chinese"
+    tl_dir.mkdir()
+    (tl_dir / "script.rpy").write_text(
+        'translate chinese strings:\n    old "Alice"\n    new "爱丽丝"\n',
+        encoding="utf-8",
+    )
+
+    def boom(*_args, **_kwargs):
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(
+        "module.Extract.UnifiedExtractor.atomic_write_text", boom
+    )
+    extractor = UnifiedExtractor()
+    errors = []
+    monkeypatch.setattr(extractor.logger, "error", lambda message: errors.append(message))
+
+    removed, _manifest = extractor._filter_tl_files(tl_dir, "chinese", {"Alice"})
+
+    assert removed == 1  # 清单照留，用户知道有条目被判定为要删
+    assert any("应用保留库过滤失败" in message for message in errors)
+    # 源文件必须保持原样（原子写失败不会留下半截文件）。
+    assert (tl_dir / "script.rpy").read_text(encoding="utf-8").endswith('new "爱丽丝"\n')
+
+
+def test_backup_run_dirs_never_collide_within_one_post_process(tmp_path):
+    """同一秒内连续两轮过滤，各自的清单不能互相覆盖。
+
+    保留库过滤和布尔表达式过滤在 _post_process 里先后跑，时间戳只到秒。
+    run_dir 重名时后写的 restore_manifest.csv 会覆盖前一份，被删的译文就
+    永远恢复不回来了。
+    """
+    tl_dir = tmp_path / "chinese"
+    tl_dir.mkdir()
+
+    first = UnifiedExtractor()._write_suspicious_backup(
+        tl_dir,
+        "chinese",
+        {"script.rpy": [{"line": 1, "old": "Alice", "new": "爱丽丝", "reason": "preserve_set"}]},
+    )
+    second = UnifiedExtractor()._write_suspicious_backup(
+        tl_dir,
+        "chinese",
+        {"script.rpy": [{"line": 9, "old": "x == True", "new": "", "reason": "suspicious_bool_expr"}]},
+    )
+
+    assert first != second
+    assert first.exists() and second.exists()
+    assert "Alice" in first.read_text(encoding="utf-8-sig")
+    assert "x == True" in second.read_text(encoding="utf-8-sig")
+
+
 def test_scan_cancellation_propagates_before_source_mutation(tmp_path):
     path = tmp_path / "script.rpy"
     path.write_text('text "Retained content"\n', encoding="utf-8")
     with pytest.raises(rx.ExtractionCancelled):
         rx.ExtractFromFile(str(path), True, 4, False, False, True, False, should_stop=lambda: True)
     assert path.read_text(encoding="utf-8") == 'text "Retained content"\n'
+
+
+def test_result_caches_stay_bounded_across_projects():
+    """换一个项目不能让三个结果缓存无限增长。
+
+    缓存键带 tl 目录签名，目录一改就必然 miss，可没人来删旧条目：用户每换一个
+    项目就留一份编号块指纹和 strings 集合（实测项目 62 个 rpy / 60229 条），
+    长时间切换项目会把内存吃满。命中时还要按 LRU 重排，否则"最近用的"会被淘汰。
+    """
+    overflow = _RESULT_CACHE_MAX_ENTRIES + 5
+    for name in (
+        "_STRING_ORIGINALS_CACHE",
+        "_NUMBERED_FINGERPRINTS_CACHE",
+        "_EXISTING_TRANSLATIONS_CACHE",
+    ):
+        cache = getattr(unified_extractor_module, name)
+        cache.clear()
+        try:
+            for index in range(overflow):
+                _cache_put(cache, (f"project-{index}", "sig"), index)
+            assert len(cache) == _RESULT_CACHE_MAX_ENTRIES, (
+                f"{name} 超过上限：{len(cache)} > {_RESULT_CACHE_MAX_ENTRIES}"
+            )
+
+            # 最旧的已淘汰，最新的还在。
+            assert _cache_get(cache, ("project-0", "sig")) is None
+            assert _cache_get(cache, (f"project-{overflow - 1}", "sig")) == overflow - 1
+
+            # 命中会把条目挪到末尾，所以再插一个就该淘汰当前最旧的（即 project-1）。
+            _cache_put(cache, ("newcomer", "sig"), "x")
+            assert _cache_get(cache, ("project-1", "sig")) is None
+            assert _cache_get(cache, ("newcomer", "sig")) == "x"
+        finally:
+            cache.clear()
