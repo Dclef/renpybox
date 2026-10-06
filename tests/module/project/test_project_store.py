@@ -40,11 +40,14 @@ def _fake_paths(tmp_path, monkeypatch: pytest.MonkeyPatch) -> RenpyProjectPaths:
     return paths
 
 
-def test_apply_resolved_writes_five_fields_saves_and_emits(
+def test_apply_resolved_writes_three_identity_fields_and_derives_empty_run_folders(
     store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """空运行目录仍是派生态：应回落到本项目的标准目录。"""
     instance, emitted = store
     config = _FakeConfig()
+    config.input_folder = ""
+    config.output_folder = ""
     paths = _fake_paths(tmp_path, monkeypatch)
 
     instance.apply_resolved(config, paths)
@@ -59,6 +62,74 @@ def test_apply_resolved_writes_five_fields_saves_and_emits(
         Base.Event.PROJECT_CHANGED,
         {"project_root": str(paths.project_root)},
     )]
+
+
+@pytest.mark.parametrize("field", ["input_folder", "output_folder"])
+def test_apply_resolved_keeps_user_chosen_run_folder(
+    store, tmp_path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """用户自己选的目录不能被规范项目路径改写回 game/tl/<lang>。"""
+    instance, _ = store
+    config = _FakeConfig()
+    custom = tmp_path / "MyOwnFolder" / "trans"
+    custom.mkdir(parents = True)
+    setattr(config, field, str(custom))
+    other = "output_folder" if field == "input_folder" else "input_folder"
+    setattr(config, other, "")
+    paths = _fake_paths(tmp_path, monkeypatch)
+
+    instance.apply_resolved(config, paths)
+
+    assert getattr(config, field) == str(custom)
+    # 另一个字段是空值时照旧派生。
+    expected = (
+        str(paths.translation_output_dir)
+        if field == "input_folder"
+        else str(paths.tl_language_dir)
+    )
+    assert getattr(config, other) == expected
+
+
+@pytest.mark.parametrize("field", ["input_folder", "output_folder"])
+def test_apply_resolved_refreshes_stale_derived_folders_from_other_project(
+    store, tmp_path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """上一个项目遗留的派生态必须跟随新项目，否则会卡在旧路径。"""
+    instance, _ = store
+    config = _FakeConfig()
+    old_project = tmp_path / "OldGame"
+    if field == "input_folder":
+        stale = old_project / "game" / "tl" / "chinese"
+    else:
+        stale = old_project / "RenpyBox_Translation" / "chinese"
+    stale.mkdir(parents = True)
+    setattr(config, field, str(stale))
+    paths = _fake_paths(tmp_path, monkeypatch)
+
+    instance.apply_resolved(config, paths)
+
+    expected = (
+        str(paths.tl_language_dir)
+        if field == "input_folder"
+        else str(paths.translation_output_dir)
+    )
+    assert getattr(config, field) == expected
+
+
+def test_apply_resolved_refreshes_stale_incremental_folder(
+    store, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧增量暂存目录也是派生态，切项目后必须让位给新的主目录。"""
+    instance, _ = store
+    config = _FakeConfig()
+    stale = tmp_path / "OldGame" / "RenpyBox_Translation" / "chinese_new"
+    stale.mkdir(parents = True)
+    config.input_folder = str(stale)
+    paths = _fake_paths(tmp_path, monkeypatch)
+
+    instance.apply_resolved(config, paths)
+
+    assert config.input_folder == str(paths.tl_language_dir)
 
 
 def test_apply_resolved_honors_explicit_run_folders(

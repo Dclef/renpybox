@@ -43,6 +43,7 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
+from base.AppPaths import get_app_paths
 from base.BaseLanguage import BaseLanguage
 from base.LogManager import LogManager
 from widget.ItemCard import ItemCard
@@ -89,6 +90,40 @@ from frontend.RenpyToolbox.OneKeyWorkers import (
     preserve_incremental_translation_cache,
     resolve_translation_apply_paths,
 )
+
+
+def _same_path(left, right) -> bool:
+    """比较两个目录是否指向同一位置（兼容 Windows 大小写与相对写法）。"""
+    def key(value) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return os.path.normcase(os.path.normpath(str(Path(text).expanduser().resolve(strict=False))))
+        except Exception:
+            return os.path.normcase(os.path.normpath(text))
+    left_key, right_key = key(left), key(right)
+    return left_key != "" and left_key == right_key
+
+
+def _looks_derived_run_folder(value) -> bool:
+    """判断目录是否属于工具自己的派生态（而不是用户自选目录）。
+
+    覆盖标准 TL 目录 ``game/tl/<lang>``、翻译输出 ``RenpyBox_Translation/
+    <lang>`` 及其 ``<lang>_new`` 变体。这些值没有恢复价值：它们总是某个
+    项目的派生产物，跨项目恢复只会把上一个项目的路径带进新项目。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        path = Path(text).expanduser().resolve(strict=False)
+    except Exception:
+        path = Path(text)
+    if path.parent.name.casefold() == "tl":
+        return True
+    return any(part.casefold() == "renpybox_translation" for part in path.parts)
+
 
 class YiJianFanyiPage(Base, QWidget):
     """一键翻译页面 - 向导式分步骤流程"""
@@ -150,6 +185,9 @@ class YiJianFanyiPage(Base, QWidget):
         # 自动 hook 临时把配置指向 game/tl；完成后恢复主输出，但保留
         # 最近运行清单指向 hook 缓存，供校对页继续载入。
         self._hook_restore_paths = None
+        # 一键流程的输入目录是它自己抽取的语言目录，覆盖前先暂存用户
+        # 原本的选择，跑完再写回，避免项目设置页的目录被永久替换。
+        self._user_input_folder_stash = ""
         
         self._init_ui()
         self.subscribe(Base.Event.TRANSLATION_DONE, self._on_translation_done)
@@ -924,17 +962,22 @@ class YiJianFanyiPage(Base, QWidget):
             self._onekey_translation_completed = False
             self._onekey_translation_incomplete = False
             self._reset_auto_hook_state()
+            # 换项目后旧项目暂存的输入目录已无意义，不能带进新项目。
+            self._user_input_folder_stash = ""
             self._incremental_dir = None
             self._incremental_output_dir = None
             self._apply_target_dir = None
             self._max_reached_step = 1
 
-        # 同一项目往返工作台时保留增量输入、输出，不能退回全量翻译。
+        # 一键流程的翻译输入永远是它自己抽取到的语言目录（增量时是暂存
+        # 目录）；但用户自己选的输入目录不能因此被销毁，先暂存下来。
+        onekey_input = self._incremental_dir or paths.tl_language_dir
+        self._stash_user_input_folder(config, onekey_input)
         ProjectStore.get().apply_resolved(
             config,
             paths,
-            input_folder = self._incremental_dir,
-            output_folder = self._incremental_output_dir,
+            input_folder = onekey_input,
+            output_folder = self._incremental_output_dir or paths.translation_output_dir,
             mutate = configure_tl_translation_mode,
         )
 
@@ -944,6 +987,43 @@ class YiJianFanyiPage(Base, QWidget):
         self.info(f"[配置] 输入目录: {config.input_folder}")
         self.info(f"[配置] 输出目录: {config.output_folder}")
     
+    def _stash_user_input_folder(self, config, onekey_input) -> None:
+        """记下一键流程覆盖前的用户输入目录。
+
+        一键翻译的翻译输入只能是它自己抽取到的 ``game/tl/<lang>``（或增量
+        暂存目录），无法改去读用户自建目录。所以这里不改写流程行为，而是
+        把用户原来的选择暂存下来：一键跑完后由 ``_restore_user_input_folder``
+        写回，避免项目设置页里用户选的目录被永久替换成标准 ``tl`` 目录。
+        """
+        current = str(getattr(config, "input_folder", "") or "").strip()
+        if current == "" or _same_path(current, onekey_input):
+            return
+        # 工具自己派生的目录、以及未配置时的应用默认目录，都不值得恢复。
+        if _looks_derived_run_folder(current) or _same_path(
+            current, get_app_paths().input_path
+        ):
+            return
+        self._user_input_folder_stash = str(Path(current))
+
+    def _restore_user_input_folder(self, config) -> None:
+        """一键流程结束后把用户原本选择的输入目录写回配置。"""
+        stash = self._user_input_folder_stash
+        if not stash:
+            return
+        self._user_input_folder_stash = ""
+        config.input_folder = stash
+
+    def _finish_onekey_run(self) -> None:
+        """一键流程收尾：把用户原本选择的输入目录写回全局配置。"""
+        if not getattr(self, "_user_input_folder_stash", ""):
+            return
+        try:
+            config = Config().load()
+            self._restore_user_input_folder(config)
+            config.save()
+        except Exception as exc:
+            self.logger.warning(f"恢复用户输入目录失败: {exc}")
+
     def _check_old_translation(self, game_dir):
         """检测是否有旧翻译"""
         self._invalidate_old_translation_scan()
@@ -2805,6 +2885,11 @@ class YiJianFanyiPage(Base, QWidget):
             self._onekey_translation_completed = not failed
             self._onekey_translation_incomplete = incomplete
             self._reset_auto_hook_state()
+            # 翻译收尾后把用户原本选择的输入目录写回，避免项目设置页
+            # 里的选择被一键流程的标准 tl 目录永久顶掉。
+            finish = getattr(self, "_finish_onekey_run", None)
+            if finish is not None:
+                finish()
             self._refresh_step4_state()
 
     def _on_translation_stop(self, event, data):
@@ -2818,6 +2903,7 @@ class YiJianFanyiPage(Base, QWidget):
             self._onekey_translation_completed = False
             self._onekey_translation_incomplete = False
             self._reset_auto_hook_state()
+            self._finish_onekey_run()
             self._refresh_step4_state()
 
     def _translation_output_completed(self) -> bool:
