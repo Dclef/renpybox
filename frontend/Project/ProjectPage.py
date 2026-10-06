@@ -133,7 +133,16 @@ class ProjectPage(QWidget, Base):
         return looks_like_renpy_path(raw_path)
 
     def _sync_renpy_paths_from_selection(self, config: Config, raw_path: str) -> bool:
-        """把项目页选择的路径同步到 Ren'Py 专用配置，避免工具页继续读取旧项目。"""
+        """把项目页选择的路径同步到 Ren'Py 专用配置，避免工具页继续读取旧项目。
+
+        只有当所选路径本身带 Ren'Py 项目结构时才同步项目身份。用户选择的
+        翻译输入目录通常是自己建的任意文件夹，把它当成项目根会让
+        ``renpy_project_path``/``renpy_tl_folder`` 指向一个并不存在的
+        ``game/tl/<lang>``，项目设置反而变错。
+        """
+        if not self._looks_like_renpy_path(raw_path):
+            return False
+
         paths = RenpyProjectPaths.from_path(raw_path)
         if paths is None:
             return False
@@ -281,18 +290,20 @@ class ProjectPage(QWidget, Base):
             path = QFileDialog.getExistingDirectory(None, Localizer.get().select, "")
             if path == None or path == "":
                 return
+            path = path.strip()
 
             # 更新UI
             self._set_folder_description(
                 widget,
                 Localizer.get().project_page_input_folder_content,
-                path.strip(),
+                path,
             )
 
-            # 更新并保存配置
+            # 用户选的目录就是最终的翻译输入目录：显式写入并保留，
+            # 不再被规范项目路径悄悄改写成 game/tl/<语言>。
             config = Config().load()
-            config.input_folder = path.strip()
-            resolved = self._sync_renpy_paths_from_selection(config, path.strip())
+            config.input_folder = path
+            resolved = self._sync_renpy_paths_from_selection(config, path)
             ProjectStore.get().persist(config, emit = resolved)
 
         card = PushButtonCard(

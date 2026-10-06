@@ -253,9 +253,11 @@ def test_agent_translation_done_can_arrive_before_start_result():
         _onekey_translation_completed=False,
         _hook_restore_paths=None,
         _last_onekey_output_dir=None,
+        _user_input_folder_stash="",
         _refresh_step4_state=lambda: refreshed.append(True),
     )
     page._reset_auto_hook_state = lambda: YiJianFanyiPage._reset_auto_hook_state(page)
+    page._finish_onekey_run = lambda: YiJianFanyiPage._finish_onekey_run(page)
 
     YiJianFanyiPage._on_translation_done(
         page,

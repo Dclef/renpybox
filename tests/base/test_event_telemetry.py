@@ -112,11 +112,14 @@ def test_event_manager_signal_path_records_latency(monkeypatch: pytest.MonkeyPat
     manager = EventManager()
     received: list[dict] = []
     monkeypatch.setattr(
-        manager, "process_event", lambda event, data: received.append(data)
+        manager, "process_event", lambda event, data, sequence=None: received.append(data)
     )
 
     payload = {"progress": 42}
-    manager._on_signal(Base.Event.TRANSLATION_UPDATE, (payload, time.monotonic() - 0.5))
+    # 载荷形如 (数据, 发射时间, 发射序号)；序号用于过滤订阅前发出的历史事件
+    manager._on_signal(
+        Base.Event.TRANSLATION_UPDATE, (payload, time.monotonic() - 0.5, 7)
+    )
 
     assert received == [payload]  # 订阅侧 data 无污染
     snapshot = EventTelemetry.get().snapshot()["TRANSLATION_UPDATE"]
@@ -152,9 +155,10 @@ def test_event_manager_emit_wraps_payload_with_timestamp() -> None:
     assert len(captured) == 1
     event, wrapped = captured[0]
     assert event == Base.Event.PROJECT_STATUS
-    data, emitted_at = wrapped
+    data, emitted_at, sequence = wrapped
     assert data == payload
     assert before <= emitted_at <= after
+    assert sequence == manager._emit_sequence  # 带发射序号，供订阅时刻过滤
 
 
 @pytest.fixture()
