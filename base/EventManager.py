@@ -25,6 +25,15 @@ class EventManager(QObject):
     # 事件列表
     event_callbacks: dict[StrEnum, list[Callable]] = {}
 
+    # 发射序号：自增计数，每条事件带上发射时刻的序号
+    # 与 event_callbacks 同为类级：投递是排队延迟发生的，可能由另一个实例执行，
+    # 序号若各实例自行计数，就无法跨实例判断订阅与发射的先后，过滤会漏掉历史事件
+    _emit_sequence: int = 0
+
+    # 订阅时刻的发射序号，键为 (event, handler)：绑定方法每次访问都是新对象，
+    # 但相等性与哈希稳定，可用于识别「订阅之前就已发出」的历史事件
+    _subscriber_sequences: dict[tuple[StrEnum, Callable], int] = {}
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -37,12 +46,6 @@ class EventManager(QObject):
         self._coalesce_timer.setSingleShot(True)
         self._coalesce_timer.setInterval(COALESCING_INTERVAL_MS)
         self._coalesce_timer.timeout.connect(self._flush_coalesced)
-
-        # 发射序号：自增计数，每条事件带上发射时刻的序号
-        self._emit_sequence = 0
-        # 订阅时刻的发射序号，键为 (event, handler)：绑定方法每次访问都是新对象，
-        # 但相等性与哈希稳定，可用于识别「订阅之前就已发出」的历史事件
-        self._subscriber_sequences: dict[tuple[StrEnum, Callable], int] = {}
 
     @classmethod
     def get(cls) -> Self:
@@ -92,9 +95,7 @@ class EventManager(QObject):
 
     # 信号槽：解包遥测时间戳与发射序号，测 emit→实际分发的端到端延迟（含合并窗口停留）
     def _on_signal(self, event: StrEnum, wrapped: tuple) -> None:
-        # 兼容无序号的二元组（历史载荷结构）
-        data, emitted_at, *rest = wrapped
-        sequence = rest[0] if rest else None
+        data, emitted_at, sequence = wrapped
         record_latency(str(event), (time.monotonic() - emitted_at) * 1000)
         self.process_event(event, data, sequence)
 
@@ -102,8 +103,8 @@ class EventManager(QObject):
     def emit(self, event: StrEnum, data: dict) -> None:
         # payload 包装时间戳随信号走，Qt 签名不变（object 装 tuple）；
         # 订阅者最终拿到的 data 保持原样
-        self._emit_sequence += 1
-        self.signal.emit(event, (data, time.monotonic(), self._emit_sequence))
+        type(self)._emit_sequence += 1
+        self.signal.emit(event, (data, time.monotonic(), type(self)._emit_sequence))
 
     # 订阅事件
     def subscribe(self, event: StrEnum, hanlder: Callable) -> None:

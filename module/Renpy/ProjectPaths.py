@@ -420,13 +420,16 @@ def source_script_counts(
     return result.rpy_count, result.rpyc_count
 
 
-def _is_derived_run_folder(path: Path) -> bool:
+def is_derived_run_folder(value: Any) -> bool:
     """判断某个运行目录是否属于工具自己的派生态（而非用户自选目录）。
 
     派生态有三类形态：标准 TL 目录 ``game/tl/<lang>``、翻译输出
     ``<project>/RenpyBox_Translation/<lang>``，以及增量/兜底变体
     ``<lang>_new``、``<lang>_filtered_suspicious``。
     """
+    path = normalise_path(value)
+    if path is None:
+        return False
     if path.parent.name.casefold() == "tl":
         return True
     return any(
@@ -469,7 +472,7 @@ def _derive_project_run_folder(config: Any, field: str, derived: Path) -> str:
     derived_path = normalise_path(derived) or derived
     if _key(current_path) == _key(derived_path):
         return str(derived)
-    if _is_app_placeholder_folder(current_path) or _is_derived_run_folder(current_path):
+    if _is_app_placeholder_folder(current_path) or is_derived_run_folder(current_path):
         return str(derived)
     return current
 
