@@ -108,6 +108,57 @@ def test_completed_cache_from_other_project_does_not_complete_wizard(project_pag
     assert page._translation_output_completed() is False
 
 
+def test_onekey_restores_user_chosen_input_folder_after_run(project_page):
+    """一键翻译只能用 game/tl/<lang>，但不能把用户自选的输入目录永久顶掉。"""
+    page, config, root = project_page
+    custom_input = root.parent / "MyOwnFolder" / "trans"
+    custom_input.mkdir(parents = True)
+    config.input_folder = str(custom_input)
+
+    page._sync_game_dir_to_config(str(root))
+
+    # 一键流程期间仍读自己抽取的语言目录。
+    assert Path(config.input_folder) == root / "game" / "tl" / "chinese"
+    # 用户的原选择被暂存，翻译收尾时写回。
+    assert page._user_input_folder_stash == str(custom_input)
+
+    page._onekey_translation_started = True
+    page._on_translation_done(
+        Base.Event.TRANSLATION_DONE,
+        {"success": True, "request_id": page._onekey_request_id, "run_id": 1},
+    )
+
+    assert config.input_folder == str(custom_input)
+    assert page._user_input_folder_stash == ""
+
+
+def test_onekey_keeps_its_own_input_folder_as_stash_source(project_page):
+    """当前值本身就是一键派生目录时，不需要暂存，也不能被改写。"""
+    page, config, root = project_page
+    config.input_folder = str(root / "game" / "tl" / "chinese")
+
+    page._sync_game_dir_to_config(str(root))
+
+    assert page._user_input_folder_stash == ""
+    assert Path(config.input_folder) == root / "game" / "tl" / "chinese"
+
+
+def test_switching_project_drops_stashed_input_folder(project_page):
+    """暂存目录只属于原项目，换项目后不能带过去。"""
+    page, config, root = project_page
+    custom_input = root.parent / "MyOwnFolder" / "trans"
+    custom_input.mkdir(parents = True)
+    config.input_folder = str(custom_input)
+    page._sync_game_dir_to_config(str(root))
+    assert page._user_input_folder_stash == str(custom_input)
+
+    other = root.parent / "B"
+    (other / "game").mkdir(parents = True)
+    page.game_path_edit.setText(str(other))
+
+    assert page._user_input_folder_stash == ""
+
+
 def test_language_choices_update_the_actual_translation_config(project_page):
     page, config, _root = project_page
     page.src_lang_combo.setCurrentIndex(1)
