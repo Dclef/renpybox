@@ -58,6 +58,8 @@ from module.Extract.PatchGenerator import generate_patch
 from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
+    is_derived_run_folder,
+    normalise_path,
 )
 from module.Project.ProjectStore import ProjectStore
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
@@ -92,37 +94,16 @@ from frontend.RenpyToolbox.OneKeyWorkers import (
 )
 
 
+def _path_key(value) -> str:
+    """把目录写法归一为可比较的键（兼容 Windows 大小写与相对写法）。"""
+    path = normalise_path(value)
+    return "" if path is None else os.path.normcase(os.path.normpath(str(path)))
+
+
 def _same_path(left, right) -> bool:
-    """比较两个目录是否指向同一位置（兼容 Windows 大小写与相对写法）。"""
-    def key(value) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        try:
-            return os.path.normcase(os.path.normpath(str(Path(text).expanduser().resolve(strict=False))))
-        except Exception:
-            return os.path.normcase(os.path.normpath(text))
-    left_key, right_key = key(left), key(right)
+    """比较两个目录是否指向同一位置。"""
+    left_key, right_key = _path_key(left), _path_key(right)
     return left_key != "" and left_key == right_key
-
-
-def _looks_derived_run_folder(value) -> bool:
-    """判断目录是否属于工具自己的派生态（而不是用户自选目录）。
-
-    覆盖标准 TL 目录 ``game/tl/<lang>``、翻译输出 ``RenpyBox_Translation/
-    <lang>`` 及其 ``<lang>_new`` 变体。这些值没有恢复价值：它们总是某个
-    项目的派生产物，跨项目恢复只会把上一个项目的路径带进新项目。
-    """
-    text = str(value or "").strip()
-    if not text:
-        return False
-    try:
-        path = Path(text).expanduser().resolve(strict=False)
-    except Exception:
-        path = Path(text)
-    if path.parent.name.casefold() == "tl":
-        return True
-    return any(part.casefold() == "renpybox_translation" for part in path.parts)
 
 
 class YiJianFanyiPage(Base, QWidget):
@@ -999,7 +980,7 @@ class YiJianFanyiPage(Base, QWidget):
         if current == "" or _same_path(current, onekey_input):
             return
         # 工具自己派生的目录、以及未配置时的应用默认目录，都不值得恢复。
-        if _looks_derived_run_folder(current) or _same_path(
+        if is_derived_run_folder(current) or _same_path(
             current, get_app_paths().input_path
         ):
             return
@@ -1015,7 +996,7 @@ class YiJianFanyiPage(Base, QWidget):
 
     def _finish_onekey_run(self) -> None:
         """一键流程收尾：把用户原本选择的输入目录写回全局配置。"""
-        if not getattr(self, "_user_input_folder_stash", ""):
+        if not self._user_input_folder_stash:
             return
         try:
             config = Config().load()
@@ -2887,9 +2868,7 @@ class YiJianFanyiPage(Base, QWidget):
             self._reset_auto_hook_state()
             # 翻译收尾后把用户原本选择的输入目录写回，避免项目设置页
             # 里的选择被一键流程的标准 tl 目录永久顶掉。
-            finish = getattr(self, "_finish_onekey_run", None)
-            if finish is not None:
-                finish()
+            self._finish_onekey_run()
             self._refresh_step4_state()
 
     def _on_translation_stop(self, event, data):
