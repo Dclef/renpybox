@@ -420,6 +420,60 @@ def source_script_counts(
     return result.rpy_count, result.rpyc_count
 
 
+def _is_derived_run_folder(path: Path) -> bool:
+    """判断某个运行目录是否属于工具自己的派生态（而非用户自选目录）。
+
+    派生态有三类形态：标准 TL 目录 ``game/tl/<lang>``、翻译输出
+    ``<project>/RenpyBox_Translation/<lang>``，以及增量/兜底变体
+    ``<lang>_new``、``<lang>_filtered_suspicious``。
+    """
+    if path.parent.name.casefold() == "tl":
+        return True
+    return any(
+        part.casefold() == "RenpyBox_Translation".casefold()
+        for part in path.parts
+    )
+
+
+def _is_app_placeholder_folder(path: Path) -> bool:
+    """判断是否仍是未配置时的应用默认输入/输出目录。"""
+    try:
+        from base.AppPaths import get_app_paths
+
+        app_paths = get_app_paths()
+        return _key(path) in {_key(app_paths.input_path), _key(app_paths.output_path)}
+    except Exception:
+        return False
+
+
+def _derive_project_run_folder(config: Any, field: str, derived: Path) -> str:
+    """决定规范路径回写时该字段是否仍应跟随项目派生。
+
+    ``input_folder``/``output_folder`` 有两个来源：项目身份派生（标准
+    ``game/tl/<lang>`` 与 ``RenpyBox_Translation/<lang>``），以及用户自己
+    选择的目录。历史行为是无条件回落派生值，于是「项目设置页选择输入
+    目录」或「一键翻译切项目」都会把用户的选择悄悄改写掉，用户再点
+    一次「开始」就看到凭空多出来的 ``tl`` 目录。
+
+    现在只刷新「本来就是派生态」的值——包括上一个项目遗留的
+    ``game/tl/<lang>``、``RenpyBox_Translation/<lang>``、``<lang>_new``
+    以及尚未配置时的应用默认目录，这样历史项目不会因为改了默认值而
+    卡在旧路径；用户自选的任意目录则原样保留。
+    """
+    current = str(getattr(config, field, "") or "").strip()
+    if current == "":
+        return str(derived)
+    current_path = normalise_path(current)
+    if current_path is None:
+        return str(derived)
+    derived_path = normalise_path(derived) or derived
+    if _key(current_path) == _key(derived_path):
+        return str(derived)
+    if _is_app_placeholder_folder(current_path) or _is_derived_run_folder(current_path):
+        return str(derived)
+    return current
+
+
 def apply_to_config(
     config: Any,
     paths: RenpyProjectPaths,
@@ -427,13 +481,24 @@ def apply_to_config(
     input_folder: Any = None,
     output_folder: Any = None,
 ) -> Any:
-    """把规范路径写入配置，并保留专用运行输入/输出的可选覆盖。"""
+    """把规范路径写入配置，并保留专用运行输入/输出的可选覆盖。
+
+    ``input_folder``/``output_folder`` 不传时不再无条件回落派生目录：
+    派生目录的归属由 ``_derive_project_run_folder`` 判定，只有当前值
+    本身就是旧派生态时才会被刷新；用户显式选择的自定义目录原样保留。
+    """
     config.renpy_project_path = str(paths.project_root)
     # 兼容旧字段：该字段历史上保存的是项目根目录，继续保持这一语义。
     config.renpy_game_folder = str(paths.project_root)
     config.renpy_tl_folder = str(paths.tl_language_dir)
-    config.input_folder = str(input_folder if input_folder is not None else paths.tl_language_dir)
-    config.output_folder = str(output_folder if output_folder is not None else paths.translation_output_dir)
+    config.input_folder = str(
+        input_folder if input_folder is not None
+        else _derive_project_run_folder(config, "input_folder", paths.tl_language_dir)
+    )
+    config.output_folder = str(
+        output_folder if output_folder is not None
+        else _derive_project_run_folder(config, "output_folder", paths.translation_output_dir)
+    )
     return config
 
 

@@ -58,7 +58,13 @@ class ProjectStore(Base):
         mutate: Callable[[object], None] | None = None,
         persist: bool = True,
     ):
-        """规范化写入，并在同一次持久化前应用额外项目字段。"""
+        """规范化写入，并在同一次持久化前应用额外项目字段。
+
+        不传 ``input_folder``/``output_folder`` 时不再无条件把运行目录改写
+        成 ``game/tl/<lang>``：派生态的归属由 ``apply_to_config`` 判定，
+        用户显式选择的目录会被保留。调用方要强制回到主语言目录，必须显式
+        传入目录值。
+        """
         apply_to_config(
             config,
             paths,
