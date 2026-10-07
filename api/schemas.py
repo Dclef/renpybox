@@ -96,12 +96,67 @@ class ProjectPathRequest(BaseModel):
     game_folder: str | None = None
 
 
+class ProjectResolveRequest(BaseModel):
+    """按给定目录解析 Ren'Py 项目身份（选输入目录时顺带绑定项目）。"""
+
+    path: str
+
+
 class ProjectInfo(BaseModel):
     renpy_project_path: str = ""
     renpy_game_folder: str = ""
     renpy_tl_folder: str = ""
     theme: str = ""
     app_language: str = ""
+
+
+# ---------- 翻译主流程 ----------
+
+class TranslationStartRequest(BaseModel):
+    status: str = "UNTRANSLATED"
+    request_id: str | None = None
+    # 用户对「无有效资产」的明确继续决定（渲染端 preflight 弹窗选「仍然继续」）。
+    # 不带这个标志时缺资产会被拒，避免静默跑出一个没有项目背景的翻译。
+    preflight_confirmed: bool = False
+
+
+class TranslationStartResponse(BaseModel):
+    """受理结果。
+
+    ``accepted`` 只表示请求已被受理并投递到事件总线；线程是否真的起来、
+    run_id 是多少，仍以 WS 上的 ``TRANSLATION_START_RESULT`` 为准。
+    """
+
+    accepted: bool
+    request_id: str = ""
+    reason: str = ""
+    detail: str = ""
+
+
+class TranslationStateResponse(BaseModel):
+    engine_status: str = "IDLE"
+    stop_barrier: bool = False
+    single_tasks: bool = False
+    request_id: str = ""
+    run_id: int = 0
+    running: dict[str, int] = Field(default_factory=dict)
+    progress: dict[str, Any] = Field(default_factory=dict)
+    active_output_folder: str = ""
+
+
+class TokenEstimateRequest(BaseModel):
+    """Token 估算。目前没有参数，保留模型便于后续加「指定平台 / 范围」。"""
+
+    platform_id: int | None = None
+
+
+class TokenEstimateResult(BaseModel):
+    total_source_tokens: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    estimated_cost: float = 0.0
+    batch_count: int = 0
+    untranslated_count: int = 0
 
 
 # ---------- WebSocket 指令 ----------

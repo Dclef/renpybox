@@ -37,8 +37,13 @@ class ConnectionHub:
     def __init__(self) -> None:
         self._clients: dict[WebSocket, set[str] | None] = {}
         self._lock = asyncio.Lock()
+        # 事件循环引用：工作线程投递时用它把协程排回循环。
+        # 首个客户端接入时记录——那时一定在循环线程上。
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def add(self, ws: WebSocket, events: set[str] | None = None) -> None:
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
         async with self._lock:
             self._clients[ws] = events
 
@@ -73,7 +78,25 @@ class ConnectionHub:
         for ws in dead:
             await self.remove(ws)
 
-    async def broadcast_threadsafe(self, payload: dict) -> None:
-        """允许从工作线程调用（事件总线可能在后台线程 emit）。"""
-        loop = asyncio.get_running_loop()
+    def broadcast_threadsafe(self, payload: dict) -> None:
+        """允许从工作线程调用（事件总线可能在后台线程 emit）。
+
+        刻意做成普通函数而非协程：事件回调不能假设自己在事件循环线程上，
+        而 coroutine 形式的「线程安全」入口在不 await 时只会得到一个悬空协程
+        ——看起来调过了，实际什么也没发生。同环时直接就地投递。
+        """
+        loop = self._loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 没有循环可投递（进程收尾阶段）；这条事件就此丢弃
+                return
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            asyncio.ensure_future(self.broadcast(payload))
+            return
         loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.broadcast(payload)))

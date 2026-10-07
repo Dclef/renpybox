@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 开发模式：sidecar + vite + 可见的 Electron 窗口（肉眼验证用）
+# 开发模式：vite + 可见的 Electron 窗口（sidecar 由主进程自动拉起并守护）
 set -u
 cd "$(dirname "$0")"
 
-N="C:/Users/su/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
+N="${RENPYBOX_NODE:-node}"
 export RENPYBOX_SIDECAR_PORT="${RENPYBOX_SIDECAR_PORT:-9712}"
 export RENPYBOX_WEB_PORT="${RENPYBOX_WEB_PORT:-5273}"
 SIDECAR="$RENPYBOX_SIDECAR_PORT"
@@ -30,7 +30,7 @@ curl -sf "$WEB/" >/dev/null || { echo "[dev] vite 未就绪"; exit 1; }
 
 echo "[dev] 2/2 启动 Electron 窗口"
 echo "[dev] sidecar 由主进程自动拉起并守护（端口 $SIDECAR）"
-echo "[dev] 关闭 Electron 窗口即可退出；Ctrl+Shift+W 开欢迎页，Ctrl+Shift+U 开更新弹窗"
+echo "[dev] 关闭 Electron 窗口即可退出"
 echo
 
 # 环境里预置了 ELECTRON_RUN_AS_NODE=1，不清掉 electron.exe 会以纯 Node 模式运行

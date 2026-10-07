@@ -29,6 +29,8 @@ _EVENT_NAMES = (
     "PROJECT_STATUS",
     "PROJECT_STATUS_CHECK_DONE",
     "GLOSSARY_REFRESH",
+    "PLATFORM_TEST_START",
+    "PLATFORM_TEST_DONE",
     "APP_TOAST_SHOW",
     "APP_UPDATE_CHECK_START",
     "APP_UPDATE_CHECK_DONE",
@@ -43,6 +45,10 @@ _EVENT_NAMES = (
     "TRANSLATION_STOP",
     "TRANSLATION_DONE",
     "TRANSLATION_UPDATE",
+    # 导出译文与缓存自动保存的完成信号：渲染端据此提示「导出成功」，
+    # 否则用户只能看到 toast 消失、不知道写盘是否成功。
+    "TRANSLATION_MANUAL_EXPORT",
+    "CACHE_FILE_AUTO_SAVE",
 )
 
 DEFAULT_EVENTS: tuple[str, ...] = tuple(
@@ -80,7 +86,7 @@ class EventBridge:
 
     def _make_handler(self, name: str) -> Callable:
         def handler(event, data) -> None:
-            payload = {"type": "event", "event": name, "data": jsonable(data)}
+            payload = {"type": "event", "event": name, "data": _for_clients(data)}
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -90,6 +96,20 @@ class EventBridge:
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._hub.broadcast(payload)))
 
         return handler
+
+
+# TRANSLATION_START 载荷里的 ``config`` 是给翻译线程的冻结 Config 实例。
+# jsonable() 遇到它只会吐出一个约 9KB 的 repr 字符串：渲染端读不出字段，
+# 还得为这份假结构付出解析成本。渲染端的配置一律走 GET /api/settings，
+# 所以广播前直接摘掉这个键，保留其余可序列化字段。
+_BROADCAST_DROP_KEYS = frozenset({"config"})
+
+
+def _for_clients(data: object) -> object:
+    """按广播受众裁剪载荷：摘掉只有后端消费者才需要的键。"""
+    if not isinstance(data, dict):
+        return jsonable(data)
+    return jsonable({k: v for k, v in data.items() if k not in _BROADCAST_DROP_KEYS})
 
 
 def _resolve_event(name: str):

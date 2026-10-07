@@ -18,7 +18,7 @@ import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
-const { app, BrowserWindow, Menu, ipcMain, shell, globalShortcut } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = path.resolve(__dirname, '..');
@@ -26,6 +26,8 @@ const RENDERER_DIST = path.join(DESKTOP_ROOT, 'dist', 'index.html');
 const SHELL_DIR = path.join(DESKTOP_ROOT, 'shell');
 
 const isDev = !app.isPackaged;
+// dev 端口必须与 vite.config.ts 的 WEB_PORT 一致（默认 5173）。
+// 脚本会显式传 VITE_DEV_SERVER_URL；直接 `npm run dev` 时靠这个默认值。
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
 
 const log = (...args) => console.log(...args);
@@ -49,16 +51,27 @@ async function createMainWindow() {
   const info = await sidecar.start();
   log(`[shell] sidecar 就绪 ${JSON.stringify(info)}，耗时 ${Date.now() - started}ms`);
 
+  // 尺寸对齐 AppFluentWindow：默认 1280x800、APP_MIN_WIDTH/HEIGHT = 900/640。
+  // frame: false —— 原壳是 qfluentwidgets 的无边框 FluentWindow，标题栏由窗口自己画，
+  // 保留系统边框会出现两条标题栏。
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1080,
-    minHeight: 680,
+    width: 1280,
+    height: 800,
+    minWidth: 900,
+    minHeight: 640,
+    frame: false,
     show: false,
-    backgroundColor: '#17263d',
+    backgroundColor: '#202020',
     title: 'RenpyBox',
     webPreferences: webPreferences('preload-main.cjs'),
   });
+
+  // 最大化状态回推给渲染端，标题栏右侧的「最大化 / 还原」图标才能对上。
+  const forwardMaximizeState = () => {
+    mainWindow.webContents.send('window:maximized', mainWindow.isMaximized());
+  };
+  mainWindow.on('maximize', forwardMaximizeState);
+  mainWindow.on('unmaximize', forwardMaximizeState);
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -88,7 +101,6 @@ function openShellWindow(kind) {
   win.loadFile(path.join(SHELL_DIR, `${kind}.html`));
   return win;
 }
-
 ipcMain.handle('sidecar:info', () => ({
   port: SIDECAR_PORT,
   http: SIDECAR_URL,
@@ -97,17 +109,47 @@ ipcMain.handle('sidecar:info', () => ({
   chrome: process.versions.chrome,
 }));
 
-// M0 spike 用快捷键触发壳窗口，方便验证多 preload 拆分是否生效
-function registerShortcuts() {
-  globalShortcut.register('CommandOrControl+Shift+W', () => openShellWindow('welcome'));
-  globalShortcut.register('CommandOrControl+Shift+U', () => openShellWindow('update'));
-}
+ipcMain.handle('shell:open', (_event, kind) => {
+  if (kind === 'welcome' || kind === 'update') openShellWindow(kind);
+});
+
+ipcMain.on('shell:close', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+// 无边框窗口的控制按钮由渲染端画在 38px 标题栏右侧，这里只做转发。
+ipcMain.on('window:minimize', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.minimize();
+});
+
+ipcMain.on('window:toggle-maximize', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+});
+
+// 目录选择 / 打开目录。原壳用 QFileDialog.getExistingDirectory + webbrowser.open，
+// 渲染端没有 fs 与 dialog，这两件事只能由主进程提供。
+ipcMain.handle('dialog:pick-folder', async (event, defaultPath) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory'],
+    defaultPath: typeof defaultPath === 'string' && defaultPath ? defaultPath : undefined,
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('shell:open-path', async (_event, target) => {
+  if (typeof target !== 'string' || !target) return false;
+  return (await shell.openPath(target)) === '';
+});
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   try {
     await createMainWindow();
-    registerShortcuts();
   } catch (err) {
     log('[shell] 启动失败：', err);
   }
@@ -123,7 +165,6 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', async (event) => {
   event.preventDefault();
-  globalShortcut.unregisterAll();
   await sidecar.stop();
   app.exit(0);
 });
