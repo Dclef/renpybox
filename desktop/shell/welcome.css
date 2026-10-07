@@ -1,0 +1,60 @@
+:root {
+  --bg: #17263d;
+  --panel: #1f3350;
+  --line: #2b4260;
+  --text: #e8eef7;
+  --muted: #9db0c9;
+  --accent: #4c8dff;
+  --ok: #35c08a;
+  --bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/1.6 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  width: 560px;
+  padding: 32px 36px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 0.5px solid var(--line);
+}
+
+.head h1 { margin: 10px 0 4px; font-size: 22px; font-weight: 500; }
+.sub { margin: 0; color: var(--muted); font-size: 13px; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(76, 141, 255, 0.16);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.list { margin: 24px 0; border-top: 0.5px solid var(--line); }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  padding: 11px 0;
+  border-bottom: 0.5px solid var(--line);
+}
+
+.k { color: var(--muted); }
+.v { font-variant-numeric: tabular-nums; }
+.v.ok { color: var(--ok); }
+.v.bad { color: var(--bad); }
+
+.foot p { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.hint { color: #6f8299; }
