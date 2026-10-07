@@ -81,8 +81,9 @@ class ProjectAssetsRepository:
             recovered = self._recover_json_transaction_unlocked()
             active_project = self._resolve_active_project()
             project = (
-                (active_project if recovered is False else None)
-                or self._read_project_unlocked()
+                CacheProject.from_dict(active_project.asdict())
+                if active_project is not None and recovered is False
+                else self._read_project_unlocked()
             )
             assets = ProjectAssets.from_dict(project.get_project_assets())
             candidates = self.normalize_analysis_candidates(project.get_analysis_candidates())
@@ -105,6 +106,8 @@ class ProjectAssetsRepository:
 
             if changed:
                 self._write_project_unlocked(project)
+            if active_project is not None and (changed or recovered):
+                self._publish_asset_sections(active_project, project)
 
             return ProjectAssetsState(
                 assets = ProjectAssets.from_dict(project.get_project_assets()),
@@ -585,12 +588,25 @@ class ProjectAssetsRepository:
             recovered = self._recover_json_transaction_unlocked()
             active_project = self._resolve_active_project()
             project = (
-                (active_project if recovered is False else None)
-                or self._read_project_unlocked()
+                CacheProject.from_dict(active_project.asdict())
+                if active_project is not None and recovered is False
+                else self._read_project_unlocked()
             )
             updater(project)
             self._write_project_unlocked(project)
+            if active_project is not None:
+                self._publish_asset_sections(active_project, project)
             return project
+
+    @staticmethod
+    def _publish_asset_sections(active_project: CacheProject, saved_project: CacheProject) -> None:
+        # 先落盘再发布，保存失败时不能污染运行态并被自动保存线程再次写入。
+        # 保留原对象及翻译进度，只同步本仓库拥有的资产与候选分区。
+        assets = saved_project.get_project_assets()
+        candidates = saved_project.get_analysis_candidates()
+        with active_project.lock:
+            active_project.extras["project_assets"] = assets
+            active_project.extras["analysis_candidates"] = candidates
 
     def _read_project_unlocked(self) -> CacheProject:
         if not self.has_storage:

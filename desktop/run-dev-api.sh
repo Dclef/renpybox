@@ -3,7 +3,7 @@
 set -u
 cd "$(dirname "$0")"
 
-N="C:/Users/su/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
+N="${RENPYBOX_NODE:-node}"
 PROJECT_PY="${RENPYBOX_PROJECT_PYTHON:-C:/Program Files/Python/python3.10/python.exe}"
 export RENPYBOX_SIDECAR_PORT="${RENPYBOX_SIDECAR_PORT:-9712}"
 export RENPYBOX_WEB_PORT="${RENPYBOX_WEB_PORT:-5273}"

@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from api.events import EventBridge
 from api.hub import ConnectionHub
 from api.jobs import JobManager
-from api.routes import glossary, jobs, project, settings, system, ws
+from api.routes import glossary, jobs, platforms, proofreading, project, settings, system, translation, workbench, ws
 from api.routes.ws import drain_loop
 
 
@@ -75,8 +75,12 @@ def create_app() -> FastAPI:
     app.include_router(system.router)
     app.include_router(settings.router)
     app.include_router(glossary.router)
+    app.include_router(platforms.router)
+    app.include_router(workbench.router)
+    app.include_router(proofreading.router)
     app.include_router(project.router)
     app.include_router(jobs.router)
+    app.include_router(translation.router)
     app.include_router(ws.router)
 
     return app

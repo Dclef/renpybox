@@ -562,3 +562,69 @@ def test_sqlite_without_project_record_falls_back_to_complete_json(
     store = CacheDB(str(db_path))
     assert store.get_project() is None
     assert [item.get_src() for item in store.get_items()] == [sqlite_item.get_src()]
+
+
+@pytest.mark.parametrize("operation", ["workbench", "glossary"])
+def test_failed_asset_write_keeps_live_project_and_disk_unchanged(tmp_path, monkeypatch, operation) -> None:
+    """最终落盘失败时，不发布新资产，也不能让自动保存误提交失败的编辑。"""
+    config = _legacy_config(tmp_path, sqlite = False)
+    repository = ProjectAssetsRepository.from_config(config)
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: None)
+    repository.load(config)
+    live_project = repository._read_project_unlocked()
+    live_project.set_progress({"line": 7})
+    original = live_project.asdict()
+    disk_path = tmp_path / "cache" / "project.json"
+    disk_before = disk_path.read_bytes()
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: live_project)
+
+    def fail_write(project):
+        assert project is not live_project
+        assert live_project.asdict() == original
+        raise PermissionError("模拟磁盘不可写")
+
+    monkeypatch.setattr(repository, "_write_project_unlocked", fail_write)
+    with pytest.raises(PermissionError, match = "模拟磁盘不可写"):
+        if operation == "workbench":
+            config.renpy_workbench_worldbook_data = {"genre": "不应生效"}
+            repository.save_workbench_view(config)
+        else:
+            repository.replace_glossary([{"src": "City", "dst": "不应生效"}], enabled = True)
+    assert live_project.asdict() == original
+    assert disk_path.read_bytes() == disk_before
+
+
+def test_bootstrap_publishes_only_after_write_and_keeps_new_runtime_progress(tmp_path, monkeypatch) -> None:
+    """首次迁移失败保持内存不变；成功只同步资产，不覆盖写入期间增长的进度。"""
+    config = _legacy_config(tmp_path, sqlite = False)
+    repository = ProjectAssetsRepository.from_config(config)
+    live_project = CacheProject(id = "active-project")
+    original = live_project.asdict()
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: live_project)
+    real_write = repository._write_project_unlocked
+
+    def fail_write(project):
+        assert live_project.asdict() == original
+        raise PermissionError("迁移保存失败")
+
+    monkeypatch.setattr(repository, "_write_project_unlocked", fail_write)
+    with pytest.raises(PermissionError, match = "迁移保存失败"):
+        repository.load(config)
+    assert live_project.asdict() == original
+    assert not (tmp_path / "cache" / "project.json").exists()
+
+    def successful_write(project):
+        assert project is not live_project
+        assert live_project.asdict() == original
+        real_write(project)
+        # 翻译进度使用独立项目锁，在资产落盘期间仍可能继续增长。
+        live_project.set_progress({"line": 9})
+        live_project.set_status(Base.TranslationStatus.TRANSLATING)
+
+    monkeypatch.setattr(repository, "_write_project_unlocked", successful_write)
+    state = repository.load(config)
+    assert state.assets.worldbook["setting_summary"] == "A floating city"
+    assert live_project.get_project_assets() == state.assets.to_dict()
+    assert live_project.get_analysis_candidates() == state.analysis_candidates
+    assert live_project.get_progress() == {"line": 9}
+    assert live_project.get_status() == Base.TranslationStatus.TRANSLATING
