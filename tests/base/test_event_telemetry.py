@@ -139,6 +139,9 @@ def test_event_manager_emit_enqueues_payload_with_timestamp() -> None:
     payload = {"k": 1}
     before = time.monotonic()
     manager.emit(Base.Event.PROJECT_STATUS, payload)
+    # _emit_sequence 是类级计数器，全会话共享；必须在 emit 之后立刻取值，
+    # 否则会被其它测试的 emit 推进，拿它做等值比较必然不稳定
+    sequence_after_emit = EventManager._emit_sequence
     after = time.monotonic()
 
     assert len(manager._queue) == 1
@@ -146,6 +149,8 @@ def test_event_manager_emit_enqueues_payload_with_timestamp() -> None:
     assert event == Base.Event.PROJECT_STATUS
     assert data is payload  # data 不再被包装，订阅者拿到的就是原对象
     assert before <= emitted_at <= after
+    # 带发射序号，供订阅时刻过滤
+    assert sequence == sequence_after_emit
 
     manager.drain()
     assert received == [(Base.Event.PROJECT_STATUS, payload)]

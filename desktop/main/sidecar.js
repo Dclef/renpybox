@@ -19,13 +19,24 @@ export const SIDECAR_WS = `ws://127.0.0.1:${SIDECAR_PORT}/ws`;
 
 const MAX_RESTARTS = 3;
 
+// api 模式要用项目自己的解释器（3.10，全套依赖都在里面：
+// openpyxl / tiktoken / unrpa / opencc / translators / translators 依赖链都在那）；
+// bench 模式只需要 fastapi + uvicorn，用 sidecar/.venv 就够。
+const PROJECT_PYTHON =
+  process.env.RENPYBOX_PROJECT_PYTHON || 'C:/Program Files/Python/python3.10/python.exe';
+
 function resolvePython() {
-  const candidates = [
-    process.env.RENPYBOX_PYTHON,
-    path.join(SIDECAR_DIR, '.venv', 'Scripts', 'python.exe'),
-    path.join(SIDECAR_DIR, '.venv', 'bin', 'python'),
-  ].filter(Boolean);
-  for (const c of candidates) if (existsSync(c)) return c;
+  const bench = process.env.RENPYBOX_SIDECAR_BENCH === '1';
+  const candidates = [process.env.RENPYBOX_PYTHON];
+
+  if (bench) {
+    candidates.push(path.join(SIDECAR_DIR, '.venv', 'Scripts', 'python.exe'));
+    candidates.push(path.join(SIDECAR_DIR, '.venv', 'bin', 'python'));
+  } else {
+    candidates.push(PROJECT_PYTHON);
+  }
+
+  for (const c of candidates.filter(Boolean)) if (existsSync(c)) return c;
   return 'python';
 }
 
@@ -39,17 +50,20 @@ export class Sidecar {
 
   async start() {
     const python = resolvePython();
-    this.onLog(`[sidecar] 启动 ${python}`);
-    this.proc = spawn(
-      python,
-      [
-        '-m', 'uvicorn', 'main:app',
-        '--host', '127.0.0.1',
-        '--port', String(SIDECAR_PORT),
-        '--log-level', 'warning',
-      ],
-      { cwd: SIDECAR_DIR, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    const args = [path.join(SIDECAR_DIR, 'main.py')];
+    if (process.env.RENPYBOX_SIDECAR_BENCH === '1') args.push('--bench');
+
+    this.onLog(`[sidecar] 启动 ${python} ${args.join(' ')}`);
+    this.proc = spawn(python, args, {
+      cwd: SIDECAR_DIR,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        RENPYBOX_SIDECAR_PORT: String(SIDECAR_PORT),
+        QT_QPA_PLATFORM: process.env.QT_QPA_PLATFORM || 'offscreen',
+      },
+    });
 
     this.proc.stdout.on('data', (d) => this.onLog(`[sidecar] ${String(d).trim()}`));
     this.proc.stderr.on('data', (d) => this.onLog(`[sidecar:err] ${String(d).trim()}`));
