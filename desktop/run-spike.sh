@@ -12,7 +12,7 @@ OUT="${1:-perf-result-react.json}"
 
 echo "端口 sidecar=$SIDECAR  web=$RENPYBOX_WEB_PORT"
 echo "--- 启动 sidecar ---"
-( cd sidecar && ./.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port "$SIDECAR" --log-level warning ) &
+( cd sidecar && RENPYBOX_SIDECAR_PORT="$SIDECAR" ./.venv/Scripts/python.exe main.py --bench ) &
 SIDECAR_PID=$!
 
 for i in $(seq 1 40); do

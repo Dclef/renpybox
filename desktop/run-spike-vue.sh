@@ -8,7 +8,7 @@ SIDECAR="$RENPYBOX_SIDECAR_PORT"
 WEB="http://127.0.0.1:$RENPYBOX_WEB_PORT"
 OUT="${1:-perf-result-vue.json}"
 echo "Vue 对照版：sidecar=$SIDECAR web=$RENPYBOX_WEB_PORT"
-( cd sidecar && ./.venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port "$SIDECAR" --log-level warning ) &
+( cd sidecar && RENPYBOX_SIDECAR_PORT="$SIDECAR" ./.venv/Scripts/python.exe main.py --bench ) &
 SIDECAR_PID=$!
 for i in $(seq 1 40); do curl -sf "http://127.0.0.1:$SIDECAR/health" >/dev/null 2>&1 && break; sleep 0.5; done
 "$N" node_modules/vite/bin/vite.js --config renderer-vue/vite.config.ts >/tmp/vite-vue.log 2>&1 &
