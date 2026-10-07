@@ -6,9 +6,14 @@ from PyQt5.QtWidgets import QApplication
 
 from base.Base import Base
 from base.EventManager import EventManager
+from frontend.QtEventBridge import install as install_event_bridge
 
 
 APP = QApplication.instance() or QApplication([])
+
+# EventManager 已解除 Qt 依赖，emit 只入队；跨线程投递由 drain 驱动。
+# 这里装上与 app.py 相同的桥接，测试里 APP.processEvents() 才等价于原来的信号投递。
+EVENT_BRIDGE = install_event_bridge()
 
 
 def _fresh_manager() -> EventManager:

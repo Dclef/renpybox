@@ -9,11 +9,10 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 
 import httpx
-from PyQt5.QtCore import QUrl
-from PyQt5.QtGui import QDesktopServices
 
 from base.Base import Base
 from base.AppPaths import get_app_paths
@@ -362,7 +361,7 @@ class VersionManager(Base):
             })
             with self.lock:
                 self.extracting = False
-            QDesktopServices.openUrl(QUrl(__class__.RELEASE_URL))
+            webbrowser.open(__class__.RELEASE_URL)
             return
 
         install_dir = Path(sys.executable).resolve().parent
@@ -385,7 +384,7 @@ class VersionManager(Base):
             })
             with self.lock:
                 self.extracting = False
-            QDesktopServices.openUrl(QUrl(__class__.RELEASE_URL))
+            webbrowser.open(__class__.RELEASE_URL)
             return
 
         if not temp_zip_path.is_file():

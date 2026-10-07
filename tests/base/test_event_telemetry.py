@@ -101,11 +101,12 @@ def test_heartbeat_monitor_records_real_drift(monkeypatch: pytest.MonkeyPatch) -
     assert snapshot["count"] == 1
 
 
-def test_event_manager_signal_path_records_latency(monkeypatch: pytest.MonkeyPatch) -> None:
-    """emit→_on_signal 链路产生延迟记录且 data 原样到达 process_event。"""
-    import os
+def test_event_manager_drain_path_records_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """emit→drain 链路产生延迟记录且 data 原样到达 process_event。
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    M1 起EventManager 不再依赖 Qt signal：emit 只入队，drain 才投递并记录
+    emit→投递的端到端延迟。
+    """
     from base.Base import Base
     from base.EventManager import EventManager
 
@@ -116,48 +117,38 @@ def test_event_manager_signal_path_records_latency(monkeypatch: pytest.MonkeyPat
     )
 
     payload = {"progress": 42}
-    # 载荷形如 (数据, 发射时间, 发射序号)；序号用于过滤订阅前发出的历史事件
-    manager._on_signal(
-        Base.Event.TRANSLATION_UPDATE, (payload, time.monotonic() - 0.5, 7)
-    )
+    manager.emit(Base.Event.TRANSLATION_UPDATE, payload)
+    time.sleep(0.05)
+    manager.drain()
 
     assert received == [payload]  # 订阅侧 data 无污染
     snapshot = EventTelemetry.get().snapshot()["TRANSLATION_UPDATE"]
     assert snapshot["count"] == 1
-    assert snapshot["max"] >= 400  # 预置 0.5s 延迟被测到
+    assert snapshot["max"] >= 35  # 入队到排空之间的延迟被测到
 
 
-def test_event_manager_emit_wraps_payload_with_timestamp() -> None:
-    """emit 走 signal 的包装格式（QueuedConnection 下信号暂存，验证包装结构）。"""
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt5.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
+def test_event_manager_emit_enqueues_payload_with_timestamp() -> None:
+    """emit 只入队，队列元素携带 (事件, 数据, 发射时刻, 发射序号)。"""
     from base.Base import Base
     from base.EventManager import EventManager
 
     manager = EventManager()
-    captured: list[tuple] = []
-
-    def capture(event, wrapped):
-        captured.append((event, wrapped))
-
-    # 直连捕获（绕过 queued 以同步断言）
-    manager.signal.connect(capture, 1)  # Qt.DirectConnection
+    received: list[tuple] = []
+    manager.subscribe(Base.Event.PROJECT_STATUS, lambda event, data: received.append((event, data)))
 
     payload = {"k": 1}
     before = time.monotonic()
     manager.emit(Base.Event.PROJECT_STATUS, payload)
     after = time.monotonic()
 
-    assert len(captured) == 1
-    event, wrapped = captured[0]
+    assert len(manager._queue) == 1
+    event, data, emitted_at, sequence = manager._queue[-1]
     assert event == Base.Event.PROJECT_STATUS
-    data, emitted_at, sequence = wrapped
-    assert data == payload
+    assert data is payload  # data 不再被包装，订阅者拿到的就是原对象
     assert before <= emitted_at <= after
+
+    manager.drain()
+    assert received == [(Base.Event.PROJECT_STATUS, payload)]
     assert sequence == manager._emit_sequence  # 带发射序号，供订阅时刻过滤
 
 
