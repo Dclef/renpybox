@@ -209,6 +209,11 @@ if __name__ == "__main__":
     # 创建全局应用对象
     app = QApplication(sys.argv)
 
+    # 事件总线已解除 Qt 依赖：emit 只做线程安全入队，跨线程投递由 drain 驱动。
+    # Qt 壳在这里把 drain 挂到事件循环；Electron 侧由 api层的 asyncio 任务驱动。
+    from frontend.QtEventBridge import install as install_event_bridge
+    event_bridge = install_event_bridge()
+
     # 设置应用图标
     app.setWindowIcon(QIcon(get_resource_path("resource", "icon.ico")))
 
