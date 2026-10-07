@@ -18,6 +18,7 @@ class HealthResponse(BaseModel):
     app_version: str
     config_path: str
     python_version: str
+    mode: str = "api"
 
 
 class VersionResponse(BaseModel):
