@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>欢迎使用 RenpyBox</title>
+    <link rel="stylesheet" href="./welcome.css" />
+    <script src="./welcome.js" defer></script>
+  </head>
+  <body>
+    <main class="card">
+      <header class="head">
+        <span class="badge">M0 spike</span>
+        <h1>RenpyBox 桌面壳</h1>
+        <p class="sub">Electron 壳 + Python sidecar + WebSocket 单连接</p>
+      </header>
+
+      <section class="list" id="list">
+        <div class="row"><span class="k">sidecar 探活</span><span class="v" id="v-health">检查中…</span></div>
+        <div class="row"><span class="k">sidecar 端口</span><span class="v" id="v-port">—</span></div>
+        <div class="row"><span class="k">Electron</span><span class="v" id="v-electron">—</span></div>
+        <div class="row"><span class="k">Chromium</span><span class="v" id="v-chrome">—</span></div>
+      </section>
+
+      <footer class="foot">
+        <p>壳页面刻意不用框架，只用 vanilla JS + 严格 CSP（对齐 DeepSeek 的做法）。</p>
+        <p class="hint">主窗口是 React + TS 的虚拟表格，本窗口只负责轻量流程。</p>
+      </footer>
+    </main>
+  </body>
+</html>

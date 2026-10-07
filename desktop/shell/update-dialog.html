@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <title>更新 RenpyBox</title>
+    <link rel="stylesheet" href="./update-dialog.css" />
+    <script src="./update-dialog.js" defer></script>
+  </head>
+  <body>
+    <section class="dialog">
+      <h1>发现新版本</h1>
+      <p class="ver"><span id="from">当前版本</span> → <span id="to" class="accent">—</span></p>
+      <div class="bar"><div class="bar-fill" id="fill"></div></div>
+      <p class="pct"><span id="pct">0</span>% · 增量更新（只下载变化文件）</p>
+      <p class="note">差分包逻辑仍由 Python 侧负责，Electron 只负责展示与触发。</p>
+      <footer>
+        <button id="later" type="button">稍后</button>
+        <button id="now" type="button" class="primary">立即更新</button>
+      </footer>
+    </section>
+  </body>
+</html>
