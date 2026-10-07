@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useRowsSocket } from './useRowsSocket';
+import { useRenpyApi } from './useRenpyApi';
 import { VirtualTable } from './VirtualTable';
-import { getLongTasks, probeResponsiveness, resetLongTasks, sampleFps } from './perf';
+import { frameStats, getLongTasks, probeResponsiveness, resetFrameStats, resetLongTasks, sampleFps } from './perf';
 
 declare global {
   interface Window {
@@ -12,6 +13,7 @@ declare global {
       loadRows: (total?: number) => void;
       startJob: (total?: number, concurrency?: number) => void;
       metrics: () => Record<string, unknown>;
+      resetFrames: () => void;
       scrollTo: (offset: number) => void;
     };
   }
@@ -32,6 +34,7 @@ interface Live {
 
 export default function App() {
   const { connected, rows, rowsStats, job, loadRows, startJob, cancelJob } = useRowsSocket();
+  const api = useRenpyApi();
   const cells = useRef<Record<string, HTMLSpanElement | null>>({});
 
   // 性能数据放可变对象 + 直接写 DOM，绝不进 state。
@@ -59,6 +62,7 @@ export default function App() {
     };
     const L = live.current;
     put('sidecar', L.connected ? '已连接' : '未连接', L.connected ? 'ok' : 'bad');
+    put('mode', api.health?.mode ?? '—');
     put('rows', String(rowsStats.received));
     put(
       'firstPaint',
@@ -75,6 +79,7 @@ export default function App() {
 
   useEffect(() => {
     resetLongTasks();
+    resetFrameStats();
     const stop = sampleFps((fps) => {
       const L = live.current;
       L.fps = fps;
@@ -112,6 +117,7 @@ export default function App() {
       ready: true,
       loadRows: (total?: number) => loadRef.current(total),
       startJob: (total?: number, concurrency?: number) => jobRef.current(total, concurrency),
+      resetFrames: () => resetFrameStats(),
       scrollTo: (offset: number) => {
         const el = document.querySelector('.table-body') as HTMLElement | null;
         if (el) el.scrollTop = offset;
@@ -132,6 +138,7 @@ export default function App() {
           jobRunning: live.current.jobRunning,
           longTasks: lt.longTasks,
           maxBlockMs: lt.maxBlockMs,
+          ...frameStats(),
           domRows: document.querySelectorAll('.row-wrap').length,
         };
       },
@@ -157,6 +164,7 @@ export default function App() {
 
       <section className="hud">
         <Metric label="sidecar" cell="sidecar" cells={cells} />
+        <Metric label="模式" cell="mode" cells={cells} />
         <Metric label="已接收行" cell="rows" cells={cells} />
         <Metric label="首屏" cell="firstPaint" cells={cells} />
         <Metric label="推送耗时" cell="push" cells={cells} />
@@ -166,6 +174,29 @@ export default function App() {
         <Metric label="最长阻塞" cell="block" cells={cells} />
         <Metric label="任务进度" cell="job" cells={cells} />
       </section>
+
+      {api.isApi ? (
+        <section className="api">
+          <div className="api-actions">
+            <button onClick={api.loadSettings} disabled={api.busy}>
+              读取设置
+            </button>
+            <button onClick={api.switchTheme} disabled={api.busy}>
+              切换主题
+            </button>
+            <button onClick={api.dedupeGlossary} disabled={api.busy}>
+              术语表去重
+            </button>
+            <button onClick={api.searchGlossary} disabled={api.busy}>
+              术语表搜索
+            </button>
+            <button onClick={api.readProject} disabled={api.busy}>
+              读取项目
+            </button>
+          </div>
+          <pre className="api-log">{api.log.join('\n')}</pre>
+        </section>
+      ) : null}
 
       <VirtualTable rows={rows} />
     </div>

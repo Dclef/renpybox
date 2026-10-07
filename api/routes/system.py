@@ -23,6 +23,7 @@ def health(request: Request) -> HealthResponse:
         app_version = Version.CURRENT,
         config_path = str(getattr(type(config), "CONFIG_PATH", "")),
         python_version = sys.version.split()[0],
+        mode = "api",
     )
 
 

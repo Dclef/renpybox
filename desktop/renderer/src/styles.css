@@ -110,3 +110,23 @@ button:disabled { opacity: 0.45; cursor: default; }
 .target { color: #cfe0f5; }
 
 .empty { padding: 60px 18px; text-align: center; color: var(--muted); }
+/* api 模式面板 */
+.api {
+  padding: 12px 18px;
+  border-bottom: 0.5px solid var(--line);
+}
+
+.api-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.api-log {
+  margin: 10px 0 0;
+  max-height: 116px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel);
+  color: #cfe0f5;
+  font: 400 12px/1.6 var(--font-mono), Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
