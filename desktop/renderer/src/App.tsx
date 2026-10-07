@@ -1,223 +1,301 @@
-import { useEffect, useRef } from 'react';
-import { useRowsSocket } from './useRowsSocket';
-import { useRenpyApi } from './useRenpyApi';
-import { VirtualTable } from './VirtualTable';
-import { frameStats, getLongTasks, probeResponsiveness, resetFrameStats, resetLongTasks, sampleFps } from './perf';
+/**
+ * 应用外壳：负责无边框窗口标题栏、主导航和页面切换。
+ *
+ * 业务页面继续复用现有 sidecar 状态与 API；壳层只维护布局，视觉令牌、
+ * 交互状态和响应式细节集中在 styles.css。
+ */
 
-declare global {
-  interface Window {
-    renpy?: { sidecar(): Promise<unknown>; platform: string; versions: Record<string, string> };
-    /** perf-gate.js 无头验收用的自动化入口 */
-    __renpy?: {
-      ready: boolean;
-      loadRows: (total?: number) => void;
-      startJob: (total?: number, concurrency?: number) => void;
-      metrics: () => Record<string, unknown>;
-      resetFrames: () => void;
-      scrollTo: (offset: number) => void;
-    };
-  }
-}
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-type Verdict = 'ok' | 'bad' | '';
+import {
+  IconChromeClose,
+  IconChromeMaximize,
+  IconChromeMinimize,
+  IconChromeRestore,
+  IconContrast,
+  IconInfo,
+  NAV_ICONS,
+} from './icons';
+import { APP_SETTINGS_NAV, navEntries, type PageKey } from './nav';
+import { ProjectPage } from './pages/ProjectPage';
+import { SettingsPage } from './pages/SettingsPage';
+import { PlatformPage } from './pages/PlatformPage';
+import { CustomPromptPage } from './pages/CustomPromptPage';
+import { AgentPage } from './pages/AgentPage';
+import { ToolBoxPage } from './pages/ToolBoxPage';
+import { TranslationPage } from './pages/TranslationPage';
+import { WorkbenchPage } from './pages/WorkbenchPage';
+import { ProofreadingPage } from './pages/ProofreadingPage';
+import { GlossaryPage } from './pages/GlossaryPage';
+import { Dialog } from './ui';
+import { applyTheme } from './theme';
+import type { AppState } from './useAppState';
 
-interface Live {
-  fps: number;
-  minFps: number;
-  longTasks: number;
-  maxBlockMs: number;
-  connected: boolean;
-  jobDone: number;
-  jobTotal: number;
-  jobRunning: boolean;
-}
+const LINK_TEXT: Record<'connecting' | 'open' | 'closed', string> = {
+  connecting: '正在连接后端',
+  open: '后端已连接',
+  closed: '后端连接已断开',
+};
 
-export default function App() {
-  const { connected, rows, rowsStats, job, loadRows, startJob, cancelJob } = useRowsSocket();
-  const api = useRenpyApi();
-  const cells = useRef<Record<string, HTMLSpanElement | null>>({});
-
-  // 性能数据放可变对象 + 直接写 DOM，绝不进 state。
-  // 早期版本每 500ms setState 一次，实测把滚动帧率从 60 打到 48——
-  // 测量工具自己成了瓶颈，这是「UI 线程 16ms 预算」的第一课。
-  const live = useRef<Live>({
-    fps: 0,
-    minFps: 0,
-    longTasks: 0,
-    maxBlockMs: 0,
-    connected: false,
-    jobDone: 0,
-    jobTotal: 0,
-    jobRunning: false,
-  });
-
-  const paint = () => {
-    const c = cells.current;
-    const put = (k: string, v: string, verdict: Verdict = '') => {
-      const el = c[k];
-      if (!el) return;
-      if (el.textContent !== v) el.textContent = v;
-      const cls = 'm-value' + (verdict ? ' ' + verdict : '');
-      if (el.className !== cls) el.className = cls;
-    };
-    const L = live.current;
-    put('sidecar', L.connected ? '已连接' : '未连接', L.connected ? 'ok' : 'bad');
-    put('mode', api.health?.mode ?? '—');
-    put('rows', String(rowsStats.received));
-    put(
-      'firstPaint',
-      rowsStats.firstPaintMs ? `${Math.round(rowsStats.firstPaintMs)}ms` : '—',
-      rowsStats.firstPaintMs ? (rowsStats.firstPaintMs < 300 ? 'ok' : 'bad') : '',
-    );
-    put('push', rowsStats.elapsedMs ? `${rowsStats.elapsedMs}ms` : '—');
-    put('fps', `${L.fps}fps`, L.fps >= 55 ? 'ok' : 'bad');
-    put('minFps', `${L.minFps}fps`, L.minFps >= 50 ? 'ok' : 'bad');
-    put('longTasks', String(L.longTasks), L.longTasks === 0 ? 'ok' : 'bad');
-    put('block', `${Math.round(L.maxBlockMs)}ms`, L.maxBlockMs < 50 ? 'ok' : 'bad');
-    put('job', L.jobTotal ? `${L.jobDone}/${L.jobTotal}` : '—', L.jobRunning ? '' : 'ok');
-  };
-
-  useEffect(() => {
-    resetLongTasks();
-    resetFrameStats();
-    const stop = sampleFps((fps) => {
-      const L = live.current;
-      L.fps = fps;
-      L.minFps = L.minFps === 0 ? fps : Math.min(L.minFps, fps);
-      const lt = getLongTasks();
-      L.longTasks = lt.longTasks;
-      L.maxBlockMs = lt.maxBlockMs;
-      paint();
-    });
-    const timer = setInterval(paint, 250);
-    return () => {
-      stop();
-      clearInterval(timer);
-    };
-  }, []);
-
-  // 数据与任务状态变化时同步进 live，供无障碍文本与门禁读取
-  useEffect(() => {
-    const L = live.current;
-    L.connected = connected;
-    L.jobDone = job.done;
-    L.jobTotal = job.total;
-    L.jobRunning = job.running;
-    paint();
-  }, [connected, rowsStats.received, job.done, job.running]);
-
-  const loadRef = useRef(loadRows);
-  const jobRef = useRef(startJob);
-  loadRef.current = loadRows;
-  jobRef.current = startJob;
-
-  // 自动化入口，供 perf-gate 无头驱动
-  useEffect(() => {
-    window.__renpy = {
-      ready: true,
-      loadRows: (total?: number) => loadRef.current(total),
-      startJob: (total?: number, concurrency?: number) => jobRef.current(total, concurrency),
-      resetFrames: () => resetFrameStats(),
-      scrollTo: (offset: number) => {
-        const el = document.querySelector('.table-body') as HTMLElement | null;
-        if (el) el.scrollTop = offset;
-      },
-      metrics: () => {
-        const lt = getLongTasks();
-        return {
-          connected: live.current.connected,
-          rowsReceived: rowsStats.received,
-          rowsTotal: rowsStats.total,
-          rowsDone: rowsStats.done,
-          rowsElapsedMs: rowsStats.elapsedMs,
-          firstPaintMs: rowsStats.firstPaintMs,
-          fps: live.current.fps,
-          minFps: live.current.minFps,
-          jobDone: live.current.jobDone,
-          jobTotal: live.current.jobTotal,
-          jobRunning: live.current.jobRunning,
-          longTasks: lt.longTasks,
-          maxBlockMs: lt.maxBlockMs,
-          ...frameStats(),
-          domRows: document.querySelectorAll('.row-wrap').length,
-        };
-      },
-    };
-  }, [rowsStats]);
-
-  useEffect(() => {
-    probeResponsiveness(1500);
-  }, [rowsStats.received]);
-
+function Toasts(props: { toasts: AppState['toasts']; onDismiss: (id: number) => void }) {
+  const { toasts, onDismiss } = props;
+  if (toasts.length === 0) return null;
   return (
-    <div className="app">
-      <header className="bar">
-        <div className="brand">RenpyBox · Electron 壳 spike（React 版）</div>
-        <div className="actions">
-          <button onClick={() => loadRows()}>加载 10 万行</button>
-          <button onClick={() => startJob()}>启动高并发任务</button>
-          <button onClick={cancelJob} disabled={!job.running}>
-            取消任务
+    <div
+      style={{
+        position: 'fixed',
+        right: 16,
+        bottom: 76,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        width: 'min(360px, calc(100vw - 32px))',
+        zIndex: 40,
+      }}
+    >
+      {toasts.map((toast) => (
+        <div key={toast.id} className="banner" data-tone={toast.tone} role="status">
+          <div style={{ flex: 1, minWidth: 0 }}>{toast.text}</div>
+          <button type="button" className="btn" onClick={() => onDismiss(toast.id)}>
+            知道了
           </button>
         </div>
-      </header>
-
-      <section className="hud">
-        <Metric label="sidecar" cell="sidecar" cells={cells} />
-        <Metric label="模式" cell="mode" cells={cells} />
-        <Metric label="已接收行" cell="rows" cells={cells} />
-        <Metric label="首屏" cell="firstPaint" cells={cells} />
-        <Metric label="推送耗时" cell="push" cells={cells} />
-        <Metric label="帧率" cell="fps" cells={cells} />
-        <Metric label="最低帧率" cell="minFps" cells={cells} />
-        <Metric label="长任务" cell="longTasks" cells={cells} />
-        <Metric label="最长阻塞" cell="block" cells={cells} />
-        <Metric label="任务进度" cell="job" cells={cells} />
-      </section>
-
-      {api.isApi ? (
-        <section className="api">
-          <div className="api-actions">
-            <button onClick={api.loadSettings} disabled={api.busy}>
-              读取设置
-            </button>
-            <button onClick={api.switchTheme} disabled={api.busy}>
-              切换主题
-            </button>
-            <button onClick={api.dedupeGlossary} disabled={api.busy}>
-              术语表去重
-            </button>
-            <button onClick={api.searchGlossary} disabled={api.busy}>
-              术语表搜索
-            </button>
-            <button onClick={api.readProject} disabled={api.busy}>
-              读取项目
-            </button>
-          </div>
-          <pre className="api-log">{api.log.join('\n')}</pre>
-        </section>
-      ) : null}
-
-      <VirtualTable rows={rows} />
+      ))}
     </div>
   );
 }
 
-function Metric({
-  label,
-  cell,
-  cells,
-}: {
-  label: string;
-  cell: string;
-  cells: React.RefObject<Record<string, HTMLSpanElement | null>>;
-}) {
+export function App(props: { state: AppState; link: 'connecting' | 'open' | 'closed' }) {
+  const { state, link } = props;
+  const [active, setActive] = useState<PageKey>('translation');
+  const [maximized, setMaximized] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const allowClose = useRef(false);
+  const [pendingPage, setPendingPage] = useState<PageKey | 'close' | null>(null);
+  const navigate = (page: PageKey | 'close') => {
+    if (page === active) return;
+    if (dirty) { setPendingPage(page); return; }
+    if (page === 'close') window.renpy?.close?.();
+    else setActive(page);
+  };
+
+  // 系统关闭按钮或 Alt+F4 也要保护未保存编辑。
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty || allowClose.current) return;
+      event.preventDefault(); event.returnValue = '';
+      setPendingPage('close');
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [dirty]);
+
+  // 主题跟着配置走：用户在应用设置里改、点侧边栏切换都落到同一个字段。
+  useEffect(() => {
+    applyTheme(state.theme);
+  }, [state.theme]);
+
+  // 无边框窗口：最大化状态由主进程回推，标题栏的按钮图标要对上。
+  useEffect(() => {
+    return window.renpy?.onMaximizeChange?.(setMaximized);
+  }, []);
+
+  const expertMode = state.settings?.values.expert_mode === true;
+  const entries = useMemo(() => navEntries(expertMode), [expertMode]);
+  const version = state.version?.app_version ?? '';
+  const SettingsIcon = NAV_ICONS[APP_SETTINGS_NAV.icon];
+
+  // 翻译页 preflight 判定缺资产时，让用户能直接跳到工作台补齐，
+  // 不必自己找侧边栏（对齐 TranslationPage._open_workbench）。
+  const [workbenchRequested, setWorkbenchRequested] = useState(0);
+  useEffect(() => {
+    if (workbenchRequested > 0) {
+      setActive('workbench');
+      setWorkbenchRequested(0);
+    }
+  }, [workbenchRequested]);
+
+  const body = (() => {
+    switch (active) {
+      case 'translation':
+        return <TranslationPage state={state} onOpenWorkbench={() => setWorkbenchRequested((n) => n + 1)} onOpenProofreading={() => navigate('proofreading')} />;
+      case 'proofreading':
+        return <ProofreadingPage state={state} onDirtyChange={setDirty} />;
+      case 'glossary':
+        return <GlossaryPage state={state} onDirtyChange={setDirty} />;
+      case 'project':
+        return <ProjectPage state={state} />;
+      case 'toolbox':
+        return <ToolBoxPage state={state} onNavigate={navigate} />;
+      case 'basic-settings':
+        return (
+          <SettingsPage
+            state={state}
+            variant="basic"
+            title="基础设置"
+            description="调整翻译任务的并发、超时和重试阈值"
+          />
+        );
+      case 'expert-settings':
+        return (
+          <SettingsPage
+            state={state}
+            variant="expert"
+            title="专家设置"
+            description="控制提示词、资产分析和结果检查等高级行为"
+          />
+        );
+      case 'app-settings':
+        return <SettingsPage state={state} variant="app" title="应用设置" description="管理语言、更新、声音和应用级显示选项" />;
+      case 'workbench':
+        return <WorkbenchPage state={state} onDirtyChange={setDirty} />;
+      case 'agent':
+        return <AgentPage state={state} />;
+      case 'platform':
+        return <PlatformPage state={state} onDirtyChange={setDirty} />;
+      case 'custom-prompt':
+        return <CustomPromptPage state={state} />;
+      default:
+        return null;
+    }
+  })();
+
   return (
-    <div className="metric">
-      <span className="m-label">{label}</span>
-      <span className="m-value" ref={(el) => { cells.current[cell] = el; }}>
-        —
-      </span>
+    <div className="shell">
+      <header className="titlebar">
+        <span className="titlebar-title">RenpyBox {version}</span>
+        <span className="titlebar-spacer" />
+        <div className="titlebar-controls">
+          <button
+            type="button"
+            className="titlebar-button"
+            aria-label="最小化"
+            onClick={() => window.renpy?.minimize?.()}
+          >
+            <IconChromeMinimize size={10} />
+          </button>
+          <button
+            type="button"
+            className="titlebar-button"
+            aria-label={maximized ? '向下还原' : '最大化'}
+            onClick={() => window.renpy?.toggleMaximize?.()}
+          >
+            {maximized ? <IconChromeRestore size={10} /> : <IconChromeMaximize size={10} />}
+          </button>
+          <button
+            type="button"
+            className="titlebar-button titlebar-button-close"
+            aria-label="关闭"
+            onClick={() => navigate('close')}
+          >
+            <IconChromeClose size={10} />
+          </button>
+        </div>
+      </header>
+
+      <nav className="sidebar" aria-label="主导航">
+        <div className="sidebar-brand">
+          <span className="brand-mark" aria-hidden="true">R</span>
+          <span className="brand-copy">
+            <strong>RenpyBox</strong>
+            <small>翻译工作台</small>
+          </span>
+        </div>
+        {entries.map((entry) =>
+          entry.kind === 'separator' ? (
+            <div key={entry.id} className="nav-divider" />
+          ) : (
+            <button
+              key={entry.item.key}
+              type="button"
+              className="nav-item"
+              title={entry.item.label}
+              aria-current={active === entry.item.key ? 'page' : undefined}
+              onClick={() => navigate(entry.item.key)}
+            >
+              <span className="nav-item-icon">
+                {(() => {
+                  const Icon = NAV_ICONS[entry.item.icon];
+                  return <Icon size={18} />;
+                })()}
+              </span>
+              <span className="nav-item-label">{entry.item.label}</span>
+            </button>
+          ),
+        )}
+
+        <div className="nav-spacer" />
+
+        <button
+          type="button"
+          className="nav-item"
+          title={APP_SETTINGS_NAV.label}
+          aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
+          onClick={() => navigate(APP_SETTINGS_NAV.key)}
+        >
+          <span className="nav-item-icon">
+            <SettingsIcon size={18} />
+          </span>
+          <span className="nav-item-label">{APP_SETTINGS_NAV.label}</span>
+        </button>
+
+        <button
+          type="button"
+          className="nav-item"
+          title="切换主题"
+          onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}
+        >
+          <span className="nav-item-icon">
+            <IconContrast size={18} />
+          </span>
+          <span className="nav-item-label">切换主题</span>
+        </button>
+
+        {state.health ? (
+          <button
+            type="button"
+            className="nav-item"
+            title="关于与诊断"
+            onClick={() => {
+              // 壳窗口是 vanilla 页面，不进主 UI bundle；这里按需唤起。
+              void window.renpy?.openShell('welcome');
+            }}
+          >
+            <span className="nav-item-icon">
+              <IconInfo size={18} />
+            </span>
+            <span className="nav-item-label">关于与诊断</span>
+          </button>
+        ) : null}
+
+        {/* 只在链路异常时出现：正常运行下导航与原壳保持一致 */}
+        {link !== 'open' ? (
+          <div className="sidebar-status" role="status">
+            <span className="sidebar-status-dot" data-state={link} />
+            <span className="sidebar-status-text">{LINK_TEXT[link]}</span>
+          </div>
+        ) : null}
+      </nav>
+
+      <main className="content">
+        {state.ready ? (
+          body
+        ) : (
+          <div className="page">
+            <div className="empty">正在启动 …</div>
+          </div>
+        )}
+      </main>
+
+      {pendingPage ? (
+        <Dialog title="有未保存的修改" confirmText="放弃并继续" onCancel={() => setPendingPage(null)} onConfirm={() => {
+          setDirty(false);
+          if (pendingPage === 'close') { allowClose.current = true; window.renpy?.close?.(); }
+          else setActive(pendingPage);
+          setPendingPage(null);
+        }}>离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>
+      ) : null}
+      <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
     </div>
   );
 }

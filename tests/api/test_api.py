@@ -227,6 +227,220 @@ def test_ws_rejects_unknown_command() -> None:
             assert message["type"] == "error"
 
 
+# ---------- 翻译主流程 ----------
+
+def test_translation_state_reports_idle_engine() -> None:
+    """空闲引擎的快照：状态为 IDLE，且带出并发上限，供命令栏决定按钮可用性。"""
+    with _client() as client:
+        body = client.get("/api/translation/state").json()
+
+    assert body["engine_status"] == "IDLE"
+    assert body["stop_barrier"] is False
+    assert body["single_tasks"] is False
+    assert "max" in body["running"]
+    assert isinstance(body["progress"], dict)
+
+
+def test_translation_start_rejects_busy_engine() -> None:
+    """引擎忙时不得受理，且不能把 TRANSLATION_START 投进总线。
+
+    这条同时守住「前端连点两次开始」的入口：被拒的请求根本不产生事件。
+    """
+    from module.Engine.Engine import Engine
+
+    engine = Engine.get()
+    engine.set_status(Engine.Status.TRANSLATING)
+    try:
+        with _client() as client:
+            body = client.post("/api/translation/start", json = {"status": "UNTRANSLATED"}).json()
+
+        assert body["accepted"] is False
+        assert body["reason"] == "STOPPING"
+    finally:
+        engine.set_status(Engine.Status.IDLE)
+
+
+def test_translation_start_rejects_unknown_status() -> None:
+    with _client() as client:
+        response = client.post("/api/translation/start", json = {"status": "NOT_A_STATUS"})
+
+    assert response.status_code == 400
+
+
+def test_translation_stop_without_run_conflicts() -> None:
+    """空闲时停止必须 409，而不是静默成功让前端以为已停。"""
+    with _client() as client:
+        response = client.post("/api/translation/stop")
+
+    assert response.status_code == 409
+
+
+def test_translation_export_requires_output_folder() -> None:
+    """没有输出目录时导出要报冲突，而不是把事件投出去让引擎空跑。"""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class StubConfig:
+        output_folder: str = ""
+
+    with _client() as client:
+        client.app.state.config = StubConfig()
+        response = client.post("/api/translation/export")
+
+    assert response.status_code == 409
+
+
+def test_translation_start_emits_event_without_starting_engine() -> None:
+    """受理 → 事件总线 → drain_loop → EventBridge → WS。
+
+    这是翻译主流程的端到端契约：前端点「开始翻译」后，真正确认线程状态的
+    唯一通道就是 WS 上的 TRANSLATION_START。
+
+    这里刻意摘掉真实 Translator 的订阅者：lifespan 里的 ``Engine.get().run()``
+    已经建好了它，放行就会真的起线程去读目录、写缓存。这里只验证路由投递。
+    """
+    from base.Base import Base
+    from base.EventManager import EventManager
+    from module.Engine.Engine import Engine
+
+    with _client() as client:
+        translator = getattr(Engine.get(), "translator", None)
+        manager = EventManager.get()
+        detached = translator is not None and callable(getattr(translator, "translation_start", None))
+        if detached:
+            manager.unsubscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+        try:
+            with client.websocket_connect("/ws") as ws:
+                ws.receive_json()  # hello
+
+                client.post("/api/translation/start", json = {
+                    "status": "TRANSLATING",
+                    "request_id": "req-test-1",
+                })
+
+                seen = []
+                deadline = 40
+                while deadline > 0:
+                    message = ws.receive_json()
+                    seen.append(message)
+                    if message.get("event") == "TRANSLATION_START":
+                        break
+                    deadline -= 1
+        finally:
+            if detached:
+                translator.subscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+    payload = next((m["data"] for m in seen if m.get("event") == "TRANSLATION_START"), None)
+    assert payload is not None, seen
+    assert payload["request_id"] == "req-test-1"
+    assert payload["status"] == "TRANSLATING"
+    # 冻结快照只给翻译线程：广播里必须摘掉，否则渲染端收到的是 9KB 的 repr 假结构
+    assert "config" not in payload
+    # 真实引擎没被驱动起来
+    assert Engine.get().get_status() == Engine.Status.IDLE
+
+
+def test_translation_start_keeps_frozen_config_for_engine() -> None:
+    """摘掉广播字段不影响引擎侧：Translator 必须拿到冻结的 Config 实例。
+
+    两条断言对着看：广播里没有 config，总线里的 config 却是可用的对象。
+    """
+    from base.Base import Base
+    from base.EventManager import EventManager
+    from module.Engine.Engine import Engine
+
+    with _client() as client:
+        translator = getattr(Engine.get(), "translator", None)
+        manager = EventManager.get()
+        detached = translator is not None and callable(getattr(translator, "translation_start", None))
+        if detached:
+            manager.unsubscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+        captured = {}
+
+        def capture(event, data):
+            captured.update(data)
+
+        manager.subscribe(Base.Event.TRANSLATION_START, capture)
+
+        try:
+            client.post("/api/translation/start", json = {
+                "status": "TRANSLATING",
+                "request_id": "req-frozen-1",
+            })
+            EventManager.drain_all()
+        finally:
+            manager.unsubscribe(Base.Event.TRANSLATION_START, capture)
+            if detached:
+                translator.subscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+    assert captured.get("request_id") == "req-frozen-1"
+    snapshot = captured.get("config")
+    assert snapshot is not None
+    assert snapshot.input_folder is not None
+    assert Engine.get().get_status() == Engine.Status.IDLE
+
+
+def test_repeated_app_lifespans_keep_one_translator() -> None:
+    """反复建 app 不得堆叠 TRANSLATION_START 订阅者。
+
+    事件回调表是类级字典，不退订就会一直留着旧 Translator：一次开始请求
+    会唤起多个翻译线程，同时写同一个输出目录。
+    """
+    from base.Base import Base
+    from base.EventManager import EventManager
+
+    for _ in range(3):
+        with _client():
+            pass
+
+    manager = EventManager.get()
+    assert len(manager.event_callbacks.get(Base.Event.TRANSLATION_START, [])) == 1
+    assert len(manager.event_callbacks.get(Base.Event.TRANSLATION_STOP, [])) == 1
+
+
+def test_translation_start_honours_preflight_confirmation() -> None:
+    """缺资产时默认拒绝；用户明确「仍然继续」后必须真的受理。
+
+    没有后一条，渲染端的 preflight 弹窗会永远停在那里：用户点了「仍然继续」，
+    请求又被原样拒回。默认空配置没有资产，正好覆盖这个分支。
+    """
+    from base.Base import Base
+    from base.EventManager import EventManager
+    from module.Engine.Engine import Engine
+
+    with _client() as client:
+        manager = EventManager.get()
+        translator = getattr(Engine.get(), "translator", None)
+        detached = translator is not None and callable(getattr(translator, "translation_start", None))
+        if detached:
+            manager.unsubscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+        seen = []
+        capture = lambda event, data: seen.append(data)
+        manager.subscribe(Base.Event.TRANSLATION_START, capture)
+
+        try:
+            first = client.post("/api/translation/start", json = {"status": "UNTRANSLATED"}).json()
+            confirmed = client.post("/api/translation/start", json = {
+                "status": "UNTRANSLATED",
+                "preflight_confirmed": True,
+            }).json()
+            EventManager.drain_all()
+        finally:
+            manager.unsubscribe(Base.Event.TRANSLATION_START, capture)
+            if detached:
+                translator.subscribe(Base.Event.TRANSLATION_START, translator.translation_start)
+
+    assert first["accepted"] is False
+    assert first["reason"] == "ASSETS_MISSING"
+    # 只有带确认标记的那次才投进事件总线
+    assert confirmed["accepted"] is True
+    assert len(seen) == 1
+    assert seen[0]["preflight_confirmed"] is True
+
+
 # ---------- 任务模型 ----------
 
 def test_job_manager_transitions_to_done() -> None:

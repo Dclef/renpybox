@@ -63,6 +63,16 @@ class Translator(Base):
     # 大项目初始化会连续处理十万级条目；周期性让出 GIL，避免 UI 刷新被挤住。
     PREPARE_YIELD_INTERVAL: int = 512
 
+    # 订阅的事件 → 处理器方法名。register 与 unsubscribe_events 共用同一张表，
+    # 保证「注册了什么就一定退得掉」，不会两处手工维护而漏项。
+    _EVENT_HANDLERS: dict[Base.Event, str] = {
+        Base.Event.TRANSLATION_STOP: "translation_stop",
+        Base.Event.TRANSLATION_START: "translation_start",
+        Base.Event.TRANSLATION_MANUAL_EXPORT: "translation_manual_export",
+        Base.Event.TRANSLATION_CACHE_REINJECT: "translation_cache_reinject",
+        Base.Event.PROJECT_STATUS: "translation_project_status_check",
+    }
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -89,12 +99,19 @@ class Translator(Base):
         self._run_context = threading.local()
         Engine.get().translator = self
 
-        # 注册事件
-        self.subscribe(Base.Event.TRANSLATION_STOP, self.translation_stop)
-        self.subscribe(Base.Event.TRANSLATION_START, self.translation_start)
-        self.subscribe(Base.Event.TRANSLATION_MANUAL_EXPORT, self.translation_manual_export)
-        self.subscribe(Base.Event.TRANSLATION_CACHE_REINJECT, self.translation_cache_reinject)
-        self.subscribe(Base.Event.PROJECT_STATUS, self.translation_project_status_check)
+        # 注册事件（表在类头 _EVENT_HANDLERS，register 与退订共用同一份）
+        for event, attr in self._EVENT_HANDLERS.items():
+            self.subscribe(event, getattr(self, attr))
+
+    def unsubscribe_events(self) -> None:
+        """从事件总线上摘掉本实例的全部订阅。
+
+        事件总线的回调表是类级字典（EventManager.event_callbacks），不会因为
+        Translator 被回收而清理条目。Engine.run() 重建翻译器时必须先调用，
+        否则旧实例仍会响应 TRANSLATION_START，把一次请求变成多次并发翻译。
+        """
+        for event, attr in self._EVENT_HANDLERS.items():
+            self.unsubscribe(event, getattr(self, attr, None))
 
     # 翻译停止事件
     def translation_stop(self, event: str, data: dict) -> None:

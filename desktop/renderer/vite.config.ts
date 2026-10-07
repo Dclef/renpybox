@@ -14,8 +14,8 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/health': `http://127.0.0.1:${SIDECAR_PORT}`,
-      // 真实业务接口（api 模式）。bench 模式没有这些路由，请求会 404，
-      // 渲染端据此判断当前是哪种模式。
+      // 真实业务接口。开发时走 vite 代理；打包后 loadFile 源是 file://，
+      // 请求要落到 api.ts 里算出的绝对地址。
       '/api': `http://127.0.0.1:${SIDECAR_PORT}`,
       '/ws': { target: `ws://127.0.0.1:${SIDECAR_PORT}`, ws: true },
     },

@@ -101,3 +101,12 @@ def patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
         config.save()
 
     return read_settings(request)
+@router.get("/prompt-preview")
+def preview_prompt(request: Request) -> dict[str, str]:
+    """读取当前配置的基础提示、写作风格和固定工程协议，不发起模型请求。"""
+    from module.PromptBuilder import PromptBuilder
+
+    try:
+        return PromptBuilder(request.app.state.config).build_static_prompt_sections()
+    except Exception as exc:
+        raise HTTPException(status_code = 400, detail = f"提示词预览失败：{exc}") from exc

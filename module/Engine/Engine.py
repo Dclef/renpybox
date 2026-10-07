@@ -48,6 +48,14 @@ class Engine():
         self.api_test = APITester()
 
         from module.Engine.Translator.Translator import Translator
+
+        # Translator 会 subscribe 到类级事件总线上（Base.EventManager），
+        # 不退订就会一直活着：重复 run() 会堆叠多个订阅者，一条
+        # TRANSLATION_START 就会被启动 N 次翻译线程。
+        previous = getattr(self, "translator", None)
+        if previous is not None and hasattr(previous, "unsubscribe_events"):
+            previous.unsubscribe_events()
+
         self.translator = Translator()
 
     def get_status(self) -> Status:
