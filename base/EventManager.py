@@ -42,9 +42,10 @@ class EventManager(QObject):
         super().__init__()
 
         self.signal.connect(self._on_signal, Qt.ConnectionType.QueuedConnection)
+        self._lock = threading.RLock()
 
-        # 中间态事件 latest-value 合并：窗口内多次发射只分发最新值，
-        # 状态全部在主线程（process_event / timer 回调）读写，与后台线程的 emit 无竞争
+        # 中间态事件 latest-value 合并：窗口内多次发射只分发最新值。
+        # 缓存更新和取走共用实例锁，回调留在锁外；Qt 定时器仍由主线程驱动。
         self._coalescing: dict[StrEnum, tuple[dict, int | None]] = {}
         self._coalesce_timer = QTimer(self)
         self._coalesce_timer.setSingleShot(True)
@@ -67,7 +68,8 @@ class EventManager(QObject):
 
         # 可合并事件暂存最新值，由单发 timer 统一冲刷
         if event in COALESCING_EVENTS:
-            self._coalescing[event] = (data, sequence)
+            with self._lock:
+                self._coalescing[event] = (data, sequence)
             if not self._coalesce_timer.isActive():
                 self._coalesce_timer.start()
             return
@@ -76,10 +78,10 @@ class EventManager(QObject):
 
     # 冲刷合并窗口
     def _flush_coalesced(self) -> None:
-        if not self._coalescing:
-            return
-
-        pending, self._coalescing = self._coalescing, {}
+        with self._lock:
+            if not self._coalescing:
+                return
+            pending, self._coalescing = self._coalescing, {}
         for event, (data, sequence) in pending.items():
             self._dispatch(event, data, sequence)
 

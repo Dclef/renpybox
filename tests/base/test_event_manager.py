@@ -247,3 +247,46 @@ def test_repeated_unsubscribe_does_not_raise() -> None:
     manager.subscribe(Base.Event.PROJECT_CHANGED, handler)
     manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
     manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
+
+
+
+def test_coalescing_updates_and_flush_share_lock_but_dispatch_outside() -> None:
+    """更新与取走缓存共用锁，回调重入时新进度留在下一窗口。"""
+    manager = _fresh_manager()
+    received = []
+
+    class GuardedLock:
+        entered = 0
+        held = False
+
+        def __enter__(self):
+            assert not self.held
+            self.held = True
+            self.entered += 1
+
+        def __exit__(self, *args):
+            self.held = False
+
+    lock = GuardedLock()
+    manager._lock = lock
+
+    def handler(event, data):
+        assert not lock.held
+        received.append(data["progress"])
+        if data["progress"] == 1:
+            manager.process_event(event, {"progress": 2})
+
+    manager.subscribe(Base.Event.TRANSLATION_UPDATE, handler)
+    try:
+        manager.process_event(Base.Event.TRANSLATION_UPDATE, {"progress": 1})
+        assert lock.entered == 1
+        manager._flush_coalesced()
+        assert received == [1]
+        assert lock.entered == 3
+        manager._flush_coalesced()
+        assert received == [1, 2]
+        assert manager._coalescing == {}
+        assert lock.entered == 4
+    finally:
+        manager.unsubscribe(Base.Event.TRANSLATION_UPDATE, handler)
+        manager._coalesce_timer.stop()
