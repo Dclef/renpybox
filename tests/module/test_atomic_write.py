@@ -140,3 +140,62 @@ def test_atomic_write_rejects_symlink_escaping_allowed_roots(tmp_path):
 
     # 受限根目录之外的文件不得被写入。
     assert outside.read_text(encoding="utf-8") == "secret"
+
+
+@pytest.mark.parametrize("path_kind", ["relative", "absolute"])
+def test_atomic_write_rejects_ordinary_path_escaping_allowed_roots(tmp_path, path_kind):
+    output = tmp_path / "output"
+    output.mkdir()
+    outside = tmp_path / "output-other" / "fictional.txt"
+    outside.parent.mkdir()
+    outside.write_text("original fictional sentinel", encoding="utf-8")
+    target = outside if path_kind == "absolute" else output / ".." / "output-other" / outside.name
+
+    with pytest.raises(RuntimeError, match="escapes allowed roots"):
+        atomic_write_text(target, "unexpected replacement", allowed_roots=[output])
+
+    assert outside.read_text(encoding="utf-8") == "original fictional sentinel"
+    assert list(outside.parent.glob("*.tmp")) == []
+
+
+def test_atomic_write_rejects_escape_before_creating_parent_directories(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    outside = tmp_path / "outside" / "nested"
+
+    with pytest.raises(RuntimeError, match="escapes allowed roots"):
+        atomic_write_text(
+            output / ".." / "outside" / "nested" / "fictional.txt",
+            "unexpected creation",
+            allowed_roots=[output],
+        )
+
+    assert not outside.parent.exists()
+
+
+def test_atomic_write_rejects_parent_symlink_escaping_allowed_roots(tmp_path):
+    output = tmp_path / "output"
+    outside = tmp_path / "outside"
+    output.mkdir()
+    outside.mkdir()
+    link = output / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+    victim = outside / "fictional.txt"
+    victim.write_text("original fictional sentinel", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="escapes allowed roots"):
+        atomic_write_text(link / victim.name, "unexpected replacement", allowed_roots=[output])
+
+    assert victim.read_text(encoding="utf-8") == "original fictional sentinel"
+
+
+def test_atomic_write_allows_new_nested_path_within_allowed_roots(tmp_path):
+    output = tmp_path / "output"
+    target = output / "nested" / "fictional.txt"
+
+    atomic_write_text(target, "new fictional text", allowed_roots=[output])
+
+    assert target.read_text(encoding="utf-8") == "new fictional text"
