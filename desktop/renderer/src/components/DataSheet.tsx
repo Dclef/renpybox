@@ -26,7 +26,7 @@ export function DataSheet<T>(props: {
   rowHeight?: number;
   /** 变化时把列表滚回顶部。 */
   scrollTopToken?: number;
-  selection?: { keys: Set<string>; onToggle: (key: string) => void; onToggleAll: (checked: boolean) => void };
+  selection?: { keys: Set<string>; onToggle: (key: string) => void; onToggleAll: (checked: boolean) => void; disabled?: boolean };
 }) {
   const {
     rows, getKey, columns, selectedKey, onSelect, rowClassName, editor, editorClassName,
@@ -59,6 +59,7 @@ export function DataSheet<T>(props: {
         {selection ? (
           <Checkbox
             checked={selection.keys.has(key)}
+            disabled={selection.disabled}
             aria-label="选择行"
             onClick={(event) => event.stopPropagation()}
             onChange={() => selection.onToggle(key)}
@@ -85,7 +86,7 @@ export function DataSheet<T>(props: {
     <div className="rb-sheet">
       <div className="rb-sheet-table" role="table">
         <div className="rb-sheet-head" role="row" style={grid}>
-          {selection ? <Checkbox checked={allChecked} aria-label="全选" onChange={(event) => selection.onToggleAll(event.currentTarget.checked)} /> : null}
+          {selection ? <Checkbox checked={allChecked} disabled={selection.disabled} aria-label="全选" onChange={(event) => selection.onToggleAll(event.currentTarget.checked)} /> : null}
           {columns.map((column) => <span key={column.key}>{column.title}</span>)}
         </div>
         <div className="rb-sheet-scroll" ref={listRef}>
