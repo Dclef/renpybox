@@ -443,7 +443,22 @@
   .rb-group-panel .settings-header { display: none; }
   .rb-group-panel .rb-page-scroll { padding: 0 0 16px; }
 
-  .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .proofreading-page { width: auto; align-self: stretch; padding: 0; gap: 0; overflow: hidden; }
+  .proofreading-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .proofreading-filters .mantine-TextInput-root,
+  .proofreading-filters .mantine-Select-root { flex: 1 1 160px; min-width: 0; }
+  .proofreading-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--rb-text-secondary); font-size: 13px; }
+  .proofreading-toolbar { display: flex; align-items: center; gap: 8px; }
+  .proofreading-target { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--rb-accent-text); font: inherit; font-size: 13px; background: transparent; border: 0; cursor: pointer; }
+  .proofreading-target:disabled { color: var(--rb-text-disabled); cursor: default; }
+  .rb-proof-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .rb-proof-status i { width: 8px; height: 8px; border-radius: 999px; background: var(--rb-text-disabled); }
+  .rb-proof-status[data-status='TRANSLATED'] i,
+  .rb-proof-status[data-status='POLISHED'] i,
+  .rb-proof-status[data-status='TRANSLATED_IN_PAST'] i { background: var(--rb-success); }
+  .rb-proof-status[data-status='UNTRANSLATED'] i { background: var(--rb-warning); }
+  .rb-proof-status[data-status='EXCLUDED'] i,
+  .rb-proof-status[data-status='DUPLICATED'] i { background: var(--rb-error); }
   .rb-sheet-summary { display: flex; flex-direction: column; gap: 2px; }
   .rb-sheet-summary strong { color: var(--rb-text-primary); font-size: 14px; font-weight: 500; }
   .rb-honorific-list { display: flex; flex-direction: column; min-height: 0; overflow: auto; }

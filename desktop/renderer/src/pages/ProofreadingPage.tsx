@@ -2,8 +2,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { request } from '../api';
 import type { AppState } from '../useAppState';
-import { Button, Table } from 'antd';
-import { Banner, Dialog } from '../ui';
+import { Button, Checkbox, Select, Textarea, TextInput, UnstyledButton } from '@mantine/core';
+import { DataSheet } from '../components/DataSheet';
+import { Banner, Dialog, PageHeader } from '../ui';
 
 interface ProofreadingRow {
   id: number;
@@ -156,103 +157,97 @@ export function ProofreadingPage({ state, onDirtyChange }: {
     } finally { setSaving(false); }
   };
 
+  const items = data?.items ?? [];
+  const toggle = (key: string) => {
+    const id = Number(key);
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const openEdit = (row: ProofreadingRow) => {
+    setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+    setDraft(row.dst);
+  };
+
   return (
-    <div className="page proofreading-page">
-      <header className="page-header proofreading-heading">
-        <div>
-          <h1>平行校对台</h1>
-          <p>原文与译文并排阅读，让每一句更准确、更自然。</p>
-        </div>
-        <div className="proofreading-toolbar">
-          <button className="btn" disabled={loading || saving} onClick={reload}>刷新译文</button>
-          <button className="btn" disabled={readonly || loading || saving || !data?.items.length} onClick={() => { if (!data) return; setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? data.items.filter((row) => selected.has(row.id)) : data.items }); setReplaceOpen(true); }}>批量替换</button>
-        </div>
-      </header>
-      {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
-      {error && <Banner tone="warning">{error}</Banner>}
-      <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
-        <input aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <select aria-label="翻译状态" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
-          <option value="">全部状态</option>
-          {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-        <select aria-label="源文件" value={file} onChange={(event) => { setFile(event.target.value); setPage(1); }}>
-          <option value="">全部文件</option>
-          {(data?.files ?? []).map((path) => <option key={path} value={path}>{path || '未分类'}</option>)}
-        </select>
-        <button className="btn" type="submit" disabled={loading}>搜索</button>
-      </form>
-      <Table<ProofreadingRow>
-        className="data-sheet"
-        size="small"
-        bordered
-        rowKey="id"
-        loading={loading && !data}
-        pagination={false}
-        dataSource={data?.items ?? []}
-        locale={{ emptyText: data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里打磨对白。' }}
-        rowSelection={{
-          selectedRowKeys: [...selected],
-          onChange: (keys) => setSelected(new Set(keys.map(Number))),
-          getCheckboxProps: () => ({ disabled: Boolean(readonly || loading) }),
-        }}
-        columns={[
-          { title: '序号', dataIndex: 'id', width: 72, render: (id: number) => id + 1 },
-          { title: '状态', dataIndex: 'status', width: 100, render: (status: string) => STATUS_LABELS[status] ?? status },
-          { title: '原文', dataIndex: 'src', ellipsis: true },
-          {
-            title: '译文',
-            dataIndex: 'dst',
-            render: (dst: string, row) => (
-              <Button
-                type="link"
-                size="small"
-                disabled={readonly || loading || saving}
-                onClick={() => {
-                  setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
-                  setDraft(dst);
-                }}
-              >
-                {dst || '（空，点击编辑）'}
-              </Button>
-            ),
-          },
-          {
-            title: '文件',
-            width: 180,
-            ellipsis: true,
-            render: (_, row) => `${row.file_path || '未分类'}${row.row ? `:${row.row}` : ''}`,
-          },
-        ]}
-      />
-      <footer className="proofreading-pagination">
-        <span>{data ? `${data.matched.toLocaleString()} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
-        <div className="proofreading-toolbar">
-          <button className="btn" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</button>
-          <span>{data?.page ?? 1} / {Math.max(1, Math.ceil((data?.matched ?? 0) / 50))}</span>
-          <button className="btn" disabled={loading || !data || page * 50 >= data.matched} onClick={() => setPage((value) => value + 1)}>下一页</button>
-        </div>
-      </footer>
-      {edit && (
-        <Dialog title="打磨译文" confirmText="保存译文" onCancel={closeEdit} onConfirm={saving || readonly || !dirty || editProjectChanged ? undefined : () => void saveEdit()}>
-          {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请先复制译文，再取消编辑并载入新项目。</Banner>}
-          <div className="proofreading-editor">
-            <label className="proofreading-editor-label">原文</label>
-            <div className="proofreading-editor-source">{edit.src}</div>
-            <label className="proofreading-editor-label" htmlFor="proofreading-draft">译文</label>
-            <textarea id="proofreading-draft" rows={7} value={draft} disabled={saving || readonly} onChange={(event) => setDraft(event.target.value)} />
-            <span>{saving ? '正在保存…' : '保存到翻译缓存；写回游戏请使用翻译页的“导出译文”。'}</span>
+    <div className="proofreading-page rb-page">
+      <div className="rb-page-scroll">
+        <PageHeader
+          title="平行校对台"
+          description="原文与译文并排阅读，让每一句更准确、更自然。"
+          actions={(
+            <>
+              <Button variant="default" disabled={loading || saving} onClick={reload}>刷新译文</Button>
+              <Button variant="default" disabled={readonly || loading || saving || !data?.items.length} onClick={() => { if (!data) return; setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? data.items.filter((row) => selected.has(row.id)) : data.items }); setReplaceOpen(true); }}>批量替换</Button>
+            </>
+          )}
+        />
+        {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
+        {error && <Banner tone="warning">{error}</Banner>}
+        <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
+          <TextInput aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+          <Select aria-label="翻译状态" allowDeselect={false} value={status} data={[{ value: '', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]} onChange={(value) => { if (value != null) { setStatus(value); setPage(1); } }} />
+          <Select aria-label="源文件" allowDeselect={false} value={file} data={[{ value: '', label: '全部文件' }, ...(data?.files ?? []).map((path) => ({ value: path, label: path || '未分类' }))]} onChange={(value) => { if (value != null) { setFile(value); setPage(1); } }} />
+          <Button variant="default" type="submit" disabled={loading}>搜索</Button>
+        </form>
+        <DataSheet
+          virtual={false}
+          rows={items}
+          getKey={(row) => String(row.id)}
+          selectedKey={edit ? String(edit.id) : null}
+          onSelect={() => undefined}
+          emptyText={data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里打磨对白。'}
+          selection={{
+            keys: new Set([...selected].map(String)),
+            disabled: Boolean(readonly || loading),
+            onToggle: toggle,
+            onToggleAll: (checked) => setSelected(checked ? new Set(items.map((row) => row.id)) : new Set()),
+          }}
+          columns={[
+            { key: 'index', title: '序号', width: '72px', render: (row) => <span>{row.id + 1}</span> },
+            { key: 'status', title: '状态', width: '120px', render: (row) => <span className="rb-proof-status" data-status={row.status}><i />{STATUS_LABELS[row.status] ?? row.status}</span> },
+            { key: 'src', title: '原文', render: (row) => <span>{row.src}</span> },
+            { key: 'dst', title: '译文', render: (row) => (
+              <UnstyledButton className="proofreading-target" disabled={readonly || loading || saving} onClick={(event) => { event.stopPropagation(); openEdit(row); }}>
+                {row.dst || '（空，点击编辑）'}
+              </UnstyledButton>
+            ) },
+            { key: 'file', title: '文件', width: '180px', render: (row) => <span>{`${row.file_path || '未分类'}${row.row ? `:${row.row}` : ''}`}</span> },
+          ]}
+          editorClassName="rb-term-editor"
+          editor={edit ? (
+            <>
+              <header><h2>打磨译文</h2></header>
+              {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请先复制译文，再取消编辑并载入新项目。</Banner>}
+              <div className="proofreading-editor-source">{edit.src}</div>
+              <Textarea id="proofreading-draft" autosize minRows={7} value={draft} disabled={saving || readonly} onChange={(event) => setDraft(event.currentTarget.value)} />
+              <span className="rb-term-formal">{saving ? '正在保存…' : '保存到翻译缓存；写回游戏请使用翻译页的“导出译文”。'}</span>
+              <div className="rb-dialog-actions">
+                <Button variant="default" onClick={closeEdit}>取消</Button>
+                <Button disabled={saving || readonly || !dirty || editProjectChanged} onClick={() => void saveEdit()}>保存译文</Button>
+              </div>
+            </>
+          ) : null}
+        />
+        <footer className="proofreading-pagination">
+          <span>{data ? `${data.matched.toLocaleString()} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
+          <div className="proofreading-toolbar">
+            <Button variant="default" size="xs" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
+            <span>{data?.page ?? 1} / {Math.max(1, Math.ceil((data?.matched ?? 0) / 50))}</span>
+            <Button variant="default" size="xs" disabled={loading || !data || page * 50 >= data.matched} onClick={() => setPage((value) => value + 1)}>下一页</Button>
           </div>
-        </Dialog>
-      )}
+        </footer>
+      </div>
       {replaceOpen && (
         <Dialog title="批量替换译文" confirmText="替换并保存" onCancel={() => { if (!saving) setReplaceOpen(false); }} onConfirm={!find || saving || readonly ? undefined : () => void replaceRows()}>
           <p>对{selected.size ? `已选 ${selected.size} 条` : `当前页 ${replaceSnapshot?.rows.length ?? 0} 条`}译文执行纯文本替换，并立即保存。</p>
           <div className="proofreading-replacement-grid">
-            <label>查找<input value={find} disabled={saving} onChange={(event) => setFind(event.target.value)} placeholder="需要替换的内容" /></label>
-            <label>替换为<input value={replacement} disabled={saving} onChange={(event) => setReplacement(event.target.value)} placeholder="留空可删除匹配内容" /></label>
+            <TextInput label="查找" value={find} disabled={saving} placeholder="需要替换的内容" onChange={(event) => setFind(event.currentTarget.value)} />
+            <TextInput label="替换为" value={replacement} disabled={saving} placeholder="留空可删除匹配内容" onChange={(event) => setReplacement(event.currentTarget.value)} />
           </div>
-          <label><input type="checkbox" checked={caseSensitive} disabled={saving} onChange={(event) => setCaseSensitive(event.target.checked)} /> 区分大小写</label>
+          <Checkbox label="区分大小写" checked={caseSensitive} disabled={saving} onChange={(event) => setCaseSensitive(event.currentTarget.checked)} />
           {saving && <p>正在保存替换结果…</p>}
         </Dialog>
       )}
