@@ -22,7 +22,9 @@ import type {
   TranslationStartResponse,
   TranslationState,
   VersionInfo,
+  JobSnapshot,
   WsEventMessage,
+  WsJobMessage,
 } from './types';
 import { normalizeLang, type Lang } from './i18n';
 import { useSidecarEvents } from './useSidecarEvents';
@@ -41,6 +43,7 @@ export interface AppState {
   ready: boolean;
   /** 启动时读取一次的界面语言。运行中修改语言不会改变界面，重启后生效。 */
   bootLanguage: Lang | null;
+  jobs: JobSnapshot[];
   health: HealthInfo | null;
   version: VersionInfo | null;
   project: ProjectInfo | null;
@@ -88,6 +91,7 @@ let toastSeq = 0;
 export function useAppState(): AppState {
   const [ready, setReady] = useState(false);
   const [bootLanguage, setBootLanguage] = useState<Lang | null>(null);
+  const [jobs, setJobs] = useState<JobSnapshot[]>([]);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [project, setProject] = useState<ProjectInfo | null>(null);
@@ -249,6 +253,45 @@ export function useAppState(): AppState {
     });
   }, [subscribe, reloadProject]);
 
+  const upsertJob = useCallback((job: JobSnapshot) => {
+    const summary = { ...job };
+    delete summary.result;
+    setJobs((prev) => {
+      const next = [summary, ...prev.filter((item) => item.id !== job.id)];
+      while (next.length > 64) {
+        let removed = false;
+        for (let index = next.length - 1; index >= 0; index -= 1) {
+          const status = next[index]?.status;
+          if (status === 'done' || status === 'failed' || status === 'cancelled') {
+            next.splice(index, 1);
+            removed = true;
+            break;
+          }
+        }
+        if (!removed) break;
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (link !== 'open') return;
+    let alive = true;
+    void api.listJobs()
+      .then((listed) => {
+        if (!alive) return;
+        setJobs(listed.map((job) => {
+          const summary = { ...job };
+          delete summary.result;
+          return summary;
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [link]);
+
   useSidecarEvents(
     useCallback((message: WsEventMessage) => {
       if (message.type === 'event') {
@@ -299,6 +342,7 @@ export function useAppState(): AppState {
       }
     }, [pushToast, reloadProject, reloadTranslation]),
     setLink,
+    useCallback((message: WsJobMessage) => upsertJob(message.job), [upsertJob]),
   );
 
   const theme = useMemo<ThemeName>(() => {
@@ -309,6 +353,7 @@ export function useAppState(): AppState {
   return {
     ready,
     bootLanguage,
+    jobs,
     health,
     version,
     project,
