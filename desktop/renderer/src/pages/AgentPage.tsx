@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Select } from '@mantine/core';
+import { Button, Select } from '@mantine/core';
 import { Bot, Square } from 'lucide-react';
 import * as api from '../api';
 import { AgentMessageBody } from '../AgentMessageBody';
@@ -181,13 +181,13 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
             />
           </label>
           <div className="agent-control-actions">
-            <button type="button" className="btn" onClick={onOpenPlatforms}>管理接口</button>
-            <button type="button" className="btn" disabled={!connected || !session || busy || pending || !session.messages.length} onClick={() => setResetDialog(true)}>新建会话</button>
+            <Button variant="default" onClick={onOpenPlatforms}>管理接口</Button>
+            <Button variant="default" disabled={!connected || !session || busy || pending || !session.messages.length} onClick={() => setResetDialog(true)}>新建会话</Button>
           </div>
         </div>
       </header>
 
-      {loadError ? <Banner tone="error">加载 Agent 会话失败：{loadError} <button type="button" className="btn" onClick={() => setRetry(previous => previous + 1)}>重试</button></Banner> : null}
+      {loadError ? <Banner tone="error">加载 Agent 会话失败：{loadError} <Button variant="default" size="xs" onClick={() => setRetry(previous => previous + 1)}>重试</Button></Banner> : null}
       {actionError ? <Banner tone="error" onDismiss={() => setActionError('')}>{actionError}</Banner> : null}
       {connected && !platform ? <Banner tone="info">请选择支持工具调用的 OpenAI、Anthropic 或 Google 接口，不会改变翻译任务的接口设置。</Banner> : null}
 
@@ -277,8 +277,8 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           <pre>{JSON.stringify({ arguments: confirmation.arguments, context: confirmation.data }, null, 2)}</pre>
           <div className="agent-confirmation-actions">
             <span>确认有效至 {new Date(confirmation.expires_at * 1000).toLocaleTimeString()}</span>
-            <button type="button" className="btn" disabled={!connected || pending} onClick={() => void perform(() => api.confirmAgentTool(confirmation.id, false))}>拒绝执行</button>
-            <button type="button" className="btn btn-primary" disabled={!connected || pending} onClick={() => void perform(() => api.confirmAgentTool(confirmation.id, true))}>确认执行</button>
+            <Button variant="default" disabled={!connected || pending} onClick={() => void perform(() => api.confirmAgentTool(confirmation.id, false))}>拒绝执行</Button>
+            <Button disabled={!connected || pending} onClick={() => void perform(() => api.confirmAgentTool(confirmation.id, true))}>确认执行</Button>
           </div>
         </section>
       ) : null}
@@ -310,13 +310,13 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
                   : 'Enter 发送 · Shift+Enter 换行'}
           </span>
           {busy ? (
-            <button type="button" className="btn" disabled={!connected || pending || session?.status === 'stopping'} onClick={() => void perform(api.stopAgent)}>
+            <Button variant="default" disabled={!connected || pending || session?.status === 'stopping'} onClick={() => void perform(api.stopAgent)}>
               <Square size={14} strokeWidth={1.75} />停止
-            </button>
+            </Button>
           ) : (
-            <button type="submit" className="btn btn-primary" disabled={!canSend}>
+            <Button type="submit" disabled={!canSend}>
               {pending ? '发送中…' : '发送'}
-            </button>
+            </Button>
           )}
         </div>
       </form>
