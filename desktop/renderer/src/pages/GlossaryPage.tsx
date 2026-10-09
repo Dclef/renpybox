@@ -1,12 +1,12 @@
 /** 术语表：正式术语与分析候选分别保留，保存复用项目资产仓库。 */
 import { useEffect, useRef, useState } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { Badge, Button, Checkbox, Menu, Textarea, TextInput } from '@mantine/core';
 import { Check, Plus, Search } from 'lucide-react';
 
 import { request } from '../api';
+import { DataSheet } from '../components/DataSheet';
 import type { AppState } from '../useAppState';
-import { Banner, Dialog, Empty, PageHeader } from '../ui';
+import { Banner, Dialog, PageHeader } from '../ui';
 
 interface TermRow {
   src: string;
@@ -40,9 +40,9 @@ export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<number | null>(null);
+  const [scrollTopToken, setScrollTopToken] = useState(0);
   const [confirmReload, setConfirmReload] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   const projectRef = useRef('');
   const projectKey = JSON.stringify([state.project?.renpy_project_path, state.project?.renpy_tl_folder, state.settings?.values.input_folder, state.settings?.values.output_folder]);
@@ -121,12 +121,6 @@ export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state
   };
   const matched = rows.map((row, index) => ({ row, index })).filter(({ row }) => `${row.src} ${row.dst} ${row.info ?? ''}`.toLowerCase().includes(query.toLowerCase()));
   const candidateCount = rows.filter(row => row.candidate).length;
-  const virtualizer = useVirtualizer({
-    count: matched.length,
-    getScrollElement: () => listRef.current,
-    estimateSize: () => 40,
-    overscan: 8,
-  });
   const selectedRow = selected != null ? rows[selected] : undefined;
   const emptyText = busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理';
 
@@ -160,8 +154,7 @@ export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state
           ) : null}
           <Button variant="default" disabled={locked || !snapshot} leftSection={<Plus size={16} strokeWidth={1.75} />} onClick={() => {
             setRows(previous => [{ src: '', dst: '', info: '', candidate: false }, ...previous]);
-            setSelected(0); setQuery(''); setDirty(true);
-            requestAnimationFrame(() => virtualizer.scrollToOffset(0));
+            setSelected(0); setQuery(''); setDirty(true); setScrollTopToken((value) => value + 1);
           }}>新增词条</Button>
           <Menu position="bottom-end">
             <Menu.Target><Button variant="default">更多</Button></Menu.Target>
@@ -172,46 +165,29 @@ export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state
           </Menu>
           <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={e => void importFile(e.target.files?.[0])} />
         </div>
-        <div className="rb-sheet">
-          <div className="rb-sheet-table" role="table">
-            <div className="rb-sheet-head" role="row">
-              <span>原文</span><span>译文</span><span>备注</span><span />
-            </div>
-            <div className="rb-sheet-scroll" ref={listRef}>
-              {matched.length === 0 ? <Empty>{emptyText}</Empty> : (
-                <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-                  {virtualizer.getVirtualItems().map((item) => {
-                    const entry = matched[item.index];
-                    if (!entry) return null;
-                    const { row, index } = entry;
-                    return (
-                      <div
-                        key={item.key}
-                        className="rb-term-row"
-                        role="row"
-                        data-selected={selected === index ? 'true' : undefined}
-                        tabIndex={0}
-                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: 40, transform: `translateY(${item.start}px)` }}
-                        onClick={() => setSelected(index)}
-                        onKeyDown={(event) => { if (event.key === 'Enter') setSelected(index); }}
-                      >
-                        <span>{row.src}</span>
-                        <span>{row.dst}</span>
-                        <span>{row.info}</span>
-                        <span className="rb-term-marks">
-                          {row.candidate ? <Badge>{row.candidate_confirmed ? <Check size={12} strokeWidth={1.75} /> : null}候选</Badge> : null}
-                          {row.case_sensitive ? <Badge title="区分大小写">Aa</Badge> : null}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="rb-sheet-foot">{matched.length} 条</div>
-          </div>
-          {selectedRow ? (
-            <aside className="rb-term-editor">
+        <DataSheet
+          rows={matched}
+          getKey={(entry) => String(entry.index)}
+          selectedKey={selected == null ? null : String(selected)}
+          onSelect={(key) => setSelected(key == null ? null : Number(key))}
+          rowClassName={() => 'rb-term-row'}
+          emptyText={emptyText}
+          footer={`${matched.length} 条`}
+          scrollTopToken={scrollTopToken}
+          editorClassName="rb-term-editor"
+          columns={[
+            { key: 'src', title: '原文', width: 'minmax(0, 1.2fr)', render: ({ row }) => <span>{row.src}</span> },
+            { key: 'dst', title: '译文', width: 'minmax(0, 1.2fr)', render: ({ row }) => <span>{row.dst}</span> },
+            { key: 'info', title: '备注', render: ({ row }) => <span>{row.info}</span> },
+            { key: 'marks', title: '', width: '96px', render: ({ row }) => (
+              <span className="rb-term-marks">
+                {row.candidate ? <Badge>{row.candidate_confirmed ? <Check size={12} strokeWidth={1.75} /> : null}候选</Badge> : null}
+                {row.case_sensitive ? <Badge title="区分大小写">Aa</Badge> : null}
+              </span>
+            ) },
+          ]}
+          editor={selectedRow ? (
+            <>
               <header>
                 <h2>词条 {selected! + 1}</h2>
                 <Button variant="default" size="xs" onClick={() => setSelected(null)}>完成</Button>
@@ -224,9 +200,9 @@ export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state
                 ? <Checkbox label="确认候选" checked={selectedRow.candidate_confirmed === true} disabled={locked || !selectedRow.dst.trim()} onChange={(event) => edit(selected!, { candidate_confirmed: event.currentTarget.checked })} />
                 : <span className="rb-term-formal">正式词条</span>}
               <Button color="red" variant="subtle" disabled={locked} onClick={() => { setRows(previous => previous.filter((_, i) => i !== selected)); setSelected(null); setDirty(true); }}>移除</Button>
-            </aside>
+            </>
           ) : null}
-        </div>
+        />
       </div>
       {confirmReload ? <Dialog title="放弃未保存的修改？" confirmText="重新载入" onCancel={() => setConfirmReload(false)} onConfirm={() => { setConfirmReload(false); void reload(); }}>重新载入会用项目中的词库替换当前编辑。</Dialog> : null}
     </div>
