@@ -382,6 +382,205 @@
     text-align: center;
   }
 
+  .rb-page {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .rb-page-scroll {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px 24px;
+  }
+
+  .task-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .task-state[data-active='true']::before,
+  .task-state[data-warning='true']::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--rb-success);
+  }
+
+  .task-state[data-warning='true']::before { background: var(--rb-warning); }
+
+  .task-context {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .task-context svg { flex-shrink: 0; }
+
+  .task-context-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .task-context-button > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-input { flex: 1; }
+
+  .task-language-pair {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+  }
+
+  .task-context-button:hover { background: var(--rb-sidebar-hover); color: var(--rb-text-primary); }
+
+  .rb-panel {
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    padding: 16px;
+  }
+
+  .feed-card { padding: 0; }
+
+  .rb-progress-top,
+  .rb-progress-meta,
+  .rb-feed-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-progress-main,
+  .rb-feed-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+
+  .rb-progress-percent {
+    font-size: 28px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rb-progress-lines,
+  .rb-progress-time,
+  .rb-metric-note,
+  .rb-feed-head > span {
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+  }
+
+  .rb-progress-meta { margin-top: 8px; font-size: 13px; }
+  .rb-progress .mantine-Progress-root { margin-top: 12px; }
+
+  .rb-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .rb-metrics > * { min-width: 0; padding: 0 16px; }
+  .rb-metrics > *:first-child { padding-left: 0; }
+  .rb-metrics > *:last-child { padding-right: 0; }
+  .rb-metrics > * + * { border-left: 1px solid var(--rb-divider); }
+
+  .rb-metric-label { color: var(--rb-text-secondary); font-size: 12px; font-weight: 500; }
+  .rb-metric-value {
+    margin: 4px 0;
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .rb-metric-value span { margin-left: 6px; color: var(--rb-text-secondary); font-size: 13px; font-weight: 400; }
+
+  .rb-feed-head { padding: 12px 16px; }
+  .rb-feed-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .rb-feed-head > span { margin-left: auto; }
+
+  .rb-table { width: 100%; border-collapse: collapse; }
+  .rb-table th {
+    padding: 8px 12px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+  }
+  .rb-table td {
+    padding: 8px 12px;
+    border-top: 1px solid var(--rb-divider);
+    font-size: 13px;
+  }
+  .rb-table tbody tr:hover td { background: var(--rb-surface-hover); }
+  .rb-lang { margin-left: 4px; color: var(--rb-text-secondary); font-weight: 400; }
+
+  .rb-empty-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--rb-text-secondary);
+  }
+  .rb-empty-stack strong { color: var(--rb-text-primary); font-weight: 600; }
+
+  .rb-command-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 56px;
+    padding: 10px 24px;
+    border-top: 1px solid var(--rb-divider);
+    background: var(--rb-surface);
+  }
+
+  .rb-command-spacer { flex: 1; }
+  .rb-command-pool { color: var(--rb-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .rb-stop:disabled,
+  .rb-stop[data-disabled] {
+    border-color: transparent;
+    background: transparent;
+    color: var(--rb-text-disabled);
+  }
+
+  @media (max-width: 900px) {
+    .rb-metrics { grid-template-columns: 1fr; }
+    .rb-metrics > * { padding: 12px 0 0; }
+    .rb-metrics > *:first-child { padding-top: 0; }
+    .rb-metrics > * + * { border-left: 0; border-top: 1px solid var(--rb-divider); }
+    .rb-progress-top { align-items: flex-start; flex-direction: column; }
+  }
+
   @media (max-width: 719px) {
     .rb-setting-row { flex-wrap: wrap; }
     .rb-setting-control { width: 100%; }

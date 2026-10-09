@@ -73,7 +73,7 @@ app.whenReady().then(async () => {
   const input = async (selector, value) => { await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
   const setProgress = async progress => { await js(`__uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'TRANSLATION_UPDATE',data:${JSON.stringify(progress)}})})`); await pause(100); };
-  await assert("document.querySelector('.progress-ring-text').textContent.includes('64.0%')", '翻译快照');
+  await assert("document.querySelector('.rb-progress-percent').textContent.includes('64.0%')", '翻译快照');
   await assert("document.querySelectorAll('.nav-group-label').length===4", '导航工作流分组');
   await assert("document.querySelector('.workspace-link').getAttribute('aria-label')==='后端已连接'", '全局连接状态');
   await assert("document.querySelector('.task-input').textContent.trim()===__uiFixture.values.input_folder && document.querySelector('.workspace-project').title==='C:/ui-check'", '项目身份与翻译输入目录分开展示');
@@ -84,7 +84,7 @@ app.whenReady().then(async () => {
   await setProgress({failed_line_count:0});
   await assert("document.querySelector('.task-state').textContent==='已完成'", '任务完成状态');
   await setProgress({line:0,total_line:0});
-  await assert("document.querySelector('.task-state').textContent==='待开始' && !document.querySelector('.kpi-trend')", '空任务不显示虚假健康状态');
+  await assert("document.querySelector('.task-state').textContent==='待开始' && !document.querySelector('.rb-failed-badge')", '空任务不显示虚假健康状态');
   await setProgress({line:64,total_line:100});
   await capture('new-ui-translation-dark');
   await js("document.querySelector('.task-input').click()"); await pause(180);
@@ -157,7 +157,7 @@ app.whenReady().then(async () => {
     await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
     for (const title of labels) {
       await page(title);
-      const data = await js(`({root:document.documentElement.scrollWidth>innerWidth,panels:Array.from(document.querySelectorAll('.content,.workspace-bar,.task-context,.settings-header,.workbench-header,.translation-footer,.platform-toolbar,.agent-topbar,.agent-controls,.agent-composer,.agent-confirmation,.rb-titlebar')).filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className),controls:Array.from(document.querySelectorAll('button,input,select,textarea')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left<0||r.right>innerWidth+1)}).map(e=>e.getAttribute('aria-label')||e.textContent.trim())})`);
+      const data = await js(`({root:document.documentElement.scrollWidth>innerWidth,panels:Array.from(document.querySelectorAll('.content,.workspace-bar,.task-context,.settings-header,.workbench-header,.translation-footer,.rb-command-bar,.platform-toolbar,.agent-topbar,.agent-controls,.agent-composer,.agent-confirmation,.rb-titlebar')).filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className),controls:Array.from(document.querySelectorAll('button,input,select,textarea')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left<0||r.right>innerWidth+1)}).map(e=>e.getAttribute('aria-label')||e.textContent.trim())})`);
       log('LAYOUT '+width+' '+title+' '+JSON.stringify(data));
       if (data.root || data.panels.length || data.controls.length) throw new Error('布局越界：'+width+' '+title+' '+JSON.stringify(data));
     }
