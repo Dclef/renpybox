@@ -5,7 +5,7 @@
  * 交互状态和响应式细节集中在 styles.css。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notification, Tooltip } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
 import { ChevronDown, Folder, Moon, Sun } from 'lucide-react';
@@ -31,15 +31,10 @@ import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
 import { HonorificPage } from './pages/HonorificPage';
+import { createT, I18nContext } from './i18n';
 import { Dialog, Empty } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
-
-const LINK_TEXT: Record<'connecting' | 'open' | 'closed', string> = {
-  connecting: '正在连接后端',
-  open: '后端已连接',
-  closed: '后端连接已断开',
-};
 
 const TOAST_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
 
@@ -99,11 +94,17 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
     return window.renpy?.onMaximizeChange?.(setMaximized);
   }, []);
 
+  const t = useMemo(() => createT(state.bootLanguage ?? 'ZH'), [state.bootLanguage]);
+  const linkText: Record<'connecting' | 'open' | 'closed', string> = {
+    connecting: t('app_link_connecting'),
+    open: t('app_link_open'),
+    closed: t('app_link_closed'),
+  };
   const expertMode = state.settings?.values.expert_mode === true;
   const collapsed = useMediaQuery('(max-width: 999px)') ?? false;
   const version = state.version?.app_version ?? '';
   const projectPath = String(state.project?.renpy_project_path ?? '');
-  const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || '未绑定项目';
+  const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || t('app_project_unbound_name');
 
   // 翻译页 preflight 判定缺资产时，让用户能直接跳到工作台补齐，
   // 不必自己找侧边栏（对齐 TranslationPage._open_workbench）。
@@ -198,6 +199,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   })();
 
   return (
+    <I18nContext.Provider value={t}>
     <div className="shell rb-shell">
       <header className="rb-titlebar">
         <span className="rb-brand">RenpyBox</span>
@@ -205,7 +207,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         <button
           type="button"
           className="workspace-project rb-project"
-          title={projectPath || '尚未绑定 Ren\'Py 项目，点击前往项目设置'}
+          title={projectPath || t('app_project_unbound_hint')}
           aria-label={`项目设置：${projectName}`}
           disabled={!state.ready}
           onClick={() => navigate('project')}
@@ -215,9 +217,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
           <ChevronDown size={16} strokeWidth={1.75} />
         </button>
         <span className="rb-titlebar-spacer" />
-        <span className="workspace-link rb-link" role="status" aria-label={LINK_TEXT[link]}>
+        <span className="workspace-link rb-link" role="status" aria-label={linkText[link]}>
           <span className="rb-dot" data-state={link} />
-          {link !== 'open' ? <span>{LINK_TEXT[link]}</span> : null}
+          {link !== 'open' ? <span>{linkText[link]}</span> : null}
         </span>
         <div className="rb-window-controls">
           <button type="button" className="rb-titlebar-button" aria-label="最小化" onClick={() => window.renpy?.minimize?.()}>
@@ -238,17 +240,18 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
             <div key={section[0].key} className="rb-nav-section">
               {section.map((item) => {
                 const Icon = NAV_ICONS[item.icon];
+                const label = t(item.labelKey);
                 return (
-                  <Tooltip key={item.key} label={item.label} disabled={!collapsed} position="right">
+                  <Tooltip key={item.key} label={label} disabled={!collapsed} position="right">
                     <button
                       type="button"
                       className="nav-item rb-nav-item"
-                      title={item.label}
+                      title={label}
                       aria-current={isNavCurrent(item, active) ? 'page' : undefined}
                       onClick={() => navigate(item.key)}
                     >
                       <Icon size={18} strokeWidth={1.75} />
-                      <span className="rb-nav-label">{item.label}</span>
+                      <span className="rb-nav-label">{label}</span>
                     </button>
                   </Tooltip>
                 );
@@ -258,12 +261,12 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         </div>
 
         <div className="sidebar-footer rb-sidebar-footer">
-          <Tooltip label={APP_SETTINGS_NAV.label} disabled={!collapsed} position="right">
+          <Tooltip label={t('app_settings_page')} disabled={!collapsed} position="right">
             <button
               type="button"
               className="nav-item rb-icon-button"
-              title={APP_SETTINGS_NAV.label}
-              aria-label={APP_SETTINGS_NAV.label}
+              title={t('app_settings_page')}
+              aria-label={t('app_settings_page')}
               aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
               onClick={() => navigate(APP_SETTINGS_NAV.key)}
             >
@@ -273,17 +276,17 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
               })()}
             </button>
           </Tooltip>
-          <Tooltip label="切换主题" disabled={!collapsed} position="right">
-            <button type="button" className="nav-item rb-icon-button" title="切换主题" aria-label="切换主题" onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}>
+          <Tooltip label={t('app_toggle_theme')} disabled={!collapsed} position="right">
+            <button type="button" className="nav-item rb-icon-button" title={t('app_toggle_theme')} aria-label={t('app_toggle_theme')} onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}>
               {state.theme === 'DARK' ? <Sun size={18} strokeWidth={1.75} /> : <Moon size={18} strokeWidth={1.75} />}
             </button>
           </Tooltip>
-          <Tooltip label="关于与诊断" disabled={!collapsed} position="right">
+          <Tooltip label={t('app_about_diagnostics')} disabled={!collapsed} position="right">
             <button
               type="button"
               className="nav-item rb-icon-button"
-              title="关于与诊断"
-              aria-label="关于与诊断"
+              title={t('app_about_diagnostics')}
+              aria-label={t('app_about_diagnostics')}
               onClick={() => { void window.renpy?.openShell('welcome'); }}
             >
               {(() => {
@@ -312,5 +315,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
     </div>
+    </I18nContext.Provider>
   );
 }

@@ -24,6 +24,7 @@ import type {
   VersionInfo,
   WsEventMessage,
 } from './types';
+import { normalizeLang, type Lang } from './i18n';
 import { useSidecarEvents } from './useSidecarEvents';
 
 export type ThemeName = 'LIGHT' | 'DARK';
@@ -38,6 +39,8 @@ export type LinkState = 'connecting' | 'open' | 'closed';
 
 export interface AppState {
   ready: boolean;
+  /** 启动时读取一次的界面语言。运行中修改语言不会改变界面，重启后生效。 */
+  bootLanguage: Lang | null;
   health: HealthInfo | null;
   version: VersionInfo | null;
   project: ProjectInfo | null;
@@ -84,6 +87,7 @@ let toastSeq = 0;
 
 export function useAppState(): AppState {
   const [ready, setReady] = useState(false);
+  const [bootLanguage, setBootLanguage] = useState<Lang | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [project, setProject] = useState<ProjectInfo | null>(null);
@@ -231,6 +235,11 @@ export function useAppState(): AppState {
     };
   }, [pushToast, link]);
 
+  useEffect(() => {
+    if (!ready || bootLanguage !== null) return;
+    setBootLanguage(normalizeLang(settings?.values.app_language));
+  }, [ready, bootLanguage, settings]);
+
   // 项目被侧边栏之外的地方改动（工具箱、Agent）时，同步标题栏与项目页。
   useEffect(() => {
     return subscribe((event) => {
@@ -299,6 +308,7 @@ export function useAppState(): AppState {
 
   return {
     ready,
+    bootLanguage,
     health,
     version,
     project,
