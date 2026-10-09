@@ -1956,3 +1956,46 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* 工作台分析操作与草稿审核保持可扫读，长文本按字段换行。 */
+@layer app {
+  .rb-workbench-analysis {
+    display: grid;
+    grid-template-columns: minmax(150px, 1fr) auto minmax(160px, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+  }
+  .rb-workbench-analysis > * { min-width: 0; }
+  .rb-workbench-analysis-hint { margin: 10px 0 0; color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; }
+  .rb-workbench-analysis-status {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--rb-accent);
+    background: var(--rb-accent-surface);
+    font-size: 12px;
+  }
+  .rb-workbench-analysis-status > div { min-width: 0; }
+  .rb-workbench-analysis-status strong { display: inline-flex; align-items: center; gap: 8px; margin-right: 12px; }
+  .rb-workbench-analysis-status span, .rb-workbench-analysis-status p { color: var(--rb-text-secondary); overflow-wrap: anywhere; }
+  .rb-workbench-analysis-status p { margin: 4px 0 0; }
+  .rb-workbench-analysis-status > button { flex-shrink: 0; }
+  .rb-workbench-draft-review { display: flex; flex-direction: column; gap: 16px; }
+  .rb-workbench-draft-review h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .rb-workbench-draft-fields { display: grid; gap: 10px; margin: 0; font-size: 13px; }
+  .rb-workbench-draft-fields > div { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
+  .rb-workbench-draft-fields dt { color: var(--rb-text-secondary); }
+  .rb-workbench-draft-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  .rb-workbench-draft-character { padding: 10px 0; border-top: 1px solid var(--rb-divider); }
+  .rb-workbench-draft-character summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+  .rb-workbench-draft-character summary span { margin-left: 12px; color: var(--rb-text-secondary); }
+  .rb-workbench-draft-character[open] summary { margin-bottom: 12px; }
+  .rb-workbench-draft-review .rb-workbench-preview-actions { flex-wrap: wrap; }
+  @media (max-width: 800px) {
+    .rb-workbench-analysis { grid-template-columns: minmax(0, 1fr) auto; }
+    .rb-workbench-draft-fields > div { grid-template-columns: 88px minmax(0, 1fr); }
+  }
+}
