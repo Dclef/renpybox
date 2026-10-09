@@ -1,9 +1,10 @@
 /** 接口管理：复用现有配置与密钥存储，编辑时只提交实际修改的接口字段。 */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Accordion, Button, Checkbox, Menu, NumberInput, Select, Textarea, TextInput } from '@mantine/core';
-import { Cloud, Cpu, Languages, MoreHorizontal, Plus, Settings } from 'lucide-react';
+import { Accordion, ActionIcon, Autocomplete, Button, Checkbox, Menu, Modal, Paper, NumberInput, Select, Textarea, TextInput } from '@mantine/core';
+import { Cloud, Cpu, Languages, MoreHorizontal, Pencil, Plus, Send, Settings } from 'lucide-react';
 
+import { useT } from '../i18n';
 import { getTranslationState, request } from '../api';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, Empty, PageHeader, SettingsGroup } from '../ui';
@@ -96,6 +97,10 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   );
   const activeId = Number(state.settings?.values.activate_platform ?? -1);
   const active = platforms.find((platform) => platform.id === activeId);
+  const t = useT();
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const modelRequest = useRef(0);
   const [keyword, setKeyword] = useState('');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [original, setOriginal] = useState<Editor | null>(null);
@@ -160,6 +165,9 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
 
   function openEditor(platform?: PlatformEntry) {
     if (dirty && !window.confirm('有尚未保存的接口修改，是否放弃？')) return;
+    modelRequest.current += 1;
+    setModels([]);
+    setLoadingModels(false);
     const next = makeEditor(platform);
     setEditor(next);
     setOriginal(next);
@@ -167,6 +175,8 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   }
   function closeEditor() {
     if (!dirty || window.confirm('放弃尚未保存的接口修改？')) {
+      modelRequest.current += 1;
+      setLoadingModels(false);
       setEditor(null);
       setOriginal(null);
     }
@@ -184,6 +194,21 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       setBusy(false);
     }
   }
+  async function loadModels() {
+    if (editor?.id == null) return;
+    const id = ++modelRequest.current;
+    setLoadingModels(true);
+    try {
+      const result = await request<{ models: string[] }>('/api/platforms/' + editor.id + '/models');
+      if (id !== modelRequest.current) return;
+      setModels(result.models);
+      if (!result.models.length) state.pushToast('info', t('platform_models_empty'));
+    } catch (error) {
+      if (id === modelRequest.current) state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      if (id === modelRequest.current) setLoadingModels(false);
+    }
+  }
   async function saveEditor() {
     if (!editor || !editor.name.trim()) return;
     const { id, keys, clearKeys, ...fields } = editor;
@@ -193,6 +218,8 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
     if (clearKeys) payload.api_keys = [];
     else if (keys.trim()) payload.api_keys = keys.split(/\r?\n/).map((key) => key.trim()).filter(Boolean);
     if (await mutate(`/api/platforms${id === null ? '' : `/${id}`}`, id === null ? 'POST' : 'PATCH', payload)) {
+      modelRequest.current += 1;
+      setLoadingModels(false);
       setEditor(null);
       setOriginal(null);
       state.pushToast('success', id === null ? '接口已新增' : '接口已保存');
@@ -275,51 +302,30 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                 {group.items.map((platform) => {
                   const isActive = platform.id === activeId;
                   return (
-                    <div className="rb-platform-row" key={platform.id} data-active={isActive || undefined}>
-                      <div className="rb-platform-row-main">
-                        <div className="rb-platform-row-title">
-                          <strong>{platform.name || '未命名接口'}</strong>
-                          {isActive ? <span className="platform-active-label">使用中</span> : null}
-                          <span className="rb-platform-badge">{platform.api_format || '—'}</span>
-                        </div>
-                        <div className="rb-platform-row-meta">
-                          <span>{modelLabel(platform)}</span>
-                          <span title={platform.api_url}>{platform.api_url || '无需配置地址'}</span>
+                    <Paper withBorder radius="md" className="rb-platform-card" key={platform.id} data-active={isActive || undefined}
+                      title={[platform.name, platform.model, platform.api_url].filter(Boolean).join(' · ')}
+                      onDoubleClick={() => { if (!disabled) openEditor(platform); }}>
+                      <div className="rb-platform-card-head">
+                        <strong>{platform.name || '未命名接口'}</strong>
+                        <div className="platform-row-actions">
+                          <ActionIcon variant="subtle" color="gray" size={28} aria-label={t('platform_test')} title={t('platform_test')}
+                            loading={testing === platform.id} disabled={disabled} onClick={() => void startTest(platform)}><Send size={15} /></ActionIcon>
+                          <ActionIcon variant="subtle" color="gray" size={28} aria-label={t('platform_edit')} title={t('platform_edit')}
+                            disabled={disabled} onClick={() => openEditor(platform)}><Pencil size={15} /></ActionIcon>
+                          <Menu position="bottom-end" withinPortal>
+                            <Menu.Target><ActionIcon variant="subtle" color="gray" size={28} aria-label={(platform.name || '') + '更多'} disabled={disabled}><MoreHorizontal size={16} /></ActionIcon></Menu.Target>
+                            <Menu.Dropdown>
+                              <Menu.Item disabled={disabled || isActive} onClick={() => void mutate('/api/platforms/' + platform.id + '/activate', 'POST')}>{isActive ? '已启用' : '启用'}</Menu.Item>
+                              <Menu.Item disabled={disabled} onClick={() => openEditor(platform)}>{t('platform_edit')}</Menu.Item>
+                              <Menu.Item disabled={disabled} onClick={() => { openEditor(platform); window.setTimeout(() => editorRef.current?.querySelector<HTMLButtonElement>('.mantine-Accordion-control')?.click(), 50); }}>{t('platform_parameters')}</Menu.Item>
+                              <Menu.Divider />
+                              <Menu.Item color="red" disabled={disabled} onClick={() => setDeleting(platform)}>删除</Menu.Item>
+                            </Menu.Dropdown>
+                          </Menu>
                         </div>
                       </div>
-                      <div className="platform-row-actions">
-                        <Button size="xs" variant="default" disabled={disabled} onClick={() => void startTest(platform)}>
-                          {testing === platform.id ? '测试中…' : '测试'}
-                        </Button>
-                        {isActive ? (
-                          <Button size="xs" variant="default" disabled title="当前已在使用">已启用</Button>
-                        ) : (
-                          <Button size="xs" disabled={disabled} onClick={() => void mutate(`/api/platforms/${platform.id}/activate`, 'POST')}>
-                            启用
-                          </Button>
-                        )}
-                        <Menu position="bottom-end" withinPortal>
-                          <Menu.Target>
-                            <Button size="xs" variant="subtle" aria-label={`${platform.name || '未命名接口'}更多`} disabled={disabled}>
-                              <MoreHorizontal size={16} strokeWidth={1.75} />
-                              更多
-                            </Button>
-                          </Menu.Target>
-                          <Menu.Dropdown>
-                            <Menu.Item disabled={disabled} onClick={() => openEditor(platform)}>编辑</Menu.Item>
-                            <Menu.Item
-                              color="red"
-                              disabled={disabled}
-                              onClick={() => {
-                                if (!dirty || window.confirm('删除接口会关闭编辑面板，是否放弃尚未保存的修改？')) setDeleting(platform);
-                              }}
-                            >
-                              删除
-                            </Menu.Item>
-                          </Menu.Dropdown>
-                        </Menu>
-                      </div>
-                    </div>
+                      <div className="rb-platform-card-meta"><span className="rb-platform-badge">{platform.api_format || '—'}</span><span>{modelLabel(platform)}</span>{isActive && <i aria-label="使用中" title="使用中" />}</div>
+                    </Paper>
                   );
                 })}
               </SettingsGroup>
@@ -336,6 +342,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
         </div>
 
         {editor ? (
+          <Modal opened onClose={closeEditor} title={editor.id === null ? '新增接口' : '编辑接口'} size="lg" centered closeOnClickOutside={false}>
           <form
             ref={editorRef}
             className="platform-editor"
@@ -383,14 +390,15 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
               }}
             />
             {!machine ? (
-              <TextInput
-                label="模型名称"
-                required
-                maxLength={256}
-                value={editor.model}
-                onChange={(event) => setEditor({ ...editor, model: event.currentTarget.value })}
-                placeholder="服务商提供的模型 ID"
-              />
+              <>
+                <Autocomplete label="模型名称" required maxLength={256} data={models}
+                  value={editor.model} onChange={(model) => setEditor({ ...editor, model })}
+                  placeholder="服务商提供的模型 ID" limit={50} />
+                <Button type="button" variant="default" loading={loadingModels}
+                  disabled={disabled || editor.id === null || editor.api_url !== original?.api_url || editor.api_format !== original?.api_format || !!editor.keys.trim() || editor.clearKeys}
+                  onClick={() => void loadModels()}>{t('platform_load_models')}</Button>
+                <span className="rb-metric-note">{t('platform_models_saved_hint')}</span>
+              </>
             ) : null}
             {!machine ? (
               <TextInput
@@ -477,6 +485,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
               </Button>
             </div>
           </form>
+          </Modal>
         ) : null}
       </div>
 

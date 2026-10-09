@@ -9,7 +9,7 @@
  *   - RENPYBOX_SIDECAR_EXTERNAL=1 → 只等待，不启动、不杀死
  *   - 本进程 spawn 出来的 → owned=true，退出时才 taskkill
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -32,6 +32,19 @@ function externalMode() {
 
 // sidecar 跑真实业务逻辑，需要项目自己的解释器（3.10，openpyxl / tiktoken /
 // unrpa / opencc / translators 依赖链都在那）。
+function importsSidecarDeps(executable) {
+  try {
+    const result = spawnSync(executable, ['-c', 'import fastapi, uvicorn'], {
+      stdio: 'ignore',
+      timeout: 20000,
+      windowsHide: true,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function resolvePython(sidecarDir = DEFAULT_SIDECAR_DIR) {
   const configured = process.env.RENPYBOX_PYTHON || process.env.RENPYBOX_PROJECT_PYTHON;
   if (configured) {
@@ -44,8 +57,15 @@ function resolvePython(sidecarDir = DEFAULT_SIDECAR_DIR) {
     path.join(DESKTOP_ROOT, '..', '.venv', executable),
     path.join(sidecarDir, '.venv', executable),
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs/Python/Python310/python.exe'),
-  ];
-  return candidates.find(candidate => candidate && existsSync(candidate)) || (process.platform === 'win32' ? 'python' : 'python3');
+    process.platform === 'win32' ? 'C:\\Program Files\\Python\\python3.10\\python.exe' : '',
+    process.platform === 'win32' ? 'python' : 'python3',
+  ].filter(Boolean);
+  const ready = candidates.find((candidate) => {
+    if (candidate !== 'python' && candidate !== 'python3' && !existsSync(candidate)) return false;
+    return importsSidecarDeps(candidate);
+  });
+  if (!ready) throw new Error('没有找到已安装 fastapi 的 Python。请设置 RENPYBOX_PYTHON 指向项目解释器。');
+  return ready;
 }
 
 export class Sidecar {

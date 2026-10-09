@@ -2,22 +2,24 @@
 import { useEffect, useState } from 'react';
 import { Button, Checkbox, TextInput } from '@mantine/core';
 
+import { request } from '../api';
+import { useT } from '../i18n';
 import type { AppState } from '../useAppState';
 import { Banner, Empty } from '../ui';
 
 function readTitles(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item ?? ''));
+  return value.map((item) => typeof item === 'string' ? item : item && typeof item === 'object' && 'src' in item ? String(item.src ?? '') : '');
 }
-
-const DEFAULT_TITLES = ['mr', 'mrs', 'ms', 'miss', 'dr', 'doctor', 'prof', 'professor', 'sir', 'madam', 'lady', 'master'];
 
 export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: boolean) => void }) {
   const { state, onDirtyChange } = props;
+  const t = useT();
+  const [loadingDefaults, setLoadingDefaults] = useState(false);
   const [titles, setTitles] = useState<string[]>(() => readTitles(state.settings?.values.honorific_placeholder_titles));
   const [enabled, setEnabled] = useState(state.settings?.values.honorific_placeholder_bridge_enable !== false);
   const [dirty, setDirty] = useState(false);
-  const locked = state.saving || state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier;
+  const locked = loadingDefaults || state.saving || state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
 
   useEffect(() => {
     if (dirty) return;
@@ -30,40 +32,9 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
     return () => onDirtyChange?.(false);
   }, [dirty, onDirtyChange]);
 
-  const reload = () => {
-    if (dirty && !window.confirm('放弃尚未保存的称呼词修改并重新加载？')) return;
-    setTitles(readTitles(state.settings?.values.honorific_placeholder_titles));
-    setEnabled(state.settings?.values.honorific_placeholder_bridge_enable !== false);
-    setDirty(false);
-  };
-
-  const deduplicate = () => {
-    const seen = new Set<string>();
-    setTitles((previous) => previous.map((title) => title.trim()).filter((title) => {
-      const key = title.toLocaleLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }));
-    setDirty(true);
-  };
-
-  const clearAll = () => {
-    if (!titles.length || window.confirm('清空全部称呼词？')) {
-      setTitles([]);
-      setDirty(true);
-    }
-  };
-
-  const restoreDefaults = () => {
-    setTitles([...DEFAULT_TITLES]);
-    setDirty(true);
-  };
-
-  const save = () => {
-    const cleaned = titles.map((title) => title.trim()).filter(Boolean);
-    state.setSetting('honorific_placeholder_titles', cleaned);
-    state.setSetting('honorific_placeholder_bridge_enable', enabled);
+  const save = async () => {
+    const cleaned = titles.map((title) => title.trim().toLowerCase()).filter(Boolean);
+    if (!await state.saveSettings({ honorific_placeholder_titles: cleaned, honorific_placeholder_bridge_enable: enabled })) return;
     setTitles(cleaned);
     setDirty(false);
     state.pushToast('success', `已保存 ${cleaned.length} 个称呼词`);
@@ -78,11 +49,25 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
         </div>
         <Checkbox label="启用称呼变量桥接" checked={enabled} disabled={locked} onChange={(event) => { setEnabled(event.currentTarget.checked); setDirty(true); }} />
         <span className="rb-toolbar-spacer" />
-        <Button variant="default" disabled={locked} onClick={reload}>从配置加载</Button>
         <Button variant="default" disabled={locked} onClick={() => { setTitles((previous) => ['', ...previous]); setDirty(true); }}>新增称呼词</Button>
-        <Button variant="default" disabled={locked || !titles.length} onClick={deduplicate}>去重</Button>
-        <Button variant="default" disabled={locked || !titles.length} onClick={clearAll}>清空全部</Button>
-        <Button variant="default" disabled={locked} onClick={restoreDefaults}>恢复默认</Button>
+        <Button variant="default" disabled={locked || !titles.length} onClick={() => {
+          setTitles([...new Set(titles.map((title) => title.trim().toLowerCase()).filter(Boolean))]); setDirty(true);
+        }}>{t('rules_deduplicate')}</Button>
+        <Button variant="default" disabled={locked} onClick={async () => {
+          if (dirty && !window.confirm(t('rules_reload_confirm'))) return;
+          await state.reloadSettings(); setDirty(false);
+        }}>{t('rules_reload')}</Button>
+        <Button variant="default" disabled={locked} onClick={async () => {
+          if (!window.confirm(t('rules_defaults_confirm'))) return;
+          setLoadingDefaults(true);
+          try { const result = await request<{ titles: string[] }>('/api/settings/honorific-defaults'); setTitles(result.titles); setDirty(true); }
+          catch (error) { state.pushToast('error', error instanceof Error ? error.message : String(error)); }
+          finally { setLoadingDefaults(false); }
+        }}>{t('rules_defaults')}</Button>
+        <Button color="red" variant="subtle" disabled={locked || !titles.length} onClick={() => {
+          if (!window.confirm(t('rules_clear_confirm'))) return;
+          setTitles([]); setEnabled(false); setDirty(true);
+        }}>{t('rules_clear')}</Button>
         <Button disabled={locked || !dirty} onClick={save}>{state.saving ? '保存中…' : '保存'}</Button>
       </div>
       {locked && state.translation.engine_status !== 'IDLE' ? <Banner tone="info">任务执行期间只读，结束后再保存。</Banner> : null}

@@ -1,20 +1,7 @@
-/**
- * Ren'Py 工具箱 —— 对齐 frontend/RenpyToolbox/RenpyToolboxPage.py 与 widget/ItemCard.py 的实测几何。
- *
- * 实测（nav=256、页宽 1023）：
- *   头部：左侧文字块 639x33 @ (24,24)（TitleLabel 18px + CaptionLabel 12px），
- *         **右侧 SearchLineEdit 320x33 @ (679,24)**，placeholder = toolbox_search_tools
- *         —— 搜索框属于这一页，不在导航栏（导航栏没有搜索框）。
- *   滚动区 975x664 @ (24,73)。
- *   小节：节头 975x14 = 组名 StrongBodyLabel 14px + 计数 CaptionLabel 12px（右对齐）；
- *         卡片容器在其下 20px；卡行间距 12。
- *   卡片 ItemCard 316x132、3 列、列距 14：
- *         头部 286x30 @ (15,13) = 序号码 22x22（fpx 11）+ 图标 20x20（间距 9）
- *         + 标题 SubtitleLabel 14px + 右侧箭头 36x30
- *         说明两行截断（TwoLineElideLabel 口径）。
- */
+/** 工具箱：沿用旧版四组分类与卡片入口，未接入工具明确提示使用原桌面版。 */
 
 import { useMemo, useState } from 'react';
+import { useT } from '../i18n';
 import { TextInput } from '@mantine/core';
 import { ChevronRight, Search } from 'lucide-react';
 
@@ -23,6 +10,11 @@ import type { AppState } from '../useAppState';
 import type { PageKey } from '../nav';
 import { Banner, Dialog, Empty, PageHeader } from '../ui';
 
+const TOOL_PAGES: Record<string, PageKey> = {
+  local_glossary: 'glossary', text_preserve: 'preserve', honorific_placeholder: 'honorific',
+  proofreading: 'proofreading', continue_translation: 'translation',
+};
+
 /** 把 Lucide SVG 源码塞进内联 SVG；颜色靠 currentColor 跟随主题。 */
 function InlineSvg(props: { markup: string }) {
   return <span className="tool-card-icon" dangerouslySetInnerHTML={{ __html: props.markup }} />;
@@ -30,6 +22,7 @@ function InlineSvg(props: { markup: string }) {
 
 function ToolCard(props: { tool: ToolSpec; blocked: boolean; onOpen: (tool: ToolSpec) => void }) {
   const { tool, blocked, onOpen } = props;
+  const t = useT();
   return (
     <button
       type="button"
@@ -43,6 +36,7 @@ function ToolCard(props: { tool: ToolSpec; blocked: boolean; onOpen: (tool: Tool
       <span className="rb-tool-copy">
         <span className="rb-tool-title">{tool.title}</span>
         <span className="rb-tool-desc">{tool.description}</span>
+        {!TOOL_PAGES[tool.key] && <span className="rb-tool-availability">{t('tool_pending')}</span>}
         {blocked ? <span className="rb-tool-desc">需先选择游戏目录</span> : null}
       </span>
       <ChevronRight size={16} strokeWidth={1.75} />
@@ -56,11 +50,8 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
   const [query, setQuery] = useState('');
 
   const openTool = (tool: ToolSpec) => {
-    if (tool.key === 'local_glossary') { onNavigate('glossary'); return; }
-    if (tool.key === 'text_preserve') { onNavigate('preserve'); return; }
-    if (tool.key === 'honorific_placeholder') { onNavigate('honorific'); return; }
-    if (tool.key === 'proofreading') { onNavigate('proofreading'); return; }
-    if (tool.key === 'continue_translation') { onNavigate('translation'); return; }
+    const page = TOOL_PAGES[tool.key];
+    if (page) { onNavigate(page); return; }
     setSelected(tool);
   };
   const hasProject = Boolean(state.project?.renpy_project_path);

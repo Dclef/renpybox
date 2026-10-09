@@ -5,17 +5,17 @@ M0 的性能验证已结束，当前正在迁移主界面；旧性能门禁与 V
 
 ## 当前进度（2026-10-08）
 
-翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、术语表、静态提示词预览、Agent 助手、应用更新（复用 VersionManager）。AI 校对、工具箱执行页等仍有迁移缺口。审计缺口见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)；2026-10-09 接到壳上的行为和未完成项见 [补充说明](SUPPLEMENT-2026-10-09.md)；表格组件见 [Table UI 设计规范](TABLE-UI-SPEC.md)。
+翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、术语表、静态提示词预览、Agent 助手、应用更新（复用 VersionManager）。AI 校对与润色支持选中条目、确认、取消及任务结果查看；22 项工具仍只有说明入口，主流程和资产工具仍有迁移缺口。审计缺口见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)；2026-10-09 接到壳上的行为和未完成项见 [补充说明](SUPPLEMENT-2026-10-09.md)；表格组件见 [Table UI 设计规范](TABLE-UI-SPEC.md)。
 
 开发时网页与桌面共用同一 Python sidecar：`npm run dev` / `npm run dev:web` 都由脚本托管后端；关掉 Electron 不会杀死后端，只有 Ctrl+C 结束开发脚本时才停。
 
-下方的 PyQt 尺寸表是迁移时的历史对照记录。当前外壳使用 38px 标题栏、224px 展开导航、60px 折叠导航；视觉调整以现有 React/CSS 实现为准。
+下方的 PyQt 尺寸表是迁移时的历史对照记录。当前外壳使用 38px 标题栏、256px 展开导航、56px 折叠导航；视觉调整以现有 React/CSS 实现为准。
 
-2026-10-09 的 UI 调整按翻译工作区、项目配置、工具与资产、翻译设置组织导航；应用设置、主题和诊断入口固定在侧栏底部。全局项目面包屑与连接状态跨页面保留，项目入口继续保护未保存编辑。
+2026-10-09 的 UI 调整按翻译工作区、项目配置、工具与资产、翻译设置组织导航；应用设置、主题和诊断入口固定在侧栏底部。标题栏项目入口与连接状态跨页面保留，项目入口继续保护未保存编辑。
 
 侧栏恢复为四段，校对台与词表只从工具箱进入，并补上打开与保存文件对话框以及任务进度推送。
 
-翻译页展示实际输入目录、语言方向和当前接口，点击目录或接口可进入对应设置；输入目录独立于 Ren'Py 项目身份展示，不修改用户选择的路径。进度、吞吐与流水使用一个工作区表面；新任务、可继续、有失败项及已完成状态分别显示，明暗主题与减少动态效果设置共用同一套样式。自检覆盖这些入口、状态和五种窗口宽度。
+翻译页展示实际输入目录、语言方向和当前接口，点击目录或接口可进入对应设置；输入目录独立于 Ren'Py 项目身份展示，不修改用户选择的路径。输入/输出 Token 与线程池独立显示；进度环与吞吐面板左右排列，下方为翻译流水；新任务、可继续、有失败项及已完成状态分别显示，明暗主题与减少动态效果设置共用同一套样式。自检覆盖这些入口、状态和五种窗口宽度。
 
 ### 工作台补齐（2026-10-10）
 
@@ -57,20 +57,22 @@ desktop/
 ├── scripts/dev.mjs        一条命令拉起 vite + Electron（npm run dev）
 ├── renderer/              React + TS 主 UI（产品界面）
 │   ├── src/
-│   │   ├── App.tsx        外壳：44px 标题栏 + 导航（228 展开 / 48 折叠）+ toast
+│   │   ├── App.tsx        外壳：38px 标题栏 + 导航（256 展开 / 56 折叠）+ Mantine 通知
 │   │   ├── nav.ts         导航结构，镜像 AppFluentWindow.add_pages()
 │   │   ├── tools.ts       27 个工具，镜像 ToolRegistry.TOOL_SPECS
-│   │   ├── icons.tsx      导航 / 命令栏 / 标题栏图标（按 FluentIcon 语义手写内联 SVG）
+│   │   ├── icons.tsx      lucide 导航图标与自绘窗口按钮
 │   │   ├── icons/toolbox/ 工具箱 25 个 Lucide SVG，直接复用项目自带资源
-│   │   ├── ProgressRing.tsx   进度环（122px / strokeWidth 8），对齐 qfluentwidgets ProgressRing
-│   │   ├── Waveform.tsx       吞吐波形（50x20 柱 / 160px 高），对齐 widget/WaveformWidget.py
+│   │   ├── Waveform.tsx       吞吐波形，复用旧版绘制口径
 │   │   ├── settingsSchema.ts  设置页字段 schema（按 Config 真实类型分派）
 │   │   ├── useAppState.ts 唯一状态源：配置乐观更新 + 事件分发 + toast
 │   │   ├── useSidecarEvents.ts 全应用单条 WS（指数退避重连）
-│   │   ├── theme.ts       ThemeTokens.py → CSS 变量
+│   │   ├── theme.ts       灰阶与强调色的语义令牌
+│   │   ├── mantineTheme.ts Mantine 主题与 CSS 变量映射
+│   │   ├── styles/        分层样式（legacy 尚未完全清理）
+│   │   ├── components/    DataSheet 与工具页框架
 │   │   ├── preload.d.ts   window.renpy 桥接类型
 │   │   ├── pages/         翻译 / 项目 / 工具箱 / 工作台 / 设置
-│   │   └── ui.tsx         Card / FieldRow / Switch / Dialog / Banner 等
+│   │   └── ui.tsx         Mantine 设置控件 / PageHeader / Dialog / Banner 等
 │   └── index.html         含严格 CSP（connect-src 指向 sidecar 端口）
 ├── PERF-REPORT.md         M0 的 React vs Vue 实测报告（保留作虚拟化决策依据）
 └── run-dev.sh / run-dev-api.sh / run-dev.cmd
@@ -113,8 +115,8 @@ vite、`main.js` 与 `index.html` 的 CSP 三处必须一致。
 - **主题**沿用 `widget/ThemeTokens.py` 的语义令牌命名，渲染端在 `theme.ts` 定义独立配色并映射成 `--rb-*` CSS 变量，组件不写死颜色。切换主题只改 `config.theme` 一个字段（`GET/PATCH /api/settings`）。
 - **文案**来自 `renpybox/module/Localizer/LocalizerZH.py`，导航项、KPI、流水表头的文字与该文件同名条目逐字一致（含 `{PERCENT:.1f}%` 这类占位符的格式）；不新造术语。
 - **操作接真实业务**：接口、工作台、校对和词库均复用 Python 业务层；尚未迁移的工具明确说明使用条件与限制。
-- **图标不另画一套**：工具箱 25 个图标直接内联项目自带的 `resource/icons/toolbox/*.svg`（Lucide），与 `ToolIcon.py` 的映射逐项对应；导航与命令栏在 PyQt 侧是字体图标（`FluentIcon.*`），渲染端没有那套字体，按语义在 `icons.tsx` 手写等效内联 SVG；Windows 标题栏那四个窗口按钮另用 10 视框（24 视框缩放会失真）。
-- **视觉口径照搬 `widget/ThemeHelper.py`**：卡片 8px 圆角 + 1px 描边、hover/pressed 走 `surface_hover`/`surface_pressed`/`border_strong`；内嵌块 6px + `surface_subtle`；工具卡固定 132px 高 / 260px 最小宽；流程序号是 accent 圆胶囊；表格交替行 `surface_subtle`、选中 `accent_surface`、表头 600 字重；滚动条滑块可见宽仅 3px（11px 轨道 + 4px 透明描边裁掉）。
+- **图标**：工具箱复用项目自带 Lucide SVG；导航和命令栏用 lucide-react；窗口按钮保留现有自绘实现。
+- **设计口径**：保留 Mantine 的中性灰阶与蓝色主题，以旧 Qt 的页面组织和操作流程为基准。侧栏四段，工具箱分组卡片；翻译页保留进度环和吞吐图；校对表格支持长文本换行和选中条目的 AI 操作。颜色由 theme.ts / mantineTheme.ts 统一管理。
 
 ## 原 Qt 外壳几何对照（历史记录）
 
@@ -218,7 +220,7 @@ PyQt 侧**没有可读的 QSS** —— qfluentwidgets 把样式编译进 6.4MB �
 
 1. **渲染进程只渲染** —— IO、解析、翻译全在 Python sidecar
 2. **数据流式到达** —— 解析器生成器化 + 分批推送，不再「全量加载完再显示」
-3. **长列表限制渲染量** —— 校对每页 50 条、词库每页 40 条；侧边栏和编辑器只渲染当前页面
+3. **长列表限制渲染量** —— 校对每页 25 / 50 / 100 条、词库每页 40 条；侧边栏和编辑器只渲染当前页面
 4. **UI 线程 16ms 预算** —— 超过就离开主线程；批次进缓冲区，由 `requestAnimationFrame` 统一 flush，绝不在每条消息到达时 `setState`
 
 ## CSP 与端口
@@ -229,3 +231,19 @@ sidecar 端口被写死进构建产物，改端口要同时改 `index.html` 与 
 ## UI 集成自检
 
 先启动 `npm run dev:renderer`，再以 Electron 主进程运行 `scripts/check-ui.cjs`（启动前清除 `ELECTRON_RUN_AS_NODE`）。可用 `RENPYBOX_UI_URL` 改开发服务器地址，`RENPYBOX_UI_CAPTURE_DIR` 指定截图与日志目录。自检使用受控 HTTP/WS 快照，不读写真实项目；实际持久化由 `tests/api/test_platforms.py`、`test_workbench.py`、`test_proofreading.py` 与 `test_prompt_preview.py` 的临时项目测试覆盖。
+
+## 校对与润色操作
+
+从工具箱打开“检查与润色”，勾选当前页中的译文，再点击“AI 校对”或“AI 润色”。确认框说明本次范围和 Token 消耗；只有确认后才请求当前接口。只处理符合条件的条目，其余由后端返回跳过数量。
+
+处理期间缓存只读，可以取消；完成后自动刷新译文。“质量报告”同时显示翻译失败/降级/行数异常摘要与 AI 校对/润色处理记录，不把二者混为一谈。
+
+表格单击选行，Ctrl 增减选择、Shift 连选；双击原文/译文或按 F2 打开双语编辑弹窗，Ctrl+Enter 保存。右键在鼠标旁弹出；可重译选中行、复制原文/译文/双语、定位译文上下文。达到重试阈值时可人工确认译文无误。复制双语为制表符分隔文本，可粘贴到 Excel；不提供公式、填充柄等电子表格功能。
+
+“导出译文”先保存缓存，再按原格式写回当前实际输出目录中的全部译文，不受页面筛选限制。重译会消耗当前接口额度；失败行保留原译文，取消后等待已发出的请求结束并保存成功结果。
+
+校对读取复用当前项目只读快照；缓存文件或设置变化自动失效。普通翻页只检查当前页，首次启用问题筛选需要扫描候选条目。
+
+## 界面检查
+
+已有开发服务器时，以 Electron 运行 scripts/check-ui.cjs；HTTP/WS 使用受控数据，测试不调用付费接口。RENPYBOX_UI_CAPTURE_ALL=1 会在检查通过后额外生成 14 个页面各两种主题的截图。此检查覆盖五种宽度，不替代真实游戏和安装包验收。

@@ -133,6 +133,8 @@ export interface TranslationState {
   running: { running: number; max: number };
   progress: Record<string, unknown>;
   active_output_folder: string;
+  progress_source?: 'none' | 'runtime' | 'cache';
+  progress_error?: string;
 }
 
 export interface TranslationStartResponse {

@@ -203,3 +203,18 @@ def test_platform(request: Request, platform_id: int) -> dict:
         engine.release_status(Engine.Status.TESTING)
         raise HTTPException(status_code = 500, detail = "接口测试启动失败，请重试。") from None
     return {"accepted": True}
+
+@router.get("/{platform_id}/models")
+def read_models(request: Request, platform_id: int) -> dict:
+    """读取已保存接口的模型列表；凭据留在后端，不回传 SDK 异常内容。"""
+    from module.Engine.API.ModelList import list_models
+
+    with _WRITE_LOCK:
+        _idle()
+        platform = copy.deepcopy(_platform(request.app.state.config, platform_id))
+        keys = SecretStore.get().resolve_keys(platform)
+    try:
+        models = list_models(platform.get("api_url", ""), keys[0] if keys else "", platform.get("api_format", "OpenAI"))
+    except Exception:
+        raise HTTPException(status_code=502, detail="读取模型列表失败，请检查已保存的接口地址、密钥和网络连接。") from None
+    return {"models": models}

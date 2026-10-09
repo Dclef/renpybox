@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import dataclasses
+import copy
+import threading
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,6 +33,7 @@ SECRET_FIELDS = frozenset({
 })
 
 REDACTED = "***"
+_SETTINGS_LOCK = threading.Lock()
 
 
 def _is_secret(field_name: str) -> bool:
@@ -70,7 +73,18 @@ def read_settings(request: Request) -> SettingsResponse:
 
 @router.patch("", response_model = SettingsResponse)
 def patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
-    config = request.app.state.config
+    with _SETTINGS_LOCK:
+        return _patch_settings(request, patch)
+
+
+def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
+    original = request.app.state.config
+    config = copy.deepcopy(original)
+    if set(patch.values) & {"text_preserve_data", "text_preserve_enable", "honorific_placeholder_titles", "honorific_placeholder_bridge_enable"}:
+        from module.Engine.Engine import Engine
+        engine = Engine.get()
+        if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier() or engine.has_single_tasks():
+            raise HTTPException(status_code=409, detail="任务执行期间不能修改翻译规则。")
     known = {f.name for f in dataclasses.fields(config)}
 
     for key, value in patch.values.items():
@@ -98,9 +112,21 @@ def patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
     config._normalise_runtime_paths()
 
     if patch.save:
-        config.save()
-
+        try:
+            config.save(strict=True)
+        except Exception:
+            raise HTTPException(status_code=500, detail="配置保存失败，修改未生效，请检查写入权限。") from None
+    for field in dataclasses.fields(config):
+        setattr(original, field.name, getattr(config, field.name))
     return read_settings(request)
+
+
+@router.get("/honorific-defaults")
+def honorific_defaults() -> dict:
+    """返回翻译引擎的内置称呼词，只读，不覆盖用户配置。"""
+    from module.TextProcessor import TextProcessor
+    return {"titles": list(TextProcessor.DEFAULT_HONORIFIC_TITLES)}
+
 @router.get("/prompt-preview")
 def preview_prompt(request: Request) -> dict[str, str]:
     """读取当前配置的基础提示、写作风格和固定工程协议，不发起模型请求。"""
