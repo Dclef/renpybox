@@ -508,3 +508,186 @@ def test_job_manager_cancel_running_task() -> None:
         manager.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_job_cancel_stops_running_worker() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        manager = JobManager()
+        job = manager.create("slow")
+        reached = []
+        started = asyncio.Event()
+
+        async def worker(j):
+            started.set()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                reached.append("cancelled")
+                raise
+            reached.append("after")
+
+        await manager.run(job.id, worker)
+        await started.wait()
+        await asyncio.sleep(0)
+        assert manager.cancel(job.id) is True
+        await asyncio.sleep(0)
+        assert reached == ["cancelled"]
+        assert manager.snapshot(job.id)["status"] == JobStatus.CANCELLED.value
+        manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_job_cancel_is_not_overwritten_by_worker_return() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        manager = JobManager()
+        job = manager.create("slow")
+
+        async def worker(j):
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                return "swallowed"
+
+        await manager.run(job.id, worker)
+        assert manager.cancel(job.id) is True
+        await asyncio.sleep(0)
+        assert manager.snapshot(job.id)["status"] == JobStatus.CANCELLED.value
+        manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_job_run_after_cancel_stays_cancelled() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        manager = JobManager()
+        job = manager.create("demo")
+        called = []
+
+        async def worker(j):
+            called.append(j.id)
+
+        assert manager.cancel(job.id) is True
+        await manager.run(job.id, worker)
+        await asyncio.sleep(0)
+        assert called == []
+        assert manager.snapshot(job.id)["status"] == JobStatus.CANCELLED.value
+
+    asyncio.run(scenario())
+
+
+def test_job_progress_is_throttled() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        sink = []
+        manager = JobManager(publish = sink.append, min_interval = 0.2)
+        job = manager.create("demo", total = 100)
+
+        async def worker(j):
+            for index in range(100):
+                manager.progress(job.id, done = index + 1)
+
+        await manager.run(job.id, worker)
+        await asyncio.sleep(0)
+        progress = [item for item in sink if item["job"]["status"] == "running" and item["job"]["done"] > 0]
+        assert len(progress) <= 2
+        assert any(item["job"]["status"] == "done" for item in sink)
+
+    asyncio.run(scenario())
+
+
+def test_job_publish_payload_is_json_safe() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        sink = []
+        manager = JobManager(publish = sink.append)
+        job = manager.create("demo")
+
+        async def worker(j):
+            return {"ok": True}
+
+        await manager.run(job.id, worker)
+        await asyncio.sleep(0)
+        assert sink
+        for item in sink:
+            json.dumps(item)
+            assert "result" not in item["job"]
+            assert "cancel_event" not in item["job"]
+
+    asyncio.run(scenario())
+
+
+def test_job_snapshot_after_event_wait() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        manager = JobManager()
+        job = manager.create("wait")
+
+        async def worker(j):
+            try:
+                await asyncio.wait_for(j.cancel_event.wait(), timeout = 0.01)
+            except asyncio.TimeoutError:
+                return "ok"
+
+        await manager.run(job.id, worker)
+        await asyncio.sleep(0.05)
+        manager.snapshot(job.id)
+
+    asyncio.run(scenario())
+
+
+def test_job_publish_error_does_not_break_runner() -> None:
+    import asyncio
+
+    async def scenario() -> None:
+        def explode(_payload):
+            raise RuntimeError("推送失败")
+
+        manager = JobManager(publish = explode)
+        job = manager.create("demo")
+
+        async def worker(j):
+            return 1
+
+        await manager.run(job.id, worker)
+        await asyncio.sleep(0)
+        assert manager.snapshot(job.id)["status"] == JobStatus.DONE.value
+
+    asyncio.run(scenario())
+
+
+def test_job_push_reaches_ws_client() -> None:
+    with _client() as client:
+        with client.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert hello["type"] == "hello"
+            client.app.state.jobs.create("demo")
+            seen = None
+            deadline = 30
+            while deadline > 0:
+                message = ws.receive_json()
+                if message.get("type") == "job":
+                    seen = message
+                    break
+                deadline -= 1
+            assert seen is not None and seen["job"]["kind"] == "demo", seen
+
+
+def test_jobs_rest_contract_unchanged() -> None:
+    with _client() as client:
+        job = client.app.state.jobs.create("demo")
+        listed = client.get("/api/jobs").json()
+        assert set(listed) == {"jobs"}
+        match = next(item for item in listed["jobs"] if item["id"] == job.id)
+        assert "status" in match and "progress" in match
+        missing = client.get("/api/jobs/不存在的id")
+        assert missing.status_code == 404

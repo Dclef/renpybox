@@ -33,9 +33,10 @@ const STATUS_LABELS: Record<string, string> = {
   TRANSLATED_IN_PAST: '已有译文', EXCLUDED: '已排除', DUPLICATED: '重复',
 };
 
-export function ProofreadingPage({ state, onDirtyChange }: {
+export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   state: AppState;
   onDirtyChange?: (dirty: boolean) => void;
+  embedded?: boolean;
 }) {
   const [data, setData] = useState<ProofreadingData | null>(null);
   const [query, setQuery] = useState('');
@@ -171,19 +172,23 @@ export function ProofreadingPage({ state, onDirtyChange }: {
     setDraft(row.dst);
   };
 
+  const actions = (
+    <>
+      <Button variant="default" disabled={loading || saving} onClick={reload}>刷新译文</Button>
+      <Button variant="default" disabled={readonly || loading || saving || !data?.items.length} onClick={() => { if (!data) return; setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? data.items.filter((row) => selected.has(row.id)) : data.items }); setReplaceOpen(true); }}>批量替换</Button>
+    </>
+  );
+
   return (
-    <div className="proofreading-page rb-page">
+    <div className={embedded ? 'proofreading-page rb-embedded' : 'proofreading-page rb-page'}>
       <div className="rb-page-scroll">
-        <PageHeader
-          title="平行校对台"
-          description="原文与译文并排阅读，让每一句更准确、更自然。"
-          actions={(
-            <>
-              <Button variant="default" disabled={loading || saving} onClick={reload}>刷新译文</Button>
-              <Button variant="default" disabled={readonly || loading || saving || !data?.items.length} onClick={() => { if (!data) return; setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? data.items.filter((row) => selected.has(row.id)) : data.items }); setReplaceOpen(true); }}>批量替换</Button>
-            </>
-          )}
-        />
+        {embedded ? <div className="rb-embedded-actions">{actions}</div> : (
+          <PageHeader
+            title="平行校对台"
+            description="原文与译文并排阅读，让每一句更准确、更自然。"
+            actions={actions}
+          />
+        )}
         {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
         {error && <Banner tone="warning">{error}</Banner>}
         <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>

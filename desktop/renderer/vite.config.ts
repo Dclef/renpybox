@@ -5,7 +5,8 @@ import path from 'node:path';
 const SIDECAR_PORT = Number(process.env.RENPYBOX_SIDECAR_PORT || 9712);
 const WEB_PORT = Number(process.env.RENPYBOX_WEB_PORT || 5173);
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? './' : '/',
   root: path.resolve(import.meta.dirname),
   plugins: [react()],
   server: {
@@ -24,4 +25,4 @@ export default defineConfig({
     outDir: path.resolve(import.meta.dirname, '..', 'dist'),
     emptyOutDir: true,
   },
-});
+}));

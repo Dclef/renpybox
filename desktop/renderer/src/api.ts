@@ -193,8 +193,8 @@ export function resolveProject(path: string): Promise<ProjectInfo> {
   });
 }
 
-export function listJobs(): Promise<{ jobs: JobSnapshot[] }> {
-  return request<{ jobs: JobSnapshot[] }>('/api/jobs');
+export function listJobs(): Promise<JobSnapshot[]> {
+  return request<{ jobs: JobSnapshot[] }>('/api/jobs').then((body) => body.jobs);
 }
 
 export function getJob(jobId: string): Promise<JobSnapshot> {

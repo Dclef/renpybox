@@ -48,7 +48,7 @@ export const OUTPUT_PROTOCOL_OPTIONS = [
   { value: 'SINGLE_TEXT', label: '单条纯文本（SINGLE_TEXT）' },
 ];
 
-/** 专家设置里的语言下拉用的是 app_language，不是翻译语言。 */
+/** 应用设置里的语言下拉用的是 app_language（界面语言，不是翻译语言）。 */
 export const APP_LANGUAGE_OPTIONS = [
   { value: 'ZH', label: '简体中文' },
   { value: 'EN', label: 'English' },

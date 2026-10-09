@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     LogManager.get().info(f"[api] RenpyBox {Version.CURRENT} 启动")
 
     hub = ConnectionHub()
-    jobs = JobManager()
+    jobs = JobManager(publish=hub.broadcast_threadsafe)
     bridge = EventBridge(hub)
 
     app.state.config = config

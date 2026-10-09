@@ -6,12 +6,13 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { WsEventMessage, WsMessage } from './types';
+import type { WsEventMessage, WsJobMessage, WsMessage } from './types';
 
 export type WsStatus = 'connecting' | 'open' | 'closed';
 
 type EventHandler = (message: WsEventMessage) => void;
 type StatusHandler = (status: WsStatus) => void;
+type JobHandler = (message: WsJobMessage) => void;
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
@@ -29,13 +30,15 @@ function socketUrl(): string {
  * 断线后自动重连，退避到 RECONNECT_MAX_MS 封顶。组件卸载或 handlers 变化时
  * 重新订阅同一条连接，不会额外开连接。
  */
-export function useSidecarEvents(onEvent: EventHandler, onStatus?: StatusHandler): void {
+export function useSidecarEvents(onEvent: EventHandler, onStatus?: StatusHandler, onJob?: JobHandler): void {
   const onEventRef = useRef(onEvent);
   const onStatusRef = useRef(onStatus);
+  const onJobRef = useRef(onJob);
   const socketRef = useRef<WebSocket | null>(null);
 
   onEventRef.current = onEvent;
   onStatusRef.current = onStatus;
+  onJobRef.current = onJob;
 
   useEffect(() => {
     let disposed = false;
@@ -62,6 +65,8 @@ export function useSidecarEvents(onEvent: EventHandler, onStatus?: StatusHandler
         }
         if (message.type === 'event') {
           onEventRef.current(message as WsEventMessage);
+        } else if (message.type === 'job') {
+          onJobRef.current?.(message as WsJobMessage);
         }
       };
 

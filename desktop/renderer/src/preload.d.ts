@@ -1,5 +1,8 @@
 /** preload 暴露的窗口能力（见 main/preload-main.cjs）。 */
 
+interface FileDialogFilter { name: string; extensions: string[] }
+interface FileDialogOptions { defaultPath?: string; filters?: FileDialogFilter[] }
+
 interface RenpyBridge {
   sidecar: () => Promise<unknown>;
   /** 打开轻量壳窗口：'welcome'（关于与诊断）/ 'update'（更新） */
@@ -12,6 +15,8 @@ interface RenpyBridge {
   onMaximizeChange: (callback: (maximized: boolean) => void) => () => void;
   /** 目录选择（原生 dialog）与「打开目录」；取消返回 null */
   pickFolder: (defaultPath?: string) => Promise<string | null>;
+  pickFile: (options?: FileDialogOptions) => Promise<string | null>;
+  saveFile: (options?: FileDialogOptions) => Promise<string | null>;
   openPath: (target: string) => Promise<boolean>;
   platform: string;
   versions: { electron: string; chrome: string; node: string };
