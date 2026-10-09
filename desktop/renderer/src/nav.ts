@@ -11,6 +11,8 @@ export type PageKey =
   | 'translation'
   | 'proofreading'
   | 'glossary'
+  | 'preserve'
+  | 'honorific'
   | 'agent'
   | 'project'
   | 'platform'
@@ -41,7 +43,9 @@ const MAIN_NAV: NavItem[] = [
   { key: 'project', labelKey: 'app_project_page', label: '项目设置', icon: 'IconFolder' },
   { key: 'platform', labelKey: 'app_platform_page', label: '接口管理', icon: 'IconIot' },
   { key: 'toolbox', labelKey: 'app_renpy_toolbox_page', label: "Ren'Py 工具箱", icon: 'IconGame' },
-  { key: 'glossary', labelKey: 'local_glossary', label: '项目词库', icon: 'IconSpeakers' },
+  { key: 'glossary', labelKey: 'local_glossary', label: '术语表', icon: 'IconSpeakers' },
+  { key: 'preserve', labelKey: 'text_preserve', label: '禁翻表', icon: 'IconInfo' },
+  { key: 'honorific', labelKey: 'honorific_placeholder', label: '称呼桥接', icon: 'IconPeople' },
   { key: 'workbench', labelKey: 'app_workbench_page', label: '角色 / 世界观工作台', icon: 'IconPeople' },
   { key: 'basic-settings', labelKey: 'app_basic_settings_page', label: '基础设置', icon: 'IconZoom' },
   { key: 'expert-settings', labelKey: 'app_expert_settings_page', label: '专家设置', icon: 'IconEducation' },
@@ -56,16 +60,16 @@ export const APP_SETTINGS_NAV: NavItem = {
   icon: 'IconSetting',
 };
 
-/** 这几项后面跟一条 addSeparator()，对应原壳的分组分隔线 */
-const SEPARATOR_AFTER: Partial<Record<PageKey, string>> = {
-  agent: 'nav-sep-task',
-  platform: 'nav-sep-project',
-  workbench: 'nav-sep-workspace',
+const GROUP_BEFORE: Partial<Record<PageKey, string>> = {
+  translation: '翻译工作区',
+  project: '项目配置',
+  toolbox: '工具与资产',
+  'basic-settings': '翻译设置',
 };
 
 export type NavEntry =
   | { kind: 'item'; item: NavItem }
-  | { kind: 'separator'; id: string };
+  | { kind: 'group'; id: string; label: string };
 
 export const ALL_NAV_ITEMS: NavItem[] = [...MAIN_NAV, APP_SETTINGS_NAV];
 
@@ -74,17 +78,17 @@ export function findNavItem(key: PageKey): NavItem {
 }
 
 /**
- * 展开成渲染用的扁平序列（项与分隔线混排）。
+ * 展开成渲染用的扁平序列（分组标题与导航项混排）。
  * 专家模式关闭时隐藏专家设置页（对齐 LogManager.is_expert_mode()），
- * 分隔线跟着所属分组走，不会留下悬空的线。
+ * 分组标题跟着所属页面走。
  */
 export function navEntries(expertMode: boolean): NavEntry[] {
   const entries: NavEntry[] = [];
   for (const item of MAIN_NAV) {
     if (item.key === 'expert-settings' && !expertMode) continue;
+    const group = GROUP_BEFORE[item.key];
+    if (group) entries.push({ kind: 'group', id: `group-${item.key}`, label: group });
     entries.push({ kind: 'item', item });
-    const separatorId = SEPARATOR_AFTER[item.key];
-    if (separatorId) entries.push({ kind: 'separator', id: separatorId });
   }
   return entries;
 }

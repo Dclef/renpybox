@@ -40,6 +40,9 @@ export function Waveform(props: { points: number[]; columns?: number; height?: n
       role="img"
       aria-label="实时吞吐波形"
     >
+      {[0.25, 0.5, 0.75, 1].map((position) => (
+        <line key={position} className="waveform-grid" x1={0} x2={width} y1={position * (height - 1)} y2={position * (height - 1)} />
+      ))}
       {hasThroughput ? (
         values.map((value, index) => {
           const barHeight = Math.max(2, (height - 4) * value);
@@ -47,7 +50,7 @@ export function Waveform(props: { points: number[]; columns?: number; height?: n
             <rect
               key={index}
               className="waveform-bar"
-              x={index * slot + gap / 2}
+              x={(columns - values.length + index) * slot + gap / 2}
               y={height - barHeight}
               width={barWidth}
               height={barHeight}

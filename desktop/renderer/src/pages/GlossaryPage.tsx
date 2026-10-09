@@ -1,8 +1,9 @@
-/** 项目词库：正式术语与分析候选分别保留，保存复用项目资产仓库。 */
+/** 术语表：正式术语与分析候选分别保留，保存复用项目资产仓库。 */
 import { useEffect, useRef, useState } from 'react';
 import { request } from '../api';
 import type { AppState } from '../useAppState';
-import { Banner, Dialog, Empty } from '../ui';
+import { Button, Input, Table } from 'antd';
+import { Banner, Dialog } from '../ui';
 
 interface TermRow {
   src: string;
@@ -124,8 +125,8 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
   return (
     <div className="settings-layout glossary-layout">
       <header className="settings-header">
-        <h1 className="settings-title">项目词库</h1>
-        <p className="settings-subtitle">统一专有名词译法，确认候选后用于下一次翻译</p>
+        <h1 className="settings-title">术语表</h1>
+        <p className="settings-subtitle">当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。</p>
       </header>
       <div className="settings-scroll glossary-scroll">
         <div className="workspace-toolbar">
@@ -145,24 +146,49 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
             <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={e => void importFile(e.target.files?.[0])} />
           </div>
         </div>
-        <label className="checkbox-label"><input type="checkbox" disabled={locked || !snapshot} checked={enabled} onChange={e => { setEnabled(e.target.checked); setDirty(true); }} />在翻译中启用项目词库</label>
+        <label className="checkbox-label"><input type="checkbox" disabled={locked || !snapshot} checked={enabled} onChange={e => { setEnabled(e.target.checked); setDirty(true); }} />翻译时启用本术语表</label>
         {state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
-        <div className="glossary-list">
-          <div className="glossary-column-head"><span>原文</span><span>译文</span><span>操作</span></div>
-          {visible.map(({ row, index }) => (
-            <div className="glossary-row" key={`${index}-${row.record_id ?? ''}`}>
-              <textarea aria-label={`词条 ${index + 1} 原文`} value={row.src} disabled={locked} onChange={e => edit(index, { src: e.target.value })} rows={2} />
-              <textarea aria-label={`词条 ${index + 1} 译文`} value={row.dst} disabled={locked} onChange={e => edit(index, { dst: e.target.value })} rows={2} />
-              <button className="btn btn-danger" disabled={locked} onClick={() => { setRows(previous => previous.filter((_, i) => i !== index)); setDirty(true); }}>移除</button>
-              <input className="glossary-note" type="text" aria-label={`词条 ${index + 1} 备注`} placeholder="备注（可选）" value={row.info ?? ''} disabled={locked} onChange={e => edit(index, { info: e.target.value })} />
-              <div className="glossary-options">
-                {row.candidate ? <label className="checkbox-label"><input type="checkbox" checked={row.candidate_confirmed === true} disabled={locked || !row.dst.trim()} onChange={e => edit(index, { candidate_confirmed: e.target.checked })} />确认候选</label> : <span className="card-description">人工 / 正式词条</span>}
-                <label className="checkbox-label"><input type="checkbox" checked={row.case_sensitive === true} disabled={locked} onChange={e => edit(index, { case_sensitive: e.target.checked })} />区分大小写</label>
-              </div>
-            </div>
-          ))}
-          {visible.length === 0 ? <Empty>{busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理'}</Empty> : null}
-        </div>
+        <Table
+          className="data-sheet"
+          size="small"
+          bordered
+          pagination={false}
+          rowKey={(row) => `${row.index}-${row.row.record_id ?? ''}`}
+          dataSource={visible}
+          locale={{ emptyText: busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理' }}
+          columns={[
+            {
+              title: '原文',
+              render: (_, record) => (
+                <Input.TextArea aria-label={`词条 ${record.index + 1} 原文`} autoSize={{ minRows: 1, maxRows: 4 }} value={record.row.src} disabled={locked} onChange={(event) => edit(record.index, { src: event.target.value })} />
+              ),
+            },
+            {
+              title: '译文',
+              render: (_, record) => (
+                <Input.TextArea aria-label={`词条 ${record.index + 1} 译文`} autoSize={{ minRows: 1, maxRows: 4 }} value={record.row.dst} disabled={locked} onChange={(event) => edit(record.index, { dst: event.target.value })} />
+              ),
+            },
+            {
+              title: '备注',
+              width: 240,
+              render: (_, record) => (
+                <div className="glossary-options">
+                  <Input aria-label={`词条 ${record.index + 1} 备注`} placeholder="备注（可选）" value={record.row.info ?? ''} disabled={locked} onChange={(event) => edit(record.index, { info: event.target.value })} />
+                  {record.row.candidate ? <label className="checkbox-label"><input type="checkbox" checked={record.row.candidate_confirmed === true} disabled={locked || !record.row.dst.trim()} onChange={(event) => edit(record.index, { candidate_confirmed: event.target.checked })} />确认候选</label> : <span className="card-description">正式词条</span>}
+                  <label className="checkbox-label"><input type="checkbox" checked={record.row.case_sensitive === true} disabled={locked} onChange={(event) => edit(record.index, { case_sensitive: event.target.checked })} />区分大小写</label>
+                </div>
+              ),
+            },
+            {
+              title: '操作',
+              width: 88,
+              render: (_, record) => (
+                <Button danger type="link" disabled={locked} onClick={() => { setRows((previous) => previous.filter((__, i) => i !== record.index)); setDirty(true); }}>移除</Button>
+              ),
+            },
+          ]}
+        />
         <div className="workspace-toolbar pagination-bar">
           <span className="card-description">{matched.length} 条 · 第 {currentPage + 1} / {pageCount} 页</span>
           <div className="workspace-actions"><button className="btn" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button><button className="btn" disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)}>下一页</button></div>

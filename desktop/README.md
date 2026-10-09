@@ -5,9 +5,15 @@ M0 的性能验证已结束，当前正在迁移主界面；旧性能门禁与 V
 
 ## 当前进度（2026-10-08）
 
-翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、项目词库、静态提示词预览。AI 校对、工具执行、Agent 与更新仍有迁移缺口。审计缺口和本轮验证见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)。
+翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、术语表、静态提示词预览、Agent 助手、应用更新（复用 VersionManager）。AI 校对、工具箱执行页等仍有迁移缺口。审计缺口见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)；2026-10-09 接到壳上的行为和未完成项见 [补充说明](SUPPLEMENT-2026-10-09.md)；表格组件见 [Table UI 设计规范](TABLE-UI-SPEC.md)。
 
-下方的 PyQt 尺寸表是迁移时的历史对照记录。当前外壳使用 44px 标题栏、228px 展开导航、48px 折叠导航；视觉调整以现有 React/CSS 实现为准。
+开发时网页与桌面共用同一 Python sidecar：`npm run dev` / `npm run dev:web` 都由脚本托管后端；关掉 Electron 不会杀死后端，只有 Ctrl+C 结束开发脚本时才停。
+
+下方的 PyQt 尺寸表是迁移时的历史对照记录。当前外壳使用 38px 标题栏、224px 展开导航、60px 折叠导航；视觉调整以现有 React/CSS 实现为准。
+
+2026-10-09 的 UI 调整按翻译工作区、项目配置、工具与资产、翻译设置组织导航；应用设置、主题和诊断入口固定在侧栏底部。全局项目面包屑与连接状态跨页面保留，项目入口继续保护未保存编辑。
+
+翻译页展示实际输入目录、语言方向和当前接口，点击目录或接口可进入对应设置；输入目录独立于 Ren'Py 项目身份展示，不修改用户选择的路径。进度、吞吐与流水使用一个工作区表面；新任务、可继续、有失败项及已完成状态分别显示，明暗主题与减少动态效果设置共用同一套样式。自检覆盖这些入口、状态和五种窗口宽度。
 
 ## 仿的是什么
 
@@ -65,7 +71,8 @@ desktop/
 ```bash
 cd renpybox/desktop
 npm install
-npm run dev            # vite + Electron（scripts/dev.mjs 一起拉起）；sidecar 由主进程守护
+npm run dev            # vite + Electron + sidecar（scripts/dev.mjs 托管后端）
+npm run dev:web        # 仅 vite + sidecar，浏览器打开；可与桌面端同时用
 ```
 
 `npm run dev` 一条命令就够，不需要另开终端跑 vite：dev 模式下窗口从 vite dev server
@@ -73,12 +80,14 @@ npm run dev            # vite + Electron（scripts/dev.mjs 一起拉起）；sid
 `RENPYBOX_WEB_PORT`（默认 5173）和 `RENPYBOX_SIDECAR_PORT`（默认 9712）传入，
 vite、`main.js` 与 `index.html` 的 CSP 三处必须一致。
 
-其它脚本：`npm run dev:shell`（只起 Electron，配合已开着的 vite）、
-`npm run dev:renderer`（只起 vite）、`npm run typecheck`、`npm run build:renderer`。
+关掉桌面窗口后，vite 与 sidecar 仍保持运行，可继续用浏览器，或再执行
+`npm run dev:shell` 接回同一后端（复用已运行的进程，不会互杀）。
 
-> sidecar 端口同时只能有一个持有者。若 `npm run dev` 报
-> `Errno 10048 … 9712`，说明已经有另一个 sidecar 占着端口（多半是手动起的那份），
-> 停掉它再起即可；主进程自身会对崩溃重试 3 次后放弃。
+其它脚本：`npm run sidecar`（只起后端）、`npm run dev:shell`（只起 Electron）、
+`npm run dev:renderer`（只起 vite，不带后端）、`npm run typecheck`、`npm run build:renderer`。
+
+> sidecar 端口同时只能有一个持有者。若启动时报 `Errno 10048 … 9712`，说明已有
+> 后端占着端口；直接复用即可，不必再起第二份。由本进程 spawn 的后端才会在退出时清理。
 
 想手动联调真实接口（先验 `/health` 与术语表路由，再起窗口）：
 
@@ -159,8 +168,8 @@ PyQt 侧**没有可读的 QSS** —— qfluentwidgets 把样式编译进 6.4MB �
 
 ### 项目设置页
 
-6 张卡，顺序同 `frontend/Project/ProjectPage.py:81-86`：原文语言 → 译文语言 → 输入文件夹 →
-输出文件夹（不能与输入文件夹相同）→ 任务完成时打开输出文件夹 → 使用繁体输出中文。
+项目页顶部单独显示已绑定的工程根、game 与 tl；下面 6 张卡顺序同 `frontend/Project/ProjectPage.py:81-86`：原文语言 → 译文语言 → 输入文件夹 →
+输出文件夹 → 任务完成时打开输出文件夹 → 使用繁体输出中文。只选不含 `game/` 的目录时只当作输入目录，不会改写工程身份。
 
 **真实 `ProjectPage` 没有「工程路径」卡片** —— 项目身份是选输入目录时由
 `_sync_renpy_paths_from_selection()` 顺带绑定的。渲染端为此新增

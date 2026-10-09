@@ -18,7 +18,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   IconCalories,
+  IconChevronRight,
   IconDocument,
+  IconFolder,
+  IconIot,
   IconPlay,
   IconRotate,
   IconShare,
@@ -99,8 +102,14 @@ function KpiCard(props: {
   );
 }
 
-export function TranslationPage(props: { state: AppState; onOpenWorkbench: () => void; onOpenProofreading: () => void }) {
-  const { state, onOpenWorkbench, onOpenProofreading } = props;
+export function TranslationPage(props: {
+  state: AppState;
+  onOpenWorkbench: () => void;
+  onOpenProofreading: () => void;
+  onOpenProject: () => void;
+  onOpenPlatform: () => void;
+}) {
+  const { state, onOpenWorkbench, onOpenProofreading, onOpenProject, onOpenPlatform } = props;
   const progress = state.translation.progress as TranslationUpdateData;
   const [samples, setSamples] = useState<number[]>([]);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -117,6 +126,12 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
 
   const sourceLanguage = String(state.settings?.values.source_language ?? '');
   const targetLanguage = String(state.settings?.values.target_language ?? '');
+  const inputFolder = String(state.settings?.values.input_folder ?? '');
+  const platforms = state.settings?.values.platforms;
+  const activePlatform = Array.isArray(platforms)
+    ? platforms.find((platform) => platform.id === Number(state.settings?.values.activate_platform ?? -1))
+    : undefined;
+  const platformName = String(activePlatform?.name || '选择翻译接口');
 
   // 进度由应用级状态合并；这里只在下一轮开始时清除上一轮波形。
   useEffect(() => {
@@ -233,13 +248,19 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
   }, [state]);
 
   const commandDisabled = busy || !state.ready;
+  const statusLabel = isStopping ? '正在停止' : preparing ? '正在准备'
+    : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
+    : totalLine > 0 ? line >= totalLine && failed === 0 ? '已完成' : '可继续' : '待开始';
 
   return (
     <div className="translation-layout">
       <div className="translation-scroll">
         <header className="translation-header">
           <div className="translation-header-text">
-            <h1 className="translation-header-title">任务执行监控</h1>
+            <div className="translation-heading">
+              <h1 className="translation-header-title">翻译任务</h1>
+              <span className="task-state" data-active={isTranslating} data-warning={isStopping || failed > 0} role="status">{statusLabel}</span>
+            </div>
             <p className="translation-header-desc">{headerDescription}</p>
           </div>
           <button
@@ -252,14 +273,29 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
           </button>
         </header>
 
+        <div className="task-context">
+          <button type="button" className="task-context-button task-input" title={inputFolder || '选择翻译输入目录'} aria-label="配置翻译输入目录" onClick={onOpenProject}>
+            <IconFolder size={15} />
+            <span>{inputFolder || '选择翻译输入目录'}</span>
+          </button>
+          <span className="task-language-pair" aria-label={`原文 ${sourceLanguage || '未设置'}，译文 ${targetLanguage || '未设置'}`}>
+            {sourceLanguage || '原文'}<IconChevronRight size={12} />{targetLanguage || '译文'}
+          </span>
+          <button type="button" className="task-context-button task-platform" title={activePlatform?.model && activePlatform.model !== 'no_model_required' ? `${platformName} · ${activePlatform.model}` : platformName} aria-label="配置翻译接口" onClick={onOpenPlatform}>
+            <IconIot size={15} />
+            <span>{platformName}</span>
+            <IconChevronRight size={12} />
+          </button>
+        </div>
+
         <div className="kpi-strip">
           <KpiCard
             icon={<IconDocument size={20} />}
-            accent="accent"
+            accent={failed > 0 ? 'warning' : 'accent'}
             title="翻译进度"
             value={(percent * 100).toFixed(1)}
             unit="%"
-            trend={failed === 0 ? '健康' : String(failed)}
+            trend={failed > 0 ? `${failed} 行失败` : undefined}
             detail={linesDetail}
           />
           <KpiCard
@@ -267,7 +303,7 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
             accent="info"
             title="实时吞吐"
             value={throughput.toFixed(2)}
-            unit="T/s"
+            unit="Token/s"
             detail={`有效翻译速度 ${effectiveRate.toFixed(1)} 条/分`}
           />
           <KpiCard
@@ -275,29 +311,31 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
             accent="success"
             title="累计消耗"
             value={(inputTokens + outputTokens).toLocaleString()}
-            unit="tokens"
+            unit="Token"
             detail={`输出: ${outputTokens.toLocaleString()} · 输入: ${inputTokens.toLocaleString()}`}
           />
         </div>
 
         <div className="dashboard-grid">
           <section className="card progress-card">
-            <h2 className="card-title">总体翻译完成度</h2>
+            <h2 className="card-title">翻译完成度</h2>
             <div className="progress-ring-slot">
               <ProgressRing
                 value={percent * 10000}
+                size={136}
+                stroke={7}
                 lines={[`${(percent * 100).toFixed(1)}%`, `${line.toLocaleString()} / ${totalLine.toLocaleString()}`]}
               />
             </div>
             <div className="pill-row">
               <span className="badge" data-tone="success">
-                已翻译 {(percent * 100).toFixed(1)}%
+                已译 {line.toLocaleString()}
               </span>
               <span className="badge" data-tone="info" title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">
                 {cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}
               </span>
               <span className="badge" data-tone="warning">
-                待处理 {((totalLine ? 1 - percent : 0) * 100).toFixed(1)}%
+                待译 {Math.max(0, totalLine - line).toLocaleString()}
               </span>
             </div>
             <div className="hero-meta">
@@ -308,10 +346,11 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
 
           <section className="card throughput-card">
             <header className="card-header">
-              <h2 className="card-title">实时 Token 吞吐速率</h2>
-              <span className="card-description">峰值 {peak.toFixed(2)} T/s</span>
+              <h2 className="card-title">吞吐趋势</h2>
+              <span className="card-description">峰值 {peak.toFixed(2)} Token/s</span>
             </header>
-            <Waveform points={samples} columns={WAVE_COLUMNS} />
+            <Waveform points={samples} columns={WAVE_COLUMNS} height={132} />
+            <div className="chart-caption"><span>最近 {WAVE_COLUMNS} 次采样</span><span>最新</span></div>
             <div className="throughput-stats">
               <span>
                 均值吞吐 <b>{throughput.toFixed(2)}</b>
@@ -330,10 +369,11 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
 
           <section className="card feed-card">
             <header className="card-header">
-              <h2 className="card-title">实时翻译流水</h2>
-              <span className="badge" data-tone="info">
-                实时状态
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h2 className="card-title">实时翻译流水</h2>
+                <span className="feed-card-badge">{recentItems.length} 条记录</span>
+              </div>
+              <span className="card-description">自动追踪引擎吐出的最新对白</span>
             </header>
             {recentItems.length > 0 ? (
               <div className="feed-scroll">
@@ -341,24 +381,34 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
                   <thead>
                     <tr>
                       <th>时间</th>
-                      <th>原文 ({sourceLanguage})</th>
-                      <th>译文 ({targetLanguage})</th>
+                      <th>原文 <span className="table-header-tag">{sourceLanguage}</span></th>
+                      <th>译文 <span className="table-header-tag table-header-tag-accent">{targetLanguage}</span></th>
                     </tr>
                   </thead>
                   <tbody>
                     {recentItems.map((item, index) => (
                       // 流水行没有稳定 id，用序号做 key（每次更新整体重排）
-                      <tr key={index}>
-                        <td className="feed-time">{String(item.time ?? item.timestamp ?? '')}</td>
-                        <td>{String(item.src ?? item.source ?? '')}</td>
-                        <td>{String(item.dst ?? item.target ?? '')}</td>
+                      <tr key={index} data-latest={index === 0 ? 'true' : undefined}>
+                        <td className="feed-time">
+                          <span className="feed-time-wrap">
+                            {String(item.time ?? item.timestamp ?? '')}
+                          </span>
+                        </td>
+                        <td className="feed-source">{String(item.src ?? item.source ?? '')}</td>
+                        <td className="feed-target">{String(item.dst ?? item.target ?? '')}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             ) : (
-              <Empty>{message || '等待翻译任务产生流水数据'}</Empty>
+              <Empty>
+                <div className="translation-empty-content">
+                  <IconDocument size={28} />
+                  <strong>{isTranslating ? '正在等待第一批译文' : '暂无翻译流水'}</strong>
+                  <span>{message || '开始翻译后，原文与译文会显示在这里。'}</span>
+                </div>
+              </Empty>
             )}
           </section>
         </div>
@@ -374,7 +424,7 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
             onClick={() => setConfirmReset(true)}
           >
             <IconPlay size={15} />
-            开始
+            开始翻译
           </button>
           <button
             type="button"
@@ -429,7 +479,7 @@ export function TranslationPage(props: { state: AppState; onOpenWorkbench: () =>
           <span className="command-bar-spacer" />
           {preparing ? <span className="command-spinner" aria-label="处理中" /> : null}
           <span className="command-caption">
-            {STATUS_TEXT[status] ?? status}
+            {statusLabel}
             {isTranslating ? ` · ${running}/${max}` : ''}
           </span>
         </div>

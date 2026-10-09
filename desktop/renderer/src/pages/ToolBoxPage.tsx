@@ -60,6 +60,8 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
 
   const openTool = (tool: ToolSpec) => {
     if (tool.key === 'local_glossary') { onNavigate('glossary'); return; }
+    if (tool.key === 'text_preserve') { onNavigate('preserve'); return; }
+    if (tool.key === 'honorific_placeholder') { onNavigate('honorific'); return; }
     if (tool.key === 'proofreading') { onNavigate('proofreading'); return; }
     if (tool.key === 'continue_translation') { onNavigate('translation'); return; }
     setSelected(tool);
@@ -93,7 +95,7 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
 
       <div className="settings-scroll">
         {hasProject ? null : (
-          <Banner tone="warning">未选择工程。需要项目的工具暂时不可用，请先到项目设置绑定 Ren'Py 目录。</Banner>
+          <Banner tone="warning">尚未绑定工程。需要项目的工具暂时不可用，请先到项目设置选择带 game/ 的目录。</Banner>
         )}
 
         {searching && matches ? (

@@ -6,17 +6,21 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ConfigProvider, theme as antdTheme } from 'antd';
+import zhCN from 'antd/locale/zh_CN';
 
 import {
   IconChromeClose,
   IconChromeMaximize,
   IconChromeMinimize,
   IconChromeRestore,
+  IconChevronRight,
   IconContrast,
+  IconFolder,
   IconInfo,
   NAV_ICONS,
 } from './icons';
-import { APP_SETTINGS_NAV, navEntries, type PageKey } from './nav';
+import { APP_SETTINGS_NAV, findNavItem, navEntries, type PageKey } from './nav';
 import { ProjectPage } from './pages/ProjectPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PlatformPage } from './pages/PlatformPage';
@@ -27,6 +31,8 @@ import { TranslationPage } from './pages/TranslationPage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
+import { PreservePage } from './pages/PreservePage';
+import { HonorificPage } from './pages/HonorificPage';
 import { Dialog } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
@@ -104,6 +110,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const entries = useMemo(() => navEntries(expertMode), [expertMode]);
   const version = state.version?.app_version ?? '';
   const SettingsIcon = NAV_ICONS[APP_SETTINGS_NAV.icon];
+  const projectPath = String(state.project?.renpy_project_path ?? '');
+  const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || '未绑定项目';
 
   // 翻译页 preflight 判定缺资产时，让用户能直接跳到工作台补齐，
   // 不必自己找侧边栏（对齐 TranslationPage._open_workbench）。
@@ -118,11 +126,23 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const body = (() => {
     switch (active) {
       case 'translation':
-        return <TranslationPage state={state} onOpenWorkbench={() => setWorkbenchRequested((n) => n + 1)} onOpenProofreading={() => navigate('proofreading')} />;
+        return (
+          <TranslationPage
+            state={state}
+            onOpenWorkbench={() => setWorkbenchRequested((n) => n + 1)}
+            onOpenProofreading={() => navigate('proofreading')}
+            onOpenProject={() => navigate('project')}
+            onOpenPlatform={() => navigate('platform')}
+          />
+        );
       case 'proofreading':
         return <ProofreadingPage state={state} onDirtyChange={setDirty} />;
       case 'glossary':
         return <GlossaryPage state={state} onDirtyChange={setDirty} />;
+      case 'preserve':
+        return <PreservePage state={state} onDirtyChange={setDirty} />;
+      case 'honorific':
+        return <HonorificPage state={state} onDirtyChange={setDirty} />;
       case 'project':
         return <ProjectPage state={state} />;
       case 'toolbox':
@@ -150,7 +170,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'workbench':
         return <WorkbenchPage state={state} onDirtyChange={setDirty} />;
       case 'agent':
-        return <AgentPage state={state} />;
+        return <AgentPage state={state} onOpenPlatforms={() => navigate('platform')} />;
       case 'platform':
         return <PlatformPage state={state} onDirtyChange={setDirty} />;
       case 'custom-prompt':
@@ -161,6 +181,17 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   })();
 
   return (
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        algorithm: state.theme === 'DARK' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        token: {
+          colorPrimary: '#0078D4',
+          borderRadius: 4,
+          fontFamily: "'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif",
+        },
+      }}
+    >
     <div className="shell">
       <header className="titlebar">
         <span className="titlebar-title">RenpyBox {version}</span>
@@ -198,86 +229,97 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
           <span className="brand-mark" aria-hidden="true">R</span>
           <span className="brand-copy">
             <strong>RenpyBox</strong>
-            <small>翻译工作台</small>
+            <small>Ren'Py 本地化工作台</small>
           </span>
         </div>
-        {entries.map((entry) =>
-          entry.kind === 'separator' ? (
-            <div key={entry.id} className="nav-divider" />
-          ) : (
-            <button
-              key={entry.item.key}
-              type="button"
-              className="nav-item"
-              title={entry.item.label}
-              aria-current={active === entry.item.key ? 'page' : undefined}
-              onClick={() => navigate(entry.item.key)}
-            >
-              <span className="nav-item-icon">
-                {(() => {
-                  const Icon = NAV_ICONS[entry.item.icon];
-                  return <Icon size={18} />;
-                })()}
-              </span>
-              <span className="nav-item-label">{entry.item.label}</span>
-            </button>
-          ),
-        )}
+        <div className="sidebar-navigation">
+          {entries.map((entry) =>
+            entry.kind === 'group' ? (
+              <h2 key={entry.id} className="nav-group-label">{entry.label}</h2>
+            ) : (
+              <button
+                key={entry.item.key}
+                type="button"
+                className="nav-item"
+                title={entry.item.label}
+                aria-current={active === entry.item.key ? 'page' : undefined}
+                onClick={() => navigate(entry.item.key)}
+              >
+                <span className="nav-item-icon">
+                  {(() => {
+                    const Icon = NAV_ICONS[entry.item.icon];
+                    return <Icon size={18} />;
+                  })()}
+                </span>
+                <span className="nav-item-label">{entry.item.label}</span>
+              </button>
+            ),
+          )}
+        </div>
 
-        <div className="nav-spacer" />
-
-        <button
-          type="button"
-          className="nav-item"
-          title={APP_SETTINGS_NAV.label}
-          aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
-          onClick={() => navigate(APP_SETTINGS_NAV.key)}
-        >
-          <span className="nav-item-icon">
-            <SettingsIcon size={18} />
-          </span>
-          <span className="nav-item-label">{APP_SETTINGS_NAV.label}</span>
-        </button>
-
-        <button
-          type="button"
-          className="nav-item"
-          title="切换主题"
-          onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}
-        >
-          <span className="nav-item-icon">
-            <IconContrast size={18} />
-          </span>
-          <span className="nav-item-label">切换主题</span>
-        </button>
-
-        {state.health ? (
+        <div className="sidebar-footer">
           <button
             type="button"
             className="nav-item"
-            title="关于与诊断"
-            onClick={() => {
-              // 壳窗口是 vanilla 页面，不进主 UI bundle；这里按需唤起。
-              void window.renpy?.openShell('welcome');
-            }}
+            title={APP_SETTINGS_NAV.label}
+            aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
+            onClick={() => navigate(APP_SETTINGS_NAV.key)}
           >
             <span className="nav-item-icon">
-              <IconInfo size={18} />
+              <SettingsIcon size={18} />
             </span>
-            <span className="nav-item-label">关于与诊断</span>
+            <span className="nav-item-label">{APP_SETTINGS_NAV.label}</span>
           </button>
-        ) : null}
 
-        {/* 只在链路异常时出现：正常运行下导航与原壳保持一致 */}
-        {link !== 'open' ? (
-          <div className="sidebar-status" role="status">
-            <span className="sidebar-status-dot" data-state={link} />
-            <span className="sidebar-status-text">{LINK_TEXT[link]}</span>
-          </div>
-        ) : null}
+          <button
+            type="button"
+            className="nav-item"
+            title="切换主题"
+            onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}
+          >
+            <span className="nav-item-icon">
+              <IconContrast size={18} />
+            </span>
+            <span className="nav-item-label">切换主题</span>
+          </button>
+
+          {state.health ? (
+            <button
+              type="button"
+              className="nav-item"
+              title="关于与诊断"
+              onClick={() => {
+                // 壳窗口是 vanilla 页面，不进主 UI bundle；这里按需唤起。
+                void window.renpy?.openShell('welcome');
+              }}
+            >
+              <span className="nav-item-icon">
+                <IconInfo size={18} />
+              </span>
+              <span className="nav-item-label">关于与诊断</span>
+            </button>
+          ) : null}
+        </div>
       </nav>
 
-      <main className="content">
+      <main className="content" data-page={active}>
+        <div className="workspace-bar">
+          <div className="workspace-breadcrumb">
+            <button type="button" className="workspace-project" title={projectPath || '尚未绑定 Ren\'Py 项目，点击前往项目设置'} aria-label={`项目设置：${projectName}`} disabled={!state.ready} onClick={() => navigate('project')}>
+              <IconFolder size={15} />
+              <span>{projectName}</span>
+            </button>
+            <IconChevronRight size={12} />
+            <span className="workspace-current">{findNavItem(active).label}</span>
+          </div>
+          <span className="workspace-link" role="status" aria-label={LINK_TEXT[link]}>
+            <span className="sidebar-status-dot" data-state={link} />
+            <span className="workspace-link-text">{LINK_TEXT[link]}</span>
+          </span>
+        </div>
+        {link === 'closed' ? <div className="backend-notice" role="status">
+          后端未连接，正在自动重试。请用 <code>npm run dev</code> 或 <code>npm run dev:web</code> 启动（二者共用同一后端，关桌面端不会杀掉服务）；仅 <code>npm run dev:renderer</code> 不会起 Python。
+        </div> : null}
         {state.ready ? (
           body
         ) : (
@@ -297,5 +339,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
     </div>
+    </ConfigProvider>
   );
 }

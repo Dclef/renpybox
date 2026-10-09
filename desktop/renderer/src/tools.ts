@@ -241,8 +241,8 @@ export const TOOL_SPECS: ToolSpec[] = [
   // ---------- 资源与词表 ----------
   {
     key: 'local_glossary',
-    title: '本地词库',
-    description: '管理术语表，统一专有名词翻译',
+    title: '术语表',
+    description: '管理当前项目专有名词对照，统一译法',
     group: 'asset',
     requiresProject: false,
     icon: 'GLOSSARY',

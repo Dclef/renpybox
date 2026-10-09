@@ -7,7 +7,7 @@
  * CaptionLabel 组合。
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 
 import type { FieldSpec } from './settingsSchema';
 
@@ -374,5 +374,140 @@ export function Stat(props: { label: ReactNode; value: ReactNode; tone?: string 
         {value}
       </span>
     </div>
+  );
+}
+
+/**
+ * 现代 Fluent Design (WinUI 3 风格) 表格组件
+ */
+export function Table(props: {
+  className?: string;
+  container?: boolean;
+  striped?: boolean;
+  compact?: boolean;
+  relaxed?: boolean;
+  children: ReactNode;
+  style?: CSSProperties;
+}) {
+  const { className = '', container = false, striped, compact, relaxed, children, style } = props;
+  const classes = [
+    'table',
+    striped ? 'table-striped' : '',
+    compact ? 'table-compact' : '',
+    relaxed ? 'table-relaxed' : '',
+    className,
+  ].filter(Boolean).join(' ');
+
+  const content = (
+    <table className={classes} style={style}>
+      {children}
+    </table>
+  );
+
+  if (container) {
+    return <div className="table-container">{content}</div>;
+  }
+  return content;
+}
+
+export function TableHead(props: { className?: string; children: ReactNode }) {
+  return <thead className={props.className}>{props.children}</thead>;
+}
+
+export function TableBody(props: { className?: string; children: ReactNode }) {
+  return <tbody className={props.className}>{props.children}</tbody>;
+}
+
+export function TableRow(props: {
+  selected?: boolean;
+  className?: string;
+  onClick?: () => void;
+  children: ReactNode;
+  style?: CSSProperties;
+}) {
+  const { selected, className = '', onClick, children, style } = props;
+  const classes = [selected ? 'is-selected' : '', className].filter(Boolean).join(' ');
+  return (
+    <tr
+      className={classes || undefined}
+      data-selected={selected || undefined}
+      aria-selected={selected || undefined}
+      onClick={onClick}
+      style={style}
+    >
+      {children}
+    </tr>
+  );
+}
+
+export function TableHeaderCell(props: {
+  align?: 'left' | 'center' | 'right';
+  width?: number | string;
+  tag?: string;
+  tagAccent?: boolean;
+  className?: string;
+  style?: CSSProperties;
+  children?: ReactNode;
+}) {
+  const { align, width, tag, tagAccent, className = '', style, children } = props;
+  const alignClass = align === 'right' ? 'col-num' : align === 'center' ? 'col-center' : '';
+  const classes = [alignClass, className].filter(Boolean).join(' ');
+  return (
+    <th className={classes || undefined} style={{ width, ...style }}>
+      {children}
+      {tag ? (
+        <span className={`table-header-tag${tagAccent ? ' table-header-tag-accent' : ''}`}>
+          {tag}
+        </span>
+      ) : null}
+    </th>
+  );
+}
+
+export function TableCell(props: {
+  align?: 'left' | 'center' | 'right';
+  time?: boolean;
+  num?: boolean;
+  mono?: boolean;
+  muted?: boolean;
+  nowrap?: boolean;
+  colSpan?: number;
+  rowSpan?: number;
+  className?: string;
+  style?: CSSProperties;
+  children?: ReactNode;
+}) {
+  const {
+    align,
+    time,
+    num,
+    mono,
+    muted,
+    nowrap,
+    colSpan,
+    rowSpan,
+    className = '',
+    style,
+    children,
+  } = props;
+  const classes = [
+    time ? 'col-time' : '',
+    num || align === 'right' ? 'col-num' : '',
+    align === 'center' ? 'col-center' : '',
+    mono ? 'mono' : '',
+    muted ? 'col-muted' : '',
+    nowrap ? 'col-nowrap' : '',
+    className,
+  ].filter(Boolean).join(' ');
+
+  return (
+    <td
+      className={classes || undefined}
+      colSpan={colSpan}
+      rowSpan={rowSpan}
+      style={style}
+    >
+      {children}
+    </td>
   );
 }

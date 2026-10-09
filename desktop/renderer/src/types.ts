@@ -2,6 +2,42 @@
 
 export type ThemeName = 'LIGHT' | 'DARK';
 
+export type AgentThinkingLevel = 'OFF' | 'LOW' | 'MEDIUM' | 'HIGH' | 'MAX';
+
+export interface AgentToolEntry {
+  name: string;
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  arguments?: Record<string, unknown>;
+  message?: string;
+  code?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  reasoning?: string;
+  tools?: AgentToolEntry[];
+  status?: 'running' | 'done' | 'failed' | 'cancelled';
+  error?: string;
+}
+
+export interface AgentSnapshot {
+  session_id: string;
+  revision: number;
+  run_id: number;
+  status: 'idle' | 'running' | 'stopping';
+  messages: AgentMessage[];
+  confirmation: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    data: Record<string, unknown>;
+    expires_at: number;
+  } | null;
+}
+
 /** 项目翻译状态：Base.TranslationStatus 的项目级取值 */
 export type ProjectStatus = 'UNTRANSLATED' | 'TRANSLATING' | 'TRANSLATED';
 
@@ -33,6 +69,31 @@ export interface HealthInfo {
 export interface VersionInfo {
   app_version: string;
   api_version: string;
+}
+
+export type UpdateStatus = 'NONE' | 'NEW_VERSION' | 'UPDATING' | 'DOWNLOADED';
+
+export interface UpdateState {
+  ok?: boolean;
+  status: UpdateStatus | string;
+  version: string;
+  latest: {
+    tag_name?: string;
+    body?: string;
+    published_at?: string;
+    assets?: { name?: string; size?: number; browser_download_url?: string }[];
+  };
+  downloaded_size: number;
+  total_size: number;
+  error: string;
+  new_version: boolean;
+  release_url: string;
+  can_install: boolean;
+}
+
+export interface ChangelogResponse {
+  markdown: string;
+  empty: boolean;
 }
 
 export interface SettingsResponse {

@@ -1,21 +1,21 @@
 /**
- * 开发启动器：一条命令同时起 vite 与 Electron。
+ * 开发启动器：一条命令同时起 vite 与（可选）Electron。
  *
- * 为什么需要它：`npm run dev` 只起 Electron，而 dev 模式下窗口要从 vite dev
- * server 加载渲染端。单起 Electron 会得到 ERR_CONNECTION_REFUSED —— 端口对不上，
- * 而不是「vite 没开」这种能一眼看懂的提示。
+ * 后端由本脚本统一托管：网页与桌面共用同一 sidecar，关掉 Electron
+ * 不会带走后端；Ctrl+C 结束本脚本时才停掉。
  *
- * 端口在这里统一给 Electron 传进去，避免 main.js 的默认值与 vite 实际端口漂移。
- *
- * 用法：npm run dev          （等价于 node scripts/dev.mjs）
+ * 用法：
+ *   npm run dev       vite + Electron（Electron 以 EXTERNAL 模式接入）
+ *   npm run dev:web   仅 vite + sidecar（浏览器打开）
  */
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Sidecar } from '../main/sidecar.js';
 
-const require = createRequire(import.meta.url);
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const webOnly = process.argv.includes('--web');
+const sidecar = new Sidecar({ onLog: console.log });
 
 const SIDECAR_PORT = Number(process.env.RENPYBOX_SIDECAR_PORT || 9712);
 const WEB_PORT = Number(process.env.RENPYBOX_WEB_PORT || 5173);
@@ -40,7 +40,7 @@ async function waitForWeb(timeoutMs = 60_000) {
 const children = [];
 let shuttingDown = false;
 
-function stopAll(code) {
+async function stopAll(code) {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const child of children) {
@@ -52,6 +52,7 @@ function stopAll(code) {
       }
     }
   }
+  await sidecar.stop();
   process.exit(code);
 }
 
@@ -59,6 +60,13 @@ process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));
 
 console.log(`[dev] sidecar 端口 ${SIDECAR_PORT}，渲染端 ${WEB_URL}`);
+
+try {
+  await sidecar.start();
+} catch (error) {
+  console.error(`[dev] 后端启动失败：${error.message}`);
+  await stopAll(1);
+}
 
 const vite = spawn(
   process.execPath,
@@ -72,33 +80,40 @@ vite.on('exit', (code) => {
 });
 
 if (!(await waitForWeb())) {
-  console.error('[dev] vite 未就绪，放弃启动 Electron');
-  stopAll(1);
+  console.error('[dev] vite 未就绪，停止开发服务');
+  await stopAll(1);
 }
 
-// ELECTRON_RUN_AS_NODE=1 会让 electron.exe 以纯 Node 模式跑，必须清掉
-const electronEnv = {
-  ...process.env,
-  VITE_DEV_SERVER_URL: WEB_URL,
-  RENPYBOX_SIDECAR_PORT: String(SIDECAR_PORT),
-};
-delete electronEnv.ELECTRON_RUN_AS_NODE;
+if (webOnly) {
+  console.log(`[dev] 网页与真实后端已就绪：${WEB_URL}`);
+  console.log('[dev] 可同时打开 Electron（npm run dev:shell）；关掉任一客户端不会杀死后端。Ctrl+C 停止。');
+} else {
+  // ELECTRON_RUN_AS_NODE=1 会让 electron.exe 以纯 Node 模式跑，必须清掉
+  const electronEnv = {
+    ...process.env,
+    VITE_DEV_SERVER_URL: WEB_URL,
+    RENPYBOX_SIDECAR_PORT: String(SIDECAR_PORT),
+    // 后端由本脚本托管；Electron 只复用，退出时不互杀
+    RENPYBOX_SIDECAR_EXTERNAL: '1',
+  };
+  delete electronEnv.ELECTRON_RUN_AS_NODE;
 
-console.log('[dev] 启动 Electron；sidecar 由主进程自动拉起并守护');
-const electronBinary = path.join(
-  DESKTOP_ROOT,
-  'node_modules',
-  'electron',
-  'dist',
-  process.platform === 'win32' ? 'electron.exe' : 'electron',
-);
-const electron = spawn(electronBinary, ['.'], {
-  cwd: DESKTOP_ROOT,
-  stdio: ['ignore', 'inherit', 'inherit'],
-  env: electronEnv,
-});
-children.push(electron);
-electron.on('exit', (code) => {
-  console.log(`[dev] Electron 退出（${code}）`);
-  stopAll(code ?? 0);
-});
+  console.log('[dev] 启动 Electron；后端由开发脚本托管，关窗不会断开网页端');
+  const electronBinary = path.join(
+    DESKTOP_ROOT,
+    'node_modules',
+    'electron',
+    'dist',
+    process.platform === 'win32' ? 'electron.exe' : 'electron',
+  );
+  const electron = spawn(electronBinary, ['.'], {
+    cwd: DESKTOP_ROOT,
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: electronEnv,
+  });
+  children.push(electron);
+  electron.on('exit', (code) => {
+    console.log(`[dev] Electron 退出（${code}）；vite 与后端仍在运行，可继续用浏览器或再次打开桌面端`);
+    // 不再 stopAll：允许网页继续联调同一后端
+  });
+}

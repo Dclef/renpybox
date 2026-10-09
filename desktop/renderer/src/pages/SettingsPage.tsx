@@ -18,8 +18,9 @@
  * 夹在 max_output_tokens 和 request_timeout 两张卡之间，不是卡片。
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
+import * as api from '../api';
 import {
   APP_FIELDS,
   BALANCED_THROUGHPUT,
@@ -28,8 +29,9 @@ import {
   PROXY_FIELD,
   type FieldSpec,
 } from '../settingsSchema';
+import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
-import { Banner, NumberInput, SelectInput, SettingCard, Switch, TextInput } from '../ui';
+import { Dialog, NumberInput, SelectInput, SettingCard, Switch, TextInput } from '../ui';
 
 type Variant = 'basic' | 'expert' | 'app';
 
@@ -171,15 +173,100 @@ export function SettingsPage(props: {
   );
 }
 
+function displayVersion(tag: string): string {
+  const match = /^(?:RenpyBox_)?v?(\d+(?:\.\d+){2,3})$/.exec(String(tag).trim());
+  return match ? `v${match[1]}` : tag;
+}
+
+function formatMegabytes(size: number): string {
+  return `${(Math.max(0, size) / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const EMPTY_UPDATE: UpdateState = {
+  status: 'NONE',
+  version: '',
+  latest: {},
+  downloaded_size: 0,
+  total_size: 0,
+  error: '',
+  new_version: false,
+  release_url: 'https://github.com/dclef/RenpyBox/releases/latest',
+  can_install: false,
+};
+
 /**
- * 「关于与更新」—— 对应 `renpybox/widget/GroupCard.py`（实测 975x220）。
- * 原壳这里有检查更新 / 下载 / 安装一整条链路，Electron 侧还没接更新服务，
- * 所以这一块只如实显示当前版本，不摆不能按的按钮。
+ * 「关于与更新」—— 对接 /api/update（复用 VersionManager）。
+ * 检查 / 下载 / 取消 / 安装与 Qt 原壳同一事件流；进度经 WebSocket 推送。
  */
 function AboutCard(props: { state: AppState }) {
   const { state } = props;
   const version = state.version?.app_version ?? state.health?.app_version ?? '—';
   const python = state.health?.python_version ?? '—';
+  const [update, setUpdate] = useState<UpdateState>(EMPTY_UPDATE);
+  const [checking, setChecking] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [changelog, setChangelog] = useState<string | null>(null);
+  const [installConfirm, setInstallConfirm] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      setUpdate(await api.getUpdateState());
+    } catch {
+      /* 后端短暂不可达时保留上次状态 */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    return state.subscribe((event) => {
+      if (!String(event.event).startsWith('APP_UPDATE_')) return;
+      if (event.event === 'APP_UPDATE_CHECK_DONE') {
+        setChecking(false);
+        const data = event.data as { error?: string; new_version?: boolean; manual?: boolean };
+        if (data.manual) {
+          if (data.error) state.pushToast('error', `检查更新失败：${data.error}`);
+          else if (!data.new_version) state.pushToast('success', '当前已是最新版本');
+        }
+      }
+      if (event.event === 'APP_UPDATE_DOWNLOAD_ERROR') {
+        setCancelling(false);
+        const data = event.data as { cancelled?: boolean; error?: string };
+        if (data.cancelled) state.pushToast('info', '已取消下载');
+        else if (data.error) state.pushToast('error', String(data.error));
+      }
+      if (event.event === 'APP_UPDATE_DOWNLOAD_DONE') setCancelling(false);
+      void refresh();
+    });
+  }, [refresh, state]);
+
+  const run = async (operation: () => Promise<UpdateState>, options?: { checking?: boolean; cancelling?: boolean }) => {
+    setBusy(true);
+    if (options?.checking) setChecking(true);
+    if (options?.cancelling) setCancelling(true);
+    try {
+      setUpdate(await operation());
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+      if (options?.checking) setChecking(false);
+      if (options?.cancelling) setCancelling(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const tag = displayVersion(String(update.latest.tag_name || ''));
+  const status = String(update.status || 'NONE');
+  const progress = Math.max(0, Math.min(100, Math.round((update.downloaded_size / Math.max(1, update.total_size)) * 100)));
+  let statusText = '尚未检查更新';
+  if (checking) statusText = '检查中…';
+  else if (status === 'NEW_VERSION' || update.new_version) statusText = `发现新版本 ${tag || ''}`.trim();
+  else if (status === 'UPDATING') {
+    statusText = `正在下载 ${formatMegabytes(update.downloaded_size)} / ${formatMegabytes(update.total_size)}`;
+  } else if (status === 'DOWNLOADED' || update.can_install) statusText = '下载完成，重启后生效';
+  else if (update.error) statusText = '检查更新失败，请重试';
+  else if (update.latest.tag_name) statusText = '已是最新版本';
+
   return (
     <section className="group-card">
       <div className="setting-card-text">
@@ -189,19 +276,96 @@ function AboutCard(props: { state: AppState }) {
       <div className="group-card-body">
         <div className="group-row group-row-version">
           <span className="group-row-label">当前版本</span>
-          <span className="group-row-value">{version}</span>
+          <div className="group-row-value update-version-row">
+            <span>{version}</span>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'}
+              onClick={() => void run(() => api.checkUpdate(true), { checking: true })}
+            >
+              {checking ? '检查中…' : '检查更新'}
+            </button>
+          </div>
         </div>
         <div className="group-row">
           <span className="group-row-label">后端 Python</span>
           <span className="group-row-value">{python}</span>
         </div>
+        <div className="group-row update-status-row">
+          <span className="group-row-label">更新状态</span>
+          <div className="group-row-value update-status-value">
+            <span>{statusText}</span>
+            {status === 'UPDATING' ? (
+              <div className="update-progress" aria-label={`下载进度 ${progress}%`}>
+                <div className="update-progress-track">
+                  <div className="update-progress-bar" style={{ width: `${progress}%` }} />
+                </div>
+                <span>{progress}%</span>
+              </div>
+            ) : null}
+            <div className="update-actions">
+              {(status === 'NEW_VERSION' || update.new_version) && status !== 'UPDATING' && status !== 'DOWNLOADED' ? (
+                <>
+                  <button type="button" className="btn" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>
+                    查看详情
+                  </button>
+                  <button type="button" className="btn btn-primary" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>
+                    下载更新
+                  </button>
+                </>
+              ) : null}
+              {status === 'UPDATING' ? (
+                <button type="button" className="btn" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
+                  {cancelling ? '正在取消…' : '取消'}
+                </button>
+              ) : null}
+              {(status === 'DOWNLOADED' || update.can_install) ? (
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={() => setInstallConfirm(true)}>
+                  立即重启并安装
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
         <div className="group-row">
-          <span className="group-row-label">更新通道</span>
-          <span className="group-row-value">
-            <Banner tone="info">Electron 版尚未接入更新服务，检查更新与自动安装在原壳里由 Qt 侧完成。</Banner>
-          </span>
+          <span className="group-row-label">更新日志</span>
+          <div className="group-row-value">
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => {
+                void api.getChangelog()
+                  .then((result) => setChangelog(result.empty ? '暂无更新日志' : result.markdown))
+                  .catch((error) => state.pushToast('error', error instanceof Error ? error.message : String(error)));
+              }}
+            >
+              查看更新日志
+            </button>
+          </div>
         </div>
       </div>
+
+      {installConfirm ? (
+        <Dialog
+          title="安装更新"
+          confirmText="立即重启并安装"
+          onCancel={() => setInstallConfirm(false)}
+          onConfirm={() => {
+            setInstallConfirm(false);
+            void run(api.installUpdate);
+          }}
+        >
+          当前有任务正在运行时安装会中断任务并重启应用。源码模式下会打开发布页，请下载新版覆盖安装目录。
+        </Dialog>
+      ) : null}
+
+      {changelog !== null ? (
+        <Dialog title="更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
+          <pre className="update-changelog">{changelog}</pre>
+        </Dialog>
+      ) : null}
     </section>
   );
 }
