@@ -930,26 +930,8 @@ body {
   height: 27px;
 }
 
-/* 「关于与更新」GroupCard —— 实测 975x220，标题/说明与设置卡同排版，下面挂内容行 */
-.group-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 18px;
-  border: 1px solid var(--rb-divider);
-  border-radius: 12px;
-  background: var(--rb-surface);
-}
-
 .setting-card-description {
   overflow-wrap: anywhere;
-}
-
-.group-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 6px;
 }
 
 /* 行高照实测：版本行 52、状态行/日志行 40 */
@@ -1093,39 +1075,6 @@ body {
   min-height: 34px;
 }
 
-/* Tab 条 1023x40：padding (24,0,24,12)、间距 8 */
-.workbench-tabs {
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 0 0 14px;
-}
-
-/* QuietPillButton：宽度按实测写死（54/68/68/96），高度 28/27 */
-.quiet-pill {
-  flex-shrink: 0;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--rb-text-secondary);
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
-}
-
-.quiet-pill:hover {
-  background: var(--rb-surface-subtle);
-  color: var(--rb-text-primary);
-}
-
-.quiet-pill[aria-selected='true'] {
-  border-color: var(--rb-border);
-  background: var(--rb-surface);
-  color: var(--rb-text-primary);
-}
-
 /* 状态条 1023x47：padding (24,7,24,10)、间距 4 */
 .workbench-status {
   flex-shrink: 0;
@@ -1192,40 +1141,6 @@ body {
   font-size: 12px;
   line-height: 14px;
   color: var(--rb-text-secondary);
-}
-
-/* ---------- 翻译提示页（实测见 pages/CustomPromptPage.tsx 顶部注释） ---------- */
-
-/*
- * 自定义提示词 GroupCard：标题/说明与设置卡同排版，下面挂一个 PlainTextEdit。
- * 实测 `PlainTextEdit.setMinimumHeight(180)`（zh/en），自定义写作风格是 140。
- */
-.prompt-group-card {
-  gap: 6px;
-}
-
-.prompt-textarea {
-  margin-top: 6px;
-  min-height: 180px;
-  padding: 8px;
-  border: 1px solid var(--rb-border-strong);
-  border-radius: 4px;
-  background: var(--rb-surface);
-  color: var(--rb-text-primary);
-  font: inherit;
-  font-size: 13px;
-  line-height: 18px;
-  resize: vertical;
-}
-
-.prompt-textarea:focus-visible {
-  outline: 2px solid var(--rb-accent);
-  outline-offset: -1px;
-}
-
-.prompt-textarea:disabled {
-  color: var(--rb-text-disabled);
-  background: var(--rb-surface-subtle);
 }
 
 /* ---------- 工具箱页（实测：头部右侧 320x33 搜索框、卡 316x132、3 列间距 14） ---------- */
@@ -1333,8 +1248,7 @@ body {
 }
 
 /* 动效只帮助辨认交互；系统要求减少动态时关闭位移与循环动画。 */
-.setting-card,
-.quiet-pill {
+.setting-card {
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
@@ -1383,8 +1297,6 @@ body {
 .workbench-field input,
 .workbench-field textarea { width: 100%; }
 .btn-danger-text { color: var(--rb-error); border-color: transparent; background: transparent; }
-.quiet-pill { padding: 7px 14px; min-height: 34px; }
-.prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
 
 /* 工作台：背景表单与角色名单共用一致的编辑层次。 */
 .workbench-status { background: transparent; border: 0; border-left: 2px solid var(--rb-accent); border-radius: 0; padding: 3px 12px; gap: 6px; }

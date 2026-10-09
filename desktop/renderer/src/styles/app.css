@@ -440,8 +440,12 @@
     overflow: hidden;
   }
 
-  .rb-group-panel .settings-header { display: none; }
   .rb-group-panel .rb-page-scroll { padding: 0 0 16px; }
+  .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-head { border-bottom: 0; }
+  .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-body { display: none; }
+  .rb-settings-head { flex-wrap: wrap; }
+  .prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
 
   .proofreading-page { width: auto; align-self: stretch; padding: 0; gap: 0; overflow: hidden; }
   .proofreading-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
