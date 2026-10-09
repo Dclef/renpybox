@@ -105,8 +105,9 @@ export function SettingsPage(props: {
   variant: Variant;
   title: string;
   description: string;
+  embedded?: boolean;
 }) {
-  const { state, variant, title, description } = props;
+  const { state, variant, title, description, embedded = false } = props;
   const values = state.settings?.values;
   const fields = fieldsFor(variant);
 
@@ -135,9 +136,11 @@ export function SettingsPage(props: {
   ) : null;
 
   return (
-    <div className="rb-page rb-page-narrow">
+    <div className={embedded ? 'rb-embedded' : 'rb-page rb-page-narrow'}>
       <div className="rb-page-scroll">
-        <PageHeader title={title} description={description} actions={balancedButton} />
+        {embedded
+          ? (balancedButton ? <div className="rb-embedded-actions">{balancedButton}</div> : null)
+          : <PageHeader title={title} description={description} actions={balancedButton} />}
         {variant === 'app' ? (
           <>
             <SettingsGroup>
