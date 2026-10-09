@@ -169,7 +169,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
             : '调整翻译任务的并发、超时和重试阈值';
         return (
           <GroupPage title="翻译设置" description={description} tabs={tabs} active={active} onSelect={navigate}>
-            {active === 'custom-prompt' ? <CustomPromptPage state={state} />
+            {active === 'custom-prompt' ? <CustomPromptPage state={state} embedded />
               : (
                 <SettingsPage
                   state={state}
