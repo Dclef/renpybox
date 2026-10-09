@@ -8,7 +8,7 @@ import json
 import os
 import re
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -39,6 +39,12 @@ class ReplaceRequest(BaseModel):
     find: str = Field(min_length=1, max_length=2000)
     replace: str = Field(max_length=10000)
     case_sensitive: bool = True
+
+
+class QualityRequest(BaseModel):
+    cache_token: str = Field(min_length=64, max_length=64)
+    task: Literal["polish", "proofread"]
+    ids: list[int] = Field(min_length=1, max_length=500)
 
 
 def _key(path: str) -> str:
@@ -217,3 +223,55 @@ def replace_rows(request: Request, body: ReplaceRequest) -> dict:
         if changed:
             _save(request, output, manager, body.cache_token)
         return {"ok": True, "changed": changed}
+
+
+@router.post("/quality")
+def start_quality(request: Request, body: QualityRequest) -> dict:
+    """对选中缓存条目启动 AI 润色或校对。进度经 TRANSLATION_UPDATE 推送。"""
+    engine = Engine.get()
+    if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier():
+        raise HTTPException(status_code=409, detail="任务正在运行，请结束后再开始校对或润色。")
+    config = copy.deepcopy(request.app.state.config)
+    with CacheManager.LOCK:
+        output, manager = _load_cache(config)
+        if body.cache_token != _cache_token(config, output):
+            raise HTTPException(status_code=409, detail="项目或缓存已变化，请刷新后再开始。")
+        items = manager.get_items()
+        selected = []
+        skipped = 0
+        for index in dict.fromkeys(body.ids):
+            if index < 0 or index >= len(items):
+                raise HTTPException(status_code=400, detail="选中的条目不存在，请刷新后再试。")
+            item = items[index]
+            eligible = (
+                Base.is_item_polishable(item.get_status())
+                if body.task == "polish"
+                else Base.is_item_proofreadable(item.get_status())
+            )
+            if eligible:
+                selected.append(item)
+            else:
+                skipped += 1
+    if not selected:
+        detail = "选中的条目里没有可润色的译文。润色只处理已翻译的句子。" if body.task == "polish" else "选中的条目里没有可校对的译文。"
+        raise HTTPException(status_code=400, detail=detail)
+    runtime = copy.deepcopy(config)
+    runtime.output_folder = output
+    from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator
+    coordinator = QualityTaskCoordinator.get()
+    started = (
+        coordinator.start_polishing(runtime, items, selected)
+        if body.task == "polish"
+        else coordinator.start_proofreading(runtime, items, selected)
+    )
+    if not started:
+        raise HTTPException(status_code=409, detail="质量任务未能启动，请确认没有其他任务在运行。")
+    return {"ok": True, "accepted": len(selected), "skipped": skipped, "task": body.task}
+
+
+@router.post("/quality/cancel")
+def cancel_quality() -> dict:
+    from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator
+    if not QualityTaskCoordinator.get().cancel():
+        raise HTTPException(status_code=409, detail="当前没有进行中的校对或润色。")
+    return {"ok": True}

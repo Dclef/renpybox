@@ -10,6 +10,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class AgentMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=16000)
+    thinking_level: Literal["OFF", "LOW", "MEDIUM", "HIGH", "MAX"] = "OFF"
+
+
+class AgentConfirmationRequest(BaseModel):
+    confirmation_id: str = Field(min_length=32, max_length=32)
+    approved: bool
+
+
 # ---------- 通用 ----------
 
 class HealthResponse(BaseModel):

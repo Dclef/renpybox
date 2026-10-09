@@ -6,8 +6,9 @@
   "description": "RenpyBox Electron shell —— Electron 主进程 + Python sidecar（FastAPI + WebSocket）+ React/TS 主 UI",
   "main": "main/main.js",
   "scripts": {
-    "sidecar": "sidecar\\.venv\\Scripts\\python.exe -m uvicorn main:app --app-dir sidecar --host 127.0.0.1 --port 9712",
+    "sidecar": "node scripts/sidecar.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:web": "node scripts/dev.mjs --web",
     "dev:shell": "electron .",
     "dev:renderer": "vite --config renderer/vite.config.ts",
     "build:renderer": "vite build --config renderer/vite.config.ts",
@@ -16,6 +17,7 @@
   },
   "dependencies": {
     "@esbuild/win32-x64": "^0.25.12",
+    "antd": "^6.6.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {

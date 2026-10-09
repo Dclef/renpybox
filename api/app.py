@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from api.events import EventBridge
 from api.hub import ConnectionHub
 from api.jobs import JobManager
-from api.routes import glossary, jobs, platforms, proofreading, project, settings, system, translation, workbench, ws
+from api.routes import agent, glossary, jobs, platforms, proofreading, project, settings, system, translation, update, workbench, ws
 from api.routes.ws import drain_loop
 
 
@@ -27,6 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from module.Config import Config
     from module.Engine.Engine import Engine
     from module.Localizer.Localizer import Localizer
+    from module.Agent.AgentService import AgentService
+    from api.agent import AgentSession
 
     config = Config().load()
     Localizer.set_app_language(config.app_language)
@@ -41,10 +43,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.jobs = jobs
     app.state.bridge = bridge
     app.state.app_version = Version.CURRENT
-    app.state.bridge_event_names = tuple(bridge._events)
+    app.state.bridge_event_names = (*bridge._events, "AGENT_UPDATE")
+    app.state.agent = AgentSession(
+        AgentService(config_loader=lambda: app.state.config),
+        hub.broadcast_threadsafe,
+    )
 
     # 事件总线单例要先于桥接创建，否则桥接订阅不到
     EventManager.get()
+    # VersionManager 在构造时订阅检查/下载/安装事件，必须在桥接前实例化
+    from base.VersionManager import VersionManager
+    app.state.version_manager = VersionManager.get()
     bridge.start()
 
     # 翻译引擎依赖 APITester / Translator，初始化后任务接口才能用
@@ -56,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await asyncio.to_thread(app.state.agent.close)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -73,6 +83,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(system.router)
+    app.include_router(update.router)
+    app.include_router(agent.router)
     app.include_router(settings.router)
     app.include_router(glossary.router)
     app.include_router(platforms.router)

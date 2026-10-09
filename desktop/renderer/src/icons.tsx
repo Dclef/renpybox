@@ -243,6 +243,46 @@ export function IconChevronRight(p: IconProps) {
   );
 }
 
+/** 复制图标 */
+export function IconCopy(p: IconProps) {
+  return (
+    <Svg size={14} {...p}>
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Svg>
+  );
+}
+
+/** 编辑图标 */
+export function IconEdit(p: IconProps) {
+  return (
+    <Svg size={14} {...p}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+    </Svg>
+  );
+}
+
+/** 确认 / 对勾图标 */
+export function IconCheck(p: IconProps) {
+  return (
+    <Svg size={14} {...p}>
+      <polyline points="20 6 9 17 4 12" />
+    </Svg>
+  );
+}
+
+/** 更多操作 (···) 图标 */
+export function IconDots(p: IconProps) {
+  return (
+    <Svg size={16} {...p}>
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 /**
  * 无边框窗口的控制图标 —— Windows 11 标题栏口径：10px 字形、1px 细线，
  * 所以这几个单独用 10 视框而不是 24，避免缩放后线宽失真。
@@ -296,6 +336,7 @@ export type NavIconName =
   | 'IconZoom'
   | 'IconEducation'
   | 'IconSpeakers'
+  | 'IconInfo'
   | 'IconSetting';
 
 export const NAV_ICONS: Record<NavIconName, FC<IconProps>> = {
@@ -309,5 +350,6 @@ export const NAV_ICONS: Record<NavIconName, FC<IconProps>> = {
   IconZoom,
   IconEducation,
   IconSpeakers,
+  IconInfo,
   IconSetting,
 };

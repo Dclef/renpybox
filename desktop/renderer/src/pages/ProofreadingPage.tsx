@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { request } from '../api';
 import type { AppState } from '../useAppState';
-import { Banner, Dialog, Empty } from '../ui';
+import { Button, Table } from 'antd';
+import { Banner, Dialog } from '../ui';
 
 interface ProofreadingRow {
   id: number;
@@ -115,11 +116,6 @@ export function ProofreadingPage({ state, onDirtyChange }: {
     if (dirty && !window.confirm('译文尚未保存，确定放弃这次编辑？')) return;
     setEdit(null);
   };
-  const toggleRow = (id: number) => setSelected((previous) => {
-    const next = new Set(previous);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
 
   const saveEdit = async () => {
     if (!data || !edit || saving || readonly || editProjectChanged) return;
@@ -186,24 +182,49 @@ export function ProofreadingPage({ state, onDirtyChange }: {
         </select>
         <button className="btn" type="submit" disabled={loading}>搜索</button>
       </form>
-      <section className="proofreading-surface" aria-busy={loading}>
-        <div className="proofreading-table-head">
-          <input type="checkbox" aria-label="选择当前页全部译文" checked={Boolean(data?.items.length) && selected.size === data?.items.length} disabled={!data?.items.length || readonly || loading} onChange={(event) => setSelected(event.target.checked ? new Set(data?.items.map((row) => row.id)) : new Set())} />
-          <span>位置</span><span>原文</span><span>译文</span>
-        </div>
-        <div className="proofreading-table">
-          {data?.items.map((row) => (
-            <article key={`${data.cache_token}:${row.id}`} className="proofreading-row">
-              <input type="checkbox" aria-label={`选择第 ${row.id + 1} 条译文`} checked={selected.has(row.id)} disabled={readonly || loading} onChange={() => toggleRow(row.id)} />
-              <div className="proofreading-meta"><strong>{String(row.id + 1).padStart(3, '0')}</strong><span className="proofreading-row-status" data-status={row.status}>{STATUS_LABELS[row.status] ?? row.status}</span><span title={row.file_path}>{row.file_path || '未分类'}{row.row ? `:${row.row}` : ''}</span></div>
-              <div className="proofreading-source">{row.src}</div>
-              <button className="proofreading-target" disabled={readonly || loading || saving} onClick={() => { setEdit({ ...row, cache_token: data.cache_token, project_identity: projectIdentity }); setDraft(row.dst); }} title="编辑这条译文" aria-label={`编辑第 ${row.id + 1} 条译文`}>{row.dst || <span>待补充译文</span>}</button>
-            </article>
-          ))}
-          {loading && !data && <Empty>正在载入项目译文…</Empty>}
-          {!loading && !data?.items.length && <Empty>{data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里打磨对白。'}</Empty>}
-        </div>
-      </section>
+      <Table<ProofreadingRow>
+        className="data-sheet"
+        size="small"
+        bordered
+        rowKey="id"
+        loading={loading && !data}
+        pagination={false}
+        dataSource={data?.items ?? []}
+        locale={{ emptyText: data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里打磨对白。' }}
+        rowSelection={{
+          selectedRowKeys: [...selected],
+          onChange: (keys) => setSelected(new Set(keys.map(Number))),
+          getCheckboxProps: () => ({ disabled: Boolean(readonly || loading) }),
+        }}
+        columns={[
+          { title: '序号', dataIndex: 'id', width: 72, render: (id: number) => id + 1 },
+          { title: '状态', dataIndex: 'status', width: 100, render: (status: string) => STATUS_LABELS[status] ?? status },
+          { title: '原文', dataIndex: 'src', ellipsis: true },
+          {
+            title: '译文',
+            dataIndex: 'dst',
+            render: (dst: string, row) => (
+              <Button
+                type="link"
+                size="small"
+                disabled={readonly || loading || saving}
+                onClick={() => {
+                  setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+                  setDraft(dst);
+                }}
+              >
+                {dst || '（空，点击编辑）'}
+              </Button>
+            ),
+          },
+          {
+            title: '文件',
+            width: 180,
+            ellipsis: true,
+            render: (_, row) => `${row.file_path || '未分类'}${row.row ? `:${row.row}` : ''}`,
+          },
+        ]}
+      />
       <footer className="proofreading-pagination">
         <span>{data ? `${data.matched.toLocaleString()} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
         <div className="proofreading-toolbar">

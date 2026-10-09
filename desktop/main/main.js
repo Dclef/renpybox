@@ -165,6 +165,7 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', async (event) => {
   event.preventDefault();
+  // 仅杀死本进程启动的 sidecar；EXTERNAL / 复用模式下保留后端给网页端。
   await sidecar.stop();
   app.exit(0);
 });
