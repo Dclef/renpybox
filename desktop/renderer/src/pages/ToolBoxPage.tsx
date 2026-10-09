@@ -15,12 +15,13 @@
  */
 
 import { useMemo, useState } from 'react';
+import { TextInput } from '@mantine/core';
+import { ChevronRight, Search } from 'lucide-react';
 
-import { IconChevronRight, IconSearch } from '../icons';
 import { searchTools, TOOL_ICONS, toolsByGroup, type ToolSpec } from '../tools';
 import type { AppState } from '../useAppState';
 import type { PageKey } from '../nav';
-import { Banner, Dialog, Empty } from '../ui';
+import { Banner, Dialog, Empty, PageHeader } from '../ui';
 
 /** 把 Lucide SVG 源码塞进内联 SVG；颜色靠 currentColor 跟随主题。 */
 function InlineSvg(props: { markup: string }) {
@@ -37,18 +38,14 @@ function ToolCard(props: { tool: ToolSpec; blocked: boolean; onOpen: (tool: Tool
       onClick={() => onOpen(tool)}
       title={blocked ? '需先选择游戏目录' : `打开${tool.title}`}
     >
-      <span className="tool-card-head">
-        {tool.step > 0 ? <span className="tool-card-step">{tool.step}</span> : null}
-        <InlineSvg markup={TOOL_ICONS[tool.icon]} />
-        <span className="tool-card-title">{tool.title}</span>
-        <span className="tool-card-go">
-          <IconChevronRight size={16} />
-        </span>
+      {tool.step > 0 ? <span className="rb-tool-step">{tool.step}</span> : null}
+      <InlineSvg markup={TOOL_ICONS[tool.icon]} />
+      <span className="rb-tool-copy">
+        <span className="rb-tool-title">{tool.title}</span>
+        <span className="rb-tool-desc">{tool.description}</span>
+        {blocked ? <span className="rb-tool-desc">需先选择游戏目录</span> : null}
       </span>
-      <span className="tool-card-body">
-        <span className="tool-card-description">{tool.description}</span>
-        {blocked ? <span className="tool-card-requirement">需先选择游戏目录</span> : null}
-      </span>
+      <ChevronRight size={16} strokeWidth={1.75} />
     </button>
   );
 }
@@ -72,28 +69,25 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
   const matches = useMemo(() => (searching ? searchTools(query) : null), [query, searching]);
 
   return (
-    <div className="settings-layout">
-      <header className="settings-header toolbox-header">
-        <div className="toolbox-header-text">
-          <h1 className="settings-title">Ren'Py 工具箱</h1>
-          <p className="settings-subtitle">集中管理翻译流程、文本处理、术语资产与工程辅助工具</p>
-        </div>
-        <div className="toolbox-search-wrap">
-          <span className="toolbox-search-icon">
-            <IconSearch size={15} />
-          </span>
-          <input
-            className="toolbox-search"
-            type="text"
+    <div className="rb-page rb-toolbox">
+      <PageHeader
+        title="Ren'Py 工具箱"
+        description="集中管理翻译流程、文本处理、术语资产与工程辅助工具"
+        actions={(
+          <TextInput
+            w={240}
+            maw="100%"
+            leftSection={<Search size={16} strokeWidth={1.75} />}
+            classNames={{ input: 'toolbox-search' }}
             aria-label="搜索工具"
             placeholder="搜索工具"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => setQuery(event.currentTarget.value)}
           />
-        </div>
-      </header>
+        )}
+      />
 
-      <div className="settings-scroll">
+      <div className="rb-toolbox-scroll">
         {hasProject ? null : (
           <Banner tone="warning">尚未绑定工程。需要项目的工具暂时不可用，请先到项目设置选择带 game/ 的目录。</Banner>
         )}
@@ -107,7 +101,7 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
             {matches.length === 0 ? (
               <Empty>没有匹配的工具</Empty>
             ) : (
-              <div className="tool-grid">
+              <div className="rb-tool-list">
                 {matches.map((tool) => (
                   <ToolCard
                     key={tool.key}
@@ -130,7 +124,7 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
                 <span className="tool-group-title">{group.title}</span>
                 <span className="tool-group-count">{tools.length} 款工具</span>
               </div>
-              <div className="tool-grid">
+              <div className="rb-tool-list">
                 {tools.map((tool) => (
                   <ToolCard
                     key={tool.key}
