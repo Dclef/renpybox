@@ -1,36 +1,31 @@
 /**
- * 翻译任务页 —— 替代 TranslationPage.py 的运行时部分。
+ * 翻译任务页。
  *
- * 布局按实测几何复原（页宽 1183、nav=48 时）：
- *   header 1183x32  @ (24, 18)   标题 18px 粗体 + 说明 + 右侧「打开平行校对台」32px 按钮
- *   KPI 条 1183x88  @ (24, 62)   三张 386 宽的高 88 KPI 卡
- *   网格   1183x523 @ (24, 162)  280x248 进度环卡 + 889x248 吞吐卡 + 1183x261 流水卡
- *   命令栏 1231x58  @ (0, 703)   钉在页面底部、在滚动区之外；按钮高 34
- *
- * 保留 PyQt 页的决策逻辑：开始前引擎必须 IDLE 且无 stop_barrier、
+ * 保留的决策：开始前引擎必须 IDLE 且无 stop_barrier、
  * ASSETS_MISSING 时交给用户选择「打开工作台 / 仍然继续」、停止前确认、
  * 进度读取应用级快照，切页和任务结束后仍保留统计、
  * preparing 阶段显示不确定进度。
- * 不做的是流水的逐行虚拟化（等校对页迁移时一起做）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
+import { Badge, Button, Loader, Menu, Progress } from '@mantine/core';
 import {
-  IconCalories,
-  IconChevronRight,
-  IconDocument,
-  IconFolder,
-  IconIot,
-  IconPlay,
-  IconRotate,
-  IconShare,
-  IconStop,
-  IconSync,
-} from '../icons';
-import { ProgressRing } from '../ProgressRing';
+  ArrowRight,
+  Calculator,
+  Ellipsis,
+  FileDown,
+  FileText,
+  Folder,
+  Play,
+  Plug,
+  RefreshCw,
+  SpellCheck,
+  Square,
+  StepForward,
+} from 'lucide-react';
+
 import type { StartableProjectStatus, TranslationUpdateData } from '../types';
-import { Dialog, Empty } from '../ui';
+import { Dialog, Empty, PageHeader } from '../ui';
 import type { AppState } from '../useAppState';
 import { Waveform } from '../Waveform';
 
@@ -63,43 +58,6 @@ function formatDuration(seconds: number): string {
   if (h > 0) return `${h}时 ${m}分 ${s}秒`;
   if (m > 0) return `${m}分 ${s}秒`;
   return `${s}秒`;
-}
-
-type KpiAccent = 'accent' | 'success' | 'warning' | 'info';
-
-/** KPI 卡：38x38 图标块 + 标题/趋势行 + 20px 粗体数值 + 说明 */
-function KpiCard(props: {
-  icon: React.ReactNode;
-  accent: KpiAccent;
-  title: string;
-  value: string;
-  unit?: string;
-  trend?: string;
-  detail?: string;
-}) {
-  const { icon, accent, title, value, unit, trend, detail } = props;
-  return (
-    <section className="card kpi-card">
-      <div className="kpi-icon" data-accent={accent}>
-        {icon}
-      </div>
-      <div className="kpi-content">
-        <div className="kpi-label-row">
-          <span className="kpi-title">{title}</span>
-          {trend ? (
-            <span className="kpi-trend" data-accent={accent}>
-              {trend}
-            </span>
-          ) : null}
-        </div>
-        <div className="kpi-value-row">
-          <span className="kpi-value">{value}</span>
-          {unit ? <span className="kpi-unit">{unit}</span> : null}
-        </div>
-        {detail ? <div className="kpi-detail">{detail}</div> : null}
-      </div>
-    </section>
-  );
 }
 
 export function TranslationPage(props: {
@@ -252,239 +210,133 @@ export function TranslationPage(props: {
     : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
     : totalLine > 0 ? line >= totalLine && failed === 0 ? '已完成' : '可继续' : '待开始';
 
+  const continuePrimary = statusLabel === '可继续';
+  const latencyText = averageLatency > 0 ? `${averageLatency.toFixed(2)}s` : '—';
+  const cacheText = `${(cacheRate > 1 ? cacheRate : cacheRate * 100).toFixed(1)}%`;
+
   return (
-    <div className="translation-layout">
-      <div className="translation-scroll">
-        <header className="translation-header">
-          <div className="translation-header-text">
-            <div className="translation-heading">
-              <h1 className="translation-header-title">翻译任务</h1>
-              <span className="task-state" data-active={isTranslating} data-warning={isStopping || failed > 0} role="status">{statusLabel}</span>
-            </div>
-            <p className="translation-header-desc">{headerDescription}</p>
-          </div>
-          <button
-            type="button"
-            className="btn"
-            onClick={onOpenProofreading}
-          >
-            <IconDocument size={15} />
-            打开平行校对台
-          </button>
-        </header>
+    <div className="translation-layout rb-page">
+      <div className="rb-page-scroll">
+        <PageHeader
+          title="翻译任务"
+          titleExtra={<span className="task-state" data-active={isTranslating} data-warning={isStopping || failed > 0} role="status">{statusLabel}</span>}
+          description={headerDescription}
+          actions={(
+            <Button variant="default" onClick={onOpenProofreading} leftSection={<SpellCheck size={16} strokeWidth={1.75} />}>
+              打开平行校对台
+            </Button>
+          )}
+        />
 
         <div className="task-context">
           <button type="button" className="task-context-button task-input" title={inputFolder || '选择翻译输入目录'} aria-label="配置翻译输入目录" onClick={onOpenProject}>
-            <IconFolder size={15} />
+            <Folder size={16} strokeWidth={1.75} />
             <span>{inputFolder || '选择翻译输入目录'}</span>
           </button>
           <span className="task-language-pair" aria-label={`原文 ${sourceLanguage || '未设置'}，译文 ${targetLanguage || '未设置'}`}>
-            {sourceLanguage || '原文'}<IconChevronRight size={12} />{targetLanguage || '译文'}
+            {sourceLanguage || '原文'}<ArrowRight size={14} strokeWidth={1.75} />{targetLanguage || '译文'}
           </span>
           <button type="button" className="task-context-button task-platform" title={activePlatform?.model && activePlatform.model !== 'no_model_required' ? `${platformName} · ${activePlatform.model}` : platformName} aria-label="配置翻译接口" onClick={onOpenPlatform}>
-            <IconIot size={15} />
+            <Plug size={16} strokeWidth={1.75} />
             <span>{platformName}</span>
-            <IconChevronRight size={12} />
           </button>
         </div>
 
-        <div className="kpi-strip">
-          <KpiCard
-            icon={<IconDocument size={20} />}
-            accent={failed > 0 ? 'warning' : 'accent'}
-            title="翻译进度"
-            value={(percent * 100).toFixed(1)}
-            unit="%"
-            trend={failed > 0 ? `${failed} 行失败` : undefined}
-            detail={linesDetail}
-          />
-          <KpiCard
-            icon={<IconCalories size={20} />}
-            accent="info"
-            title="实时吞吐"
-            value={throughput.toFixed(2)}
-            unit="Token/s"
-            detail={`有效翻译速度 ${effectiveRate.toFixed(1)} 条/分`}
-          />
-          <KpiCard
-            icon={<IconShare size={20} />}
-            accent="success"
-            title="累计消耗"
-            value={(inputTokens + outputTokens).toLocaleString()}
-            unit="Token"
-            detail={`输出: ${outputTokens.toLocaleString()} · 输入: ${inputTokens.toLocaleString()}`}
-          />
-        </div>
+        <section className="rb-panel rb-progress">
+          <div className="rb-progress-top">
+            <div className="rb-progress-main">
+              <span className="rb-progress-percent">{(percent * 100).toFixed(1)}%</span>
+              <span className="rb-progress-lines">{linesDetail}</span>
+            </div>
+            <span className="rb-progress-time">已用: {formatDuration(elapsed)} · 剩余约: {remaining > 0 ? formatDuration(remaining) : '—'}</span>
+          </div>
+          <Progress size="sm" radius="xl" value={percent * 100} animated={preparing} />
+          <div className="rb-progress-meta">
+            <span>
+              已译 {line.toLocaleString()}
+              {' · '}
+              <span title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">{cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}</span>
+              {' · '}
+              待译 {Math.max(0, totalLine - line).toLocaleString()}
+            </span>
+            {failed > 0 ? <Badge className="rb-failed-badge" color="red">{failed} 行失败</Badge> : null}
+          </div>
+        </section>
 
-        <div className="dashboard-grid">
-          <section className="card progress-card">
-            <h2 className="card-title">翻译完成度</h2>
-            <div className="progress-ring-slot">
-              <ProgressRing
-                value={percent * 10000}
-                size={136}
-                stroke={7}
-                lines={[`${(percent * 100).toFixed(1)}%`, `${line.toLocaleString()} / ${totalLine.toLocaleString()}`]}
-              />
-            </div>
-            <div className="pill-row">
-              <span className="badge" data-tone="success">
-                已译 {line.toLocaleString()}
-              </span>
-              <span className="badge" data-tone="info" title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">
-                {cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}
-              </span>
-              <span className="badge" data-tone="warning">
-                待译 {Math.max(0, totalLine - line).toLocaleString()}
-              </span>
-            </div>
-            <div className="hero-meta">
-              <span>已用: {formatDuration(elapsed)}</span>
-              <span className="hero-remaining">剩余约: {remaining > 0 ? formatDuration(remaining) : '—'}</span>
-            </div>
-          </section>
+        <section className="rb-panel rb-metrics">
+          <div>
+            <div className="rb-metric-label">实时吞吐</div>
+            <div className="rb-metric-value">{throughput.toFixed(2)}<span>Token/s</span></div>
+            <Waveform points={samples} columns={50} height={36} />
+            <div className="rb-metric-note">峰值 {peak.toFixed(2)} Token/s</div>
+          </div>
+          <div>
+            <div className="rb-metric-label">累计消耗</div>
+            <div className="rb-metric-value">{(inputTokens + outputTokens).toLocaleString()}<span>Token</span></div>
+            <div className="rb-metric-note">输出: {outputTokens.toLocaleString()} · 输入: {inputTokens.toLocaleString()}</div>
+          </div>
+          <div>
+            <div className="rb-metric-label">有效翻译速度</div>
+            <div className="rb-metric-value">{effectiveRate.toFixed(1)}<span>条/分</span></div>
+            <div className="rb-metric-note">已处理批次 {batches.toLocaleString()} · 平均请求耗时 {latencyText} · 已有译文占比 {cacheText}</div>
+          </div>
+        </section>
 
-          <section className="card throughput-card">
-            <header className="card-header">
-              <h2 className="card-title">吞吐趋势</h2>
-              <span className="card-description">峰值 {peak.toFixed(2)} Token/s</span>
-            </header>
-            <Waveform points={samples} columns={WAVE_COLUMNS} height={132} />
-            <div className="chart-caption"><span>最近 {WAVE_COLUMNS} 次采样</span><span>最新</span></div>
-            <div className="throughput-stats">
-              <span>
-                均值吞吐 <b>{throughput.toFixed(2)}</b>
+        <section className="rb-panel feed-card">
+          <header className="rb-feed-head">
+            <h2>实时翻译流水</h2>
+            <Badge>{recentItems.length} 条记录</Badge>
+            <span>自动追踪引擎吐出的最新对白</span>
+          </header>
+          {recentItems.length > 0 ? (
+            <table className="rb-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>原文 <span className="rb-lang">{sourceLanguage}</span></th>
+                  <th>译文 <span className="rb-lang">{targetLanguage}</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentItems.map((item, index) => (
+                  <tr key={index}>
+                    <td>{String(item.time ?? item.timestamp ?? '')}</td>
+                    <td>{String(item.src ?? item.source ?? '')}</td>
+                    <td>{String(item.dst ?? item.target ?? '')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <Empty>
+              <span className="rb-empty-stack">
+                <FileText size={28} strokeWidth={1.75} />
+                <strong>{isTranslating ? '正在等待第一批译文' : '暂无翻译流水'}</strong>
+                <span>{message || '开始翻译后，原文与译文会显示在这里。'}</span>
               </span>
-              <span>
-                已处理批次 <b>{batches.toLocaleString()}</b>
-              </span>
-              <span>
-                已有译文占比 <b>{(cacheRate > 1 ? cacheRate : cacheRate * 100).toFixed(1)}%</b>
-              </span>
-              <span>
-                平均请求耗时 <b>{averageLatency > 0 ? `${averageLatency.toFixed(2)}s` : '—'}</b>
-              </span>
-            </div>
-          </section>
-
-          <section className="card feed-card">
-            <header className="card-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <h2 className="card-title">实时翻译流水</h2>
-                <span className="feed-card-badge">{recentItems.length} 条记录</span>
-              </div>
-              <span className="card-description">自动追踪引擎吐出的最新对白</span>
-            </header>
-            {recentItems.length > 0 ? (
-              <div className="feed-scroll">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>时间</th>
-                      <th>原文 <span className="table-header-tag">{sourceLanguage}</span></th>
-                      <th>译文 <span className="table-header-tag table-header-tag-accent">{targetLanguage}</span></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentItems.map((item, index) => (
-                      // 流水行没有稳定 id，用序号做 key（每次更新整体重排）
-                      <tr key={index} data-latest={index === 0 ? 'true' : undefined}>
-                        <td className="feed-time">
-                          <span className="feed-time-wrap">
-                            {String(item.time ?? item.timestamp ?? '')}
-                          </span>
-                        </td>
-                        <td className="feed-source">{String(item.src ?? item.source ?? '')}</td>
-                        <td className="feed-target">{String(item.dst ?? item.target ?? '')}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <Empty>
-                <div className="translation-empty-content">
-                  <IconDocument size={28} />
-                  <strong>{isTranslating ? '正在等待第一批译文' : '暂无翻译流水'}</strong>
-                  <span>{message || '开始翻译后，原文与译文会显示在这里。'}</span>
-                </div>
-              </Empty>
-            )}
-          </section>
-        </div>
+            </Empty>
+          )}
+        </section>
       </div>
 
-      {/* 命令栏在滚动区之外、钉在页面底部（对齐 CommandBarCard 的 58px） */}
-      <footer className="translation-footer">
-        <div className="command-bar">
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={commandDisabled || !canStart || isTranslating}
-            onClick={() => setConfirmReset(true)}
-          >
-            <IconPlay size={15} />
-            开始翻译
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={commandDisabled || !canStart}
-            onClick={() => void start('TRANSLATING')}
-          >
-            <IconRotate size={15} />
-            继续任务
-          </button>
-          <span className="command-separator" />
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={commandDisabled || !isTranslating}
-            onClick={() => setConfirmStop(true)}
-          >
-            <IconStop size={15} />
-            停止
-          </button>
-          <button type="button" className="btn" disabled={commandDisabled} onClick={() => void onEstimate()}>
-            <IconCalories size={15} />
-            估算 Token
-          </button>
-          <span className="command-separator" />
-          <button
-            type="button"
-            className="btn"
-            disabled={commandDisabled}
-            onClick={() =>
-              void state.retryFailedTranslations().catch((error: unknown) => {
-                state.pushToast('warning', error instanceof Error ? error.message : String(error));
-              })
-            }
-          >
-            <IconSync size={15} />
-            重翻失败项
-          </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={commandDisabled || isTranslating}
-            onClick={() =>
-              void state.exportTranslation().catch((error: unknown) => {
-                state.pushToast('warning', error instanceof Error ? error.message : String(error));
-              })
-            }
-          >
-            <IconShare size={15} />
-            写入译文文件
-          </button>
-          <span className="command-bar-spacer" />
-          {preparing ? <span className="command-spinner" aria-label="处理中" /> : null}
-          <span className="command-caption">
-            {statusLabel}
-            {isTranslating ? ` · ${running}/${max}` : ''}
-          </span>
-        </div>
+      <footer className="translation-footer rb-command-bar">
+        <Button variant={continuePrimary ? 'default' : 'filled'} disabled={commandDisabled || !canStart || isTranslating} onClick={() => setConfirmReset(true)} leftSection={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
+        <Button variant={continuePrimary ? 'filled' : 'default'} disabled={commandDisabled || !canStart} onClick={() => void start('TRANSLATING')} leftSection={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
+        <Button className="rb-stop" color="red" variant="light" disabled={commandDisabled || !isTranslating} onClick={() => setConfirmStop(true)} leftSection={<Square size={16} strokeWidth={1.75} />}>停止</Button>
+        <Button variant="default" disabled={commandDisabled || isTranslating} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} leftSection={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
+        <Menu position="top-start">
+          <Menu.Target>
+            <Button variant="default" leftSection={<Ellipsis size={16} strokeWidth={1.75} />}>更多</Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item disabled={commandDisabled} leftSection={<Calculator size={16} strokeWidth={1.75} />} onClick={() => void onEstimate()}>估算 Token</Menu.Item>
+            <Menu.Item disabled={commandDisabled} leftSection={<RefreshCw size={16} strokeWidth={1.75} />} onClick={() => void state.retryFailedTranslations().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })}>重翻失败项</Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+        <span className="rb-command-spacer" />
+        {preparing ? <Loader size="xs" /> : null}
+        {isTranslating ? <span className="rb-command-pool">线程池 {running}/{max}</span> : null}
       </footer>
-
       {confirmStop ? (
         <Dialog
           title="提醒"
