@@ -492,7 +492,8 @@
     border-bottom: 1px solid var(--rb-divider);
   }
   .rb-term-row { font-size: 13px; cursor: pointer; }
-  .rb-term-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-term-row > span,
+  .rb-sheet-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rb-term-row:hover { background: var(--rb-surface-hover); }
   .rb-term-row[data-selected='true'] { background: var(--rb-accent-surface); }
   .rb-term-marks { display: flex; justify-content: flex-end; gap: 4px; }
