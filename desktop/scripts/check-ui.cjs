@@ -157,7 +157,9 @@ app.whenReady().then(async () => {
   await assert("!!document.querySelector('.glossary-layout')", '工具词库入口');
   await page('Agent 助手');
   await assert("!!document.querySelector('.agent-composer textarea') && !document.querySelector('.agent-empty').textContent.includes('暂不可用')", 'Agent 工作区已替换占位页');
-  await js("document.querySelector('.agent-suggestion').click(); const select=document.querySelector('[aria-label=\"Agent 思考等级\"]'); select.value='HIGH'; select.dispatchEvent(new Event('change',{bubbles:true}));"); await pause(100);
+  await js("document.querySelector('.agent-suggestion').click()"); await pause(80);
+  await js("document.querySelector('[aria-label=\"Agent 思考等级\"]').click()"); await pause(120);
+  await js("Array.from(document.querySelectorAll('[role=option]')).find(o=>o.textContent.trim()==='高')?.click()"); await pause(120);
   await click('发送');
   await assert("__uiFixture.writes.at(-1).p==='/api/agent/message' && __uiFixture.writes.at(-1).body.thinking_level==='HIGH' && document.querySelectorAll('.agent-message').length===2", 'Agent 发送实际请求与思考覆盖项');
   await js("__uiFixture.agent.messages.at(-1).content='找到 2 个资源包。'; __uiFixture.agent.messages.at(-1).tools=[{name:'list_rpa_files',status:'done',message:'找到 2 个资源包'}]; __uiFixture.emitAgent();"); await pause(220);
