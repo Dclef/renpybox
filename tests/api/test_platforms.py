@@ -101,3 +101,62 @@ def test_platform_test_reserves_engine_and_releases_after_failure(monkeypatch):
     assert engine.get_status() == Engine.Status.IDLE
     assert len(seen) == 1 and seen[0][1]["result"] is False
     assert "sensitive-secret" not in str(seen)
+
+
+def test_model_list_uses_saved_credentials_and_hides_sdk_errors(monkeypatch):
+    from module.Engine.API import ModelList
+
+    engine = Engine()
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
+    config = Config(platforms=[{"id": 0, "api_url": "https://example.invalid/v1", "api_format": "OpenAI", "api_key": ["test-private-key"]}])
+    app = FastAPI()
+    app.state.config = config
+    app.include_router(platforms.router)
+    seen = []
+    def models(url, key, api_format):
+        seen.append((url, key, api_format))
+        return ["model-a", "model-b"]
+    monkeypatch.setattr(ModelList, "list_models", models)
+    with TestClient(app) as client:
+        response = client.get("/api/platforms/0/models")
+        assert response.json() == {"models": ["model-a", "model-b"]}
+        assert seen == [("https://example.invalid/v1", "test-private-key", "OpenAI")]
+        assert "test-private-key" not in response.text
+        assert client.get("/api/platforms/99/models").status_code == 404
+        engine.set_status(Engine.Status.TRANSLATING)
+        assert client.get("/api/platforms/0/models").status_code == 409
+        engine.set_status(Engine.Status.IDLE)
+        def failed(*args):
+            raise RuntimeError("test-private-key")
+        monkeypatch.setattr(ModelList, "list_models", failed)
+        response = client.get("/api/platforms/0/models")
+        assert response.status_code == 502
+        assert "test-private-key" not in response.text
+
+
+def test_model_list_shared_sdk_paths(monkeypatch):
+    import sys
+    from module.Engine.API.ModelList import list_models
+    from base.Base import Base
+
+    calls = []
+    class Client:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            self.models = SimpleNamespace(list=lambda: [SimpleNamespace(id="z", name="z"), SimpleNamespace(id="a", name="a"), SimpleNamespace(id="a", name="a")])
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=Client))
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setitem(sys.modules, "google.genai", SimpleNamespace(Client=Client))
+    import google
+    monkeypatch.setattr(google, "genai", sys.modules["google.genai"], raising=False)
+    for api_format in (Base.APIFormat.OPENAI, Base.APIFormat.ANTHROPIC, Base.APIFormat.GOOGLE):
+        assert list_models("https://example.invalid", "key", api_format) == ["a", "z"]
+    assert calls[0]["timeout"] == 30
+    assert calls[2]["http_options"] == {"timeout": 30000}
+    before = len(calls)
+    assert list_models("", "", next(iter(Base.MACHINE_API_FORMATS))) == ["free"]
+    assert len(calls) == before

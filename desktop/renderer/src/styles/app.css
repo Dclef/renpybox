@@ -1,7 +1,7 @@
 @layer app {
   .rb-shell {
     display: grid;
-    grid-template-columns: 208px minmax(0, 1fr);
+    grid-template-columns: 256px minmax(0, 1fr);
     grid-template-rows: 38px minmax(0, 1fr);
     grid-template-areas:
       'titlebar titlebar'
@@ -204,7 +204,7 @@
   }
 
   .rb-nav-section { display: flex; flex-direction: column; gap: 2px; }
-  .rb-nav-section + .rb-nav-section { margin-top: 16px; }
+  .rb-nav-section + .rb-nav-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rb-divider); }
 
   .rb-sidebar-footer {
     display: flex;
@@ -448,13 +448,43 @@
   .prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
 
   .proofreading-page { width: auto; align-self: stretch; padding: 0; gap: 0; overflow: hidden; }
-  .proofreading-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .proofreading-filters .mantine-TextInput-root,
-  .proofreading-filters .mantine-Select-root { flex: 1 1 160px; min-width: 0; }
+  .rb-proofreading-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .rb-quality-report { border: 1px solid var(--rb-border); border-radius: 8px; padding: 12px; font-size: 13px; }
+  .rb-quality-report summary { cursor: pointer; font-weight: 500; }
+  .rb-quality-report ul { max-height: 180px; overflow: auto; overflow-wrap: anywhere; }
+  .proofreading-page .rb-page-scroll { flex: 1; gap: 10px; overflow: hidden; }
+  .proofreading-page .rb-embedded-actions { gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+  .proofreading-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-shrink: 0; }
+  .proofreading-filters .mantine-TextInput-root { flex: 2 1 180px; min-width: 0; }
+  .proofreading-filters .mantine-Select-root { flex: 1 1 120px; min-width: 0; }
+  .rb-proofreading-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; flex-shrink: 0; }
+  .rb-proofreading-selection .mantine-Select-root { width: 150px; }
+  .rb-proof-table-scroll { min-height: 120px; flex: 1; overflow: auto; border: 1px solid var(--rb-border); border-radius: 4px; }
+  .rb-proof-table { min-width: 520px; font-size: 13px; }
+  .rb-proof-table thead { background: var(--rb-surface); }
+  .rb-proof-table th { font-size: 12px; height: 36px; white-space: nowrap; }
+  .rb-proof-table td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: middle; line-height: 1.65; }
+  .rb-proofreading-row { cursor: default; }
+  .rb-proofreading-row[data-selected='true'] { background: var(--rb-accent-surface); }
+  .rb-proofreading-row:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: -2px; }
+  .rb-proof-index { color: var(--rb-text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
+  .rb-proof-table .rb-proof-target { display: inline; color: var(--rb-text-primary); white-space: pre-wrap; font-size: inherit; cursor: default; }
+  .rb-proof-warning { display: flex; align-items: center; gap: 3px; color: var(--rb-warning); font-size: 11px; }
+  .rb-proof-context { max-height: 420px; overflow: auto; font-size: 13px; line-height: 1.7; }
+  .rb-proof-context [data-target="true"] { background: var(--rb-accent-surface); color: var(--rb-accent-text); }
+  .rb-proofreading-task { flex-shrink: 0; font-size: 12px; color: var(--rb-text-secondary); }
+  .rb-proof-empty { text-align: center; height: 140px; color: var(--rb-text-secondary); }
+  .rb-proofreading-location { display: flex; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; color: var(--rb-text-secondary); font-size: 11px; flex-shrink: 0; }
+  .rb-proofreading-location > span { margin-left: auto; }
+  .rb-proof-bilingual-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .rb-proof-bilingual-editor textarea { line-height: 1.7; }
+  @media (max-width: 760px) {
+    .rb-proof-bilingual-editor { grid-template-columns: 1fr; }
+    .rb-proof-bilingual-editor textarea { min-height: 100px; max-height: 160px; }
+    .rb-proofreading-selection .rb-metric-note { display: none; }
+  }
   .proofreading-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--rb-text-secondary); font-size: 13px; }
   .proofreading-toolbar { display: flex; align-items: center; gap: 8px; }
-  .proofreading-target { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--rb-accent-text); font: inherit; font-size: 13px; background: transparent; border: 0; cursor: pointer; }
-  .proofreading-target:disabled { color: var(--rb-text-disabled); cursor: default; }
   .rb-quality-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
   .rb-quality-summary strong { padding: 10px 12px; border: 1px solid var(--rb-divider); border-radius: 8px; background: var(--rb-surface-subtle); font-variant-numeric: tabular-nums; }
   .rb-quality-items { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto; padding: 8px 0; }
@@ -481,6 +511,9 @@
   .rb-honorific-row span { color: var(--rb-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
   .rb-embedded-actions { display: flex; justify-content: flex-end; }
 
+  .rb-page-scroll > *, .rb-workbench-scroll > *, .rb-platform-list > * { flex-shrink: 0; }
+  .banner { flex-shrink: 0; min-width: 0; max-width: 100%; }
+  .rb-proof-loading { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--rb-text-secondary); font-size: 12px; min-height: 26px; }
   .rb-page-scroll {
     min-width: 0;
     min-height: 0;
@@ -560,16 +593,7 @@
     .rb-term-editor { width: auto; }
   }
 
-  @container (max-width: 899px) {
-    .rb-term-editor {
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      z-index: 2;
-      box-shadow: var(--rb-shadow-overlay);
-    }
-  }
+
 
   .task-state {
     display: inline-flex;
@@ -644,7 +668,6 @@
 
   .feed-card { padding: 0; }
 
-  .rb-progress-top,
   .rb-progress-meta,
   .rb-feed-head {
     display: flex;
@@ -653,11 +676,10 @@
     gap: 12px;
   }
 
-  .rb-progress-main,
   .rb-feed-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 
   .rb-progress-percent {
-    font-size: 28px;
+    font-size: 24px;
     font-weight: 600;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -672,17 +694,22 @@
   }
 
   .rb-progress-meta { margin-top: 8px; font-size: 13px; }
-  .rb-progress .mantine-Progress-root { margin-top: 12px; }
 
-  .rb-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .rb-metrics > * { min-width: 0; padding: 0 16px; }
-  .rb-metrics > *:first-child { padding-left: 0; }
-  .rb-metrics > *:last-child { padding-right: 0; }
-  .rb-metrics > * + * { border-left: 1px solid var(--rb-divider); }
+  .rb-translation-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .rb-translation-summary .rb-panel { min-width: 0; padding: 10px 16px; }
+  .rb-translation-dashboard { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 14px; }
+  .rb-translation-dashboard h2 { margin: 0; font-size: 14px; font-weight: 500; }
+  .rb-progress { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+  .rb-progress .mantine-RingProgress-label { text-align: center; }
+  .rb-progress-meta { flex-wrap: wrap; justify-content: center; text-align: center; }
+  .rb-progress-time { font-size: 12px; text-align: center; }
+  .translation-layout .rb-page-header { margin-bottom: 0; }
+  .rb-throughput { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .rb-throughput-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .rb-throughput-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border-top: 1px solid var(--rb-divider); padding-top: 12px; }
+  .rb-throughput-stats > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .rb-throughput-stats strong { font-size: 14px; font-weight: 500; }
+  @media (max-width: 800px) { .rb-translation-dashboard { grid-template-columns: minmax(0, 1fr); } }
 
   .rb-metric-label { color: var(--rb-text-secondary); font-size: 12px; font-weight: 500; }
   .rb-metric-value {
@@ -742,14 +769,6 @@
     border-color: transparent;
     background: transparent;
     color: var(--rb-text-disabled);
-  }
-
-  @media (max-width: 900px) {
-    .rb-metrics { grid-template-columns: 1fr; }
-    .rb-metrics > * { padding: 12px 0 0; }
-    .rb-metrics > *:first-child { padding-top: 0; }
-    .rb-metrics > * + * { border-left: 0; border-top: 1px solid var(--rb-divider); }
-    .rb-progress-top { align-items: flex-start; flex-direction: column; }
   }
 
   @media (max-width: 719px) {
@@ -856,90 +875,18 @@
     font-size: 12px;
   }
 
-  .rb-platform-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-width: 0;
-    padding: 10px 0;
-    border-bottom: 1px solid var(--rb-divider);
-  }
-
-  .rb-platform-row:last-child { border-bottom: 0; }
-
-  .rb-platform-row-main {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .rb-platform-row-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .rb-platform-row-title strong {
-    font-size: 14px;
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .rb-platform-badge {
-    flex-shrink: 0;
-    padding: 0 6px;
-    border-radius: 4px;
-    background: var(--rb-surface-subtle);
-    color: var(--rb-text-secondary);
-    font-size: 11px;
-    line-height: 18px;
-  }
-
-  .rb-platform-row-meta {
-    display: flex;
-    gap: 8px;
-    min-width: 0;
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-  }
-
-  .platform-row-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-    flex-wrap: wrap;
-  }
-
-  .rb-platform-row-meta span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .platform-editor {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 380px;
-    flex-shrink: 0;
-    overflow: auto;
-    margin: 0;
-    padding: 0 0 0 16px;
-    border: 0;
-    border-left: 1px solid var(--rb-divider);
-    border-radius: 0;
-    background: transparent;
-    animation: none;
-    box-shadow: none;
-  }
+  .rb-platform-list .rb-settings-body { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+  .rb-platform-list .rb-settings-group { flex-shrink: 0; }
+  .rb-platform-card { width: 280px; max-width: 100%; min-height: 72px; padding: 10px 10px 10px 14px; cursor: default; }
+  .rb-platform-card[data-active='true'] { background: var(--rb-accent-surface); border-color: var(--rb-accent); }
+  .rb-platform-card-head { display: flex; align-items: center; gap: 4px; }
+  .rb-platform-card-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+  .platform-row-actions { display: flex; flex-shrink: 0; gap: 0; }
+  .rb-platform-card-meta { display: flex; align-items: center; gap: 8px; color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-platform-card-meta > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-platform-card-meta i { width: 7px; height: 7px; background: var(--rb-accent); border-radius: 50%; }
+  .rb-platform-badge { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--rb-surface-subtle); }
+  .platform-editor { display: flex; flex-direction: column; gap: 12px; width: 100%; min-width: 0; margin: 0; padding: 0; }
 
   .rb-platform-editor-head {
     display: flex;
@@ -1011,73 +958,37 @@
     gap: 16px;
   }
 
+  /* 恢复旧版分组卡片及两行说明；按可用宽度自动换列。 */
   .rb-tool-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0 24px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    gap: 12px;
   }
 
   .tool-card {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
+    display: grid;
+    grid-template-columns: auto 20px minmax(0, 1fr) 16px;
+    align-items: start;
     gap: 10px;
-    height: auto;
-    min-height: 44px;
-    padding: 8px 4px;
-    border: 0;
-    border-radius: 0;
-    border-bottom: 1px solid var(--rb-divider);
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .tool-card-icon {
-    display: flex;
-    flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-    color: var(--rb-text-secondary);
-  }
-
-  .tool-card-icon svg { width: 20px; height: 20px; }
-
-  .rb-tool-step {
-    flex-shrink: 0;
-    width: 18px;
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-    text-align: center;
-  }
-
-  .rb-tool-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
     min-width: 0;
-    flex: 1;
+    height: auto;
+    min-height: 112px;
+    padding: 16px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: none;
+    text-align: left;
   }
 
-  .rb-tool-title {
-    font-size: 14px;
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .rb-tool-desc {
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  @media (max-width: 800px) {
-    .rb-tool-list { grid-template-columns: minmax(0, 1fr); }
-  }
-
+  .tool-card:not(:has(.rb-tool-step)) { grid-template-columns: 20px minmax(0, 1fr) 16px; }
+  .tool-card-icon { display: flex; width: 20px; height: 20px; color: var(--rb-text-secondary); }
+  .tool-card-icon svg { width: 20px; height: 20px; }
+  .rb-tool-step { color: var(--rb-text-secondary); font-size: 12px; line-height: 20px; }
+  .rb-tool-copy { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .rb-tool-title { font-size: 14px; font-weight: 500; }
+  .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; white-space: normal; }
+  .rb-tool-availability { color: var(--rb-text-secondary); font-size: 12px; }
   .rb-workbench {
     display: flex;
     flex-direction: column;
@@ -1947,7 +1858,27 @@
 
 
   .agent-workspace { max-width: none; height: 100%; }
-  .agent-chat, .agent-composer, .agent-confirmation, .agent-topbar { width: min(760px, 100%); margin-inline: auto; }
+  .agent-chat, .agent-composer, .agent-confirmation, .agent-topbar, .agent-workspace > .banner { width: 100%; min-width: 0; max-width: 100%; margin-inline: 0; }
+  .agent-workspace { align-self: stretch; width: auto; padding: 20px 24px 16px; gap: 12px; }
+  .agent-controls { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .agent-topbar { align-items: center; gap: 8px 16px; }
+  .agent-title { font-size: 18px; font-weight: 600; }
+  .agent-avatar { width: 32px; height: 32px; border-radius: 8px; }
+  .agent-chat { border-radius: 8px; }
+  .agent-composer { border-radius: 8px; }
+  .agent-composer textarea { min-height: 64px; }
+  .agent-empty { width: min(560px, 100%); max-width: 560px; flex-shrink: 0; }
+  .agent-empty h2 { font-size: 18px; }
+  .agent-empty p { max-width: 480px; }
+  .agent-empty-icon { width: 42px; height: 42px; border-radius: 10px; }
+  .agent-suggestions { width: 100%; }
+  .agent-suggestion { min-height: 38px; padding: 8px 12px; border-radius: 6px; }
+  .rb-workbench .rb-settings-body { padding: 12px 16px; }
+  .rb-workbench-switch { min-height: 40px; }
+  .rb-workbench-summary { border: 1px solid var(--rb-border); border-radius: 8px; padding: 16px; }
+  .rb-workbench-summary h2 { font-size: 17px; margin: 6px 0; }
+  .rb-workbench-roster { padding: 12px; border: 1px solid var(--rb-border); border-radius: 8px; min-width: 0; }
+  .rb-workbench-status, .rb-workbench-tabs { flex-shrink: 0; }
   .agent-message[data-role='user'] { background: var(--rb-accent-surface); }
   .agent-message[data-role='assistant'] { background: transparent; box-shadow: none; }
   .agent-confirmation { background: color-mix(in srgb, var(--rb-warning) 14%, var(--rb-surface)); border-color: color-mix(in srgb, var(--rb-warning) 42%, var(--rb-border)); }

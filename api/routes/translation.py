@@ -214,10 +214,30 @@ def read_state(request: Request) -> TranslationStateResponse:
     status = engine.get_status()
 
     progress: dict[str, Any] = {}
-    if translator is not None:
+    progress_source = "none"
+    progress_error = ""
+    output_folder = ""
+    active = status in (Engine.Status.TRANSLATING, Engine.Status.STOPPING) or engine.has_stop_barrier()
+    if active and translator is not None:
         extras = getattr(translator, "extras", None)
         if isinstance(extras, dict):
             progress = dict(extras.get("progress") or {}) if isinstance(extras.get("progress"), dict) else dict(extras)
+        output_folder = str(getattr(translator, "_active_cache_output_folder", "") or "")
+        progress_source = "runtime"
+    elif not active:
+        # 与旧版启动预读一致：只读当前项目的元数据，避免加载整份译文或串入上个项目。
+        output = resolve_translation_output(request.app.state.config)
+        if output is not None:
+            output_folder = str(output)
+            if any(os.path.isfile(os.path.join(output_folder, "cache", name)) for name in ("cache.db", "project.json")):
+                try:
+                    manager = CacheManager(service = False)
+                    manager.load_project_from_file(output_folder, strict = True)
+                    project = manager.get_project()
+                    progress = {**project.get_progress(), "status": project.get_status()}
+                    progress_source = "cache"
+                except Exception as exc:
+                    progress_error = f"缓存进度读取失败：{exc}"
 
     # Quality work runs outside Translator but shares the translation progress contract.
     from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator
@@ -238,7 +258,9 @@ def read_state(request: Request) -> TranslationStateResponse:
         run_id = int(getattr(translator, "_translation_run_id", 0) or 0),
         running = running,
         progress = progress,
-        active_output_folder = str(getattr(translator, "_active_cache_output_folder", "") or ""),
+        active_output_folder = output_folder,
+        progress_source = progress_source,
+        progress_error = progress_error,
     )
 
 
@@ -272,7 +294,7 @@ def retry_failed(request: Request) -> dict:
         )
 
     # 与翻译页一致：立刻把新的项目状态推给渲染端，让进度回落到待翻译。
-    _emit(Base.Event.TRANSLATION_UPDATE, manager.get_project().get_extras())
+    _emit(Base.Event.TRANSLATION_UPDATE, manager.get_project().get_progress())
     return {"ok": True, "count": count}
 
 

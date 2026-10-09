@@ -4,6 +4,7 @@ import { Button, Checkbox, Textarea, TextInput } from '@mantine/core';
 
 import { DataSheet } from '../components/DataSheet';
 import type { AppState } from '../useAppState';
+import { useT } from '../i18n';
 import { Banner } from '../ui';
 
 interface PreserveRow {
@@ -15,6 +16,7 @@ function readRows(value: unknown): PreserveRow[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
     if (typeof item === 'string') return { src: item, comment: '' };
+    if (!item || typeof item !== 'object') return { src: '', comment: '' };
     const row = item as { src?: unknown; comment?: unknown; info?: unknown };
     return {
       src: String(row.src ?? ''),
@@ -25,13 +27,14 @@ function readRows(value: unknown): PreserveRow[] {
 
 export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: boolean) => void }) {
   const { state, onDirtyChange } = props;
+  const t = useT();
   const stored = state.settings?.values.text_preserve_data;
   const [rows, setRows] = useState<PreserveRow[]>(() => readRows(stored));
   const [enabled, setEnabled] = useState(state.settings?.values.text_preserve_enable === true);
   const [dirty, setDirty] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<number | null>(null);
-  const locked = state.saving || state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier;
+  const locked = state.saving || state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
 
   useEffect(() => {
     if (dirty) return;
@@ -49,47 +52,27 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
     .filter(({ row }) => `${row.src} ${row.comment}`.toLowerCase().includes(query.toLowerCase()));
   const selectedRow = selected != null ? rows[selected] : undefined;
 
-  const reload = () => {
-    if (dirty && !window.confirm('放弃尚未保存的禁翻表修改并重新加载？')) return;
-    setRows(readRows(state.settings?.values.text_preserve_data));
-    setEnabled(state.settings?.values.text_preserve_enable === true);
-    setSelected(null);
-    setDirty(false);
-  };
-
-  const deduplicate = () => {
-    const seen = new Map<string, PreserveRow>();
-    rows.forEach((row) => {
-      const src = row.src.trim();
-      if (!src) return;
-      const key = src.toLocaleLowerCase();
-      const previous = seen.get(key);
-      if (!previous) seen.set(key, { src, comment: row.comment.trim() });
-      else if (!previous.comment && row.comment.trim()) previous.comment = row.comment.trim();
-    });
-    setRows([...seen.values()]);
-    setSelected(null);
-    setDirty(true);
-  };
-
-  const clearAll = () => {
-    if (!rows.length || window.confirm('清空全部禁翻规则？')) {
-      setRows([]);
-      setSelected(null);
-      setDirty(true);
-    }
-  };
-
-  const save = () => {
+  const save = async () => {
     const cleaned = rows.map((row) => ({ src: row.src.trim(), comment: row.comment.trim() })).filter((row) => row.src);
-    const nextEnabled = cleaned.length > 0 ? true : enabled;
-    state.setSetting('text_preserve_data', cleaned);
-    state.setSetting('text_preserve_enable', nextEnabled);
+    const nextEnabled = enabled;
+    if (!await state.saveSettings({ text_preserve_data: cleaned, text_preserve_enable: nextEnabled })) return;
     setRows(cleaned);
     setEnabled(nextEnabled);
     setSelected(null);
     setDirty(false);
     state.pushToast('success', `已保存 ${cleaned.length} 条禁翻规则`);
+  };
+
+  const deduplicate = () => {
+    const unique = new Map<string, PreserveRow>();
+    for (const row of rows) {
+      const src = row.src.trim();
+      if (!src) continue;
+      const key = src.replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').toLowerCase();
+      const previous = unique.get(key);
+      unique.set(key, previous ? { ...previous, comment: row.comment.trim().length > previous.comment.length ? row.comment.trim() : previous.comment } : { src, comment: row.comment.trim() });
+    }
+    setRows([...unique.values()]); setSelected(null); setDirty(true);
   };
 
   const patch = (index: number, next: Partial<PreserveRow>) => {
@@ -106,9 +89,15 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
         </div>
         <span className="rb-toolbar-spacer" />
         <Button variant="default" disabled={locked} onClick={() => { setRows((previous) => [{ src: '', comment: '' }, ...previous]); setQuery(''); setSelected(0); setDirty(true); }}>新增规则</Button>
-        <Button variant="default" disabled={locked || !rows.length} onClick={deduplicate}>去重</Button>
-        <Button variant="default" disabled={locked || !rows.length} onClick={clearAll}>清空全部</Button>
-        <Button variant="default" disabled={locked} onClick={reload}>从配置加载</Button>
+        <Button variant="default" disabled={locked || !rows.length} onClick={deduplicate}>{t('rules_deduplicate')}</Button>
+        <Button variant="default" disabled={locked} onClick={async () => {
+          if (dirty && !window.confirm(t('rules_reload_confirm'))) return;
+          await state.reloadSettings(); setDirty(false); setSelected(null);
+        }}>{t('rules_reload')}</Button>
+        <Button color="red" variant="subtle" disabled={locked || !rows.length} onClick={() => {
+          if (!window.confirm(t('rules_clear_confirm'))) return;
+          setRows([]); setEnabled(false); setSelected(null); setDirty(true);
+        }}>{t('rules_clear')}</Button>
         <Button disabled={locked || !dirty} onClick={save}>{state.saving ? '保存中…' : '保存'}</Button>
       </div>
       <div className="rb-toolbar">

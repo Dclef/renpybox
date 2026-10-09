@@ -59,7 +59,8 @@ export interface AppState {
   reloadProject: () => Promise<void>;
   reloadTranslation: () => Promise<void>;
   setTheme: (theme: ThemeName) => void;
-  setSetting: (key: string, value: unknown) => void;
+  setSetting: (key: string, value: unknown) => Promise<boolean>;
+  saveSettings: (values: Record<string, unknown>) => Promise<boolean>;
   setProjectPath: (projectPath: string, gameFolder?: string) => Promise<void>;
   startTranslation: (
     status: StartableProjectStatus,
@@ -131,38 +132,45 @@ export function useAppState(): AppState {
     setProject(await api.getProject());
   }, []);
 
+  const translationRequest = useRef(0);
   const reloadTranslation = useCallback(async () => {
+    const request = ++translationRequest.current;
     const next = await api.getTranslationState();
-    setTranslation((prev) => ({ ...next, progress: { ...prev.progress, ...next.progress } }));
+    // HTTP 返回完整快照；新项目的空进度也必须覆盖旧项目，迟到响应不能回滚状态。
+    if (request === translationRequest.current) setTranslation(next);
   }, []);
 
-  const setSetting = useCallback(
-    (key: string, value: unknown) => {
-      setSettings((prev) => {
-        if (!prev) return prev;
-        return { ...prev, values: { ...prev.values, [key]: value } };
-      });
+  const saveSettings = useCallback(
+    async (values: Record<string, unknown>) => {
+      setSettings((prev) => prev ? { ...prev, values: { ...prev.values, ...values } } : prev);
       setSaving(true);
-      api
-        .patchSettings({ [key]: value }, true)
-        .then((next) => setSettings((prev) => (prev ? { ...prev, ...next } : prev)))
-        .catch((error: unknown) => {
-          const text = error instanceof Error ? error.message : String(error);
-          pushToast('error', `保存设置失败：${text}`);
-          // 回滚到服务端真实值，否则界面停在未落盘的状态上
-          void api.getSettings().then((fresh) => setSettings(fresh));
-        })
-        .finally(() => setSaving(false));
+      try {
+        const next = await api.patchSettings(values, true);
+        setSettings(next);
+        if (Object.keys(values).some((key) => ['input_folder', 'output_folder', 'renpy_project_path', 'renpy_tl_folder'].includes(key))) {
+          await reloadTranslation();
+        }
+        return true;
+      } catch (error) {
+        pushToast('error', '保存设置失败：' + (error instanceof Error ? error.message : String(error)));
+        await api.getSettings().then(setSettings).catch(() => {});
+        return false;
+      } finally {
+        setSaving(false);
+      }
     },
-    [pushToast],
+    [pushToast, reloadTranslation],
   );
+
+  const setSetting = useCallback((key: string, value: unknown) => saveSettings({ [key]: value }), [saveSettings]);
 
   const setProjectPath = useCallback(
     async (projectPath: string, gameFolder?: string) => {
       const next = await api.setProjectPath(projectPath, gameFolder);
       setProject(next);
+      await Promise.all([reloadSettings(), reloadTranslation()]);
     },
-    [],
+    [reloadSettings, reloadTranslation],
   );
 
   const startTranslation = useCallback(
@@ -212,6 +220,7 @@ export function useAppState(): AppState {
     if (link === 'closed') { setReady(true); return; }
     let alive = true;
     const boot = async () => {
+      const request = ++translationRequest.current;
       try {
         const [healthInfo, versionInfo, projectInfo, settingsInfo, translationState] = await Promise.all([
           api.getHealth(),
@@ -225,7 +234,7 @@ export function useAppState(): AppState {
         setVersion(versionInfo);
         setProject(projectInfo);
         setSettings(settingsInfo);
-        setTranslation(translationState);
+        if (request === translationRequest.current) setTranslation(translationState);
         setReady(true);
       } catch (error) {
         if (!alive) return;
@@ -243,15 +252,6 @@ export function useAppState(): AppState {
     if (!ready || bootLanguage !== null) return;
     setBootLanguage(normalizeLang(settings?.values.app_language));
   }, [ready, bootLanguage, settings]);
-
-  // 项目被侧边栏之外的地方改动（工具箱、Agent）时，同步标题栏与项目页。
-  useEffect(() => {
-    return subscribe((event) => {
-      if (event.event === 'PROJECT_CHANGED' || event.event === 'PROJECT_STATUS') {
-        void Promise.all([reloadProject(), reloadSettings()]).catch((error) => pushToast('error', String(error)));
-      }
-    });
-  }, [subscribe, reloadProject, reloadSettings, pushToast]);
 
   const upsertJob = useCallback((job: JobSnapshot) => {
     const summary = { ...job };
@@ -297,14 +297,15 @@ export function useAppState(): AppState {
       if (message.type === 'event') {
         switch (message.event) {
           case 'PROJECT_CHANGED':
-            void reloadProject();
+          case 'PROJECT_STATUS':
+            void Promise.all([reloadProject(), reloadSettings(), reloadTranslation()]).catch((error) => pushToast('error', String(error)));
             break;
           case 'GLOSSARY_REFRESH':
             pushToast('info', '术语表已更新');
             break;
           case 'APP_TOAST_SHOW': {
-            const data = message.data as { content?: string; type?: string } | undefined;
-            const text = typeof data?.content === 'string' ? data.content : '';
+            const data = message.data as { content?: string; message?: string; type?: string } | undefined;
+            const text = typeof data?.content === 'string' ? data.content : typeof data?.message === 'string' ? data.message : '';
             const tone =
               data?.type === 'ERROR'
                 ? 'error'
@@ -326,11 +327,16 @@ export function useAppState(): AppState {
           case 'TRANSLATION_STOP':
             void reloadTranslation();
             break;
-          case 'TRANSLATION_UPDATE':
           case 'PROJECT_STATUS_CHECK_DONE':
-            // 共享进度快照在应用级保留，切换页面和任务完成后仍可查看统计。
-            setTranslation((prev) => ({ ...prev, progress: { ...prev.progress, ...message.data } }));
+            void reloadTranslation();
             break;
+          case 'TRANSLATION_UPDATE': {
+            translationRequest.current += 1;
+            const nested = message.data.progress;
+            const progress = nested && typeof nested === 'object' ? nested : message.data;
+            setTranslation((prev) => ({ ...prev, progress: { ...prev.progress, ...progress } }));
+            break;
+          }
           case 'TRANSLATION_START':
             setTranslation((prev) => ({ ...prev, progress: {} }));
             void reloadTranslation();
@@ -340,7 +346,7 @@ export function useAppState(): AppState {
         }
         handlers.current.forEach((handler) => handler(message));
       }
-    }, [pushToast, reloadProject, reloadTranslation]),
+    }, [pushToast, reloadProject, reloadSettings, reloadTranslation]),
     setLink,
     useCallback((message: WsJobMessage) => upsertJob(message.job), [upsertJob]),
   );
@@ -368,6 +374,7 @@ export function useAppState(): AppState {
     reloadTranslation,
     setTheme,
     setSetting,
+    saveSettings,
     setProjectPath,
     startTranslation,
     stopTranslation,

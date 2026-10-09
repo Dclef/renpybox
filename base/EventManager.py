@@ -38,6 +38,9 @@ class EventManager():
     # 与 event_callbacks 同为类级：投递是排队延迟发生的，可能由另一个实例执行，
     # 序号若各实例自行计数，就无法跨实例判断订阅与发射的先后，过滤会漏掉历史事件
     _emit_sequence: int = 0
+    # 序号跨实例共享，实例锁覆盖不到。自增与订阅时刻的读取必须用同一把锁，
+    # 否则并发 emit 会读到同一个值，订阅过滤会把历史事件投给新订阅者。
+    _sequence_lock = threading.Lock()
 
     # 订阅时刻的发射序号，键为 (event, handler)：绑定方法每次访问都是新对象，
     # 但相等性与哈希稳定，可用于识别「订阅之前就已发出」的历史事件
@@ -69,8 +72,10 @@ class EventManager():
 
     # 触发事件：仅入队，不在当前线程分发
     def emit(self, event: StrEnum, data: dict) -> None:
-        type(self)._emit_sequence += 1
-        sequence = type(self)._emit_sequence
+        cls = type(self)
+        with cls._sequence_lock:
+            cls._emit_sequence += 1
+            sequence = cls._emit_sequence
         with self._lock:
             self._queue.append((event, data, time.monotonic(), sequence))
 
@@ -114,37 +119,41 @@ class EventManager():
         if event in FLUSH_ON_EVENTS:
             self._flush_coalesced()
 
-        # 可合并事件暂存最新值，由 drain 到期后统一冲刷
+        # 可合并事件暂存最新值，由 drain 到期后统一冲刷。
+        # 与 flush 共用实例锁：drain 在不同线程同时 process / 检查超时时，
+        # 不能让窗口起点被覆盖或让到期判断读到旧值。分发仍在锁外。
         if event in COALESCING_EVENTS:
-            self._coalescing[event] = (data, sequence)
-            if self._coalesce_since is None:
-                self._coalesce_since = time.monotonic()
+            with self._lock:
+                self._coalescing[event] = (data, sequence)
+                if self._coalesce_since is None:
+                    self._coalesce_since = time.monotonic()
             return
 
         self._dispatch(event, data, sequence)
 
     # 合并窗口是否已到期（替代原 QTimer 的单发冲刷）
     def flush_coalesced_if_due(self) -> None:
-        if not self._coalescing:
-            return
+        with self._lock:
+            since = self._coalesce_since
+            if not self._coalescing or since is None:
+                return
+            if (time.monotonic() - since) * 1000 < COALESCING_INTERVAL_MS:
+                return
+            pending, self._coalescing = self._coalescing, {}
+            self._coalesce_since = None
 
-        since = self._coalesce_since
-        if since is None:
-            return
-
-        if (time.monotonic() - since) * 1000 < COALESCING_INTERVAL_MS:
-            return
-
-        self._flush_coalesced()
+        for event, (data, sequence) in pending.items():
+            self._dispatch(event, data, sequence)
 
     # 冲刷合并窗口
     def _flush_coalesced(self) -> None:
-        if not self._coalescing:
+        with self._lock:
+            if not self._coalescing:
+                self._coalesce_since = None
+                return
+            pending, self._coalescing = self._coalescing, {}
             self._coalesce_since = None
-            return
 
-        pending, self._coalescing = self._coalescing, {}
-        self._coalesce_since = None
         for event, (data, sequence) in pending.items():
             self._dispatch(event, data, sequence)
 
@@ -165,9 +174,11 @@ class EventManager():
     # 订阅事件
     def subscribe(self, event: StrEnum, hanlder: Callable) -> None:
         if callable(hanlder):
-            self.event_callbacks.setdefault(event, []).append(hanlder)
-            # 记录订阅时刻，之后更早发出的事件不会再投递给它
-            self._subscriber_sequences[(event, hanlder)] = self._emit_sequence
+            # 截止序号与回调挂载放在同一把锁里，并先写序号。
+            # 与 emit 的自增互斥，避免新订阅者读到偏小的序号后收到历史事件。
+            with type(self)._sequence_lock:
+                self._subscriber_sequences[(event, hanlder)] = type(self)._emit_sequence
+                self.event_callbacks.setdefault(event, []).append(hanlder)
 
     # 取消订阅事件
     def unsubscribe(self, event: StrEnum, hanlder: Callable) -> None:
