@@ -837,12 +837,6 @@ body {
  *   项目设置页 74 = 66 + 8（ProjectPage.py:78 显式 form.setSpacing(8)）
  *   基础/专家/应用设置页 88 = 82 + 6、73 = 67 + 6（scroll_area_vbox 用 Qt 默认 6）
  */
-.setting-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
 .settings-card-list {
   display: flex;
   flex-direction: column;
@@ -945,89 +939,6 @@ body {
   border: 1px solid var(--rb-divider);
   border-radius: 12px;
   background: var(--rb-surface);
-}
-
-.project-identity {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 18px;
-  padding: 18px 18px 14px;
-  border: 1px solid var(--rb-divider);
-  border-radius: 16px;
-  background: var(--rb-surface);
-  box-shadow: inset 3px 0 var(--rb-accent);
-}
-
-.project-identity[data-bound='false'] {
-  background: var(--rb-surface);
-}
-
-.project-identity-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.project-identity-kicker {
-  color: var(--rb-accent);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.project-identity[data-bound='false'] .project-identity-kicker {
-  color: var(--rb-warning);
-}
-
-.project-identity h2 {
-  margin: 0;
-  font-size: 20px;
-  line-height: 1.25;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.project-identity p {
-  margin: 2px 0 0;
-  max-width: 62ch;
-  color: var(--rb-text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.project-identity > .btn {
-  align-self: start;
-}
-
-.project-identity-paths {
-  grid-column: 1 / -1;
-  display: grid;
-  gap: 8px;
-  margin: 8px 0 0;
-}
-
-.project-identity-paths > div {
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
-  gap: 10px;
-  align-items: baseline;
-  min-width: 0;
-}
-
-.project-identity-paths dt {
-  color: var(--rb-text-disabled);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.project-identity-paths dd {
-  margin: 0;
-  overflow: hidden;
-  color: var(--rb-text-primary);
-  font-size: 12px;
-  font-family: 'Cascadia Code', 'Consolas', ui-monospace, monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .setting-card-description {
@@ -3245,8 +3156,6 @@ body {
   .platform-row-actions .btn { padding: 0 10px; }
 }
 @media (max-width: 800px) {
-  .project-identity { grid-template-columns: minmax(0, 1fr); }
-  .project-identity > .btn { justify-self: start; }
   .workbench-summary { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .workbench-overview-stats { flex-direction: row; justify-content: space-between; border-left: 0; padding: 0; gap: 10px; }
   .workbench-overview-stats > div { flex-direction: column; gap: 4px; }

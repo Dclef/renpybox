@@ -31,7 +31,8 @@ import {
 } from '../settingsSchema';
 import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
-import { Dialog, NumberInput, SelectInput, SettingCard, Switch, TextInput } from '../ui';
+import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
+import { Button, Progress, Tooltip } from '@mantine/core';
 
 type Variant = 'basic' | 'expert' | 'app';
 
@@ -127,47 +128,27 @@ export function SettingsPage(props: {
       />
     ));
 
-  // 基础设置页的均衡吞吐按钮插在第 5 张卡（max_output_tokens）之后
-  const balancedButton = (
-    <button
-      type="button"
-      className="btn settings-solo-button"
-      title={BALANCED_THROUGHPUT.tooltip}
-      onClick={applyBalanced}
-    >
-      {BALANCED_THROUGHPUT.label}
-    </button>
-  );
+  const balancedButton = variant === 'basic' ? (
+    <Tooltip label={BALANCED_THROUGHPUT.tooltip}>
+      <Button variant="default" onClick={applyBalanced}>{BALANCED_THROUGHPUT.label}</Button>
+    </Tooltip>
+  ) : null;
 
   return (
-    <div className="settings-layout">
-      <header className="settings-header">
-        <h1 className="settings-title">{title}</h1>
-        <p className="settings-subtitle">{description}</p>
-      </header>
-
-      <div className="settings-scroll">
-        <div className="settings-card-list">
-          {variant === 'basic' ? (
-            <>
-              {cards(fields.slice(0, 5))}
-              {balancedButton}
-              {cards(fields.slice(5))}
-            </>
-          ) : null}
-
-          {variant === 'expert' ? cards(fields) : null}
-
-          {variant === 'app' ? (
-            <>
-              {/* 应用语言是第 1 张卡；「关于与更新」GroupCard 插在它后面 */}
-              {cards(fields.slice(0, 1))}
-              <AboutCard state={state} />
-              {cards(fields.slice(1))}
+    <div className="rb-page rb-page-narrow">
+      <div className="rb-page-scroll">
+        <PageHeader title={title} description={description} actions={balancedButton} />
+        {variant === 'app' ? (
+          <>
+            <SettingsGroup>
+              {cards(fields)}
               <ProxyCard state={state} value={values?.proxy_url} proxyEnabled={values?.proxy_enable} />
-            </>
-          ) : null}
-        </div>
+            </SettingsGroup>
+            <AboutCard state={state} />
+          </>
+        ) : (
+          <SettingsGroup>{cards(fields)}</SettingsGroup>
+        )}
       </div>
     </div>
   );
@@ -268,84 +249,59 @@ function AboutCard(props: { state: AppState }) {
   else if (update.latest.tag_name) statusText = '已是最新版本';
 
   return (
-    <section className="group-card">
-      <div className="setting-card-text">
-        <span className="setting-card-title">关于与更新</span>
-        <span className="setting-card-description">查看当前版本、检查并安装更新</span>
-      </div>
-      <div className="group-card-body">
-        <div className="group-row group-row-version">
-          <span className="group-row-label">当前版本</span>
-          <div className="group-row-value update-version-row">
-            <span>{version}</span>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'}
-              onClick={() => void run(() => api.checkUpdate(true), { checking: true })}
-            >
-              {checking ? '检查中…' : '检查更新'}
-            </button>
-          </div>
-        </div>
-        <div className="group-row">
-          <span className="group-row-label">后端 Python</span>
-          <span className="group-row-value">{python}</span>
-        </div>
-        <div className="group-row update-status-row">
-          <span className="group-row-label">更新状态</span>
-          <div className="group-row-value update-status-value">
+    <>
+      <SettingsGroup title="关于与更新" description="查看当前版本、检查并安装更新">
+        <SettingCard title="当前版本" description={null}>
+          <span className="rb-setting-value">{version}</span>
+          <Button variant="default" size="xs" disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'} onClick={() => void run(() => api.checkUpdate(true), { checking: true })}>
+            {checking ? '检查中…' : '检查更新'}
+          </Button>
+        </SettingCard>
+        <SettingCard title="后端 Python" description={null}>
+          <span className="rb-setting-value">{python}</span>
+        </SettingCard>
+        <SettingCard title="更新状态" description={null}>
+          <div className="rb-update-status">
             <span>{statusText}</span>
             {status === 'UPDATING' ? (
-              <div className="update-progress" aria-label={`下载进度 ${progress}%`}>
-                <div className="update-progress-track">
-                  <div className="update-progress-bar" style={{ width: `${progress}%` }} />
-                </div>
+              <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
+                <Progress value={progress} w={160} size="sm" />
                 <span>{progress}%</span>
               </div>
             ) : null}
-            <div className="update-actions">
+            <div className="rb-update-actions">
               {(status === 'NEW_VERSION' || update.new_version) && status !== 'UPDATING' && status !== 'DOWNLOADED' ? (
                 <>
-                  <button type="button" className="btn" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>
-                    查看详情
-                  </button>
-                  <button type="button" className="btn btn-primary" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>
-                    下载更新
-                  </button>
+                  <Button variant="default" size="xs" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>查看详情</Button>
+                  <Button size="xs" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>下载更新</Button>
                 </>
               ) : null}
               {status === 'UPDATING' ? (
-                <button type="button" className="btn" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
+                <Button variant="default" size="xs" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
                   {cancelling ? '正在取消…' : '取消'}
-                </button>
+                </Button>
               ) : null}
               {(status === 'DOWNLOADED' || update.can_install) ? (
-                <button type="button" className="btn btn-primary" disabled={busy} onClick={() => setInstallConfirm(true)}>
-                  立即重启并安装
-                </button>
+                <Button size="xs" disabled={busy} onClick={() => setInstallConfirm(true)}>立即重启并安装</Button>
               ) : null}
             </div>
           </div>
-        </div>
-        <div className="group-row">
-          <span className="group-row-label">更新日志</span>
-          <div className="group-row-value">
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() => {
-                void api.getChangelog()
-                  .then((result) => setChangelog(result.empty ? '暂无更新日志' : result.markdown))
-                  .catch((error) => state.pushToast('error', error instanceof Error ? error.message : String(error)));
-              }}
-            >
-              查看更新日志
-            </button>
-          </div>
-        </div>
-      </div>
+        </SettingCard>
+        <SettingCard title="更新日志" description={null}>
+          <Button
+            variant="default"
+            size="xs"
+            disabled={busy}
+            onClick={() => {
+              void api.getChangelog()
+                .then((result) => setChangelog(result.empty ? '暂无更新日志' : result.markdown))
+                .catch((error) => state.pushToast('error', error instanceof Error ? error.message : String(error)));
+            }}
+          >
+            查看更新日志
+          </Button>
+        </SettingCard>
+      </SettingsGroup>
 
       {installConfirm ? (
         <Dialog
@@ -366,7 +322,7 @@ function AboutCard(props: { state: AppState }) {
           <pre className="update-changelog">{changelog}</pre>
         </Dialog>
       ) : null}
-    </section>
+    </>
   );
 }
 

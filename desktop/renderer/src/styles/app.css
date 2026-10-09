@@ -382,6 +382,49 @@
     text-align: center;
   }
 
+  .rb-page-narrow { max-width: 960px; }
+
+  .rb-setting-desc:empty { display: none; margin: 0; }
+  .rb-setting-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .rb-setting-value { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rb-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .rb-project-identity {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px;
+    align-items: start;
+  }
+  .rb-identity-kicker { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-identity-name { margin-top: 4px; font-size: 16px; font-weight: 600; }
+  .rb-identity-copy p { margin: 4px 0 0; color: var(--rb-text-secondary); font-size: 13px; }
+  .rb-identity-paths {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+    margin: 8px 0 0;
+  }
+  .rb-identity-paths > div {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+  }
+  .rb-identity-paths dt { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-identity-paths dd {
+    margin: 0;
+    overflow: hidden;
+    font-family: var(--mantine-font-family-monospace);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-update-status,
+  .rb-update-actions,
+  .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .rb-page-header { flex-wrap: wrap; }
+
   .rb-page {
     flex: 1;
     min-width: 0;
