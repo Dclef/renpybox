@@ -9,7 +9,25 @@
  * 见 toolIcons.ts —— 不在这里重复画一遍，避免和 PyQt 侧的 ToolIcon 漂移。
  */
 
-import type { FC, SVGProps } from 'react';
+import type { SVGProps } from 'react';
+import {
+  BookOpenText,
+  Bot,
+  FlaskConical,
+  FolderCog,
+  Info,
+  Languages,
+  MessageSquareText,
+  Plug,
+  Settings,
+  ShieldBan,
+  SlidersHorizontal,
+  SpellCheck,
+  UsersRound,
+  Variable,
+  Wrench,
+  type LucideIcon,
+} from 'lucide-react';
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -326,30 +344,36 @@ export function IconChromeClose(p: IconProps) {
  * 这样 nav.ts 保持纯数据（可回查 labelKey），不牵涉 JSX。
  */
 export type NavIconName =
-  | 'IconDocument'
-  | 'IconPlay'
-  | 'IconRobot'
-  | 'IconFolder'
-  | 'IconIot'
-  | 'IconGame'
-  | 'IconPeople'
-  | 'IconZoom'
-  | 'IconEducation'
-  | 'IconSpeakers'
-  | 'IconInfo'
-  | 'IconSetting';
+  | 'Languages'
+  | 'SpellCheck'
+  | 'Bot'
+  | 'FolderCog'
+  | 'Plug'
+  | 'Wrench'
+  | 'BookOpenText'
+  | 'ShieldBan'
+  | 'Variable'
+  | 'UsersRound'
+  | 'SlidersHorizontal'
+  | 'FlaskConical'
+  | 'MessageSquareText'
+  | 'Settings'
+  | 'Info';
 
-export const NAV_ICONS: Record<NavIconName, FC<IconProps>> = {
-  IconDocument,
-  IconPlay,
-  IconRobot,
-  IconFolder,
-  IconIot,
-  IconGame,
-  IconPeople,
-  IconZoom,
-  IconEducation,
-  IconSpeakers,
-  IconInfo,
-  IconSetting,
+export const NAV_ICONS: Record<NavIconName, LucideIcon> = {
+  Languages,
+  SpellCheck,
+  Bot,
+  FolderCog,
+  Plug,
+  Wrench,
+  BookOpenText,
+  ShieldBan,
+  Variable,
+  UsersRound,
+  SlidersHorizontal,
+  FlaskConical,
+  MessageSquareText,
+  Settings,
+  Info,
 };
