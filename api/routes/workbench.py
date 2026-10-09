@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import os
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.jobs import Job
 from module.Cache.CacheManager import CacheManager
+from module.Engine.Engine import Engine
+from module.Engine.TaskRequester import TaskRequester
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.PromptBuilder import PromptBuilder
+from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError, WorkbenchAnalysisService
 from module.Workbench.WorkbenchData import (
     WORLD_FIELDS,
-    merge_character_card,
+    merge_imported_character_cards,
     normalize_character_cards,
+    normalize_text_list,
     normalize_worldbook,
 )
 
@@ -33,6 +40,11 @@ class WorkbenchPatch(AssetVersion):
     characters: list[dict[str, Any]]
     worldbook_enabled: bool
     characters_enabled: bool
+
+
+class AnalysisRequest(AssetVersion):
+    action: Literal["scan", "all", "worldbook", "characters"]
+    scope: Literal["current", "full"] = "current"
 
 
 class PreviewRequest(AssetVersion):
@@ -141,15 +153,175 @@ def apply_drafts(request: Request, body: AssetVersion) -> dict[str, Any]:
             }}
             config.renpy_workbench_worldbook_enable = True
         if drafts:
-            cards = {card["id"]: card for card in normalize_character_cards(config.renpy_workbench_character_cards)}
-            for card in drafts:
-                cards[card["id"]] = merge_character_card(cards[card["id"]], card) if card["id"] in cards else card
-            config.renpy_workbench_character_cards = list(cards.values())
+            config.renpy_workbench_character_cards = merge_imported_character_cards(
+                config.renpy_workbench_character_cards, _draft_overlays(drafts),
+            )
             config.renpy_workbench_character_cards_enable = True
         config.renpy_workbench_generated_worldbook_draft = {}
         config.renpy_workbench_generated_character_drafts = []
         state = repository.save_workbench_view(config)
         return _snapshot(repository, config, state)
+
+
+def _draft_overlays(cards: list[dict]) -> list[dict]:
+    # 扫描和模型的空值、默认开关不能清空已有角色资料或启停状态。
+    return [{key: value for key, value in card.items() if value and key not in {"enabled", "is_primary"}}
+            for card in normalize_character_cards(cards)]
+
+
+def _drafts(config: Any) -> tuple[dict, list]:
+    return (
+        normalize_worldbook(config.renpy_workbench_generated_worldbook_draft),
+        normalize_character_cards(config.renpy_workbench_generated_character_drafts),
+    )
+
+
+def _merge_scan_drafts(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """沿用旧工作台的扫描合并规则，只补充空字段和候选线索。"""
+    cards = {card["id"]: card for card in normalize_character_cards(existing)}
+    for seed in normalize_character_cards(incoming):
+        card = cards.setdefault(seed["id"], seed)
+        for field in ("aliases", "match_keywords"):
+            card[field] = normalize_text_list(card[field] + seed[field])
+        for field in ("name_translation", "prompt_notes", "sample_lines"):
+            if not card[field]:
+                card[field] = seed[field]
+    return sorted(cards.values(), key = lambda card: card["name"].casefold())
+
+
+@router.get("/analysis")
+def read_analysis(request: Request) -> dict:
+    """返回当前项目最近一次扫描或 AI 草稿任务，包含真实线程收尾状态。"""
+    repository = ProjectAssetsRepository.from_config(request.app.state.config)
+    key = _key(repository) if repository.has_storage else None
+    job = next((job for job in request.app.state.jobs.list()
+                if job.kind == "workbench_analysis" and isinstance(job.result, dict)
+                and job.result.get("storage_key") == key), None)
+    return {"job": job.snapshot() if job else None}
+
+
+@router.post("/analysis")
+async def start_analysis(request: Request, body: AnalysisRequest) -> dict:
+    """后台扫描或生成资料草稿；显式应用前不会覆盖正式资料。"""
+    engine = Engine.get()
+    with CacheManager.LOCK:
+        _, config, _ = _load(request, body)
+        original_drafts = _drafts(config)
+        if not engine.try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
+            raise HTTPException(status_code = 409, detail = "已有任务正在运行或收尾，请稍后再试")
+    manager = request.app.state.jobs
+    try:
+        service = WorkbenchAnalysisService()
+        if body.action != "scan":
+            service.ensure_analysis_ready(config, engine_reserved = True)
+        job = manager.create("workbench_analysis", cooperative_cancel = True)
+    except Exception as exc:
+        engine.release_status(Engine.Status.TESTING)
+        if isinstance(exc, AnalysisServiceError):
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise
+    job.result = {
+        "storage_key": body.storage_key, "action": body.action, "scope": body.scope,
+        "message": "准备扫描角色" if body.action == "scan" else "准备生成资料草稿",
+        "worker_active": True,
+    }
+    loop = asyncio.get_running_loop()
+
+    def check_cancel() -> None:
+        if job.cancel_event.is_set():
+            raise asyncio.CancelledError()
+
+    def publish_progress(message: str) -> None:
+        if job.result["worker_active"]:
+            job.result["message"] = message
+            manager.progress(job.id)
+
+    def progress(message: str) -> None:
+        check_cancel()
+        loop.call_soon_threadsafe(publish_progress, message)
+
+    service.progress_callback = progress
+
+    def analyze() -> AnalysisResult:
+        check_cancel()
+        if body.action == "scan":
+            progress("正在读取项目文本并扫描角色")
+            items, summary = service.load_scope_items(config, body.scope)
+            check_cancel()
+            candidates = service.scanner.build_candidates(config, items, service.resolve_project_root(config))
+            return AnalysisResult(body.scope, {}, [candidate.as_card_seed() for candidate in candidates], source_summary = summary)
+        operation = {
+            "all": service.analyze_all, "worldbook": service.generate_worldbook_only,
+            "characters": service.generate_character_only,
+        }[body.action]
+        return operation(config, body.scope, engine_reserved = True)
+
+    def compute() -> AnalysisResult:
+        TaskRequester.bind_run_cancel_event(job.cancel_event)
+        try:
+            return analyze()
+        finally:
+            TaskRequester.unbind_run_cancel_event()
+
+    async def worker(_: Job) -> dict:
+        try:
+            check_cancel()
+            future = loop.run_in_executor(None, compute)
+            try:
+                result = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                job.cancel_event.set()
+                # 关闭时也必须等同步请求退出，不能提前释放引擎或写入晚到结果。
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.shield(future)
+                raise
+            check_cancel()
+            # 与取消路由在同一事件循环串行提交，版本检查和短事务之间不让出执行权。
+            with CacheManager.LOCK:
+                repository, current, _ = _load(request, body)
+                if _drafts(current) != original_drafts:
+                    raise HTTPException(status_code = 409, detail = "项目草稿已更新，本次结果未保存，请重新加载")
+                if body.action == "scan":
+                    current.renpy_workbench_generated_character_drafts = _merge_scan_drafts(original_drafts[1], result.character_drafts)
+                else:
+                    current.renpy_workbench_generated_worldbook_draft = {
+                        **original_drafts[0], **{key: value for key, value in normalize_worldbook(result.worldbook_draft).items() if value},
+                    }
+                    # 保留未命中的旧草稿和空值旧字段，新内容只更新待审核资料。
+                    incoming = _draft_overlays(result.character_drafts)
+                    current.renpy_workbench_generated_character_drafts = merge_imported_character_cards(original_drafts[1], incoming)
+                current.renpy_workbench_last_analysis_scope = body.scope
+                repository.save_workbench_view(current)
+            job.result.update(
+                message = "角色扫描完成，候选已存为草稿" if body.action == "scan" else "分析完成，资料已存为草稿",
+                source_summary = result.source_summary,
+                worldbook_fields = sum(bool(value) for value in result.worldbook_draft.values()),
+                character_count = len(result.character_drafts),
+            )
+            manager.progress(job.id, done = 1, total = 1)
+            return job.result
+        except asyncio.CancelledError:
+            job.result["message"] = "任务已取消，未保存本次结果"
+            raise
+        except Exception as exc:
+            if job.cancel_event.is_set():
+                job.result["message"] = "任务已取消，未保存本次结果"
+                raise asyncio.CancelledError() from exc
+            job.result["message"] = "任务失败，未保存本次结果"
+            if isinstance(exc, HTTPException):
+                raise RuntimeError(str(exc.detail)) from exc
+            raise
+        finally:
+            job.result["worker_active"] = False
+            engine.release_status(Engine.Status.TESTING)
+
+    try:
+        await manager.run(job.id, worker)
+    except BaseException:
+        job.result["worker_active"] = False
+        engine.release_status(Engine.Status.TESTING)
+        raise
+    return {"job": job.snapshot()}
 
 
 @router.post("/preview")

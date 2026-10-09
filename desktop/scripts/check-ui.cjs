@@ -14,7 +14,23 @@ function fixture() {
   const worldbook = { project_name: '港湾来信', genre: '日常 / 悬疑', setting_summary: '一座靠海的小镇，一封迟到的信。人物的语气平静而克制。', tone_style: '自然口语，保留人物之间的距离感', era_background: '', narrative_rules: '', format_rules: '', spoiler_notes: '', reference_notes: '' };
   const f = window.__uiFixture = { values, sockets: [], writes: [], assets: { storage_key: 'fixture', revision: 1, worldbook, characters: [character('alice', 'Alice')], worldbook_enabled: true, characters_enabled: true, worldbook_draft: {}, character_drafts: [] }, glossary: { storage_key: 'fixture', revision: 1, enabled: true, candidate_ids: ['c1'], rows: [{ src: 'Harbor', dst: '港湾', info: '地名', candidate: false, record_id: 'f1' }, { src: 'Sealed Letter', dst: '封缄的信', info: '待审核', candidate: true, record_id: 'c1' }] }, items: [{ id: 0, version: 'v1', src: 'Alice, the letter arrived this morning.', dst: '艾丽丝，那封信今天早上到了。', status: 'TRANSLATED', file_path: 'chapter_01.rpy', row: 24 }] };
   const nativeFetch = fetch.bind(window);
-  f.reads = []; f.confirmed = [];
+  f.reads = []; f.confirmed = []; f.engineStatus = 'IDLE';
+  f.workbenchJob = null;
+  f.finishWorkbench = (status = 'done', message = '扫描到 1 位新角色') => {
+    const job = f.workbenchJob;
+    if (!job) throw new Error('没有待完成的工作台任务');
+    job.status = status; job.updated_at += 1; job.result.message = message; job.result.worker_active = false;
+    job.error = status === 'failed' ? message : null;
+    if (status === 'done') {
+      if (['scan', 'characters', 'all'].includes(job.result.action)) f.assets.character_drafts = [{ ...character('bob', 'Bob'), name_translation: '鲍勃', identity: '灯塔管理员', aliases: ['Keeper'] }];
+      if (['worldbook', 'all'].includes(job.result.action)) f.assets.worldbook_draft = { setting_summary: '潮汐与灯塔构成故事背景。' };
+      f.assets.revision += 1;
+      job.result.worldbook_fields = Object.values(f.assets.worldbook_draft).filter(Boolean).length;
+      job.result.character_count = f.assets.character_drafts.length;
+    }
+    f.engineStatus = 'IDLE';
+    f.sockets.forEach(socket => socket.onmessage?.({ data: JSON.stringify({ type: 'job', job }) }));
+  };
   f.agent = { session_id: 'ui-agent', revision: 0, run_id: 0, status: 'idle', messages: [], confirmation: null };
   f.emitAgent = () => { f.agent.revision += 1; f.sockets.forEach(socket => socket.onmessage?.({ data: JSON.stringify({ type: 'event', event: 'AGENT_UPDATE', data: { revision: f.agent.revision } }) })); };
   const response = data => new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -43,13 +59,37 @@ function fixture() {
       f.emitAgent(); return response(f.agent);
     }
     if (p === '/api/project') return response({ renpy_project_path: 'C:/ui-check', renpy_game_folder: 'C:/ui-check/game', renpy_tl_folder: values.input_folder });
-    if (p === '/api/translation/state') return response({ engine_status: 'IDLE', stop_barrier: false, single_tasks: false, request_id: 'fixture', run_id: 1, running: { running: 0, max: 4 }, progress: { line: 64, total_line: 100, time: 120, total_output_tokens: 4800, throughput: { schema_version: 1, elapsed_seconds: 120, output_tokens: 4800, effective_items_per_minute: 32 } }, active_output_folder: values.output_folder });
+    if (p === '/api/translation/state') return response({ engine_status: f.engineStatus, stop_barrier: false, single_tasks: false, request_id: 'fixture', run_id: 1, running: { running: 0, max: 4 }, progress: { line: 64, total_line: 100, time: 120, total_output_tokens: 4800, throughput: { schema_version: 1, elapsed_seconds: 120, output_tokens: 4800, effective_items_per_minute: 32 } }, active_output_folder: values.output_folder });
     if (p === '/api/settings/prompt-preview') return response({ base: '将对白翻译为自然中文，保留人物语气。', style: '语言克制。', fixed: '保持变量和输出协议。' });
-    if (p === '/api/workbench') { if (method === 'PATCH') Object.assign(f.assets, body, { revision: f.assets.revision + 1 }); return response(f.assets); }
+    if (p === '/api/workbench/analysis') {
+      if (method === 'POST') {
+        if (f.rejectWorkbench) return new Response(JSON.stringify({ detail: '项目资料已更新，请重新加载后再生成。' }), { status: 409 });
+        f.engineStatus = 'TESTING';
+        f.workbenchJob = { id: 'workbench-task', kind: 'workbench_analysis', status: 'running', total: 0, done: 0, progress: 0, error: null, created_at: Date.now() / 1000, updated_at: Date.now() / 1000, result: { storage_key: f.assets.storage_key, action: body.action, scope: body.scope, message: '正在读取项目语料', worker_active: true } };
+      }
+      return response({ job: f.workbenchJob?.result.storage_key === f.assets.storage_key ? f.workbenchJob : null });
+    }
+    if (p === '/api/jobs/workbench-task/cancel') { f.workbenchJob.result.message = '已请求取消，正在等待当前请求结束'; f.workbenchJob.cancel_requested = true; return response(f.workbenchJob); }
+    if (p === '/api/workbench/apply-drafts') {
+      Object.assign(f.assets.worldbook, f.assets.worldbook_draft);
+      for (const card of f.assets.character_drafts) {
+        const current = f.assets.characters.find(item => item.id === card.id);
+        if (current) Object.assign(current, card); else f.assets.characters.push(card);
+      }
+      f.assets.worldbook_draft = {}; f.assets.character_drafts = []; f.assets.revision += 1;
+      return response(f.assets);
+    }
+    if (p === '/api/workbench') {
+      if (method === 'PATCH') {
+        if (body.storage_key !== f.assets.storage_key || body.revision !== f.assets.revision) return new Response(JSON.stringify({ detail: '项目资料已更新，请重新加载后再保存。' }), { status: 409 });
+        Object.assign(f.assets, body, { revision: f.assets.revision + 1 });
+      }
+      return response(f.assets);
+    }
     if (p === '/api/workbench/glossary') { if (method === 'PATCH') Object.assign(f.glossary, body, { revision: f.glossary.revision + 1 }); return response(f.glossary); }
     if (p === '/api/proofreading') return response({ cache_token: 'fixture-cache', cache_folder: values.output_folder, total: 1, matched: 1, page: 1, limit: 50, files: ['chapter_01.rpy'], readonly: false, items: f.items });
     if (p === '/api/proofreading/item') { f.items[0].dst = body.dst; return response({ ok: true }); }
-    if (p === '/api/jobs') return response({ jobs: [] });
+    if (p === '/api/jobs') return response({ jobs: f.workbenchJob ? [f.workbenchJob] : [] });
     throw new Error('自检未定义接口：' + method + ' ' + p);
   };
   const NativeSocket = WebSocket;
@@ -136,6 +176,71 @@ app.whenReady().then(async () => {
   await page('角色 / 世界观工作台'); await click('世界观');
   await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改');
   await assert("__uiFixture.assets.worldbook.project_name==='港湾来信 · 新篇'", '世界观保存');
+  await click('概览');
+  await assert("!!document.querySelector('.rb-workbench-analysis') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='扫描角色' && !b.disabled)", '工作台提供扫描与生成入口');
+  await click('世界观'); await input('.workbench-form-grid input', '未保存的工作台编辑'); await click('概览');
+  await assert("Array.from(document.querySelectorAll('button')).filter(b=>['扫描角色','生成草稿'].includes(b.textContent.trim())).every(b=>b.disabled)", '未保存资料不能启动扫描或收费分析');
+  await click('世界观'); await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('概览');
+  await click('扫描角色');
+  await assert("__uiFixture.writes.at(-1).p==='/api/workbench/analysis' && __uiFixture.writes.at(-1).body.action==='scan' && __uiFixture.writes.at(-1).body.storage_key==='fixture' && !document.querySelector('[role=dialog]')", '角色扫描携带项目版本且不请求AI确认');
+  await page('翻译任务'); await page('角色 / 世界观工作台');
+  await assert("document.querySelector('.rb-workbench-analysis-status').textContent.includes('正在读取项目语料')", '切页返回恢复正在执行的工作台任务');
+  await js("__uiFixture.finishWorkbench()"); await pause(1900);
+  await assert("document.querySelector('.rb-workbench-draft-review').textContent.includes('灯塔管理员') && __uiFixture.assets.characters.length===1", '扫描结果可读审核且不自动应用正式角色');
+  await capture('workbench-scan-drafts-dark');
+  await click('应用草稿');
+  await js("Array.from(document.querySelectorAll('[role=dialog] button')).find(b=>b.textContent.trim()==='应用草稿').click()"); await pause(180);
+  await assert("__uiFixture.assets.characters.length===2 && !__uiFixture.assets.character_drafts.length", '确认后将审核草稿应用到正式资料');
+  await click('角色卡'); await input('.rb-workbench-roster input', 'Keeper');
+  await assert("document.querySelectorAll('.rb-workbench-character').length===1 && document.querySelector('.rb-workbench-character').textContent.includes('Bob')", '角色搜索覆盖别名');
+  await input('.rb-workbench-roster input', '完全不匹配的角色');
+  await assert("!document.querySelector('.rb-workbench-character') && document.querySelector('.rb-workbench-roster-list').textContent.trim().length>0", '角色搜索无结果时提供明确反馈');
+  await input('.rb-workbench-roster input', ''); await click('概览');
+  await js("__uiFixture.workbenchStarts = __uiFixture.writes.filter(w=>w.p==='/api/workbench/analysis').length");
+  await click('生成草稿');
+  await assert("document.querySelector('[role=dialog]').textContent.includes('Token') && __uiFixture.writes.filter(w=>w.p==='/api/workbench/analysis').length===__uiFixture.workbenchStarts", 'AI分析先确认费用与处理范围');
+  await click('确认并生成');
+  await assert("__uiFixture.workbenchJob.result.action==='all' && __uiFixture.workbenchJob.result.worker_active", '确认后启动世界观与角色生成');
+  await click('取消任务');
+  await assert("__uiFixture.workbenchJob.cancel_requested && Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='生成草稿').disabled", '取消等待后台真正结束');
+  await page('翻译任务'); await page('角色 / 世界观工作台');
+  await assert("document.querySelector('.rb-workbench-analysis-status').textContent.includes('正在取消')", '取消状态在离开并返回工作台后保留');
+  await js("__uiFixture.finishWorkbench('cancelled', '已取消，未修改项目资料')"); await pause(1900);
+  await assert("!__uiFixture.assets.character_drafts.length && document.querySelector('.rb-workbench-analysis-status').textContent.includes('取消')", '取消终态保留已有资料且不产生草稿');
+  await click('生成草稿'); await click('确认并生成');
+  await js("__uiFixture.finishWorkbench('failed', '模拟接口失败，原资料保持不变')"); await pause(1900);
+  await assert("document.querySelector('.rb-workbench-analysis-status').textContent.includes('模拟接口失败') && __uiFixture.assets.characters.length===2", '分析失败显示真实原因并保留资料');
+  await click('生成草稿'); await click('确认并生成');
+  await js("__uiFixture.finishWorkbench('done', '生成 1 项世界观和 1 位角色草稿')"); await pause(1900);
+  await assert("document.querySelector('.rb-workbench-draft-review').textContent.includes('潮汐与灯塔') && !__uiFixture.assets.worldbook.setting_summary.includes('潮汐与灯塔')", 'AI结果先进入草稿审核，不覆盖正式背景');
+  await click('扫描角色'); await click('世界观'); await input('.workbench-form-grid input', '任务期间保留的编辑');
+  await js("__uiFixture.finishWorkbench()"); await pause(1900);
+  await assert("document.querySelector('.workbench-form-grid input').value==='任务期间保留的编辑' && !Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='保存修改').disabled", '后台草稿完成不覆盖手工编辑');
+  await click('保存修改');
+  await assert("__uiFixture.assets.worldbook.project_name==='任务期间保留的编辑'", '完成后使用新草稿版本保存手工资料');
+  await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改'); await click('概览');
+
+  await click('扫描角色'); await click('世界观'); await input('.workbench-form-grid input', '本地尚未保存的项目名');
+  await js("__uiFixture.assets.worldbook.project_name='外部更新的项目名'; __uiFixture.finishWorkbench()"); await pause(1900);
+  await assert("document.querySelector('.workbench-form-grid input').value==='本地尚未保存的项目名' && document.body.textContent.includes('正式资料已被其他操作更新')", '外部资料变化保留本地编辑并显示冲突');
+  await click('保存修改');
+  await assert("__uiFixture.assets.worldbook.project_name==='外部更新的项目名' && document.querySelector('.workbench-form-grid input').value==='本地尚未保存的项目名'", '外部更新后不提升旧编辑版本绕过冲突');
+  await click('重新加载'); await click('丢弃并重新加载');
+  await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改'); await click('概览');
+  await js("document.querySelector('.rb-workbench-draft-review').scrollIntoView({block:'start'}); document.querySelector('.rb-workbench-draft-character summary')?.click()"); await pause(180);
+  await capture('workbench-analysis-drafts-dark');
+  await js("document.querySelector('[title=切换主题]').click()"); await pause(220); await capture('workbench-analysis-drafts-light');
+  await js("document.querySelector('[title=切换主题]').click()"); await pause(220);
+
+  await click('世界观'); await input('.workbench-form-grid input', '切项目前尚未保存的资料');
+  await js("__uiFixture.savedWorkbench=structuredClone(__uiFixture.assets); __uiFixture.savedOutput=__uiFixture.values.output_folder; __uiFixture.values.output_folder='C:/other-project/output'; __uiFixture.assets={...structuredClone(__uiFixture.assets),storage_key:'other-fixture',revision:1,worldbook:{...__uiFixture.assets.worldbook,project_name:'另一项目'},character_drafts:[],worldbook_draft:{}}; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(350);
+  await assert("document.querySelector('.workbench-form-grid input').value==='切项目前尚未保存的资料' && Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='保存修改').disabled", '外部切项目保留旧编辑并阻止写入新项目');
+  await click('概览');
+  await assert("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='扫描角色').disabled", '旧项目编辑未处理时不能扫描新项目');
+  await click('重新加载'); await click('丢弃并重新加载');
+  await assert("document.querySelector('.rb-workbench-summary h2').textContent==='另一项目' && !document.querySelector('.rb-workbench-analysis-status')", '明确重新加载后只展示新项目资料和任务');
+  await js("__uiFixture.assets=__uiFixture.savedWorkbench; __uiFixture.values.output_folder=__uiFixture.savedOutput; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(350);
+
   await click('角色卡'); await capture('new-ui-characters-dark');
   await openTool('术语表'); await js("document.querySelector('.rb-term-row')?.click()"); await pause(120);
   await input('.rb-term-editor textarea', 'Harbor Town');

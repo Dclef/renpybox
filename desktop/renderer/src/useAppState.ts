@@ -248,10 +248,10 @@ export function useAppState(): AppState {
   useEffect(() => {
     return subscribe((event) => {
       if (event.event === 'PROJECT_CHANGED' || event.event === 'PROJECT_STATUS') {
-        void reloadProject();
+        void Promise.all([reloadProject(), reloadSettings()]).catch((error) => pushToast('error', String(error)));
       }
     });
-  }, [subscribe, reloadProject]);
+  }, [subscribe, reloadProject, reloadSettings, pushToast]);
 
   const upsertJob = useCallback((job: JobSnapshot) => {
     const summary = { ...job };

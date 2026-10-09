@@ -27,7 +27,7 @@ def read_job(request: Request, job_id: str) -> dict:
 
 
 @router.post("/{job_id}/cancel")
-def cancel_job(request: Request, job_id: str) -> dict:
+async def cancel_job(request: Request, job_id: str) -> dict:
     manager = _manager(request)
     if not manager.cancel(job_id):
         raise HTTPException(status_code = 409, detail = "任务已结束或不存在")

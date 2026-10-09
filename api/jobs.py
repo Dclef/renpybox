@@ -46,6 +46,7 @@ class Job:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    cooperative_cancel: bool = False
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class Job:
             "error": self.error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            **({"cancel_requested": self.cancel_event.is_set()} if self.cooperative_cancel else {}),
         }
 
     def brief(self) -> dict[str, Any]:
@@ -84,8 +86,8 @@ class JobManager:
         self._min_interval = min_interval
         self._last_push: dict[str, float] = {}
 
-    def create(self, kind: str, total: int = 0) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], kind=kind, total=total)
+    def create(self, kind: str, total: int = 0, *, cooperative_cancel: bool = False) -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], kind=kind, total=total, cooperative_cancel=cooperative_cancel)
         self._jobs[job.id] = job
         self._order.append(job.id)
         self._evict()
@@ -117,6 +119,10 @@ class JobManager:
         if job is None or job.status in TERMINAL:
             return False
         job.cancel_event.set()
+        if job.cooperative_cancel:
+            job.updated_at = time.time()
+            self._publish(job)
+            return True
         task = self._tasks.get(job_id)
         if task is not None:
             task.cancel()
@@ -147,13 +153,14 @@ class JobManager:
 
         async def runner() -> None:
             try:
-                if job.cancel_event.is_set() or job.status in TERMINAL:
+                # 协作取消仍交给任务体收尾，确保同步线程退出后再释放资源。
+                if (job.cancel_event.is_set() and not job.cooperative_cancel) or job.status in TERMINAL:
                     self._set_status(job, JobStatus.CANCELLED)
                 else:
                     result = await worker(job)
                     if job.status is JobStatus.RUNNING:
                         job.result = result
-                        self._set_status(job, JobStatus.DONE)
+                        self._set_status(job, JobStatus.CANCELLED if job.cancel_event.is_set() else JobStatus.DONE)
             except asyncio.CancelledError:
                 self._set_status(job, JobStatus.CANCELLED)
             except Exception as exc:  # noqa: BLE001
@@ -194,6 +201,10 @@ class JobManager:
             self._jobs.pop(oldest, None)
 
     def shutdown(self) -> None:
-        for task in list(self._tasks.values()):
-            task.cancel()
+        for job_id, task in list(self._tasks.items()):
+            job = self._jobs[job_id]
+            if job.cooperative_cancel:
+                job.cancel_event.set()
+            else:
+                task.cancel()
         self._tasks.clear()
