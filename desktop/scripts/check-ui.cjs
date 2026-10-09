@@ -49,6 +49,7 @@ function fixture() {
     if (p === '/api/workbench/glossary') { if (method === 'PATCH') Object.assign(f.glossary, body, { revision: f.glossary.revision + 1 }); return response(f.glossary); }
     if (p === '/api/proofreading') return response({ cache_token: 'fixture-cache', cache_folder: values.output_folder, total: 1, matched: 1, page: 1, limit: 50, files: ['chapter_01.rpy'], readonly: false, items: f.items });
     if (p === '/api/proofreading/item') { f.items[0].dst = body.dst; return response({ ok: true }); }
+    if (p === '/api/jobs') return response({ jobs: [] });
     throw new Error('自检未定义接口：' + method + ' ' + p);
   };
   const NativeSocket = WebSocket;
@@ -70,18 +71,14 @@ app.whenReady().then(async () => {
   const assert = async (expression, name) => { if (!await js(expression)) throw new Error('FAIL ' + name); log('PASS ' + name); };
   const click = async text => { await js(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===${JSON.stringify(text)})?.click()`); await pause(120); };
   const page = async title => { await js(`Array.from(document.querySelectorAll('.nav-item')).find(b=>b.title===${JSON.stringify(title)})?.click()`); await pause(180); };
-  const subpage = async (group, tab) => {
-    await page(group);
-    await js(`Array.from(document.querySelectorAll('[role=tab]')).find(t=>t.textContent.trim()===${JSON.stringify(tab)})?.click()`);
-    await pause(150);
-  };
   const input = async (selector, value) => { await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
+  const openTool = async title => { await page("Ren'Py 工具箱"); await input('.toolbox-search', title); await js("document.querySelector('.tool-card')?.click()"); await pause(180); };
   const SAMPLE_PAGES = [['翻译任务','translation'],['基础设置','basic'],['项目设置','project'],['术语表','glossary']];
   const captureSamples = async prefix => {
     for (const [title, key] of SAMPLE_PAGES) {
-      if (title === '基础设置') await subpage('翻译设置', '基础设置');
-      else if (title === '术语表') await subpage('词表与规则', '术语表');
+      if (title === '基础设置') await page('基础设置');
+      else if (title === '术语表') await openTool('术语表');
       else await page(title);
       if (key === 'glossary') { await js("document.querySelector('.rb-term-row')?.click()"); await pause(160); }
       await capture(`${prefix}-${key}`);
@@ -89,27 +86,30 @@ app.whenReady().then(async () => {
     await page('翻译任务');
   };
   const capturePhase2A = async prefix => {
-    await subpage('词表与规则', '术语表');
+    await openTool('术语表');
     await js("document.querySelector('.rb-term-row')?.click()"); await pause(160);
     await capture(`${prefix}-glossary`);
-    await subpage('词表与规则', '禁翻表');
+    await openTool('禁翻表');
     await capture(`${prefix}-preserve`);
-    await subpage('词表与规则', '称呼桥接');
+    await openTool('称呼桥接');
     await capture(`${prefix}-honorific`);
-    await page('平行校对台');
+    await openTool('检查与润色');
     await js("document.querySelector('.proofreading-target')?.click()"); await pause(160);
     await capture(`${prefix}-proofreading`);
     await js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='取消')?.click()"); await pause(80);
-    await subpage('翻译设置', '基础设置');
+    await page('基础设置');
     await capture(`${prefix}-basic`);
-    await subpage('翻译设置', '翻译提示');
+    await page('翻译提示');
     await capture(`${prefix}-prompt`);
     await page('翻译任务');
   };
   const waitLayout = async () => { for (let i = 0; i < 50; i++) { if (await js("!!document.querySelector('.translation-layout')")) return; await pause(100); } };
   const setProgress = async progress => { await js(`__uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'TRANSLATION_UPDATE',data:${JSON.stringify(progress)}})})`); await pause(100); };
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('64.0%')", '翻译快照');
-  await assert("document.querySelectorAll('.rb-nav-section').length===3 && document.querySelectorAll('.rb-nav .nav-item').length===9", '导航工作流分组');
+  await assert("document.querySelectorAll('.rb-nav-section').length===4 && document.querySelectorAll('.rb-nav .nav-item').length===9", '导航工作流分组');
+  await js("__uiFixture.sockets.at(-1).onmessage({ data: JSON.stringify({ type: 'job', job: { id: 'smoke', kind: 'demo', status: 'running', total: 1, done: 0, progress: 0, error: null, created_at: 0, updated_at: 0 } }) });");
+  await pause(120);
+  await assert("!!document.querySelector('.rb-nav') && !!document.querySelector('.task-state')", 'job 消息不误入事件通道');
   await assert("document.querySelector('.workspace-link').getAttribute('aria-label')==='后端已连接'", '全局连接状态');
   await assert("document.querySelector('.task-input').textContent.trim()===__uiFixture.values.input_folder && document.querySelector('.workspace-project').title==='C:/ui-check'", '项目身份与翻译输入目录分开展示');
   await assert("document.querySelector('.task-platform').textContent.includes('主翻译接口') && document.querySelector('.task-language-pair').textContent.includes('EN') && document.querySelector('.task-language-pair').textContent.includes('ZH')", '当前接口与语言上下文');
@@ -137,17 +137,17 @@ app.whenReady().then(async () => {
   await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改');
   await assert("__uiFixture.assets.worldbook.project_name==='港湾来信 · 新篇'", '世界观保存');
   await click('角色卡'); await capture('new-ui-characters-dark');
-  await subpage('词表与规则','术语表'); await js("document.querySelector('.rb-term-row')?.click()"); await pause(120);
+  await openTool('术语表'); await js("document.querySelector('.rb-term-row')?.click()"); await pause(120);
   await input('.rb-term-editor textarea', 'Harbor Town');
   await js("document.querySelector('.workspace-project').click()"); await pause(180);
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
   await click('取消'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
-  await page('平行校对台'); await js("document.querySelector('.proofreading-target').click()"); await pause(100);
+  await openTool('检查与润色'); await js("document.querySelector('.proofreading-target').click()"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
   await capture('new-ui-proofreading-dark');
-  await subpage('翻译设置','翻译提示'); await click('查看当前提示词');
+  await page('翻译提示'); await click('查看当前提示词');
   await assert("document.querySelector('.prompt-preview-text').value.includes('自然中文')", '静态提示词预览');
   await js("document.querySelector('.dialog').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(100);
   await assert("!document.querySelector('[role=dialog]')", 'Escape 关闭');
@@ -193,12 +193,12 @@ app.whenReady().then(async () => {
   await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await captureSamples('p1-light-1280'); await capturePhase2A('p2a-light-1280'); await capture('new-ui-glossary-light');
   await page('Agent 助手'); await capture('new-ui-agent-light');
   await page('翻译任务'); await capture('new-ui-translation-light');
-  const labels = [['翻译任务'],['平行校对台'],['项目设置'],['接口管理'],["Ren'Py 工具箱"],['词表与规则','术语表'],['词表与规则','禁翻表'],['词表与规则','称呼桥接'],['角色 / 世界观工作台'],['翻译设置','基础设置'],['翻译设置','专家设置'],['翻译设置','翻译提示'],['Agent 助手'],['应用设置']];
+  const labels = [['翻译任务'], ['Agent 助手'], ['项目设置'], ['接口管理'], ["Ren'Py 工具箱"], ['角色 / 世界观工作台'], ['基础设置'], ['专家设置'], ['翻译提示'], ['应用设置'], ['工具', '术语表'], ['工具', '禁翻表'], ['工具', '称呼桥接'], ['工具', '检查与润色']];
   for (const [width,height] of [[680,800],[900,640],[1000,640],[1280,800],[1920,1080]]) {
     await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
     for (const item of labels) {
-      const title = item.length === 2 ? item[1] : item[0];
-      if (item.length === 2) await subpage(item[0], item[1]); else await page(item[0]);
+      const title = item[0] === '工具' ? item[1] : item[0];
+      if (item[0] === '工具') await openTool(item[1]); else await page(item[0]);
       const data = await js(`({root:document.documentElement.scrollWidth>innerWidth,panels:Array.from(document.querySelectorAll('.content,.workspace-bar,.task-context,.settings-header,.workbench-header,.translation-footer,.rb-command-bar,.rb-sheet,.platform-toolbar,.agent-topbar,.agent-controls,.agent-composer,.agent-confirmation,.rb-titlebar')).filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className),controls:Array.from(document.querySelectorAll('button,input,select,textarea')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left<0||r.right>innerWidth+1)}).map(e=>e.getAttribute('aria-label')||e.textContent.trim())})`);
       log('LAYOUT '+width+' '+title+' '+JSON.stringify(data));
       if (data.root || data.panels.length || data.controls.length) throw new Error('布局越界：'+width+' '+title+' '+JSON.stringify(data));
@@ -209,7 +209,7 @@ app.whenReady().then(async () => {
       await page('翻译任务');
       await assert("document.querySelector('.content h1').getBoundingClientRect().top<=64", '翻译标题起点');
     }
-    if (width === 680) { await page('平行校对台'); await capture('new-ui-proofreading-680'); }
+    if (width === 680) { await openTool('检查与润色'); await capture('new-ui-proofreading-680'); }
     if (width === 900) {
       await assert("(()=>{const e=document.querySelector('.sidebar-navigation');return !!e && e.scrollHeight<=e.clientHeight})()", '窄窗口侧栏不需要滚动');
       await captureSamples('p1-light-900');
@@ -221,7 +221,7 @@ app.whenReady().then(async () => {
     await waitLayout();
     await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200);
     await page('翻译任务'); await capture(`p1-accent-${accent}-translation`);
-    await subpage('翻译设置','基础设置'); await capture(`p1-accent-${accent}-basic`);
+    await page('基础设置'); await capture(`p1-accent-${accent}-basic`);
   }
   await js("localStorage.removeItem('renpybox.accent')");
   await win.webContents.reload();
