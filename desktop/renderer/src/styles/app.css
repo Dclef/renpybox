@@ -1,3 +1,311 @@
 @layer app {
-  /* 新样式写在这一层，类名用 rb- 前缀。 */
+  .rb-shell {
+    display: grid;
+    grid-template-columns: 208px minmax(0, 1fr);
+    grid-template-rows: 38px minmax(0, 1fr);
+    grid-template-areas:
+      'titlebar titlebar'
+      'sidebar content';
+    height: 100%;
+    background: var(--rb-background);
+  }
+
+  .rb-titlebar {
+    grid-area: titlebar;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 38px;
+    padding-left: 12px;
+    background: var(--rb-chrome);
+    border-bottom: 1px solid var(--rb-divider);
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+
+  .rb-brand {
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--rb-text-primary);
+  }
+
+  .rb-version {
+    flex-shrink: 0;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--rb-text-secondary);
+  }
+
+  .rb-project {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 280px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--rb-text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-project > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-project:hover:not(:disabled) {
+    background: var(--rb-sidebar-hover);
+  }
+
+  .rb-project:disabled {
+    cursor: default;
+    color: var(--rb-text-disabled);
+  }
+
+  .rb-titlebar-spacer {
+    flex: 1;
+    min-width: 8px;
+  }
+
+  .rb-link {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .rb-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--rb-text-disabled);
+  }
+
+  .rb-dot[data-state='open'] { background: var(--rb-success); }
+  .rb-dot[data-state='connecting'] { background: var(--rb-warning); }
+  .rb-dot[data-state='closed'] { background: var(--rb-error); }
+
+  .rb-window-controls {
+    display: flex;
+    align-self: stretch;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-titlebar-button {
+    width: 46px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--rb-text-primary);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-titlebar-button:hover { background: var(--rb-surface-hover); }
+  .rb-titlebar-button:active { background: var(--rb-surface-pressed); }
+
+  .rb-titlebar-button-close:hover {
+    background: var(--rb-error);
+    color: var(--rb-on-accent);
+  }
+
+  .rb-sidebar {
+    grid-area: sidebar;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 12px 8px;
+    background: var(--rb-chrome);
+    border-right: 1px solid var(--rb-divider);
+    overflow: hidden;
+  }
+
+  .rb-nav {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: auto;
+  }
+
+  .rb-nav-item,
+  .rb-icon-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rb-nav-item {
+    flex-shrink: 0;
+    width: 100%;
+    height: 32px;
+    padding: 0 8px;
+  }
+
+  .rb-nav-label {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rb-nav-item:hover,
+  .rb-icon-button:hover {
+    background: var(--rb-sidebar-hover);
+    color: var(--rb-text-primary);
+  }
+
+  .rb-nav-item[aria-current='page'] {
+    background: var(--rb-accent-surface);
+    color: var(--rb-text-primary);
+    font-weight: 600;
+  }
+
+  .rb-nav-item[aria-current='page'] svg,
+  .rb-icon-button[aria-current='page'] svg {
+    color: var(--rb-accent-text);
+  }
+
+  .rb-nav-item:focus-visible,
+  .rb-icon-button:focus-visible,
+  .rb-project:focus-visible,
+  .rb-titlebar-button:focus-visible {
+    outline: 2px solid var(--rb-accent);
+    outline-offset: -2px;
+  }
+
+  .rb-nav-group {
+    flex-shrink: 0;
+    margin: 12px 8px 0;
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 16px;
+  }
+
+  .rb-nav-group:first-child { margin-top: 0; }
+
+  .rb-sidebar-footer {
+    display: flex;
+    flex-shrink: 0;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rb-divider);
+  }
+
+  .rb-icon-button {
+    width: 32px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .rb-icon-button[aria-current='page'] {
+    background: var(--rb-accent-surface);
+    color: var(--rb-text-primary);
+  }
+
+  .rb-content {
+    grid-area: content;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--rb-background);
+  }
+
+  .rb-content > * {
+    animation: rb-page-in 150ms ease;
+  }
+
+  .rb-notice {
+    flex-shrink: 0;
+    margin: 0;
+    border: 0;
+    padding: 8px 24px;
+    background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .rb-toasts {
+    position: fixed;
+    right: 16px;
+    bottom: 72px;
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(360px, calc(100vw - 32px));
+  }
+
+  @media (max-width: 999px) {
+    .rb-shell { grid-template-columns: 56px minmax(0, 1fr); }
+
+    .rb-nav-label { display: none; }
+
+    .rb-nav-item {
+      justify-content: center;
+      padding: 0;
+    }
+
+    .rb-nav-group {
+      height: 1px;
+      margin: 12px 8px 0;
+      padding: 0;
+      overflow: hidden;
+      background: var(--rb-divider);
+      color: transparent;
+      font-size: 0;
+      line-height: 0;
+    }
+
+    .rb-nav-group:first-child { margin-top: 0; }
+
+    .rb-sidebar-footer {
+      flex-direction: column;
+      align-items: center;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rb-content > * { animation: none; }
+  }
+}
+
+@keyframes rb-page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

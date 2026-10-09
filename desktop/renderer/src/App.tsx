@@ -8,19 +8,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import { Notification, Tooltip } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
+import { ChevronDown, Folder, Moon, Sun } from 'lucide-react';
 
 import {
   IconChromeClose,
   IconChromeMaximize,
   IconChromeMinimize,
   IconChromeRestore,
-  IconChevronRight,
-  IconContrast,
-  IconFolder,
-  IconInfo,
   NAV_ICONS,
 } from './icons';
-import { APP_SETTINGS_NAV, findNavItem, navEntries, type PageKey } from './nav';
+import { APP_SETTINGS_NAV, navEntries, type PageKey } from './nav';
 import { ProjectPage } from './pages/ProjectPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PlatformPage } from './pages/PlatformPage';
@@ -34,7 +33,7 @@ import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
 import { HonorificPage } from './pages/HonorificPage';
 import { ACCENTS, FONT_FAMILY, readAccent } from './mantineTheme';
-import { Dialog } from './ui';
+import { Dialog, Empty } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
 
@@ -44,29 +43,24 @@ const LINK_TEXT: Record<'connecting' | 'open' | 'closed', string> = {
   closed: '后端连接已断开',
 };
 
+const TOAST_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
+
 function Toasts(props: { toasts: AppState['toasts']; onDismiss: (id: number) => void }) {
   const { toasts, onDismiss } = props;
   if (toasts.length === 0) return null;
   return (
-    <div
-      style={{
-        position: 'fixed',
-        right: 16,
-        bottom: 76,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-        width: 'min(360px, calc(100vw - 32px))',
-        zIndex: 40,
-      }}
-    >
+    <div className="rb-toasts">
       {toasts.map((toast) => (
-        <div key={toast.id} className="banner" data-tone={toast.tone} role="status">
-          <div style={{ flex: 1, minWidth: 0 }}>{toast.text}</div>
-          <button type="button" className="btn" onClick={() => onDismiss(toast.id)}>
-            知道了
-          </button>
-        </div>
+        <Notification
+          key={toast.id}
+          data-rb-toast=""
+          withBorder
+          color={TOAST_COLOR[toast.tone]}
+          onClose={() => onDismiss(toast.id)}
+          closeButtonProps={{ 'aria-label': '知道了' }}
+        >
+          {toast.text}
+        </Notification>
       ))}
     </div>
   );
@@ -109,8 +103,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
   const expertMode = state.settings?.values.expert_mode === true;
   const entries = useMemo(() => navEntries(expertMode), [expertMode]);
+  const collapsed = useMediaQuery('(max-width: 999px)') ?? false;
   const version = state.version?.app_version ?? '';
-  const SettingsIcon = NAV_ICONS[APP_SETTINGS_NAV.icon];
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || '未绑定项目';
 
@@ -193,141 +187,108 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         },
       }}
     >
-    <div className="shell">
-      <header className="titlebar">
-        <span className="titlebar-title">RenpyBox {version}</span>
-        <span className="titlebar-spacer" />
-        <div className="titlebar-controls">
-          <button
-            type="button"
-            className="titlebar-button"
-            aria-label="最小化"
-            onClick={() => window.renpy?.minimize?.()}
-          >
+    <div className="shell rb-shell">
+      <header className="rb-titlebar">
+        <span className="rb-brand">RenpyBox</span>
+        {version ? <span className="rb-version">{version}</span> : null}
+        <button
+          type="button"
+          className="workspace-project rb-project"
+          title={projectPath || '尚未绑定 Ren\'Py 项目，点击前往项目设置'}
+          aria-label={`项目设置：${projectName}`}
+          disabled={!state.ready}
+          onClick={() => navigate('project')}
+        >
+          <Folder size={16} strokeWidth={1.75} />
+          <span>{projectName}</span>
+          <ChevronDown size={16} strokeWidth={1.75} />
+        </button>
+        <span className="rb-titlebar-spacer" />
+        <span className="workspace-link rb-link" role="status" aria-label={LINK_TEXT[link]}>
+          <span className="rb-dot" data-state={link} />
+          {link !== 'open' ? <span>{LINK_TEXT[link]}</span> : null}
+        </span>
+        <div className="rb-window-controls">
+          <button type="button" className="rb-titlebar-button" aria-label="最小化" onClick={() => window.renpy?.minimize?.()}>
             <IconChromeMinimize size={10} />
           </button>
-          <button
-            type="button"
-            className="titlebar-button"
-            aria-label={maximized ? '向下还原' : '最大化'}
-            onClick={() => window.renpy?.toggleMaximize?.()}
-          >
+          <button type="button" className="rb-titlebar-button" aria-label={maximized ? '向下还原' : '最大化'} onClick={() => window.renpy?.toggleMaximize?.()}>
             {maximized ? <IconChromeRestore size={10} /> : <IconChromeMaximize size={10} />}
           </button>
-          <button
-            type="button"
-            className="titlebar-button titlebar-button-close"
-            aria-label="关闭"
-            onClick={() => navigate('close')}
-          >
+          <button type="button" className="rb-titlebar-button rb-titlebar-button-close" aria-label="关闭" onClick={() => navigate('close')}>
             <IconChromeClose size={10} />
           </button>
         </div>
       </header>
 
-      <nav className="sidebar" aria-label="主导航">
-        <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true">R</span>
-          <span className="brand-copy">
-            <strong>RenpyBox</strong>
-            <small>Ren'Py 本地化工作台</small>
-          </span>
-        </div>
-        <div className="sidebar-navigation">
+      <nav className="sidebar rb-sidebar" aria-label="主导航">
+        <div className="sidebar-navigation rb-nav">
           {entries.map((entry) =>
             entry.kind === 'group' ? (
-              <h2 key={entry.id} className="nav-group-label">{entry.label}</h2>
+              <h2 key={entry.id} className="nav-group-label rb-nav-group">{entry.label}</h2>
             ) : (
-              <button
-                key={entry.item.key}
-                type="button"
-                className="nav-item"
-                title={entry.item.label}
-                aria-current={active === entry.item.key ? 'page' : undefined}
-                onClick={() => navigate(entry.item.key)}
-              >
-                <span className="nav-item-icon">
+              <Tooltip key={entry.item.key} label={entry.item.label} disabled={!collapsed} position="right">
+                <button
+                  type="button"
+                  className="nav-item rb-nav-item"
+                  title={entry.item.label}
+                  aria-current={active === entry.item.key ? 'page' : undefined}
+                  onClick={() => navigate(entry.item.key)}
+                >
                   {(() => {
                     const Icon = NAV_ICONS[entry.item.icon];
-                    return <Icon size={18} />;
+                    return <Icon size={18} strokeWidth={1.75} />;
                   })()}
-                </span>
-                <span className="nav-item-label">{entry.item.label}</span>
-              </button>
+                  <span className="rb-nav-label">{entry.item.label}</span>
+                </button>
+              </Tooltip>
             ),
           )}
         </div>
 
-        <div className="sidebar-footer">
-          <button
-            type="button"
-            className="nav-item"
-            title={APP_SETTINGS_NAV.label}
-            aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
-            onClick={() => navigate(APP_SETTINGS_NAV.key)}
-          >
-            <span className="nav-item-icon">
-              <SettingsIcon size={18} />
-            </span>
-            <span className="nav-item-label">{APP_SETTINGS_NAV.label}</span>
-          </button>
-
-          <button
-            type="button"
-            className="nav-item"
-            title="切换主题"
-            onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}
-          >
-            <span className="nav-item-icon">
-              <IconContrast size={18} />
-            </span>
-            <span className="nav-item-label">切换主题</span>
-          </button>
-
-          {state.health ? (
+        <div className="sidebar-footer rb-sidebar-footer">
+          <Tooltip label={APP_SETTINGS_NAV.label} disabled={!collapsed} position="right">
             <button
               type="button"
-              className="nav-item"
-              title="关于与诊断"
-              onClick={() => {
-                // 壳窗口是 vanilla 页面，不进主 UI bundle；这里按需唤起。
-                void window.renpy?.openShell('welcome');
-              }}
+              className="nav-item rb-icon-button"
+              title={APP_SETTINGS_NAV.label}
+              aria-label={APP_SETTINGS_NAV.label}
+              aria-current={active === APP_SETTINGS_NAV.key ? 'page' : undefined}
+              onClick={() => navigate(APP_SETTINGS_NAV.key)}
             >
-              <span className="nav-item-icon">
-                <IconInfo size={18} />
-              </span>
-              <span className="nav-item-label">关于与诊断</span>
+              {(() => {
+                const Icon = NAV_ICONS[APP_SETTINGS_NAV.icon];
+                return <Icon size={18} strokeWidth={1.75} />;
+              })()}
             </button>
-          ) : null}
+          </Tooltip>
+          <Tooltip label="切换主题" disabled={!collapsed} position="right">
+            <button type="button" className="nav-item rb-icon-button" title="切换主题" aria-label="切换主题" onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}>
+              {state.theme === 'DARK' ? <Sun size={18} strokeWidth={1.75} /> : <Moon size={18} strokeWidth={1.75} />}
+            </button>
+          </Tooltip>
+          <Tooltip label="关于与诊断" disabled={!collapsed} position="right">
+            <button
+              type="button"
+              className="nav-item rb-icon-button"
+              title="关于与诊断"
+              aria-label="关于与诊断"
+              onClick={() => { void window.renpy?.openShell('welcome'); }}
+            >
+              {(() => {
+                const Icon = NAV_ICONS.Info;
+                return <Icon size={18} strokeWidth={1.75} />;
+              })()}
+            </button>
+          </Tooltip>
         </div>
       </nav>
 
-      <main className="content" data-page={active}>
-        <div className="workspace-bar">
-          <div className="workspace-breadcrumb">
-            <button type="button" className="workspace-project" title={projectPath || '尚未绑定 Ren\'Py 项目，点击前往项目设置'} aria-label={`项目设置：${projectName}`} disabled={!state.ready} onClick={() => navigate('project')}>
-              <IconFolder size={15} />
-              <span>{projectName}</span>
-            </button>
-            <IconChevronRight size={12} />
-            <span className="workspace-current">{findNavItem(active).label}</span>
-          </div>
-          <span className="workspace-link" role="status" aria-label={LINK_TEXT[link]}>
-            <span className="sidebar-status-dot" data-state={link} />
-            <span className="workspace-link-text">{LINK_TEXT[link]}</span>
-          </span>
-        </div>
-        {link === 'closed' ? <div className="backend-notice" role="status">
+      <main className="content rb-content" data-page={active}>
+        {link === 'closed' ? <div className="backend-notice rb-notice" role="status">
           后端未连接，正在自动重试。请用 <code>npm run dev</code> 或 <code>npm run dev:web</code> 启动（二者共用同一后端，关桌面端不会杀掉服务）；仅 <code>npm run dev:renderer</code> 不会起 Python。
         </div> : null}
-        {state.ready ? (
-          body
-        ) : (
-          <div className="page">
-            <div className="empty">正在启动 …</div>
-          </div>
-        )}
+        {state.ready ? body : <Empty>正在启动 …</Empty>}
       </main>
 
       {pendingPage ? (
