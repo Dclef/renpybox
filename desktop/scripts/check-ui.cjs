@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
   await page('翻译任务'); await js("document.querySelector('.task-platform').click()"); await pause(180);
   await assert("document.querySelector('.content').dataset.page==='platform'", '翻译接口快捷入口');
   await page('接口管理'); await capture('new-ui-platform-dark');
-  await click('＋ 新增接口'); await capture('new-ui-platform-editor-dark');
+  await click('新增接口'); await capture('new-ui-platform-editor-dark');
   await input('.platform-editor input', '自检接口'); await input('.platform-editor input[placeholder^=服务商]', 'story-model'); await input('.platform-editor input[type=url]', 'https://api.example.com/v1'); await click('保存接口');
   await assert("__uiFixture.values.platforms.some(p=>p.name==='自检接口')", '接口编辑表单提交');
   await assert("!('api_keys' in __uiFixture.writes.at(-1).body)", '空密钥不覆盖凭据');
@@ -104,7 +104,7 @@ app.whenReady().then(async () => {
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
   await click('取消'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
-  await page('平行校对台'); await js("document.querySelector('.proofreading-target').click()"); await pause(100);
+  await page('平行校对台'); await click('艾丽丝，那封信今天早上到了。'); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]')", '校对保存');
   await capture('new-ui-proofreading-dark');
@@ -119,7 +119,7 @@ app.whenReady().then(async () => {
   await page('Agent 助手');
   await assert("!!document.querySelector('.agent-composer textarea') && !document.querySelector('.agent-empty').textContent.includes('暂不可用')", 'Agent 工作区已替换占位页');
   await js("document.querySelector('.agent-suggestion').click(); const select=document.querySelector('[aria-label=\"Agent 思考等级\"]'); select.value='HIGH'; select.dispatchEvent(new Event('change',{bubbles:true}));"); await pause(100);
-  await click('发送消息');
+  await click('发送');
   await assert("__uiFixture.writes.at(-1).p==='/api/agent/message' && __uiFixture.writes.at(-1).body.thinking_level==='HIGH' && document.querySelectorAll('.agent-message').length===2", 'Agent 发送实际请求与思考覆盖项');
   await js("__uiFixture.agent.messages.at(-1).content='找到 2 个资源包。'; __uiFixture.agent.messages.at(-1).tools=[{name:'list_rpa_files',status:'done',message:'找到 2 个资源包'}]; __uiFixture.emitAgent();"); await pause(220);
   await assert("document.querySelector('.agent-message-body').textContent.includes('找到 2 个资源包') && !!document.querySelector('.agent-tool')", 'Agent 流式快照与工具反馈');
@@ -129,13 +129,13 @@ app.whenReady().then(async () => {
   await assert("__uiFixture.writes.at(-1).p==='/api/agent/stop' && document.querySelector('.agent-chat').textContent.includes('已停止')", 'Agent 停止请求');
   await click('新建会话'); await click('清空并新建');
   await assert("__uiFixture.agent.messages.length===0 && !!document.querySelector('.agent-empty')", 'Agent 清空会话与上下文');
-  await input('.agent-composer textarea', '解包当前项目'); await click('发送消息');
+  await input('.agent-composer textarea', '解包当前项目'); await click('发送');
   await js("__uiFixture.agent.confirmation={id:'c'.repeat(32),name:'unpack_rpa_files',arguments:{},data:{game_dir:'C:/ui-check/game',count:2},expires_at:Date.now()/1000+120}; __uiFixture.emitAgent();"); await pause(220);
   await assert("document.querySelector('.agent-confirmation').textContent.includes('C:/ui-check/game') && __uiFixture.confirmed.length===0", 'Agent 写入前展示服务端范围且不自动批准');
   await capture('new-ui-agent-confirmation-dark');
   await click('拒绝执行');
   await assert("__uiFixture.confirmed.at(-1).approved===false && !document.querySelector('.agent-confirmation')", 'Agent 拒绝工具');
-  await input('.agent-composer textarea', '确认解包当前项目'); await click('发送消息');
+  await input('.agent-composer textarea', '确认解包当前项目'); await click('发送');
   await js("__uiFixture.agent.confirmation={id:'d'.repeat(32),name:'unpack_rpa_files',arguments:{},data:{game_dir:'C:/ui-check/game',count:2},expires_at:Date.now()/1000+120}; __uiFixture.emitAgent();"); await pause(220);
   await click('确认执行');
   await assert("__uiFixture.writes.at(-1).body.confirmation_id==='d'.repeat(32) && __uiFixture.confirmed.at(-1).approved===true", 'Agent 确认仅提交一次性标识');
@@ -149,7 +149,7 @@ app.whenReady().then(async () => {
   await assert(`document.querySelector('.workspace-link').getAttribute('aria-label')==='后端已连接' && __uiFixture.reads.filter(path=>path==='/api/settings').length>${readsBeforeReconnect} && document.querySelector('.agent-composer textarea').value==='断线时保留的草稿'`, '后端重连后重新加载配置和会话');
   await input('.agent-composer textarea', '');
   await capture('new-ui-agent-dark');
-  await js("import('/src/theme.ts').then(m=>m.applyTheme('LIGHT'))"); await capture('new-ui-glossary-light');
+  await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await capture('new-ui-glossary-light');
   await page('Agent 助手'); await capture('new-ui-agent-light');
   await page('翻译任务'); await capture('new-ui-translation-light');
   const labels = ['翻译任务','平行校对台','项目设置','接口管理',"Ren'Py 工具箱",'术语表','禁翻表','称呼桥接','角色 / 世界观工作台','翻译提示','Agent 助手','基础设置','应用设置'];

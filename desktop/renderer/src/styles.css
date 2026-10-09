@@ -3,6 +3,7 @@
  * 页面组件声明结构，颜色、交互状态和响应式规则在这里统一维护。
  */
 
+@layer legacy {
 * {
   box-sizing: border-box;
 }
@@ -525,13 +526,7 @@ body {
   flex-shrink: 0;
 }
 
-input:not([type]),
-input[type='url'],
-input[type='text'],
-input[type='number'],
-input[type='password'],
-select,
-textarea {
+:where(input:not([type]), input[type='url'], input[type='text'], input[type='number'], input[type='password'], select, textarea):where(:not([class*="mantine-"])) {
   min-width: 0;
   min-height: 34px;
   padding: 0 10px;
@@ -542,31 +537,27 @@ textarea {
   font: inherit;
 }
 
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
+:where(input:focus-visible, select:focus-visible, textarea:focus-visible):where(:not([class*="mantine-"])) {
   outline: none;
   border-color: var(--rb-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 18%, transparent);
 }
 
-button:focus-visible {
+:where(button:focus-visible):where(:not([class*="mantine-"])) {
   outline: 2px solid var(--rb-accent);
   outline-offset: 2px;
 }
 
-input:disabled,
-select:disabled,
-textarea:disabled {
+:where(input:disabled, select:disabled, textarea:disabled):where(:not([class*="mantine-"])) {
   color: var(--rb-text-disabled);
   background: var(--rb-surface-subtle);
 }
 
-input[type='number'] {
+:where(input[type='number']):where(:not([class*="mantine-"])) {
   width: 120px;
 }
 
-select {
+:where(select):where(:not([class*="mantine-"])) {
   min-width: 160px;
 }
 
@@ -617,7 +608,7 @@ select {
 
 /* ---------- 按钮 ---------- */
 
-button {
+:where(button):where(:not([class*="mantine-"])) {
   font: inherit;
 }
 
@@ -3555,8 +3546,8 @@ button {
 .workspace-summary span,
 .platform-summary span { color: var(--rb-text-secondary); font-size: 12px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
-input[type='checkbox'] { accent-color: var(--rb-accent); flex-shrink: 0; }
-textarea { padding: 10px 12px; line-height: 1.65; resize: vertical; }
+:where(input[type='checkbox']):where(:not([class*="mantine-"])) { accent-color: var(--rb-accent); flex-shrink: 0; }
+:where(textarea):where(:not([class*="mantine-"])) { padding: 10px 12px; line-height: 1.65; resize: vertical; }
 .input,
 .textarea,
 .platform-field input,
@@ -4488,4 +4479,5 @@ textarea { padding: 10px 12px; line-height: 1.65; resize: vertical; }
   .glossary-row,
   .glossary-column-head { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .glossary-row > .btn { grid-column: 2; justify-self: end; }
+}
 }
