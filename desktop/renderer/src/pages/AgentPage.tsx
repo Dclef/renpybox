@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Select } from '@mantine/core';
+import { Bot, Square } from 'lucide-react';
 import * as api from '../api';
 import { AgentMessageBody } from '../AgentMessageBody';
 import type { AgentSnapshot, AgentThinkingLevel } from '../types';
 import type { AppState } from '../useAppState';
-import { IconRobot, IconStop } from '../icons';
 import { Banner, Dialog } from '../ui';
 
 const TOOL_NAMES: Record<string, string> = {
@@ -142,7 +143,7 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
       <header className="agent-topbar">
         <div className="agent-identity">
           <span className="agent-avatar" aria-hidden="true">
-            <IconRobot size={18} />
+            <Bot size={18} strokeWidth={1.75} />
           </span>
           <div className="agent-heading">
             <div className="agent-title-row">
@@ -155,16 +156,29 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
         <div className="agent-controls">
           <label className="agent-select">
             <span>接口</span>
-            <select aria-label="Agent 接口" value={platform ? platformId : -1} disabled={!connected || busy || pending || state.saving} onChange={event => state.setSetting('agent_platform', Number(event.target.value))}>
-              <option value={-1}>选择 Agent 接口</option>
-              {platforms.map(entry => <option key={entry.id} value={entry.id}>{entry.name || entry.model || `接口 ${entry.id}`}</option>)}
-            </select>
+            <Select
+              w={150}
+              maw="100%"
+              aria-label="Agent 接口"
+              allowDeselect={false}
+              value={platform ? String(platformId) : '-1'}
+              disabled={!connected || busy || pending || state.saving}
+              data={[{ value: '-1', label: '选择 Agent 接口' }, ...platforms.map(entry => ({ value: String(entry.id), label: entry.name || entry.model || `接口 ${entry.id}` }))]}
+              onChange={value => { if (value != null) state.setSetting('agent_platform', Number(value)); }}
+            />
           </label>
           <label className="agent-select">
             <span>思考</span>
-            <select aria-label="Agent 思考等级" value={thinking} disabled={!connected || busy || pending || state.saving} onChange={event => state.setSetting('agent_thinking_level', event.target.value)}>
-              {([['OFF', '关闭'], ['LOW', '低'], ['MEDIUM', '中'], ['HIGH', '高'], ['MAX', '最高']] as const).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            <Select
+              w={120}
+              maw="100%"
+              aria-label="Agent 思考等级"
+              allowDeselect={false}
+              value={thinking}
+              disabled={!connected || busy || pending || state.saving}
+              data={([['OFF', '关闭'], ['LOW', '低'], ['MEDIUM', '中'], ['HIGH', '高'], ['MAX', '最高']] as const).map(([value, label]) => ({ value, label }))}
+              onChange={value => { if (value != null) state.setSetting('agent_thinking_level', value); }}
+            />
           </label>
           <div className="agent-control-actions">
             <button type="button" className="btn" onClick={onOpenPlatforms}>管理接口</button>
@@ -184,7 +198,7 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
         {!session?.messages.length ? (
           <div className="agent-empty">
             <span className="agent-empty-icon" aria-hidden="true">
-              <IconRobot size={28} />
+              <Bot size={28} strokeWidth={1.75} />
             </span>
             <h2>从当前项目开始</h2>
             <p>用自然语言检查项目、查询进度或调用现有工具。需要确认的操作会先显示执行范围。</p>
@@ -297,7 +311,7 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           </span>
           {busy ? (
             <button type="button" className="btn" disabled={!connected || pending || session?.status === 'stopping'} onClick={() => void perform(api.stopAgent)}>
-              <IconStop size={14} />停止
+              <Square size={14} strokeWidth={1.75} />停止
             </button>
           ) : (
             <button type="submit" className="btn btn-primary" disabled={!canSend}>
