@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('renpy', {
    * 原壳用 QFileDialog.getExistingDirectory + webbrowser.open，这里是等价物。
    */
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),
+  pickFile: (options) => ipcRenderer.invoke('dialog:pick-file', options),
+  saveFile: (options) => ipcRenderer.invoke('dialog:save-file', options),
   openPath: (target) => ipcRenderer.invoke('shell:open-path', target),
   platform: process.platform,
   versions: {
