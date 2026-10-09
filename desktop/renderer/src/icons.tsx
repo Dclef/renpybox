@@ -13,18 +13,14 @@ import type { SVGProps } from 'react';
 import {
   BookOpenText,
   Bot,
-  FlaskConical,
   FolderCog,
   Info,
   Languages,
-  MessageSquareText,
   Plug,
   Settings,
-  ShieldBan,
   SlidersHorizontal,
   SpellCheck,
   UsersRound,
-  Variable,
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
@@ -351,12 +347,8 @@ export type NavIconName =
   | 'Plug'
   | 'Wrench'
   | 'BookOpenText'
-  | 'ShieldBan'
-  | 'Variable'
   | 'UsersRound'
   | 'SlidersHorizontal'
-  | 'FlaskConical'
-  | 'MessageSquareText'
   | 'Settings'
   | 'Info';
 
@@ -368,12 +360,8 @@ export const NAV_ICONS: Record<NavIconName, LucideIcon> = {
   Plug,
   Wrench,
   BookOpenText,
-  ShieldBan,
-  Variable,
   UsersRound,
   SlidersHorizontal,
-  FlaskConical,
-  MessageSquareText,
   Settings,
   Info,
 };

@@ -5,7 +5,7 @@
  * 交互状态和响应式细节集中在 styles.css。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ConfigProvider, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { Notification, Tooltip } from '@mantine/core';
@@ -19,7 +19,8 @@ import {
   IconChromeRestore,
   NAV_ICONS,
 } from './icons';
-import { APP_SETTINGS_NAV, navEntries, type PageKey } from './nav';
+import { GroupPage } from './components/GroupPage';
+import { APP_SETTINGS_NAV, findNavItem, isNavCurrent, NAV_SECTIONS, type PageKey } from './nav';
 import { ProjectPage } from './pages/ProjectPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PlatformPage } from './pages/PlatformPage';
@@ -102,7 +103,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   }, []);
 
   const expertMode = state.settings?.values.expert_mode === true;
-  const entries = useMemo(() => navEntries(expertMode), [expertMode]);
   const collapsed = useMediaQuery('(max-width: 999px)') ?? false;
   const version = state.version?.app_version ?? '';
   const projectPath = String(state.project?.renpy_project_path ?? '');
@@ -117,6 +117,10 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       setWorkbenchRequested(0);
     }
   }, [workbenchRequested]);
+
+  useEffect(() => {
+    if (!expertMode && active === 'expert-settings') navigate('basic-settings');
+  }, [expertMode, active]);
 
   const body = (() => {
     switch (active) {
@@ -133,33 +137,54 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'proofreading':
         return <ProofreadingPage state={state} onDirtyChange={setDirty} />;
       case 'glossary':
-        return <GlossaryPage state={state} onDirtyChange={setDirty} />;
       case 'preserve':
-        return <PreservePage state={state} onDirtyChange={setDirty} />;
-      case 'honorific':
-        return <HonorificPage state={state} onDirtyChange={setDirty} />;
+      case 'honorific': {
+        const tabs = (['glossary', 'preserve', 'honorific'] as const).map((key) => ({ key, label: findNavItem(key).label }));
+        const description = active === 'preserve'
+          ? '这些原文会在译文里原样保留，适合变量、代码和不应翻译的专名。'
+          : active === 'honorific'
+            ? '识别 Mr.[name]、Dr.[name] 这类称呼加变量，避免模型丢掉变量或把中文语序写乱。'
+            : '当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。';
+        return (
+          <GroupPage title="词表与规则" description={description} tabs={tabs} active={active} onSelect={navigate}>
+            {active === 'preserve' ? <PreservePage state={state} onDirtyChange={setDirty} />
+              : active === 'honorific' ? <HonorificPage state={state} onDirtyChange={setDirty} />
+                : <GlossaryPage state={state} onDirtyChange={setDirty} embedded />}
+          </GroupPage>
+        );
+      }
       case 'project':
         return <ProjectPage state={state} />;
       case 'toolbox':
         return <ToolBoxPage state={state} onNavigate={navigate} />;
       case 'basic-settings':
-        return (
-          <SettingsPage
-            state={state}
-            variant="basic"
-            title="基础设置"
-            description="调整翻译任务的并发、超时和重试阈值"
-          />
-        );
       case 'expert-settings':
+      case 'custom-prompt': {
+        const tabs = [
+          { key: 'basic-settings' as const, label: findNavItem('basic-settings').label },
+          ...(expertMode ? [{ key: 'expert-settings' as const, label: findNavItem('expert-settings').label }] : []),
+          { key: 'custom-prompt' as const, label: findNavItem('custom-prompt').label },
+        ];
+        const description = active === 'expert-settings'
+          ? '控制提示词、资产分析和结果检查等高级行为'
+          : active === 'custom-prompt'
+            ? '配置翻译提示词模式、风格和预览内容'
+            : '调整翻译任务的并发、超时和重试阈值';
         return (
-          <SettingsPage
-            state={state}
-            variant="expert"
-            title="专家设置"
-            description="控制提示词、资产分析和结果检查等高级行为"
-          />
+          <GroupPage title="翻译设置" description={description} tabs={tabs} active={active} onSelect={navigate}>
+            {active === 'custom-prompt' ? <CustomPromptPage state={state} />
+              : (
+                <SettingsPage
+                  state={state}
+                  embedded
+                  variant={active === 'expert-settings' ? 'expert' : 'basic'}
+                  title={active === 'expert-settings' ? '专家设置' : '基础设置'}
+                  description={description}
+                />
+              )}
+          </GroupPage>
         );
+      }
       case 'app-settings':
         return <SettingsPage state={state} variant="app" title="应用设置" description="管理语言、更新、声音和应用级显示选项" />;
       case 'workbench':
@@ -223,27 +248,27 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
       <nav className="sidebar rb-sidebar" aria-label="主导航">
         <div className="sidebar-navigation rb-nav">
-          {entries.map((entry) =>
-            entry.kind === 'group' ? (
-              <h2 key={entry.id} className="nav-group-label rb-nav-group">{entry.label}</h2>
-            ) : (
-              <Tooltip key={entry.item.key} label={entry.item.label} disabled={!collapsed} position="right">
-                <button
-                  type="button"
-                  className="nav-item rb-nav-item"
-                  title={entry.item.label}
-                  aria-current={active === entry.item.key ? 'page' : undefined}
-                  onClick={() => navigate(entry.item.key)}
-                >
-                  {(() => {
-                    const Icon = NAV_ICONS[entry.item.icon];
-                    return <Icon size={18} strokeWidth={1.75} />;
-                  })()}
-                  <span className="rb-nav-label">{entry.item.label}</span>
-                </button>
-              </Tooltip>
-            ),
-          )}
+          {NAV_SECTIONS.map((section) => (
+            <div key={section[0].key} className="rb-nav-section">
+              {section.map((item) => {
+                const Icon = NAV_ICONS[item.icon];
+                return (
+                  <Tooltip key={item.key} label={item.label} disabled={!collapsed} position="right">
+                    <button
+                      type="button"
+                      className="nav-item rb-nav-item"
+                      title={item.label}
+                      aria-current={isNavCurrent(item, active) ? 'page' : undefined}
+                      onClick={() => navigate(item.key)}
+                    >
+                      <Icon size={18} strokeWidth={1.75} />
+                      <span className="rb-nav-label">{item.label}</span>
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          ))}
         </div>
 
         <div className="sidebar-footer rb-sidebar-footer">
