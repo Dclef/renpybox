@@ -33,6 +33,7 @@ import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
 import { HonorificPage } from './pages/HonorificPage';
+import { ACCENTS, FONT_FAMILY, readAccent } from './mantineTheme';
 import { Dialog } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
@@ -186,9 +187,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       theme={{
         algorithm: state.theme === 'DARK' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
-          colorPrimary: '#0078D4',
-          borderRadius: 4,
-          fontFamily: "'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif",
+          colorPrimary: ACCENTS[readAccent()].accent,
+          borderRadius: 6,
+          fontFamily: FONT_FAMILY,
         },
       }}
     >

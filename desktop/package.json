@@ -17,7 +17,11 @@
   },
   "dependencies": {
     "@esbuild/win32-x64": "^0.25.12",
+    "@mantine/core": "^9.7.1",
+    "@mantine/hooks": "^9.7.1",
+    "@tanstack/react-virtual": "^3.14.13",
     "antd": "^6.6.5",
+    "lucide-react": "^1.54.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

@@ -1,30 +1,21 @@
 /**
- * 设计令牌沿用 Python 侧 widget/ThemeTokens.py 的语义命名。
- *
- * 色值与 widget/ThemeTokens.py 一致：Windows 11 中性表面 + 系统蓝强调色。
- * Qt 样式表里的 alpha（0–255）在这里换成 CSS 的 0–1。
- *
- * 注释里保留的设计原则（来自 ThemeTokens.py）：
- * 中性表面跟随 Windows 11 明暗调色板，颜色只留给交互与状态，
- * 工作区保持安静。
+ * 设计令牌。中性色在这里，强调色由 mantineTheme.ts 传入。
+ * CSS 变量只由 Mantine 的 cssVariablesResolver 输出，这里不写内联样式。
  */
 
 export type ThemeName = 'LIGHT' | 'DARK';
 
 export interface ThemePalette {
-  accent: string;
-  accentHover: string;
-  accentPressed: string;
-  accentSurface: string;
-  onAccent: string;
   background: string;
   surface: string;
   surfaceSubtle: string;
   surfaceHover: string;
   surfacePressed: string;
   chrome: string;
+  sidebarHover: string;
   textPrimary: string;
   textSecondary: string;
+  textPlaceholder: string;
   textDisabled: string;
   border: string;
   borderStrong: string;
@@ -35,95 +26,117 @@ export interface ThemePalette {
   warning: string;
   error: string;
   info: string;
+  shadowOverlay: string;
+}
+
+export interface AccentTokens {
+  accent: string;
+  accentHover: string;
+  accentPressed: string;
+  accentText: string;
+  accentSurface: string;
+  onAccent: string;
 }
 
 export const LIGHT: ThemePalette = {
-  accent: '#0078D4',
-  accentHover: '#006CBE',
-  accentPressed: '#005A9E',
-  accentSurface: '#E5F3FB',
-  onAccent: '#FFFFFF',
-  background: '#F3F3F3',
+  background: '#FFFFFF',
   surface: '#FFFFFF',
-  surfaceSubtle: '#F9F9F9',
-  surfaceHover: '#F6F6F6',
-  surfacePressed: '#EAEAEA',
-  chrome: '#F3F3F3',
-  textPrimary: '#1A1A1A',
-  textSecondary: '#5D5D5D',
-  textDisabled: '#9A9A9A',
-  border: 'rgba(0, 0, 0, 0.08)',
-  borderStrong: 'rgba(0, 0, 0, 0.14)',
-  divider: 'rgba(0, 0, 0, 0.07)',
-  scrollbar: '#8A8A8A',
-  scrollbarHover: '#666666',
-  success: '#0F7B0F',
-  warning: '#9D5D00',
-  error: '#C42B1C',
-  info: '#0067C0',
+  surfaceSubtle: '#F4F4F5',
+  surfaceHover: '#F4F4F5',
+  surfacePressed: '#E4E4E7',
+  chrome: '#F4F4F5',
+  sidebarHover: '#E4E4E7',
+  textPrimary: '#18181B',
+  textSecondary: '#52525B',
+  textPlaceholder: '#71717A',
+  textDisabled: '#A1A1AA',
+  border: '#E4E4E7',
+  borderStrong: '#D4D4D8',
+  divider: '#E4E4E7',
+  scrollbar: '#A1A1AA',
+  scrollbarHover: '#71717A',
+  success: '#15803D',
+  warning: '#B45309',
+  error: '#B91C1C',
+  info: '#1D4ED8',
+  shadowOverlay: '0 8px 24px rgba(0,0,0,.12)',
 };
 
 export const DARK: ThemePalette = {
-  accent: '#4CC2FF',
-  accentHover: '#60CDFF',
-  accentPressed: '#0091EA',
-  accentSurface: '#0B3A4A',
-  onAccent: '#000000',
-  background: '#202020',
-  surface: '#2B2B2B',
-  surfaceSubtle: '#252525',
-  surfaceHover: '#323232',
-  surfacePressed: '#3A3A3A',
-  chrome: '#202020',
-  textPrimary: '#FFFFFF',
-  textSecondary: '#C7C7C7',
-  textDisabled: '#777777',
-  border: 'rgba(255, 255, 255, 0.08)',
-  borderStrong: 'rgba(255, 255, 255, 0.14)',
-  divider: 'rgba(255, 255, 255, 0.07)',
-  scrollbar: '#8A8A8A',
-  scrollbarHover: '#B0B0B0',
-  success: '#6CCB5F',
-  warning: '#FCE100',
-  error: '#FF99A4',
-  info: '#60CDFF',
+  background: '#18181B',
+  surface: '#18181B',
+  surfaceSubtle: '#232326',
+  surfaceHover: '#232326',
+  surfacePressed: '#2A2A2E',
+  chrome: '#111113',
+  sidebarHover: '#1F1F23',
+  textPrimary: '#FAFAFA',
+  textSecondary: '#A1A1AA',
+  textPlaceholder: '#71717A',
+  textDisabled: '#52525B',
+  border: 'rgba(255,255,255,.08)',
+  borderStrong: 'rgba(255,255,255,.14)',
+  divider: 'rgba(255,255,255,.08)',
+  scrollbar: '#52525B',
+  scrollbarHover: '#71717A',
+  success: '#4ADE80',
+  warning: '#FBBF24',
+  error: '#F87171',
+  info: '#60A5FA',
+  shadowOverlay: '0 8px 24px rgba(0,0,0,.5)',
 };
 
-const CAMEL_TO_KEBAB: Record<keyof ThemePalette, string> = {
-  accent: 'accent',
-  accentHover: 'accent-hover',
-  accentPressed: 'accent-pressed',
-  accentSurface: 'accent-surface',
-  onAccent: 'on-accent',
-  background: 'background',
-  surface: 'surface',
-  surfaceSubtle: 'surface-subtle',
-  surfaceHover: 'surface-hover',
-  surfacePressed: 'surface-pressed',
-  chrome: 'chrome',
-  textPrimary: 'text-primary',
-  textSecondary: 'text-secondary',
-  textDisabled: 'text-disabled',
-  border: 'border',
-  borderStrong: 'border-strong',
-  divider: 'divider',
-  scrollbar: 'scrollbar',
-  scrollbarHover: 'scrollbar-hover',
-  success: 'success',
-  warning: 'warning',
-  error: 'error',
-  info: 'info',
+const NEUTRAL_VARS: Record<keyof ThemePalette, string> = {
+  background: '--rb-background',
+  surface: '--rb-surface',
+  surfaceSubtle: '--rb-surface-subtle',
+  surfaceHover: '--rb-surface-hover',
+  surfacePressed: '--rb-surface-pressed',
+  chrome: '--rb-chrome',
+  sidebarHover: '--rb-sidebar-hover',
+  textPrimary: '--rb-text-primary',
+  textSecondary: '--rb-text-secondary',
+  textPlaceholder: '--rb-text-placeholder',
+  textDisabled: '--rb-text-disabled',
+  border: '--rb-border',
+  borderStrong: '--rb-border-strong',
+  divider: '--rb-divider',
+  scrollbar: '--rb-scrollbar',
+  scrollbarHover: '--rb-scrollbar-hover',
+  success: '--rb-success',
+  warning: '--rb-warning',
+  error: '--rb-error',
+  info: '--rb-info',
+  shadowOverlay: '--rb-shadow-overlay',
 };
 
-/** 把调色板写成 :root 上的 CSS 变量，组件样式只消费变量，不写死色值。 */
-export function applyTheme(theme: ThemeName, root: HTMLElement = document.documentElement): ThemePalette {
-  const palette = theme === 'DARK' ? DARK : LIGHT;
-  for (const key of Object.keys(palette) as (keyof ThemePalette)[]) {
-    root.style.setProperty(`--rb-${CAMEL_TO_KEBAB[key]}`, palette[key]);
+const ACCENT_VARS: Record<keyof AccentTokens, string> = {
+  accent: '--rb-accent',
+  accentHover: '--rb-accent-hover',
+  accentPressed: '--rb-accent-pressed',
+  accentText: '--rb-accent-text',
+  accentSurface: '--rb-accent-surface',
+  onAccent: '--rb-on-accent',
+};
+
+/** 中性色和强调色合成 --rb-* 变量表，供 cssVariablesResolver 使用。 */
+export function toCssVariables(scheme: ThemeName, accent: AccentTokens): Record<string, string> {
+  const palette = scheme === 'DARK' ? DARK : LIGHT;
+  const vars: Record<string, string> = {};
+  for (const key of Object.keys(NEUTRAL_VARS) as (keyof ThemePalette)[]) {
+    vars[NEUTRAL_VARS[key]] = palette[key];
   }
+  for (const key of Object.keys(ACCENT_VARS) as (keyof AccentTokens)[]) {
+    vars[ACCENT_VARS[key]] = accent[key];
+  }
+  return vars;
+}
+
+/** 只切换明暗标记。颜色由 Mantine 主题输出，内联变量会盖住它。 */
+export function applyTheme(theme: ThemeName, root: HTMLElement = document.documentElement): ThemePalette {
   root.dataset.theme = theme;
   root.style.colorScheme = theme === 'DARK' ? 'dark' : 'light';
-  return palette;
+  return theme === 'DARK' ? DARK : LIGHT;
 }
 
 export function readStoredTheme(): ThemeName {
