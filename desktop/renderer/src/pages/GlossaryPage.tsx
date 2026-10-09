@@ -29,7 +29,7 @@ interface GlossarySnapshot {
   candidate_ids: string[];
 }
 
-export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirtyChange?: (dirty: boolean) => void }) {
+export function GlossaryPage({ state, onDirtyChange, embedded = false }: { state: AppState; onDirtyChange?: (dirty: boolean) => void; embedded?: boolean }) {
   const [snapshot, setSnapshot] = useState<GlossarySnapshot | null>(null);
   const [rows, setRows] = useState<TermRow[]>([]);
   const [enabled, setEnabled] = useState(false);
@@ -131,18 +131,20 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
   const emptyText = busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理';
 
   return (
-    <div className="glossary-layout rb-page">
+    <div className={embedded ? 'glossary-layout rb-embedded' : 'glossary-layout rb-page'}>
       <div className="rb-page-scroll rb-glossary">
-        <PageHeader
-          title="术语表"
-          description="当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。"
-          actions={(
-            <>
-              <Button variant="default" disabled={busy} onClick={() => dirty ? setConfirmReload(true) : void reload()}>重新载入</Button>
-              <Button disabled={!snapshot || locked || !dirty} onClick={() => void save()}>{busy ? '处理中…' : '保存到项目'}</Button>
-            </>
-          )}
-        />
+        {embedded ? null : (
+          <PageHeader
+            title="术语表"
+            description="当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。"
+            actions={(
+              <>
+                <Button variant="default" disabled={busy} onClick={() => dirty ? setConfirmReload(true) : void reload()}>重新载入</Button>
+                <Button disabled={!snapshot || locked || !dirty} onClick={() => void save()}>{busy ? '处理中…' : '保存到项目'}</Button>
+              </>
+            )}
+          />
+        )}
         <div className="rb-sheet-summary">{rows.length} 个词条 · {candidateCount} 个候选 · {dirty ? '有未保存修改' : '已与项目同步'}</div>
         {error ? <Banner tone="error">{error}</Banner> : null}
         {state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
@@ -150,6 +152,12 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
           <TextInput w={280} aria-label="搜索词条" placeholder="搜索原文、译文或备注" value={query} leftSection={<Search size={16} strokeWidth={1.75} />} onChange={(event) => setQuery(event.currentTarget.value)} />
           <Checkbox label="翻译时启用本术语表" checked={enabled} disabled={locked || !snapshot} onChange={(event) => { setEnabled(event.currentTarget.checked); setDirty(true); }} />
           <span className="rb-toolbar-spacer" />
+          {embedded ? (
+            <>
+              <Button variant="default" disabled={busy} onClick={() => dirty ? setConfirmReload(true) : void reload()}>重新载入</Button>
+              <Button disabled={!snapshot || locked || !dirty} onClick={() => void save()}>{busy ? '处理中…' : '保存到项目'}</Button>
+            </>
+          ) : null}
           <Button variant="default" disabled={locked || !snapshot} leftSection={<Plus size={16} strokeWidth={1.75} />} onClick={() => {
             setRows(previous => [{ src: '', dst: '', info: '', candidate: false }, ...previous]);
             setSelected(0); setQuery(''); setDirty(true);
