@@ -49,6 +49,7 @@ from module.ResultChecker import ResultChecker
 from module.ResultChecker import WarningType
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
+    restore_resumable_translation_paths,
     translation_output_candidates,
 )
 from widget.CommandBarCard import CommandBarCard
@@ -411,7 +412,10 @@ class ProofreadingPage(QWidget, Base):
 
                 self._cache_output_folder = str(output_path)
                 # 后续质量任务、保存和导出都使用本次实际命中的缓存目录。
-                self.config.output_folder = self._cache_output_folder
+                self.config = restore_resumable_translation_paths(
+                    self.config,
+                    self._cache_output_folder,
+                )
                 items = loaded_items or [
                     item for item in cache_manager.get_items() if item.get_src().strip()
                 ]

@@ -834,3 +834,25 @@ def resolve_translation_output(config: Any, preferred: Any = None) -> Path | Non
         if _has_cache(path):
             return path
     return candidates[0] if candidates else None
+
+
+def restore_resumable_translation_paths(config: Any, output_folder: Any = None) -> Any:
+    """Restore the source/output pair for the selected cached run."""
+    output_path = (
+        normalise_path(output_folder)
+        if output_folder is not None
+        else resolve_translation_output(config)
+    )
+    if output_path is None:
+        return config
+
+    config.output_folder = str(output_path)
+    paths = RenpyProjectPaths.from_config(config)
+    manifest = read_run_manifest(paths) if paths is not None else None
+    if manifest is None or _key(Path(manifest["output_folder"])) != _key(output_path):
+        return config
+
+    input_folder = _normalise(manifest.get("input_folder"))
+    if input_folder:
+        config.input_folder = input_folder
+    return config

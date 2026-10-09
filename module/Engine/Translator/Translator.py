@@ -38,6 +38,7 @@ from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     read_run_manifest,
     resolve_translation_output,
+    restore_resumable_translation_paths,
     write_run_manifest,
 )
 from module.TextProcessor import TextProcessor
@@ -551,9 +552,7 @@ class Translator(Base):
                 })
                 return
 
-            # 使用输出目录作为读写根，避免写回错位
-            config.output_folder = output_folder
-            config.input_folder = output_folder
+            config = restore_resumable_translation_paths(config, output_folder)
 
             self.info(f"[REINJECT] 从缓存写入译文文件：{output_folder} (items={len(items)})")
             try:
@@ -2212,7 +2211,6 @@ class Translator(Base):
 
             reinject_config = copy.deepcopy(self.config)
             reinject_config.output_folder = self.config.output_folder
-            reinject_config.input_folder = self.config.output_folder
             self.warning(f"[REINJECT] 检测到写回失败，自动重新注入：{self.config.output_folder}")
 
             # 重新从缓存读取，避免内存中的条目与写回基准不一致

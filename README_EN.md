@@ -50,6 +50,11 @@
 
 ## Recent Updates 📅
 
+- 2026-10-09 v0.8.2:
+  - Fixed slow write-back validation for large Ren'Py projects while preserving duplicate-text, character-name, and AST matching semantics.
+  - Fixed cache exports and fallback reinjection reading from the output directory; incremental and proofreading exports now restore the matching input path from the run manifest.
+  - Strengthened write-back path safety checks and fixed first-time export of a single TL script.
+
 - 2026-10-02 v0.8.0:
   - Opening the model list no longer waits for every translation SDK to load, and switching projects and saving the translation cache are noticeably faster.
   - Proofreading filters, similarity checks, and placeholder checks are faster, so large projects no longer stutter repeatedly.

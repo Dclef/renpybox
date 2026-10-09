@@ -2,12 +2,15 @@ from pathlib import Path
 from types import SimpleNamespace
 import sqlite3
 
+import pytest
+
 from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheProject import CacheProject
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
     read_run_manifest,
     resolve_translation_output,
+    restore_resumable_translation_paths,
     source_script_counts,
     translation_output_candidates,
     write_run_manifest,
@@ -73,6 +76,27 @@ def test_explicit_non_main_output_wins_over_stale_manifest(tmp_path):
     # 配置明确指向增量目录时，不应被旧的主目录清单抢走。
     config = _config(paths, output = delta)
     assert resolve_translation_output(config) == delta.resolve()
+
+
+@pytest.mark.parametrize("select_incremental", [True, False])
+def test_restore_paths_only_uses_manifest_for_selected_output(tmp_path, select_incremental):
+    project = tmp_path / "fictional-game"
+    paths = RenpyProjectPaths.from_path(project, "chinese")
+    assert paths is not None
+    main_input = paths.tl_language_dir
+    main_input.mkdir(parents=True)
+    delta_input = main_input.parent / "chinese_new"
+    main_output = paths.translation_output_dir
+    delta_output = main_output.parent / "chinese_new"
+    write_run_manifest(paths, delta_output, input_folder=delta_input, run_kind="incremental")
+    config = _config(paths)
+    selected_output = delta_output if select_incremental else main_output
+
+    restored = restore_resumable_translation_paths(config, selected_output)
+
+    assert restored is config
+    assert restored.output_folder == str(selected_output)
+    assert restored.input_folder == str(delta_input if select_incremental else main_input)
 
 
 def test_preferred_cache_cannot_override_explicit_output(tmp_path):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import List, Set
 
@@ -10,7 +9,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
-from module.File.AtomicWrite import atomic_write_text
+from module.File.AtomicWrite import atomic_write_text, validate_write_path
 
 
 class RENPYSOURCE(Base):
@@ -240,6 +239,14 @@ class RENPYSOURCE(Base):
         errors: list[str] = []
 
         for rel_path, group_items in grouped.items():
+            target_path = self.output_path / rel_path
+            try:
+                validate_write_path(target_path, [self.output_path])
+            except Exception as exc:
+                self.error(f"写入 Ren'Py 源码失败: {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
+
             source_path = self._resolve_source_path(rel_path)
             if not source_path.exists():
                 self.warning(f"RENPY 源码不存在: {source_path}")
@@ -339,15 +346,16 @@ class RENPYSOURCE(Base):
                 lines[row - 1] = new_line
                 applied += 1
 
-            target_path = self.output_path / rel_path
-            os.makedirs(target_path.parent, exist_ok=True)
-
             # 写回前备份（仅本地 .bak）
             if self.config.renpy_backup_original:
                 bak_path = target_path.with_suffix(target_path.suffix + ".bak")
                 if target_path.exists() and not bak_path.exists():
                     try:
-                        bak_path.write_text(target_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                        atomic_write_text(
+                            bak_path,
+                            target_path.read_text(encoding="utf-8", errors="replace"),
+                            allowed_roots=[self.output_path],
+                        )
                     except Exception:
                         pass
 
@@ -383,9 +391,10 @@ class RENPYSOURCE(Base):
         if report:
             report_path = self.output_path / "writeback_report_renpy_source.json"
             try:
-                report_path.write_text(
+                atomic_write_text(
+                    report_path,
                     json.dumps(report, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+                    allowed_roots=[self.output_path],
                 )
             except Exception:
                 pass
