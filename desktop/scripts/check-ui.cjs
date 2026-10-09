@@ -100,7 +100,9 @@ app.whenReady().then(async () => {
   await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改');
   await assert("__uiFixture.assets.worldbook.project_name==='港湾来信 · 新篇'", '世界观保存');
   await click('角色卡'); await capture('new-ui-characters-dark');
-  await page('术语表'); await input('.data-sheet textarea', 'Harbor Town'); await js("document.querySelector('.workspace-project').click()"); await pause(180);
+  await page('术语表'); await js("document.querySelector('.rb-term-row')?.click()"); await pause(120);
+  await input('.rb-term-editor textarea', 'Harbor Town');
+  await js("document.querySelector('.workspace-project').click()"); await pause(180);
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
   await click('取消'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
@@ -157,7 +159,7 @@ app.whenReady().then(async () => {
     await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
     for (const title of labels) {
       await page(title);
-      const data = await js(`({root:document.documentElement.scrollWidth>innerWidth,panels:Array.from(document.querySelectorAll('.content,.workspace-bar,.task-context,.settings-header,.workbench-header,.translation-footer,.rb-command-bar,.platform-toolbar,.agent-topbar,.agent-controls,.agent-composer,.agent-confirmation,.rb-titlebar')).filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className),controls:Array.from(document.querySelectorAll('button,input,select,textarea')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left<0||r.right>innerWidth+1)}).map(e=>e.getAttribute('aria-label')||e.textContent.trim())})`);
+      const data = await js(`({root:document.documentElement.scrollWidth>innerWidth,panels:Array.from(document.querySelectorAll('.content,.workspace-bar,.task-context,.settings-header,.workbench-header,.translation-footer,.rb-command-bar,.rb-sheet,.platform-toolbar,.agent-topbar,.agent-controls,.agent-composer,.agent-confirmation,.rb-titlebar')).filter(e=>e.scrollWidth>e.clientWidth+1).map(e=>e.className),controls:Array.from(document.querySelectorAll('button,input,select,textarea')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&(r.left<0||r.right>innerWidth+1)}).map(e=>e.getAttribute('aria-label')||e.textContent.trim())})`);
       log('LAYOUT '+width+' '+title+' '+JSON.stringify(data));
       if (data.root || data.panels.length || data.controls.length) throw new Error('布局越界：'+width+' '+title+' '+JSON.stringify(data));
     }
