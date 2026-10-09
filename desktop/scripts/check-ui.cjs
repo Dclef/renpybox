@@ -124,9 +124,9 @@ app.whenReady().then(async () => {
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
   await click('取消'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
-  await page('平行校对台'); await click('艾丽丝，那封信今天早上到了。'); await pause(100);
+  await page('平行校对台'); await js("document.querySelector('.proofreading-target').click()"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
-  await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]')", '校对保存');
+  await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
   await capture('new-ui-proofreading-dark');
   await subpage('翻译设置','翻译提示'); await click('查看当前提示词');
   await assert("document.querySelector('.prompt-preview-text').value.includes('自然中文')", '静态提示词预览');
