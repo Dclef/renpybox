@@ -6,8 +6,6 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { ConfigProvider, theme as antdTheme } from 'antd';
-import zhCN from 'antd/locale/zh_CN';
 import { Notification, Tooltip } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
 import { ChevronDown, Folder, Moon, Sun } from 'lucide-react';
@@ -33,7 +31,6 @@ import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
 import { HonorificPage } from './pages/HonorificPage';
-import { ACCENTS, FONT_FAMILY, readAccent } from './mantineTheme';
 import { Dialog, Empty } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
@@ -201,17 +198,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   })();
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        algorithm: state.theme === 'DARK' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        token: {
-          colorPrimary: ACCENTS[readAccent()].accent,
-          borderRadius: 6,
-          fontFamily: FONT_FAMILY,
-        },
-      }}
-    >
     <div className="shell rb-shell">
       <header className="rb-titlebar">
         <span className="rb-brand">RenpyBox</span>
@@ -326,6 +312,5 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
     </div>
-    </ConfigProvider>
   );
 }
