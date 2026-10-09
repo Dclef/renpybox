@@ -1939,13 +1939,7 @@ body {
 }
 
 .toolbox-search {
-  flex-shrink: 0;
   width: 100%;
-  min-height: 36px;
-  font-size: 14px;
-  padding: 0 10px 0 34px;
-  border-radius: 7px;
-  background: var(--rb-surface-subtle);
 }
 
 .toolbox-search-wrap {

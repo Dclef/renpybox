@@ -986,6 +986,90 @@
     }
   }
 
+  .rb-toolbox {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+  }
+
+  .rb-toolbox-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .rb-tool-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 24px;
+  }
+
+  .tool-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    height: auto;
+    min-height: 44px;
+    padding: 8px 4px;
+    border: 0;
+    border-radius: 0;
+    border-bottom: 1px solid var(--rb-divider);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .tool-card-icon {
+    display: flex;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    color: var(--rb-text-secondary);
+  }
+
+  .tool-card-icon svg { width: 20px; height: 20px; }
+
+  .rb-tool-step {
+    flex-shrink: 0;
+    width: 18px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .rb-tool-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .rb-tool-title {
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-tool-desc {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 800px) {
+    .rb-tool-list { grid-template-columns: minmax(0, 1fr); }
+  }
+
   .rb-workbench {
     display: flex;
     flex-direction: column;
