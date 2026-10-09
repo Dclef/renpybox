@@ -1,9 +1,12 @@
 /** 术语表：正式术语与分析候选分别保留，保存复用项目资产仓库。 */
 import { useEffect, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { Badge, Button, Checkbox, Menu, Textarea, TextInput } from '@mantine/core';
+import { Check, Plus, Search } from 'lucide-react';
+
 import { request } from '../api';
 import type { AppState } from '../useAppState';
-import { Button, Input, Table } from 'antd';
-import { Banner, Dialog } from '../ui';
+import { Banner, Dialog, Empty, PageHeader } from '../ui';
 
 interface TermRow {
   src: string;
@@ -25,7 +28,6 @@ interface GlossarySnapshot {
   enabled: boolean;
   candidate_ids: string[];
 }
-const PAGE_SIZE = 40;
 
 export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirtyChange?: (dirty: boolean) => void }) {
   const [snapshot, setSnapshot] = useState<GlossarySnapshot | null>(null);
@@ -37,9 +39,10 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<number | null>(null);
   const [confirmReload, setConfirmReload] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   const projectRef = useRef('');
   const projectKey = JSON.stringify([state.project?.renpy_project_path, state.project?.renpy_tl_folder, state.settings?.values.input_folder, state.settings?.values.output_folder]);
@@ -52,7 +55,7 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
   }, [dirty, onDirtyChange]);
 
   const apply = (next: GlossarySnapshot) => {
-    setSnapshot(next); setRows(next.rows); setEnabled(next.enabled); setDirty(false); setError(''); setPage(0);
+    setSnapshot(next); setRows(next.rows); setEnabled(next.enabled); setDirty(false); setError(''); setSelected(null);
   };
   const reload = async () => {
     const id = ++operation.current; const key = projectRef.current;
@@ -117,81 +120,104 @@ export function GlossaryPage({ state, onDirtyChange }: { state: AppState; onDirt
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const matched = rows.map((row, index) => ({ row, index })).filter(({ row }) => `${row.src} ${row.dst} ${row.info ?? ''}`.toLowerCase().includes(query.toLowerCase()));
-  const pageCount = Math.max(1, Math.ceil(matched.length / PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount - 1);
-  const visible = matched.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const candidateCount = rows.filter(row => row.candidate).length;
+  const virtualizer = useVirtualizer({
+    count: matched.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 40,
+    overscan: 8,
+  });
+  const selectedRow = selected != null ? rows[selected] : undefined;
+  const emptyText = busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理';
 
   return (
-    <div className="settings-layout glossary-layout">
-      <header className="settings-header">
-        <h1 className="settings-title">术语表</h1>
-        <p className="settings-subtitle">当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。</p>
-      </header>
-      <div className="settings-scroll glossary-scroll">
-        <div className="workspace-toolbar">
-          <div className="workspace-summary"><strong>{rows.length} 个词条</strong><span>{candidateCount} 个候选 · {dirty ? '有未保存修改' : '已与项目同步'}</span></div>
-          <div className="workspace-actions">
-            <button className="btn" disabled={busy} onClick={() => dirty ? setConfirmReload(true) : void reload()}>重新载入</button>
-            <button className="btn btn-primary" disabled={!snapshot || locked || !dirty} onClick={() => void save()}>{busy ? '处理中…' : '保存到项目'}</button>
-          </div>
-        </div>
-        {error ? <Banner tone="error">{error}</Banner> : null}
-        <div className="workspace-toolbar glossary-tools">
-          <input type="text" aria-label="搜索词条" placeholder="搜索原文、译文或备注" value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} />
-          <div className="workspace-actions">
-            <button className="btn" disabled={locked || !snapshot} onClick={() => { setRows(previous => [{ src: '', dst: '', info: '', candidate: false }, ...previous]); setQuery(''); setPage(0); setDirty(true); }}>新增词条</button>
-            <button className="btn" disabled={locked || !snapshot} onClick={() => fileInput.current?.click()}>导入 JSON</button>
-            <button className="btn" disabled={rows.length === 0} onClick={exportJson}>导出 JSON</button>
-            <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={e => void importFile(e.target.files?.[0])} />
-          </div>
-        </div>
-        <label className="checkbox-label"><input type="checkbox" disabled={locked || !snapshot} checked={enabled} onChange={e => { setEnabled(e.target.checked); setDirty(true); }} />翻译时启用本术语表</label>
-        {state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
-        <Table
-          className="data-sheet"
-          size="small"
-          bordered
-          pagination={false}
-          rowKey={(row) => `${row.index}-${row.row.record_id ?? ''}`}
-          dataSource={visible}
-          locale={{ emptyText: busy ? '正在读取词库…' : query ? '没有匹配的词条' : '词库为空，新增或导入词条开始整理' }}
-          columns={[
-            {
-              title: '原文',
-              render: (_, record) => (
-                <Input.TextArea aria-label={`词条 ${record.index + 1} 原文`} autoSize={{ minRows: 1, maxRows: 4 }} value={record.row.src} disabled={locked} onChange={(event) => edit(record.index, { src: event.target.value })} />
-              ),
-            },
-            {
-              title: '译文',
-              render: (_, record) => (
-                <Input.TextArea aria-label={`词条 ${record.index + 1} 译文`} autoSize={{ minRows: 1, maxRows: 4 }} value={record.row.dst} disabled={locked} onChange={(event) => edit(record.index, { dst: event.target.value })} />
-              ),
-            },
-            {
-              title: '备注',
-              width: 240,
-              render: (_, record) => (
-                <div className="glossary-options">
-                  <Input aria-label={`词条 ${record.index + 1} 备注`} placeholder="备注（可选）" value={record.row.info ?? ''} disabled={locked} onChange={(event) => edit(record.index, { info: event.target.value })} />
-                  {record.row.candidate ? <label className="checkbox-label"><input type="checkbox" checked={record.row.candidate_confirmed === true} disabled={locked || !record.row.dst.trim()} onChange={(event) => edit(record.index, { candidate_confirmed: event.target.checked })} />确认候选</label> : <span className="card-description">正式词条</span>}
-                  <label className="checkbox-label"><input type="checkbox" checked={record.row.case_sensitive === true} disabled={locked} onChange={(event) => edit(record.index, { case_sensitive: event.target.checked })} />区分大小写</label>
-                </div>
-              ),
-            },
-            {
-              title: '操作',
-              width: 88,
-              render: (_, record) => (
-                <Button danger type="link" disabled={locked} onClick={() => { setRows((previous) => previous.filter((__, i) => i !== record.index)); setDirty(true); }}>移除</Button>
-              ),
-            },
-          ]}
+    <div className="glossary-layout rb-page">
+      <div className="rb-page-scroll rb-glossary">
+        <PageHeader
+          title="术语表"
+          description="当前项目的专有名词对照（角色名、地名、技能等）。保存后翻译会优先采用这些译法；分析产生的候选需确认后才会变成正式词条。"
+          actions={(
+            <>
+              <Button variant="default" disabled={busy} onClick={() => dirty ? setConfirmReload(true) : void reload()}>重新载入</Button>
+              <Button disabled={!snapshot || locked || !dirty} onClick={() => void save()}>{busy ? '处理中…' : '保存到项目'}</Button>
+            </>
+          )}
         />
-        <div className="workspace-toolbar pagination-bar">
-          <span className="card-description">{matched.length} 条 · 第 {currentPage + 1} / {pageCount} 页</span>
-          <div className="workspace-actions"><button className="btn" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>上一页</button><button className="btn" disabled={currentPage >= pageCount - 1} onClick={() => setPage(currentPage + 1)}>下一页</button></div>
+        <div className="rb-sheet-summary">{rows.length} 个词条 · {candidateCount} 个候选 · {dirty ? '有未保存修改' : '已与项目同步'}</div>
+        {error ? <Banner tone="error">{error}</Banner> : null}
+        {state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
+        <div className="rb-toolbar">
+          <TextInput w={280} aria-label="搜索词条" placeholder="搜索原文、译文或备注" value={query} leftSection={<Search size={16} strokeWidth={1.75} />} onChange={(event) => setQuery(event.currentTarget.value)} />
+          <Checkbox label="翻译时启用本术语表" checked={enabled} disabled={locked || !snapshot} onChange={(event) => { setEnabled(event.currentTarget.checked); setDirty(true); }} />
+          <span className="rb-toolbar-spacer" />
+          <Button variant="default" disabled={locked || !snapshot} leftSection={<Plus size={16} strokeWidth={1.75} />} onClick={() => {
+            setRows(previous => [{ src: '', dst: '', info: '', candidate: false }, ...previous]);
+            setSelected(0); setQuery(''); setDirty(true);
+            requestAnimationFrame(() => virtualizer.scrollToOffset(0));
+          }}>新增词条</Button>
+          <Menu position="bottom-end">
+            <Menu.Target><Button variant="default">更多</Button></Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item disabled={locked || !snapshot} onClick={() => fileInput.current?.click()}>导入 JSON</Menu.Item>
+              <Menu.Item disabled={rows.length === 0} onClick={exportJson}>导出 JSON</Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+          <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={e => void importFile(e.target.files?.[0])} />
+        </div>
+        <div className="rb-sheet">
+          <div className="rb-sheet-table" role="table">
+            <div className="rb-sheet-head" role="row">
+              <span>原文</span><span>译文</span><span>备注</span><span />
+            </div>
+            <div className="rb-sheet-scroll" ref={listRef}>
+              {matched.length === 0 ? <Empty>{emptyText}</Empty> : (
+                <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+                  {virtualizer.getVirtualItems().map((item) => {
+                    const entry = matched[item.index];
+                    if (!entry) return null;
+                    const { row, index } = entry;
+                    return (
+                      <div
+                        key={item.key}
+                        className="rb-term-row"
+                        role="row"
+                        data-selected={selected === index ? 'true' : undefined}
+                        tabIndex={0}
+                        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: 40, transform: `translateY(${item.start}px)` }}
+                        onClick={() => setSelected(index)}
+                        onKeyDown={(event) => { if (event.key === 'Enter') setSelected(index); }}
+                      >
+                        <span>{row.src}</span>
+                        <span>{row.dst}</span>
+                        <span>{row.info}</span>
+                        <span className="rb-term-marks">
+                          {row.candidate ? <Badge>{row.candidate_confirmed ? <Check size={12} strokeWidth={1.75} /> : null}候选</Badge> : null}
+                          {row.case_sensitive ? <Badge title="区分大小写">Aa</Badge> : null}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="rb-sheet-foot">{matched.length} 条</div>
+          </div>
+          {selectedRow ? (
+            <aside className="rb-term-editor">
+              <header>
+                <h2>词条 {selected! + 1}</h2>
+                <Button variant="default" size="xs" onClick={() => setSelected(null)}>完成</Button>
+              </header>
+              <Textarea autosize label="原文" disabled={locked} value={selectedRow.src} onChange={(event) => edit(selected!, { src: event.currentTarget.value })} />
+              <Textarea autosize label="译文" disabled={locked} value={selectedRow.dst} onChange={(event) => edit(selected!, { dst: event.currentTarget.value })} />
+              <TextInput placeholder="备注（可选）" disabled={locked} value={selectedRow.info ?? ''} onChange={(event) => edit(selected!, { info: event.currentTarget.value })} />
+              <Checkbox label="区分大小写" checked={selectedRow.case_sensitive === true} disabled={locked} onChange={(event) => edit(selected!, { case_sensitive: event.currentTarget.checked })} />
+              {selectedRow.candidate
+                ? <Checkbox label="确认候选" checked={selectedRow.candidate_confirmed === true} disabled={locked || !selectedRow.dst.trim()} onChange={(event) => edit(selected!, { candidate_confirmed: event.currentTarget.checked })} />
+                : <span className="rb-term-formal">正式词条</span>}
+              <Button color="red" variant="subtle" disabled={locked} onClick={() => { setRows(previous => previous.filter((_, i) => i !== selected)); setSelected(null); setDirty(true); }}>移除</Button>
+            </aside>
+          ) : null}
         </div>
       </div>
       {confirmReload ? <Dialog title="放弃未保存的修改？" confirmText="重新载入" onCancel={() => setConfirmReload(false)} onConfirm={() => { setConfirmReload(false); void reload(); }}>重新载入会用项目中的词库替换当前编辑。</Dialog> : null}
