@@ -443,7 +443,19 @@
   .rb-group-panel .settings-header { display: none; }
   .rb-group-panel .rb-page-scroll { padding: 0 0 16px; }
 
-  .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+  .rb-sheet-summary { display: flex; flex-direction: column; gap: 2px; }
+  .rb-sheet-summary strong { color: var(--rb-text-primary); font-size: 14px; font-weight: 500; }
+  .rb-honorific-list { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .rb-honorific-row {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-honorific-row span { color: var(--rb-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
   .rb-embedded-actions { display: flex; justify-content: flex-end; }
 
   .rb-page-scroll {

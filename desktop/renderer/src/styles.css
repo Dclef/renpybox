@@ -3045,38 +3045,6 @@ body {
   width: 100%;
 }
 
-/* 术语表：每页 40 行，保留候选元数据。 */
-.glossary-scroll {
-  gap: 16px;
-}
-
-.glossary-tools {
-  padding: 12px 14px;
-  border: 1px solid var(--rb-divider);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--rb-surface) 88%, transparent);
-}
-
-.glossary-tools input[type='text'] {
-  flex: 1;
-  min-width: 180px;
-  max-width: 360px;
-  min-height: 34px;
-  border-radius: 9px;
-  background: var(--rb-surface-subtle);
-  border-color: transparent;
-}
-
-.honorific-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 16px;
-  border-top: 1px solid var(--rb-divider);
-}
-.honorific-row input { width: 100%; }
-
 @media (max-width: 1100px) {
   .workbench-character-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
   .platform-row { gap: 14px; padding: 16px; }
