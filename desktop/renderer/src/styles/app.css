@@ -765,6 +765,227 @@
     }
   }
 
+  .rb-platform {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+    container-type: inline-size;
+  }
+
+  .platform-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .rb-platform-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .platform-status {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--rb-text-disabled);
+    box-shadow: none;
+  }
+
+  .platform-status[data-active='true'] { background: var(--rb-success); }
+
+  .platform-summary-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .platform-summary-copy strong {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .platform-summary-copy span {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 16px;
+  }
+
+  .rb-platform-list {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .rb-platform-group-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rb-platform-count {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--rb-divider);
+  }
+
+  .rb-platform-row:last-child { border-bottom: 0; }
+
+  .rb-platform-row-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .rb-platform-row-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .rb-platform-row-title strong {
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-platform-badge {
+    flex-shrink: 0;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    line-height: 18px;
+  }
+
+  .rb-platform-row-meta {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .platform-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  .rb-platform-row-meta span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .platform-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 380px;
+    flex-shrink: 0;
+    overflow: auto;
+    margin: 0;
+    padding: 0 0 0 16px;
+    border: 0;
+    border-left: 1px solid var(--rb-divider);
+    border-radius: 0;
+    background: transparent;
+    animation: none;
+    box-shadow: none;
+  }
+
+  .rb-platform-editor-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-platform-editor-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .rb-platform-editor-head span,
+  .rb-platform-help {
+    margin: 4px 0 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-params {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rb-platform-param {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-platform-editor-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  @container (max-width: 899px) {
+    .platform-editor {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(420px, 100%);
+      z-index: 4;
+      padding: 16px;
+      border-left: 1px solid var(--rb-divider);
+      background: var(--rb-surface);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .rb-content > * { animation: none; }
   }
