@@ -152,6 +152,8 @@ class TranslationStateResponse(BaseModel):
     running: dict[str, int] = Field(default_factory=dict)
     progress: dict[str, Any] = Field(default_factory=dict)
     active_output_folder: str = ""
+    progress_source: str = "none"
+    progress_error: str = ""
 
 
 class TokenEstimateRequest(BaseModel):

@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Loader, Menu, Progress } from '@mantine/core';
+import { Badge, Button, Loader, Menu, RingProgress } from '@mantine/core';
 import {
   ArrowRight,
   Calculator,
@@ -25,9 +25,10 @@ import {
 } from 'lucide-react';
 
 import type { StartableProjectStatus, TranslationUpdateData } from '../types';
-import { Dialog, Empty, PageHeader } from '../ui';
+import { Banner, Dialog, Empty, PageHeader } from '../ui';
 import type { AppState } from '../useAppState';
 import { Waveform } from '../Waveform';
+import { useT } from '../i18n';
 
 const STATUS_TEXT: Record<string, string> = {
   IDLE: '无任务',
@@ -68,6 +69,7 @@ export function TranslationPage(props: {
   onOpenPlatform: () => void;
 }) {
   const { state, onOpenWorkbench, onOpenProofreading, onOpenProject, onOpenPlatform } = props;
+  const t = useT();
   const progress = state.translation.progress as TranslationUpdateData;
   const [samples, setSamples] = useState<number[]>([]);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -94,7 +96,7 @@ export function TranslationPage(props: {
   // 进度由应用级状态合并；这里只在下一轮开始时清除上一轮波形。
   useEffect(() => {
     return state.subscribe((message) => {
-      if (message.event === 'TRANSLATION_START') {
+      if (message.event === 'TRANSLATION_START' || message.event === 'PROJECT_CHANGED') {
         setSamples([]);
         lastSampleAt.current = 0;
       }
@@ -143,12 +145,13 @@ export function TranslationPage(props: {
 
   // 波形按 500ms 从共享快照采样，避免把每一条进度消息都画成一根柱。
   useEffect(() => {
+    if (!isTranslating) return;
     if (!('throughput' in progress) && !('total_output_tokens' in progress)) return;
     const now = Date.now();
     if (now - lastSampleAt.current < SAMPLE_INTERVAL_MS) return;
     lastSampleAt.current = now;
     setSamples((prev) => [...prev, Number.isFinite(throughput) ? throughput : 0].slice(-WAVE_COLUMNS));
-  }, [progress, throughput]);
+  }, [progress, throughput, isTranslating]);
 
   const linesDetail = `${line.toLocaleString()} / ${totalLine.toLocaleString()} 行`;
   const headerDescription =
@@ -208,10 +211,13 @@ export function TranslationPage(props: {
   const commandDisabled = busy || !state.ready;
   const statusLabel = isStopping ? '正在停止' : preparing ? '正在准备'
     : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
+    : state.translation.progress_error ? t('translation_cache_error')
     : totalLine > 0 ? line >= totalLine && failed === 0 ? '已完成' : '可继续' : '待开始';
 
   const continuePrimary = statusLabel === '可继续';
   const latencyText = averageLatency > 0 ? `${averageLatency.toFixed(2)}s` : '—';
+  const requestP95 = metrics?.logical_request_ms_p95;
+  const latencyMetric = metrics ? (typeof requestP95 === 'number' ? (requestP95 / 1000).toFixed(2) + 's' : '—') : latencyText;
   const cacheText = `${(cacheRate > 1 ? cacheRate : cacheRate * 100).toFixed(1)}%`;
 
   return (
@@ -242,51 +248,52 @@ export function TranslationPage(props: {
           </button>
         </div>
 
-        <section className="rb-panel rb-progress">
-          <div className="rb-progress-top">
-            <div className="rb-progress-main">
-              <span className="rb-progress-percent">{(percent * 100).toFixed(1)}%</span>
-              <span className="rb-progress-lines">{linesDetail}</span>
-            </div>
+        {state.translation.progress_error ? <Banner tone="warning">{state.translation.progress_error}</Banner> : null}
+        {state.translation.progress_source === 'cache' ? <Banner tone="info">{t('translation_cache_restored')}</Banner> : null}
+        <section className="rb-translation-summary">
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_input_tokens')}</span><div className="rb-metric-value">{progress.total_input_tokens != null ? inputTokens.toLocaleString() : '—'}</div></div>
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_output_tokens')}</span><div className="rb-metric-value">{progress.total_output_tokens != null ? outputTokens.toLocaleString() : '—'}</div></div>
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_workers')}</span><div className="rb-metric-value">{running}<span>/ {max}</span></div></div>
+        </section>
+        <div className="rb-translation-dashboard">
+          <section className="rb-panel rb-progress">
+            <h2>{t('translation_progress')}</h2>
+            {preparing && <Loader size="xs" aria-label={statusLabel} />}
+            <RingProgress size={122} thickness={8} roundCaps={percent > 0}
+              sections={[{ value: percent * 100, color: 'brand' }]}
+              label={<span className="rb-progress-percent">{(percent * 100).toFixed(1)}%</span>} />
+            <span className="rb-progress-lines">{linesDetail}</span>
             <span className="rb-progress-time">已用: {formatDuration(elapsed)} · 剩余约: {remaining > 0 ? formatDuration(remaining) : '—'}</span>
-          </div>
-          <Progress size="sm" radius="xl" value={percent * 100} animated={preparing} />
-          <div className="rb-progress-meta">
-            <span>
-              已译 {line.toLocaleString()}
-              {' · '}
-              <span title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">{cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}</span>
-              {' · '}
-              待译 {Math.max(0, totalLine - line).toLocaleString()}
-            </span>
-            {failed > 0 ? <Badge className="rb-failed-badge" color="red">{failed} 行失败</Badge> : null}
-          </div>
-        </section>
+            <div className="rb-progress-meta">
+              <span>
+                已译 {line.toLocaleString()}
+                {' · '}
+                <span title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">{cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}</span>
+                {' · '}
+                待译 {Math.max(0, totalLine - line).toLocaleString()}
+              </span>
+              {failed > 0 ? <Badge className="rb-failed-badge" color="red">{failed} 行失败</Badge> : null}
+            </div>
+          </section>
 
-        <section className="rb-panel rb-metrics">
-          <div>
-            <div className="rb-metric-label">实时吞吐</div>
+          <section className="rb-panel rb-throughput">
+            <div className="rb-throughput-head"><h2>{t(isTranslating ? 'translation_live_rate' : 'translation_average_rate')}</h2><span className="rb-metric-note">{isTranslating ? '峰值 ' + peak.toFixed(2) + ' Token/s' : null}</span></div>
             <div className="rb-metric-value">{throughput.toFixed(2)}<span>Token/s</span></div>
-            <Waveform points={samples} columns={50} height={36} />
-            <div className="rb-metric-note">峰值 {peak.toFixed(2)} Token/s</div>
-          </div>
-          <div>
-            <div className="rb-metric-label">累计消耗</div>
-            <div className="rb-metric-value">{(inputTokens + outputTokens).toLocaleString()}<span>Token</span></div>
-            <div className="rb-metric-note">输出: {outputTokens.toLocaleString()} · 输入: {inputTokens.toLocaleString()}</div>
-          </div>
-          <div>
-            <div className="rb-metric-label">有效翻译速度</div>
-            <div className="rb-metric-value">{effectiveRate.toFixed(1)}<span>条/分</span></div>
-            <div className="rb-metric-note">已处理批次 {batches.toLocaleString()} · 平均请求耗时 {latencyText} · 已有译文占比 {cacheText}</div>
-          </div>
-        </section>
+            <Waveform points={samples} columns={50} height={72} />
+            <div className="rb-throughput-stats">
+              <div><span className="rb-metric-label">有效翻译速度</span><strong>{effectiveRate.toFixed(1)} 条/分</strong></div>
+              <div><span className="rb-metric-label">{t('translation_batches')}</span><strong>{progress.processed_batches != null ? batches.toLocaleString() : '—'}</strong></div>
+              <div><span className="rb-metric-label">{t(metrics ? 'translation_request_p95' : 'translation_average_latency')}</span><strong>{latencyMetric}</strong></div>
+              <div><span className="rb-metric-label">{t('translation_cache_rate')}</span><strong>{progress.cache_hit_rate != null ? cacheText : '—'}</strong></div>
+            </div>
+          </section>
+        </div>
 
         <section className="rb-panel feed-card">
           <header className="rb-feed-head">
-            <h2>实时翻译流水</h2>
+            <h2>{t(isTranslating ? 'translation_live_feed' : 'translation_recent_feed')}</h2>
             <Badge>{recentItems.length} 条记录</Badge>
-            <span>自动追踪引擎吐出的最新对白</span>
+            <span>{t(isTranslating ? 'translation_feed_live_hint' : 'translation_feed_saved_hint')}</span>
           </header>
           {recentItems.length > 0 ? (
             <table className="rb-table">

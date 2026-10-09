@@ -54,11 +54,11 @@ export function ProjectPage(props: { state: AppState }) {
       if (!picked) return;
       setBusy(true);
       try {
-        state.setSetting(which === 'input' ? 'input_folder' : 'output_folder', picked);
+        if (!await state.setSetting(which === 'input' ? 'input_folder' : 'output_folder', picked)) return;
         if (which === 'input') {
           try {
             await resolveProject(picked);
-            await Promise.all([state.reloadProject(), state.reloadSettings()]);
+            await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
             state.pushToast('success', '已识别 Ren\'Py 项目并绑定工程');
           } catch (error) {
             const message = error instanceof Error ? error.message : '';
@@ -82,7 +82,7 @@ export function ProjectPage(props: { state: AppState }) {
     setBusy(true);
     try {
       await resolveProject(picked);
-      await Promise.all([state.reloadProject(), state.reloadSettings()]);
+      await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
       state.pushToast('success', 'Ren\'Py 项目已绑定');
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));

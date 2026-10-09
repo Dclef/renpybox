@@ -14,7 +14,10 @@ function fixture() {
   const worldbook = { project_name: '港湾来信', genre: '日常 / 悬疑', setting_summary: '一座靠海的小镇，一封迟到的信。人物的语气平静而克制。', tone_style: '自然口语，保留人物之间的距离感', era_background: '', narrative_rules: '', format_rules: '', spoiler_notes: '', reference_notes: '' };
   const f = window.__uiFixture = { values, sockets: [], writes: [], assets: { storage_key: 'fixture', revision: 1, worldbook, characters: [character('alice', 'Alice')], worldbook_enabled: true, characters_enabled: true, worldbook_draft: {}, character_drafts: [] }, glossary: { storage_key: 'fixture', revision: 1, enabled: true, candidate_ids: ['c1'], rows: [{ src: 'Harbor', dst: '港湾', info: '地名', candidate: false, record_id: 'f1' }, { src: 'Sealed Letter', dst: '封缄的信', info: '待审核', candidate: true, record_id: 'c1' }] }, items: [{ id: 0, version: 'v1', src: 'Alice, the letter arrived this morning.', dst: '艾丽丝，那封信今天早上到了。', status: 'TRANSLATED', file_path: 'chapter_01.rpy', row: 24 }] };
   const nativeFetch = fetch.bind(window);
-  f.reads = []; f.confirmed = []; f.engineStatus = 'IDLE';
+  f.reads = []; f.confirmed = []; f.engineStatus = 'IDLE'; f.qualityReports = [];
+  f.progress = { line: 64, total_line: 100, time: 120, total_output_tokens: 4800, throughput: { schema_version: 1, elapsed_seconds: 120, output_tokens: 4800, effective_items_per_minute: 32 }, recent_items: [{ src: 'Saved source', dst: '已保存的译文' }] };
+  f.progressSource = 'cache'; window.confirm = () => true;
+  f.emitQuality = report => { f.qualityReports = [report]; f.sockets.forEach(socket => socket.onmessage?.({ data: JSON.stringify({ type: 'event', event: 'TRANSLATION_UPDATE', data: { quality_task: report } }) })); };
   f.workbenchJob = null;
   f.finishWorkbench = (status = 'done', message = '扫描到 1 位新角色') => {
     const job = f.workbenchJob;
@@ -43,7 +46,9 @@ function fixture() {
     if (p === '/health') return response({ ok: true, app_version: 'v0.8.1', mode: 'api', pid: 0 });
     if (p === '/api/version') return response({ app_version: 'v0.8.1', api_version: '1' });
     if (p === '/api/platforms' && method === 'POST') { values.platforms.push({ ...body, id: values.platforms.length, api_key: '***' }); return response({ values, masked: [] }); }
-    if (p === '/api/settings') { if (method === 'PATCH') Object.assign(values, body.values); return response({ values, masked: [] }); }
+    if (p === '/api/settings') { if (method === 'PATCH') { if (f.failSettings) return new Response(JSON.stringify({detail:'模拟落盘失败'}),{status:500}); Object.assign(values, body.values); } return response({ values, masked: [] }); }
+    if (p === '/api/settings/honorific-defaults') return response({ titles: ['mr', 'mrs', 'doctor'] });
+    if (/^\/api\/platforms\/\d+\/models$/.test(p)) return response({ models: ['available-model', 'story-model'] });
     if (p === '/api/agent') return response(f.agent);
     if (p === '/api/agent/message') {
       f.agent.run_id += 1; f.agent.status = 'running';
@@ -59,7 +64,7 @@ function fixture() {
       f.emitAgent(); return response(f.agent);
     }
     if (p === '/api/project') return response({ renpy_project_path: 'C:/ui-check', renpy_game_folder: 'C:/ui-check/game', renpy_tl_folder: values.input_folder });
-    if (p === '/api/translation/state') return response({ engine_status: f.engineStatus, stop_barrier: false, single_tasks: false, request_id: 'fixture', run_id: 1, running: { running: 0, max: 4 }, progress: { line: 64, total_line: 100, time: 120, total_output_tokens: 4800, throughput: { schema_version: 1, elapsed_seconds: 120, output_tokens: 4800, effective_items_per_minute: 32 } }, active_output_folder: values.output_folder });
+    if (p === '/api/translation/state') return response({ engine_status: f.engineStatus, stop_barrier: false, single_tasks: false, request_id: 'fixture', run_id: 1, running: { running: 0, max: 4 }, progress: f.progress, progress_source: f.progressSource, progress_error: f.progressError || '', active_output_folder: values.output_folder });
     if (p === '/api/settings/prompt-preview') return response({ base: '将对白翻译为自然中文，保留人物语气。', style: '语言克制。', fixed: '保持变量和输出协议。' });
     if (p === '/api/workbench/analysis') {
       if (method === 'POST') {
@@ -87,7 +92,22 @@ function fixture() {
       return response(f.assets);
     }
     if (p === '/api/workbench/glossary') { if (method === 'PATCH') Object.assign(f.glossary, body, { revision: f.glossary.revision + 1 }); return response(f.glossary); }
-    if (p === '/api/proofreading') return response({ cache_token: 'fixture-cache', cache_folder: values.output_folder, total: 1, matched: 1, page: 1, limit: 50, files: ['chapter_01.rpy'], readonly: false, items: f.items });
+    if (p === '/api/proofreading/retranslate' && method === 'GET') return response(f.retranslate || { state: 'IDLE' });
+    if (p === '/api/proofreading/retranslate') { f.retranslate = { state: 'RUNNING', total: body.rows.length, done: 0, updated: 0, failed: 0 }; return response(f.retranslate); }
+    if (p === '/api/proofreading/retranslate/cancel') { f.retranslate.state = 'CANCELLING'; return response(f.retranslate); }
+    if (p === '/api/proofreading/report') return response({ failed_count: 1, fallback_count: 2, line_mismatch_count: 1, error_type_counts: { FAIL_LINE_COUNT: 1 }, item_references: [{ item_index: 0, reference: 'chapter_01.rpy:24', source_preview: 'Hello', error_types: ['FAIL_LINE_COUNT'] }] });
+    if (p === '/api/proofreading/locate') return response({ path: 'C:/ui-check/output/chapter_01.rpy', row: 24, lines: [{ number: 23, text: 'old "Hello"' }, { number: 24, text: 'new "你好"' }] });
+    if (p === '/api/proofreading/export') return response({ ok: true, output_folder: values.output_folder });
+    if (p === '/api/proofreading/reset') { body.rows.forEach(row => { f.items[row.id].dst = ''; f.items[row.id].status = 'UNTRANSLATED'; }); return response({ ok: true, changed: body.rows.length }); }
+    if (p === '/api/proofreading' && f.issueDelay) await new Promise(resolve => setTimeout(resolve, 350));
+    if (p === '/api/proofreading') return response({ cache_token: 'fixture-cache', cache_folder: values.output_folder, total: f.items.length, matched: f.items.length, page: 1, limit: 50, files: ['chapter_01.rpy'], readonly: f.engineStatus !== 'IDLE', quality_reports: f.qualityReports, items: f.items });
+    if (p === '/api/proofreading/quality') {
+      if (f.rejectQuality) return new Response(JSON.stringify({ detail: '译文或缓存条目已更新，请刷新后再编辑。' }), { status: 409 });
+      f.engineStatus = 'QUALITY';
+      f.emitQuality({ task_type: body.task === 'polish' ? 'POLISHER' : 'PROOFREADER', state: 'RUNNING', total_count: body.ids.length, completed_count: 0, updated_count: 0, failed_count: 0, skipped_count: 0 });
+      return response({ ok: true, accepted: body.ids.length, skipped: 0 });
+    }
+    if (p === '/api/proofreading/quality/cancel') { f.engineStatus = 'IDLE'; f.emitQuality({ ...f.qualityReports[0], state: 'CANCELLED' }); return response({ ok: true }); }
     if (p === '/api/proofreading/item') { f.items[0].dst = body.dst; return response({ ok: true }); }
     if (p === '/api/jobs') return response({ jobs: f.workbenchJob ? [f.workbenchJob] : [] });
     throw new Error('自检未定义接口：' + method + ' ' + p);
@@ -134,7 +154,7 @@ app.whenReady().then(async () => {
     await openTool('称呼桥接');
     await capture(`${prefix}-honorific`);
     await openTool('检查与润色');
-    await js("document.querySelector('.proofreading-target')?.click()"); await pause(160);
+    await js("document.querySelector('.rb-proof-target')?.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(160);
     await capture(`${prefix}-proofreading`);
     await js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='取消')?.click()"); await pause(80);
     await page('基础设置');
@@ -146,6 +166,13 @@ app.whenReady().then(async () => {
   const waitLayout = async () => { for (let i = 0; i < 50; i++) { if (await js("!!document.querySelector('.translation-layout')")) return; await pause(100); } };
   const setProgress = async progress => { await js(`__uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'TRANSLATION_UPDATE',data:${JSON.stringify(progress)}})})`); await pause(100); };
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('64.0%')", '翻译快照');
+  await assert("document.querySelector('.feed-card').textContent.includes('已保存的译文') && document.body.textContent.includes('已恢复当前项目')", '启动恢复缓存流水');
+  await js("__uiFixture.progress={}; __uiFixture.progressSource='none'; __uiFixture.values.output_folder='C:/other/output'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(250);
+  await assert("document.querySelector('.rb-progress-percent').textContent.includes('0.0%') && !document.querySelector('.feed-card').textContent.includes('已保存的译文')", '切换空项目清除旧流水和统计');
+  await js("__uiFixture.progress={line:64,total_line:100,time:120,total_output_tokens:4800}; __uiFixture.progressSource='cache'; __uiFixture.values.output_folder='C:/ui-check/output'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(250);
+  await setProgress({ progress: { line: 65, total_line: 100 } });
+  await assert("document.querySelector('.rb-progress-percent').textContent.includes('65.0%')", '兼容分区进度事件');
+  await setProgress({line:64,total_line:100});
   await assert("document.querySelectorAll('.rb-nav-section').length===4 && document.querySelectorAll('.rb-nav .nav-item').length===9", '导航工作流分组');
   await js("__uiFixture.sockets.at(-1).onmessage({ data: JSON.stringify({ type: 'job', job: { id: 'smoke', kind: 'demo', status: 'running', total: 1, done: 0, progress: 0, error: null, created_at: 0, updated_at: 0 } }) });");
   await pause(120);
@@ -161,6 +188,9 @@ app.whenReady().then(async () => {
   await setProgress({line:0,total_line:0});
   await assert("document.querySelector('.task-state').textContent==='待开始' && !document.querySelector('.rb-failed-badge')", '空任务不显示虚假健康状态');
   await setProgress({line:64,total_line:100});
+  await assert("document.querySelectorAll('.rb-translation-summary .rb-panel').length===3 && !!document.querySelector('.mantine-RingProgress-root') && document.querySelectorAll('.rb-throughput-stats > div').length===4", '旧版仪表盘分区及未知指标');
+  await assert("document.querySelector('.rb-throughput-stats').textContent.includes('—')", '未知指标不伪装为零');
+  await assert("(()=>{const e=document.querySelector('.translation-layout .banner');return e&&e.clientHeight>=e.scrollHeight-2})()", '缓存提示条不被压扁');
   await capture('new-ui-translation-dark');
   await captureSamples('p1-dark-1280');
   await capturePhase2A('p2a-dark-1280');
@@ -168,11 +198,36 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('.content').dataset.page==='project' && document.querySelector('.content h1').textContent==='项目设置'", '输入目录快捷入口');
   await page('翻译任务'); await js("document.querySelector('.task-platform').click()"); await pause(180);
   await assert("document.querySelector('.content').dataset.page==='platform'", '翻译接口快捷入口');
-  await page('接口管理'); await capture('new-ui-platform-dark');
+  await page('接口管理');
+  await assert("(()=>{const e=document.querySelector('.rb-platform-card');const r=e.getBoundingClientRect();return r.width===280&&r.height>=72&&document.querySelector('.rb-platform-list .rb-settings-group').getBoundingClientRect().height>140})()", '旧 Qt 分组小卡片且不挤压');
+  await capture('new-ui-platform-dark');
   await click('新增接口'); await capture('new-ui-platform-editor-dark');
   await input('.platform-editor input', '自检接口'); await input('.platform-editor input[placeholder^=服务商]', 'story-model'); await input('.platform-editor input[type=url]', 'https://api.example.com/v1'); await click('保存接口');
   await assert("__uiFixture.values.platforms.some(p=>p.name==='自检接口')", '接口编辑表单提交');
   await assert("!('api_keys' in __uiFixture.writes.at(-1).body)", '空密钥不覆盖凭据');
+  await js("document.querySelector('.platform-row-actions button[aria-label=\"编辑\"]').click()"); await pause(100);
+  await click('读取模型列表');
+  await js("document.querySelector('.platform-editor input[placeholder^=服务商]').focus()");
+  await input('.platform-editor input[placeholder^=服务商]', 'available');
+  log('MODEL CHECK ' + JSON.stringify(await js("({reads:__uiFixture.reads.slice(-6),list:document.querySelector('[role=listbox]')?.textContent, buttons:Array.from(document.querySelectorAll('.platform-editor button')).map(b=>[b.textContent,b.disabled])})")));
+  await assert("Array.from(document.querySelectorAll('[role=option]')).some(e=>e.getBoundingClientRect().height>0&&e.textContent.includes('available-model')) && __uiFixture.reads.includes('/api/platforms/1/models')", '模型列表可读取并搜索');
+  await js("Array.from(document.querySelectorAll('[role=option]')).find(e=>e.getBoundingClientRect().height>0&&e.textContent.trim()==='available-model').click()"); await pause(100);
+  await assert("document.querySelector('.platform-editor input[placeholder^=服务商]').value==='available-model'", '选取模型填入草稿');
+  await click('关闭');
+  await js("__uiFixture.values.text_preserve_data=[{src:'Name',comment:'短'},{src:'name',comment:'完整备注'}]; __uiFixture.values.text_preserve_enable=false; __uiFixture.values.honorific_placeholder_titles=[{src:'Dr',comment:'旧版备注'},'dr']; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(200);
+  await openTool('禁翻表'); await click('去重');
+  await js("__uiFixture.failSettings=true"); await click('保存');
+  await assert("document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改') && __uiFixture.values.text_preserve_data.length===2", '禁翻规则保存失败保留草稿');
+  await js("__uiFixture.failSettings=false"); await click('保存');
+  await assert("__uiFixture.values.text_preserve_data.length===1 && __uiFixture.values.text_preserve_data[0].comment==='完整备注' && __uiFixture.values.text_preserve_enable===false && !document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改')", '禁翻去重保留备注和关闭状态');
+  await openTool('称呼桥接');
+  await assert("document.querySelector('.rb-honorific-row input').value==='Dr'", '读取旧版对象格式称呼词');
+  await click('去重'); await click('保存');
+  await assert("__uiFixture.values.honorific_placeholder_titles.length===1 && __uiFixture.values.honorific_placeholder_titles[0]==='dr'", '称呼去重按旧版小写规则保存');
+  await click('恢复默认');
+  await assert("document.querySelectorAll('.rb-honorific-row').length===3 && __uiFixture.values.honorific_placeholder_titles.length===1", '恢复引擎默认值只改草稿');
+  await click('保存');
+  await assert("__uiFixture.values.honorific_placeholder_titles.includes('doctor')", '确认保存默认称呼词');
   await page('角色 / 世界观工作台'); await click('世界观');
   await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改');
   await assert("__uiFixture.assets.worldbook.project_name==='港湾来信 · 新篇'", '世界观保存');
@@ -248,15 +303,82 @@ app.whenReady().then(async () => {
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
   await click('取消'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
-  await openTool('检查与润色'); await js("document.querySelector('.proofreading-target').click()"); await pause(100);
+  await openTool('检查与润色'); await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
+  await js("__uiFixture.issueDelay=true; document.querySelector('input[type=checkbox][aria-label=only-issues]')?.click()");
+  await js("Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='仅看问题')?.click()"); await pause(30);
+  await assert("!!document.querySelector('.rb-proof-loading') && !document.querySelector('.rb-proofreading-row')", '问题筛选立即反馈且不展示旧结果');
+  await pause(420); await js("__uiFixture.issueDelay=false");
+  await assert("!document.querySelector('.rb-proof-loading') && !!document.querySelector('.rb-proofreading-row')", '问题检查结束后恢复表格');
+  await assert("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='AI 校对').disabled", '质量任务要求先选中译文');
+  await js("document.querySelector('[aria-label=选择行]').click()"); await pause(100);
+  await click('AI 校对'); await click('开始处理');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/proofreading/quality' && w.body.task==='proofread' && w.body.ids.length===1 && w.body.ids[0]===0 && w.body.rows[0].version==='v1')", 'AI 校对发送选中范围和行版本');
+  await assert("document.querySelector('.rb-proofreading-task').textContent.includes('处理') && !document.querySelector('#proofreading-draft')", '质量运行期间只读并显示报告');
+  await click('取消质量任务'); await pause(200);
+  await assert("!document.querySelector('.rb-proofreading-task') && __uiFixture.qualityReports[0].state === 'CANCELLED'", '质量取消后恢复编辑');
+  await js("document.querySelector('[aria-label=选择行]').click()"); await pause(100);
+  await click('AI 润色');
+  await js("__uiFixture.rejectQuality = true"); await click('开始处理');
+  await assert("!!document.querySelector('[role=dialog]') && __uiFixture.engineStatus==='IDLE' && document.body.textContent.includes('译文或缓存条目已更新')", '版本冲突保留确认并显示真实错误');
+  await js("__uiFixture.rejectQuality = false"); await click('开始处理');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/proofreading/quality' && w.body.task==='polish')", 'AI 润色使用独立任务类型');
+  await js("__uiFixture.engineStatus='IDLE'; __uiFixture.emitQuality({...__uiFixture.qualityReports[0],state:'COMPLETED',completed_count:1,updated_count:1})"); await pause(300);
+  await assert("!document.querySelector('.rb-proofreading-task') && __uiFixture.qualityReports[0].state === 'COMPLETED'", '质量完成刷新缓存并恢复编辑');
+  await page('翻译任务'); await openTool('检查与润色');
+  await click('质量报告');
+  await assert("document.querySelector('.rb-quality-report').textContent.includes('已完成') && document.querySelector('[role=dialog]').textContent.includes('行数异常 1')", '翻译质量与 AI 处理记录区分显示');
+  await js("document.querySelector('[role=dialog]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(200);
+  await js("__uiFixture.items.push({...__uiFixture.items[0],id:1,version:'v2',src:'Another line',dst:'另一行'})"); await click('刷新译文');
+  await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
+  await input('#proofreading-draft', '尚未保存的编辑');
+  await js("window.__originalConfirm = window.confirm; window.confirm = () => false; document.querySelectorAll('.rb-proof-target')[1].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
+  await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '切换编辑行保留未保存译文');
+  await click('取消');
+  await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '取消编辑保留未保存译文');
+  await js("window.confirm = () => true; void 0"); await click('取消');
+  await js("window.confirm = window.__originalConfirm; __uiFixture.items.pop()"); await click('刷新译文');
+  await js("__uiFixture.items.push({...__uiFixture.items[0],id:1,version:'v2',src:'Two',dst:'第二行'},{...__uiFixture.items[0],id:2,version:'v3',src:'Three',dst:'第三行'})"); await click('刷新译文');
+  await js("document.querySelector('.rb-proofreading-row').click()"); await pause(80);
+  await assert("!document.querySelector('#proofreading-draft') && document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length===1", '单击只选行不打开编辑');
+  await assert("getComputedStyle(document.querySelector('.rb-proof-target')).borderTopWidth==='0px' && getComputedStyle(document.querySelector('.rb-proof-target')).paddingTop==='0px'", '译文没有按钮边框和内边距');
+  await js("document.querySelectorAll('.rb-proofreading-row')[2].dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true}))"); await pause(80);
+  await assert("document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length===3", 'Shift 连选三行');
+  await js("document.querySelectorAll('.rb-proofreading-row')[1].dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}))"); await pause(80);
+  await assert("document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length===2", 'Ctrl 取消单行选择');
+  await js("document.querySelector('.rb-proofreading-row').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:480,clientY:370}))"); await pause(180);
+  await assert("(()=>{const r=document.querySelector('[role=menu]').getBoundingClientRect();return Math.abs(r.left-480)<25 && Math.abs(r.top-370)<25})()", '右键菜单靠近鼠标而非行尾');
+  await assert("document.querySelector('[role=menu]').textContent.includes('重新翻译') && document.querySelector('[role=menu]').textContent.includes('定位译文')", '恢复旧版右键操作');
+  await capture('proofreading-context-menu'); await click('定位译文');
+  await assert("document.querySelector('.rb-proof-context [data-target=true]').textContent.includes('24')", '定位展示实际译文行');
+  await js("document.querySelector('[role=dialog]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(200);
+  await click('导出译文'); await click('写入译文文件');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/proofreading/export' && w.body.cache_token==='fixture-cache')", '导出携带项目缓存身份');
+  await js("document.querySelector('.rb-proofreading-row').focus();document.querySelector('.rb-proofreading-row').dispatchEvent(new KeyboardEvent('keydown',{key:'F2',bubbles:true}))"); await pause(100);
+  await assert("!!document.querySelector('.rb-proof-bilingual-editor') && !document.querySelector('.rb-sheet-editor')", 'F2 打开双语对照弹窗');
+  await capture('proofreading-bilingual-editor'); await click('取消');
+  await js("document.querySelector('.rb-proofreading-row').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:window.innerWidth-8,clientY:window.innerHeight-8}))"); await pause(180);
+  await assert("(()=>{const r=document.querySelector('[role=menu]').getBoundingClientRect();return r.right<=window.innerWidth && r.bottom<=window.innerHeight && r.left>=0 && r.top>=0})()", '右键菜单在边缘自动避让');
+  await js("document.querySelector('[role=menu]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(180);
+  await js("document.querySelector('.rb-proofreading-row').click()"); await pause(80);
+  await click('重译选中行'); await click('开始重译');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/proofreading/retranslate' && w.body.rows.length===1 && w.body.rows[0].version==='v1')", '重译提交选中版本');
+  await click('取消重译');
+  await assert("__uiFixture.retranslate.state==='CANCELLING' && Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='重译选中行').disabled", '取消重译等待后台完成');
+  await js("__uiFixture.retranslate={state:'CANCELLED',total:1,done:1,updated:1,failed:0}"); await pause(1900);
+  await assert("!Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='导出译文').disabled", '重译终态恢复编辑');
+
+  await js("__uiFixture.items.splice(1)"); await click('刷新译文');
   await capture('new-ui-proofreading-dark');
   await page('翻译提示'); await click('查看当前提示词');
   await assert("document.querySelector('.prompt-preview-text').value.includes('自然中文')", '静态提示词预览');
   await js("document.querySelector('.dialog').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(100);
   await assert("!document.querySelector('[role=dialog]')", 'Escape 关闭');
-  await page("Ren'Py 工具箱"); await input('.toolbox-search', '术语');
+  await page("Ren'Py 工具箱");
+  await assert("document.querySelectorAll('.tool-card').length===27 && document.querySelectorAll('.rb-tool-availability').length===22", '工具箱明确标记未接入工具');
+  await capture('new-ui-toolbox-dark');
+  await input('.toolbox-search', '术语');
   await assert("document.querySelectorAll('.tool-card').length===1", '工具搜索不重复');
   await js("document.querySelector('.tool-card').click()"); await pause(180);
   await assert("!!document.querySelector('.glossary-layout')", '工具词库入口');
@@ -334,6 +456,16 @@ app.whenReady().then(async () => {
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   await page('翻译任务');
   await assert("getComputedStyle(document.querySelector('.translation-layout')).animationName==='none'", '尊重减少动态效果设置');
+  if (process.env.RENPYBOX_UI_CAPTURE_ALL === '1') {
+    await win.webContents.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+    win.setContentSize(1280, 800);
+    const pages = [['翻译任务', 'translation'], ['Agent 助手', 'agent'], ['项目设置', 'project'], ['接口管理', 'platform'], ["Ren'Py 工具箱", 'toolbox'], ['角色 / 世界观工作台', 'workbench'], ['基础设置', 'basic'], ['专家设置', 'expert'], ['翻译提示', 'prompt'], ['应用设置', 'settings']];
+    for (const scheme of ['dark', 'light']) {
+      if (await js("document.documentElement.getAttribute('data-mantine-color-scheme')") !== scheme) { await js("document.querySelector('[title=切换主题]').click()"); await pause(200); }
+      for (const [title, key] of pages) { await page(title); await capture('all-' + scheme + '-' + key); }
+      for (const [title, key] of [['检查与润色', 'proofreading'], ['术语表', 'glossary'], ['禁翻表', 'preserve'], ['称呼桥接', 'honorific']]) { await openTool(title); await capture('all-' + scheme + '-' + key); }
+    }
+  }
   log('控制台错误：'+JSON.stringify(errors)); if (errors.length) throw new Error('控制台错误');
   log('ALL CHECKS PASSED'); win.destroy(); app.quit();
 }).catch(error=>{log(error.stack || String(error));app.exit(1);});
