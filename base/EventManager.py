@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import Callable
 
@@ -29,6 +30,9 @@ class EventManager(QObject):
     # 与 event_callbacks 同为类级：投递是排队延迟发生的，可能由另一个实例执行，
     # 序号若各实例自行计数，就无法跨实例判断订阅与发射的先后，过滤会漏掉历史事件
     _emit_sequence: int = 0
+    # 序号跨实例共享，实例之间没有同一把锁。自增与订阅时刻的读取必须互斥，
+    # 否则并发 emit 会读到同一个值，订阅过滤会把历史事件投给新订阅者。
+    _sequence_lock = threading.Lock()
 
     # 订阅时刻的发射序号，键为 (event, handler)：绑定方法每次访问都是新对象，
     # 但相等性与哈希稳定，可用于识别「订阅之前就已发出」的历史事件
@@ -103,15 +107,20 @@ class EventManager(QObject):
     def emit(self, event: StrEnum, data: dict) -> None:
         # payload 包装时间戳随信号走，Qt 签名不变（object 装 tuple）；
         # 订阅者最终拿到的 data 保持原样
-        type(self)._emit_sequence += 1
-        self.signal.emit(event, (data, time.monotonic(), type(self)._emit_sequence))
+        cls = type(self)
+        with cls._sequence_lock:
+            cls._emit_sequence += 1
+            sequence = cls._emit_sequence
+        self.signal.emit(event, (data, time.monotonic(), sequence))
 
     # 订阅事件
     def subscribe(self, event: StrEnum, hanlder: Callable) -> None:
         if callable(hanlder):
-            self.event_callbacks.setdefault(event, []).append(hanlder)
-            # 记录订阅时刻，之后更早发出的事件不会再投递给它
-            self._subscriber_sequences[(event, hanlder)] = self._emit_sequence
+            # 截止序号与回调挂载放在同一把锁里，并先写序号。
+            # 与 emit 的自增互斥，避免新订阅者读到偏小的序号后收到历史事件。
+            with type(self)._sequence_lock:
+                self._subscriber_sequences[(event, hanlder)] = type(self)._emit_sequence
+                self.event_callbacks.setdefault(event, []).append(hanlder)
 
     # 取消订阅事件
     def unsubscribe(self, event: StrEnum, hanlder: Callable) -> None:
