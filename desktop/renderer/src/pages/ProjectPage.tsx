@@ -22,7 +22,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { resolveProject } from '../api';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
 import type { AppState } from '../useAppState';
-import { Banner, SettingCard } from '../ui';
+import { SettingCard } from '../ui';
 
 export function ProjectPage(props: { state: AppState }) {
   const { state } = props;
@@ -56,9 +56,14 @@ export function ProjectPage(props: { state: AppState }) {
         if (which === 'input') {
           try {
             await resolveProject(picked);
-            await state.reloadProject();
-          } catch {
-            // 不含 Ren'Py 结构：409，按原壳语义静默忽略，只当输入目录用
+            await Promise.all([state.reloadProject(), state.reloadSettings()]);
+            state.pushToast('success', '已识别 Ren\'Py 项目并绑定工程');
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '';
+            state.pushToast(
+              'info',
+              message || '该目录不含 Ren\'Py 项目结构，只作为翻译输入目录保留',
+            );
           }
         }
       } finally {
@@ -68,24 +73,68 @@ export function ProjectPage(props: { state: AppState }) {
     [state],
   );
 
+  const pickProject = useCallback(async () => {
+    const current = String(state.project?.renpy_project_path ?? inputFolder);
+    const picked = await window.renpy?.pickFolder(current || undefined);
+    if (!picked) return;
+    setBusy(true);
+    try {
+      await resolveProject(picked);
+      await Promise.all([state.reloadProject(), state.reloadSettings()]);
+      state.pushToast('success', 'Ren\'Py 项目已绑定');
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [inputFolder, state]);
+
   const openFolder = useCallback((target: string) => {
     if (!target) return;
     void window.renpy?.openPath(target);
   }, []);
 
+  const projectRoot = String(state.project?.renpy_project_path ?? '');
+  const gameFolder = String(state.project?.renpy_game_folder ?? '');
+  const tlFolder = String(state.project?.renpy_tl_folder ?? '');
+  const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || '';
+
   return (
     <div className="settings-layout">
       <header className="settings-header">
         <h1 className="settings-title">项目设置</h1>
-        <p className="settings-subtitle">绑定 Ren'Py 项目并设置翻译输入与输出目录</p>
+        <p className="settings-subtitle">先绑定带 game/ 的 Ren'Py 工程，再指定翻译读取和写出的目录</p>
       </header>
 
       <div className="settings-scroll">
-        {state.project?.renpy_project_path ? null : (
-          <Banner tone="warning">
-            未选择工程。选择带 game/ 目录的 Ren'Py 项目文件夹后会自动绑定。
-          </Banner>
-        )}
+        <section className="project-identity" data-bound={projectRoot ? 'true' : 'false'}>
+          <div className="project-identity-copy">
+            <span className="project-identity-kicker">{projectRoot ? '已绑定工程' : '尚未绑定工程'}</span>
+            <h2>{projectLabel || '选择 Ren\'Py 项目文件夹'}</h2>
+            <p>
+              {projectRoot
+                ? '工程根、game 与 tl 目录来自项目结构。输入目录可以另选，不含 game/ 时不会改写工程身份。'
+                : '请选择包含 game/ 的项目根目录。只选译文文件夹不会绑定工程。'}
+            </p>
+          </div>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void pickProject()}>
+            {projectRoot ? '重新选择工程' : '选择工程'}
+          </button>
+          <dl className="project-identity-paths">
+            <div>
+              <dt>工程根</dt>
+              <dd title={projectRoot || undefined}>{projectRoot || '未绑定'}</dd>
+            </div>
+            <div>
+              <dt>game</dt>
+              <dd title={gameFolder || undefined}>{gameFolder || '—'}</dd>
+            </div>
+            <div>
+              <dt>tl</dt>
+              <dd title={tlFolder || undefined}>{tlFolder || '—'}</dd>
+            </div>
+          </dl>
+        </section>
 
         <div className="setting-card-list">
           <SettingCard title="原文语言" description="设置当前项目中输入文本的语言">
@@ -118,7 +167,10 @@ export function ProjectPage(props: { state: AppState }) {
             </select>
           </SettingCard>
 
-          <SettingCard title="输入文件夹" description={`当前输入文件夹为 ${inputFolder || '未设置'}`}>
+          <SettingCard
+            title="输入文件夹"
+            description={inputFolder || '未设置。翻译从这里读取待译文本'}
+          >
             <button type="button" className="btn" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>
               选择
             </button>
@@ -128,8 +180,8 @@ export function ProjectPage(props: { state: AppState }) {
           </SettingCard>
 
           <SettingCard
-            title="输出文件夹（不能与输入文件夹相同）"
-            description={`当前输出文件夹为 ${outputFolder || '未设置'}`}
+            title="输出文件夹"
+            description={outputFolder || '未设置。不能与输入文件夹相同'}
           >
             <button type="button" className="btn" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>
               选择

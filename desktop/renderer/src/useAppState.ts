@@ -201,6 +201,7 @@ export function useAppState(): AppState {
 
   // 启动：并行读取健康、版本、项目、配置、翻译状态。
   useEffect(() => {
+    if (link === 'closed') { setReady(true); return; }
     let alive = true;
     const boot = async () => {
       try {
@@ -220,7 +221,7 @@ export function useAppState(): AppState {
         setReady(true);
       } catch (error) {
         if (!alive) return;
-        pushToast('error', `连接后端失败：${error instanceof Error ? error.message : String(error)}`);
+        if (link === 'open') pushToast('error', `连接后端失败：${error instanceof Error ? error.message : String(error)}`);
         setReady(true);
       }
     };
@@ -228,7 +229,7 @@ export function useAppState(): AppState {
     return () => {
       alive = false;
     };
-  }, [pushToast]);
+  }, [pushToast, link]);
 
   // 项目被侧边栏之外的地方改动（工具箱、Agent）时，同步标题栏与项目页。
   useEffect(() => {

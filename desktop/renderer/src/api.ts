@@ -7,6 +7,9 @@
  */
 
 import type {
+  AgentSnapshot,
+  AgentThinkingLevel,
+  ChangelogResponse,
   HealthInfo,
   JobSnapshot,
   ProjectInfo,
@@ -15,6 +18,7 @@ import type {
   TokenEstimate,
   TranslationStartResponse,
   TranslationState,
+  UpdateState,
   VersionInfo,
 } from './types';
 
@@ -98,8 +102,61 @@ export function getHealth(): Promise<HealthInfo> {
   return request<HealthInfo>('/health');
 }
 
+export function getAgentSession(): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>('/api/agent');
+}
+
+export function sendAgentMessage(message: string, thinkingLevel: AgentThinkingLevel): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>('/api/agent/message', {
+    method: 'POST',
+    body: JSON.stringify({ message, thinking_level: thinkingLevel }),
+  });
+}
+
+export function stopAgent(): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>('/api/agent/stop', { method: 'POST' });
+}
+
+export function resetAgent(): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>('/api/agent/reset', { method: 'POST' });
+}
+
+export function confirmAgentTool(confirmationId: string, approved: boolean): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>('/api/agent/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ confirmation_id: confirmationId, approved }),
+  });
+}
+
 export function getVersion(): Promise<VersionInfo> {
   return request<VersionInfo>('/api/version');
+}
+
+export function getUpdateState(): Promise<UpdateState> {
+  return request<UpdateState>('/api/update');
+}
+
+export function checkUpdate(manual = true): Promise<UpdateState> {
+  return request<UpdateState>('/api/update/check', {
+    method: 'POST',
+    body: JSON.stringify({ manual }),
+  });
+}
+
+export function downloadUpdate(): Promise<UpdateState> {
+  return request<UpdateState>('/api/update/download', { method: 'POST' });
+}
+
+export function cancelUpdateDownload(): Promise<UpdateState> {
+  return request<UpdateState>('/api/update/cancel', { method: 'POST' });
+}
+
+export function installUpdate(): Promise<UpdateState> {
+  return request<UpdateState>('/api/update/install', { method: 'POST' });
+}
+
+export function getChangelog(): Promise<ChangelogResponse> {
+  return request<ChangelogResponse>('/api/update/changelog');
 }
 
 export function getSettings(): Promise<SettingsResponse> {
