@@ -1194,170 +1194,6 @@ body {
   color: var(--rb-text-secondary);
 }
 
-/* ---------- 接口管理页（实测见 pages/PlatformPage.tsx 顶部注释） ---------- */
-
-/* 滚动区从 y=66 起（页头比设置页少 2px 下边距），但内容仍走同一套卡间距 8 */
-.platform-scroll {
-  gap: 8px;
-}
-
-/* PlatformHeaderCard：975x66，右侧 128x27 的下拉按钮 */
-.platform-header-card {
-  min-height: 66px;
-}
-
-/* PlatformGroupCard：975x136/382，内边距 17，组头与条目区之间 8 */
-.platform-group-card {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 11px 17px;
-  border: 1px solid var(--rb-border);
-  border-radius: 8px;
-  background: var(--rb-surface);
-}
-
-/* 组头 941x34：图标 26x26 @ (0,4)，文字块从 x=34 起 */
-.platform-group-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-height: 34px;
-}
-
-.platform-group-icon {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  margin-top: 4px;
-  border-radius: 6px;
-  background: var(--rb-accent-surface);
-  color: var(--rb-accent);
-  display: grid;
-  place-items: center;
-}
-
-.platform-group-icon svg {
-  width: 17px;
-  height: 17px;
-}
-
-.platform-group-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.platform-group-title {
-  font-size: 14px;
-  line-height: 1.4;
-  font-weight: 600;
-  color: var(--rb-text-primary);
-}
-
-.platform-group-description {
-  font-size: 12px;
-  line-height: 14px;
-  color: var(--rb-text-secondary);
-}
-
-/* 条目区：PlatformItemCard 固定 280x72，同排节距 290 → 间距 10 */
-.platform-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 10px;
-  align-content: start;
-}
-
-/* PlatformItemCard：280x72、圆角 8、margins (14,10,10,10) spacing 4 */
-.platform-item-card {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 4px;
-  width: 100%;
-  height: 72px;
-  padding: 10px 10px 10px 14px;
-  border: 1px solid var(--rb-border);
-  border-radius: 8px;
-  background: var(--rb-surface);
-}
-
-.platform-item-card[data-active] {
-  border-color: var(--rb-accent);
-  background: color-mix(in srgb, var(--rb-accent-surface) 35%, var(--rb-surface));
-}
-
-/* 上行：接口名和只读状态 */
-.platform-item-top {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.platform-item-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--rb-text-primary);
-}
-
-.platform-item-readonly {
-  flex-shrink: 0;
-  padding: 3px 7px;
-  border-radius: 5px;
-  background: var(--rb-surface-subtle);
-  color: var(--rb-text-secondary);
-  font-size: 11px;
-}
-
-/* 下行：api_format 徽标 + 模型名 + 激活状态，间距 8 */
-.platform-item-bottom {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.platform-item-badge {
-  flex-shrink: 0;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--rb-surface-subtle);
-  font-size: 11px;
-  line-height: 14px;
-  color: var(--rb-text-secondary);
-}
-
-.platform-item-model {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  line-height: 14px;
-  color: var(--rb-text-secondary);
-}
-
-.platform-item-status {
-  flex-shrink: 0;
-  font-size: 12px;
-  line-height: 14px;
-  color: var(--rb-text-secondary);
-}
-
-.platform-item-status[data-active] {
-  color: var(--rb-accent);
-}
-
 /* ---------- 翻译提示页（实测见 pages/CustomPromptPage.tsx 顶部注释） ---------- */
 
 /*
@@ -2240,7 +2076,6 @@ body {
 }
 /* 工作区用一层表面和分隔线组织内容，避免表单被多层卡片挤压。 */
 .workspace-toolbar,
-.platform-toolbar,
 .workbench-editor-header,
 .workbench-roster-header,
 .proofreading-heading,
@@ -2252,7 +2087,6 @@ body {
   flex-wrap: wrap;
 }
 .workspace-actions,
-.platform-row-actions,
 .proofreading-toolbar {
   display: flex;
   align-items: center;
@@ -2261,314 +2095,17 @@ body {
 }
 .workspace-summary { display: flex; flex-direction: column; gap: 5px; }
 .workspace-summary strong { font-size: 16px; font-weight: 650; }
-.workspace-summary span,
-.platform-summary span { color: var(--rb-text-secondary); font-size: 12px; }
+.workspace-summary span { color: var(--rb-text-secondary); font-size: 12px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
 :where(input[type='checkbox']):where(:not([class*="mantine-"])) { accent-color: var(--rb-accent); flex-shrink: 0; }
 :where(textarea):where(:not([class*="mantine-"])) { padding: 10px 12px; line-height: 1.65; resize: vertical; }
 .input,
 .textarea,
-.platform-field input,
-.platform-field textarea,
 .workbench-field input,
 .workbench-field textarea { width: 100%; }
 .btn-danger-text { color: var(--rb-error); border-color: transparent; background: transparent; }
 .quiet-pill { padding: 7px 14px; min-height: 34px; }
 .prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
-
-/* 接口管理：顶栏状态 + 分组列表 + 内联编辑面板 */
-.platform-page .settings-header { margin-bottom: 4px; }
-.platform-scroll { gap: 18px; }
-.platform-toolbar {
-  padding: 14px 16px;
-  border: 1px solid var(--rb-divider);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--rb-surface) 88%, transparent);
-}
-.platform-toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.platform-search {
-  width: 220px;
-  max-width: 100%;
-  min-height: 34px;
-  border-radius: 9px;
-  background: var(--rb-surface-subtle);
-  border-color: transparent;
-}
-.platform-search:focus {
-  border-color: var(--rb-border);
-  background: var(--rb-surface);
-}
-.platform-summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.platform-summary-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.platform-summary-copy strong {
-  font-size: 14px;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.platform-summary-copy span {
-  color: var(--rb-text-secondary);
-  font-size: 12px;
-}
-.platform-status {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--rb-text-disabled);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--rb-text-disabled) 12%, transparent);
-}
-.platform-status[data-active='true'] {
-  background: var(--rb-success);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--rb-success) 14%, transparent);
-}
-.platform-list { flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; }
-.platform-group-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  color: var(--rb-text-secondary);
-}
-.platform-group-heading .platform-group-icon {
-  width: 30px;
-  height: 30px;
-  margin-top: 0;
-  border-radius: 9px;
-}
-.platform-group-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-.platform-group-copy h2 {
-  margin: 0;
-  color: var(--rb-text-primary);
-  font-size: 13px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-}
-.platform-group-copy p {
-  margin: 0;
-  font-size: 12px;
-  color: var(--rb-text-secondary);
-}
-.platform-group-count {
-  flex-shrink: 0;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 7px;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  background: var(--rb-surface-subtle);
-  color: var(--rb-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-}
-.platform-rows {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--rb-divider);
-  border-radius: 14px;
-  background: var(--rb-surface);
-  overflow: hidden;
-}
-.platform-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px 20px;
-  padding: 14px 16px;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--rb-divider);
-  transition: background 140ms ease;
-}
-.platform-row:last-child { border-bottom: 0; }
-.platform-row:hover { background: var(--rb-surface-hover); }
-.platform-row[data-active] {
-  background: color-mix(in srgb, var(--rb-accent-surface) 55%, var(--rb-surface));
-  box-shadow: inset 3px 0 var(--rb-accent);
-}
-.platform-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-.platform-row-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.platform-row-title strong {
-  font-size: 14px;
-  font-weight: 650;
-}
-.platform-active-label {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--rb-accent-surface);
-  color: var(--rb-accent);
-  font-size: 11px;
-  font-weight: 600;
-}
-.platform-row .platform-item-badge {
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: var(--rb-surface-subtle);
-  color: var(--rb-text-secondary);
-  font-size: 11px;
-  line-height: 1.2;
-}
-.platform-row[data-active] .platform-item-badge {
-  background: color-mix(in srgb, var(--rb-accent) 12%, var(--rb-surface));
-}
-.platform-row-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.platform-row-model {
-  font-size: 13px;
-  color: var(--rb-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.platform-row-url {
-  color: var(--rb-text-secondary);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.platform-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.platform-row-actions .btn {
-  min-height: 30px;
-  padding: 0 11px;
-}
-.platform-row-actions .btn-danger-text {
-  padding-right: 8px;
-  padding-left: 8px;
-}
-.platform-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  border: 1px solid color-mix(in srgb, var(--rb-accent) 22%, var(--rb-border));
-  border-radius: 16px;
-  padding: 20px 20px 16px;
-  background: var(--rb-surface);
-  animation: agent-fade-up 180ms ease both;
-}
-.platform-editor-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-}
-.platform-editor-heading h2 {
-  margin: 0 0 4px;
-  font-size: 17px;
-  font-weight: 680;
-  letter-spacing: -0.01em;
-}
-.platform-editor-heading span,
-.platform-field-help {
-  color: var(--rb-text-secondary);
-  font-size: 12px;
-}
-.platform-editor-grid,
-.workbench-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px 18px;
-}
-.platform-field,
-.workbench-field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--rb-text-secondary);
-}
-.platform-field > .input,
-.platform-field > .select,
-.platform-field > .textarea,
-.workbench-field > .input,
-.workbench-field > .textarea {
-  color: var(--rb-text-primary);
-}
-.platform-field-wide,
-.workbench-field-wide { grid-column: 1 / -1; }
-.platform-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--rb-text-primary);
-  font-size: 13px;
-}
-.platform-parameters {
-  padding-top: 4px;
-  border-top: 1px solid var(--rb-divider);
-}
-.platform-parameters summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--rb-text-primary);
-  margin: 8px 0 14px;
-  list-style: none;
-}
-.platform-parameters summary::-webkit-details-marker { display: none; }
-.platform-parameters summary::before {
-  content: '▸';
-  display: inline-block;
-  margin-right: 8px;
-  color: var(--rb-text-disabled);
-}
-.platform-parameters[open] summary::before { transform: rotate(90deg); }
-.platform-editor-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 4px;
-}
 
 /* 工作台：背景表单与角色名单共用一致的编辑层次。 */
 .workbench-status { background: transparent; border: 0; border-left: 2px solid var(--rb-accent); border-radius: 0; padding: 3px 12px; gap: 6px; }
@@ -2588,7 +2125,23 @@ body {
 .workbench-overview-stats > div { display: flex; align-items: baseline; gap: 14px; }
 .workbench-overview-stats strong { font-size: 28px; min-width: 32px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .workbench-overview-stats span { color: var(--rb-text-secondary); font-size: 12px; }
-.workbench-form-grid { margin-top: 8px; }
+.workbench-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 18px;
+  margin-top: 8px;
+}
+.workbench-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--rb-text-secondary);
+}
+.workbench-field > .input,
+.workbench-field > .textarea { color: var(--rb-text-primary); }
+.workbench-field-wide { grid-column: 1 / -1; }
 .workbench-field > span { display: flex; justify-content: space-between; align-items: center; }
 .workbench-field small { color: var(--rb-text-secondary); font-size: 11px; }
 .workbench-character-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); align-items: start; gap: 20px; }
@@ -3047,9 +2600,6 @@ body {
 
 @media (max-width: 1100px) {
   .workbench-character-layout { grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
-  .platform-row { gap: 14px; padding: 16px; }
-  .platform-row-actions { gap: 6px; }
-  .platform-row-actions .btn { padding: 0 10px; }
 }
 @media (max-width: 800px) {
   .workbench-summary { grid-template-columns: minmax(0, 1fr); gap: 24px; }
@@ -3060,18 +2610,10 @@ body {
   .workbench-roster-list { flex-direction: row; flex-wrap: wrap; max-height: 200px; overflow: auto; }
   .workbench-header { flex-wrap: wrap; }
   .proofreading-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .platform-toolbar { align-items: stretch; }
-  .platform-toolbar-actions { width: 100%; }
-  .platform-search { flex: 1; width: auto; }
-  .platform-group-copy p { display: none; }
-  .platform-row { flex-direction: column; align-items: stretch; }
-  .platform-row-actions { justify-content: flex-start; }
 }
 @media (max-width: 680px) {
-  .platform-editor-grid,
   .workbench-form-grid { grid-template-columns: minmax(0, 1fr); }
-  .workbench-card,
-  .platform-editor { padding: 16px; }
+  .workbench-card { padding: 16px; }
   .proofreading-page { overflow-y: auto; }
   .proofreading-surface { flex-shrink: 0; min-height: 280px; max-height: 55vh; }
   .proofreading-table-head { display: none; }
