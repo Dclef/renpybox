@@ -72,6 +72,16 @@ app.whenReady().then(async () => {
   const page = async title => { await js(`Array.from(document.querySelectorAll('.nav-item')).find(b=>b.title===${JSON.stringify(title)})?.click()`); await pause(180); };
   const input = async (selector, value) => { await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
+  const SAMPLE_PAGES = [['翻译任务','translation'],['基础设置','basic'],['项目设置','project'],['术语表','glossary']];
+  const captureSamples = async prefix => {
+    for (const [title, key] of SAMPLE_PAGES) {
+      await page(title);
+      if (key === 'glossary') { await js("document.querySelector('.rb-term-row')?.click()"); await pause(160); }
+      await capture(`${prefix}-${key}`);
+    }
+    await page('翻译任务');
+  };
+  const waitLayout = async () => { for (let i = 0; i < 50; i++) { if (await js("!!document.querySelector('.translation-layout')")) return; await pause(100); } };
   const setProgress = async progress => { await js(`__uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'TRANSLATION_UPDATE',data:${JSON.stringify(progress)}})})`); await pause(100); };
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('64.0%')", '翻译快照');
   await assert("document.querySelectorAll('.nav-group-label').length===4", '导航工作流分组');
@@ -87,6 +97,7 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('.task-state').textContent==='待开始' && !document.querySelector('.rb-failed-badge')", '空任务不显示虚假健康状态');
   await setProgress({line:64,total_line:100});
   await capture('new-ui-translation-dark');
+  await captureSamples('p1-dark-1280');
   await js("document.querySelector('.task-input').click()"); await pause(180);
   await assert("document.querySelector('.content').dataset.page==='project' && document.querySelector('.content h1').textContent==='项目设置'", '输入目录快捷入口');
   await page('翻译任务'); await js("document.querySelector('.task-platform').click()"); await pause(180);
@@ -151,7 +162,7 @@ app.whenReady().then(async () => {
   await assert(`document.querySelector('.workspace-link').getAttribute('aria-label')==='后端已连接' && __uiFixture.reads.filter(path=>path==='/api/settings').length>${readsBeforeReconnect} && document.querySelector('.agent-composer textarea').value==='断线时保留的草稿'`, '后端重连后重新加载配置和会话');
   await input('.agent-composer textarea', '');
   await capture('new-ui-agent-dark');
-  await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await capture('new-ui-glossary-light');
+  await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await captureSamples('p1-light-1280'); await capture('new-ui-glossary-light');
   await page('Agent 助手'); await capture('new-ui-agent-light');
   await page('翻译任务'); await capture('new-ui-translation-light');
   const labels = ['翻译任务','平行校对台','项目设置','接口管理',"Ren'Py 工具箱",'术语表','禁翻表','称呼桥接','角色 / 世界观工作台','翻译提示','Agent 助手','基础设置','应用设置'];
@@ -170,7 +181,19 @@ app.whenReady().then(async () => {
       await assert("document.querySelector('.content h1').getBoundingClientRect().top<=64", '翻译标题起点');
     }
     if (width === 680) { await page('平行校对台'); await capture('new-ui-proofreading-680'); }
+    if (width === 900) await captureSamples('p1-light-900');
   }
+  for (const accent of ['indigo', 'teal']) {
+    await js(`localStorage.setItem('renpybox.accent',${JSON.stringify(accent)})`);
+    await win.webContents.reload();
+    await waitLayout();
+    await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200);
+    await page('翻译任务'); await capture(`p1-accent-${accent}-translation`);
+    await page('基础设置'); await capture(`p1-accent-${accent}-basic`);
+  }
+  await js("localStorage.removeItem('renpybox.accent')");
+  await win.webContents.reload();
+  await waitLayout();
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   await page('翻译任务');
   await assert("getComputedStyle(document.querySelector('.translation-layout')).animationName==='none'", '尊重减少动态效果设置');
