@@ -88,6 +88,24 @@ app.whenReady().then(async () => {
     }
     await page('翻译任务');
   };
+  const capturePhase2A = async prefix => {
+    await subpage('词表与规则', '术语表');
+    await js("document.querySelector('.rb-term-row')?.click()"); await pause(160);
+    await capture(`${prefix}-glossary`);
+    await subpage('词表与规则', '禁翻表');
+    await capture(`${prefix}-preserve`);
+    await subpage('词表与规则', '称呼桥接');
+    await capture(`${prefix}-honorific`);
+    await page('平行校对台');
+    await js("document.querySelector('.proofreading-target')?.click()"); await pause(160);
+    await capture(`${prefix}-proofreading`);
+    await js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='取消')?.click()"); await pause(80);
+    await subpage('翻译设置', '基础设置');
+    await capture(`${prefix}-basic`);
+    await subpage('翻译设置', '翻译提示');
+    await capture(`${prefix}-prompt`);
+    await page('翻译任务');
+  };
   const waitLayout = async () => { for (let i = 0; i < 50; i++) { if (await js("!!document.querySelector('.translation-layout')")) return; await pause(100); } };
   const setProgress = async progress => { await js(`__uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'TRANSLATION_UPDATE',data:${JSON.stringify(progress)}})})`); await pause(100); };
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('64.0%')", '翻译快照');
@@ -105,6 +123,7 @@ app.whenReady().then(async () => {
   await setProgress({line:64,total_line:100});
   await capture('new-ui-translation-dark');
   await captureSamples('p1-dark-1280');
+  await capturePhase2A('p2a-dark-1280');
   await js("document.querySelector('.task-input').click()"); await pause(180);
   await assert("document.querySelector('.content').dataset.page==='project' && document.querySelector('.content h1').textContent==='项目设置'", '输入目录快捷入口');
   await page('翻译任务'); await js("document.querySelector('.task-platform').click()"); await pause(180);
@@ -169,7 +188,7 @@ app.whenReady().then(async () => {
   await assert(`document.querySelector('.workspace-link').getAttribute('aria-label')==='后端已连接' && __uiFixture.reads.filter(path=>path==='/api/settings').length>${readsBeforeReconnect} && document.querySelector('.agent-composer textarea').value==='断线时保留的草稿'`, '后端重连后重新加载配置和会话');
   await input('.agent-composer textarea', '');
   await capture('new-ui-agent-dark');
-  await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await captureSamples('p1-light-1280'); await capture('new-ui-glossary-light');
+  await js("document.querySelector('[title=\"切换主题\"]').click()"); await pause(200); await captureSamples('p1-light-1280'); await capturePhase2A('p2a-light-1280'); await capture('new-ui-glossary-light');
   await page('Agent 助手'); await capture('new-ui-agent-light');
   await page('翻译任务'); await capture('new-ui-translation-light');
   const labels = [['翻译任务'],['平行校对台'],['项目设置'],['接口管理'],["Ren'Py 工具箱"],['词表与规则','术语表'],['词表与规则','禁翻表'],['词表与规则','称呼桥接'],['角色 / 世界观工作台'],['翻译设置','基础设置'],['翻译设置','专家设置'],['翻译设置','翻译提示'],['Agent 助手'],['应用设置']];
