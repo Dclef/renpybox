@@ -109,17 +109,19 @@ export interface ProjectInfo {
   app_language: string;
 }
 
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+
 export interface JobSnapshot {
   id: string;
   kind: string;
-  status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED';
+  status: JobStatus;
   total: number;
   done: number;
-  result: unknown;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
   progress: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  result?: unknown;
 }
 
 export interface TranslationState {
@@ -180,10 +182,15 @@ export interface WsEventMessage {
   data: Record<string, unknown>;
 }
 
+export interface WsJobMessage {
+  type: 'job';
+  job: JobSnapshot;
+}
+
 export interface WsHelloMessage {
   type: 'hello';
   app_version: string;
   events: string[];
 }
 
-export type WsMessage = WsHelloMessage | WsEventMessage | { type: string; [key: string]: unknown };
+export type WsMessage = WsHelloMessage | WsEventMessage | WsJobMessage | { type: string; [key: string]: unknown };
