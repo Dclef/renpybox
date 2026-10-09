@@ -141,6 +141,38 @@ ipcMain.handle('dialog:pick-folder', async (event, defaultPath) => {
   return result.filePaths[0];
 });
 
+function sanitizeDialogOptions(options) {
+  const source = options && typeof options === 'object' ? options : {};
+  const defaultPath = typeof source.defaultPath === 'string' && source.defaultPath ? source.defaultPath : undefined;
+  const filters = Array.isArray(source.filters)
+    ? source.filters
+        .filter((item) => item && typeof item.name === 'string' && Array.isArray(item.extensions))
+        .map((item) => ({
+          name: item.name,
+          extensions: item.extensions.filter((ext) => typeof ext === 'string' && /^[a-z0-9]{1,10}$/i.test(ext)),
+        }))
+        .filter((item) => item.extensions.length > 0)
+    : [];
+  return { defaultPath, filters: filters.length ? filters : undefined };
+}
+
+ipcMain.handle('dialog:pick-file', async (event, options) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openFile'],
+    ...sanitizeDialogOptions(options),
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('dialog:save-file', async (event, options) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showSaveDialog(win, sanitizeDialogOptions(options));
+  if (result.canceled || !result.filePath) return null;
+  return result.filePath;
+});
+
 ipcMain.handle('shell:open-path', async (_event, target) => {
   if (typeof target !== 'string' || !target) return false;
   return (await shell.openPath(target)) === '';
