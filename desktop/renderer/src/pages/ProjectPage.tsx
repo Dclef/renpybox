@@ -19,10 +19,12 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { Button } from '@mantine/core';
+
 import { resolveProject } from '../api';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
 import type { AppState } from '../useAppState';
-import { SettingCard } from '../ui';
+import { PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
 
 export function ProjectPage(props: { state: AppState }) {
   const { state } = props;
@@ -100,27 +102,23 @@ export function ProjectPage(props: { state: AppState }) {
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || '';
 
   return (
-    <div className="settings-layout">
-      <header className="settings-header">
-        <h1 className="settings-title">项目设置</h1>
-        <p className="settings-subtitle">先绑定带 game/ 的 Ren'Py 工程，再指定翻译读取和写出的目录</p>
-      </header>
-
-      <div className="settings-scroll">
-        <section className="project-identity" data-bound={projectRoot ? 'true' : 'false'}>
-          <div className="project-identity-copy">
-            <span className="project-identity-kicker">{projectRoot ? '已绑定工程' : '尚未绑定工程'}</span>
-            <h2>{projectLabel || '选择 Ren\'Py 项目文件夹'}</h2>
+    <div className="rb-page rb-page-narrow">
+      <div className="rb-page-scroll">
+        <PageHeader title="项目设置" description="先绑定带 game/ 的 Ren'Py 工程，再指定翻译读取和写出的目录" />
+        <section className="rb-panel rb-project-identity">
+          <div className="rb-identity-copy">
+            <div className="rb-identity-kicker">{projectRoot ? '已绑定工程' : '尚未绑定工程'}</div>
+            <div className="rb-identity-name">{projectLabel || '选择 Ren\'Py 项目文件夹'}</div>
             <p>
               {projectRoot
                 ? '工程根、game 与 tl 目录来自项目结构。输入目录可以另选，不含 game/ 时不会改写工程身份。'
                 : '请选择包含 game/ 的项目根目录。只选译文文件夹不会绑定工程。'}
             </p>
           </div>
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void pickProject()}>
+          <Button disabled={busy} onClick={() => void pickProject()}>
             {projectRoot ? '重新选择工程' : '选择工程'}
-          </button>
-          <dl className="project-identity-paths">
+          </Button>
+          <dl className="rb-identity-paths">
             <div>
               <dt>工程根</dt>
               <dd title={projectRoot || undefined}>{projectRoot || '未绑定'}</dd>
@@ -136,95 +134,50 @@ export function ProjectPage(props: { state: AppState }) {
           </dl>
         </section>
 
-        <div className="setting-card-list">
+        <SettingsGroup>
           <SettingCard title="原文语言" description="设置当前项目中输入文本的语言">
-            <select
-              aria-label="原文语言"
+            <SelectInput
+              label="原文语言"
               value={sourceLanguage}
               disabled={state.saving}
-              onChange={(event) => state.setSetting('source_language', event.target.value)}
-            >
-              {LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              options={LANGUAGE_OPTIONS}
+              onCommit={(next) => state.setSetting('source_language', next)}
+            />
           </SettingCard>
-
           <SettingCard title="译文语言" description="设置当前项目中输出文本的语言">
-            <select
-              aria-label="译文语言"
+            <SelectInput
+              label="译文语言"
               value={targetLanguage}
               disabled={state.saving}
-              onChange={(event) => state.setSetting('target_language', event.target.value)}
-            >
-              {LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </SettingCard>
-
-          <SettingCard
-            title="输入文件夹"
-            description={inputFolder || '未设置。翻译从这里读取待译文本'}
-          >
-            <button type="button" className="btn" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>
-              选择
-            </button>
-            <button type="button" className="btn" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>
-              打开
-            </button>
-          </SettingCard>
-
-          <SettingCard
-            title="输出文件夹"
-            description={outputFolder || '未设置。不能与输入文件夹相同'}
-          >
-            <button type="button" className="btn" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>
-              选择
-            </button>
-            <button type="button" className="btn" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>
-              打开
-            </button>
-          </SettingCard>
-
-          <SettingCard
-            title="任务完成时打开输出文件夹"
-            description="启用此功能后，将在任务完成时自动打开输出文件夹"
-          >
-            <button
-              type="button"
-              className="switch"
-              role="switch"
-              aria-checked={values?.output_folder_open_on_finish === true}
-              aria-label="任务完成时打开输出文件夹"
-              disabled={state.saving}
-              onClick={() =>
-                state.setSetting('output_folder_open_on_finish', values?.output_folder_open_on_finish !== true)
-              }
+              options={LANGUAGE_OPTIONS}
+              onCommit={(next) => state.setSetting('target_language', next)}
             />
           </SettingCard>
-
-          <SettingCard
-            title="使用繁体输出中文"
-            description="启用此功能后，在译文语言设置为中文时，将使用繁体字形输出中文文本"
-          >
-            <button
-              type="button"
-              className="switch"
-              role="switch"
-              aria-checked={values?.traditional_chinese_enable === true}
-              aria-label="使用繁体输出中文"
+          <SettingCard title="输入文件夹" description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || '未设置。翻译从这里读取待译文本'}</span>}>
+            <Button variant="default" size="xs" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>选择</Button>
+            <Button variant="default" size="xs" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>打开</Button>
+          </SettingCard>
+          <SettingCard title="输出文件夹" description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || '未设置。不能与输入文件夹相同'}</span>}>
+            <Button variant="default" size="xs" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>选择</Button>
+            <Button variant="default" size="xs" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>打开</Button>
+          </SettingCard>
+          <SettingCard title="任务完成时打开输出文件夹" description="启用此功能后，将在任务完成时自动打开输出文件夹">
+            <Switch
+              checked={values?.output_folder_open_on_finish === true}
               disabled={state.saving}
-              onClick={() =>
-                state.setSetting('traditional_chinese_enable', values?.traditional_chinese_enable !== true)
-              }
+              label="任务完成时打开输出文件夹"
+              onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
             />
           </SettingCard>
-        </div>
+          <SettingCard title="使用繁体输出中文" description="启用此功能后，在译文语言设置为中文时，将使用繁体字形输出中文文本">
+            <Switch
+              checked={values?.traditional_chinese_enable === true}
+              disabled={state.saving}
+              label="使用繁体输出中文"
+              onChange={(next) => state.setSetting('traditional_chinese_enable', next)}
+            />
+          </SettingCard>
+        </SettingsGroup>
       </div>
     </div>
   );
