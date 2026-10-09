@@ -583,77 +583,6 @@ body {
   color: var(--rb-accent);
 }
 
-/* ---------- 提示条 / 对话框 ---------- */
-
-.banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--rb-border);
-  border-left: 3px solid var(--rb-info);
-  border-radius: 8px;
-  background: var(--rb-surface);
-  font-size: 13px;
-}
-
-.banner[data-tone='error'] {
-  border-left-color: var(--rb-error);
-}
-
-.banner[data-tone='warning'] {
-  border-left-color: var(--rb-warning);
-}
-
-.banner[data-tone='success'] {
-  border-left-color: var(--rb-success);
-}
-
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 40%);
-  z-index: 100;
-}
-
-.dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: min(520px, calc(100vw - 48px));
-  max-height: calc(100vh - 96px);
-  padding: 20px;
-  border: 1px solid var(--rb-border-strong);
-  border-radius: 8px;
-  background: var(--rb-surface);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 24%);
-}
-
-.dialog-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  margin: 0;
-  font-size: 14px;
-  overflow-y: auto;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 /* ---------- 表格（Fluent QTableWidget 升级） ---------- */
 
 .table-container {
@@ -3160,12 +3089,7 @@ body {
 .workbench-field textarea { width: 100%; }
 .btn-danger-text { color: var(--rb-error); border-color: transparent; background: transparent; }
 .quiet-pill { padding: 7px 14px; min-height: 34px; }
-.dialog { width: min(680px, calc(100vw - 40px)); border-radius: 14px; padding: 24px; animation: rb-dialog-in 140ms ease-out; }
-.dialog-backdrop { animation: rb-fade-in 120ms ease-out; }
-.dialog-body { gap: 14px; }
 .prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
-@keyframes rb-dialog-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-@keyframes rb-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* 接口管理：顶栏状态 + 分组列表 + 内联编辑面板 */
 .platform-page .settings-header { margin-bottom: 4px; }
@@ -4079,7 +4003,6 @@ body {
   .proofreading-target-wrap { grid-column: 2; }
   .proofreading-source { color: var(--rb-text-secondary); }
   .proofreading-replacement-grid { grid-template-columns: minmax(0, 1fr); }
-  .dialog { padding: 20px; max-height: calc(100vh - 48px); }
   .glossary-row,
   .glossary-column-head { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .glossary-row > .btn { grid-column: 2; justify-self: end; }

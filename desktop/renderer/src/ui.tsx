@@ -7,7 +7,8 @@
  * CaptionLabel 组合。
  */
 
-import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { Alert, Button, Modal, NumberInput as MantineNumberInput, Select, Switch as MantineSwitch, TextInput as MantineTextInput } from '@mantine/core';
 
 import type { FieldSpec } from './settingsSchema';
 
@@ -80,11 +81,9 @@ function RichDescription(props: { text: string }) {
   );
 }
 
-/**
- * 一张设置卡 —— 对应 PyQt 侧的 `widget/SpinCard.py`、`SwitchButtonCard.py`、
- * `ComboBoxCard.py`、`PushButtonCard.py`、`LineEditCard.py`（它们都是同一个骨架，
- * 只换右侧控件）。实测几何见 renderer/src/styles.css 里 `.setting-card` 的注释。
- */
+const TONE_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
+
+/** 设置行。单独出现时自带面板；放进 SettingsGroup 后只保留分隔线。 */
 export function SettingCard(props: {
   title: ReactNode;
   description: ReactNode;
@@ -92,19 +91,63 @@ export function SettingCard(props: {
 }) {
   const { title, description, children } = props;
   return (
-    <section className="setting-card">
-      <div className="setting-card-text">
-        <span className="setting-card-title">{title}</span>
-        <span className="setting-card-description">
+    <section className="rb-setting-row">
+      <div className="rb-setting-text">
+        <div className="rb-setting-title">{title}</div>
+        <div className="rb-setting-desc">
           {typeof description === 'string' ? <RichDescription text={description} /> : description}
-        </span>
+        </div>
       </div>
-      {children ? <div className="setting-card-control">{children}</div> : null}
+      {children ? <div className="rb-setting-control">{children}</div> : null}
     </section>
   );
 }
 
-/** 纯 CSS 开关，与 SwitchButtonCard 一样靠 aria-checked 暴露状态。 */
+export function PageHeader(props: {
+  title: ReactNode;
+  description?: ReactNode;
+  titleExtra?: ReactNode;
+  actions?: ReactNode;
+}) {
+  const { title, description, titleExtra, actions } = props;
+  return (
+    <header className="rb-page-header">
+      <div>
+        <div className="rb-page-title-row">
+          <h1 className="rb-page-title">{title}</h1>
+          {titleExtra}
+        </div>
+        {description ? <p className="rb-page-desc">{description}</p> : null}
+      </div>
+      {actions ? <div className="rb-page-actions">{actions}</div> : null}
+    </header>
+  );
+}
+
+export function SettingsGroup(props: {
+  title?: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  children?: ReactNode;
+}) {
+  const { title, description, actions, children } = props;
+  const headed = title != null || description != null || actions != null;
+  return (
+    <section className="rb-settings-group">
+      {headed ? (
+        <header className="rb-settings-head">
+          <div>
+            {title ? <h2 className="rb-settings-title">{title}</h2> : null}
+            {description ? <p className="rb-settings-desc">{description}</p> : null}
+          </div>
+          {actions ? <div className="rb-settings-actions">{actions}</div> : null}
+        </header>
+      ) : null}
+      <div className="rb-settings-body">{children}</div>
+    </section>
+  );
+}
+
 export function Switch(props: {
   checked: boolean;
   disabled?: boolean;
@@ -113,19 +156,16 @@ export function Switch(props: {
 }) {
   const { checked, disabled, onChange, label } = props;
   return (
-    <button
-      type="button"
-      className="switch"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
+    <MantineSwitch
+      checked={checked}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      aria-label={label}
+      onChange={(event) => onChange(event.currentTarget.checked)}
     />
   );
 }
 
-/** 数字输入。空串允许临时存在（用户正在输入），失焦时回落到上界内的值。 */
+/** 数字输入。空串允许临时存在（用户正在输入），不提交。 */
 export function NumberInput(props: {
   value: number;
   min: number;
@@ -136,17 +176,15 @@ export function NumberInput(props: {
 }) {
   const { value, min, max, disabled, label, onCommit } = props;
   return (
-    <input
-      type="number"
+    <MantineNumberInput
+      w={120}
       aria-label={label}
       value={Number.isFinite(value) ? value : ''}
       min={min}
       max={max}
       disabled={disabled}
-      onChange={(event) => {
-        const next = Number(event.target.value);
-        // 空输入时保持原值：直接写 0 会把用户还没打完的数字变成 0
-        if (Number.isFinite(next) && event.target.value !== '') onCommit(next);
+      onChange={(next) => {
+        if (typeof next === 'number' && Number.isFinite(next)) onCommit(next);
       }}
     />
   );
@@ -162,14 +200,14 @@ export function TextInput(props: {
 }) {
   const { value, label, disabled, placeholder, allowEmpty, onCommit } = props;
   return (
-    <input
-      type="text"
+    <MantineTextInput
+      w={240}
       aria-label={label}
       value={value}
       disabled={disabled}
       placeholder={placeholder}
       onChange={(event) => {
-        const next = event.target.value;
+        const next = event.currentTarget.value;
         if (allowEmpty || next !== '') onCommit(next);
       }}
     />
@@ -185,18 +223,17 @@ export function SelectInput(props: {
 }) {
   const { value, options, label, disabled, onCommit } = props;
   return (
-    <select
+    <Select
+      w={200}
       aria-label={label}
       value={value}
+      data={options}
       disabled={disabled}
-      onChange={(event) => onCommit(event.target.value)}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      allowDeselect={false}
+      onChange={(next) => {
+        if (next != null) onCommit(next);
+      }}
+    />
   );
 }
 
@@ -278,14 +315,14 @@ export function Banner(props: {
 }) {
   const { tone = 'info', children, onDismiss } = props;
   return (
-    <div className="banner" data-tone={tone} role="status">
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
-      {onDismiss ? (
-        <button type="button" className="btn" onClick={onDismiss}>
-          知道了
-        </button>
-      ) : null}
-    </div>
+    <Alert className="banner" variant="light" color={TONE_COLOR[tone]}>
+      <div className="rb-banner">
+        <div className="rb-banner-text">{children}</div>
+        {onDismiss ? (
+          <Button variant="subtle" size="xs" onClick={onDismiss}>知道了</Button>
+        ) : null}
+      </div>
+    </Alert>
   );
 }
 
@@ -310,59 +347,30 @@ export function Dialog(props: {
     onCancel,
     onExtra,
   } = props;
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const cancelRef = useRef(onCancel);
-  cancelRef.current = onCancel;
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const dialog = dialogRef.current;
-    const controls = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') ?? []).filter(element => element.getClientRects().length > 0);
-    if (!dialog?.contains(document.activeElement)) controls()[0]?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current(); }
-      if (event.key !== 'Tab') return;
-      const fields = controls();
-      const first = fields[0]; const last = fields.at(-1);
-      if (!first) { event.preventDefault(); dialog?.focus(); return; }
-      if (event.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
-    };
-    dialog?.addEventListener('keydown', keydown);
-    return () => { dialog?.removeEventListener('keydown', keydown); if (previous?.isConnected) previous.focus(); };
-  }, []);
   return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onCancel();
+    <Modal
+      opened
+      onClose={onCancel}
+      size={560}
+      title={title}
+      withCloseButton={false}
+      classNames={{ content: 'dialog' }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') onCancel();
       }}
     >
-      <div ref={dialogRef} tabIndex={-1} className="dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <h2 className="dialog-title">{title}</h2>
-        {children ? <div className="dialog-body">{children}</div> : null}
-        <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onCancel}>
-            {cancelText}
-          </button>
-          {extraText ? (
-            <button type="button" className="btn" onClick={onExtra ?? onCancel}>
-              {extraText}
-            </button>
-          ) : null}
-          {onConfirm ? (
-            <button type="button" className="btn btn-primary" onClick={onConfirm} autoFocus>
-              {confirmText}
-            </button>
-          ) : null}
-        </div>
+      {children}
+      <div className="rb-dialog-actions">
+        <Button variant="default" onClick={onCancel}>{cancelText}</Button>
+        {extraText ? <Button variant="default" onClick={onExtra ?? onCancel}>{extraText}</Button> : null}
+        {onConfirm ? <Button data-autofocus onClick={onConfirm}>{confirmText}</Button> : null}
       </div>
-    </div>
+    </Modal>
   );
 }
 
 export function Empty(props: { children: ReactNode }) {
-  return <div className="empty">{props.children}</div>;
+  return <div className="rb-empty">{props.children}</div>;
 }
 
 export function Stat(props: { label: ReactNode; value: ReactNode; tone?: string }) {
