@@ -1,5 +1,5 @@
 /**
- * 导航：9 项分 3 段。子页名称仍由 findNavItem 提供，供分组标签使用。
+ * 导航：侧栏 4 段（与旧版一致）。校对台、术语表、禁翻表、称呼桥接只经工具箱进入。
  */
 
 import type { NavIconName } from './icons';
@@ -28,7 +28,7 @@ export interface NavItem {
   labelKey: TextKey;
   label: string;
   icon: NavIconName;
-  /** 分组页包含的子页。当前停在这些页面时，这一项视为选中。 */
+  /** 工具箱承载的工具页。停留在这些页面时，工具箱项保持选中。 */
   members?: PageKey[];
 }
 
@@ -58,19 +58,14 @@ export const APP_SETTINGS_NAV: NavItem = {
 
 const page = (key: PageKey): NavItem => PAGES.find((item) => item.key === key)!;
 
-/** 侧栏三段。段间留白，不显示分组标题。 */
+export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve', 'honorific'];
+
+/** 侧栏四段。段间留白，不显示分组标题。 */
 export const NAV_SECTIONS: NavItem[][] = [
-  [page('translation'), page('proofreading'), page('agent')],
-  [
-    page('project'),
-    page('platform'),
-    { ...page('basic-settings'), label: '翻译设置', members: ['basic-settings', 'expert-settings', 'custom-prompt'] },
-  ],
-  [
-    { ...page('glossary'), label: '词表与规则', members: ['glossary', 'preserve', 'honorific'] },
-    page('workbench'),
-    page('toolbox'),
-  ],
+  [page('translation'), page('agent')],
+  [page('project'), page('platform')],
+  [{ ...page('toolbox'), members: TOOLBOX_PAGES }, page('workbench')],
+  [page('basic-settings'), page('expert-settings'), page('custom-prompt')],
 ];
 
 export const ALL_NAV_ITEMS: NavItem[] = [...PAGES, APP_SETTINGS_NAV];
