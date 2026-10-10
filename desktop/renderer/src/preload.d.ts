@@ -39,7 +39,10 @@ interface RenpyBridge {
   };
   /** 打开日志或更新窗口；welcome 是旧日志入口的兼容别名。 */
   openShell: (kind: 'logs' | 'welcome' | 'update') => Promise<void>;
+  /** 关闭当前窗口；主窗口会先弹出退出确认 */
   close: () => void;
+  /** 未保存修改已在页面内确认放弃时关闭主窗口，不再弹退出确认 */
+  closeConfirmed: () => void;
   /** 无边框窗口的窗口控制（标题栏右侧三个按钮） */
   minimize: () => void;
   toggleMaximize: () => void;

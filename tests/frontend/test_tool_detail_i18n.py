@@ -1,4 +1,6 @@
 import os
+
+import pytest
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -18,6 +20,11 @@ from module.Extract.UnifiedExtractor import ExtractionResult
 
 
 APP = QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "CONFIG_PATH", str(tmp_path / "config.json"))
 
 
 def _widget_texts(page: QWidget) -> set[str]:
@@ -184,5 +191,79 @@ def test_structured_export_page_uses_english_copy(monkeypatch) -> None:
             "Standard + External + Aggressive Scan (Use Carefully)",
         ]
         assert page.status_label.text() == "Ready"
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_structured_export_confirms_existing_output(tmp_path, monkeypatch, approve):
+    from PyQt5.QtWidgets import QMessageBox
+    from module.Extract.HakimiSuiteRunner import HakimiResult
+
+    module = "frontend.RenpyToolbox.MaSuitePage"
+    (tmp_path / "game").mkdir()
+    output = tmp_path / "translate_output"
+    output.mkdir()
+    (output / "manual.txt").write_text("manual", encoding="utf-8")
+    questions, calls, shown = [], [], []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: self)
+    monkeypatch.setattr(Config, "save", lambda self, path=None: None)
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: questions.append(args[2]) or (QMessageBox.Yes if approve else QMessageBox.No))
+    monkeypatch.setattr(f"{module}.InfoBar.success", lambda *args, **kwargs: pytest.fail("partial result must not show success"))
+    monkeypatch.setattr(f"{module}.InfoBar.warning", lambda title, detail, **kwargs: shown.append((title, detail)))
+    result = HakimiResult(base_dir=output)
+    result.warnings = ["Emoji mapping failed"]
+    result.backup_path = "output_backup"
+    page = MaSuitePage("structure_confirm")
+    try:
+        page.path_edit.setText(str(tmp_path))
+        page.hakimi_runner.run = lambda *args, **kwargs: calls.append(kwargs) or result
+        page._run_suite()
+        assert str(output) in questions[0]
+        assert len(calls) == int(approve)
+        if approve:
+            assert calls[0]["confirm_overwrite"] is True
+            assert "Emoji mapping failed" in shown[0][1]
+            assert "output_backup" in shown[0][1]
+    finally:
+        page.close()
+
+
+def test_structured_export_invalid_project_never_runs(tmp_path, monkeypatch):
+    module = "frontend.RenpyToolbox.MaSuitePage"
+    errors = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: self)
+    monkeypatch.setattr(f"{module}.InfoBar.error", lambda *args, **kwargs: errors.append(args))
+    page = MaSuitePage("structure_invalid")
+    try:
+        page.path_edit.setText(str(tmp_path))
+        page.hakimi_runner.run = lambda *args, **kwargs: pytest.fail("invalid path must not authorize overwriting")
+        page._run_suite()
+        assert errors
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("counts,expected", [((0, 2, 0), "error"), ((1, 1, 1), "warning"), ((0, 0, 0), "warning"), ((1, 0, 0), "warning"), ((1, 0, 1), "success")])
+def test_emoji_result_uses_real_completion_status(tmp_path, monkeypatch, counts, expected):
+    from PyQt5.QtWidgets import QMessageBox
+
+    module = "frontend.RenpyToolbox.MaSuitePage"
+    (tmp_path / "game").mkdir()
+    shown = []
+    monkeypatch.setattr(Config, "load", lambda self, path=None: self)
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(f"{module}.load_default_mapping", lambda *args: {"a": "b"})
+    monkeypatch.setattr(f"{module}.backup_folder", lambda *args, **kwargs: tmp_path / "backup")
+    monkeypatch.setattr(f"{module}.apply_replacements_dir", lambda *args, **kwargs: counts)
+    for tone in ("success", "warning", "error"):
+        monkeypatch.setattr(f"{module}.InfoBar.{tone}", lambda title, detail, _tone=tone, **kwargs: shown.append((_tone, detail)))
+    page = MaSuitePage("emoji_result")
+    try:
+        page.path_edit.setText(str(tmp_path))
+        page.emoji_dir_edit.setText(str(tmp_path / "game"))
+        page._run_emoji_dir("prepare")
+        assert shown[0][0] == expected
+        assert str(tmp_path / "backup") in shown[0][1]
     finally:
         page.close()

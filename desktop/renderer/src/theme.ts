@@ -1,6 +1,5 @@
 /**
- * 设计令牌。中性色在这里，强调色由 mantineTheme.ts 传入。
- * CSS 变量只由 Mantine 的 cssVariablesResolver 输出，这里不写内联样式。
+ * 设计令牌。中性色在这里；强调色为 Ant 默认蓝，由 antdTheme 按算法推导后注入 ConfigProvider 与 --rb-*。
  */
 
 export type ThemeName = 'LIGHT' | 'DARK';
@@ -119,7 +118,7 @@ const ACCENT_VARS: Record<keyof AccentTokens, string> = {
   onAccent: '--rb-on-accent',
 };
 
-/** 中性色和强调色合成 --rb-* 变量表，供 cssVariablesResolver 使用。 */
+/** 中性色和强调色合成 --rb-* 变量表。 */
 export function toCssVariables(scheme: ThemeName, accent: AccentTokens): Record<string, string> {
   const palette = scheme === 'DARK' ? DARK : LIGHT;
   const vars: Record<string, string> = {};
@@ -132,21 +131,22 @@ export function toCssVariables(scheme: ThemeName, accent: AccentTokens): Record<
   return vars;
 }
 
-/** 只切换明暗标记。颜色由 Mantine 主题输出，内联变量会盖住它。 */
+/** 切换明暗标记；CSS 变量由 antdTheme.applyRbCssVariables 同步写入。 */
 export function applyTheme(theme: ThemeName, root: HTMLElement = document.documentElement): ThemePalette {
   root.dataset.theme = theme;
   root.style.colorScheme = theme === 'DARK' ? 'dark' : 'light';
   return theme === 'DARK' ? DARK : LIGHT;
 }
 
+/** 读取本地缓存的主题偏好；没有偏好时固定为 LIGHT，保证首帧不先黑后白。 */
 export function readStoredTheme(): ThemeName {
   try {
     const stored = localStorage.getItem('renpybox.theme');
     if (stored === 'LIGHT' || stored === 'DARK') return stored;
   } catch {
-    // 隐私模式 / 存储被禁：退回跟随系统
+    // 隐私模式 / 存储被禁：退回浅色兜底
   }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'DARK' : 'LIGHT';
+  return 'LIGHT';
 }
 
 export function persistTheme(theme: ThemeName): void {

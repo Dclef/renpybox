@@ -66,6 +66,9 @@ let logWindow = null;
 let backendHealth = null;
 let quitting = false;
 let cleanupDone = false;
+// 主窗口关闭确认：closeConfirmed 表示用户已同意退出，closePrompting 防止重复弹框。
+let closeConfirmed = false;
+let closePrompting = false;
 const updater = createDesktopUpdater({
   autoUpdater, packaged: !isDev, version: app.getVersion(), log,
   broadcast: state => {
@@ -135,7 +138,35 @@ async function createMainWindow() {
   } else {
     await mainWindow.loadFile(RENDERER_DIST);
   }
-  mainWindow.on('closed', () => { mainWindow = null; });
+  // 对齐 AppFluentWindow.closeEvent：标题栏关闭、Alt+F4、任务栏关闭都先确认。
+  // 程序化退出（更新安装、before-quit 清理）不再弹框，避免卡住退出流程。
+  mainWindow.on('close', (event) => {
+    if (closeConfirmed || quitting || cleanupDone) return;
+    event.preventDefault();
+    if (closePrompting) return;
+    closePrompting = true;
+    const win = mainWindow;
+    void dialog.showMessageBox(win, {
+      type: 'warning',
+      title: '警告',
+      message: '确定是否退出程序 … ？',
+      buttons: ['确认', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }).then(({ response }) => {
+      if (response !== 0 || win.isDestroyed()) return;
+      closeConfirmed = true;
+      win.close();
+    }).catch(error => log.error(error)).finally(() => { closePrompting = false; });
+  });
+  // 渲染端 beforeunload 拦下（有未保存修改）时撤销确认，交给页面内 Dialog 继续处理。
+  mainWindow.webContents.on('will-prevent-unload', () => { closeConfirmed = false; });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    // 已确认退出时直接走 app.quit，让 before-quit 停止 sidecar，不因更新窗口仍开着而残留进程。
+    if (closeConfirmed) app.quit();
+  });
 }
 
 /** 轻量壳窗口：vanilla 页面 + 独立 preload，按 DeepSeek 的做法不背 UI 框架 */
@@ -199,6 +230,14 @@ ipcMain.handle('shell:open', (_event, kind) => {
 
 ipcMain.on('shell:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+// 渲染端「有未保存的修改」Dialog 已确认放弃并退出，跳过退出确认，避免二次弹框。
+ipcMain.on('window:close-confirmed', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== mainWindow) return;
+  closeConfirmed = true;
+  win.close();
 });
 
 // 无边框窗口的控制按钮由渲染端画在 38px 标题栏右侧，这里只做转发。

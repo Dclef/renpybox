@@ -18,7 +18,7 @@
  * 夹在 max_output_tokens 和 request_timeout 两张卡之间，不是卡片。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import * as api from '../api';
 import {
@@ -33,7 +33,7 @@ import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
 import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
-import { Button, Progress, Tooltip } from '@mantine/core';
+import { Button, Progress, Tooltip } from 'antd';
 
 type Variant = 'basic' | 'expert' | 'app';
 
@@ -131,8 +131,8 @@ export function SettingsPage(props: {
     ));
 
   const balancedButton = variant === 'basic' ? (
-    <Tooltip label={BALANCED_THROUGHPUT.tooltip}>
-      <Button variant="default" onClick={applyBalanced}>{BALANCED_THROUGHPUT.label}</Button>
+    <Tooltip title={BALANCED_THROUGHPUT.tooltip}>
+      <Button type="default" onClick={applyBalanced}>{BALANCED_THROUGHPUT.label}</Button>
     </Tooltip>
   ) : null;
 
@@ -165,6 +165,156 @@ function displayVersion(tag: string): string {
 
 function formatMegabytes(size: number): string {
   return `${(Math.max(0, size) / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type MarkdownBlock =
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'list'; ordered: boolean; items: { depth: number; text: string }[] }
+  | { type: 'code'; text: string }
+  | { type: 'quote'; text: string }
+  | { type: 'rule' }
+  | { type: 'paragraph'; text: string };
+
+/** GitHub 发布说明可能是 HTML：只做文本替换降级为 Markdown，不解析、不插入任何 HTML。 */
+function htmlToMarkdown(source: string): string {
+  if (!/<\/?(?:h[1-6]|p|ul|ol|li|br|code|pre|a|strong|div)\b/i.test(source)) return source;
+  return source
+    .replace(/<h([1-6])[^>]*>/gi, (_, level: string) => `\n${'#'.repeat(Number(level))} `)
+    .replace(/<li[^>]*>/gi, '\n- ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:h[1-6]|p|div|ul|ol|li|pre)>/gi, '\n')
+    .replace(/<\/?code[^>]*>/gi, '`')
+    .replace(/<\/?(?:strong|b)>/gi, '**')
+    .replace(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
+}
+
+/** 按行切分 Markdown 块：标题、列表、围栏代码、引用、分隔线，其余合并为段落。 */
+function parseMarkdown(source: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  const lines = htmlToMarkdown(source).replace(/\r\n?/g, '\n').split('\n');
+  let paragraph: string[] = [];
+  const flush = () => {
+    if (paragraph.length) blocks.push({ type: 'paragraph', text: paragraph.join(' ') });
+    paragraph = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const last = blocks[blocks.length - 1];
+    const fence = /^\s*(```|~~~)/.exec(line);
+    if (fence) {
+      flush();
+      const code: string[] = [];
+      for (index += 1; index < lines.length && !lines[index].trim().startsWith(fence[1]); index += 1) code.push(lines[index]);
+      blocks.push({ type: 'code', text: code.join('\n') });
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    const heading = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      flush();
+      blocks.push({ type: 'heading', level: heading[1].length, text: heading[2] });
+      continue;
+    }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      flush();
+      blocks.push({ type: 'rule' });
+      continue;
+    }
+    const item = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      flush();
+      const ordered = /\d/.test(item[2]);
+      const entry = { depth: Math.min(3, Math.floor(item[1].replace(/\t/g, '  ').length / 2)), text: item[3] };
+      // 缩进子项并入当前列表，靠 data-depth 缩进显示
+      if (last?.type === 'list' && (last.ordered === ordered || entry.depth > 0)) last.items.push(entry);
+      else blocks.push({ type: 'list', ordered, items: [entry] });
+      continue;
+    }
+    const quote = /^\s*>\s?(.*)$/.exec(line);
+    if (quote) {
+      flush();
+      if (last?.type === 'quote') last.text += ` ${quote[1]}`;
+      else blocks.push({ type: 'quote', text: quote[1] });
+      continue;
+    }
+    // 列表项的缩进续行归入上一项，而不是另起段落
+    if (!paragraph.length && last?.type === 'list' && /^\s+\S/.test(line)) {
+      last.items[last.items.length - 1].text += ` ${line.trim()}`;
+      continue;
+    }
+    paragraph.push(line.trim());
+  }
+  flush();
+  return blocks;
+}
+
+const INLINE_PATTERN = /`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()]+)/g;
+
+/** 行内格式只认代码、粗体、链接；链接仅放行 http(s)，由主进程转交系统浏览器打开。 */
+function renderInline(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(INLINE_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) nodes.push(text.slice(cursor, start));
+    const key = nodes.length;
+    if (match[1] !== undefined) nodes.push(<code key={key}>{match[1]}</code>);
+    else if (match[2] !== undefined) nodes.push(<strong key={key}>{match[2]}</strong>);
+    else {
+      const label = match[3] ?? match[5];
+      const href = match[4] ?? match[5];
+      nodes.push(/^https?:\/\//i.test(href)
+        ? <a key={key} href={href} target="_blank" rel="noopener noreferrer">{label}</a>
+        : label);
+    }
+    cursor = start + match[0].length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
+/** 更新日志的 Markdown 只读视图：全部走 React 文本节点，不注入 HTML。 */
+function ChangelogView({ markdown }: { markdown: string }) {
+  const blocks = useMemo(() => parseMarkdown(markdown), [markdown]);
+  return (
+    <div className="update-changelog">
+      {blocks.map((block, index) => {
+        switch (block.type) {
+          case 'heading': {
+            // 弹窗标题已是最高层级，正文标题统一下沉到 h3~h6
+            const Tag = `h${Math.min(6, block.level + 2)}` as 'h3';
+            return <Tag key={index} data-level={block.level}>{renderInline(block.text)}</Tag>;
+          }
+          case 'list': {
+            const List = block.ordered ? 'ol' : 'ul';
+            return (
+              <List key={index}>
+                {block.items.map((item, itemIndex) => <li key={itemIndex} data-depth={item.depth}>{renderInline(item.text)}</li>)}
+              </List>
+            );
+          }
+          case 'code':
+            return <pre key={index}><code>{block.text}</code></pre>;
+          case 'quote':
+            return <blockquote key={index}>{renderInline(block.text)}</blockquote>;
+          case 'rule':
+            return <hr key={index} />;
+          default:
+            return <p key={index}>{renderInline(block.text)}</p>;
+        }
+      })}
+    </div>
+  );
 }
 
 const EMPTY_UPDATE: UpdateState = {
@@ -255,7 +405,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
       <SettingsGroup title="关于与更新" description="RenpyBox 桌面版 · GitHub 发布更新">
         <SettingCard title="当前版本" description={appInfo?.packaged === false ? '开发模式' : null}>
           <span className="rb-setting-value">{displayVersion(version)}</span>
-          <Button variant="default" size="xs" disabled={!enabled || pending.length > 0 || ['checking', 'downloading', 'downloaded'].includes(status || '')} onClick={() => void run('check')}>
+          <Button type="default" size="small" disabled={!enabled || pending.length > 0 || ['checking', 'downloading', 'downloaded'].includes(status || '')} onClick={() => void run('check')}>
             {status === 'checking' || pending.includes('check') ? '检查中…' : '检查更新'}
           </Button>
         </SettingCard>
@@ -267,23 +417,23 @@ function DesktopAboutCard({ state }: { state: AppState }) {
             <span>{statusText}</span>
             {status === 'downloading' ? (
               <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
-                <Progress value={progress} w={160} size="sm" />
+                <Progress percent={progress} style={{ width: 160 }} size="small" />
                 <span>{progress}%</span>
               </div>
             ) : null}
             <div className="rb-update-actions">
-              {status === 'available' ? <Button size="xs" disabled={!enabled || pending.length > 0} onClick={() => void run('download')}>下载更新</Button> : null}
+              {status === 'available' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => void run('download')}>下载更新</Button> : null}
               {status === 'downloading' ? (
-                <Button variant="default" size="xs" disabled={pending.includes('cancel')} onClick={() => void run('cancel')}>
+                <Button type="default" size="small" disabled={pending.includes('cancel')} onClick={() => void run('cancel')}>
                   {pending.includes('cancel') ? '正在取消…' : '取消下载'}
                 </Button>
               ) : null}
-              {status === 'downloaded' ? <Button size="xs" disabled={!enabled || pending.length > 0} onClick={() => setInstallConfirm(true)}>重启并安装</Button> : null}
+              {status === 'downloaded' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => setInstallConfirm(true)}>重启并安装</Button> : null}
             </div>
           </div>
         </SettingCard>
         <SettingCard title="更新日志" description={null}>
-          <Button variant="default" size="xs" disabled={loadingChangelog} onClick={() => {
+          <Button type="default" size="small" disabled={loadingChangelog} onClick={() => {
             if (update?.releaseNotes?.trim()) {
               setChangelog(update.releaseNotes);
               return;
@@ -296,7 +446,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
           }}>{loadingChangelog ? '读取中…' : '查看更新日志'}</Button>
         </SettingCard>
         <SettingCard title="运行日志" description="启动、后端与更新记录">
-          <Button variant="default" size="xs" onClick={() => {
+          <Button type="default" size="small" onClick={() => {
             void window.renpy?.openLogs().catch((error) => state.pushToast('error', String(error?.message || error)));
           }}>查看日志</Button>
         </SettingCard>
@@ -311,7 +461,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
       ) : null}
       {changelog !== null ? (
         <Dialog title="桌面更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
-          <pre className="update-changelog">{changelog}</pre>
+          <ChangelogView markdown={changelog} />
         </Dialog>
       ) : null}
     </>
@@ -393,7 +543,7 @@ function WebAboutCard(props: { state: AppState }) {
       <SettingsGroup title="关于与更新" description="查看当前版本、检查并安装更新">
         <SettingCard title="当前版本" description={null}>
           <span className="rb-setting-value">{version}</span>
-          <Button variant="default" size="xs" disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'} onClick={() => void run(() => api.checkUpdate(true), { checking: true })}>
+          <Button type="default" size="small" disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'} onClick={() => void run(() => api.checkUpdate(true), { checking: true })}>
             {checking ? '检查中…' : '检查更新'}
           </Button>
         </SettingCard>
@@ -405,32 +555,32 @@ function WebAboutCard(props: { state: AppState }) {
             <span>{statusText}</span>
             {status === 'UPDATING' ? (
               <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
-                <Progress value={progress} w={160} size="sm" />
+                <Progress percent={progress} style={{ width: 160 }} size="small" />
                 <span>{progress}%</span>
               </div>
             ) : null}
             <div className="rb-update-actions">
               {(status === 'NEW_VERSION' || update.new_version) && status !== 'UPDATING' && status !== 'DOWNLOADED' ? (
                 <>
-                  <Button variant="default" size="xs" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>查看详情</Button>
-                  <Button size="xs" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>下载更新</Button>
+                  <Button type="default" size="small" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>查看详情</Button>
+                  <Button size="small" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>下载更新</Button>
                 </>
               ) : null}
               {status === 'UPDATING' ? (
-                <Button variant="default" size="xs" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
+                <Button type="default" size="small" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
                   {cancelling ? '正在取消…' : '取消'}
                 </Button>
               ) : null}
               {(status === 'DOWNLOADED' || update.can_install) ? (
-                <Button size="xs" disabled={busy} onClick={() => setInstallConfirm(true)}>立即重启并安装</Button>
+                <Button size="small" disabled={busy} onClick={() => setInstallConfirm(true)}>立即重启并安装</Button>
               ) : null}
             </div>
           </div>
         </SettingCard>
         <SettingCard title="更新日志" description={null}>
           <Button
-            variant="default"
-            size="xs"
+            type="default"
+            size="small"
             disabled={busy}
             onClick={() => {
               void api.getChangelog()
@@ -459,7 +609,7 @@ function WebAboutCard(props: { state: AppState }) {
 
       {changelog !== null ? (
         <Dialog title="更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
-          <pre className="update-changelog">{changelog}</pre>
+          <ChangelogView markdown={changelog} />
         </Dialog>
       ) : null}
     </>

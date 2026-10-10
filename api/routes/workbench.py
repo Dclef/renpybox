@@ -353,6 +353,8 @@ def _glossary_snapshot(repository: ProjectAssetsRepository, config: Any, state) 
                 "info": data["note"], "regex": data["regex"], "enabled": data["enabled"],
                 "case_sensitive": bool(meta.get("case_sensitive", False)),
                 "type": str(meta.get("type", "")), "candidate": candidate,
+                # 候选确认由前端展示；API 只给原始 type + candidate 标志
+                "candidate_confirmed": False if candidate else bool(meta.get("candidate_confirmed", False)),
             })
     return {
         "storage_key": _key(repository), "revision": state.assets.revision,

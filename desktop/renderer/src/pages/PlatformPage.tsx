@@ -1,7 +1,18 @@
 /** 接口管理：复用现有配置与密钥存储，编辑时只提交实际修改的接口字段。 */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Accordion, ActionIcon, Autocomplete, Button, Checkbox, Menu, Modal, Paper, NumberInput, Select, Textarea, TextInput } from '@mantine/core';
+import {
+  AutoComplete,
+  Button,
+  Checkbox,
+  Collapse,
+  Dropdown,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+} from 'antd';
 import { Cloud, Cpu, Languages, MoreHorizontal, Pencil, Plus, Send, Settings } from 'lucide-react';
 
 import { useT } from '../i18n';
@@ -108,6 +119,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   const [testing, setTesting] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<PlatformEntry | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [collapseKeys, setCollapseKeys] = useState<string[]>([]);
   const editorRef = useRef<HTMLFormElement>(null);
   const testPending = useRef(false);
   const dirty = editor !== null && JSON.stringify(editor) !== JSON.stringify(original);
@@ -163,7 +175,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
     return () => window.clearInterval(timer);
   }, [testing]);
 
-  function openEditor(platform?: PlatformEntry) {
+  function openEditor(platform?: PlatformEntry, openSampling = false) {
     if (dirty && !window.confirm('有尚未保存的接口修改，是否放弃？')) return;
     modelRequest.current += 1;
     setModels([]);
@@ -171,6 +183,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
     const next = makeEditor(platform);
     setEditor(next);
     setOriginal(next);
+    setCollapseKeys(openSampling ? ['sampling'] : []);
     window.requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
   function closeEditor() {
@@ -179,6 +192,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       setLoadingModels(false);
       setEditor(null);
       setOriginal(null);
+      setCollapseKeys([]);
     }
   }
   async function mutate(path: string, method: string, body?: Record<string, unknown>): Promise<boolean> {
@@ -222,6 +236,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       setLoadingModels(false);
       setEditor(null);
       setOriginal(null);
+      setCollapseKeys([]);
       state.pushToast('success', id === null ? '接口已新增' : '接口已保存');
     }
   }
@@ -247,15 +262,14 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
         description="配置翻译用的模型服务；当前启用的接口会用于翻译任务"
         actions={(
           <div className="platform-toolbar">
-            <TextInput
-              w={220}
-              maw="100%"
+            <Input
+              style={{ width: 220, maxWidth: '100%' }}
               aria-label="搜索接口"
               placeholder="搜索名称或模型…"
               value={keyword}
-              onChange={(event) => setKeyword(event.currentTarget.value)}
+              onChange={(event) => setKeyword(event.target.value)}
             />
-            <Button leftSection={<Plus size={16} strokeWidth={1.75} />} disabled={disabled} onClick={() => openEditor()}>
+            <Button icon={<Plus size={16} strokeWidth={1.75} />} disabled={disabled} onClick={() => openEditor()}>
               新增接口
             </Button>
           </div>
@@ -302,30 +316,81 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                 {group.items.map((platform) => {
                   const isActive = platform.id === activeId;
                   return (
-                    <Paper withBorder radius="md" className="rb-platform-card" key={platform.id} data-active={isActive || undefined}
+                    <div
+                      className="rb-platform-card"
+                      key={platform.id}
+                      data-active={isActive || undefined}
                       title={[platform.name, platform.model, platform.api_url].filter(Boolean).join(' · ')}
-                      onDoubleClick={() => { if (!disabled) openEditor(platform); }}>
+                      onDoubleClick={() => { if (!disabled) openEditor(platform); }}
+                    >
                       <div className="rb-platform-card-head">
                         <strong>{platform.name || '未命名接口'}</strong>
                         <div className="platform-row-actions">
-                          <ActionIcon variant="subtle" color="gray" size={28} aria-label={t('platform_test')} title={t('platform_test')}
-                            loading={testing === platform.id} disabled={disabled} onClick={() => void startTest(platform)}><Send size={15} /></ActionIcon>
-                          <ActionIcon variant="subtle" color="gray" size={28} aria-label={t('platform_edit')} title={t('platform_edit')}
-                            disabled={disabled} onClick={() => openEditor(platform)}><Pencil size={15} /></ActionIcon>
-                          <Menu position="bottom-end" withinPortal>
-                            <Menu.Target><ActionIcon variant="subtle" color="gray" size={28} aria-label={(platform.name || '') + '更多'} disabled={disabled}><MoreHorizontal size={16} /></ActionIcon></Menu.Target>
-                            <Menu.Dropdown>
-                              <Menu.Item disabled={disabled || isActive} onClick={() => void mutate('/api/platforms/' + platform.id + '/activate', 'POST')}>{isActive ? '已启用' : '启用'}</Menu.Item>
-                              <Menu.Item disabled={disabled} onClick={() => openEditor(platform)}>{t('platform_edit')}</Menu.Item>
-                              <Menu.Item disabled={disabled} onClick={() => { openEditor(platform); window.setTimeout(() => editorRef.current?.querySelector<HTMLButtonElement>('.mantine-Accordion-control')?.click(), 50); }}>{t('platform_parameters')}</Menu.Item>
-                              <Menu.Divider />
-                              <Menu.Item color="red" disabled={disabled} onClick={() => setDeleting(platform)}>删除</Menu.Item>
-                            </Menu.Dropdown>
-                          </Menu>
+                          <Button
+                            type="text"
+                            size="small"
+                            aria-label={t('platform_test')}
+                            title={t('platform_test')}
+                            loading={testing === platform.id}
+                            disabled={disabled}
+                            icon={<Send size={15} />}
+                            onClick={() => void startTest(platform)}
+                          />
+                          <Button
+                            type="text"
+                            size="small"
+                            aria-label={t('platform_edit')}
+                            title={t('platform_edit')}
+                            disabled={disabled}
+                            icon={<Pencil size={15} />}
+                            onClick={() => openEditor(platform)}
+                          />
+                          <Dropdown
+                            trigger={['click']}
+                            placement="bottomRight"
+                            menu={{
+                              items: [
+                                {
+                                  key: 'activate',
+                                  label: isActive ? '已启用' : '启用',
+                                  disabled: disabled || isActive,
+                                  onClick: () => void mutate('/api/platforms/' + platform.id + '/activate', 'POST'),
+                                },
+                                {
+                                  key: 'edit',
+                                  label: t('platform_edit'),
+                                  disabled,
+                                  onClick: () => openEditor(platform),
+                                },
+                                {
+                                  key: 'parameters',
+                                  label: t('platform_parameters'),
+                                  disabled,
+                                  onClick: () => openEditor(platform, true),
+                                },
+                                { type: 'divider' },
+                                {
+                                  key: 'delete',
+                                  label: '删除',
+                                  danger: true,
+                                  disabled,
+                                  onClick: () => setDeleting(platform),
+                                },
+                              ],
+                            }}
+                          >
+                            <Button
+                              type="text"
+                              size="small"
+                              aria-label={(platform.name || '') + '更多'}
+                              disabled={disabled}
+                              icon={<MoreHorizontal size={16} />}
+                            />
+                          </Dropdown>
                         </div>
                       </div>
                       <div className="rb-platform-card-meta"><span className="rb-platform-badge">{platform.api_format || '—'}</span><span>{modelLabel(platform)}</span>{isActive && <i aria-label="使用中" title="使用中" />}</div>
-                    </Paper>
+                    </div>
                   );
                 })}
               </SettingsGroup>
@@ -342,7 +407,16 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
         </div>
 
         {editor ? (
-          <Modal opened onClose={closeEditor} title={editor.id === null ? '新增接口' : '编辑接口'} size="lg" centered closeOnClickOutside={false}>
+          <Modal
+            open
+            onCancel={closeEditor}
+            title={editor.id === null ? '新增接口' : '编辑接口'}
+            width={720}
+            centered
+            mask={{ closable: false }}
+            footer={null}
+            destroyOnHidden
+          >
           <form
             ref={editorRef}
             className="platform-editor"
@@ -356,131 +430,155 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                 <h2>{editor.id === null ? '新增接口' : '编辑接口'}</h2>
                 <span>{dirty ? '有未保存的修改' : '保存后即可用于翻译'}</span>
               </div>
-              <Button type="button" variant="default" disabled={busy} onClick={closeEditor}>关闭</Button>
+              <Button type="default" htmlType="button" disabled={busy} onClick={closeEditor}>关闭</Button>
             </div>
 
-            <TextInput
-              label="接口名称"
-              required
-              maxLength={128}
-              autoFocus
-              value={editor.name}
-              onChange={(event) => setEditor({ ...editor, name: event.currentTarget.value })}
-              placeholder="例如：DeepSeek / Claude"
-            />
-            <Select
-              label="分组"
-              allowDeselect={false}
-              value={editor.group}
-              data={GROUPS.map((group) => ({ value: group.key, label: group.title }))}
-              onChange={(value) => { if (value) setEditor({ ...editor, group: value }); }}
-            />
-            <Select
-              label="接口协议"
-              allowDeselect={false}
-              value={editor.api_format}
-              data={FORMATS}
-              onChange={(value) => {
-                if (!value) return;
-                setEditor({
-                  ...editor,
-                  api_format: value,
-                  ...(['GoogleFree', 'Bing'].includes(value) ? { group: 'machine' } : {}),
-                });
-              }}
-            />
+            <Form.Item label="接口名称" required style={{ marginBottom: 0 }}>
+              <Input
+                required
+                maxLength={128}
+                autoFocus
+                value={editor.name}
+                onChange={(event) => setEditor({ ...editor, name: event.target.value })}
+                placeholder="例如：DeepSeek / Claude"
+              />
+            </Form.Item>
+            <Form.Item label="分组" style={{ marginBottom: 0 }}>
+              <Select
+                allowClear={false}
+                value={editor.group}
+                options={GROUPS.map((group) => ({ value: group.key, label: group.title }))}
+                onChange={(value) => setEditor({ ...editor, group: value })}
+              />
+            </Form.Item>
+            <Form.Item label="接口协议" style={{ marginBottom: 0 }}>
+              <Select
+                allowClear={false}
+                value={editor.api_format}
+                options={FORMATS.map((value) => ({ value, label: value }))}
+                onChange={(value) => {
+                  setEditor({
+                    ...editor,
+                    api_format: value,
+                    ...(['GoogleFree', 'Bing'].includes(value) ? { group: 'machine' } : {}),
+                  });
+                }}
+              />
+            </Form.Item>
             {!machine ? (
               <>
-                <Autocomplete label="模型名称" required maxLength={256} data={models}
-                  value={editor.model} onChange={(model) => setEditor({ ...editor, model })}
-                  placeholder="服务商提供的模型 ID" limit={50} />
-                <Button type="button" variant="default" loading={loadingModels}
+                <Form.Item label="模型名称" required htmlFor="rb-platform-model" style={{ marginBottom: 0 }}>
+                  {/* 显式 Input 子节点：placeholder/id/aria 落在真实 input 上，label 能关联到它 */}
+                  <AutoComplete
+                    options={models.map((model) => ({ value: model }))}
+                    value={editor.model}
+                    onChange={(model) => setEditor({ ...editor, model })}
+                  >
+                    <Input id="rb-platform-model" aria-label="模型名称" aria-required placeholder="服务商提供的模型 ID" maxLength={256} />
+                  </AutoComplete>
+                </Form.Item>
+                <Button
+                  type="default"
+                  htmlType="button"
+                  loading={loadingModels}
                   disabled={disabled || editor.id === null || editor.api_url !== original?.api_url || editor.api_format !== original?.api_format || !!editor.keys.trim() || editor.clearKeys}
-                  onClick={() => void loadModels()}>{t('platform_load_models')}</Button>
+                  onClick={() => void loadModels()}
+                >
+                  {t('platform_load_models')}
+                </Button>
                 <span className="rb-metric-note">{t('platform_models_saved_hint')}</span>
               </>
             ) : null}
             {!machine ? (
-              <TextInput
-                label="接口地址"
-                required
-                type="url"
-                maxLength={2048}
-                value={editor.api_url}
-                onChange={(event) => setEditor({ ...editor, api_url: event.currentTarget.value })}
-                placeholder="https://api.example.com/v1"
-              />
+              <Form.Item label="接口地址" required style={{ marginBottom: 0 }}>
+                <Input
+                  required
+                  type="url"
+                  maxLength={2048}
+                  value={editor.api_url}
+                  onChange={(event) => setEditor({ ...editor, api_url: event.target.value })}
+                  placeholder="https://api.example.com/v1"
+                />
+              </Form.Item>
             ) : null}
             {!machine ? (
               <>
-                <Textarea
-                  label="API 密钥"
-                  autosize
-                  minRows={2}
-                  value={editor.keys}
-                  disabled={editor.clearKeys}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setEditor({ ...editor, keys: event.currentTarget.value })}
-                  placeholder={editor.id === null ? '每行一把密钥；无需密钥可留空' : '留空保留原密钥；输入新密钥将替换原值'}
-                />
+                <Form.Item label="API 密钥" style={{ marginBottom: 0 }}>
+                  <Input.TextArea
+                    autoSize={{ minRows: 2 }}
+                    value={editor.keys}
+                    disabled={editor.clearKeys}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setEditor({ ...editor, keys: event.target.value })}
+                    placeholder={editor.id === null ? '每行一把密钥；无需密钥可留空' : '留空保留原密钥；输入新密钥将替换原值'}
+                  />
+                </Form.Item>
                 <p className="rb-platform-help">已有密钥不回显。支持多把密钥，每行一把。</p>
               </>
             ) : null}
             {!machine && editor.id !== null ? (
               <Checkbox
                 checked={editor.clearKeys}
-                label="清空此接口已保存的密钥"
-                onChange={(event) => setEditor({ ...editor, clearKeys: event.currentTarget.checked })}
-              />
+                onChange={(event) => setEditor({ ...editor, clearKeys: event.target.checked })}
+              >
+                清空此接口已保存的密钥
+              </Checkbox>
             ) : null}
             {!machine && editor.api_format !== 'SakuraLLM' ? (
-              <Select
-                label="思考等级"
-                allowDeselect={false}
-                value={editor.thinking_level}
-                data={thinkingOptions.map(([value, label]) => ({ value, label }))}
-                onChange={(value) => { if (value) setEditor({ ...editor, thinking_level: value }); }}
-              />
+              <Form.Item label="思考等级" style={{ marginBottom: 0 }}>
+                <Select
+                  allowClear={false}
+                  value={editor.thinking_level}
+                  options={thinkingOptions.map(([value, label]) => ({ value, label }))}
+                  onChange={(value) => setEditor({ ...editor, thinking_level: value })}
+                />
+              </Form.Item>
             ) : null}
 
             {!machine ? (
-              <Accordion variant="contained">
-                <Accordion.Item value="sampling">
-                  <Accordion.Control>高级采样参数</Accordion.Control>
-                  <Accordion.Panel>
-                    <div className="rb-platform-params">
-                      {PARAMETERS.map((parameter) => {
-                        const enableKey = `${parameter.key}_custom_enable` as keyof Editor;
-                        return (
-                          <div className="rb-platform-param" key={parameter.key}>
-                            <Checkbox
-                              checked={Boolean(editor[enableKey])}
-                              label={parameter.label}
-                              onChange={(event) => setEditor({ ...editor, [enableKey]: event.currentTarget.checked })}
-                            />
-                            <NumberInput
-                              step={0.01}
-                              decimalScale={2}
-                              min={parameter.min}
-                              max={parameter.max}
-                              disabled={!editor[enableKey]}
-                              value={editor[parameter.key]}
-                              onChange={(value) => setEditor({ ...editor, [parameter.key]: typeof value === 'number' ? value : 0 })}
-                              aria-label={parameter.label}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </Accordion.Panel>
-                </Accordion.Item>
-              </Accordion>
+              <Collapse
+                activeKey={collapseKeys}
+                onChange={(keys) => setCollapseKeys(Array.isArray(keys) ? keys.map(String) : [String(keys)])}
+                items={[
+                  {
+                    key: 'sampling',
+                    label: '高级采样参数',
+                    children: (
+                      <div className="rb-platform-params">
+                        {PARAMETERS.map((parameter) => {
+                          const enableKey = `${parameter.key}_custom_enable` as keyof Editor;
+                          return (
+                            <div className="rb-platform-param" key={parameter.key}>
+                              <Checkbox
+                                checked={Boolean(editor[enableKey])}
+                                onChange={(event) => setEditor({ ...editor, [enableKey]: event.target.checked })}
+                              >
+                                {parameter.label}
+                              </Checkbox>
+                              <InputNumber
+                                step={0.01}
+                                precision={2}
+                                min={parameter.min}
+                                max={parameter.max}
+                                disabled={!editor[enableKey]}
+                                value={editor[parameter.key] as number}
+                                onChange={(value) => setEditor({ ...editor, [parameter.key]: typeof value === 'number' ? value : 0 })}
+                                aria-label={parameter.label}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
             ) : null}
 
             <div className="rb-platform-editor-footer">
-              <Button type="button" variant="default" disabled={busy} onClick={closeEditor}>取消</Button>
-              <Button type="submit" disabled={disabled || !editor.name.trim() || (editor.id !== null && !dirty)}>
+              <Button type="default" htmlType="button" disabled={busy} onClick={closeEditor}>取消</Button>
+              <Button htmlType="submit" disabled={disabled || !editor.name.trim() || (editor.id !== null && !dirty)}>
                 {busy ? '保存中…' : '保存接口'}
               </Button>
             </div>
