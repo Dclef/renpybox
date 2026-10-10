@@ -10,6 +10,8 @@ _PACK_UNPACK_ERROR_EN = {
     "EXTRACTOR_FAILED": "The game's Ren'Py unpacker exited with an error.",
     "UNAVAILABLE": "No unpackable RPA files were found, or every unpacking method failed.",
     "UNREN_SKIPPED": "Direct and external unpacking both failed, and the UnRen fallback is disabled because the archives could not be validated safely.",
+    "NO_RPA": "The selected game folder contains no .rpa files; nothing to unpack.",
+    "SCRIPT_ONLY_UNSUPPORTED": "Scripts-only unpacking failed with both direct and external tools. The UnRen fallback extracts every resource, so it was skipped. Uncheck \"scripts only\" and try again.",
 }
 
 

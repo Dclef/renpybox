@@ -118,6 +118,38 @@ def _normalize_honorific_titles(value: Any) -> list[str | dict[str, str]]:
     return TextProcessor.serialize_honorific_titles(entries)
 
 
+def sync_output_protocol(config: Any, changed: frozenset[str] | set[str] = frozenset()) -> None:
+    """让「翻译输出协议」与「单行翻译模式」保持同一状态。
+
+    语义对齐 frontend/Setting/TranslationSettingsBinding.py（sidecar 打包排除了
+    frontend 包，不能直接导入）：SINGLE_TEXT 只能走单行请求，批量请求遇到它会
+    直接抛错。本次修改了哪一项就以哪一项为准，两项都没改时按旧配置规范化。
+    """
+    from module.Config import Config
+
+    protocol = str(getattr(config, "translation_output_protocol", "") or "").strip().upper()
+    if protocol not in Config.OUTPUT_PROTOCOLS:
+        if "translation_output_protocol" in changed:
+            raise HTTPException(status_code = 400, detail = f"未知翻译输出协议：{protocol}")
+        protocol = Config.OUTPUT_PROTOCOL_STRUCTURED
+
+    if "translation_output_protocol" in changed:
+        single_line = protocol == Config.OUTPUT_PROTOCOL_SINGLE_TEXT
+    elif "single_line_translation_enable" in changed:
+        single_line = getattr(config, "single_line_translation_enable", False) is True
+        if single_line:
+            protocol = Config.OUTPUT_PROTOCOL_SINGLE_TEXT
+        elif protocol == Config.OUTPUT_PROTOCOL_SINGLE_TEXT:
+            protocol = Config.OUTPUT_PROTOCOL_STRUCTURED
+    else:
+        if getattr(config, "single_line_translation_enable", False) is True:
+            protocol = Config.OUTPUT_PROTOCOL_SINGLE_TEXT
+        single_line = protocol == Config.OUTPUT_PROTOCOL_SINGLE_TEXT
+
+    config.translation_output_protocol = protocol
+    config.single_line_translation_enable = single_line
+
+
 @router.get("", response_model = SettingsResponse)
 def read_settings(request: Request) -> SettingsResponse:
     config = request.app.state.config
@@ -179,6 +211,10 @@ def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
                 raise HTTPException(status_code = 400, detail = f"{key} 期望列表")
 
         setattr(config, key, value)
+
+    protocol_keys = {"translation_output_protocol", "single_line_translation_enable"} & patch.values.keys()
+    if protocol_keys:
+        sync_output_protocol(config, protocol_keys)
 
     # 相对路径要重新固定成绝对路径，否则 sidecar 的 cwd一变就失效
     config._normalise_runtime_paths()

@@ -4,6 +4,7 @@ import { Button, Checkbox, Form, Input, Progress, Radio, Select } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT } from '../i18n';
+import { isIncrementalOutput } from '../onekeyView.mjs';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, SettingsGroup } from '../ui';
@@ -80,7 +81,8 @@ export function OneKeyTranslatePage(props: {
   const defaultLanguage = tlFolder.split(/[\\/]/).filter(Boolean).at(-1) || 'chinese';
   const [gameDir, setGameDir] = useState(projectRoot);
   const [language, setLanguage] = useState(defaultLanguage);
-  const [incremental, setIncremental] = useState(mode === 'full' || /_new[\\/]?$/.test(String(values.output_folder ?? '')));
+  // 没有本次准备结果时按当前输出目录判断；完整流程准备完成后以任务结果为准
+  const [incremental, setIncremental] = useState(() => isIncrementalOutput(values.output_folder));
   // 旧 Qt：检测到已有译文时默认增量；用户明确选择全量/增量后以用户选择为准
   const [extractMode, setExtractMode] = useState<ExtractMode>('auto');
   // 旧 Qt 一键流程总会尝试官方抽取（自动找 game.exe）；EXE 留空即交给后端自动识别
@@ -133,6 +135,8 @@ export function OneKeyTranslatePage(props: {
 
   useEffect(() => {
     sequence.current += 1;
+    // 设置晚于首帧加载或输出目录变化时重新推断，避免沿用空配置下的判断
+    setIncremental(isIncrementalOutput(values.output_folder));
     setOfficialExtract(true);
     setExePath('');
     setExtractMode('auto');

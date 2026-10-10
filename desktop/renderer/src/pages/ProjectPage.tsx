@@ -102,10 +102,11 @@ export function ProjectPage(props: { state: AppState }) {
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || '';
 
   return (
-    <div className="rb-page rb-page-narrow">
+    <div className="rb-page rb-page-narrow rb-project-page">
       <div className="rb-page-scroll">
         <PageHeader title="项目设置" description="先绑定带 game/ 的 Ren'Py 工程，再指定翻译读取和写出的目录" />
-        <section className="rb-panel rb-project-identity">
+        {/* 已绑定的工程即“当前项目卡”，与接口管理的当前接口同样高亮 */}
+        <section className="rb-panel rb-project-identity" data-active={Boolean(projectRoot)}>
           <div className="rb-identity-copy">
             <div className="rb-identity-kicker">{projectRoot ? '已绑定工程' : '尚未绑定工程'}</div>
             <div className="rb-identity-name">{projectLabel || '选择 Ren\'Py 项目文件夹'}</div>

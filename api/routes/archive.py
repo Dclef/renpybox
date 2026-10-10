@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from api.jobs import Job
 from module.Cache.CacheManager import CacheManager
 from module.Engine.Engine import Engine
+from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Tool.ArchiveOps import (
     PackerUnpackError,
@@ -107,10 +108,12 @@ async def _run_archive_job(
     compute,
     path_label: str,
     output_file: str | None = None,
+    cancellable: bool = False,
 ) -> dict:
     engine = _acquire_engine()
     manager = request.app.state.jobs
     try:
+        # 不可取消的任务也走协作模式，避免通用取消接口直接打断仍在写盘的线程。
         job = manager.create(kind, cooperative_cancel=True)
     except Exception:
         engine.release_status(Engine.Status.TESTING)
@@ -120,13 +123,17 @@ async def _run_archive_job(
         "message": message,
         "worker_active": True,
         "path": path_label,
+        "cancellable": cancellable,
     }
     if output_file is not None:
         job.result["output_file"] = output_file
     loop = asyncio.get_running_loop()
 
+    def cancel_requested() -> bool:
+        return cancellable and job.cancel_event.is_set()
+
     def check_cancel() -> None:
-        if job.cancel_event.is_set():
+        if cancel_requested():
             raise asyncio.CancelledError()
 
     def publish(message_text: str, *, done: int | None = None, total: int | None = None) -> None:
@@ -137,7 +144,7 @@ async def _run_archive_job(
 
     def progress(message_text: str, done: int | None = None, total: int | None = None) -> None:
         # 子进程日志可能来自读取线程，不能用异常中断它并堵塞管道。
-        if job.cancel_event.is_set():
+        if cancel_requested():
             return
         loop.call_soon_threadsafe(lambda: publish(message_text, done=done, total=total))
 
@@ -152,11 +159,13 @@ async def _run_archive_job(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await asyncio.shield(future)
                 raise
-            check_cancel()
             if not result.get("success"):
+                check_cancel()
                 job.result.update(result)
                 job.result["message"] = result.get("message") or "任务失败"
                 raise RuntimeError(job.result["message"])
+            # 结果已写盘发布，迟到的取消请求不能再把 done 改成 cancelled。
+            job.cancel_event.clear()
             job.result.update(result)
             job.result["message"] = result.get("message") or "完成"
             manager.progress(job.id, done=1, total=1)
@@ -166,7 +175,7 @@ async def _run_archive_job(
                 job.result["message"] = "任务已取消"
             raise
         except Exception as exc:
-            if job.cancel_event.is_set():
+            if cancel_requested():
                 if isinstance(job.result, dict):
                     job.result["message"] = "任务已取消"
                 raise asyncio.CancelledError() from exc
@@ -222,7 +231,7 @@ async def start_unpack(request: Request, body: UnpackBody) -> dict:
             return {
                 "success": False,
                 "level": "error",
-                "message": str(exc),
+                "message": Localizer.get().pack_unpack_error(exc.code),
                 "code": exc.code,
                 "archives_removed": False,
             }
@@ -231,7 +240,7 @@ async def start_unpack(request: Request, body: UnpackBody) -> dict:
         request,
         kind="archive_unpack",
         project_key=project_key,
-        message="准备解包",
+        message=Localizer.get().pack_unpack_preparing,
         compute=compute,
         path_label=snapshot_dir,
     )
@@ -265,7 +274,7 @@ async def start_decompile(request: Request, body: DecompileBody) -> dict:
         request,
         kind="archive_decompile",
         project_key=project_key,
-        message="准备反编译",
+        message=Localizer.get().pack_unpack_preparing,
         compute=compute,
         path_label=snapshot_target,
     )
@@ -283,7 +292,7 @@ async def start_pack(request: Request, body: PackBody) -> dict:
         source = Path(body.source_dir).expanduser().resolve()
         output = resolve_pack_output(source, body.output_file)
         max_part = None if body.max_part_size is None else parse_rpa_size_limit(body.max_part_size)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, FileExistsError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot_source = str(source)
     snapshot_output = str(output)
@@ -296,24 +305,35 @@ async def start_pack(request: Request, body: PackBody) -> dict:
                 return True
             return False
 
-        return pack_directory(
-            snapshot_source,
-            snapshot_output,
-            max_part_size_bytes=max_part,
-            progress_callback=lambda current, total, filename: progress(
-                f"打包 {current}/{total}: {filename}", done=current, total=total or 1,
-            ),
-            stop_check=stop_check,
-        )
+        try:
+            return pack_directory(
+                snapshot_source,
+                snapshot_output,
+                max_part_size_bytes=max_part,
+                progress_callback=lambda current, total, filename: progress(
+                    Localizer.get().pack_unpack_packing.format(current=current, total=total, filename=filename),
+                    done=current,
+                    total=total or 1,
+                ),
+                stop_check=stop_check,
+            )
+        except Exception as exc:
+            if stop_check():
+                raise
+            # 与 Qt5 PackWorker 一致：失败统一加“打包失败”前缀。
+            raise RuntimeError(Localizer.get().pack_unpack_packaging_failed.format(
+                message=Localizer.localize(str(exc), "Packaging failed. Check the logs for details."),
+            )) from exc
 
     return await _run_archive_job(
         request,
         kind="archive_pack",
         project_key=project_key,
-        message="准备打包",
+        message=Localizer.get().pack_unpack_scanning_files,
         compute=compute,
         path_label=snapshot_source,
         output_file=snapshot_output,
+        cancellable=True,
     )
 
 
@@ -338,14 +358,14 @@ async def start_cleanup_temp(request: Request, body: ArchivePathBody) -> dict:
             return False
 
         check_cancel()
-        progress("正在清理临时文件…")
+        progress(Localizer.get().pack_unpack_cleaning_temporary_files)
         return cleanup_unpack_artifacts(snapshot_dir, stop_check=stop_check)
 
     return await _run_archive_job(
         request,
         kind="archive_cleanup_temp",
         project_key=project_key,
-        message="准备清理临时文件",
+        message=Localizer.get().pack_unpack_preparing_cleanup,
         compute=compute,
         path_label=snapshot_dir,
     )
@@ -365,14 +385,14 @@ async def start_cleanup_rpyc(request: Request, body: ArchivePathBody) -> dict:
 
     def compute(check_cancel, progress):
         check_cancel()
-        progress("正在清理 RPYC 文件…")
+        progress(Localizer.get().pack_unpack_cleaning_rpyc_files)
         return cleanup_decompiled_rpyc(snapshot_dir)
 
     return await _run_archive_job(
         request,
         kind="archive_cleanup_rpyc",
         project_key=project_key,
-        message="准备清理 RPYC",
+        message=Localizer.get().pack_unpack_preparing_cleanup,
         compute=compute,
         path_label=snapshot_dir,
     )

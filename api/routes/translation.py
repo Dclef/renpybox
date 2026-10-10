@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from api.routes.settings import sync_output_protocol
 from api.schemas import (
     TokenEstimateRequest,
     TokenEstimateResult,
@@ -94,6 +95,8 @@ def _prepare_payload(
     try:
         config = Config().load()
         config = _bind_resumable_output(config, status)
+        # 旧桌面端可能已保存「SINGLE_TEXT + 单行关闭」，快照里规范化，避免整轮请求失败。
+        sync_output_protocol(config)
 
         payload: dict[str, Any] = {
             "status": status,
@@ -193,13 +196,27 @@ def export_translation(request: Request) -> dict:
 
     非运行态走缓存重注入，TRANSLATING 且已初始化走在线导出；
     未初始化时由 Translator 发 APP_TOAST_SHOW 提示「预处理中」。
+    其他状态 Translator 会静默忽略事件，这里与 frontend/TranslationPage.py
+    ``update_button_status`` 一致直接拒绝，避免前端误以为已写入。
     """
     config = request.app.state.config
     if not str(getattr(config, "output_folder", "") or "").strip():
         raise HTTPException(status_code = 409, detail = "尚未设置翻译输出目录")
 
-    _emit(Base.Event.TRANSLATION_MANUAL_EXPORT, {"output_folder": str(config.output_folder)})
-    return {"ok": True, "output_folder": str(config.output_folder)}
+    engine = Engine.get()
+    status = engine.get_status()
+    if engine.has_stop_barrier() or status not in (Engine.Status.IDLE, Engine.Status.TRANSLATING):
+        raise HTTPException(status_code = 409, detail = "当前状态不能写入译文文件，请等待任务结束或停止收尾完成")
+
+    output_folder = str(config.output_folder)
+    if status == Engine.Status.IDLE:
+        # 与 /state 读取进度同口径：优先当前项目最近运行清单里含缓存的目录。
+        resolved = resolve_translation_output(config)
+        if resolved is not None:
+            output_folder = str(resolved)
+
+    _emit(Base.Event.TRANSLATION_MANUAL_EXPORT, {"output_folder": output_folder})
+    return {"ok": True, "output_folder": output_folder}
 
 
 @router.get("/state", response_model = TranslationStateResponse)
