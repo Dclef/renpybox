@@ -3,31 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
-    />
-    <title>RenpyBox</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'" />
+    <title>运行日志 · RenpyBox</title>
     <link rel="stylesheet" href="./welcome.css" />
     <script src="./welcome.js" defer></script>
   </head>
   <body>
-    <main class="card">
-      <header class="head">
-        <h1>RenpyBox</h1>
-        <p class="sub">Electron 壳 + Python sidecar + WebSocket 单连接</p>
+    <main class="log-window">
+      <header class="toolbar">
+        <h1>运行日志</h1>
+        <div class="toolbar-actions">
+          <select id="source" aria-label="日志来源">
+            <option value="app">运行日志</option>
+            <option value="desktop">启动与更新</option>
+          </select>
+          <label class="auto-refresh"><input id="auto-refresh" type="checkbox" checked />自动刷新</label>
+          <button id="refresh" type="button">刷新</button>
+          <button id="copy" type="button" disabled>复制</button>
+        </div>
       </header>
-
-      <section class="list" id="list">
-        <div class="row"><span class="k">sidecar 探活</span><span class="v" id="v-health">检查中…</span></div>
-        <div class="row"><span class="k">sidecar 端口</span><span class="v" id="v-port">—</span></div>
-        <div class="row"><span class="k">应用版本</span><span class="v" id="v-version">—</span></div>
-        <div class="row"><span class="k">Electron</span><span class="v" id="v-electron">—</span></div>
-        <div class="row"><span class="k">Chromium</span><span class="v" id="v-chrome">—</span></div>
-      </section>
-
-      <footer class="foot">
-        <p>壳页面刻意不用框架，只用 vanilla JS + 严格 CSP。</p>
+      <pre id="log-output" class="log-output" tabindex="0" aria-label="运行日志内容" data-empty="true">正在读取日志…</pre>
+      <footer class="footer">
+        <div class="status-line">
+          <p id="status" role="status">读取中…</p>
+          <span id="truncation" hidden>仅显示最近日志</span>
+        </div>
+        <button id="close" type="button">关闭</button>
       </footer>
     </main>
   </body>

@@ -455,6 +455,10 @@
   .proofreading-toolbar { display: flex; align-items: center; gap: 8px; }
   .proofreading-target { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--rb-accent-text); font: inherit; font-size: 13px; background: transparent; border: 0; cursor: pointer; }
   .proofreading-target:disabled { color: var(--rb-text-disabled); cursor: default; }
+  .rb-quality-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+  .rb-quality-summary strong { padding: 10px 12px; border: 1px solid var(--rb-divider); border-radius: 8px; background: var(--rb-surface-subtle); font-variant-numeric: tabular-nums; }
+  .rb-quality-items { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto; padding: 8px 0; }
+  .rb-quality-items .mantine-Checkbox-label { overflow-wrap: anywhere; }
   .rb-proof-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .rb-proof-status i { width: 8px; height: 8px; border-radius: 999px; background: var(--rb-text-disabled); }
   .rb-proof-status[data-status='TRANSLATED'] i,

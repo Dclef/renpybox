@@ -225,6 +225,23 @@ def replace_rows(request: Request, body: ReplaceRequest) -> dict:
         return {"ok": True, "changed": changed}
 
 
+@router.get("/report")
+def quality_report(request: Request) -> dict:
+    """Return the quality summary for the current translation cache."""
+    config = copy.deepcopy(request.app.state.config)
+    with CacheManager.LOCK:
+        _, manager = _load_cache(config)
+        from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator
+        from module.Engine.Quality.TranslationQualityReport import build_translation_quality_report
+
+        progress = QualityTaskCoordinator.get().get_progress()
+        report = build_translation_quality_report(
+            manager.get_items(),
+            progress.as_dict() if progress is not None else None,
+        )
+        return report.as_dict()
+
+
 @router.post("/quality")
 def start_quality(request: Request, body: QualityRequest) -> dict:
     """对选中缓存条目启动 AI 润色或校对。进度经 TRANSLATION_UPDATE 推送。"""

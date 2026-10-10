@@ -6,7 +6,22 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('renpy', {
   sidecar: () => ipcRenderer.invoke('sidecar:info'),
-  /** 打开轻量壳窗口（关于 / 诊断）。壳页是 vanilla，不进主 UI bundle。 */
+  appInfo: () => ipcRenderer.invoke('app:info'),
+  changelog: () => ipcRenderer.invoke('app:changelog'),
+  openLogs: () => ipcRenderer.invoke('app:open-logs'),
+  updater: {
+    state: () => ipcRenderer.invoke('app:update-state'),
+    check: () => ipcRenderer.invoke('app:check-update'),
+    download: () => ipcRenderer.invoke('app:download-update'),
+    cancel: () => ipcRenderer.invoke('app:cancel-update'),
+    install: () => ipcRenderer.invoke('app:install-update'),
+    onState: (callback) => {
+      const handler = (_event, state) => callback(state);
+      ipcRenderer.on('app:update-state', handler);
+      return () => ipcRenderer.removeListener('app:update-state', handler);
+    },
+  },
+  /** 打开日志 / 更新窗口。 */
   openShell: (kind) => ipcRenderer.invoke('shell:open', kind),
   close: () => ipcRenderer.send('shell:close'),
   /** 无边框窗口的窗口控制（渲染端画在 38px 标题栏右侧） */

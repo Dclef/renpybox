@@ -49,6 +49,37 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
     .filter(({ row }) => `${row.src} ${row.comment}`.toLowerCase().includes(query.toLowerCase()));
   const selectedRow = selected != null ? rows[selected] : undefined;
 
+  const reload = () => {
+    if (dirty && !window.confirm('放弃尚未保存的禁翻表修改并重新加载？')) return;
+    setRows(readRows(state.settings?.values.text_preserve_data));
+    setEnabled(state.settings?.values.text_preserve_enable === true);
+    setSelected(null);
+    setDirty(false);
+  };
+
+  const deduplicate = () => {
+    const seen = new Map<string, PreserveRow>();
+    rows.forEach((row) => {
+      const src = row.src.trim();
+      if (!src) return;
+      const key = src.toLocaleLowerCase();
+      const previous = seen.get(key);
+      if (!previous) seen.set(key, { src, comment: row.comment.trim() });
+      else if (!previous.comment && row.comment.trim()) previous.comment = row.comment.trim();
+    });
+    setRows([...seen.values()]);
+    setSelected(null);
+    setDirty(true);
+  };
+
+  const clearAll = () => {
+    if (!rows.length || window.confirm('清空全部禁翻规则？')) {
+      setRows([]);
+      setSelected(null);
+      setDirty(true);
+    }
+  };
+
   const save = () => {
     const cleaned = rows.map((row) => ({ src: row.src.trim(), comment: row.comment.trim() })).filter((row) => row.src);
     const nextEnabled = cleaned.length > 0 ? true : enabled;
@@ -75,6 +106,9 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
         </div>
         <span className="rb-toolbar-spacer" />
         <Button variant="default" disabled={locked} onClick={() => { setRows((previous) => [{ src: '', comment: '' }, ...previous]); setQuery(''); setSelected(0); setDirty(true); }}>新增规则</Button>
+        <Button variant="default" disabled={locked || !rows.length} onClick={deduplicate}>去重</Button>
+        <Button variant="default" disabled={locked || !rows.length} onClick={clearAll}>清空全部</Button>
+        <Button variant="default" disabled={locked} onClick={reload}>从配置加载</Button>
         <Button disabled={locked || !dirty} onClick={save}>{state.saving ? '保存中…' : '保存'}</Button>
       </div>
       <div className="rb-toolbar">

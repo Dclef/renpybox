@@ -1,6 +1,12 @@
 /** 平行校对台：分页读取真实缓存，保存前由服务端检查项目和译文版本。 */
 import { useEffect, useRef, useState } from 'react';
-import { request } from '../api';
+import {
+  cancelProofreadingQuality,
+  getProofreadingQualityReport,
+  request,
+  startProofreadingQuality,
+  type QualityReport,
+} from '../api';
 import type { AppState } from '../useAppState';
 import { Button, Checkbox, Select, Textarea, TextInput, UnstyledButton } from '@mantine/core';
 import { DataSheet } from '../components/DataSheet';
@@ -56,6 +62,9 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [find, setFind] = useState('');
   const [replacement, setReplacement] = useState('');
   const [caseSensitive, setCaseSensitive] = useState(true);
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [reportSelection, setReportSelection] = useState<Set<number>>(new Set());
+  const [qualityBusy, setQualityBusy] = useState(false);
   const requestId = useRef(0);
   const projectRef = useRef('');
   const dirtyRef = useRef(false);
@@ -67,6 +76,9 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const editProjectChanged = Boolean(edit && edit.project_identity !== projectIdentity);
   const readonly = data?.readonly || state.translation.engine_status !== 'IDLE'
     || state.translation.stop_barrier || state.translation.single_tasks;
+  const qualityTask = state.translation.progress.quality_task as Record<string, unknown> | undefined;
+  const qualityRunning = state.translation.engine_status === 'QUALITY'
+    || qualityTask?.state === 'RUNNING';
   const dirty = Boolean(edit && draft !== edit.dst);
   dirtyRef.current = dirty;
 
@@ -158,6 +170,33 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     } finally { setSaving(false); }
   };
 
+  const runQuality = async (task: 'proofread' | 'polish', ids = [...selected]) => {
+    if (!data?.cache_token || ids.length === 0 || qualityBusy || readonly || dirty) return;
+    setQualityBusy(true);
+    try {
+      const result = await startProofreadingQuality(data.cache_token, task, ids);
+      state.pushToast('success', `${task === 'polish' ? '润色' : '校对'}任务已开始：${result.accepted} 条`);
+      setSelected(new Set());
+    } catch (failure) {
+      state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setQualityBusy(false);
+    }
+  };
+
+  const loadQualityReport = async () => {
+    setQualityBusy(true);
+    try {
+      const report = await getProofreadingQualityReport();
+      setQualityReport(report);
+      setReportSelection(new Set(report.item_references.map((item) => item.item_index)));
+    } catch (failure) {
+      state.pushToast('warning', failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setQualityBusy(false);
+    }
+  };
+
   const items = data?.items ?? [];
   const toggle = (key: string) => {
     const id = Number(key);
@@ -176,6 +215,10 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     <>
       <Button variant="default" disabled={loading || saving} onClick={reload}>刷新译文</Button>
       <Button variant="default" disabled={readonly || loading || saving || !data?.items.length} onClick={() => { if (!data) return; setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? data.items.filter((row) => selected.has(row.id)) : data.items }); setReplaceOpen(true); }}>批量替换</Button>
+      <Button variant="default" disabled={qualityBusy || qualityRunning || readonly || dirty || !data?.cache_token || selected.size === 0} onClick={() => void runQuality('proofread')}>AI 校对</Button>
+      <Button variant="default" disabled={qualityBusy || qualityRunning || readonly || dirty || !data?.cache_token || selected.size === 0} onClick={() => void runQuality('polish')}>AI 润色</Button>
+      {qualityRunning ? <Button color="red" variant="light" disabled={qualityBusy} onClick={() => void (async () => { setQualityBusy(true); try { await cancelProofreadingQuality(); } catch (failure) { state.pushToast('warning', failure instanceof Error ? failure.message : String(failure)); } finally { setQualityBusy(false); } })()}>取消质量任务</Button> : null}
+      <Button variant="default" disabled={qualityBusy || loading || !data?.items.length} onClick={() => void loadQualityReport()}>质量报告</Button>
     </>
   );
 
@@ -190,6 +233,13 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           />
         )}
         {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
+        {qualityTask ? (
+          <Banner tone={qualityTask.state === 'FAILED' ? 'error' : qualityTask.state === 'COMPLETED' ? 'success' : 'info'}>
+            {qualityTask.task_type === 'POLISHER' ? 'AI 润色' : 'AI 校对'}：{String(qualityTask.completed_count ?? 0)} / {String(qualityTask.total_count ?? 0)} 条
+            {qualityTask.failed_count ? `，失败 ${String(qualityTask.failed_count)} 条` : ''}
+            {qualityTask.state === 'RUNNING' ? '，处理中…' : qualityTask.state === 'CANCELLED' ? '，已取消' : qualityTask.state === 'FAILED' ? `，${String(qualityTask.error_message ?? '任务失败')}` : '，已完成'}
+          </Banner>
+        ) : null}
         {error && <Banner tone="warning">{error}</Banner>}
         <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
           <TextInput aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
@@ -256,6 +306,42 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           {saving && <p>正在保存替换结果…</p>}
         </Dialog>
       )}
+      {qualityReport ? (
+        <Dialog
+          title="翻译质量报告"
+          cancelText="关闭"
+          confirmText="对选中项执行 AI 校对"
+          onCancel={() => setQualityReport(null)}
+          onConfirm={reportSelection.size > 0 && !qualityRunning ? () => {
+            const ids = [...reportSelection];
+            setQualityReport(null);
+            void runQuality('proofread', ids);
+          } : undefined}
+        >
+          <div className="rb-quality-summary">
+            <strong>失败 {qualityReport.failed_count}</strong>
+            <strong>回退 {qualityReport.fallback_count}</strong>
+            <strong>对齐异常 {qualityReport.line_mismatch_count}</strong>
+          </div>
+          <p>{Object.entries(qualityReport.error_type_counts).map(([key, value]) => `${key}: ${value}`).join('，') || '没有记录到质量错误。'}</p>
+          {qualityReport.item_references.length > 0 ? (
+            <div className="rb-quality-items">
+              {qualityReport.item_references.map((item) => (
+                <Checkbox
+                  key={item.item_index}
+                  checked={reportSelection.has(item.item_index)}
+                  label={`${item.reference} [${item.error_types.join(', ') || '-'}] ${item.source_preview}`}
+                  onChange={() => setReportSelection((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(item.item_index)) next.delete(item.item_index); else next.add(item.item_index);
+                    return next;
+                  })}
+                />
+              ))}
+            </div>
+          ) : <p>没有需要处理的条目。</p>}
+        </Dialog>
+      ) : null}
     </div>
   );
 }
