@@ -1,8 +1,11 @@
 /** 平行校对台：分页读取真实缓存，保存前由服务端检查项目和译文版本。 */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Spin, Table } from 'antd';
+import type { ColumnsType, TableRef } from 'antd/es/table';
+import type { MenuProps } from 'antd';
 import { request } from '../api';
+import { focusTableRow } from '../components/tableFocus';
 import type { AppState } from '../useAppState';
-import { ActionIcon, Button, Checkbox, Loader, Menu, Modal, NumberInput, Portal, Progress, Select, Table, Textarea, TextInput } from '@mantine/core';
 import { MoreHorizontal, AlertTriangle, Copy, Pencil, RotateCcw } from 'lucide-react';
 import type { MouseEvent, KeyboardEvent } from 'react';
 import { Banner, Dialog, PageHeader } from '../ui';
@@ -108,9 +111,14 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [replacement, setReplacement] = useState('');
   const [caseSensitive, setCaseSensitive] = useState(true);
   const [reportSelection, setReportSelection] = useState<Set<number>>(new Set());
+  const [scrollY, setScrollY] = useState(200);
+  const [scrollX, setScrollX] = useState(900);
   const requestId = useRef(0);
   const projectRef = useRef('');
   const dirtyRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<TableRef>(null);
+  const cancelFocus = useRef<(() => void) | null>(null);
   const projectIdentity = JSON.stringify([
     state.project?.renpy_project_path, state.project?.renpy_game_folder, state.project?.renpy_tl_folder,
     state.settings?.values.input_folder, state.settings?.values.output_folder,
@@ -227,6 +235,36 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     const timer = retranslateRunning ? window.setInterval(() => void poll(), 1500) : undefined;
     return () => { activeRequest = false; window.clearInterval(timer); };
   }, [state.ready, state.link, retranslateRunning, state.reloadTranslation]);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const header = el.querySelector('.ant-table-header') as HTMLElement | null;
+      const headerH = header?.offsetHeight ?? 36;
+      // 下限与 .rb-proof-table-scroll 的 CSS min-height 一致，避免低窗口下两层最低高度冲突而裁切
+      setScrollY(Math.max(48, el.clientHeight - headerH - 2));
+      setScrollX(Math.max(900, el.clientWidth || 900));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    tableRef.current?.scrollTo({ top: 0 });
+  }, [page, limit, search, status, file, onlyIssues, warning]);
+
+  useEffect(() => () => cancelFocus.current?.(), []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setContextMenu(null);
+    el.addEventListener('scroll', onScroll, true);
+    return () => el.removeEventListener('scroll', onScroll, true);
+  }, []);
 
   const reload = () => setRefresh((value) => value + 1);
   const closeEdit = () => {
@@ -346,7 +384,11 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     }
     setActive(row.id);
   };
-  const rowKeyDown = (event: KeyboardEvent<HTMLTableRowElement>, row: ProofreadingRow) => {
+  const focusRow = (id: number) => {
+    cancelFocus.current?.();
+    cancelFocus.current = focusTableRow(tableRef, String(id), (row) => row.focus());
+  };
+  const rowKeyDown = (event: KeyboardEvent<HTMLElement>, row: ProofreadingRow) => {
     if (event.target !== event.currentTarget) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
       event.preventDefault(); setSelected(new Set(items.map((item) => item.id))); return;
@@ -361,7 +403,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       const index = items.indexOf(row) + (event.key === 'ArrowDown' ? 1 : -1);
       if (items[index]) {
         selectRow(items[index], event);
-        (event.currentTarget.parentElement?.children[index] as HTMLElement)?.focus();
+        focusRow(items[index].id);
       }
     }
   };
@@ -424,17 +466,139 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     catch (failure) { state.pushToast('error', failure instanceof Error ? failure.message : String(failure)); }
   };
   const mutationDisabled = !state.ready || Boolean(readonly) || retranslateRunning || loading || saving || dirty;
+
+  const contextMenuItems = (row: ProofreadingRow): MenuProps['items'] => {
+    const multi = selected.has(row.id) && selected.size > 1;
+    const targetRows = selected.has(row.id) ? items.filter((item) => selected.has(item.id)) : [row];
+    return [
+      {
+        key: 'retranslate',
+        label: '重新翻译' + (multi ? '所选行' : ''),
+        disabled: mutationDisabled,
+        onClick: () => confirmSelection('retranslate', targetRows),
+      },
+      {
+        key: 'edit',
+        icon: <Pencil size={14} />,
+        label: '编辑译文',
+        disabled: mutationDisabled,
+        onClick: () => openEdit(row),
+      },
+      {
+        key: 'copy-src',
+        icon: <Copy size={14} />,
+        label: '复制原文',
+        onClick: () => void copyText(row.src),
+      },
+      {
+        key: 'copy-dst',
+        icon: <Copy size={14} />,
+        label: '复制译文',
+        onClick: () => void copyText(row.dst),
+      },
+      {
+        key: 'copy-pairs',
+        label: '复制双语对照',
+        onClick: () => copyPairs(targetRows),
+      },
+      { type: 'divider' },
+      ...(row.warnings?.includes('RETRY_THRESHOLD') ? [{
+        key: 'confirm',
+        label: '确认译文无误',
+        disabled: mutationDisabled,
+        onClick: () => confirmSelection('confirm', targetRows),
+      }] : []),
+      {
+        key: 'reset',
+        danger: true,
+        icon: <RotateCcw size={14} />,
+        label: '重置此行译文',
+        disabled: mutationDisabled,
+        onClick: () => confirmSelection('reset', [row]),
+      },
+      {
+        key: 'locate',
+        label: '定位译文',
+        onClick: () => void locateRow(row),
+      },
+      {
+        key: 'path',
+        type: 'group',
+        label: (row.file_path || '未分类') + (row.row ? ':' + row.row : ''),
+      },
+    ];
+  };
+
+  const columns: ColumnsType<ProofreadingRow> = [
+    {
+      title: '#',
+      key: 'index',
+      width: 46,
+      className: 'rb-proof-index',
+      render: (_value, row) => <span title={row.file_path + ':' + row.row}>{row.id + 1}</span>,
+    },
+    {
+      title: '原文',
+      key: 'src',
+      width: 320,
+      className: 'rb-proof-cell-wrap',
+      onCell: (row) => ({ onDoubleClick: () => openEdit(row) }),
+      render: (_value, row) => row.src,
+    },
+    {
+      title: '译文',
+      key: 'dst',
+      width: 320,
+      className: 'rb-proof-cell-wrap',
+      onCell: (row) => ({ onDoubleClick: () => openEdit(row) }),
+      render: (_value, row) => <span className="rb-proof-target">{row.dst || '（空译文）'}</span>,
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 100,
+      render: (_value, row) => (
+        <>
+          <span className="rb-proof-status" data-status={row.status}>{STATUS_LABELS[row.status] ?? row.status}</span>
+          {!!row.warnings?.length && (
+            <span className="rb-proof-warning" title={row.warnings.map((value) => WARNING_LABELS[value] ?? value).join('、')}>
+              <AlertTriangle size={13} />{row.warnings.length} 项问题
+            </span>
+          )}
+        </>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 48,
+      onCell: () => ({ onClick: (event) => event.stopPropagation() }),
+      render: (_value, row) => (
+        <Button
+          type="text"
+          size="small"
+          aria-label={'第 ' + (row.id + 1) + ' 行操作'}
+          icon={<MoreHorizontal size={16} />}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setContextMenu({ row, x: rect.left, y: rect.bottom });
+          }}
+        />
+      ),
+    },
+  ];
+
   const actions = (
     <>
-      <Button size="xs" variant="default" disabled={loading || saving || dirty} onClick={reload}>刷新译文</Button>
-      <Button size="xs" variant="default" disabled={mutationDisabled || !data?.total} onClick={() => { if (data) setExportConfirm({ cache_token: data.cache_token, project: projectIdentity }); }}>导出译文</Button>
-      <Button size="xs" variant="default" disabled={mutationDisabled || !items.length} onClick={() => { if (data) { setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? items.filter((row) => selected.has(row.id)) : items }); setReplaceOpen(true); } }}>批量替换</Button>
-      <Button size="xs" variant="default" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('retranslate')}>重译选中行</Button>
-      {retranslateRunning && <Button size="xs" variant="light" color="red" disabled={retranslate.state === 'CANCELLING'} onClick={() => void cancelRetranslate()}>取消重译</Button>}
-      <Button size="xs" variant="default" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('reset')}>重置选中译文</Button>
-      <Button size="xs" variant="default" disabled={loading || !data} onClick={() => void showReport()}>质量报告</Button>
+      <Button size="small" disabled={loading || saving || dirty} onClick={reload}>刷新译文</Button>
+      <Button size="small" disabled={mutationDisabled || !data?.total} onClick={() => { if (data) setExportConfirm({ cache_token: data.cache_token, project: projectIdentity }); }}>导出译文</Button>
+      <Button size="small" disabled={mutationDisabled || !items.length} onClick={() => { if (data) { setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? items.filter((row) => selected.has(row.id)) : items }); setReplaceOpen(true); } }}>批量替换</Button>
+      <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('retranslate')}>重译选中行</Button>
+      {retranslateRunning && <Button size="small" danger disabled={retranslate.state === 'CANCELLING'} onClick={() => void cancelRetranslate()}>取消重译</Button>}
+      <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('reset')}>重置选中译文</Button>
+      <Button size="small" disabled={loading || !data} onClick={() => void showReport()}>质量报告</Button>
       {(['proofread', 'polish'] as const).map((task) => (
-        <Button size="xs" key={task} variant="default" disabled={mutationDisabled || !selected.size}
+        <Button size="small" key={task} disabled={mutationDisabled || !selected.size}
           onClick={() => {
             const rows = items.filter((row) => selected.has(row.id));
             if (data) setQualityConfirm({ task, cache_token: data.cache_token, ids: rows.map((row) => row.id), rows, project: projectIdentity });
@@ -442,9 +606,13 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           {t(task === 'polish' ? 'polish_action' : 'proofread_action')}
         </Button>
       ))}
-      {qualityRunning && <Button size="xs" color="red" variant="light" disabled={cancelling} onClick={() => void cancelQuality()}>{t('quality_cancel')}</Button>}
+      {qualityRunning && <Button size="small" danger disabled={cancelling} onClick={() => void cancelQuality()}>{t('quality_cancel')}</Button>}
     </>
   );
+
+  const qualityPercent = data?.quality_reports?.at(-1)?.total_count
+    ? 100 * (data.quality_reports.at(-1)?.completed_count ?? 0) / (data.quality_reports.at(-1)?.total_count ?? 1)
+    : 0;
 
   return (
     <div className={embedded ? 'proofreading-page rb-embedded' : 'proofreading-page rb-page'}>
@@ -457,64 +625,113 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           />
         )}
         {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
-        {qualityRunning && <div className="rb-proofreading-task"><Progress value={data?.quality_reports?.at(-1)?.total_count ? 100 * (data.quality_reports.at(-1)?.completed_count ?? 0) / (data.quality_reports.at(-1)?.total_count ?? 1) : 0} /><span>{t(cancelling ? 'quality_cancelling' : 'quality_running')}</span></div>}
+        {qualityRunning && <div className="rb-proofreading-task"><Progress percent={qualityPercent} showInfo={false} size="small" /><span>{t(cancelling ? 'quality_cancelling' : 'quality_running')}</span></div>}
         {retranslate.state !== 'IDLE' && <div className="rb-proofreading-task">重译：{retranslate.done ?? 0} / {retranslate.total ?? 0} · 已保存 {retranslate.updated ?? 0} · 失败 {retranslate.failed ?? 0} · {retranslateRunning ? retranslate.state === 'CANCELLING' ? '等待已发出的请求结束…' : '处理中…' : retranslate.state === 'FAILED' ? '失败：' + retranslate.error : retranslate.state === 'CANCELLED' ? '已取消' : '已完成'}</div>}
         {error && <Banner tone="warning">{error}</Banner>}
         <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
-          <TextInput aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
-          <Select aria-label="翻译状态" allowDeselect={false} value={status} data={[{ value: '', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]} onChange={(value) => { if (value != null) { setStatus(value); setPage(1); } }} />
-          <Select aria-label="源文件" allowDeselect={false} value={file} data={[{ value: '', label: '全部文件' }, ...(data?.files ?? []).map((path) => ({ value: path, label: path || '未分类' }))]} onChange={(value) => { if (value != null) { setFile(value); setPage(1); } }} />
-          <Button variant="default" type="submit" disabled={loading}>搜索</Button>
+          <Input aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.target.value)} />
+          <Select
+            aria-label="翻译状态"
+            value={status}
+            options={[{ value: '', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]}
+            onChange={(value) => { setStatus(value ?? ''); setPage(1); }}
+          />
+          <Select
+            aria-label="源文件"
+            value={file}
+            options={[{ value: '', label: '全部文件' }, ...(data?.files ?? []).map((path) => ({ value: path, label: path || '未分类' }))]}
+            onChange={(value) => { setFile(value ?? ''); setPage(1); }}
+          />
+          <Button htmlType="submit" disabled={loading}>搜索</Button>
         </form>
         <div className="rb-proofreading-selection">
-          <Checkbox label="仅看问题" checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.currentTarget.checked); setPage(1); }} />
-          <Select aria-label="问题类型" value={warning} allowDeselect={false} size="xs" data={[{ value: '', label: '全部问题类型' }, ...Object.entries(WARNING_LABELS).map(([value, label]) => ({ value, label }))]} onChange={(value) => { setWarning(value ?? ''); setPage(1); }} />
-          <Button size="compact-xs" variant="subtle" disabled={!selected.size} onClick={() => copyPairs(items.filter((row) => selected.has(row.id)))}>复制所选双语</Button>
+          <Checkbox checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setPage(1); }}>仅看问题</Checkbox>
+          <Select
+            aria-label="问题类型"
+            size="small"
+            value={warning}
+            options={[{ value: '', label: '全部问题类型' }, ...Object.entries(WARNING_LABELS).map(([value, label]) => ({ value, label }))]}
+            onChange={(value) => { setWarning(value ?? ''); setPage(1); }}
+          />
+          <Button type="link" size="small" disabled={!selected.size} onClick={() => copyPairs(items.filter((row) => selected.has(row.id)))}>复制所选双语</Button>
           <span className="rb-metric-note">单击选行 · Ctrl / Shift 多选 · 双击或 F2 编辑</span>
         </div>
         {loading && <div className="rb-proof-loading" role="status" aria-live="polite">
-          <Loader size="xs" />
+          <Spin size="small" />
           <span>{onlyIssues || warning ? t('proofreading_checking').replace('{checked}', (data?.checked ?? 0).toLocaleString()).replace('{total}', (data?.check_total ?? 0).toLocaleString()) : t('proofreading_loading')}</span>
         </div>}
-        <div className="rb-proof-table-scroll" aria-busy={loading} onScroll={() => setContextMenu(null)}>
-          <Table className="rb-proof-table" aria-label="原译对照表" layout="fixed" stickyHeader withTableBorder withColumnBorders highlightOnHover horizontalSpacing="sm" verticalSpacing="xs">
-            <colgroup><col style={{ width: 34 }} /><col style={{ width: 46 }} /><col /><col /><col style={{ width: 80 }} /><col style={{ width: 40 }} /></colgroup>
-            <Table.Thead><Table.Tr>
-              <Table.Th><Checkbox aria-label="全选当前页" checked={!!items.length && selected.size === items.length} indeterminate={selected.size > 0 && selected.size < items.length} disabled={loading || saving} onChange={(event) => setSelected(event.currentTarget.checked ? new Set(items.map((row) => row.id)) : new Set())} /></Table.Th>
-              <Table.Th>#</Table.Th><Table.Th>原文</Table.Th><Table.Th>译文</Table.Th><Table.Th>状态</Table.Th><Table.Th>操作</Table.Th>
-            </Table.Tr></Table.Thead>
-            <Table.Tbody>
-              {items.map((row) => (
-                <Table.Tr key={row.id} className="rb-proofreading-row" data-selected={selected.has(row.id)} aria-selected={selected.has(row.id)} tabIndex={0}
-                  onClick={(event) => { selectRow(row, event); event.currentTarget.focus(); }} onKeyDown={(event) => rowKeyDown(event, row)}
-                  onContextMenu={(event) => { event.preventDefault(); if (!selected.has(row.id)) selectRow(row, event); setContextMenu({ row, x: event.clientX, y: event.clientY }); }}>
-                  <Table.Td onClick={(event) => event.stopPropagation()}><Checkbox aria-label="选择行" checked={selected.has(row.id)} disabled={loading || saving} onChange={() => { toggle(row.id); setActive(row.id); selectionAnchor.current = row.id; }} /></Table.Td>
-                  <Table.Td className="rb-proof-index" title={row.file_path + ':' + row.row}>{row.id + 1}</Table.Td>
-                  <Table.Td onDoubleClick={() => openEdit(row)}>{row.src}</Table.Td>
-                  <Table.Td onDoubleClick={() => openEdit(row)}><span className="rb-proof-target">{row.dst || '（空译文）'}</span></Table.Td>
-                  <Table.Td><span className="rb-proof-status" data-status={row.status}>{STATUS_LABELS[row.status] ?? row.status}</span>
-                    {!!row.warnings?.length && <span className="rb-proof-warning" title={row.warnings.map((value) => WARNING_LABELS[value] ?? value).join('、')}><AlertTriangle size={13} />{row.warnings.length} 项问题</span>}
-                  </Table.Td>
-                  <Table.Td onClick={(event) => event.stopPropagation()}>
-                    <ActionIcon variant="subtle" aria-label={'第 ' + (row.id + 1) + ' 行操作'} onClick={(event) => {
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      setContextMenu({ row, x: rect.left, y: rect.bottom });
-                    }}><MoreHorizontal size={16} /></ActionIcon>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-              {!items.length && <Table.Tr><Table.Td colSpan={6} className="rb-proof-empty">{loading ? t('proofreading_loading') : data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里校对译文。'}</Table.Td></Table.Tr>}
-            </Table.Tbody>
-          </Table>
+        <div className="rb-proof-table-scroll" ref={scrollRef} aria-busy={loading}>
+          <Table<ProofreadingRow>
+            ref={tableRef}
+            className="rb-proof-table"
+            size="small"
+            bordered
+            tableLayout="fixed"
+            rowKey="id"
+            columns={columns}
+            dataSource={items}
+            pagination={false}
+            loading={false}
+            virtual={true}
+            scroll={{ x: scrollX, y: scrollY }}
+            locale={{
+              emptyText: (
+                <div className="rb-proof-empty">
+                  {loading ? t('proofreading_loading') : data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里校对译文。'}
+                </div>
+              ),
+            }}
+            rowClassName={() => 'rb-proofreading-row'}
+            rowSelection={{
+              columnWidth: 34,
+              selectedRowKeys: Array.from(selected),
+              onChange: (keys) => setSelected(new Set(keys.map(Number))),
+              onSelect: (record) => {
+                setActive(record.id);
+                selectionAnchor.current = record.id;
+              },
+              getCheckboxProps: () => ({ disabled: loading || saving, 'aria-label': '选择行' }),
+            }}
+            onRow={(row) => ({
+              'data-selected': selected.has(row.id) ? 'true' : undefined,
+              'aria-selected': selected.has(row.id),
+              tabIndex: 0,
+              onClick: (event) => {
+                selectRow(row, event);
+                (event.currentTarget as HTMLElement).focus();
+              },
+              onKeyDown: (event) => rowKeyDown(event, row),
+              onContextMenu: (event) => {
+                event.preventDefault();
+                if (!selected.has(row.id)) selectRow(row, event);
+                setContextMenu({ row, x: event.clientX, y: event.clientY });
+              },
+            })}
+          />
         </div>
         <footer className="proofreading-pagination">
-          <span>{data ? `${data.matched.toLocaleString()}{data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
+          <span>{data ? `${data.matched.toLocaleString()}${data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
           <div className="proofreading-toolbar">
-            <Select aria-label="每页条数" size="xs" w={100} allowDeselect={false} value={String(limit)} data={['25', '50', '100'].map((value) => ({ value, label: value + ' 条 / 页' }))} onChange={(value) => { setLimit(Number(value)); setPage(1); }} />
-            <NumberInput aria-label="跳转页码" size="xs" w={64} min={1} max={Math.max(1, Math.ceil((data?.matched ?? 0) / limit))} value={page} allowDecimal={false} onChange={(value) => { if (typeof value === 'number') setPage(value); }} />
-            <Button variant="default" size="xs" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
+            <Select
+              aria-label="每页条数"
+              size="small"
+              style={{ width: 100 }}
+              value={String(limit)}
+              options={['25', '50', '100'].map((value) => ({ value, label: value + ' 条 / 页' }))}
+              onChange={(value) => { setLimit(Number(value)); setPage(1); }}
+            />
+            <InputNumber
+              aria-label="跳转页码"
+              size="small"
+              style={{ width: 64 }}
+              min={1}
+              max={Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}
+              value={page}
+              onChange={(value) => { if (typeof value === 'number') setPage(value); }}
+            />
+            <Button size="small" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
             <span>{data?.page ?? 1} / {Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}</span>
-            <Button variant="default" size="xs" disabled={loading || !data || page * limit >= data.matched} onClick={() => setPage((value) => value + 1)}>下一页</Button>
+            <Button size="small" disabled={loading || !data || page * limit >= data.matched} onClick={() => setPage((value) => value + 1)}>下一页</Button>
           </div>
         </footer>
         <div className="rb-proofreading-location" title={activeRow?.file_path}>
@@ -522,38 +739,70 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           <span>编辑确认后自动保存缓存；导出译文才会写入文件。</span>
         </div>
       </div>
-      {contextMenu && <Portal><Menu key={contextMenu.x + ":" + contextMenu.y} opened onChange={(opened) => { if (!opened) setContextMenu(null); }} position="bottom-start" offset={0} withinPortal>
-        <Menu.Target><span style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, width: 1, height: 1 }} /></Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Item disabled={mutationDisabled} onClick={() => confirmSelection('retranslate', selected.has(contextMenu.row.id) ? items.filter((item) => selected.has(item.id)) : [contextMenu.row])}>重新翻译{selected.has(contextMenu.row.id) && selected.size > 1 ? '所选行' : ''}</Menu.Item>
-                        <Menu.Item leftSection={<Pencil size={14} />} disabled={mutationDisabled} onClick={() => openEdit(contextMenu.row)}>编辑译文</Menu.Item>
-                        <Menu.Item leftSection={<Copy size={14} />} onClick={() => void copyText(contextMenu.row.src)}>复制原文</Menu.Item>
-                        <Menu.Item leftSection={<Copy size={14} />} onClick={() => void copyText(contextMenu.row.dst)}>复制译文</Menu.Item>
-                        <Menu.Item onClick={() => copyPairs(selected.has(contextMenu.row.id) ? items.filter((item) => selected.has(item.id)) : [contextMenu.row])}>复制双语对照</Menu.Item>
-                        <Menu.Divider />
-                        {contextMenu.row.warnings?.includes('RETRY_THRESHOLD') && <Menu.Item disabled={mutationDisabled} onClick={() => confirmSelection('confirm', selected.has(contextMenu.row.id) ? items.filter((item) => selected.has(item.id)) : [contextMenu.row])}>确认译文无误</Menu.Item>}
-                        <Menu.Item color="red" leftSection={<RotateCcw size={14} />} disabled={mutationDisabled} onClick={() => confirmSelection('reset', [contextMenu.row])}>重置此行译文</Menu.Item>
-                        <Menu.Item onClick={() => void locateRow(contextMenu.row)}>定位译文</Menu.Item>
-                        <Menu.Label>{contextMenu.row.file_path || '未分类'}{contextMenu.row.row ? ':' + contextMenu.row.row : ''}</Menu.Label>
-                      </Menu.Dropdown>
-      </Menu></Portal>}
-      {locationOpen && <Modal opened onClose={() => setLocationOpen(false)} title="定位译文" size={900}>
-        {locationError ? <Banner tone="warning">{locationError}</Banner> : !location ? <p>正在读取目标行…</p> : <>
-          <p className="rb-proofreading-location">{location.path}:{location.row}</p>
-          <Button size="xs" variant="default" onClick={() => void copyText(location.path)}>复制文件路径</Button>
-          <pre className="rb-proof-context">{location.lines.map((line) => <div key={line.number} data-target={line.number === location.row}>{String(line.number).padStart(6)}  {line.text}</div>)}</pre>
-        </>}
-      </Modal>}
+      {contextMenu && (
+        <Dropdown
+          key={contextMenu.x + ':' + contextMenu.y + ':' + contextMenu.row.id}
+          open
+          onOpenChange={(opened) => { if (!opened) setContextMenu(null); }}
+          menu={{ items: contextMenuItems(contextMenu.row), onClick: () => setContextMenu(null) }}
+          placement="bottomLeft"
+          autoAdjustOverflow
+          getPopupContainer={() => document.body}
+        >
+          <span style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, width: 1, height: 1 }} />
+        </Dropdown>
+      )}
+      {locationOpen && (
+        <Modal open onCancel={() => setLocationOpen(false)} title="定位译文" width={900} footer={null}>
+          {locationError ? <Banner tone="warning">{locationError}</Banner> : !location ? <p>正在读取目标行…</p> : <>
+            <p className="rb-proofreading-location">{location.path}:{location.row}</p>
+            <Button size="small" onClick={() => void copyText(location.path)}>复制文件路径</Button>
+            <pre className="rb-proof-context">{location.lines.map((line) => <div key={line.number} data-target={line.number === location.row}>{String(line.number).padStart(6)}  {line.text}</div>)}</pre>
+          </>}
+        </Modal>
+      )}
       {edit && (
-        <Modal opened onClose={closeEdit} title="编辑译文" size={960} centered classNames={{ content: 'rb-proof-editor' }}
-          onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void saveEdit(); } }}>
-          {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请复制译文后关闭编辑。</Banner>}
-          <p className="rb-metric-note">{edit.file_path}:{edit.row} · Ctrl + Enter 保存</p>
-          <div className="rb-proof-bilingual-editor">
-            <Textarea label="原文" readOnly value={edit.src} autosize minRows={10} maxRows={16} />
-            <Textarea id="proofreading-draft" label="译文" data-autofocus value={draft} disabled={saving || readonly} autosize minRows={10} maxRows={16} onChange={(event) => setDraft(event.currentTarget.value)} />
+        <Modal
+          open
+          onCancel={closeEdit}
+          title="编辑译文"
+          width={960}
+          centered
+          classNames={{ body: 'rb-proof-editor' }}
+          footer={
+            <div className="rb-dialog-actions">
+              <Button onClick={closeEdit}>取消</Button>
+              <Button type="primary" disabled={saving || readonly || !dirty || editProjectChanged} onClick={() => void saveEdit()}>保存译文</Button>
+            </div>
+          }
+        >
+          <div
+            onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+                event.preventDefault();
+                void saveEdit();
+              }
+            }}
+          >
+            {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请复制译文后关闭编辑。</Banner>}
+            <p className="rb-metric-note">{edit.file_path}:{edit.row} · Ctrl + Enter 保存</p>
+            <div className="rb-proof-bilingual-editor">
+              <label>
+                <span>原文</span>
+                <Input.TextArea readOnly value={edit.src} autoSize={{ minRows: 10, maxRows: 16 }} />
+              </label>
+              <label>
+                <span>译文</span>
+                <Input.TextArea
+                  id="proofreading-draft"
+                  value={draft}
+                  disabled={saving || readonly}
+                  autoSize={{ minRows: 10, maxRows: 16 }}
+                  onChange={(event) => setDraft(event.target.value)}
+                />
+              </label>
+            </div>
           </div>
-          <div className="rb-dialog-actions"><Button variant="default" onClick={closeEdit}>取消</Button><Button disabled={saving || readonly || !dirty || editProjectChanged} onClick={() => void saveEdit()}>保存译文</Button></div>
         </Modal>
       )}
       {selectionConfirm && <Dialog title={selectionConfirm.action === 'retranslate' ? '重新翻译' : selectionConfirm.action === 'reset' ? '重置选中译文' : '确认译文无误'} confirmText={selectionConfirm.action === 'retranslate' ? '开始重译' : '确认并保存'} onCancel={() => { if (!saving) setSelectionConfirm(null); }} onConfirm={mutationDisabled || selectionConfirm.project !== projectIdentity ? undefined : () => void applySelection()}>
@@ -563,40 +812,45 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         <p>将当前缓存中的全部译文按原文件格式写入输出目录，可能覆盖已有译文文件。当前筛选不会限制导出范围。</p>
         <p>{data?.cache_folder}</p>
       </Dialog>}
-      {reportOpen && <Modal opened onClose={() => setReportOpen(false)} title="质量报告" size="lg">
-        {reportError ? <Banner tone="warning">{reportError}</Banner> : !report ? <p>正在读取报告…</p> : <>
-          <div className="rb-quality-summary">
-            <strong>失败 {report.failed_count}</strong>
-            <strong>回退 {report.fallback_count}</strong>
-            <strong>对齐异常 {report.line_mismatch_count}</strong>
-          </div>
-          <p>{Object.entries(report.error_type_counts).map(([key, count]) => key + ': ' + count).join(' · ') || '没有记录到翻译失败原因。'}</p>
-          {report.item_references.length ? <div className="rb-quality-items">{report.item_references.map((row) => (
-            <Checkbox key={row.item_index} checked={reportSelection.has(row.item_index)}
-              label={`#${row.item_index + 1} ${row.reference} · ${row.error_types.join('、')} · ${row.source_preview}`}
-              onChange={() => setReportSelection((previous) => {
-                const next = new Set(previous);
-                if (next.has(row.item_index)) next.delete(row.item_index); else next.add(row.item_index);
-                return next;
-              })} />
-          ))}</div> : <p>没有需要处理的条目。</p>}
-          <Button size="xs" disabled={!reportSelection.size || qualityRunning || readonly || !data?.cache_token} onClick={() => {
-            if (!data) return;
-            setQualityConfirm({ task: 'proofread', cache_token: data.cache_token, ids: [...reportSelection], project: projectIdentity });
-            setReportOpen(false);
-          }}>对选中项执行 AI 校对</Button>
-        </>}
-        {(data?.quality_reports ?? []).map((report) => (
-          <details className="rb-quality-report" key={report.task_type}>
-            <summary>AI 处理记录 · {t(report.task_type === 'POLISHER' ? 'polish_action' : 'proofread_action')} · {t(report.state === 'COMPLETED' ? 'quality_completed' : report.state === 'FAILED' ? 'quality_failed' : report.state === 'CANCELLED' ? 'quality_cancelled' : 'quality_running')}</summary>
-            <p>{t('quality_summary').replace('{completed}', String(report.completed_count)).replace('{total}', String(report.total_count)).replace('{updated}', String(report.updated_count)).replace('{failed}', String(report.failed_count)).replace('{skipped}', String(report.skipped_count))}</p>
-            <Progress value={report.total_count > 0 ? 100 * report.completed_count / report.total_count : 0} />
-            {report.error_message && <Banner tone="warning">{report.error_message}</Banner>}
-            {!!report.failures?.length && <ul>{report.failures.map((failure, index) => <li key={index}>#{failure.item_index + 1} · {failure.reason}</li>)}</ul>}
-          </details>
-        ))}
-
-      </Modal>}
+      {reportOpen && (
+        <Modal open onCancel={() => setReportOpen(false)} title="质量报告" width={720} footer={null}>
+          {reportError ? <Banner tone="warning">{reportError}</Banner> : !report ? <p>正在读取报告…</p> : <>
+            <div className="rb-quality-summary">
+              <strong>失败 {report.failed_count}</strong>
+              <strong>回退 {report.fallback_count}</strong>
+              <strong>对齐异常 {report.line_mismatch_count}</strong>
+            </div>
+            <p>{Object.entries(report.error_type_counts).map(([key, count]) => key + ': ' + count).join(' · ') || '没有记录到翻译失败原因。'}</p>
+            {report.item_references.length ? <div className="rb-quality-items">{report.item_references.map((row) => (
+              <Checkbox
+                key={row.item_index}
+                checked={reportSelection.has(row.item_index)}
+                onChange={() => setReportSelection((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(row.item_index)) next.delete(row.item_index); else next.add(row.item_index);
+                  return next;
+                })}
+              >
+                {`#${row.item_index + 1} ${row.reference} · ${row.error_types.join('、')} · ${row.source_preview}`}
+              </Checkbox>
+            ))}</div> : <p>没有需要处理的条目。</p>}
+            <Button size="small" disabled={!reportSelection.size || qualityRunning || readonly || !data?.cache_token} onClick={() => {
+              if (!data) return;
+              setQualityConfirm({ task: 'proofread', cache_token: data.cache_token, ids: [...reportSelection], project: projectIdentity });
+              setReportOpen(false);
+            }}>对选中项执行 AI 校对</Button>
+          </>}
+          {(data?.quality_reports ?? []).map((report) => (
+            <details className="rb-quality-report" key={report.task_type}>
+              <summary>AI 处理记录 · {t(report.task_type === 'POLISHER' ? 'polish_action' : 'proofread_action')} · {t(report.state === 'COMPLETED' ? 'quality_completed' : report.state === 'FAILED' ? 'quality_failed' : report.state === 'CANCELLED' ? 'quality_cancelled' : 'quality_running')}</summary>
+              <p>{t('quality_summary').replace('{completed}', String(report.completed_count)).replace('{total}', String(report.total_count)).replace('{updated}', String(report.updated_count)).replace('{failed}', String(report.failed_count)).replace('{skipped}', String(report.skipped_count))}</p>
+              <Progress percent={report.total_count > 0 ? 100 * report.completed_count / report.total_count : 0} showInfo={false} size="small" />
+              {report.error_message && <Banner tone="warning">{report.error_message}</Banner>}
+              {!!report.failures?.length && <ul>{report.failures.map((failure, index) => <li key={index}>#{failure.item_index + 1} · {failure.reason}</li>)}</ul>}
+            </details>
+          ))}
+        </Modal>
+      )}
       {qualityConfirm && (
         <Dialog title={t(qualityConfirm.task === 'polish' ? 'polish_action' : 'proofread_action')} confirmText={t('quality_confirm')}
           onCancel={() => { if (!saving) setQualityConfirm(null); }}
@@ -608,10 +862,16 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         <Dialog title="批量替换译文" confirmText="替换并保存" onCancel={() => { if (!saving) setReplaceOpen(false); }} onConfirm={!find || saving || readonly ? undefined : () => void replaceRows()}>
           <p>对{selected.size ? `已选 ${selected.size} 条` : `当前页 ${replaceSnapshot?.rows.length ?? 0} 条`}译文执行纯文本替换，并立即保存。</p>
           <div className="proofreading-replacement-grid">
-            <TextInput label="查找" value={find} disabled={saving} placeholder="需要替换的内容" onChange={(event) => setFind(event.currentTarget.value)} />
-            <TextInput label="替换为" value={replacement} disabled={saving} placeholder="留空可删除匹配内容" onChange={(event) => setReplacement(event.currentTarget.value)} />
+            <label>
+              <span>查找</span>
+              <Input value={find} disabled={saving} placeholder="需要替换的内容" onChange={(event) => setFind(event.target.value)} />
+            </label>
+            <label>
+              <span>替换为</span>
+              <Input value={replacement} disabled={saving} placeholder="留空可删除匹配内容" onChange={(event) => setReplacement(event.target.value)} />
+            </label>
           </div>
-          <Checkbox label="区分大小写" checked={caseSensitive} disabled={saving} onChange={(event) => setCaseSensitive(event.currentTarget.checked)} />
+          <Checkbox checked={caseSensitive} disabled={saving} onChange={(event) => setCaseSensitive(event.target.checked)}>区分大小写</Checkbox>
           {saving && <p>正在保存替换结果…</p>}
         </Dialog>
       )}

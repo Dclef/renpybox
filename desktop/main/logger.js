@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, existsSync, statSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { inspect, stripVTControlCharacters } from 'node:util';
+import { stdioConsole } from './stdio-console.js';
 
 /** Concise console output; complete diagnostics remain in the local log. */
 export function createLogger(logDir, { consoleOutput = true } = {}) {
@@ -19,7 +20,7 @@ export function createLogger(logDir, { consoleOutput = true } = {}) {
     appendFileSync(logPath, `${new Date().toISOString()} [${level}] ${message}` + String.fromCharCode(10), 'utf8');
     if (consoleOutput && level !== 'DEBUG') {
       const firstLine = message.split(/\r?\n/, 1)[0];
-      const output = level === 'ERROR' ? console.error : console.log;
+      const output = level === 'ERROR' ? stdioConsole.error : stdioConsole.log;
       output(`[RenpyBox] ${firstLine}`);
     }
   }

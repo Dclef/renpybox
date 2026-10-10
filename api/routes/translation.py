@@ -264,45 +264,112 @@ def read_state(request: Request) -> TranslationStateResponse:
     )
 
 
+def _ensure_engine_idle_for_cache_write(engine: Engine) -> None:
+    """与 /start 同口径：引擎忙、停止收尾或单条重译期间拒绝改写缓存。"""
+    if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier():
+        raise HTTPException(status_code = 409, detail = "翻译任务正在运行或停止收尾，请结束后再重置失败项")
+    if engine.has_single_tasks():
+        raise HTTPException(status_code = 409, detail = "有单条重译任务正在运行，请稍候再重置失败项")
+
+
+def _refresh_progress_after_failed_reset(manager: CacheManager) -> dict[str, Any]:
+    """按条目状态重算进度，口径与 Translator 续跑一致：已译=已完成条目，总数=已完成+待译。"""
+    from module.Engine.Quality.TranslationQualityReport import build_translation_quality_report
+
+    items = manager.get_items()
+    completed = sum(1 for item in items if Base.is_item_completed(item.get_status()))
+    remaining = sum(1 for item in items if item.get_status() == Base.TranslationStatus.UNTRANSLATED)
+    # 失败统计只保留仍带重试元数据的条目，已重置的失败不再计入。
+    report = build_translation_quality_report(items)
+
+    project = manager.get_project()
+    progress = project.get_progress()
+    progress.update({
+        "line": completed,
+        "total_line": completed + remaining,
+        "failed_line_count": report.failed_count,
+        "line_count_mismatch_count": report.line_mismatch_count,
+    })
+    project.set_progress(progress)
+    if remaining > 0:
+        # 项目置为可续跑状态，「继续任务」才会按续译路径读取本缓存。
+        project.set_status(Base.TranslationStatus.TRANSLATING)
+    return {**progress, "status": project.get_status()}
+
+
 @router.post("/retry-failed")
 def retry_failed(request: Request) -> dict:
-    """重置「原译相同」的条目为未翻译，之后可用继续任务重翻。"""
+    """重置翻译失败条目为未翻译，之后由用户点「继续任务」重翻；本请求不启动翻译。"""
+    engine = Engine.get()
+    _ensure_engine_idle_for_cache_write(engine)
+
     config = request.app.state.config
     output_path = resolve_translation_output(config)
     if output_path is None:
         raise HTTPException(status_code = 404, detail = "未找到当前项目缓存")
+    output_folder = str(output_path)
 
-    try:
-        manager = CacheManager(service = False)
-        manager.load_from_file(str(output_path), strict = True)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code = 400, detail = f"缓存载入失败：{exc}") from exc
+    # 持有缓存类锁完成「读-改-写」，避免与运行期 CacheManager 的自动保存交错。
+    with CacheManager.LOCK:
+        _ensure_engine_idle_for_cache_write(engine)
+        runtime_manager = getattr(getattr(engine, "translator", None), "cache_manager", None)
+        if (
+            runtime_manager is not None
+            and getattr(runtime_manager, "require_flag", False) is True
+            and os.path.normcase(os.path.abspath(str(getattr(runtime_manager, "require_path", "") or "")))
+            == os.path.normcase(os.path.abspath(output_folder))
+        ):
+            raise HTTPException(status_code = 409, detail = "上一轮翻译缓存仍在等待保存，请稍候再重置失败项")
 
-    count = manager.reset_same_translation_items()
-    if count <= 0:
-        return {"ok": True, "count": 0, "detail": "没有找到原译相同的条目"}
+        try:
+            manager = CacheManager(service = False)
+            manager.load_from_file(output_folder, strict = True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code = 400, detail = f"缓存载入失败：{exc}") from exc
 
-    saved = manager.save_to_file(
-        project = manager.get_project(),
-        items = manager.get_items(),
-        output_folder = str(output_path),
-    )
+        count = manager.reset_failed_translation_items()
+        if count <= 0:
+            return {"ok": True, "count": 0, "detail": "没有找到翻译失败或原译相同的条目"}
+
+        progress = _refresh_progress_after_failed_reset(manager)
+        saved = manager.save_to_file(
+            project = manager.get_project(),
+            items = manager.get_items(),
+            output_folder = output_folder,
+        )
     if saved is not True:
         raise HTTPException(
             status_code = 500,
             detail = "缓存写入失败，未确认重置结果，请检查输出目录权限后重试",
         )
 
-    # 与翻译页一致：立刻把新的项目状态推给渲染端，让进度回落到待翻译。
-    _emit(Base.Event.TRANSLATION_UPDATE, manager.get_project().get_progress())
-    return {"ok": True, "count": count}
+    # 只推送重算后的缓存进度，不发 TRANSLATION_START，翻译仍需用户点「继续任务」。
+    _emit(Base.Event.TRANSLATION_UPDATE, progress)
+    return {
+        "ok": True,
+        "count": count,
+        "detail": f"已重置 {count} 条失败项，请点击「继续任务」重新翻译",
+    }
 
 
 @router.post("/estimate", response_model = TokenEstimateResult)
-def estimate_tokens(request: Request, body: TokenEstimateRequest) -> TokenEstimateResult:
-    """Token 估算。同步返回，结果直接进对话框。"""
+def estimate_tokens(
+    request: Request,
+    body: TokenEstimateRequest | None = None,
+) -> TokenEstimateResult:
+    """Token 估算。同步返回，结果直接进对话框。
+
+    兼容无 body / ``{}``：前端 ``request()`` 会带 JSON Content-Type，缺 body 时
+    FastAPI 对必填模型会 422；这里显式允许省略，platform_id 缺省走激活平台。
+    """
     config = request.app.state.config
-    platform = config.get_platform(config.activate_platform)
+    payload = body or TokenEstimateRequest()
+    platform_id = (
+        payload.platform_id
+        if payload.platform_id is not None
+        else config.activate_platform
+    )
+    platform = config.get_platform(platform_id)
     if platform is None:
         raise HTTPException(status_code = 409, detail = "未找到激活的平台配置")
 

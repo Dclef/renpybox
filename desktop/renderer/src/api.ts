@@ -272,7 +272,8 @@ export function exportTranslation(): Promise<{ ok: boolean }> {
   return request('/api/translation/export', { method: 'POST' });
 }
 
-export function retryFailedTranslations(): Promise<{ ok: boolean; count: number; detail: string }> {
+/** 只重置失败条目，不启动翻译；detail 兼容旧后端可能缺省。 */
+export function retryFailedTranslations(): Promise<{ ok: boolean; count: number; detail?: string }> {
   return request('/api/translation/retry-failed', { method: 'POST' });
 }
 
@@ -314,5 +315,9 @@ export function cancelProofreadingQuality(): Promise<{ ok: boolean }> {
 }
 
 export function estimateTokens(): Promise<TokenEstimate> {
-  return request<TokenEstimate>('/api/translation/estimate', { method: 'POST' });
+  // 显式 {}：request() 固定带 application/json，无 body 时后端会 422 Field required。
+  return request<TokenEstimate>('/api/translation/estimate', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 }

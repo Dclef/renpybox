@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Button } from '@mantine/core';
+import { Button } from 'antd';
 import { ArrowLeft } from 'lucide-react';
 
 import { useT } from '../i18n';
@@ -20,12 +20,12 @@ export function ToolPageFrame(props: {
       <PageHeader
         title={title}
         description={description}
-        actions={<Button variant="default" leftSection={<ArrowLeft size={16} />} onClick={onBack}>{t('app_back_to_toolbox')}</Button>}
+        actions={<Button type="default" icon={<ArrowLeft size={16} />} onClick={onBack}>{t('app_back_to_toolbox')}</Button>}
       />
       {blocked ? (
         <Banner tone="warning">
           {t('app_tool_needs_project')}
-          <Button variant="default" onClick={onOpenProject}>{t('app_go_project_settings')}</Button>
+          <Button type="default" onClick={onOpenProject}>{t('app_go_project_settings')}</Button>
         </Banner>
       ) : (
         <div className="rb-tool-panel">{children}</div>

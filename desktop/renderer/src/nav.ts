@@ -12,6 +12,12 @@ export type PageKey =
   | 'glossary'
   | 'preserve'
   | 'honorific'
+  | 'onekey'
+  | 'onekey-apply'
+  | 'pack-unpack'
+  | 'ma-suite'
+  | 'batch-correction'
+  | 'name-extraction'
   | 'agent'
   | 'project'
   | 'platform'
@@ -42,6 +48,12 @@ const PAGES: NavItem[] = [
   { key: 'glossary', labelKey: 'app_glossary_page', label: '术语表', icon: 'BookOpenText' },
   { key: 'preserve', labelKey: 'app_text_preserve_page', label: '禁翻表', icon: 'BookOpenText' },
   { key: 'honorific', labelKey: 'app_honorific_page', label: '称呼桥接', icon: 'BookOpenText' },
+  { key: 'onekey', labelKey: 'app_onekey_page', label: '一键翻译', icon: 'Languages' },
+  { key: 'onekey-apply', labelKey: 'app_onekey_apply_page', label: '应用译文', icon: 'FolderCog' },
+  { key: 'pack-unpack', labelKey: 'app_pack_unpack_page', label: '解包与反编译', icon: 'Wrench' },
+  { key: 'ma-suite', labelKey: 'app_ma_suite_page', label: '终极结构导出', icon: 'Wrench' },
+  { key: 'batch-correction', labelKey: 'app_batch_correction_page', label: '批量修正', icon: 'Wrench' },
+  { key: 'name-extraction', labelKey: 'app_name_extraction_page', label: '姓名提取', icon: 'Wrench' },
   { key: 'workbench', labelKey: 'app_workbench_page', label: '角色 / 世界观工作台', icon: 'UsersRound' },
   { key: 'basic-settings', labelKey: 'app_basic_settings_page', label: '基础设置', icon: 'SlidersHorizontal' },
   { key: 'expert-settings', labelKey: 'app_expert_settings_page', label: '专家设置', icon: 'SlidersHorizontal' },
@@ -58,7 +70,7 @@ export const APP_SETTINGS_NAV: NavItem = {
 
 const page = (key: PageKey): NavItem => PAGES.find((item) => item.key === key)!;
 
-export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve', 'honorific'];
+export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve', 'honorific', 'onekey', 'onekey-apply', 'pack-unpack', 'ma-suite', 'batch-correction', 'name-extraction'];
 
 /** 侧栏四段。段间留白，不显示分组标题。 */
 export const NAV_SECTIONS: NavItem[][] = [

@@ -35,6 +35,21 @@ SECRET_FIELDS = frozenset({
 REDACTED = "***"
 _SETTINGS_LOCK = threading.Lock()
 
+# 翻译规则字段：引擎忙碌时禁止修改
+TRANSLATION_RULE_KEYS = frozenset({
+    "text_preserve_data",
+    "text_preserve_enable",
+    "honorific_placeholder_titles",
+    "honorific_placeholder_bridge_enable",
+})
+HONORIFIC_RULE_KEYS = frozenset({
+    "honorific_placeholder_titles",
+    "honorific_placeholder_bridge_enable",
+})
+HONORIFIC_TITLES_MAX_ROWS = 5000
+HONORIFIC_TITLE_MAX_LEN = 200
+HONORIFIC_COMMENT_MAX_LEN = 2000
+
 
 def _is_secret(field_name: str) -> bool:
     return field_name.lower() in SECRET_FIELDS
@@ -56,6 +71,53 @@ def _sanitise(value: Any) -> Any:
     return repr(value)
 
 
+def _normalize_honorific_titles(value: Any) -> list[str | dict[str, str]]:
+    """校验并规范化称呼词：允许 str 或 {src, comment}，过滤空称呼。"""
+    from module.TextProcessor import TextProcessor
+
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="honorific_placeholder_titles 期望列表")
+    if len(value) > HONORIFIC_TITLES_MAX_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"称呼词超过 {HONORIFIC_TITLES_MAX_ROWS} 行限制",
+        )
+
+    entries: list[dict[str, str]] = []
+    for item in value:
+        if isinstance(item, str):
+            src = item.strip().lower()
+            comment = ""
+        elif isinstance(item, dict):
+            src_raw = item.get("src", "")
+            comment_raw = item.get("comment", "")
+            if src_raw is not None and not isinstance(src_raw, str):
+                raise HTTPException(status_code=400, detail="称呼词 src 必须是字符串")
+            if comment_raw is not None and not isinstance(comment_raw, str):
+                raise HTTPException(status_code=400, detail="称呼词 comment 必须是字符串")
+            src = str(src_raw or "").strip().lower()
+            comment = str(comment_raw or "").strip()
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="称呼词条目必须是字符串或含 src/comment 的对象",
+            )
+        if not src:
+            continue
+        if len(src) > HONORIFIC_TITLE_MAX_LEN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"称呼词长度不能超过 {HONORIFIC_TITLE_MAX_LEN} 字符",
+            )
+        if len(comment) > HONORIFIC_COMMENT_MAX_LEN:
+            raise HTTPException(
+                status_code=400,
+                detail=f"称呼词备注长度不能超过 {HONORIFIC_COMMENT_MAX_LEN} 字符",
+            )
+        entries.append({"src": src, "comment": comment})
+    return TextProcessor.serialize_honorific_titles(entries)
+
+
 @router.get("", response_model = SettingsResponse)
 def read_settings(request: Request) -> SettingsResponse:
     config = request.app.state.config
@@ -74,17 +136,21 @@ def read_settings(request: Request) -> SettingsResponse:
 @router.patch("", response_model = SettingsResponse)
 def patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
     with _SETTINGS_LOCK:
-        return _patch_settings(request, patch)
+        if not set(patch.values) & TRANSLATION_RULE_KEYS:
+            return _patch_settings(request, patch)
+        from module.Engine.Engine import Engine
+        engine = Engine.get()
+        if not engine.try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
+            raise HTTPException(status_code=409, detail="任务执行期间不能修改翻译规则。")
+        try:
+            return _patch_settings(request, patch)
+        finally:
+            engine.release_status(Engine.Status.TESTING)
 
 
 def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
     original = request.app.state.config
     config = copy.deepcopy(original)
-    if set(patch.values) & {"text_preserve_data", "text_preserve_enable", "honorific_placeholder_titles", "honorific_placeholder_bridge_enable"}:
-        from module.Engine.Engine import Engine
-        engine = Engine.get()
-        if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier() or engine.has_single_tasks():
-            raise HTTPException(status_code=409, detail="任务执行期间不能修改翻译规则。")
     known = {f.name for f in dataclasses.fields(config)}
 
     for key, value in patch.values.items():
@@ -93,18 +159,24 @@ def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
         if _is_secret(key):
             raise HTTPException(status_code = 403, detail = f"{key} 需通过密钥流程修改")
 
-        current = getattr(config, key, None)
-        if isinstance(current, bool):
+        if key == "honorific_placeholder_titles":
+            value = _normalize_honorific_titles(value)
+        elif key == "honorific_placeholder_bridge_enable":
             if not isinstance(value, bool):
-                raise HTTPException(status_code = 400, detail = f"{key} 期望布尔值")
-        elif isinstance(current, int) and not isinstance(current, bool):
-            if not isinstance(value, int):
-                raise HTTPException(status_code = 400, detail = f"{key} 期望整数")
-        elif isinstance(current, str):
-            if not isinstance(value, str):
-                raise HTTPException(status_code = 400, detail = f"{key} 期望字符串")
-        elif isinstance(current, list) and not isinstance(value, list):
-            raise HTTPException(status_code = 400, detail = f"{key} 期望列表")
+                raise HTTPException(status_code=400, detail=f"{key} 期望布尔值")
+        else:
+            current = getattr(config, key, None)
+            if isinstance(current, bool):
+                if not isinstance(value, bool):
+                    raise HTTPException(status_code = 400, detail = f"{key} 期望布尔值")
+            elif isinstance(current, int) and not isinstance(current, bool):
+                if not isinstance(value, int):
+                    raise HTTPException(status_code = 400, detail = f"{key} 期望整数")
+            elif isinstance(current, str):
+                if not isinstance(value, str):
+                    raise HTTPException(status_code = 400, detail = f"{key} 期望字符串")
+            elif isinstance(current, list) and not isinstance(value, list):
+                raise HTTPException(status_code = 400, detail = f"{key} 期望列表")
 
         setattr(config, key, value)
 

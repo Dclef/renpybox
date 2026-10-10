@@ -134,7 +134,8 @@ class Config():
     sakura_jsonline_retry_enable: bool = True
     token_estimation_output_ratio: float = 1.2
     honorific_placeholder_bridge_enable: bool = True
-    honorific_placeholder_titles: list[str] = dataclasses.field(default_factory = lambda: [
+    # 兼容 legacy 纯字符串与带备注的 {src, comment} 字典
+    honorific_placeholder_titles: list[str | dict[str, str]] = dataclasses.field(default_factory = lambda: [
         "mr",
         "mrs",
         "ms",
@@ -640,7 +641,7 @@ class Config():
         self.auto_process_prefix_suffix_preserved_text: bool = False
         self.sakura_jsonline_retry_enable: bool = True
         self.honorific_placeholder_bridge_enable: bool = True
-        self.honorific_placeholder_titles: list[str] = [
+        self.honorific_placeholder_titles: list[str | dict[str, str]] = [
             "mr",
             "mrs",
             "ms",
