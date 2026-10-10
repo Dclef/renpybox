@@ -30,6 +30,7 @@ import { Banner, Dialog, Empty, NumberInput, PageHeader } from '../ui';
 import type { AppState } from '../useAppState';
 import { Waveform } from '../Waveform';
 import { useT } from '../i18n';
+import { describeTokenEstimate, elapsedSeconds, translationCommands } from '../translationView.mjs';
 
 const STATUS_TEXT: Record<string, string> = {
   IDLE: '无任务',
@@ -49,6 +50,9 @@ const PHASE_TEXT: Record<string, string> = {
 /** 波形采样节拍：对齐 WaveformWidget 的 refresh_rate = 2（500ms） */
 const SAMPLE_INTERVAL_MS = 500;
 const WAVE_COLUMNS = 50;
+
+/** 页面切换会卸载组件；按运行代次暂存波形，切回来时同一轮任务的采样不丢。 */
+let waveCache: { runId: number; samples: number[] } = { runId: 0, samples: [] };
 
 /** 文案格式照 LocalizerZH：{H}时 {M}分 {S}秒 / {M}分 {S}秒 / {S}秒 */
 function formatDuration(seconds: number): string {
@@ -87,7 +91,9 @@ export function TranslationPage(props: {
   const { state, onOpenWorkbench, onOpenProofreading, onOpenProject, onOpenPlatform } = props;
   const t = useT();
   const progress = state.translation.progress as TranslationUpdateData;
-  const [samples, setSamples] = useState<number[]>([]);
+  const runId = state.translation.run_id;
+  const [samples, setSamples] = useState<number[]>(() => (waveCache.runId === runId ? waveCache.samples : []));
+  const [now, setNow] = useState(() => Date.now());
   const [confirmStop, setConfirmStop] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [assetsMissing, setAssetsMissing] = useState(false);
@@ -123,6 +129,10 @@ export function TranslationPage(props: {
     });
   }, [state.subscribe]);
 
+  useEffect(() => {
+    waveCache = { runId, samples };
+  }, [runId, samples]);
+
   const projectKey = `${state.project?.renpy_project_path ?? ''}\n${inputFolder}`;
   useEffect(() => {
     if (state.translationTimerDeadline !== null && state.translationTimerProjectKey !== projectKey) {
@@ -140,10 +150,12 @@ export function TranslationPage(props: {
     return () => window.clearInterval(timer);
   }, [timerDeadline]);
 
-  // 轮询补一次 running 计数：running/max 不在事件流里，引擎在跑时定时对齐。
+  // 轮询补一次 running 计数：running/max 不在事件流里，引擎在跑时定时对齐；
+  // 同一节拍刷新已用时间，批次之间也按 start_time 实时走秒。
   useEffect(() => {
     if (!isTranslating && !isStopping) return;
     const timer = window.setInterval(() => {
+      setNow(Date.now());
       void state.reloadTranslation();
     }, 1000);
     return () => window.clearInterval(timer);
@@ -152,12 +164,12 @@ export function TranslationPage(props: {
   const line = Number(progress.line ?? 0);
   const totalLine = Number(progress.total_line ?? 0);
   const percent = totalLine > 0 ? Math.min(1, line / totalLine) : 0;
-  const preparing = progress.phase === 'preparing' || (isTranslating && line === 0);
+  const preparing = isTranslating && (progress.phase === 'preparing' || line === 0);
   const message = progress.message ?? PHASE_TEXT[progress.phase ?? ''] ?? '';
 
   const inputTokens = Number(progress.total_input_tokens ?? 0);
   const outputTokens = Number(progress.total_output_tokens ?? 0);
-  const elapsed = Number(progress.time ?? 0);
+  const elapsed = elapsedSeconds(progress, status, now);
   const remaining = totalLine > line && elapsed > 0 ? (elapsed / Math.max(line, 1)) * (totalLine - line) : 0;
   const failed = Number(progress.failed_line_count ?? 0);
   const batches = Number(progress.processed_batches ?? 0);
@@ -294,12 +306,8 @@ export function TranslationPage(props: {
     setBusy(true);
     try {
       const result = await state.estimateTokens();
-      if (!result) return;
-      state.pushToast(
-        'info',
-        `估算：原文 ${result.total_source_tokens} tokens，输入约 ${result.estimated_input_tokens}，` +
-          `输出约 ${result.estimated_output_tokens}，${result.batch_count} 个批次，待译 ${result.untranslated_count} 条`,
-      );
+      const { tone, text } = describeTokenEstimate(result);
+      state.pushToast(tone, text);
     } catch (error) {
       state.pushToast('warning', error instanceof Error ? error.message : String(error));
     } finally {
@@ -308,12 +316,12 @@ export function TranslationPage(props: {
   }, [state]);
 
   const commandDisabled = busy || !state.ready;
-  // 运行、停止收尾或准备阶段禁止重置，避免与翻译器并发写缓存。
-  const retryFailedDisabled = commandDisabled || !canStart || isTranslating || isStopping || preparing;
+  const commands = translationCommands(state.translation, { busy, ready: state.ready });
   const statusLabel = isStopping ? '正在停止' : preparing ? '正在准备'
     : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
     : state.translation.progress_error ? t('translation_cache_error')
-    : totalLine > 0 ? line >= totalLine && failed === 0 ? '已完成' : '可继续' : '待开始';
+    : commands.confirmRestart ? '可继续'
+    : totalLine > 0 ? '已完成' : '待开始';
 
   const continuePrimary = statusLabel === '可继续';
   const latencyText = averageLatency > 0 ? `${averageLatency.toFixed(2)}s` : '—';
@@ -425,14 +433,14 @@ export function TranslationPage(props: {
       </div>
 
       <footer className="translation-footer rb-command-bar">
-        <Button type={continuePrimary ? 'default' : 'primary'} disabled={commandDisabled || !canStart || isTranslating} onClick={() => setConfirmReset(true)} icon={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
-        <Button type={continuePrimary ? 'primary' : 'default'} disabled={commandDisabled || !canStart} onClick={() => void start('TRANSLATING')} icon={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
-        <Button className="rb-stop" danger disabled={commandDisabled || !isTranslating} onClick={() => setConfirmStop(true)} icon={<Square size={16} strokeWidth={1.75} />}>停止</Button>
-        <Button type="default" disabled={commandDisabled || isTranslating} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} icon={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
+        <Button type={continuePrimary ? 'default' : 'primary'} disabled={!commands.start} onClick={() => (commands.confirmRestart ? setConfirmReset(true) : void start('UNTRANSLATED'))} icon={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
+        <Button type={continuePrimary ? 'primary' : 'default'} disabled={!commands.continueTask} title={commands.continueTask ? undefined : '当前项目没有可继续的翻译缓存'} onClick={() => void start('TRANSLATING')} icon={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
+        <Button className="rb-stop" danger disabled={!commands.stop} onClick={() => setConfirmStop(true)} icon={<Square size={16} strokeWidth={1.75} />}>停止</Button>
+        <Button type="default" disabled={!commands.exportFile} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} icon={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
         <Button type="default" disabled={commandDisabled} onClick={() => void onEstimate()} icon={<Calculator size={16} strokeWidth={1.75} />}>估算 Token</Button>
         <Button
           type="default"
-          disabled={retryFailedDisabled}
+          disabled={!commands.retryFailed}
           title="将失败条目重置为待翻译，随后点击「继续任务」重新翻译"
           onClick={() => void onRetryFailed()}
           icon={<RefreshCw size={16} strokeWidth={1.75} />}

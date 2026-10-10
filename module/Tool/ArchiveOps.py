@@ -85,6 +85,10 @@ def resolve_pack_source(path: str | Path) -> Path:
     return source
 
 
+def _path_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(str(path))).rstrip("\\/")
+
+
 def resolve_pack_output(source_dir: str | Path, output_file: str | Path | None) -> Path:
     """解析打包输出；留空时按 Qt5 规则推导为源目录同级的“源目录名.rpa”。"""
     source = resolve_pack_source(source_dir)
@@ -94,11 +98,23 @@ def resolve_pack_output(source_dir: str | Path, output_file: str | Path | None) 
     else:
         if not source.name:
             raise ValueError(f"无法从源目录推导输出文件名：{source}")
+        # 整个 game 打包时条目不带 game/ 前缀，推导出的项目根 game.rpa 不会被 Ren'Py 加载。
+        if source.name.casefold() == GAME_DIR_NAME:
+            raise ValueError("打包整个 game 目录时请手动指定输出文件（应位于 game 目录内），默认的项目根 game.rpa 无法被游戏加载")
         output = source.parent / f"{source.name}{RPA_SUFFIX}"
     if not output.name.lower().endswith(RPA_SUFFIX):
         raise ValueError("输出文件必须以 .rpa 结尾")
     if not output.parent.is_dir():
         raise FileNotFoundError(f"输出目录不存在：{output.parent}")
+    # 输出在源目录树内时，旧包会被排除在打包内容之外再被替换，原归档内容将永久丢失。
+    source_key = _path_key(source)
+    parent_key = _path_key(output.parent)
+    if parent_key == source_key or parent_key.startswith(source_key + os.sep):
+        part_pattern = Packer._part_name_pattern(output)
+        if output.exists() or any(
+            path.is_file() and part_pattern.fullmatch(path.name) for path in output.parent.iterdir()
+        ):
+            raise FileExistsError(f"输出文件已存在于源目录内，覆盖会丢失该归档原有内容，请换一个文件名：{output}")
     return output
 
 

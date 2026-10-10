@@ -1,11 +1,11 @@
 /** 工具箱：沿用旧版四组分类与卡片入口，未接入工具明确提示使用原桌面版。 */
 
 import { useMemo, useState } from 'react';
-import { useT, type TextKey } from '../i18n';
-import { Button, Input } from 'antd';
+import { useT } from '../i18n';
+import { Input } from 'antd';
 import { ChevronRight, Search } from 'lucide-react';
 
-import { findTool, searchTools, TOOL_ICONS, toolsByGroup, type ToolSpec } from '../tools';
+import { searchTools, TOOL_ICONS, toolsByGroup, type ToolSpec } from '../tools';
 import type { AppState } from '../useAppState';
 import type { PageKey } from '../nav';
 import { Banner, Dialog, Empty, PageHeader } from '../ui';
@@ -22,13 +22,15 @@ function InlineSvg(props: { markup: string }) {
   return <span className="tool-card-icon" dangerouslySetInnerHTML={{ __html: props.markup }} />;
 }
 
-function ToolCard(props: { tool: ToolSpec; blocked: boolean; onOpen: (tool: ToolSpec) => void }) {
-  const { tool, blocked, onOpen } = props;
+/** active 仅表示当前打开说明的卡片；聚焦与按下由 CSS 伪类处理。 */
+function ToolCard(props: { tool: ToolSpec; blocked: boolean; active: boolean; onOpen: (tool: ToolSpec) => void }) {
+  const { tool, blocked, active, onOpen } = props;
   const t = useT();
   return (
     <button
       type="button"
       className="tool-card"
+      data-active={active}
       disabled={blocked}
       onClick={() => onOpen(tool)}
       title={blocked ? '需先选择游戏目录' : `打开${tool.title}`}
@@ -43,44 +45,6 @@ function ToolCard(props: { tool: ToolSpec; blocked: boolean; onOpen: (tool: Tool
       </span>
       <ChevronRight size={16} strokeWidth={1.75} />
     </button>
-  );
-}
-
-const FLOW_STEPS: { page: PageKey; tool: string; title: TextKey; desc: TextKey }[] = [
-  { page: 'glossary', tool: 'local_glossary', title: 'app_glossary_page', desc: 'flow_step_glossary_desc' },
-  { page: 'preserve', tool: 'text_preserve', title: 'app_text_preserve_page', desc: 'flow_step_preserve_desc' },
-  { page: 'honorific', tool: 'honorific_placeholder', title: 'app_honorific_page', desc: 'flow_step_honorific_desc' },
-  { page: 'onekey', tool: 'one_key_translate', title: 'app_onekey_page', desc: 'flow_step_onekey_desc' },
-];
-
-function FlowGuide(props: { hasProject: boolean; onNavigate: (page: PageKey) => void }) {
-  const { hasProject, onNavigate } = props;
-  const t = useT();
-  return (
-    <div className="rb-flow-guide">
-      <div className="rb-flow-guide-head">
-        <span className="rb-tool-title">{t('flow_guide_title')}</span>
-        <span className="rb-tool-desc">{t('flow_guide_desc')}</span>
-      </div>
-      {hasProject ? null : <Banner tone="warning">{t('flow_guide_no_project')}</Banner>}
-      <ol className="rb-flow-steps" aria-label={t('flow_guide_title')}>
-        {FLOW_STEPS.map((step, index) => {
-          const blocked = findTool(step.tool)?.requiresProject === true && !hasProject;
-          const needsDir = step.page === 'onekey' && !hasProject;
-          return (
-            <li key={step.page}>
-              <Button className="rb-flow-step" disabled={blocked} onClick={() => onNavigate(step.page)}>
-                <span className="rb-flow-step-index">{index + 1}</span>
-                <span className="rb-flow-step-copy">
-                  <span className="rb-tool-title">{t(step.title)}</span>
-                  <span className="rb-tool-desc" data-warning={needsDir || undefined}>{t(needsDir ? 'flow_step_onekey_needs_dir' : step.desc)}</span>
-                </span>
-              </Button>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
   );
 }
 
@@ -137,6 +101,7 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
                     key={tool.key}
                     tool={tool}
                     blocked={tool.requiresProject && !hasProject}
+                    active={selected?.key === tool.key}
                     onOpen={openTool}
                   />
                 ))}
@@ -154,13 +119,13 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
                 <span className="tool-group-title">{group.title}</span>
                 <span className="tool-group-count">{tools.length} 款工具</span>
               </div>
-              {group.group === 'flow' ? <FlowGuide hasProject={hasProject} onNavigate={onNavigate} /> : null}
               <div className="rb-tool-list">
                 {tools.map((tool) => (
                   <ToolCard
                     key={tool.key}
                     tool={tool}
                     blocked={tool.requiresProject && !hasProject}
+                    active={selected?.key === tool.key}
                     onOpen={openTool}
                   />
                 ))}

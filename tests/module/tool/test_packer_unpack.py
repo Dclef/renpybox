@@ -90,7 +90,7 @@ def test_unpack_rpa_files_falls_back_to_unren_bat(monkeypatch) -> None:
 
     result = packer.unpack_rpa_files(
         "game",
-        script_only=True,
+        script_only=False,
         progress_callback=stages.append,
     )
 
@@ -102,10 +102,35 @@ def test_unpack_rpa_files_falls_back_to_unren_bat(monkeypatch) -> None:
     }
     assert external_args == {
         "game_dir": "game",
-        "script_only": True,
+        "script_only": False,
         "output_root": "game",
     }
     assert stages == ["direct", "direct_failed", "external", "unren_bat"]
+
+
+def test_unpack_rpa_files_script_only_never_uses_unren_bat(monkeypatch) -> None:
+    """UnRen 批处理会解出全部资源，仅脚本模式下必须跳过并明确失败。"""
+    packer = Packer()
+    stages = []
+    monkeypatch.setattr(packer, "validate_rpa_paths", lambda _game_dir: True)
+    monkeypatch.setattr(packer, "find_rpa_files", lambda _game_dir: ["a.rpa"])
+    monkeypatch.setattr(
+        packer,
+        "unpack_all_unren",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("直接解包失败")),
+    )
+    monkeypatch.setattr(packer, "unpack_all", lambda *_args, **_kwargs: (0, []))
+    monkeypatch.setattr(
+        packer,
+        "unpack_all_unren_bat",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应启动 UnRen 兜底")),
+    )
+
+    result = packer.unpack_rpa_files("game", script_only=True, progress_callback=stages.append)
+
+    assert result["success"] is False
+    assert result["code"] == "SCRIPT_ONLY_UNSUPPORTED"
+    assert stages == ["direct", "direct_failed", "external"]
 
 
 def test_unpack_rpa_files_uses_unren_bat_when_external_tool_fails(monkeypatch) -> None:

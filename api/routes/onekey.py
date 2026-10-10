@@ -393,13 +393,10 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         check_cancel()
         if status != "ready":
             raise RuntimeError(message or "预处理后仍无可抽取脚本")
-        progress("正在配置翻译路径", 45, stage="paths")
-        prepared = prepare_extraction_paths(config, game_root, language, incremental=incremental)
-        check_cancel()
-        progress("正在抽取文本", 55, stage="extract")
+        progress("正在抽取文本", 45, stage="extract")
 
         def extract_progress(msg: str, pct: int) -> None:
-            progress(msg, max(55, min(90, 55 + int(pct * 0.35))), stage="extract")
+            progress(msg, max(45, min(85, 45 + int(pct * 0.4))), stage="extract")
 
         success, extract_message, result = extract_project_text(
             game_root,
@@ -414,6 +411,12 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
             raise asyncio.CancelledError()
         if not success:
             raise RuntimeError(extract_message or "文本抽取失败")
+
+        # 与 Qt5 一致：抽取成功后才配置翻译路径并备份旧增量输出缓存，
+        # 抽取失败或取消时不能挪走用户尚未应用的 <lang>_new 译文。
+        check_cancel()
+        progress("正在配置翻译路径", 90, stage="paths")
+        prepared = prepare_extraction_paths(config, game_root, language, incremental=incremental)
 
         # 把路径写回共享配置（仍锁定在快照项目）；不再二次备份增量缓存。
         with CacheManager.LOCK:

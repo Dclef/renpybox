@@ -9,6 +9,8 @@ _PACK_UNPACK_ERROR_ZH = {
     "EXTRACTOR_FAILED": "游戏自带的 Ren'Py 解包器执行失败。",
     "UNAVAILABLE": "未找到可解包的 RPA 文件，或所有解包方式均失败。",
     "UNREN_SKIPPED": "前两种解包方式失败，UnRen 兜底因安全校验不可用而跳过。",
+    "NO_RPA": "所选 game 目录中没有 .rpa 文件，无需解包。",
+    "SCRIPT_ONLY_UNSUPPORTED": "仅脚本模式下直接解包和外部工具均未成功；UnRen 兜底会解出全部资源，已跳过。可取消“仅脚本”后重试。",
 }
 
 

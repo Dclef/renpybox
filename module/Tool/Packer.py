@@ -554,6 +554,10 @@ class Packer:
                 if progress_callback:
                     progress_callback("direct_failed")
 
+        # 游戏加载器可能识别自定义扩展名，所以直接解包仍会尝试；外部工具和 UnRen 只处理 .rpa。
+        if archive_count == 0:
+            return self._no_rpa_result()
+
         if progress_callback:
             progress_callback("external")
         try:
@@ -571,6 +575,16 @@ class Packer:
                 "method": "external",
                 "count": count,
                 "message": f"外部工具解包完成，共解包 {count} 个 RPA 文件",
+            }
+
+        # UnRen 批处理会解出全部资源，无法只取脚本。
+        if script_only:
+            return {
+                "success": False,
+                "method": "none",
+                "count": 0,
+                "code": "SCRIPT_ONLY_UNSUPPORTED",
+                "message": "仅脚本模式下前两种解包方式失败，UnRen 兜底不支持只解包脚本，已跳过",
             }
 
         if not allow_unren_bat:
@@ -606,12 +620,30 @@ class Packer:
             "message": "未找到可解包的 RPA 文件，或所有解包方式均失败",
         }
 
-    def _unpack_archive_in_process(self, archive_path: Path, out_dir: Path) -> int:
+    @staticmethod
+    def _no_rpa_result() -> dict[str, object]:
+        return {
+            "success": False,
+            "method": "none",
+            "count": 0,
+            "code": "NO_RPA",
+            "message": "game 目录中没有 .rpa 文件，无需解包",
+        }
+
+    def _unpack_archive_in_process(
+        self,
+        archive_path: Path,
+        out_dir: Path,
+        *,
+        script_only: bool = False,
+        protected_keys: set[str] | None = None,
+    ) -> int:
         """进程内解包单个 RPA（rpatool 库模式）。
 
         与上游 shiz/rpatool 一致：RenPyArchive 本身就是纯 Python 库，
         无需子进程。进程内执行彻底消除 CLI 输出塞满管道导致的死锁面。
         支持读取 RPA-2.0 / RPA-3.0 / RPA-3.2。
+        script_only 时只写出 .rpy/.rpyc；protected_keys 中的路径（源 .rpa）永不覆盖。
         """
         archive = RenPyArchive(str(archive_path))
         written = 0
@@ -619,7 +651,12 @@ class Packer:
             for name in archive.list():
                 if not self._is_safe_archive_name(name):
                     raise PackerUnpackError("UNSAFE_PATH", f"RPA 包含不安全路径: {name}")
+                if script_only and not str(name).lower().endswith((".rpy", ".rpyc")):
+                    continue
                 target = out_dir / str(name).replace("\\", "/")
+                if protected_keys and self._normalized_path_key(target) in protected_keys:
+                    self.logger.warning(f"跳过会覆盖源归档的条目: {name}")
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 data = archive.read(name)
                 with open(target, "wb") as fh:
@@ -668,6 +705,7 @@ class Packer:
 
         total_files = len(files)
         self.logger.info(f"找到 {total_files} 个 RPA 文件，开始解包")
+        protected_keys = {self._normalized_path_key(path.resolve()) for path in files}
 
         for index, rpa in enumerate(files, start=1):
             out_dir = Path(output_root) if output_root else (Path(game_dir) / "unpacked_rpa" / rpa.stem)
@@ -675,11 +713,21 @@ class Packer:
             bar = self._format_progress_bar(index, total_files)
             try:
                 # 第一通道：进程内 rpatool 库，零子进程、零管道死锁面
-                self._unpack_archive_in_process(rpa, out_dir)
+                self._unpack_archive_in_process(
+                    rpa,
+                    out_dir,
+                    script_only=bool(script_only),
+                    protected_keys=protected_keys,
+                )
                 unpacked += 1
                 self.logger.info(f"进度 {bar} 解包(进程内): {rpa.name}")
                 continue
             except Exception as exc:
+                if script_only:
+                    msg = f"进程内解包失败 {rpa.name}，外部 CLI 不支持仅脚本过滤，已跳过: {exc}"
+                    msgs.append(msg)
+                    self.logger.warning(msg)
+                    continue
                 self.logger.warning(f"进程内解包失败 {rpa.name}，回退外部 CLI: {exc}")
             try:
                 self.logger.info(f"进度 {bar} 解包: {rpa.name}")

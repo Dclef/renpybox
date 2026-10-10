@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Form, Input, Progress } from 'antd';
 
 import { cancelJob, request } from '../api';
+import { archiveJobCancellable, derivePackOutput, isGameFolder, resolvePackOutput } from '../archiveView.mjs';
 import { useT } from '../i18n';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
@@ -29,24 +30,8 @@ function jobRunning(job: ArchiveJob | null): boolean {
   return Boolean(job && (job.status === 'pending' || job.status === 'running' || jobResult(job)?.worker_active));
 }
 
-/** 仅用于展示：与 Qt5 一致推导为源目录同级的“源目录名.rpa”，实际路径由后端重新推导。 */
-function derivePackOutput(source: string): string {
-  const trimmed = source.trim().replace(/[\\/]+$/, '');
-  const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-  const name = trimmed.slice(index + 1);
-  if (index < 0 || !name || name.endsWith(':')) return '';
-  return `${trimmed.slice(0, index + 1)}${name}.rpa`;
-}
-
-/** 与 Qt 一致：相对文件名落在源目录同级；后端会按 sidecar 工作目录解析相对路径，故提交前补成绝对路径。 */
-function resolvePackOutput(source: string, output: string): string {
-  const value = output.trim();
-  if (!value) return '';
-  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(value)) return value;
-  const base = derivePackOutput(source);
-  const index = Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\'));
-  return index < 0 ? value : `${base.slice(0, index + 1)}${value}`;
-}
+const POLL_ACTIVE_MS = 500;
+const POLL_IDLE_MS = 1500;
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -57,7 +42,8 @@ export function PackUnpackPage(props: { state: AppState }) {
   const gameFolder = String(state.project?.renpy_game_folder ?? '');
   const [unpackPath, setUnpackPath] = useState(gameFolder || projectRoot);
   const [decompilePath, setDecompilePath] = useState(projectRoot || gameFolder);
-  const [packSource, setPackSource] = useState(gameFolder);
+  // 与 Qt5 一致不预填：整个 game 打包会产出项目根下无法加载的 game.rpa。
+  const [packSource, setPackSource] = useState('');
   const [packOutput, setPackOutput] = useState('');
   const [direct, setDirect] = useState(true);
   const [scriptOnly, setScriptOnly] = useState(false);
@@ -74,7 +60,8 @@ export function PackUnpackPage(props: { state: AppState }) {
   const projectRef = useRef(projectKey);
   const pending = useRef(false);
   const revision = useRef(0);
-  const completed = useRef('');
+  // 只在本页亲眼看到运行中的任务结束时才刷新翻译状态，挂载时恢复的旧终态不触发。
+  const watched = useRef('');
   const [submitting, setSubmitting] = useState(false);
   const sequence = useRef(0);
   projectRef.current = projectKey;
@@ -83,15 +70,19 @@ export function PackUnpackPage(props: { state: AppState }) {
   const busy = active || cancelling || submitting;
   const startBlocked = busy || engineBusy || state.link !== 'open';
   const derivedOutput = derivePackOutput(packSource);
+  const packNeedsOutput = isGameFolder(packSource) && !packOutput.trim();
+  const cancellable = archiveJobCancellable(job);
 
   useEffect(() => {
     setUnpackPath(gameFolder || projectRoot);
     setDecompilePath(projectRoot || gameFolder);
-    setPackSource(gameFolder);
+    setPackSource('');
+    setPackOutput('');
   }, [gameFolder, projectRoot]);
 
   useEffect(() => {
     sequence.current += 1;
+    watched.current = '';
     setJob(null);
     setError('');
     setConfirm(null);
@@ -107,6 +98,7 @@ export function PackUnpackPage(props: { state: AppState }) {
     const key = projectKey;
     const current = sequence.current;
     const poll = async () => {
+      let delay = POLL_IDLE_MS;
       try {
         if (pending.current) return;
         const requestRevision = revision.current;
@@ -114,10 +106,15 @@ export function PackUnpackPage(props: { state: AppState }) {
         if (!alive || key !== projectRef.current || current !== sequence.current || requestRevision !== revision.current || pending.current) return;
         setJob(next);
         setChecking(false);
-        if (!jobRunning(next)) setCancelling(false);
-        if (next && !jobRunning(next) && completed.current !== next.id) {
-          completed.current = next.id;
-          await state.reloadTranslation();
+        if (next && jobRunning(next)) {
+          watched.current = next.id;
+          delay = POLL_ACTIVE_MS;
+        } else {
+          setCancelling(false);
+          if (next && watched.current === next.id) {
+            watched.current = '';
+            await state.reloadTranslation();
+          }
         }
       } catch (failure) {
         if (alive && key === projectRef.current && current === sequence.current) {
@@ -125,7 +122,7 @@ export function PackUnpackPage(props: { state: AppState }) {
           setError(errorText(failure));
         }
       } finally {
-        if (alive) timer = window.setTimeout(() => void poll(), 1500);
+        if (alive) timer = window.setTimeout(() => void poll(), delay);
       }
     };
     void poll();
@@ -162,6 +159,7 @@ export function PackUnpackPage(props: { state: AppState }) {
         body: JSON.stringify({ ...body, project_key: '' }),
       });
       if (context !== projectRef.current) return;
+      watched.current = next.id;
       setJob(next);
       await state.reloadTranslation();
     } catch (failure) {
@@ -190,7 +188,7 @@ export function PackUnpackPage(props: { state: AppState }) {
   const startCleanupRpyc = () => submit('cleanup-rpyc', { path: decompilePath });
 
   async function onCancel() {
-    if (!job || !active || cancelling) return;
+    if (!job || !active || cancelling || !cancellable) return;
     setCancelling(true);
     try {
       await cancelJob(job.id);
@@ -204,11 +202,11 @@ export function PackUnpackPage(props: { state: AppState }) {
   const statusText = checking
     ? t('archive_checking')
     : active
-      ? (cancelling || job?.cancel_requested ? t('archive_cancelling') : (result?.message || t('archive_running')))
+      ? (cancellable && (cancelling || job?.cancel_requested) ? t('archive_cancelling') : (result?.message || t('archive_running')))
       : job?.status === 'done'
         ? (result?.message || t('archive_done'))
         : job?.status === 'failed'
-          ? (job.error || result?.message || t('archive_failed'))
+          ? (result?.message || job.error || t('archive_failed'))
           : job?.status === 'cancelled'
             ? t('archive_cancelled')
             : t('archive_idle');
@@ -227,7 +225,7 @@ export function PackUnpackPage(props: { state: AppState }) {
       {error ? <Banner tone="error">{error}</Banner> : null}
       <Banner tone={statusTone}>{statusText}</Banner>
       {active ? <Progress percent={Math.min(100, 100 * (job?.progress || 0))} aria-label={t('archive_running')} /> : null}
-      {active ? (
+      {active && cancellable ? (
         <div className="rb-tool-actions">
           <Button onClick={() => void onCancel()} disabled={cancelling || Boolean(job?.cancel_requested)}>
             {t('archive_cancel')}
@@ -272,7 +270,9 @@ export function PackUnpackPage(props: { state: AppState }) {
         </Form.Item>
         <Form.Item
           label={t('archive_output')}
-          extra={!packOutput.trim() && derivedOutput ? `${t('archive_output_auto')}${derivedOutput}` : undefined}
+          extra={packNeedsOutput
+            ? t('archive_pack_game_output_required')
+            : !packOutput.trim() && derivedOutput ? `${t('archive_output_auto')}${derivedOutput}` : undefined}
           style={{ marginBottom: 0 }}
         >
           <Input
@@ -294,7 +294,7 @@ export function PackUnpackPage(props: { state: AppState }) {
           <Button
             type="primary"
             onClick={() => setConfirm('pack')}
-            disabled={startBlocked || !packSource.trim() || (splitEnabled && !partSize.trim())}
+            disabled={startBlocked || !packSource.trim() || packNeedsOutput || (splitEnabled && !partSize.trim())}
           >
             {t('archive_pack')}
           </Button>
