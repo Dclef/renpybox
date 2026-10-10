@@ -121,6 +121,55 @@ def test_prepare_requires_confirm_and_does_not_start_translation(onekey_app, mon
     assert "translation" not in job["kind"]
 
 
+@pytest.mark.parametrize("extract_ok", [True, False])
+def test_prepare_configures_paths_only_after_successful_extraction(onekey_app, monkeypatch, extract_ok):
+    """对齐 Qt5：抽取成功后才配置路径；抽取失败不能挪走旧增量输出缓存。"""
+    client, config, engine, project, _ = onekey_app
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "api.routes.onekey.detect_game_status",
+        lambda game_dir, language, cancel_check=None: ("ready", "可抽取"),
+    )
+
+    def fake_paths(config, game_dir, tl_name, *, incremental):
+        calls.append("paths")
+        return {
+            "paths": None,
+            "incremental_dir": None,
+            "output_dir": config.output_folder,
+            "main_tl_dir": config.input_folder,
+            "main_output_dir": config.output_folder,
+            "preserved_cache": None,
+        }
+
+    def fake_extract(*args, **kwargs):
+        calls.append("extract")
+        result = SimpleNamespace(success=extract_ok, cancelled=False, incremental_dir=None, tl_dir=config.input_folder)
+        return extract_ok, "抽取完成" if extract_ok else "抽取失败", result
+
+    monkeypatch.setattr("api.routes.onekey.prepare_extraction_paths", fake_paths)
+    monkeypatch.setattr("api.routes.onekey.extract_project_text", fake_extract)
+    monkeypatch.setattr(
+        "api.routes.onekey.configure_main_translation_paths",
+        lambda config, game_dir, tl_name, *, remember_run=True: (config.input_folder, config.output_folder),
+    )
+    monkeypatch.setattr(type(config), "save", lambda self, *args, **kwargs: None)
+
+    response = client.post(
+        "/api/onekey/prepare",
+        json={"game_dir": str(project), "language": "chinese", "mode": "full", "confirm_write": True},
+    )
+    assert response.status_code == 200, response.text
+    job = _finish(client, response.json()["job"]["id"])
+    if extract_ok:
+        assert job["status"] == "done"
+        assert calls == ["extract", "paths"]
+    else:
+        assert job["status"] == "failed"
+        assert calls == ["extract"]
+    assert engine.get_status() == Engine.Status.IDLE
+
+
 def test_apply_requires_confirm_and_rejects_busy_engine(onekey_app):
     client, config, engine, project, _ = onekey_app
     Path(config.output_folder).mkdir(parents=True, exist_ok=True)

@@ -123,18 +123,74 @@ def _capture_pack(monkeypatch):
 @pytest.mark.parametrize("output_file", ["", "   "])
 def test_pack_blank_output_is_derived_on_server(archive_app, monkeypatch, output_file):
     client, _, engine, project, game = archive_app
+    images = game / "images"
+    images.mkdir()
     calls = _capture_pack(monkeypatch)
     response = client.post(
         "/api/archive/pack",
-        json={"source_dir": str(game), "output_file": output_file, "confirm": True},
+        json={"source_dir": str(images), "output_file": output_file, "confirm": True},
     )
     assert response.status_code == 200, response.text
     job = _finish(client, response.json()["job"]["id"])
-    expected = str((project / "game.rpa").resolve())
+    expected = str((game / "images.rpa").resolve())
     assert job["status"] == "done", job
     assert job["result"]["output_file"] == expected
-    assert calls == [{"source": str(game.resolve()), "output": expected, "max_part": None}]
+    assert calls == [{"source": str(images.resolve()), "output": expected, "max_part": None}]
     assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_pack_whole_game_with_blank_output_is_rejected(archive_app, monkeypatch):
+    client, _, engine, project, game = archive_app
+    calls = _capture_pack(monkeypatch)
+    response = client.post("/api/archive/pack", json={"source_dir": str(game), "output_file": "", "confirm": True})
+    assert response.status_code == 400
+    assert "game" in response.json()["detail"]
+    assert calls == []
+    assert not (project / "game.rpa").exists()
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_pack_refuses_to_replace_source_archive(archive_app, monkeypatch):
+    client, _, _, project, game = archive_app
+    calls = _capture_pack(monkeypatch)
+    response = client.post(
+        "/api/archive/pack",
+        json={"source_dir": str(game), "output_file": str(game / "assets.rpa"), "confirm": True},
+    )
+    assert response.status_code == 400
+    assert calls == []
+    assert (game / "assets.rpa").read_bytes() == b"RPA-TEST"
+
+
+def test_pack_failure_uses_qt5_prefix(archive_app, monkeypatch):
+    client, _, engine, project, game = archive_app
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("源目录为空")
+
+    monkeypatch.setattr("api.routes.archive.pack_directory", fail)
+    response = client.post(
+        "/api/archive/pack",
+        json={"source_dir": str(game), "output_file": str(project / "out.rpa"), "confirm": True},
+    )
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert job["result"]["message"] == "打包失败: 源目录为空"
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_unpack_packer_error_uses_localized_code(archive_app, monkeypatch):
+    from module.Tool.Packer import PackerUnpackError
+
+    client, _, _, project, game = archive_app
+
+    def unsafe(*_args, **_kwargs):
+        raise PackerUnpackError("UNSAFE_PATH", "internal detail ../evil")
+
+    monkeypatch.setattr("api.routes.archive.unpack_game", unsafe)
+    job = _finish(client, client.post("/api/archive/unpack", json={"path": str(game)}).json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert job["result"]["message"] == "RPA 归档包含不安全路径，已拒绝解包。"
 
 
 def test_pack_rejects_non_rpa_output(archive_app, monkeypatch):
@@ -218,27 +274,88 @@ def test_cleanup_rejects_missing_path_and_stale_project(archive_app):
         assert response.status_code == 409
 
 
-def test_unpack_cancel_waits_for_thread(archive_app, monkeypatch):
+def test_unpack_ignores_cancel_like_qt5(archive_app, monkeypatch):
+    """Qt5 解包没有取消入口；取消请求不能把已写盘的解包结果标成已取消。"""
     client, _, engine, project, game = archive_app
     release = {"go": False}
 
     def slow_unpack(game_dir, *, direct, script_only, progress_callback=None, packer=None):
         while not release["go"]:
             time.sleep(0.01)
+        progress_callback("取消请求后仍在解包")
         return {
             "success": True,
             "level": "success",
             "message": "完成",
             "method": "direct",
-            "count": 0,
+            "count": 1,
             "archives_removed": False,
             "game_dir": str(game_dir),
         }
 
     monkeypatch.setattr("api.routes.archive.unpack_game", slow_unpack)
-    job_id = client.post("/api/archive/unpack", json={"path": str(game)}).json()["job"]["id"]
-    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    response = client.post("/api/archive/unpack", json={"path": str(game)})
+    assert response.json()["job"]["result"]["cancellable"] is False
+    job_id = response.json()["job"]["id"]
+    client.post(f"/api/jobs/{job_id}/cancel")
     assert engine.get_status() == Engine.Status.TESTING
+    release["go"] = True
+    job = _finish(client, job_id)
+    assert job["status"] == "done"
+    assert job["result"]["message"] == "完成"
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_pack_late_cancel_after_publish_stays_done(archive_app, monkeypatch):
+    """打包已发布成品后才到达的取消请求，不能把 done 改成 cancelled。"""
+    client, _, engine, project, game = archive_app
+    published, release = {"done": False}, {"go": False}
+    out = project / "out.rpa"
+
+    def pack_then_wait(source_dir, output_file, *, max_part_size_bytes=None, progress_callback=None, stop_check=None):
+        Path(output_file).write_bytes(b"published")
+        published["done"] = True
+        while not release["go"]:
+            time.sleep(0.01)
+        return {"success": True, "message": "打包完成", "outputs": [output_file]}
+
+    monkeypatch.setattr("api.routes.archive.pack_directory", pack_then_wait)
+    response = client.post("/api/archive/pack", json={"source_dir": str(game), "output_file": str(out), "confirm": True})
+    job_id = response.json()["job"]["id"]
+    assert response.json()["job"]["result"]["cancellable"] is True
+    deadline = time.monotonic() + 5
+    while not published["done"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    release["go"] = True
+    job = _finish(client, job_id)
+    assert job["status"] == "done", job
+    assert out.read_bytes() == b"published"
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_pack_cancel_before_publish_is_cancelled(archive_app, monkeypatch):
+    client, _, engine, project, game = archive_app
+    entered, release = {"go": False}, {"go": False}
+
+    def cancellable_pack(source_dir, output_file, *, max_part_size_bytes=None, progress_callback=None, stop_check=None):
+        entered["go"] = True
+        while not release["go"]:
+            time.sleep(0.01)
+        if stop_check():
+            raise RuntimeError("打包已取消")
+        return {"success": True, "message": "打包完成", "outputs": [output_file]}
+
+    monkeypatch.setattr("api.routes.archive.pack_directory", cancellable_pack)
+    response = client.post(
+        "/api/archive/pack",
+        json={"source_dir": str(game), "output_file": str(project / "out.rpa"), "confirm": True},
+    )
+    job_id = response.json()["job"]["id"]
+    deadline = time.monotonic() + 5
+    while not entered["go"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
     release["go"] = True
     job = _finish(client, job_id)
     assert job["status"] == "cancelled"

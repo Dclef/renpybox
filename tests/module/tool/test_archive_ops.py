@@ -68,6 +68,117 @@ def test_resolve_pack_output_derives_sibling_rpa_when_blank(tmp_path):
         resolve_pack_output(images, str(tmp_path / "missing" / "out.rpa"))
 
 
+def test_resolve_pack_output_rejects_unloadable_root_game_rpa(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    with pytest.raises(ValueError):
+        resolve_pack_output(game, "")
+    explicit = game / "patch.rpa"
+    assert resolve_pack_output(game, str(explicit)) == explicit.resolve()
+
+
+@pytest.mark.parametrize("existing", ["archive.rpa", "archive.part001.rpa"])
+def test_resolve_pack_output_refuses_overwriting_archive_inside_source(tmp_path, existing):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / existing).write_bytes(b"original")
+    with pytest.raises(FileExistsError):
+        resolve_pack_output(game, str(game / "archive.rpa"))
+    assert (game / existing).read_bytes() == b"original"
+    images = game / "images"
+    images.mkdir()
+    (game / "images.rpa").write_bytes(b"old")
+    assert resolve_pack_output(images, "") == (game / "images.rpa").resolve()
+
+
+def _real_archive(tmp_path, files: dict[str, bytes], name: str = "assets.rpa") -> Path:
+    from module.Tool.Packer import Packer
+
+    source = tmp_path / "src" / "game"
+    for rel, data in files.items():
+        path = source / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    game = tmp_path / "project" / "game"
+    game.mkdir(parents=True)
+    Packer().pack_from_dir(str(source), str(game / name))
+    return game
+
+
+def _offline_packer(monkeypatch):
+    from module.Tool.Packer import Packer
+
+    packer = Packer()
+    monkeypatch.setattr(packer, "_get_game_python", lambda _root: None)
+    monkeypatch.setattr(packer, "_which_unrpa", lambda: None)
+    monkeypatch.setattr(packer, "_local_rpatool", lambda: Path("rpatool"))
+    return packer
+
+
+def test_unpack_without_rpa_skips_unren_and_fails(tmp_path, monkeypatch):
+    from module.Tool.Packer import Packer
+
+    game = tmp_path / "game"
+    game.mkdir()
+    packer = Packer()
+    monkeypatch.setattr(packer, "validate_rpa_paths", lambda _dir: True)
+    monkeypatch.setattr(packer, "unpack_all_unren", lambda *a, **k: (0, []))
+
+    def no_unren(*_args, **_kwargs):
+        raise AssertionError("没有 RPA 时不应进入 UnRen 兜底")
+
+    monkeypatch.setattr(packer, "unpack_all_unren_bat", no_unren)
+    result = unpack_game(game, packer=packer)
+    assert result["success"] is False
+    assert result["code"] == "NO_RPA"
+    assert "没有 .rpa" in result["message"]
+
+
+def test_script_only_in_process_unpack_filters_resources(tmp_path, monkeypatch):
+    game = _real_archive(tmp_path, {
+        "script.rpy": b"label start:\n",
+        "script.rpyc": b"compiled",
+        "images/bg.png": b"png",
+        "audio/theme.ogg": b"ogg",
+    })
+    result = unpack_game(game, direct=False, script_only=True, packer=_offline_packer(monkeypatch))
+    assert result["success"] is True
+    assert (game / "script.rpy").read_bytes() == b"label start:\n"
+    assert (game / "script.rpyc").read_bytes() == b"compiled"
+    assert not (game / "images").exists()
+    assert not (game / "audio").exists()
+    assert (game / "assets.rpa").exists()
+
+
+def test_in_process_unpack_never_overwrites_source_archive(tmp_path, monkeypatch):
+    game = _real_archive(tmp_path, {"assets.rpa": b"nested", "script.rpy": b"x"})
+    original = (game / "assets.rpa").read_bytes()
+    result = unpack_game(game, direct=False, packer=_offline_packer(monkeypatch))
+    assert result["success"] is True
+    assert (game / "assets.rpa").read_bytes() == original
+    assert (game / "script.rpy").read_bytes() == b"x"
+
+
+def test_script_only_skips_unfilterable_fallbacks(tmp_path, monkeypatch):
+    import utils.process_runner
+
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "broken.rpa").write_bytes(b"not an archive")
+    packer = _offline_packer(monkeypatch)
+    monkeypatch.setattr(packer, "validate_rpa_paths", lambda _dir: True)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("仅脚本模式不应调用无法过滤的外部 CLI / UnRen")
+
+    monkeypatch.setattr(utils.process_runner, "run_process", forbidden)
+    monkeypatch.setattr(packer, "unpack_all_unren_bat", forbidden)
+    result = unpack_game(game, direct=False, script_only=True, packer=packer)
+    assert result["success"] is False
+    assert result["code"] == "SCRIPT_ONLY_UNSUPPORTED"
+    assert (game / "broken.rpa").read_bytes() == b"not an archive"
+
+
 def _make_project(tmp_path):
     root = tmp_path / "project"
     game = root / "game"

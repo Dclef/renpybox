@@ -29,6 +29,7 @@ import type {
 import { normalizeLang, type Lang } from './i18n';
 import { persistTheme, readStoredTheme } from './theme';
 import { useSidecarEvents } from './useSidecarEvents';
+import { mergeProgressUpdate, mergeTranslationSnapshot } from './translationView.mjs';
 
 export type ThemeName = 'LIGHT' | 'DARK';
 
@@ -142,12 +143,18 @@ export function useAppState(): AppState {
   }, []);
 
   const translationRequest = useRef(0);
+  // WS 进度序号：判断 HTTP 快照在途期间是否收到过更新的进度。
+  const progressEpoch = useRef(0);
+  const applyTranslationSnapshot = useCallback((request: number, epoch: number, next: TranslationState) => {
+    // HTTP 返回完整快照；新项目的空进度也必须覆盖旧项目，迟到的旧请求不能回滚状态。
+    if (request !== translationRequest.current) return;
+    setTranslation((prev) => mergeTranslationSnapshot(prev, next, epoch !== progressEpoch.current));
+  }, []);
   const reloadTranslation = useCallback(async () => {
     const request = ++translationRequest.current;
-    const next = await api.getTranslationState();
-    // HTTP 返回完整快照；新项目的空进度也必须覆盖旧项目，迟到响应不能回滚状态。
-    if (request === translationRequest.current) setTranslation(next);
-  }, []);
+    const epoch = progressEpoch.current;
+    applyTranslationSnapshot(request, epoch, await api.getTranslationState());
+  }, [applyTranslationSnapshot]);
 
   const saveSettings = useCallback(
     async (values: Record<string, unknown>) => {
@@ -279,6 +286,7 @@ export function useAppState(): AppState {
     let alive = true;
     const boot = async () => {
       const request = ++translationRequest.current;
+      const epoch = progressEpoch.current;
       try {
         const [healthInfo, versionInfo, projectInfo, settingsInfo, translationState] = await Promise.all([
           api.getHealth(),
@@ -292,7 +300,7 @@ export function useAppState(): AppState {
         setVersion(versionInfo);
         setProject(projectInfo);
         setSettings(settingsInfo);
-        if (request === translationRequest.current) setTranslation(translationState);
+        applyTranslationSnapshot(request, epoch, translationState);
         setReady(true);
       } catch (error) {
         if (!alive) return;
@@ -304,7 +312,7 @@ export function useAppState(): AppState {
     return () => {
       alive = false;
     };
-  }, [pushToast, link]);
+  }, [applyTranslationSnapshot, pushToast, link]);
 
   useEffect(() => {
     if (!ready || bootLanguage !== null) return;
@@ -391,10 +399,10 @@ export function useAppState(): AppState {
             void reloadTranslation();
             break;
           case 'TRANSLATION_UPDATE': {
-            translationRequest.current += 1;
+            progressEpoch.current += 1;
             const nested = message.data.progress;
-            const progress = nested && typeof nested === 'object' ? nested : message.data;
-            setTranslation((prev) => ({ ...prev, progress: { ...prev.progress, ...progress } }));
+            const progress = (nested && typeof nested === 'object' ? nested : message.data) as Record<string, unknown>;
+            setTranslation((prev) => ({ ...prev, progress: mergeProgressUpdate(prev.progress, progress) }));
             break;
           }
           case 'TRANSLATION_START':

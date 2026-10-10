@@ -142,12 +142,12 @@ def test_cancel_waits_for_worker_and_blocks_other_tasks(archive_client, tmp_path
         entered.set()
         assert release.wait(5)
         callback = kwargs["progress_callback"]
+        after_cancel.append(True)
         if kind == "pack":
             assert kwargs["stop_check"]()
             callback(1, 2, "取消后的进度")
-        else:
-            callback("取消后的日志仍可消费")
-        after_cancel.append(True)
+            raise RuntimeError("打包已取消")
+        callback("取消后的日志仍可消费")
         return {"success": True, "message": "完成"}
 
     monkeypatch.setattr(f"api.routes.archive.{operation}", slow)
@@ -165,7 +165,8 @@ def test_cancel_waits_for_worker_and_blocks_other_tasks(archive_client, tmp_path
         assert client.post("/api/archive/unpack", json={"path": str(game)}).status_code == 409
     finally:
         release.set()
-    assert finish(client, job_id)["status"] == "cancelled"
+    # Qt5 只有打包可取消；解包/反编译收到取消请求仍跑完并如实报告完成。
+    assert finish(client, job_id)["status"] == ("cancelled" if kind == "pack" else "done")
     assert after_cancel == [True]
     assert engine.get_status() == Engine.Status.IDLE
 

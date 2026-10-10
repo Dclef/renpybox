@@ -412,6 +412,26 @@
     min-width: 0;
   }
   .rb-identity-paths dt { color: var(--rb-text-secondary); font-size: 12px; }
+  /* 项目设置沿用接口管理逻辑：默认白底中性边框，仅当前工程卡与聚焦中的设置项淡蓝底 + 蓝边 + 轻外圈 */
+  .rb-project-page .rb-project-identity,
+  .rb-project-page .rb-settings-body > .rb-setting-row {
+    background: var(--rb-surface);
+    transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .rb-project-page .rb-project-identity { border-color: var(--rb-border); }
+  .rb-project-page .rb-project-identity[data-active='true'] {
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  }
+  /* 组内设置项无独立边框，聚焦时用内描边代替蓝边，外圈抬到相邻行之上 */
+  .rb-project-page .rb-settings-body > .rb-setting-row:focus-within {
+    position: relative;
+    z-index: 1;
+    border-radius: 8px;
+    background: var(--rb-accent-surface);
+    box-shadow: inset 0 0 0 1px var(--rb-accent), 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  }
   .rb-identity-paths dd {
     margin: 0;
     overflow: hidden;
@@ -1048,57 +1068,6 @@
   .rb-tool-title { font-size: 14px; font-weight: 500; }
   .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; white-space: normal; }
   .rb-tool-availability { color: var(--rb-text-secondary); font-size: 12px; }
-  /* 推荐流程：轻边框面板 + 蓝色序号，贴近旧 Qt 版的步骤卡 */
-  .rb-flow-guide {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    border: 1px solid var(--rb-border);
-    border-left: 3px solid var(--rb-accent);
-    border-radius: 8px;
-    background: var(--rb-surface);
-  }
-  .rb-flow-guide-head { display: flex; flex-direction: column; gap: 4px; }
-  .rb-flow-steps {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
-    gap: 8px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .rb-flow-steps > li { display: flex; min-width: 0; }
-  .rb-flow-step.ant-btn {
-    flex: 1;
-    min-width: 0;
-    /* Ant 按钮默认固定高度，流程说明较长时必须允许自然增高。 */
-    height: auto !important;
-    min-height: 44px;
-    padding: 10px 12px;
-    justify-content: flex-start;
-    align-items: flex-start;
-    gap: 10px;
-    text-align: left;
-    white-space: normal !important;
-  }
-  .rb-flow-step-index {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 999px;
-    background: var(--rb-accent);
-    color: var(--rb-on-accent);
-    font-size: 12px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .rb-flow-step.ant-btn:disabled .rb-flow-step-index { background: var(--rb-text-disabled); }
-  .rb-flow-step-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .rb-flow-step .rb-tool-desc[data-warning] { color: var(--rb-warning); }
   .rb-workbench {
     display: flex;
     flex-direction: column;
@@ -2370,22 +2339,33 @@
     grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 264px), calc((100% - 24px) / 3)), 1fr));
     gap: 12px;
   }
-  /* 卡片：序号胶囊 + 淡蓝图标块 + 标题 / 两行说明 + 右箭头 */
+  /* 卡片：序号胶囊 + 中性图标块 + 标题 / 两行说明 + 右箭头；默认白底中性边框 */
   .rb-toolbox .tool-card {
     grid-template-columns: auto 32px minmax(0, 1fr) 16px;
     gap: 12px;
     min-height: 104px;
     padding: 14px 14px 14px 16px;
     border-color: var(--rb-border);
+    background: var(--rb-surface);
     box-shadow: var(--rb-qt-shadow);
-    transition: border-color 140ms ease, box-shadow 140ms ease;
+    transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
   }
   .rb-toolbox .tool-card:not(:has(.rb-tool-step)) { grid-template-columns: 32px minmax(0, 1fr) 16px; }
   .rb-toolbox .tool-card:hover:not(:disabled) {
     transform: none;
     background: var(--rb-surface);
-    border-color: color-mix(in srgb, var(--rb-accent) 45%, var(--rb-border));
+    border-color: var(--rb-border-strong);
     box-shadow: var(--rb-qt-shadow-hover);
+  }
+  /* 与接口管理当前卡片一致：只有键盘聚焦、按下和当前打开说明的卡片才淡蓝底 + 蓝边 + 轻外圈 */
+  .rb-toolbox .tool-card:focus-visible,
+  .rb-toolbox .tool-card:active:not(:disabled),
+  .rb-toolbox .tool-card[data-active='true'],
+  .rb-toolbox .tool-card[data-active='true']:hover {
+    outline: none;
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
   }
   .rb-toolbox .tool-card:disabled { cursor: not-allowed; opacity: 0.7; }
   .rb-toolbox .tool-card .tool-card-icon {
@@ -2394,7 +2374,11 @@
     width: 32px;
     height: 32px;
     border-radius: 8px;
-    background: var(--rb-accent-surface);
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+  }
+  .rb-toolbox .tool-card:is(:focus-visible, :active:not(:disabled), [data-active='true']) .tool-card-icon {
+    background: var(--rb-surface);
     color: var(--rb-accent);
   }
   .rb-toolbox .tool-card-icon svg { width: 18px; height: 18px; }
@@ -2432,7 +2416,8 @@
     line-height: 18px;
   }
   .rb-toolbox .tool-card > svg:last-child { margin-top: 8px; color: var(--rb-text-disabled); transition: color 140ms ease; }
-  .rb-toolbox .tool-card:hover:not(:disabled) > svg:last-child { color: var(--rb-accent); }
+  .rb-toolbox .tool-card:hover:not(:disabled) > svg:last-child { color: var(--rb-text-secondary); }
+  .rb-toolbox .tool-card:is(:focus-visible, :active:not(:disabled), [data-active='true']) > svg:last-child { color: var(--rb-accent); }
 
   /* ---- 窄窗口（侧栏收起为图标栏） ---- */
   @media (max-width: 999px) {
