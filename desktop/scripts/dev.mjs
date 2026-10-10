@@ -9,11 +9,14 @@
  *   npm run dev:web   仅 vite + sidecar（浏览器打开）
  */
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Sidecar } from '../main/sidecar.js';
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
 const webOnly = process.argv.includes('--web');
 const sidecar = new Sidecar({ onLog: console.log });
 
@@ -27,7 +30,7 @@ async function waitForWeb(timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${WEB_URL}/`);
+      const response = await fetch(`${WEB_URL}/`, { signal: AbortSignal.timeout(1500) });
       if (response.ok) return true;
     } catch {
       // vite 还没起来
@@ -74,6 +77,7 @@ const vite = spawn(
   { cwd: DESKTOP_ROOT, stdio: ['ignore', 'inherit', 'inherit'], env: process.env },
 );
 children.push(vite);
+vite.on('error', error => { console.error(`[dev] Vite 启动失败：${error.message}`); void stopAll(1); });
 vite.on('exit', (code) => {
   console.log(`[dev] vite 退出（${code}）`);
   stopAll(code ?? 0);
@@ -99,19 +103,25 @@ if (webOnly) {
   delete electronEnv.ELECTRON_RUN_AS_NODE;
 
   console.log('[dev] 启动 Electron；后端由开发脚本托管，关窗不会断开网页端');
-  const electronBinary = path.join(
-    DESKTOP_ROOT,
-    'node_modules',
-    'electron',
-    'dist',
-    process.platform === 'win32' ? 'electron.exe' : 'electron',
-  );
+  let electronBinary;
+  try {
+    // 通过 Electron 包入口解析真实二进制；缺失时可触发其缓存安装逻辑。
+    electronBinary = require('electron');
+    if (typeof electronBinary !== 'string' || !existsSync(electronBinary)) throw new Error('运行 npm rebuild electron --foreground-scripts 修复 Electron 安装。');
+  } catch (error) {
+    console.error(`[dev] Electron 运行时不可用：${error.message}`);
+    await stopAll(1);
+  }
   const electron = spawn(electronBinary, ['.'], {
     cwd: DESKTOP_ROOT,
     stdio: ['ignore', 'inherit', 'inherit'],
     env: electronEnv,
   });
   children.push(electron);
+  electron.on('error', (error) => {
+    console.error(`[dev] Electron 启动失败：${error.message}`);
+    stopAll(1);
+  });
   electron.on('exit', (code) => {
     console.log(`[dev] Electron 退出（${code}）；vite 与后端仍在运行，可继续用浏览器或再次打开桌面端`);
     // 不再 stopAll：允许网页继续联调同一后端

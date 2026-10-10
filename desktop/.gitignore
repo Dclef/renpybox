@@ -4,3 +4,5 @@ dist/
 *.log
 sidecar/.venv/
 sidecar/__pycache__/
+runtime/
+release/

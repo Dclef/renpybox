@@ -3,10 +3,42 @@
 interface FileDialogFilter { name: string; extensions: string[] }
 interface FileDialogOptions { defaultPath?: string; filters?: FileDialogFilter[] }
 
+export interface DesktopUpdateState {
+  status: 'dev' | 'idle' | 'checking' | 'available' | 'latest' | 'downloading' | 'downloaded' | 'error';
+  currentVersion: string;
+  version: string;
+  error: string;
+  progress: number;
+  releaseNotes?: string;
+  releaseUrl?: string;
+  packaged: boolean;
+}
+
+export interface DesktopAppInfo {
+  appVersion: string;
+  packaged: boolean;
+  logPath: string;
+  dataPath: string;
+  icon: string;
+  health?: { ok?: boolean; port?: number; python_version?: string };
+}
+
 interface RenpyBridge {
   sidecar: () => Promise<unknown>;
-  /** 打开轻量壳窗口：'welcome'（关于与诊断）/ 'update'（更新） */
-  openShell: (kind: 'welcome' | 'update') => Promise<void>;
+  appInfo: () => Promise<DesktopAppInfo>;
+  changelog: () => Promise<string>;
+  /** 在应用内打开运行日志窗口。 */
+  openLogs: () => Promise<void>;
+  updater: {
+    state: () => Promise<DesktopUpdateState>;
+    check: () => Promise<DesktopUpdateState>;
+    download: () => Promise<DesktopUpdateState>;
+    cancel: () => Promise<DesktopUpdateState>;
+    install: () => Promise<unknown>;
+    onState: (callback: (state: DesktopUpdateState) => void) => () => void;
+  };
+  /** 打开日志或更新窗口；welcome 是旧日志入口的兼容别名。 */
+  openShell: (kind: 'logs' | 'welcome' | 'update') => Promise<void>;
   close: () => void;
   /** 无边框窗口的窗口控制（标题栏右侧三个按钮） */
   minimize: () => void;

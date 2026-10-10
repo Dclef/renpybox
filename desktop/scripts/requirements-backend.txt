@@ -1,0 +1,23 @@
+# Install only when building the frozen API runtime. End users need no Python.
+pyinstaller>=6.19,<7
+-r ../sidecar/requirements.txt
+opencc>=1.1.5
+translators>=5.9.2
+pygtrans>=1.5.0
+truststore>=0.8
+charset-normalizer>=3.0
+chardet>=5.0
+openpyxl>=3.0
+pyyaml>=6.0
+lxml>=4.9
+beautifulsoup4>=4.12
+tiktoken>=0.5
+regex>=2026.2.19
+json-repair>=0.20
+rich>=13.0
+httpx>=0.24
+openai>=1.44
+anthropic>=0.34
+google-genai>=1.0
+unrpa>=2.3
+pandas>=2.0

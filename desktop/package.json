@@ -1,7 +1,8 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.8.1",
+  "version": "0.8.1-newui.1",
   "private": true,
+  "author": "dclef",
   "type": "module",
   "description": "RenpyBox Electron shell —— Electron 主进程 + Python sidecar（FastAPI + WebSocket）+ React/TS 主 UI",
   "main": "main/main.js",
@@ -13,13 +14,20 @@
     "dev:renderer": "vite --config renderer/vite.config.ts",
     "build:renderer": "vite build --config renderer/vite.config.ts",
     "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
-    "start": "electron ."
+    "start": "electron .",
+    "build:backend": "node scripts/build-backend.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "pack:dir": "npm run build:backend && npm run build:renderer && electron-builder --dir --publish never && npm run verify:package",
+    "pack:win": "npm run build:backend && npm run build:renderer && electron-builder --win nsis --x64 --publish never && npm run verify:package",
+    "dist": "npm run pack:win"
   },
   "dependencies": {
     "@esbuild/win32-x64": "^0.25.12",
     "@mantine/core": "^9.7.1",
     "@mantine/hooks": "^9.7.1",
     "@tanstack/react-virtual": "^3.14.13",
+    "builder-util-runtime": "^9.7.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.54.0",
     "ws": "^8.18.0"
   },
@@ -29,9 +37,53 @@
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.3",
     "vite": "^6.0.11"
+  },
+  "build": {
+    "appId": "com.dclef.renpybox.newui",
+    "productName": "RenpyBox New UI",
+    "asar": true,
+    "generateUpdatesFilesForAllChannels": false,
+    "directories": {
+      "output": "release",
+      "buildResources": "../resource"
+    },
+    "files": [
+      "dist/**/*",
+      "main/**/*",
+      "shell/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../resource/icon.ico", "to": "renpybox/icon.ico" },
+      { "from": "runtime/backend", "to": "backend" },
+      { "from": "../CHANGELOG.md", "to": "renpybox/CHANGELOG.md" },
+      { "from": "../LICENSE", "to": "renpybox/LICENSE" }
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "artifactName": "RenpyBox-NewUI-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "dclef",
+      "repo": "RenpyBox",
+      "channel": "newui",
+      "releaseType": "prerelease"
+    }
   }
 }
