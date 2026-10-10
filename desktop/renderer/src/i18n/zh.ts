@@ -14,7 +14,7 @@ export const zh = {
   app_text_preserve_page: '禁翻表',
   app_honorific_page: '称呼桥接',
   app_toggle_theme: '切换主题',
-  app_about_diagnostics: '关于与诊断',
+  app_logs: '日志',
   app_project_unbound_name: '未绑定项目',
   app_project_unbound_hint: '尚未绑定 Ren\'Py 项目，点击前往项目设置',
   app_link_connecting: '正在连接后端',

@@ -13,12 +13,17 @@
  */
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
+import { createLogger } from './logger.js';
+import { readLogTail } from './log-reader.js';
+import { createDesktopUpdater } from './updater.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, nativeTheme } = require('electron');
+const { autoUpdater } = require('electron-updater');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = path.resolve(__dirname, '..');
@@ -26,14 +31,58 @@ const RENDERER_DIST = path.join(DESKTOP_ROOT, 'dist', 'index.html');
 const SHELL_DIR = path.join(DESKTOP_ROOT, 'shell');
 
 const isDev = !app.isPackaged;
+if (!isDev) {
+  const profile = app.commandLine.getSwitchValue('user-data-dir');
+  app.setPath('userData', profile ? path.resolve(profile) : path.join(app.getPath('appData'), 'RenpyBox-newUI'));
+}
+if (!app.requestSingleInstanceLock()) app.exit(0);
 // dev 端口必须与 vite.config.ts 的 WEB_PORT 一致（默认 5173）。
 // 脚本会显式传 VITE_DEV_SERVER_URL；直接 `npm run dev` 时靠这个默认值。
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
 
-const log = (...args) => console.log(...args);
-const sidecar = new Sidecar({ onLog: log });
+const dataPath = isDev ? path.resolve(DESKTOP_ROOT, '..') : app.getPath('userData');
+const logDirectory = path.join(dataPath, 'log');
+const appIcon = isDev ? path.join(DESKTOP_ROOT, '..', 'resource', 'icon.ico') : path.join(process.resourcesPath, 'renpybox', 'icon.ico');
+let log;
+try {
+  mkdirSync(dataPath, { recursive: true });
+  log = createLogger(logDirectory);
+  log(`启动 RenpyBox ${app.getVersion()}`);
+} catch (error) {
+  dialog.showErrorBox('RenpyBox 启动失败', `无法写入运行目录：${dataPath}\n\n${error.message || error}`);
+  app.exit(1);
+  throw error;
+}
+const sidecar = new Sidecar({
+  onLog: line => line.startsWith('[backend') ? log.debug(line) : log(line),
+  backendExecutable: isDev ? undefined : path.join(process.resourcesPath, 'backend', 'RenpyBoxBackend.exe'),
+  appRoot: dataPath,
+  expectedAppVersion: app.getVersion().split('-')[0],
+  allowReuse: isDev,
+});
 
 let mainWindow = null;
+let logWindow = null;
+let backendHealth = null;
+let quitting = false;
+let cleanupDone = false;
+const updater = createDesktopUpdater({
+  autoUpdater, packaged: !isDev, version: app.getVersion(), log,
+  broadcast: state => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('app:update-state', state);
+    }
+  },
+  beforeInstall: async () => { await sidecar.stop(); cleanupDone = true; },
+});
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+});
+
+function openExternal(url) {
+  try { const parsed = new URL(url); if (['https:', 'http:'].includes(parsed.protocol)) return shell.openExternal(parsed.href); } catch {}
+  return Promise.reject(new Error('仅支持打开 HTTP/HTTPS 链接。'));
+}
 
 function webPreferences(preloadFile) {
   return {
@@ -49,7 +98,8 @@ function webPreferences(preloadFile) {
 async function createMainWindow() {
   const started = Date.now();
   const info = await sidecar.start();
-  log(`[shell] sidecar 就绪 ${JSON.stringify(info)}，耗时 ${Date.now() - started}ms`);
+  backendHealth = info;
+  log(`后端就绪，耗时 ${Date.now() - started}ms`);
 
   // 尺寸对齐 AppFluentWindow：默认 1280x800、APP_MIN_WIDTH/HEIGHT = 900/640。
   // frame: false —— 原壳是 qfluentwidgets 的无边框 FluentWindow，标题栏由窗口自己画，
@@ -63,6 +113,7 @@ async function createMainWindow() {
     show: false,
     backgroundColor: '#202020',
     title: 'RenpyBox',
+    icon: appIcon,
     webPreferences: webPreferences('preload-main.cjs'),
   });
 
@@ -75,7 +126,7 @@ async function createMainWindow() {
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    void openExternal(url).catch(error => log.error(error));
     return { action: 'deny' };
   });
 
@@ -84,21 +135,33 @@ async function createMainWindow() {
   } else {
     await mainWindow.loadFile(RENDERER_DIST);
   }
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 /** 轻量壳窗口：vanilla 页面 + 独立 preload，按 DeepSeek 的做法不背 UI 框架 */
 function openShellWindow(kind) {
+  const isLogs = kind === 'logs' || kind === 'welcome';
+  if (isLogs && logWindow && !logWindow.isDestroyed()) {
+    if (logWindow.isMinimized()) logWindow.restore();
+    logWindow.show();
+    logWindow.focus();
+    return logWindow;
+  }
   const win = new BrowserWindow({
-    width: kind === 'welcome' ? 760 : 520,
-    height: kind === 'welcome' ? 580 : 400,
-    resizable: false,
+    width: isLogs ? 900 : 520,
+    height: isLogs ? 600 : 400,
+    ...(isLogs ? { minWidth: 560, minHeight: 360, parent: mainWindow || undefined, title: '运行日志 — RenpyBox' } : {}),
+    resizable: isLogs,
     show: false,
     frame: kind !== 'update',
-    backgroundColor: '#17263d',
+    backgroundColor: isLogs ? (nativeTheme.shouldUseDarkColors ? '#181818' : '#ffffff') : '#17263d',
+    icon: appIcon,
     webPreferences: webPreferences('preload-shell.cjs'),
   });
+  if (isLogs) { logWindow = win; win.on('closed', () => { logWindow = null; }); }
   win.once('ready-to-show', () => win.show());
-  win.loadFile(path.join(SHELL_DIR, `${kind}.html`));
+  win.webContents.setWindowOpenHandler(({ url }) => { void openExternal(url).catch(error => log.error(error)); return { action: 'deny' }; });
+  void win.loadFile(path.join(SHELL_DIR, kind === 'update' ? 'update-dialog.html' : 'welcome.html')).catch(error => log.error(error));
   return win;
 }
 ipcMain.handle('sidecar:info', () => ({
@@ -108,9 +171,30 @@ ipcMain.handle('sidecar:info', () => ({
   electron: process.versions.electron,
   chrome: process.versions.chrome,
 }));
+ipcMain.handle('app:info', async () => {
+  try { backendHealth = await sidecar.probe(); } catch { backendHealth = { ok: false, port: SIDECAR_PORT }; }
+  return { appVersion: app.getVersion(), packaged: !isDev, logPath: log.path, dataPath, icon: pathToFileURL(appIcon).href, health: { ...backendHealth, port: SIDECAR_PORT } };
+});
+ipcMain.handle('app:changelog', () => readFileSync(isDev ? path.join(DESKTOP_ROOT, '..', 'CHANGELOG.md') : path.join(process.resourcesPath, 'renpybox', 'CHANGELOG.md'), 'utf8'));
+ipcMain.handle('app:open-logs', () => { openShellWindow('logs'); });
+ipcMain.handle('app:read-logs', (_event, source = 'app') => {
+  const filename = source === 'app' ? 'app.log' : source === 'desktop' ? 'desktop.log' : null;
+  if (!filename) throw new Error('未知日志类型');
+  return readLogTail(path.join(logDirectory, filename));
+});
+ipcMain.handle('app:copy-logs', (_event, text) => {
+  if (typeof text !== 'string' || text.length > 512 * 1024) throw new Error('日志内容无效');
+  clipboard.writeText(text);
+});
+ipcMain.handle('app:open-external', (_event, url) => openExternal(url));
+ipcMain.handle('app:update-state', () => updater.state());
+ipcMain.handle('app:check-update', () => updater.check());
+ipcMain.handle('app:download-update', () => updater.download());
+ipcMain.handle('app:cancel-update', () => updater.cancel());
+ipcMain.handle('app:install-update', () => updater.install());
 
 ipcMain.handle('shell:open', (_event, kind) => {
-  if (kind === 'welcome' || kind === 'update') openShellWindow(kind);
+  if (kind === 'logs' || kind === 'welcome' || kind === 'update') openShellWindow(kind);
 });
 
 ipcMain.on('shell:close', (event) => {
@@ -180,14 +264,19 @@ ipcMain.handle('shell:open-path', async (_event, target) => {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
+  if (!isDev) app.setAppUserModelId('com.dclef.renpybox.newui');
   try {
     await createMainWindow();
+    if (!isDev) setTimeout(() => void updater.check(), 2500).unref();
   } catch (err) {
-    log('[shell] 启动失败：', err);
+    log.error('启动失败', err);
+    dialog.showErrorBox('RenpyBox 启动失败', `${err.message || err}\n\n日志：${log.path}`);
+    await sidecar.stop();
+    app.exit(1);
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow().catch(() => {});
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow().catch(error => { log.error(error); dialog.showErrorBox('RenpyBox', error.message); });
   });
 });
 
@@ -195,9 +284,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('will-quit', async (event) => {
+app.on('before-quit', (event) => {
+  if (cleanupDone) return;
   event.preventDefault();
-  // 仅杀死本进程启动的 sidecar；EXTERNAL / 复用模式下保留后端给网页端。
-  await sidecar.stop();
-  app.exit(0);
+  if (quitting) return;
+  quitting = true;
+  void sidecar.stop().catch(error => log.error(error)).finally(() => { cleanupDone = true; app.quit(); });
 });

@@ -276,6 +276,43 @@ export function retryFailedTranslations(): Promise<{ ok: boolean; count: number;
   return request('/api/translation/retry-failed', { method: 'POST' });
 }
 
+export interface QualityReport {
+  schema_version: number;
+  failed_count: number;
+  fallback_count: number;
+  line_mismatch_count: number;
+  error_type_counts: Record<string, number>;
+  item_references: {
+    item_index: number;
+    reference: string;
+    file_path: string;
+    row: number;
+    source_preview: string;
+    status: string;
+    retry_count: number;
+    error_types: string[];
+  }[];
+}
+
+export function getProofreadingQualityReport(): Promise<QualityReport> {
+  return request<QualityReport>('/api/proofreading/report');
+}
+
+export function startProofreadingQuality(
+  cacheToken: string,
+  task: 'proofread' | 'polish',
+  ids: number[],
+): Promise<{ ok: boolean; accepted: number; skipped: number; task: string }> {
+  return request('/api/proofreading/quality', {
+    method: 'POST',
+    body: JSON.stringify({ cache_token: cacheToken, task, ids }),
+  });
+}
+
+export function cancelProofreadingQuality(): Promise<{ ok: boolean }> {
+  return request('/api/proofreading/quality/cancel', { method: 'POST' });
+}
+
 export function estimateTokens(): Promise<TokenEstimate> {
   return request<TokenEstimate>('/api/translation/estimate', { method: 'POST' });
 }

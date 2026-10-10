@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Notification, Tooltip } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
-import { ChevronDown, Folder, Moon, Sun } from 'lucide-react';
+import { ChevronDown, FileText, Folder, Moon, Sun } from 'lucide-react';
 
 import {
   IconChromeClose,
@@ -37,6 +37,7 @@ import { createT, I18nContext } from './i18n';
 import { Dialog, Empty } from './ui';
 import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
+import type { DesktopAppInfo } from './preload';
 
 const TOAST_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
 
@@ -79,6 +80,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const { state, link } = props;
   const [active, setActive] = useState<PageKey>('translation');
   const [maximized, setMaximized] = useState(false);
+  const [desktopInfo, setDesktopInfo] = useState<DesktopAppInfo | null>(null);
   const [dirty, setDirty] = useState(false);
   const allowClose = useRef(false);
   const [pendingPage, setPendingPage] = useState<PageKey | 'close' | null>(null);
@@ -110,6 +112,16 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
     return window.renpy?.onMaximizeChange?.(setMaximized);
   }, []);
 
+  useEffect(() => {
+    const bridge = window.renpy;
+    if (!bridge) return;
+    let active = true;
+    void bridge.appInfo()
+      .then((info) => { if (active) setDesktopInfo(info); })
+      .catch((error) => { if (active) state.pushToast('error', `读取桌面信息失败：${String(error?.message || error)}`); });
+    return () => { active = false; };
+  }, [state.pushToast]);
+
   const t = useMemo(() => createT(state.bootLanguage ?? 'ZH'), [state.bootLanguage]);
   const linkText: Record<'connecting' | 'open' | 'closed', string> = {
     connecting: t('app_link_connecting'),
@@ -136,7 +148,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
     );
   };
   const collapsed = useMediaQuery('(max-width: 999px)') ?? false;
-  const version = state.version?.app_version ?? '';
+  const version = window.renpy ? desktopInfo?.appVersion ?? '' : state.version?.app_version ?? '';
+  const showDesktopRecovery = Boolean(window.renpy) && desktopInfo?.packaged !== false;
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || t('app_project_unbound_name');
 
@@ -280,26 +293,31 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
               })()}
             </button>
           </Tooltip>
-          <Tooltip label={t('app_about_diagnostics')} disabled={!collapsed} position="right">
+          {window.renpy ? <Tooltip label={t('app_logs')} disabled={!collapsed} position="right">
             <button
               type="button"
               className="nav-item rb-icon-button"
-              title={t('app_about_diagnostics')}
-              aria-label={t('app_about_diagnostics')}
-              onClick={() => { void window.renpy?.openShell('welcome'); }}
+              title={t('app_logs')}
+              aria-label={t('app_logs')}
+              onClick={() => {
+                void window.renpy?.openLogs().catch(error => {
+                  state.pushToast('error', error instanceof Error ? error.message : String(error));
+                });
+              }}
             >
-              {(() => {
-                const Icon = NAV_ICONS.Info;
-                return <Icon size={18} strokeWidth={1.75} />;
-              })()}
+              <FileText size={18} strokeWidth={1.75} />
             </button>
-          </Tooltip>
+          </Tooltip> : null}
         </div>
       </nav>
 
       <main className="content rb-content" data-page={active}>
         {link === 'closed' ? <div className="backend-notice rb-notice" role="status">
-          后端未连接，正在自动重试。请用 <code>npm run dev</code> 或 <code>npm run dev:web</code> 启动（二者共用同一后端，关桌面端不会杀掉服务）；仅 <code>npm run dev:renderer</code> 不会起 Python。
+          {showDesktopRecovery ? (<>
+            后端连接已断开，正在自动重试。若持续无法连接，请重启 RenpyBox，并点击左下角「日志」查看错误记录。
+          </>) : (<>
+            后端未连接，正在自动重试。请用 <code>npm run dev</code> 或 <code>npm run dev:web</code> 启动（二者共用同一后端，关桌面端不会杀掉服务）；仅 <code>npm run dev:renderer</code> 不会起 Python。
+          </>)}
         </div> : null}
         {state.ready ? body : <Empty>正在启动 …</Empty>}
       </main>

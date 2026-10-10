@@ -48,6 +48,9 @@ def test_proofreading_preserves_new_results_and_project_boundaries(tmp_path, mon
     filtered = client.get("/api/proofreading", params={"query": "小猫", "status": "TRANSLATED"}).json()
     assert filtered["matched"] == 1
     assert filtered["files"] == ["chapter.rpy", "ending.rpy"]
+    report = client.get("/api/proofreading/report")
+    assert report.status_code == 200
+    assert report.json()["item_references"] == []
     assert client.get("/api/proofreading", params={"status": "UNKNOWN"}).status_code == 400
 
     def edit_payload(row, dst, token=None):

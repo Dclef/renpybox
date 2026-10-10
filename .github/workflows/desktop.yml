@@ -1,0 +1,107 @@
+name: RenpyBox New UI desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this new_UI build as a GitHub prerelease
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches:
+      - new_UI
+    paths:
+      - "desktop/**"
+      - "api/**"
+      - "base/**"
+      - "module/**"
+      - "resource/**"
+      - "utils/**"
+      - "update_integrity.py"
+      - "update_path_policy.py"
+      - "CHANGELOG.md"
+      - ".github/workflows/desktop.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/new_UI'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python for the bundled backend
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            desktop/scripts/requirements-backend.txt
+            desktop/sidecar/requirements.txt
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r desktop/scripts/requirements-backend.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix desktop
+
+      - name: Check renderer types
+        run: npm run typecheck --prefix desktop
+
+      - name: Check desktop process and updater contracts
+        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs
+
+      - name: Build Windows installer
+        run: npm run pack:win --prefix desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpybox-newui-windows
+          path: |
+            desktop/release/RenpyBox-NewUI-*-x64.exe
+            desktop/release/RenpyBox-NewUI-*-x64.exe.blockmap
+            desktop/release/newui.yml
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/new_UI'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: renpybox-newui-windows
+          path: desktop/release
+      - name: Publish isolated New UI prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$') { throw 'Expected a newui prerelease version' }
+          $files = @(
+            "desktop/release/RenpyBox-NewUI-$version-x64.exe",
+            "desktop/release/RenpyBox-NewUI-$version-x64.exe.blockmap",
+            'desktop/release/newui.yml'
+          )
+          foreach ($file in $files) { if (!(Test-Path -LiteralPath $file)) { throw "Missing artifact: $file" } }
+          gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --latest=false --title "RenpyBox New UI $version" --notes "new_UI branch desktop test build; includes the Python backend."
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

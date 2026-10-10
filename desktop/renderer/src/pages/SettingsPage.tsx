@@ -18,7 +18,7 @@
  * 夹在 max_output_tokens 和 request_timeout 两张卡之间，不是卡片。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api';
 import {
@@ -31,6 +31,7 @@ import {
 } from '../settingsSchema';
 import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
+import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
 import { Button, Progress, Tooltip } from '@mantine/core';
 
@@ -178,11 +179,147 @@ const EMPTY_UPDATE: UpdateState = {
   can_install: false,
 };
 
-/**
- * 「关于与更新」—— 对接 /api/update（复用 VersionManager）。
- * 检查 / 下载 / 取消 / 安装与 Qt 原壳同一事件流；进度经 WebSocket 推送。
- */
 function AboutCard(props: { state: AppState }) {
+  return window.renpy ? <DesktopAboutCard {...props} /> : <WebAboutCard {...props} />;
+}
+
+/** 桌面安装包只通过 Electron 更新，避免调用 Qt 的覆盖安装接口。 */
+function DesktopAboutCard({ state }: { state: AppState }) {
+  const [appInfo, setAppInfo] = useState<DesktopAppInfo | null>(null);
+  const [update, setUpdate] = useState<DesktopUpdateState | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [pending, setPending] = useState<string[]>([]);
+  const pendingRef = useRef(new Set<string>());
+  const [installConfirm, setInstallConfirm] = useState(false);
+  const [changelog, setChangelog] = useState<string | null>(null);
+  const [loadingChangelog, setLoadingChangelog] = useState(false);
+
+  useEffect(() => {
+    const bridge = window.renpy;
+    if (!bridge) return;
+    let active = true;
+    let receivedState = false;
+    const unsubscribe = bridge.updater.onState((next) => {
+      receivedState = true;
+      if (!active) return;
+      setUpdate(next);
+      setLoadError('');
+    });
+    void bridge.updater.state()
+      .then((next) => { if (active && !receivedState) setUpdate(next); })
+      .catch((error) => { if (active && !receivedState) setLoadError(String(error?.message || error)); });
+    void bridge.appInfo()
+      .then((info) => { if (active) setAppInfo(info); })
+      .catch((error) => { if (active) state.pushToast('error', `读取桌面信息失败：${String(error?.message || error)}`); });
+    return () => { active = false; unsubscribe(); };
+  }, [state.pushToast]);
+
+  const run = async (action: 'check' | 'download' | 'cancel' | 'install') => {
+    const updater = window.renpy?.updater;
+    if (!updater || !update?.packaged || pendingRef.current.has(action)) return;
+    if (action === 'cancel' && update.status !== 'downloading') return;
+    if (action === 'download' && update.status !== 'available') return;
+    if (action === 'install' && update.status !== 'downloaded') return;
+    if (action === 'check' && ['checking', 'downloading', 'downloaded'].includes(update.status)) return;
+    if (action !== 'cancel' && pendingRef.current.size > 0) return;
+    pendingRef.current.add(action);
+    setPending([...pendingRef.current]);
+    try {
+      if (action === 'install') await updater.install();
+      else setUpdate(await updater[action]());
+      setLoadError('');
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      pendingRef.current.delete(action);
+      setPending([...pendingRef.current]);
+    }
+  };
+
+  const status = update?.status;
+  const progress = Math.max(0, Math.min(100, Math.round(update?.progress || 0)));
+  const version = appInfo?.appVersion || update?.currentVersion || '读取中…';
+  const enabled = update?.packaged === true;
+  let statusText = loadError ? `读取更新状态失败：${loadError}` : '读取更新状态…';
+  if (status === 'dev') statusText = '开发模式，请使用安装版测试自动更新';
+  else if (status === 'idle') statusText = '尚未检查更新';
+  else if (status === 'checking') statusText = '正在检查更新…';
+  else if (status === 'available') statusText = `发现新版本 ${displayVersion(update?.version || '')}`;
+  else if (status === 'latest') statusText = '当前已是最新版本';
+  else if (status === 'downloading') statusText = `正在下载 ${progress}%`;
+  else if (status === 'downloaded') statusText = '下载完成，可以重启安装';
+  else if (status === 'error') statusText = update?.error || '更新失败，请重试';
+
+  return (
+    <>
+      <SettingsGroup title="关于与更新" description="RenpyBox 桌面版 · GitHub 发布更新">
+        <SettingCard title="当前版本" description={appInfo?.packaged === false ? '开发模式' : null}>
+          <span className="rb-setting-value">{displayVersion(version)}</span>
+          <Button variant="default" size="xs" disabled={!enabled || pending.length > 0 || ['checking', 'downloading', 'downloaded'].includes(status || '')} onClick={() => void run('check')}>
+            {status === 'checking' || pending.includes('check') ? '检查中…' : '检查更新'}
+          </Button>
+        </SettingCard>
+        <SettingCard title="后端 Python" description={null}>
+          <span className="rb-setting-value">{state.health?.python_version || '—'}</span>
+        </SettingCard>
+        <SettingCard title="桌面更新" description={null}>
+          <div className="rb-update-status" aria-live="polite">
+            <span>{statusText}</span>
+            {status === 'downloading' ? (
+              <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
+                <Progress value={progress} w={160} size="sm" />
+                <span>{progress}%</span>
+              </div>
+            ) : null}
+            <div className="rb-update-actions">
+              {status === 'available' ? <Button size="xs" disabled={!enabled || pending.length > 0} onClick={() => void run('download')}>下载更新</Button> : null}
+              {status === 'downloading' ? (
+                <Button variant="default" size="xs" disabled={pending.includes('cancel')} onClick={() => void run('cancel')}>
+                  {pending.includes('cancel') ? '正在取消…' : '取消下载'}
+                </Button>
+              ) : null}
+              {status === 'downloaded' ? <Button size="xs" disabled={!enabled || pending.length > 0} onClick={() => setInstallConfirm(true)}>重启并安装</Button> : null}
+            </div>
+          </div>
+        </SettingCard>
+        <SettingCard title="更新日志" description={null}>
+          <Button variant="default" size="xs" disabled={loadingChangelog} onClick={() => {
+            if (update?.releaseNotes?.trim()) {
+              setChangelog(update.releaseNotes);
+              return;
+            }
+            setLoadingChangelog(true);
+            void window.renpy?.changelog()
+              .then((markdown) => setChangelog(markdown.trim() ? markdown : '暂无更新日志'))
+              .catch((error) => state.pushToast('error', String(error?.message || error)))
+              .finally(() => setLoadingChangelog(false));
+          }}>{loadingChangelog ? '读取中…' : '查看更新日志'}</Button>
+        </SettingCard>
+        <SettingCard title="运行日志" description="启动、后端与更新记录">
+          <Button variant="default" size="xs" onClick={() => {
+            void window.renpy?.openLogs().catch((error) => state.pushToast('error', String(error?.message || error)));
+          }}>查看日志</Button>
+        </SettingCard>
+      </SettingsGroup>
+      {installConfirm ? (
+        <Dialog title="安装更新" confirmText="重启并安装" onCancel={() => setInstallConfirm(false)} onConfirm={() => {
+          setInstallConfirm(false);
+          void run('install');
+        }}>
+          安装会关闭并重启 RenpyBox。请先保存工作，并等待正在运行的任务完成。
+        </Dialog>
+      ) : null}
+      {changelog !== null ? (
+        <Dialog title="桌面更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
+          <pre className="update-changelog">{changelog}</pre>
+        </Dialog>
+      ) : null}
+    </>
+  );
+}
+
+/** 网页端沿用 Python 的更新接口和 WebSocket 事件。 */
+function WebAboutCard(props: { state: AppState }) {
   const { state } = props;
   const version = state.version?.app_version ?? state.health?.app_version ?? '—';
   const python = state.health?.python_version ?? '—';

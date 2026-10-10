@@ -16,7 +16,7 @@ export const en: Record<keyof typeof zh, string> = {
   app_text_preserve_page: 'Text Preserve',
   app_honorific_page: 'Honorific Bridge',
   app_toggle_theme: 'Toggle Theme',
-  app_about_diagnostics: 'About & Diagnostics',
+  app_logs: 'Logs',
   app_project_unbound_name: 'No Project',
   app_project_unbound_hint: 'No Ren\'Py project bound. Open Project Settings',
   app_link_connecting: 'Connecting to backend',

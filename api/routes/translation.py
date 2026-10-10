@@ -219,6 +219,12 @@ def read_state(request: Request) -> TranslationStateResponse:
         if isinstance(extras, dict):
             progress = dict(extras.get("progress") or {}) if isinstance(extras.get("progress"), dict) else dict(extras)
 
+    # Quality work runs outside Translator but shares the translation progress contract.
+    from module.Engine.Quality.QualityTaskCoordinator import QualityTaskCoordinator
+    quality_progress = QualityTaskCoordinator.get().get_progress()
+    if quality_progress is not None:
+        progress["quality_task"] = quality_progress.as_dict()
+
     running = {
         "running": int(engine.get_running_task_count()),
         "max": int(getattr(request.app.state.config, "max_workers", 0) or 0),
