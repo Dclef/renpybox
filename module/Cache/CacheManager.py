@@ -752,6 +752,36 @@ class CacheManager(Base):
                     count += 1
         return count
 
+    # 重置翻译失败条目，供「重翻失败项」随后通过「继续任务」重新翻译
+    def reset_failed_translation_items(self) -> int:
+        """
+        按 translation_retry 结构化元数据识别失败条目（含达到阈值被排除的条目），
+        并兼容旧逻辑重置“译文等于原文”的已翻译条目。返回去重后的重置数量。
+        已完成且译文不同于原文的条目即使残留重试元数据也不清空，避免误删人工译文。
+        """
+        failed_statuses = (
+            Base.TranslationStatus.UNTRANSLATED,
+            Base.TranslationStatus.EXCLUDED,
+        )
+        count = 0
+        with __class__.LOCK:
+            for item in self.items:
+                status = item.get_status()
+                if (
+                    status in failed_statuses
+                    and isinstance(item.get_metadata().get(CacheItem.TRANSLATION_RETRY_KEY), dict)
+                ):
+                    item.reset_translation()
+                    count += 1
+                    continue
+                if Base.is_item_completed(status):
+                    src = (item.get_src() or "").strip()
+                    dst = (item.get_dst() or "").strip()
+                    if src and dst and src == dst:
+                        item.reset_translation()
+                        count += 1
+        return count
+
     # 生成缓存数据条目片段
     def generate_item_chunks(
         self,

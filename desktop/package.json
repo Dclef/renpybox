@@ -23,9 +23,7 @@
   },
   "dependencies": {
     "@esbuild/win32-x64": "^0.25.12",
-    "@mantine/core": "^9.7.1",
-    "@mantine/hooks": "^9.7.1",
-    "@tanstack/react-virtual": "^3.14.13",
+    "antd": "6.6.5",
     "builder-util-runtime": "^9.7.0",
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.54.0",
@@ -59,15 +57,32 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "../resource/icon.ico", "to": "renpybox/icon.ico" },
-      { "from": "runtime/backend", "to": "backend" },
-      { "from": "../CHANGELOG.md", "to": "renpybox/CHANGELOG.md" },
-      { "from": "../LICENSE", "to": "renpybox/LICENSE" }
+      {
+        "from": "../resource/icon.ico",
+        "to": "renpybox/icon.ico"
+      },
+      {
+        "from": "runtime/backend",
+        "to": "backend"
+      },
+      {
+        "from": "../CHANGELOG.md",
+        "to": "renpybox/CHANGELOG.md"
+      },
+      {
+        "from": "../LICENSE",
+        "to": "renpybox/LICENSE"
+      }
     ],
     "win": {
       "icon": "icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "RenpyBox-NewUI-${version}-${arch}.${ext}"
     },

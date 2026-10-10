@@ -3,9 +3,9 @@
 RenpyBox 的桌面壳：**Electron 主进程 + Python sidecar（FastAPI + WebSocket）+ React/TS 主 UI**。
 M0 的性能验证已结束，当前正在迁移主界面；旧性能门禁与 Vue 对照版已移除。**界面能够运行不代表功能迁移已经完成。**
 
-## 当前进度（2026-10-08）
+## 当前进度（2026-10-10）
 
-翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、术语表、静态提示词预览、Agent 助手、应用更新（复用 VersionManager）。AI 校对与润色支持选中条目、确认、取消及任务结果查看；22 项工具仍只有说明入口，主流程和资产工具仍有迁移缺口。审计缺口见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)；2026-10-09 接到壳上的行为和未完成项见 [补充说明](SUPPLEMENT-2026-10-09.md)；表格组件见 [Table UI 设计规范](TABLE-UI-SPEC.md)。
+翻译主流程、项目设置与常规设置已接入；新增接口管理读写与测试、工作台编辑与草稿应用、平行校对编辑与批量替换、术语表/禁翻表（与旧 Qt 单元格编辑及 Excel/统计/扫描/翻译对齐，无侧栏）、静态提示词预览、Agent 助手、应用更新（复用 VersionManager）。AI 校对与润色支持选中条目、确认、取消及任务结果查看；本轮接入一键翻译、应用翻译到游戏、解包/反编译/打包，以及资源组三项：终极结构导出、批量修正、姓名提取；其余工具仍有迁移缺口。审计缺口见 [UI 迁移检查记录](UI-REVIEW-2026-10-08.md)；2026-10-09 接到壳上的行为和未完成项见 [补充说明](SUPPLEMENT-2026-10-09.md)；表格组件见 [Table UI 设计规范](TABLE-UI-SPEC.md)；词库对等见 [lexicon-qt-parity](../docs/internal/2026-10-09/dev/lexicon-qt-parity.md)。
 
 开发时网页与桌面共用同一 Python sidecar：`npm run dev` / `npm run dev:web` 都由脚本托管后端；关掉 Electron 不会杀死后端，只有 Ctrl+C 结束开发脚本时才停。
 
@@ -57,7 +57,7 @@ desktop/
 ├── scripts/dev.mjs        一条命令拉起 vite + Electron（npm run dev）
 ├── renderer/              React + TS 主 UI（产品界面）
 │   ├── src/
-│   │   ├── App.tsx        外壳：38px 标题栏 + 导航（256 展开 / 56 折叠）+ Mantine 通知
+│   │   ├── App.tsx        外壳：38px 标题栏 + 导航（256 展开 / 56 折叠）+ Ant Design 通知
 │   │   ├── nav.ts         导航结构，镜像 AppFluentWindow.add_pages()
 │   │   ├── tools.ts       27 个工具，镜像 ToolRegistry.TOOL_SPECS
 │   │   ├── icons.tsx      lucide 导航图标与自绘窗口按钮
@@ -67,12 +67,12 @@ desktop/
 │   │   ├── useAppState.ts 唯一状态源：配置乐观更新 + 事件分发 + toast
 │   │   ├── useSidecarEvents.ts 全应用单条 WS（指数退避重连）
 │   │   ├── theme.ts       灰阶与强调色的语义令牌
-│   │   ├── mantineTheme.ts Mantine 主题与 CSS 变量映射
+│   │   ├── antdTheme.ts   Ant Design ConfigProvider tokens 与 --rb-* 变量
 │   │   ├── styles/        分层样式（legacy 尚未完全清理）
 │   │   ├── components/    DataSheet 与工具页框架
 │   │   ├── preload.d.ts   window.renpy 桥接类型
 │   │   ├── pages/         翻译 / 项目 / 工具箱 / 工作台 / 设置
-│   │   └── ui.tsx         Mantine 设置控件 / PageHeader / Dialog / Banner 等
+│   │   └── ui.tsx         Ant Design 设置控件 / PageHeader / Dialog / Banner 等
 │   └── index.html         含严格 CSP（connect-src 指向 sidecar 端口）
 ├── PERF-REPORT.md         M0 的 React vs Vue 实测报告（保留作虚拟化决策依据）
 └── run-dev.sh / run-dev-api.sh / run-dev.cmd
@@ -82,10 +82,12 @@ desktop/
 
 ```bash
 cd renpybox/desktop
-npm install
+npm ci --include=dev
 npm run dev            # vite + Electron + sidecar（scripts/dev.mjs 托管后端）
 npm run dev:web        # 仅 vite + sidecar，浏览器打开；可与桌面端同时用
 ```
+
+若提示缺少 Vite，请在 `desktop` 目录重新执行 `npm ci --include=dev`。开发启动器会先检查依赖，再启动后端；Electron 运行时缺失时可执行 `node node_modules/electron/install.js` 重试。
 
 `npm run dev` 一条命令就够，不需要另开终端跑 vite：dev 模式下窗口从 vite dev server
 加载渲染端，只起 Electron 会拿到 `ERR_CONNECTION_REFUSED`。端口统一由
@@ -116,7 +118,7 @@ vite、`main.js` 与 `index.html` 的 CSP 三处必须一致。
 - **文案**来自 `renpybox/module/Localizer/LocalizerZH.py`，导航项、KPI、流水表头的文字与该文件同名条目逐字一致（含 `{PERCENT:.1f}%` 这类占位符的格式）；不新造术语。
 - **操作接真实业务**：接口、工作台、校对和词库均复用 Python 业务层；尚未迁移的工具明确说明使用条件与限制。
 - **图标**：工具箱复用项目自带 Lucide SVG；导航和命令栏用 lucide-react；窗口按钮保留现有自绘实现。
-- **设计口径**：保留 Mantine 的中性灰阶与蓝色主题，以旧 Qt 的页面组织和操作流程为基准。侧栏四段，工具箱分组卡片；翻译页保留进度环和吞吐图；校对表格支持长文本换行和选中条目的 AI 操作。颜色由 theme.ts / mantineTheme.ts 统一管理。
+- **设计口径**：使用 Ant Design 6，主色为 Ant 默认蓝（亮色 #1677ff，暗色由 darkAlgorithm 推导为 #1668dc），侧栏选中、表格选中行、进度与按钮共用同一组 token，以旧 Qt 的页面组织和操作流程为基准。侧栏四段，工具箱分组卡片；翻译页保留进度环和吞吐图；校对与词表使用 Ant Table（virtual + scroll.x/y）。中性色由 theme.ts 管理，主色系由 antdTheme.ts 从 Ant 实际 design token 派生到 `--rb-accent*`。
 
 ## 原 Qt 外壳几何对照（历史记录）
 
@@ -247,3 +249,40 @@ sidecar 端口被写死进构建产物，改端口要同时改 `index.html` 与 
 ## 界面检查
 
 已有开发服务器时，以 Electron 运行 scripts/check-ui.cjs；HTTP/WS 使用受控数据，测试不调用付费接口。RENPYBOX_UI_CAPTURE_ALL=1 会在检查通过后额外生成 14 个页面各两种主题的截图。此检查覆盖五种宽度，不替代真实游戏和安装包验收。
+
+
+## 一键翻译与解包（2026-10-10）
+
+从工具箱进入“一键翻译”，选择游戏根目录或 game 目录、目标语言目录名（例如 chinese），检测后点击“开始准备”。确认后依次检测、按需解包和反编译、抽取文本并配置翻译路径。默认启用增量保护；已有增量输出会先备份，准备结束不会自动调用翻译接口。
+
+准备完成后点击“打开翻译页”，使用现有的开始、继续或停止操作；译文生成后返回一键翻译，或从工具箱进入“应用翻译到游戏”，确认写回。全量应用覆盖对应 TL 文件，增量应用合并后才清理增量目录；应用路径由后端按当前项目和语言推导，不能指定任意目录用于清理。
+
+“解包/打包”页面支持解包 RPA、反编译 RPYC、打包和分卷。解包保留源 RPA，反编译保留 RPYC；覆盖已有 RPY 与打包写入均有确认。目录可手填，Electron 中还可调用系统目录/保存对话框。
+
+切页返回会恢复任务状态。取消后会等待当前后台操作结束再释放引擎；正在进行的文件应用会完成收尾，不承诺撤销已完成的写入。页面只能恢复当前 sidecar 进程中的任务，重启后端不会续跑旧任务。
+
+### API 约定
+
+所有写操作返回 `{ "job": ... }`，通过 `GET /api/jobs/{id}` 查看状态，`POST /api/jobs/{id}/cancel` 请求协作取消。任务结果中的 `worker_active=false` 表示工作线程已结束；`cancel_requested=true` 本身不代表已经停止。业务失败写入 `job.error`，项目过期或引擎忙返回 409，非法路径和未确认操作返回 400。
+
+| 接口 | 请求与结果 |
+|---|---|
+| `GET /api/onekey` | 当前项目最近一次准备或应用任务 |
+| `POST /api/onekey/detect` | `game_dir`、`language`，可传 `project_key` 校验项目；返回脚本状态 |
+| `POST /api/onekey/prepare` | 上述字段加 `incremental`、`confirm_write=true`；可指定项目根目录内的 `exe_path`，否则自动查找游戏程序 |
+| `POST /api/onekey/apply` | 上述项目字段加 `incremental`、`confirm=true`；可选路径字段仅用于核对，必须匹配派生目录 |
+| `GET /api/archive` | 当前项目最近一次解包、反编译或打包任务；未绑定项目时同样可用 |
+| `POST /api/archive/unpack` | `path`、`direct`、`script_only`；不删除源档 |
+| `POST /api/archive/decompile` | `path`、`overwrite`、`use_unren`；覆盖时要求 `confirm_overwrite=true` |
+| `POST /api/archive/pack` | `source_dir`、`output_file`、`max_part_size`（默认 `1G`，空值不分卷）、`confirm=true` |
+| `GET /api/asset-suite/status` | 当前项目最近一次结构/Emoji/批量修正/姓名提取任务 |
+| `POST /api/asset-suite/structure` | `path`、`language`、`mode`（1/2/3）、`use_official`、`exe_path`、`gen_emoji`、`confirm_overwrite`；覆盖已有 `translate_output` 前需确认 |
+| `POST /api/asset-suite/emoji` | `path`、`target_dir`、`mode=prepare\|restore`、`confirm=true`；先备份再原地替换 |
+| `POST /api/asset-suite/corrections/export` | `input_dir`、`output_dir`、`confirm_overwrite`；生成 `批量修正.xlsx` |
+| `POST /api/asset-suite/corrections/apply` | `workbook`、`translation_root`、`confirm=true`；原地注入，路径不得越界 |
+| `POST /api/asset-suite/names/extract` | `input_dir`；返回 `entries=[{src,context}]` |
+| `POST /api/asset-suite/names/export` | `entries`、`format=txt\|json`；可选 `output_file`+`confirm_overwrite`，否则返回可下载正文 |
+
+共享业务位于 `module/OneKey/flow.py`、`module/Tool/ArchiveOps.py` 与 `module/Tool/AssetSuiteOps.py`（结构导出复用 `HakimiSuiteRunner` / `EmojiReplacer`）；旧 Qt 页面继续调用相同逻辑，desktop 不导入 Qt 页面。翻译请求仍通过已有 `/api/translation` 接口执行。
+
+验证覆盖临时项目真实抽取与应用、RPA 打包解包、结构/Emoji/批量修正/姓名提取、项目切换、增量目录保护、取消和界面交互；不等同于真实游戏运行、官方抽取真机、收费模型或打包安装版验收。

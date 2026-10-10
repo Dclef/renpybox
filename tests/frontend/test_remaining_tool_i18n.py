@@ -1,4 +1,6 @@
 import os
+
+import pytest
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,6 +24,11 @@ from module.Localizer.Localizer import Localizer
 
 
 APP = QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "CONFIG_PATH", str(tmp_path / "config.json"))
 
 
 def _widget_texts(page: QWidget) -> set[str]:
@@ -152,3 +159,130 @@ def test_english_batch_workbook_can_be_exported_by_html_tool(
     finally:
         batch_page.close()
         html_page.close()
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_batch_export_requires_overwrite_confirmation(tmp_path, monkeypatch, approve):
+    from PyQt5.QtWidgets import QMessageBox
+
+    module = "frontend.RenpyToolbox.BatchCorrectionPage"
+    folder = tmp_path / "checks"
+    folder.mkdir()
+    (folder / "result_check_dialogue.json").write_text('{"script.rpy":{"Hello":"你好"}}', encoding="utf-8")
+    workbook = folder / "批量修正.xlsx"
+    workbook.write_bytes(b"existing workbook")
+    shown = []
+    questions = []
+    monkeypatch.setattr(f"{module}.InfoBar.success", lambda *args, **kwargs: shown.append(args))
+    monkeypatch.setattr(f"{module}.InfoBar.error", lambda *args, **kwargs: pytest.fail(str(args)))
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: questions.append(args[2]) or (QMessageBox.Yes if approve else QMessageBox.No))
+    page = BatchCorrectionPage("batch_overwrite")
+    try:
+        page.input_folder = page.output_folder = str(folder)
+        page._step_01_clicked()
+        assert str(workbook) in questions[0]
+        if approve:
+            assert workbook.read_bytes().startswith(b"PK")
+            assert list(folder.glob("批量修正.xlsx.bak_*"))[0].read_bytes() == b"existing workbook"
+            assert shown
+        else:
+            assert workbook.read_bytes() == b"existing workbook"
+            assert not list(folder.glob("*.bak_*"))
+            assert not shown
+    finally:
+        page.close()
+
+
+def test_batch_apply_requires_confirmation_each_time(tmp_path, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+
+    module = "frontend.RenpyToolbox.BatchCorrectionPage"
+    workbook = tmp_path / "批量修正.xlsx"
+    workbook.touch()
+    calls = []
+    questions = []
+    answers = iter([QMessageBox.No, QMessageBox.Yes, QMessageBox.No])
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: questions.append(args[2]) or next(answers))
+    monkeypatch.setattr(f"{module}.InfoBar.info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(f"{module}.InfoBar.success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(f"{module}.apply_batch_corrections", lambda *args, **kwargs: calls.append((args, kwargs)) or {"applied_changes": 1, "message": "done"})
+    page = BatchCorrectionPage("batch_confirm")
+    try:
+        page.workbook_path = str(workbook)
+        page.translation_root = str(tmp_path)
+        for _ in range(3):
+            page._step_02_clicked()
+        assert len(calls) == 1
+        assert calls[0][1] == {"confirm": True}
+        assert len(questions) == 3
+        assert all(str(tmp_path) in question and str(workbook) in question for question in questions)
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("level,applied,expected", [("warning", 1, "warning"), ("error", 0, "error")])
+def test_batch_apply_displays_partial_and_failed_results(tmp_path, monkeypatch, level, applied, expected):
+    from PyQt5.QtWidgets import QMessageBox
+
+    module = "frontend.RenpyToolbox.BatchCorrectionPage"
+    workbook = tmp_path / "批量修正.xlsx"
+    workbook.touch()
+    shown = []
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: QMessageBox.Yes)
+    for tone in ("success", "warning", "error"):
+        monkeypatch.setattr(f"{module}.InfoBar.{tone}", lambda title, detail, _tone=tone, **kwargs: shown.append((_tone, detail)))
+    monkeypatch.setattr(f"{module}.apply_batch_corrections", lambda *args, **kwargs: {
+        "applied_changes": applied, "level": level, "partial": bool(applied), "message": "result",
+        "warnings": ["read failed"], "backups": ["script.rpy.bak"],
+        "unmatched": [{"path": "missing.rpy", "items": [{}], "reason": "missing"}],
+    })
+    page = BatchCorrectionPage("batch_result")
+    try:
+        page.workbook_path = str(workbook)
+        page.translation_root = str(tmp_path)
+        page._step_02_clicked()
+        assert shown[0][0] == expected
+        assert all(value in shown[0][1] for value in ("read failed", "script.rpy.bak", "missing.rpy"))
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_name_extraction_displays_warnings_and_keeps_existing_draft(tmp_path, monkeypatch, empty):
+    module = "frontend.RenpyToolbox.NameExtractionPage"
+    shown = []
+    monkeypatch.setattr(f"{module}.InfoBar.warning", lambda title, detail, **kwargs: shown.append(detail))
+    monkeypatch.setattr(f"{module}.InfoBar.success", lambda *args, **kwargs: pytest.fail("warnings must not show success"))
+    entries = [] if empty else [{"src": "Alice", "context": "context"}]
+    monkeypatch.setattr(f"{module}.extract_character_names", lambda *args: {
+        "empty": empty, "entries": entries, "count": len(entries), "warnings": ["bad.json failed"],
+    })
+    page = NameExtractionPage("name_warnings")
+    try:
+        page.input_folder = str(tmp_path)
+        page.extracted_entries = [{"src": "Previous", "context": "old"}]
+        page._step_01_clicked()
+        assert "bad.json failed" in shown[0]
+        assert page.extracted_entries[0]["src"] == ("Previous" if empty else "Alice")
+    finally:
+        page.close()
+
+
+def test_name_export_confirms_final_path_after_adding_extension(tmp_path, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+
+    module = "frontend.RenpyToolbox.NameExtractionPage"
+    target = tmp_path / "glossary.json"
+    target.write_text("existing", encoding="utf-8")
+    questions = []
+    monkeypatch.setattr(f"{module}.QFileDialog.getSaveFileName", lambda *args: (str(tmp_path / "glossary"), "JSON Files (*.json)"))
+    monkeypatch.setattr(f"{module}.QMessageBox.question", lambda *args: questions.append(args[2]) or QMessageBox.No)
+    monkeypatch.setattr(f"{module}.export_name_glossary", lambda *args, **kwargs: pytest.fail("cancelled export must not write"))
+    page = NameExtractionPage("name_overwrite")
+    try:
+        page.extracted_entries = [{"src": "Alice", "context": "context"}]
+        page._step_02_clicked()
+        assert str(target) in questions[0]
+        assert target.read_text(encoding="utf-8") == "existing"
+    finally:
+        page.close()

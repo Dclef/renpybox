@@ -268,7 +268,8 @@ class HonorificPlaceholderPage(Base, QWidget):
     def _save_to_config(self):
         entries = self._collect_table_data()
         self.config = Config().load()
-        self.config.honorific_placeholder_titles = [e["src"] for e in entries]
+        # 有备注存字典，无备注存字符串，避免旧逻辑丢备注
+        self.config.honorific_placeholder_titles = TextProcessor.serialize_honorific_titles(entries)
         self.config.honorific_placeholder_bridge_enable = self.switch_btn.isChecked()
         self.config.save()
         InfoBar.success(Localizer.localize("保存成功", "Saved"), Localizer.localize("已写入 {count} 个称呼词到配置", "Saved {count} honorific terms to settings.").format(count=len(entries)), parent=self)

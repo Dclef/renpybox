@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Button } from '@mantine/core';
+import { Button } from 'antd';
 
 import { resolveProject } from '../api';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
@@ -154,12 +154,12 @@ export function ProjectPage(props: { state: AppState }) {
             />
           </SettingCard>
           <SettingCard title="输入文件夹" description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || '未设置。翻译从这里读取待译文本'}</span>}>
-            <Button variant="default" size="xs" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>选择</Button>
-            <Button variant="default" size="xs" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>打开</Button>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>选择</Button>
+            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>打开</Button>
           </SettingCard>
           <SettingCard title="输出文件夹" description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || '未设置。不能与输入文件夹相同'}</span>}>
-            <Button variant="default" size="xs" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>选择</Button>
-            <Button variant="default" size="xs" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>打开</Button>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>选择</Button>
+            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>打开</Button>
           </SettingCard>
           <SettingCard title="任务完成时打开输出文件夹" description="启用此功能后，将在任务完成时自动打开输出文件夹">
             <Switch

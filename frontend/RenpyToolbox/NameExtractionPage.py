@@ -1,13 +1,12 @@
 """
 姓名字段提取页面 - 完整实现
-基于 LinguaGacha 的 NameFieldExtractionPage 移植
+业务委托 AssetSuiteOps；支持 TXT 与 JSON 真实导出。
 """
-import re
 from pathlib import Path
 
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFileDialog
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QFileDialog, QMessageBox
 from qfluentwidgets import (
     PushButton,
     InfoBar,
@@ -19,6 +18,7 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from module.Tool.AssetSuiteOps import AssetSuiteError, export_name_glossary, extract_character_names
 from widget.EmptyCard import EmptyCard
 from widget.CommandBarCard import CommandBarCard
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
@@ -26,38 +26,25 @@ from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 class NameExtractionPage(Base, QWidget):
     """姓名字段提取页面 - 完整功能实现"""
-    
-    # Ren'Py 角色定义正则表达式
-    # 匹配: define character_name = Character("显示名")
-    RE_RENPY_CHARACTER = re.compile(
-        r'define\s+(\w+)\s*=\s*Character\s*\(\s*["\']([^"\']+)["\']',
-        re.MULTILINE
-    )
-    
-    # 匹配带 name 字段的 JSON 格式
-    # 用于 VNTextPatch 或 SExtractor 导出的格式
-    RE_JSON_NAME_FIELD = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
         QWidget.__init__(self, parent)
         self.setObjectName(object_name)
         mark_toolbox_widget(self)
-        
+
         self.window = parent
         self.input_folder = ""
         self.output_folder = ""
-        self.extracted_names = {}  # {原文姓名: 上下文}
-        
+        self.extracted_entries: list[dict] = []
+
         self._init_ui()
 
     def _init_ui(self):
-        """初始化界面"""
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         layout.setContentsMargins(24, 24, 24, 24)
 
-        # 标题卡片
         title_card = EmptyCard(
             title=Localizer.localize("姓名字段提取", "Name Extraction"),
             description=Localizer.localize(
@@ -72,7 +59,6 @@ class NameExtractionPage(Base, QWidget):
         )
         layout.addWidget(title_card)
 
-        # 创建滚动区域
         scroll_area = SingleDirectionScrollArea(orient=Qt.Orientation.Vertical)
         scroll_area.setWidgetResizable(True)
         scroll_area.enableTransparentBackground()
@@ -84,19 +70,17 @@ class NameExtractionPage(Base, QWidget):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(12)
 
-        # 添加步骤卡片
         scroll_layout.addWidget(self._create_step1_card())
         scroll_layout.addWidget(self._create_step2_card())
         scroll_layout.addStretch(1)
-        
+
         scroll_area.setWidget(scroll_widget)
         layout.addWidget(scroll_area)
 
-        # 底部命令栏
         self.command_bar_card = CommandBarCard()
         layout.addWidget(self.command_bar_card)
         self.command_bar_card.add_stretch(1)
-        
+
         wiki_btn = TransparentPushButton(FluentIcon.HELP, Localizer.get().wiki)
         wiki_btn.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl("https://github.com/dclef/RenpyBox/wiki")
@@ -104,7 +88,6 @@ class NameExtractionPage(Base, QWidget):
         self.command_bar_card.add_widget(wiki_btn)
 
     def _create_step1_card(self) -> EmptyCard:
-        """创建步骤一卡片"""
         def init(widget: EmptyCard) -> None:
             btn = PushButton(FluentIcon.PLAY, Localizer.get().start)
             btn.clicked.connect(self._step_01_clicked)
@@ -113,7 +96,7 @@ class NameExtractionPage(Base, QWidget):
         return EmptyCard(
             title=Localizer.localize("第一步 - 提取数据", "Step 1 - Extract Names"),
             description=Localizer.localize(
-                "提取姓名字段及与其相关的上下文，发送至翻译器进行翻译<br>"
+                "提取姓名字段及与其相关的上下文<br>"
                 "（如果不需要翻译，可以直接执行第二步生成术语表）",
                 "Extract names and their context. You can continue directly to step 2 when translation is not required.",
             ),
@@ -121,7 +104,6 @@ class NameExtractionPage(Base, QWidget):
         )
 
     def _create_step2_card(self) -> EmptyCard:
-        """创建步骤二卡片"""
         def init(widget: EmptyCard) -> None:
             btn = PushButton(FluentIcon.SAVE_AS, Localizer.get().generate)
             btn.clicked.connect(self._step_02_clicked)
@@ -129,157 +111,132 @@ class NameExtractionPage(Base, QWidget):
 
         return EmptyCard(
             title=Localizer.localize("第二步 - 生成术语表", "Step 2 - Generate Glossary"),
-            description=Localizer.localize("从提取的姓名数据中生成术语表<br>然后生成对应的术语表数据，检查生成的术语表数据是否正确", "Generate a glossary from the extracted names, then review the resulting entries."),
+            description=Localizer.localize(
+                "从提取的姓名数据中生成术语表（TXT 或 JSON）",
+                "Generate a glossary from the extracted names as TXT or JSON, then review the resulting entries.",
+            ),
             init=init,
         )
 
     def _step_01_clicked(self):
-        """第一步：提取姓名字段"""
         try:
-            # 选择输入文件夹
             if not self.input_folder:
                 self.input_folder = QFileDialog.getExistingDirectory(
                     self, Localizer.localize("选择包含 Ren'Py 脚本的输入文件夹", "Select the Folder Containing Ren'Py Scripts"), ""
                 )
                 if not self.input_folder:
                     return
-            
+
             LogManager.get().info(f"开始提取姓名字段：{self.input_folder}")
-            
-            name_src_dict: dict[str, str] = {}
-            input_path = Path(self.input_folder)
-            
-            # 扫描 .rpy 文件
-            rpy_files = list(input_path.rglob("*.rpy"))
-            for rpy_file in rpy_files:
-                try:
-                    with open(rpy_file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        
-                        # 查找角色定义
-                        matches = self.RE_RENPY_CHARACTER.findall(content)
-                        for var_name, display_name in matches:
-                            # 获取上下文（定义所在行及后续几行）
-                            lines = content.split("\n")
-                            for i, line in enumerate(lines):
-                                if f"define {var_name}" in line:
-                                    # 提取定义行及后续 3 行作为上下文
-                                    context = "\n".join(lines[i:min(i+4, len(lines))])
-                                    if display_name not in name_src_dict or len(context) > len(name_src_dict.get(display_name, "")):
-                                        name_src_dict[display_name] = context
-                                    break
-                except Exception as e:
-                    LogManager.get().warning(f"读取文件失败 {rpy_file.name}: {e}")
-                    continue
-            
-            # 扫描 .json 文件（带 name 字段）
-            json_files = list(input_path.rglob("*.json"))
-            for json_file in json_files:
-                try:
-                    with open(json_file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        
-                        # 查找 name 字段
-                        matches = self.RE_JSON_NAME_FIELD.findall(content)
-                        for name in matches:
-                            if name and name not in name_src_dict:
-                                name_src_dict[name] = f"[从 {json_file.name} 提取]"
-                except Exception as e:
-                    LogManager.get().warning(f"读取文件失败 {json_file.name}: {e}")
-                    continue
-            
-            # 有效性检查
-            if len(name_src_dict) == 0:
-                InfoBar.warning(Localizer.get().notice, Localizer.localize("未找到任何角色姓名定义，请检查输入文件夹", "No character-name definitions were found. Check the input folder."), parent=self)
+            result = extract_character_names(self.input_folder)
+            warnings = result.get("warnings") or []
+            for warning in warnings:
+                LogManager.get().warning(warning)
+            if result.get("empty"):
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize("未找到任何角色姓名定义，请检查输入文件夹", "No character-name definitions were found. Check the input folder.")
+                    + ("\n" + "\n".join(warnings[:5]) if warnings else ""),
+                    parent=self,
+                )
                 return
-            
-            # 保存提取结果
-            self.extracted_names = name_src_dict
-            
-            LogManager.get().info(f"提取完成，找到 {len(name_src_dict)} 个角色姓名")
-            InfoBar.success(
-                Localizer.localize("提取完成", "Extraction Complete"),
-                Localizer.localize("找到 {count} 个角色姓名\n如需翻译，请配置翻译引擎后使用翻译功能\n否则可直接执行第二步生成术语表", "Found {count} character name(s). Configure a translation engine to translate them, or continue to step 2 to generate the glossary.").format(count=len(name_src_dict)),
-                parent=self
+
+            self.extracted_entries = list(result.get("entries") or [])
+            tone = InfoBar.warning if warnings else InfoBar.success
+            tone(
+                Localizer.localize("部分完成", "Partially Complete") if warnings else Localizer.localize("提取完成", "Extraction Complete"),
+                Localizer.localize(
+                    "找到 {count} 个角色姓名\n可直接执行第二步生成术语表",
+                    "Found {count} character name(s). Continue to step 2 to generate the glossary.",
+                ).format(count=result.get("count", 0))
+                + ("\n" + "\n".join(warnings[:5]) if warnings else ""),
+                parent=self,
             )
-            
-            # 显示提取的姓名列表（前10个）
-            preview = "\n".join(list(name_src_dict.keys())[:10])
-            if len(name_src_dict) > 10:
-                preview += f"\n... 还有 {len(name_src_dict) - 10} 个"
+            preview = "\n".join(item["src"] for item in self.extracted_entries[:10])
+            if len(self.extracted_entries) > 10:
+                preview += f"\n... 还有 {len(self.extracted_entries) - 10} 个"
             LogManager.get().info(f"提取的姓名：\n{preview}")
-            
+        except AssetSuiteError as exc:
+            InfoBar.warning(Localizer.get().notice, str(exc), parent=self)
         except Exception as e:
             LogManager.get().error(f"提取姓名字段失败: {e}")
-            InfoBar.error(Localizer.get().error, Localizer.localize("提取姓名字段失败: {error}", "Name extraction failed: {error}").format(error=e), parent=self)
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("提取姓名字段失败: {error}", "Name extraction failed: {error}").format(error=e),
+                parent=self,
+            )
 
     def _step_02_clicked(self):
-        """第二步：生成术语表"""
         try:
-            # 检查是否已提取姓名
-            if not self.extracted_names:
-                InfoBar.warning(Localizer.get().notice, Localizer.localize("请先执行步骤一提取姓名字段", "Run step 1 to extract names first."), parent=self)
+            if not self.extracted_entries:
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize("请先执行步骤一提取姓名字段", "Run step 1 to extract names first."),
+                    parent=self,
+                )
                 return
-            
-            # 选择输出文件
+
             if not self.output_folder:
                 default_path = str(Path(self.input_folder or ".") / "glossary_names.txt")
             else:
                 default_path = str(Path(self.output_folder) / "glossary_names.txt")
-            
-            output_file, _ = QFileDialog.getSaveFileName(
-                self, Localizer.localize("保存术语表文件", "Save Glossary File"), default_path,
-                Localizer.localize("文本文件 (*.txt);;JSON文件 (*.json);;所有文件 (*.*)", "Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)")
+
+            output_file, selected_filter = QFileDialog.getSaveFileName(
+                self,
+                Localizer.localize("保存术语表文件", "Save Glossary File"),
+                default_path,
+                Localizer.localize(
+                    "文本文件 (*.txt);;JSON文件 (*.json);;所有文件 (*.*)",
+                    "Text Files (*.txt);;JSON Files (*.json);;All Files (*.*)",
+                ),
             )
             if not output_file:
                 return
-            
+
+            fmt = "json" if output_file.lower().endswith(".json") or "JSON" in (selected_filter or "").upper() else "txt"
+            if fmt == "json" and not output_file.lower().endswith(".json"):
+                output_file += ".json"
+            if fmt == "txt" and not output_file.lower().endswith(".txt"):
+                output_file += ".txt"
+
+            confirm_overwrite = False
+            if Path(output_file).exists():
+                answer = QMessageBox.question(
+                    self,
+                    Localizer.get().notice,
+                    Localizer.localize(
+                        "术语表已存在，继续将先备份再覆盖：\n{path}\n是否继续？",
+                        "The glossary already exists and will be backed up before overwriting:\n{path}\nContinue?",
+                    ).format(path=output_file),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+                confirm_overwrite = True
+
             LogManager.get().info(f"开始生成术语表：{output_file}")
-            
-            # 生成术语表格式
-            # 格式：原文 -> 译文 #备注
-            glossary_lines = []
-            for src_name, context in self.extracted_names.items():
-                # 默认译文与原文相同（用户需要手动修改）
-                dst_name = src_name
-                info = "角色姓名"
-                glossary_lines.append(f"{src_name} -> {dst_name} #{info}")
-            
-            # 保存术语表
-            output_path = Path(output_file)
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(glossary_lines))
-            
-            LogManager.get().info(f"术语表已生成: {output_path}")
+            result = export_name_glossary(
+                self.extracted_entries,
+                format=fmt,
+                output_file=output_file,
+                confirm_overwrite=confirm_overwrite,
+            )
+            self.output_folder = str(Path(output_file).parent)
             InfoBar.success(
                 Localizer.localize("任务完成", "Task Complete"),
-                Localizer.localize("已生成术语表文件（共 {count} 个条目）\n{path}\n\n请手动编辑文件，将 -> 右侧修改为正确的译文", "Generated a glossary with {count} entries.\n{path}\n\nEdit the file and replace the text to the right of -> with the correct translation.").format(count=len(glossary_lines), path=output_path),
-                parent=self
+                Localizer.localize(
+                    "已生成术语表文件（共 {count} 个条目）\n{path}\n\n请手动编辑文件，将译文修改为正确译名",
+                    "Generated a glossary with {count} entries.\n{path}\n\nEdit the file and replace the destination text with the correct translation.",
+                ).format(count=result["count"], path=result.get("path") or output_file),
+                parent=self,
             )
-            
-            # 显示术语表预览（前5个）
-            preview = "\n".join(glossary_lines[:5])
-            if len(glossary_lines) > 5:
-                preview += f"\n... 还有 {len(glossary_lines) - 5} 个"
-            LogManager.get().info(f"术语表预览：\n{preview}")
-            
+        except AssetSuiteError as exc:
+            InfoBar.warning(Localizer.get().notice, str(exc), parent=self)
         except Exception as e:
             LogManager.get().error(f"生成术语表失败: {e}")
-            InfoBar.error(Localizer.get().error, Localizer.localize("生成术语表失败: {error}", "Glossary generation failed: {error}").format(error=e), parent=self)
-
-    def _parse_glossary_from_translations(self, translations: dict[str, str]) -> dict[str, str]:
-        """从翻译结果中解析术语表（如果姓名已被翻译）"""
-        # 尝试从翻译结果中提取【姓名】格式
-        glossary = {}
-        for src, dst in translations.items():
-            # 提取【】或[]中的内容
-            src_match = re.search(r'[【\[]([^】\]]+)[】\]]', src)
-            dst_match = re.search(r'[【\[]([^】\]]+)[】\]]', dst)
-            
-            if src_match and dst_match:
-                src_name = src_match.group(1)
-                dst_name = dst_match.group(1)
-                if src_name and dst_name:
-                    glossary[src_name] = dst_name
-        
-        return glossary
+            InfoBar.error(
+                Localizer.get().error,
+                Localizer.localize("生成术语表失败: {error}", "Glossary generation failed: {error}").format(error=e),
+                parent=self,
+            )

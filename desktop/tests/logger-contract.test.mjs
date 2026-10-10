@@ -36,3 +36,17 @@ test('concise console preserves diagnostic detail in the file', (t) => {
   assert.ok(content.includes(error.stack));
   assert.ok(content.includes('probe diagnostics'));
 });
+
+test('synchronous console EPIPE preserves file logging while other errors propagate', (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'renpybox-log-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = createLogger(dir);
+  const error = new Error('真实后端异常');
+  const brokenPipe = Object.assign(new Error('broken pipe'), { code: 'EPIPE' });
+  t.mock.method(console, 'error', () => { throw brokenPipe; });
+  assert.doesNotThrow(() => log.error(error));
+  assert.ok(readFileSync(log.path, 'utf8').includes(error.stack));
+  const unexpected = Object.assign(new Error('unexpected stdio failure'), { code: 'EIO' });
+  t.mock.method(console, 'error', () => { throw unexpected; });
+  assert.throws(() => log.error(error), candidate => candidate === unexpected);
+});

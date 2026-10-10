@@ -27,6 +27,7 @@ import type {
   WsJobMessage,
 } from './types';
 import { normalizeLang, type Lang } from './i18n';
+import { persistTheme, readStoredTheme } from './theme';
 import { useSidecarEvents } from './useSidecarEvents';
 
 export type ThemeName = 'LIGHT' | 'DARK';
@@ -50,6 +51,9 @@ export interface AppState {
   theme: ThemeName;
   settings: SettingsResponse | null;
   translation: TranslationState;
+  /** 翻译定时器跨页面保留；项目键用于避免切换项目后误触发。 */
+  translationTimerDeadline: number | null;
+  translationTimerProjectKey: string;
   /** PATCH 进行中，避免同一字段连点造成乱序写入 */
   saving: boolean;
   /** WS 连接状态，侧边栏底部的状态点用它 */
@@ -67,6 +71,7 @@ export interface AppState {
     preflightConfirmed?: boolean,
   ) => Promise<TranslationStartResponse>;
   stopTranslation: () => Promise<void>;
+  setTranslationTimer: (deadline: number | null, projectKey?: string) => void;
   exportTranslation: () => Promise<void>;
   retryFailedTranslations: () => Promise<void>;
   estimateTokens: () => Promise<TokenEstimate | null>;
@@ -98,13 +103,17 @@ export function useAppState(): AppState {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [translation, setTranslation] = useState<TranslationState>(EMPTY_TRANSLATION);
+  const [translationTimerDeadline, setTranslationTimerDeadline] = useState<number | null>(null);
+  const [translationTimerProjectKey, setTranslationTimerProjectKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [link, setLink] = useState<LinkState>('connecting');
+  // 服务端设置返回前用本地缓存的主题兜底，避免启动时先黑后白。
+  const [fallbackTheme] = useState<ThemeName>(readStoredTheme);
 
   // 用 ref 兜住回调闭包：WS 回调注册一次，里面的 setState 必须看到最新值。
-  const latest = useRef({ settings, project, translation });
-  latest.current = { settings, project, translation };
+  const latest = useRef({ settings, project, translation, translationTimerProjectKey });
+  latest.current = { settings, project, translation, translationTimerProjectKey };
 
   const handlers = useRef(new Set<(event: WsEventMessage) => void>());
   const pushToast = useCallback((tone: Toast['tone'], text: string) => {
@@ -164,17 +173,25 @@ export function useAppState(): AppState {
 
   const setSetting = useCallback((key: string, value: unknown) => saveSettings({ [key]: value }), [saveSettings]);
 
+  const setTranslationTimer = useCallback((deadline: number | null, projectKey = '') => {
+    setTranslationTimerDeadline(deadline);
+    setTranslationTimerProjectKey(deadline === null ? '' : projectKey);
+  }, []);
+
   const setProjectPath = useCallback(
     async (projectPath: string, gameFolder?: string) => {
+      setTranslationTimer(null);
       const next = await api.setProjectPath(projectPath, gameFolder);
       setProject(next);
       await Promise.all([reloadSettings(), reloadTranslation()]);
     },
-    [reloadSettings, reloadTranslation],
+    [reloadSettings, reloadTranslation, setTranslationTimer],
   );
 
   const startTranslation = useCallback(
     async (status: StartableProjectStatus, preflightConfirmed = false) => {
+      // 手动开始或定时开始后都不能保留旧的截止时间。
+      setTranslationTimer(null);
       const response = await api.startTranslation(status, undefined, preflightConfirmed);
       if (response.accepted) {
         await reloadTranslation();
@@ -185,13 +202,45 @@ export function useAppState(): AppState {
       }
       return response;
     },
-    [pushToast, reloadTranslation],
+    [pushToast, reloadTranslation, setTranslationTimer],
   );
 
   const stopTranslation = useCallback(async () => {
+    setTranslationTimer(null);
     await api.stopTranslation();
     await reloadTranslation();
-  }, [reloadTranslation]);
+  }, [reloadTranslation, setTranslationTimer]);
+
+  // 定时器属于应用状态，切页后仍运行，到点只消费一次并尝试启动任务。
+  useEffect(() => {
+    if (translationTimerDeadline === null) return;
+    const tick = () => {
+      if (Date.now() < translationTimerDeadline) return;
+      setTranslationTimer(null);
+      const current = latest.current;
+      const currentProjectKey = `${current.project?.renpy_project_path ?? ''}\n${String(current.settings?.values.input_folder ?? '')}`;
+      if (
+        !current.settings
+        || current.translation.engine_status !== 'IDLE'
+        || current.translation.stop_barrier
+        || current.translation.single_tasks
+        || (current.translationTimerProjectKey && current.translationTimerProjectKey !== currentProjectKey)
+      ) {
+        pushToast('warning', '定时翻译已跳过：项目已切换或当前任务不可开始');
+        return;
+      }
+      void startTranslation('UNTRANSLATED')
+        .then((response) => {
+          if (!response.accepted && response.reason === 'ASSETS_MISSING') {
+            pushToast('warning', response.detail || '定时翻译未启动：当前项目没有可用资产');
+          }
+        })
+        .catch((error: unknown) => pushToast('error', error instanceof Error ? error.message : String(error)));
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [pushToast, setTranslationTimer, startTranslation, translationTimerDeadline]);
 
   const exportTranslation = useCallback(async () => {
     await api.exportTranslation();
@@ -199,8 +248,16 @@ export function useAppState(): AppState {
 
   const retryFailedTranslations = useCallback(async () => {
     const result = await api.retryFailedTranslations();
-    pushToast(result.count > 0 ? 'success' : 'info', result.detail);
-  }, [pushToast]);
+    const count = Number(result.count ?? 0);
+    // 后端已按缓存重算进度，刷新快照让「可继续」与已译/待译/失败统计立即生效。
+    await reloadTranslation();
+    pushToast(
+      count > 0 ? 'success' : 'info',
+      count > 0
+        ? `已重置 ${count} 条失败项，请点击「继续任务」重新翻译`
+        : result.detail || '没有找到需要重翻的失败项',
+    );
+  }, [pushToast, reloadTranslation]);
 
   const estimateTokens = useCallback(async () => {
     const result = await api.estimateTokens();
@@ -208,6 +265,7 @@ export function useAppState(): AppState {
   }, []);
 
   const setTheme = useCallback((theme: ThemeName) => {
+    persistTheme(theme);
     setSettings((prev) => {
       if (!prev) return prev;
       return { ...prev, values: { ...prev.values, theme } };
@@ -298,6 +356,7 @@ export function useAppState(): AppState {
         switch (message.event) {
           case 'PROJECT_CHANGED':
           case 'PROJECT_STATUS':
+            if (message.event === 'PROJECT_CHANGED') setTranslationTimer(null);
             void Promise.all([reloadProject(), reloadSettings(), reloadTranslation()]).catch((error) => pushToast('error', String(error)));
             break;
           case 'GLOSSARY_REFRESH':
@@ -325,6 +384,7 @@ export function useAppState(): AppState {
             void reloadTranslation();
             break;
           case 'TRANSLATION_STOP':
+            setTranslationTimer(null);
             void reloadTranslation();
             break;
           case 'PROJECT_STATUS_CHECK_DONE':
@@ -338,6 +398,7 @@ export function useAppState(): AppState {
             break;
           }
           case 'TRANSLATION_START':
+            setTranslationTimer(null);
             setTranslation((prev) => ({ ...prev, progress: {} }));
             void reloadTranslation();
             break;
@@ -346,14 +407,21 @@ export function useAppState(): AppState {
         }
         handlers.current.forEach((handler) => handler(message));
       }
-    }, [pushToast, reloadProject, reloadSettings, reloadTranslation]),
+    }, [pushToast, reloadProject, reloadSettings, reloadTranslation, setTranslationTimer]),
     setLink,
     useCallback((message: WsJobMessage) => upsertJob(message.job), [upsertJob]),
   );
 
+  // 服务端 settings.theme 是最终真实值；未返回或值无效时沿用本地兜底。
   const theme = useMemo<ThemeName>(() => {
     const stored = settings?.values.theme;
-    return stored === 'LIGHT' ? 'LIGHT' : 'DARK';
+    return stored === 'LIGHT' || stored === 'DARK' ? stored : fallbackTheme;
+  }, [settings?.values.theme, fallbackTheme]);
+
+  // 服务端值落地后同步到本地缓存，下次启动首帧即与真实设置一致。
+  useEffect(() => {
+    const stored = settings?.values.theme;
+    if (stored === 'LIGHT' || stored === 'DARK') persistTheme(stored);
   }, [settings?.values.theme]);
 
   return {
@@ -366,6 +434,8 @@ export function useAppState(): AppState {
     theme,
     settings,
     translation,
+    translationTimerDeadline,
+    translationTimerProjectKey,
     saving,
     link,
     toasts,
@@ -378,6 +448,7 @@ export function useAppState(): AppState {
     setProjectPath,
     startTranslation,
     stopTranslation,
+    setTranslationTimer,
     exportTranslation,
     retryFailedTranslations,
     estimateTokens,

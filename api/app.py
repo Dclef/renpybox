@@ -1,7 +1,7 @@
 """create_app() 工厂与生命周期。
 
 sidecar（Electron 的 Python 侧）直接跑这个 app；
-测试用 TestClient 无头跑，不依赖 Qt，也不需要真实项目。
+
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from api.events import EventBridge
 from api.hub import ConnectionHub
 from api.jobs import JobManager
-from api.routes import agent, glossary, jobs, platforms, proofreading, project, settings, system, translation, update, workbench, ws
+from api.routes import agent, archive, asset_suite, glossary, jobs, language_tools, lexicon, onekey, platforms, proofreading, project, settings, system, translation, update, workbench, ws
 from api.routes.ws import drain_loop
 
 
@@ -91,6 +91,11 @@ def create_app() -> FastAPI:
     app.include_router(workbench.router)
     app.include_router(proofreading.router)
     app.include_router(project.router)
+    app.include_router(archive.router)
+    app.include_router(asset_suite.router)
+    app.include_router(lexicon.router)
+    app.include_router(onekey.router)
+    app.include_router(language_tools.router)
     app.include_router(jobs.router)
     app.include_router(translation.router)
     app.include_router(ws.router)

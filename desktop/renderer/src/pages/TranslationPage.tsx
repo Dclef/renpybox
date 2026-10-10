@@ -8,14 +8,15 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Loader, Menu, RingProgress } from '@mantine/core';
+import { Button, Progress, Spin, Table, Tag } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import {
   ArrowRight,
   Calculator,
-  Ellipsis,
   FileDown,
   FileText,
   Folder,
+  History,
   Play,
   Plug,
   RefreshCw,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-react';
 
 import type { StartableProjectStatus, TranslationUpdateData } from '../types';
-import { Banner, Dialog, Empty, PageHeader } from '../ui';
+import { Banner, Dialog, Empty, NumberInput, PageHeader } from '../ui';
 import type { AppState } from '../useAppState';
 import { Waveform } from '../Waveform';
 import { useT } from '../i18n';
@@ -61,6 +62,21 @@ function formatDuration(seconds: number): string {
   return `${s}秒`;
 }
 
+/** 定时器按钮文字，照 Qt5 add_command_bar_action_timer.format_time */
+function formatClock(full: number): string {
+  const h = Math.floor(full / 3600);
+  const m = Math.floor((full % 3600) / 60);
+  const s = full % 60;
+  return [h, m, s].map((part) => String(part).padStart(2, '0')).join(':');
+}
+
+interface FeedRow {
+  key: number;
+  time: string;
+  source: string;
+  target: string;
+}
+
 export function TranslationPage(props: {
   state: AppState;
   onOpenWorkbench: () => void;
@@ -76,6 +92,10 @@ export function TranslationPage(props: {
   const [confirmReset, setConfirmReset] = useState(false);
   const [assetsMissing, setAssetsMissing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [timerDialog, setTimerDialog] = useState(false);
+  const [confirmTimerReset, setConfirmTimerReset] = useState(false);
+  const [timerInput, setTimerInput] = useState({ h: 0, m: 0, s: 0 });
+  const [timerLeft, setTimerLeft] = useState(0);
   const lastSampleAt = useRef(0);
 
   const status = state.translation.engine_status;
@@ -102,6 +122,23 @@ export function TranslationPage(props: {
       }
     });
   }, [state.subscribe]);
+
+  const projectKey = `${state.project?.renpy_project_path ?? ''}\n${inputFolder}`;
+  useEffect(() => {
+    if (state.translationTimerDeadline !== null && state.translationTimerProjectKey !== projectKey) {
+      state.setTranslationTimer(null);
+    }
+  }, [projectKey, state]);
+
+  const timerDeadline = state.translationTimerDeadline;
+
+  useEffect(() => {
+    if (timerDeadline === null) return;
+    const tick = () => setTimerLeft(Math.max(0, Math.ceil((timerDeadline - Date.now()) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [timerDeadline]);
 
   // 轮询补一次 running 计数：running/max 不在事件流里，引擎在跑时定时对齐。
   useEffect(() => {
@@ -164,6 +201,50 @@ export function TranslationPage(props: {
     return Array.isArray(raw) ? (raw as Record<string, unknown>[]).slice(0, 40) : [];
   }, [progress.recent_items]);
 
+  const feedRows = useMemo<FeedRow[]>(
+    () =>
+      recentItems.map((item, index) => ({
+        key: index,
+        time: String(item.time ?? item.timestamp ?? ''),
+        source: String(item.src ?? item.source ?? ''),
+        target: String(item.dst ?? item.target ?? ''),
+      })),
+    [recentItems],
+  );
+
+  const feedColumns = useMemo<ColumnsType<FeedRow>>(
+    () => [
+      {
+        title: '时间',
+        dataIndex: 'time',
+        key: 'time',
+        width: 110,
+        onCell: () => ({ style: { width: 110, whiteSpace: 'nowrap' } }),
+      },
+      {
+        title: (
+          <>
+            原文 <span className="rb-lang">{sourceLanguage}</span>
+          </>
+        ),
+        dataIndex: 'source',
+        key: 'source',
+        onCell: () => ({ style: { whiteSpace: 'normal', wordBreak: 'break-word' } }),
+      },
+      {
+        title: (
+          <>
+            译文 <span className="rb-lang">{targetLanguage}</span>
+          </>
+        ),
+        dataIndex: 'target',
+        key: 'target',
+        onCell: () => ({ style: { whiteSpace: 'normal', wordBreak: 'break-word' } }),
+      },
+    ],
+    [sourceLanguage, targetLanguage],
+  );
+
   const start = useCallback(
     async (projectStatus: StartableProjectStatus, preflightConfirmed = false) => {
       setBusy(true);
@@ -179,6 +260,13 @@ export function TranslationPage(props: {
     [state],
   );
 
+  const onTimerConfirm = useCallback(() => {
+    setTimerDialog(false);
+    const total = timerInput.h * 3600 + timerInput.m * 60 + timerInput.s;
+    setTimerLeft(total);
+    state.setTranslationTimer(Date.now() + total * 1000, projectKey);
+  }, [projectKey, state, timerInput]);
+
   const onStop = useCallback(async () => {
     setConfirmStop(false);
     setBusy(true);
@@ -186,6 +274,17 @@ export function TranslationPage(props: {
       await state.stopTranslation();
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [state]);
+
+  const onRetryFailed = useCallback(async () => {
+    setBusy(true);
+    try {
+      await state.retryFailedTranslations();
+    } catch (error) {
+      state.pushToast('warning', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -209,6 +308,8 @@ export function TranslationPage(props: {
   }, [state]);
 
   const commandDisabled = busy || !state.ready;
+  // 运行、停止收尾或准备阶段禁止重置，避免与翻译器并发写缓存。
+  const retryFailedDisabled = commandDisabled || !canStart || isTranslating || isStopping || preparing;
   const statusLabel = isStopping ? '正在停止' : preparing ? '正在准备'
     : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
     : state.translation.progress_error ? t('translation_cache_error')
@@ -219,6 +320,7 @@ export function TranslationPage(props: {
   const requestP95 = metrics?.logical_request_ms_p95;
   const latencyMetric = metrics ? (typeof requestP95 === 'number' ? (requestP95 / 1000).toFixed(2) + 's' : '—') : latencyText;
   const cacheText = `${(cacheRate > 1 ? cacheRate : cacheRate * 100).toFixed(1)}%`;
+  const progressPercent = Number((percent * 100).toFixed(1));
 
   return (
     <div className="translation-layout rb-page">
@@ -228,7 +330,7 @@ export function TranslationPage(props: {
           titleExtra={<span className="task-state" data-active={isTranslating} data-warning={isStopping || failed > 0} role="status">{statusLabel}</span>}
           description={headerDescription}
           actions={(
-            <Button variant="default" onClick={onOpenProofreading} leftSection={<SpellCheck size={16} strokeWidth={1.75} />}>
+            <Button type="default" onClick={onOpenProofreading} icon={<SpellCheck size={16} strokeWidth={1.75} />}>
               打开平行校对台
             </Button>
           )}
@@ -258,10 +360,14 @@ export function TranslationPage(props: {
         <div className="rb-translation-dashboard">
           <section className="rb-panel rb-progress">
             <h2>{t('translation_progress')}</h2>
-            {preparing && <Loader size="xs" aria-label={statusLabel} />}
-            <RingProgress size={122} thickness={8} roundCaps={percent > 0}
-              sections={[{ value: percent * 100, color: 'brand' }]}
-              label={<span className="rb-progress-percent">{(percent * 100).toFixed(1)}%</span>} />
+            {preparing && <Spin size="small" aria-label={statusLabel} />}
+            <Progress
+              type="circle"
+              size={122}
+              strokeWidth={8}
+              percent={progressPercent}
+              format={() => <span className="rb-progress-percent">{progressPercent}%</span>}
+            />
             <span className="rb-progress-lines">{linesDetail}</span>
             <span className="rb-progress-time">已用: {formatDuration(elapsed)} · 剩余约: {remaining > 0 ? formatDuration(remaining) : '—'}</span>
             <div className="rb-progress-meta">
@@ -272,7 +378,7 @@ export function TranslationPage(props: {
                 {' · '}
                 待译 {Math.max(0, totalLine - line).toLocaleString()}
               </span>
-              {failed > 0 ? <Badge className="rb-failed-badge" color="red">{failed} 行失败</Badge> : null}
+              {failed > 0 ? <Tag color="error">{failed} 行失败</Tag> : null}
             </div>
           </section>
 
@@ -292,28 +398,20 @@ export function TranslationPage(props: {
         <section className="rb-panel feed-card">
           <header className="rb-feed-head">
             <h2>{t(isTranslating ? 'translation_live_feed' : 'translation_recent_feed')}</h2>
-            <Badge>{recentItems.length} 条记录</Badge>
+            <Tag>{recentItems.length} 条记录</Tag>
             <span>{t(isTranslating ? 'translation_feed_live_hint' : 'translation_feed_saved_hint')}</span>
           </header>
           {recentItems.length > 0 ? (
-            <table className="rb-table">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>原文 <span className="rb-lang">{sourceLanguage}</span></th>
-                  <th>译文 <span className="rb-lang">{targetLanguage}</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentItems.map((item, index) => (
-                  <tr key={index}>
-                    <td>{String(item.time ?? item.timestamp ?? '')}</td>
-                    <td>{String(item.src ?? item.source ?? '')}</td>
-                    <td>{String(item.dst ?? item.target ?? '')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="rb-feed-table">
+              <Table<FeedRow>
+                size="medium"
+                bordered
+                pagination={false}
+                rowKey="key"
+                columns={feedColumns}
+                dataSource={feedRows}
+              />
+            </div>
           ) : (
             <Empty>
               <span className="rb-empty-stack">
@@ -327,21 +425,30 @@ export function TranslationPage(props: {
       </div>
 
       <footer className="translation-footer rb-command-bar">
-        <Button variant={continuePrimary ? 'default' : 'filled'} disabled={commandDisabled || !canStart || isTranslating} onClick={() => setConfirmReset(true)} leftSection={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
-        <Button variant={continuePrimary ? 'filled' : 'default'} disabled={commandDisabled || !canStart} onClick={() => void start('TRANSLATING')} leftSection={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
-        <Button className="rb-stop" color="red" variant="light" disabled={commandDisabled || !isTranslating} onClick={() => setConfirmStop(true)} leftSection={<Square size={16} strokeWidth={1.75} />}>停止</Button>
-        <Button variant="default" disabled={commandDisabled || isTranslating} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} leftSection={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
-        <Menu position="top-start">
-          <Menu.Target>
-            <Button variant="default" leftSection={<Ellipsis size={16} strokeWidth={1.75} />}>更多</Button>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Item disabled={commandDisabled} leftSection={<Calculator size={16} strokeWidth={1.75} />} onClick={() => void onEstimate()}>估算 Token</Menu.Item>
-            <Menu.Item disabled={commandDisabled} leftSection={<RefreshCw size={16} strokeWidth={1.75} />} onClick={() => void state.retryFailedTranslations().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })}>重翻失败项</Menu.Item>
-          </Menu.Dropdown>
-        </Menu>
+        <Button type={continuePrimary ? 'default' : 'primary'} disabled={commandDisabled || !canStart || isTranslating} onClick={() => setConfirmReset(true)} icon={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
+        <Button type={continuePrimary ? 'primary' : 'default'} disabled={commandDisabled || !canStart} onClick={() => void start('TRANSLATING')} icon={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
+        <Button className="rb-stop" danger disabled={commandDisabled || !isTranslating} onClick={() => setConfirmStop(true)} icon={<Square size={16} strokeWidth={1.75} />}>停止</Button>
+        <Button type="default" disabled={commandDisabled || isTranslating} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} icon={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
+        <Button type="default" disabled={commandDisabled} onClick={() => void onEstimate()} icon={<Calculator size={16} strokeWidth={1.75} />}>估算 Token</Button>
+        <Button
+          type="default"
+          disabled={retryFailedDisabled}
+          title="将失败条目重置为待翻译，随后点击「继续任务」重新翻译"
+          onClick={() => void onRetryFailed()}
+          icon={<RefreshCw size={16} strokeWidth={1.75} />}
+        >
+          重翻失败项
+        </Button>
+        <Button
+          type="default"
+          disabled={timerDeadline === null && (commandDisabled || !canStart)}
+          onClick={() => (timerDeadline === null ? setTimerDialog(true) : setConfirmTimerReset(true))}
+          icon={<History size={16} strokeWidth={1.75} />}
+        >
+          {timerDeadline === null ? t('translation_timer') : formatClock(timerLeft)}
+        </Button>
         <span className="rb-command-spacer" />
-        {preparing ? <Loader size="xs" /> : null}
+        {preparing ? <Spin size="small" /> : null}
         {isTranslating ? <span className="rb-command-pool">线程池 {running}/{max}</span> : null}
       </footer>
       {confirmStop ? (
@@ -388,6 +495,47 @@ export function TranslationPage(props: {
           onCancel={() => setAssetsMissing(false)}
         >
           <p>未找到已启用且有效的世界观、角色卡、术语或禁翻项。可以先打开工作台完善项目资产，也可以仍然继续本次翻译。</p>
+        </Dialog>
+      ) : null}
+
+      {timerDialog ? (
+        <Dialog
+          title={t('translation_timer')}
+          confirmText={t('translation_timer_confirm')}
+          cancelText={t('translation_timer_cancel')}
+          onConfirm={onTimerConfirm}
+          onCancel={() => setTimerDialog(false)}
+        >
+          <p>{t('translation_timer_prompt')}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {([['h', 23, 'translation_timer_hours'], ['m', 59, 'translation_timer_minutes'], ['s', 59, 'translation_timer_seconds']] as const).map(([field, max, label]) => (
+              <label key={field} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <NumberInput
+                  value={timerInput[field]}
+                  min={0}
+                  max={max}
+                  label={t(label)}
+                  onCommit={(next) => setTimerInput((prev) => ({ ...prev, [field]: Math.min(max, Math.max(0, Math.floor(next))) }))}
+                />
+                <span>{t(label)}</span>
+              </label>
+            ))}
+          </div>
+        </Dialog>
+      ) : null}
+
+      {confirmTimerReset ? (
+        <Dialog
+          title={t('translation_timer_alert')}
+          confirmText={t('translation_timer_confirm')}
+          cancelText={t('translation_timer_cancel')}
+          onConfirm={() => {
+            setConfirmTimerReset(false);
+            state.setTranslationTimer(null);
+          }}
+          onCancel={() => setConfirmTimerReset(false)}
+        >
+          <p>{t('translation_timer_reset')}</p>
         </Dialog>
       ) : null}
     </div>

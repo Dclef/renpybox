@@ -14,12 +14,13 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  overflow: hidden;
 }
 
 body {
-  font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif;
+  font-family: 'Microsoft YaHei UI', 'PingFang SC', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   font-size: 14px;
-  line-height: 1.4;
+  line-height: 1.6;
   color: var(--rb-text-primary);
   background: var(--rb-background);
   -webkit-font-smoothing: antialiased;
@@ -121,7 +122,7 @@ body {
   flex-shrink: 0;
 }
 
-:where(input:not([type]), input[type='url'], input[type='text'], input[type='number'], input[type='password'], select, textarea):where(:not([class*="mantine-"])) {
+:where(input:not([type]), input[type='url'], input[type='text'], input[type='number'], input[type='password'], select, textarea):where(:not([class*="ant-"])) {
   min-width: 0;
   min-height: 34px;
   padding: 0 10px;
@@ -132,27 +133,27 @@ body {
   font: inherit;
 }
 
-:where(input:focus-visible, select:focus-visible, textarea:focus-visible):where(:not([class*="mantine-"])) {
+:where(input:focus-visible, select:focus-visible, textarea:focus-visible):where(:not([class*="ant-"])) {
   outline: none;
   border-color: var(--rb-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 18%, transparent);
 }
 
-:where(button:focus-visible):where(:not([class*="mantine-"])) {
+:where(button:focus-visible):where(:not([class*="ant-"])) {
   outline: 2px solid var(--rb-accent);
   outline-offset: 2px;
 }
 
-:where(input:disabled, select:disabled, textarea:disabled):where(:not([class*="mantine-"])) {
+:where(input:disabled, select:disabled, textarea:disabled):where(:not([class*="ant-"])) {
   color: var(--rb-text-disabled);
   background: var(--rb-surface-subtle);
 }
 
-:where(input[type='number']):where(:not([class*="mantine-"])) {
+:where(input[type='number']):where(:not([class*="ant-"])) {
   width: 120px;
 }
 
-:where(select):where(:not([class*="mantine-"])) {
+:where(select):where(:not([class*="ant-"])) {
   min-width: 160px;
 }
 
@@ -203,7 +204,7 @@ body {
 
 /* ---------- 按钮 ---------- */
 
-:where(button):where(:not([class*="mantine-"])) {
+:where(button):where(:not([class*="ant-"])) {
   font: inherit;
 }
 
@@ -989,15 +990,83 @@ body {
   transition: width 160ms ease;
 }
 
+/* 更新日志：Markdown 分块渲染，弹窗内独立滚动 */
 .update-changelog {
-  margin: 0;
-  max-height: min(50vh, 420px);
+  max-height: min(60vh, 520px);
   overflow: auto;
-  white-space: pre-wrap;
-  font-size: 12px;
-  line-height: 1.55;
+  padding-right: 4px;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--rb-text-secondary);
+  overflow-wrap: anywhere;
 }
+
+.update-changelog > :first-child { margin-top: 0; }
+.update-changelog > :last-child { margin-bottom: 0; }
+
+.update-changelog :is(h3, h4, h5, h6) {
+  margin: 16px 0 6px;
+  color: var(--rb-text-primary);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.update-changelog h3 { font-size: 16px; }
+.update-changelog h4 {
+  font-size: 15px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rb-divider);
+}
+.update-changelog :is(h5, h6) { font-size: 13px; }
+
+.update-changelog p { margin: 0 0 8px; }
+
+.update-changelog :is(ul, ol) {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.update-changelog li { margin: 2px 0; }
+.update-changelog li[data-depth="1"] { margin-left: 18px; }
+.update-changelog li[data-depth="2"] { margin-left: 36px; }
+.update-changelog li[data-depth="3"] { margin-left: 54px; }
+
+.update-changelog code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--rb-surface-subtle);
+  color: var(--rb-text-primary);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+}
+
+.update-changelog pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--rb-surface-subtle);
+  overflow-x: auto;
+}
+
+.update-changelog pre code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+
+.update-changelog blockquote {
+  margin: 0 0 8px;
+  padding-left: 10px;
+  border-left: 3px solid var(--rb-border);
+}
+
+.update-changelog hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--rb-divider);
+}
+
+.update-changelog a { color: var(--rb-accent); }
 
 .group-row-version {
   min-height: 52px;
@@ -1290,8 +1359,8 @@ body {
 .workspace-summary strong { font-size: 16px; font-weight: 650; }
 .workspace-summary span { color: var(--rb-text-secondary); font-size: 12px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
-:where(input[type='checkbox']):where(:not([class*="mantine-"])) { accent-color: var(--rb-accent); flex-shrink: 0; }
-:where(textarea):where(:not([class*="mantine-"])) { padding: 10px 12px; line-height: 1.65; resize: vertical; }
+:where(input[type='checkbox']):where(:not([class*="ant-"])) { accent-color: var(--rb-accent); flex-shrink: 0; }
+:where(textarea):where(:not([class*="ant-"])) { padding: 10px 12px; line-height: 1.65; resize: vertical; }
 .input,
 .textarea,
 .workbench-field input,

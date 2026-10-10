@@ -1,1 +1,3 @@
-@layer legacy, mantine, app;
+@layer legacy, antd, app;
+/* Ant reset 放进 antd 层；未分层样式会压过所有 @layer 规则，导致 app 层布局失效。 */
+@import 'antd/dist/reset.css' layer(antd);

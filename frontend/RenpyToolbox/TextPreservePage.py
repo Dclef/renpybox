@@ -32,6 +32,7 @@ from base.Base import Base
 from module.Config import Config
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from module.Tool import LexiconOps
 from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
 
 try:
@@ -583,49 +584,19 @@ class TextPreservePage(Base, QWidget):
 
     @staticmethod
     def _normalize_src(text: str) -> str:
-        if not text:
-            return ""
-        return text.strip().strip("\"'“”‘’").lower()
+        return LexiconOps.normalize_preserve_src(text)
 
     @staticmethod
     def _merge_entries(base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
-        def _clean(v: str) -> str:
-            return v.strip() if isinstance(v, str) else ""
-
-        merged = {"src": _clean(base.get("src")), "comment": _clean(base.get("comment"))}
-        incoming_clean = {"src": _clean(incoming.get("src")), "comment": _clean(incoming.get("comment"))}
-
-        # 保留有备注的
-        if incoming_clean["comment"]:
-            if not merged["comment"] or len(incoming_clean["comment"]) > len(merged["comment"]):
-                merged["comment"] = incoming_clean["comment"]
-
-        if incoming_clean["src"] and not merged["src"]:
-            merged["src"] = incoming_clean["src"]
-        return merged
+        return LexiconOps.merge_preserve_entries(base, incoming)
 
     @staticmethod
     def _build_header_map(headers: List[str]) -> Dict[str, int]:
-        alias = {
-            "src": {"原文", "原始文本", "source", "src", "text"},
-            "comment": {"备注", "说明", "comment", "note", "备注信息"},
-        }
-        mapping = {}
-        for index, name in enumerate(headers):
-            lower_name = name.lower()
-            for key, options in alias.items():
-                if lower_name in {opt.lower() for opt in options} and key not in mapping:
-                    mapping[key] = index
-        return mapping
+        return LexiconOps.build_preserve_header_map(headers)
 
     @staticmethod
     def _safe_cell(row, index: int) -> str:
-        if index is None:
-            return ""
-        if index >= len(row):
-            return ""
-        value = row[index]
-        return "" if value is None else str(value).strip()
+        return LexiconOps.safe_excel_cell(row, index)
 
     @staticmethod
     def _list_scan_candidates(config: Config) -> List[Path]:

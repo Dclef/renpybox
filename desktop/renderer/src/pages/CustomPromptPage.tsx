@@ -1,7 +1,7 @@
 /** 翻译提示：模式、风格和自定义提示词，预览走真实构造结果。 */
 
 import { useMemo, useState } from 'react';
-import { Button, Tabs, Textarea } from '@mantine/core';
+import { Button, Input, Tabs } from 'antd';
 import { request } from '../api';
 
 import type { AppState } from '../useAppState';
@@ -49,14 +49,13 @@ function PromptEditor(props: {
   const { title, description, placeholder, value, disabled, onChange } = props;
   return (
     <SettingsGroup title={title} description={description}>
-      <Textarea
+      <Input.TextArea
         aria-label={title}
         placeholder={placeholder}
         value={value}
         disabled={disabled}
-        autosize
-        minRows={6}
-        onChange={(event) => onChange(event.currentTarget.value)}
+        autoSize={{ minRows: 6 }}
+        onChange={(event) => onChange(event.target.value)}
       />
     </SettingsGroup>
   );
@@ -153,7 +152,7 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean })
           title="当前提示词"
           description="查看当前配置实际使用的静态提示词内容"
           actions={(
-            <Button variant="default" disabled={state.saving || loadingPreview} onClick={() => void loadPreview()}>
+            <Button type="default" disabled={state.saving || loadingPreview} onClick={() => void loadPreview()}>
               {loadingPreview ? '读取中…' : '查看当前提示词'}
             </Button>
           )}
@@ -165,21 +164,21 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean })
       </div>
       {preview ? (
         <Dialog title="当前提示词" cancelText="关闭" onCancel={() => setPreview(null)}>
-          <Tabs value={previewTab} onChange={(value) => { if (value) setPreviewTab(value); }}>
-            <Tabs.List aria-label="提示词部分">
-              {PREVIEW_TABS.map((tab) => <Tabs.Tab key={tab.value} value={tab.value}>{tab.label}</Tabs.Tab>)}
-            </Tabs.List>
-          </Tabs>
-          <Textarea
-            classNames={{ input: 'prompt-preview-text' }}
+          <Tabs
+            activeKey={previewTab}
+            onChange={setPreviewTab}
+            items={PREVIEW_TABS.map((tab) => ({ key: tab.value, label: tab.label }))}
+            aria-label="提示词部分"
+          />
+          <Input.TextArea
+            className="prompt-preview-text"
             aria-label="提示词预览内容"
             readOnly
-            autosize
-            minRows={8}
+            autoSize={{ minRows: 8 }}
             value={preview[previewTab] || '当前部分为空'}
           />
           <Button
-            variant="default"
+            type="default"
             onClick={() => void navigator.clipboard.writeText(preview[previewTab] || '').then(() => state.pushToast('success', '已复制提示词')).catch(() => state.pushToast('warning', '复制失败，请选中文本后手动复制'))}
           >
             复制当前部分

@@ -1,6 +1,6 @@
 /** 项目资料工作台：手动编辑保存在项目资产仓库，提示词预览复用真实构造器。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Loader, Select, Tabs, Textarea, TextInput } from '@mantine/core';
+import { Button, Form, Input, Select, Spin, Tabs } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT, type TextKey } from '../i18n';
@@ -419,8 +419,8 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
         description="维护当前项目的背景、角色资料与翻译上下文"
         actions={(
           <>
-            <Button variant="default" disabled={!draft || busy || loading} onClick={exportAssets}>导出资料</Button>
-            <Button variant="default" disabled={!hasDrafts || dirty || mutationBlocked} title={dirty ? '先保存手动编辑，再应用草稿' : undefined} onClick={() => setConfirm('apply')}>应用草稿</Button>
+            <Button type="default" disabled={!draft || busy || loading} onClick={exportAssets}>导出资料</Button>
+            <Button type="default" disabled={!hasDrafts || dirty || mutationBlocked} title={dirty ? '先保存手动编辑，再应用草稿' : undefined} onClick={() => setConfirm('apply')}>应用草稿</Button>
             <Button disabled={!dirty || mutationBlocked} onClick={() => void save()}>{busy ? '处理中…' : '保存修改'}</Button>
           </>
         )}
@@ -432,27 +432,28 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
       {error ? (
         <Banner tone="error">
           {error}{' '}
-          <Button variant="default" size="xs" disabled={busy || loading} onClick={() => dirty ? setConfirm('reload') : void reload()}>重新加载</Button>
+          <Button type="default" size="small" disabled={busy || loading} onClick={() => dirty ? setConfirm('reload') : void reload()}>重新加载</Button>
         </Banner>
       ) : null}
       {analysisJob && projectCurrent ? (
         <div className="rb-workbench-analysis-status" role="status" aria-live="polite">
           <div>
-            <strong>{analysisActive ? <Loader size="xs" aria-hidden /> : null}{cancellationRequested ? t('workbench_status_cancelling') : statusLabels[analysisJob.status]}</strong>
+            <strong>{analysisActive ? <Spin size="small" aria-hidden /> : null}{cancellationRequested ? t('workbench_status_cancelling') : statusLabels[analysisJob.status]}</strong>
             <span>{jobResult ? analysisLabels[jobResult.action] : t('workbench_analysis_title')} · {jobResult ? scopeLabels[jobResult.scope] : scopeLabels[analysisScope]}</span>
             {analysisJob.error || jobResult?.message ? <p>{analysisJob.error || jobResult?.message}</p> : null}
             {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts.length ?? 0))}</p> : null}
             {cancellationRequested ? <p>{t('workbench_cancel_hint')}</p> : null}
           </div>
-          {analysisActive ? <Button variant="default" size="xs" disabled={cancellationRequested || state.link !== 'open'} onClick={() => void cancelAnalysis()}>{t('workbench_cancel_analysis')}</Button> : null}
+          {analysisActive ? <Button type="default" size="small" disabled={cancellationRequested || state.link !== 'open'} onClick={() => void cancelAnalysis()}>{t('workbench_cancel_analysis')}</Button> : null}
         </div>
       ) : null}
       {analysisError || analysisPollError ? <Banner tone="error">{analysisError || analysisPollError}</Banner> : null}
-      <Tabs className="rb-workbench-tabs" value={tab} onChange={(value) => { if (value) setTab(value as TabKey); }}>
-        <Tabs.List>
-          {TABS.map((item) => <Tabs.Tab key={item.key} value={item.key}>{item.label}</Tabs.Tab>)}
-        </Tabs.List>
-      </Tabs>
+      <Tabs
+        className="rb-workbench-tabs"
+        activeKey={tab}
+        onChange={(value) => setTab(value as TabKey)}
+        items={TABS.map((item) => ({ key: item.key, label: item.label }))}
+      />
       <div className="rb-workbench-scroll">
         {!draft ? <Empty>{loading ? '正在加载…' : '项目资料暂不可用，请检查项目设置。'}</Empty> : tab === 'overview' ? (
           <>
@@ -461,7 +462,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                 <span className="rb-workbench-kicker">项目背景</span>
                 <h2>{draft.worldbook.project_name || '项目背景尚未填写'}</h2>
                 <p>{draft.worldbook.setting_summary || '填写背景、语气与人物关系，保存后用于下一次翻译。'}</p>
-                <Button variant="default" onClick={() => setTab('worldbook')}>完善世界观</Button>
+                <Button type="default" onClick={() => setTab('worldbook')}>完善世界观</Button>
               </div>
               <div className="rb-workbench-stats">
                 <div><strong>{worldCount}</strong><span>背景设定</span></div>
@@ -471,23 +472,25 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             </div>
             <SettingsGroup title={t('workbench_analysis_title')} description={t('workbench_analysis_description')}>
               <div className="rb-workbench-analysis">
-                <Select
-                  label={t('workbench_analysis_scope')}
-                  value={analysisScope}
-                  allowDeselect={false}
-                  data={Object.entries(scopeLabels).map(([value, label]) => ({ value, label }))}
-                  disabled={busy || analysisActive}
-                  onChange={(value) => { if (value) setAnalysisScope(value as AnalysisScope); }}
-                />
-                <Button variant="default" disabled={!canAnalyze} onClick={() => void startAnalysis('scan')}>{t('workbench_scan')}</Button>
-                <Select
-                  label={t('workbench_analysis_content')}
-                  value={analysisAction}
-                  allowDeselect={false}
-                  data={(['all', 'worldbook', 'characters'] as const).map((value) => ({ value, label: analysisLabels[value] }))}
-                  disabled={busy || analysisActive}
-                  onChange={(value) => { if (value) setAnalysisAction(value as Exclude<AnalysisAction, 'scan'>); }}
-                />
+                <Form.Item label={t('workbench_analysis_scope')} style={{ marginBottom: 0 }}>
+                  <Select
+                    value={analysisScope}
+                    allowClear={false}
+                    options={Object.entries(scopeLabels).map(([value, label]) => ({ value, label }))}
+                    disabled={busy || analysisActive}
+                    onChange={(value) => setAnalysisScope(value as AnalysisScope)}
+                  />
+                </Form.Item>
+                <Button type="default" disabled={!canAnalyze} onClick={() => void startAnalysis('scan')}>{t('workbench_scan')}</Button>
+                <Form.Item label={t('workbench_analysis_content')} style={{ marginBottom: 0 }}>
+                  <Select
+                    value={analysisAction}
+                    allowClear={false}
+                    options={(['all', 'worldbook', 'characters'] as const).map((value) => ({ value, label: analysisLabels[value] }))}
+                    disabled={busy || analysisActive}
+                    onChange={(value) => setAnalysisAction(value as Exclude<AnalysisAction, 'scan'>)}
+                  />
+                </Form.Item>
                 <Button disabled={!canAnalyze} onClick={() => setConfirm('analysis')}>{t('workbench_generate')}</Button>
               </div>
               <p className="rb-workbench-analysis-hint">{analysisChecking && projectCurrent ? t('workbench_analysis_checking') : analysisHint}</p>
@@ -537,26 +540,23 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
           <SettingsGroup title="故事背景与翻译约定" description="内容保存在当前项目中。无需填写所有字段，优先记录背景摘要与整体语气。">
             <div className="workbench-form-grid">
               {WORLD_FIELDS.map(([key, label], index) => index < 2 ? (
-                <TextInput
-                  key={key}
-                  className="workbench-field"
-                  label={label}
-                  value={draft.worldbook[key]}
-                  disabled={busy}
-                  onChange={(event) => { setDraft({ ...draft, worldbook: { ...draft.worldbook, [key]: event.currentTarget.value } }); setPreview(null); }}
-                />
+                <Form.Item key={key} className="workbench-field" label={label} style={{ marginBottom: 0 }}>
+                  <Input
+                    value={draft.worldbook[key]}
+                    disabled={busy}
+                    onChange={(event) => { setDraft({ ...draft, worldbook: { ...draft.worldbook, [key]: event.target.value } }); setPreview(null); }}
+                  />
+                </Form.Item>
               ) : (
-                <Textarea
-                  key={key}
-                  className="workbench-field workbench-field-wide"
-                  label={label}
-                  autosize
-                  minRows={key === 'setting_summary' ? 4 : 3}
-                  value={draft.worldbook[key]}
-                  disabled={busy}
-                  placeholder={key === 'spoiler_notes' ? '仅供译者理解，避免在译文中直接透露' : undefined}
-                  onChange={(event) => { setDraft({ ...draft, worldbook: { ...draft.worldbook, [key]: event.currentTarget.value } }); setPreview(null); }}
-                />
+                <Form.Item key={key} className="workbench-field workbench-field-wide" label={label} style={{ marginBottom: 0 }}>
+                  <Input.TextArea
+                    autoSize={{ minRows: key === 'setting_summary' ? 4 : 3 }}
+                    value={draft.worldbook[key]}
+                    disabled={busy}
+                    placeholder={key === 'spoiler_notes' ? '仅供译者理解，避免在译文中直接透露' : undefined}
+                    onChange={(event) => { setDraft({ ...draft, worldbook: { ...draft.worldbook, [key]: event.target.value } }); setPreview(null); }}
+                  />
+                </Form.Item>
               ))}
             </div>
           </SettingsGroup>
@@ -565,9 +565,9 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             <aside className="rb-workbench-roster">
               <div className="rb-workbench-roster-head">
                 <strong>角色资料 {draft.characters.length}</strong>
-                <Button size="xs" variant="default" disabled={busy} onClick={addCharacter}>新增</Button>
+                <Button size="small" type="default" disabled={busy} onClick={addCharacter}>新增</Button>
               </div>
-              <TextInput aria-label={t('workbench_search')} placeholder={t('workbench_search_placeholder')} value={search} onChange={(event) => setSearch(event.currentTarget.value)} />
+              <Input aria-label={t('workbench_search')} placeholder={t('workbench_search_placeholder')} value={search} onChange={(event) => setSearch(event.target.value)} />
               <div className="rb-workbench-roster-list">
                 {visibleCharacters.map((card) => (
                   <button key={card.id} type="button" className="rb-workbench-character" aria-pressed={selectedId === card.id} onClick={() => setSelectedId(card.id)}>
@@ -576,7 +576,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                   </button>
                 ))}
                 {!draft.characters.length ? <Empty>新增第一位角色，记录身份与说话风格。</Empty> : !visibleCharacters.length ? (
-                  <Empty><span>{t('workbench_search_empty')}</span><Button variant="subtle" size="xs" onClick={() => setSearch('')}>{t('workbench_clear_search')}</Button></Empty>
+                  <Empty><span>{t('workbench_search_empty')}</span><Button type="text" size="small" onClick={() => setSearch('')}>{t('workbench_clear_search')}</Button></Empty>
                 ) : null}
               </div>
             </aside>
@@ -587,30 +587,32 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                     <h2>{selected.name || '未命名角色'}</h2>
                     <p>正式角色卡 · 保存后用于后续翻译</p>
                   </div>
-                  <Button variant="default" disabled={busy} onClick={() => setConfirm('delete')}>删除角色</Button>
+                  <Button type="default" disabled={busy} onClick={() => setConfirm('delete')}>删除角色</Button>
                 </div>
                 <div className="workbench-form-grid">
                   {CHARACTER_FIELDS.map(([key, label], index) => index < 2 ? (
-                    <TextInput
-                      key={key}
-                      className="workbench-field"
-                      label={label}
-                      value={String(selected[key])}
-                      disabled={busy}
-                      onChange={(event) => updateCharacter(key, event.currentTarget.value)}
-                    />
+                    <Form.Item key={key} className="workbench-field" label={label} style={{ marginBottom: 0 }}>
+                      <Input
+                        value={String(selected[key])}
+                        disabled={busy}
+                        onChange={(event) => updateCharacter(key, event.target.value)}
+                      />
+                    </Form.Item>
                   ) : (
-                    <Textarea
+                    <Form.Item
                       key={key}
                       className="workbench-field workbench-field-wide"
                       label={label}
-                      description={LIST_FIELDS.has(key) ? '每行一项' : undefined}
-                      autosize
-                      minRows={3}
-                      value={Array.isArray(selected[key]) ? (selected[key] as string[]).join('\n') : String(selected[key])}
-                      disabled={busy}
-                      onChange={(event) => updateCharacter(key, LIST_FIELDS.has(key) ? event.currentTarget.value.split('\n') : event.currentTarget.value)}
-                    />
+                      extra={LIST_FIELDS.has(key) ? '每行一项' : undefined}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input.TextArea
+                        autoSize={{ minRows: 3 }}
+                        value={Array.isArray(selected[key]) ? (selected[key] as string[]).join('\n') : String(selected[key])}
+                        disabled={busy}
+                        onChange={(event) => updateCharacter(key, LIST_FIELDS.has(key) ? event.target.value.split('\n') : event.target.value)}
+                      />
+                    </Form.Item>
                   ))}
                 </div>
                 <div className="rb-workbench-switch"><span>启用此角色</span><Switch checked={selected.enabled} label="启用此角色" disabled={busy} onChange={(value) => updateCharacter('enabled', value)} /></div>
@@ -621,15 +623,15 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
         ) : (
           <>
             <SettingsGroup title="试一段原文，检查上下文" description="检查已保存资料的角色命中和背景片段；预览不会调用 AI，也不会产生费用。">
-              <Textarea
-                label="原文样例"
-                autosize
-                minRows={5}
-                value={sample}
-                disabled={busy}
-                placeholder="输入包含角色名或关键词的原文…"
-                onChange={(event) => { setSample(event.currentTarget.value); setPreview(null); }}
-              />
+              <Form.Item label="原文样例" style={{ marginBottom: 0 }}>
+                <Input.TextArea
+                  autoSize={{ minRows: 5 }}
+                  value={sample}
+                  disabled={busy}
+                  placeholder="输入包含角色名或关键词的原文…"
+                  onChange={(event) => { setSample(event.target.value); setPreview(null); }}
+                />
+              </Form.Item>
               <div className="rb-workbench-preview-actions">
                 <span>{dirty ? '先保存修改，再查看最新上下文。' : '匹配遵循实际翻译规则。'}</span>
                 <Button disabled={dirty || mutationBlocked} onClick={() => void previewPrompt()}>生成预览</Button>

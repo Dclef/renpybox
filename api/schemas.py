@@ -157,7 +157,7 @@ class TranslationStateResponse(BaseModel):
 
 
 class TokenEstimateRequest(BaseModel):
-    """Token 估算。目前没有参数，保留模型便于后续加「指定平台 / 范围」。"""
+    """Token 估算请求。整个 body 可省略；platform_id 缺省时用当前激活平台。"""
 
     platform_id: int | None = None
 

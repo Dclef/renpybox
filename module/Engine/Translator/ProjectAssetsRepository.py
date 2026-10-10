@@ -447,8 +447,8 @@ class ProjectAssetsRepository:
 
     @classmethod
     def _merge_candidate_items(cls, current: Any, incoming: Any) -> list[dict[str, Any]]:
-        merged: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
+        merged: dict[tuple[str, bool], dict[str, Any]] = {}
+        order: list[tuple[str, bool]] = []
         values: list[Any] = []
         if isinstance(current, (list, tuple)):
             values.extend(current)
@@ -470,8 +470,9 @@ class ProjectAssetsRepository:
                 data["source"],
                 bool(data.get("regex", False)),
             )
-            key = cls.normalize_source(data["source"])
-            if key == "":
+            source_key = cls.normalize_source(data["source"])
+            key = (source_key, bool(data.get("regex", False)))
+            if source_key == "":
                 continue
             if key not in merged:
                 merged[key] = data

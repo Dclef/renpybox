@@ -134,6 +134,15 @@ class Engine():
         with self.lock:
             return self.single_task_count > 0
 
+    def is_rules_locked(self) -> bool:
+        """原子判断：非空闲 / 收尾屏障 / 单条任务期间禁止改翻译规则。"""
+        with self.lock:
+            return (
+                self.status != __class__.Status.IDLE
+                or self.stop_barrier
+                or self.single_task_count > 0
+            )
+
     def _translate_single_item_task(self, item: CacheItem, config: Config) -> bool:
         """执行一条单条翻译并写回条目，返回是否成功。"""
         # 延迟导入避免循环依赖

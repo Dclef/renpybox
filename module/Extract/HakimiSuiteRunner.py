@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""HakimiSuiteRunner 
+"""HakimiSuiteRunner
 
 特性：
 - 扫描 game 目录（排除 tl）提取角色名/文本/变量/replace
@@ -16,15 +16,28 @@ from __future__ import annotations
 import os
 import re
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
 
-import pandas as pd
+from openpyxl import Workbook, load_workbook
 
 from base.LogManager import LogManager
 from module.Extract.EmojiReplacer import generate_emoji_replacement_sheets
 from module.Extract.RenpyExtractor import RenpyExtractor
+from module.Renpy.renpy_tl_core import escape_tl_string
+from module.Tool.AssetSuiteOps import (
+    AssetSuiteCancelled,
+    AssetSuiteError,
+    _atomic_write_bytes,
+    backup_translate_output_if_exists,
+    ensure_write_path,
+    _atomic_save_workbook,
+    raise_if_cancelled,
+    sanitize_excel_text,
+)
+from module.Tool.LanguageTools import require_language
+from module.Tool.LanguageTools import LanguageToolsError
 
 try:
     import yaml  # type: ignore
@@ -44,6 +57,10 @@ class HakimiResult:
     excel_dir: Optional[Path] = None
     rpy_dir: Optional[Path] = None
     emoji_dir: Optional[Path] = None
+    backup_path: str = ""
+    warnings: List[str] = field(default_factory=list)
+    written: List[str] = field(default_factory=list)
+    partial: bool = False
 
 
 # -------------------- 核心实现 -------------------- #
@@ -61,14 +78,30 @@ class HakimiSuiteRunner:
         exe_path: str | Path | None = None,
         gen_emoji: bool = False,
         mode: str | int = "1",
+        confirm_overwrite: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str, int | None, int | None], None] | None = None,
     ) -> HakimiResult:
+        try:
+            language = require_language(str(tl_name or "").strip() or "chinese")
+        except LanguageToolsError as exc:
+            raise ValueError(str(exc)) from exc
+
         project_root, game_dir, auto_exe = self._resolve_paths(target_path)
-        tl_dir = game_dir / "tl" / tl_name
+        tl_dir = game_dir / "tl" / language
+        ensure_write_path(tl_dir, project_root)
+        self.warnings: List[str] = []
         mode_str = str(mode).strip() or "1"
         if mode_str not in {"1", "2", "3"}:
             mode_str = "1"
         include_external = mode_str in {"2", "3"}
         mad_dog = mode_str == "3"
+
+        def report(message: str, done: int | None = None, total: int | None = None) -> None:
+            if progress_callback is not None:
+                progress_callback(message, done, total)
+
+        raise_if_cancelled(cancel_check)
 
         # 可选官方抽取
         if use_official:
@@ -76,11 +109,20 @@ class HakimiSuiteRunner:
             if exe is None:
                 raise FileNotFoundError("开启官方抽取但未找到可执行文件，请手动选择 exe")
             self.logger.info(f"执行官方抽取: {exe}")
-            self.renpy_extractor.official_extract(str(exe), tl_name, generate_empty=False, force=True)
+            report("官方抽取中…")
+            self.renpy_extractor.official_extract(
+                str(exe),
+                language,
+                generate_empty=False,
+                force=True,
+                should_stop=cancel_check,
+                progress_callback=(lambda message: report(message)),
+            )
+            raise_if_cancelled(cancel_check)
 
-        # 扫描源码（安全扫描：屏蔽 tl/saves/cache/gui/images/audio）
+        # 扫描源码：实际仅跳过 tl（与 _scan_files 一致）
         extensions = (".rpy", ".json", ".yaml", ".yml") if include_external else (".rpy",)
-        file_list = self._scan_files(game_dir, extensions)
+        file_list = self._scan_files(game_dir, extensions, cancel_check=cancel_check)
         rpy_files = [p for p in file_list if p.suffix.lower() == ".rpy"]
         external_files = [p for p in file_list if p.suffix.lower() in {".json", ".yaml", ".yml"}]
         names: List[str] = []
@@ -90,7 +132,9 @@ class HakimiSuiteRunner:
         sandbox_strings: List[str] = []
 
         self.logger.info(">>> 开始提取...")
-        for rpy in rpy_files:
+        report("提取文本中…", 0, len(rpy_files) or 1)
+        for index, rpy in enumerate(rpy_files, 1):
+            raise_if_cancelled(cancel_check)
             n, t, v, r = self._extract_strings_from_rpy(rpy)
             names.extend(n)
             texts.extend(t)
@@ -98,12 +142,15 @@ class HakimiSuiteRunner:
             replaces.extend(r)
             if mad_dog:
                 sandbox_strings.extend(self._extract_deep_python_strings(rpy))
+            report(f"提取 {rpy.name}", index, len(rpy_files))
 
         if include_external and external_files:
-            sandbox_strings.extend(self._extract_from_external_files(external_files))
+            raise_if_cancelled(cancel_check)
+            sandbox_strings.extend(self._extract_from_external_files(external_files, cancel_check=cancel_check))
 
         # 过滤
         self.logger.info(">>> 手术级清洗垃圾中...")
+        raise_if_cancelled(cancel_check)
         f_names, d_names = self._filter_strings(names)
         f_texts, d_texts = self._filter_strings(texts)
         f_vars, d_vars = self._filter_strings(variables)
@@ -114,9 +161,9 @@ class HakimiSuiteRunner:
             self.logger.info("  >>> 疯狗模式：已拦截 %s 条垃圾变量/字符串", len(d_sandbox))
 
         # 去除已有翻译
-        existing_set = self._extract_existing_translations(tl_dir)
+        existing_set = self._extract_existing_translations(tl_dir, cancel_check=cancel_check)
 
-        self.logger.info(">>> 对比 SDK 翻译 (%s)...", tl_name)
+        self.logger.info(">>> 对比 SDK 翻译 (%s)...", language)
         final_names = [s for s in f_names if s not in existing_set]
         others_pool = set(f_texts + f_vars)
         final_others = sorted([s for s in others_pool if s not in existing_set and s not in set(final_names)])
@@ -131,52 +178,132 @@ class HakimiSuiteRunner:
 
         # 输出目录
         base_out = project_root / "translate_output"
+        ensure_write_path(base_out, project_root)
+        backup_path = ""
+        written: List[str] = []
+        for parent in (base_out, base_out / "1_Excels", base_out / "2_RPY_Files", base_out / "3_Emoji_Tools"):
+            ensure_write_path(parent, project_root)
+        if base_out.exists():
+            for existing in base_out.rglob("*"):
+                ensure_write_path(existing, project_root)
+        if base_out.exists() and any(base_out.iterdir()):
+            if not confirm_overwrite:
+                raise FileExistsError("translate_output 已存在内容，需要 confirm_overwrite=true")
+            raise_if_cancelled(cancel_check)
+            backup_path = backup_translate_output_if_exists(base_out, cancel_check=cancel_check)
+
+        # Emoji 预检：避免结构已写完才发现失败
+        emoji_preflight_error = ""
+        if gen_emoji:
+            try:
+                if not tl_dir.exists():
+                    raise FileNotFoundError(f"语言目录不存在: {tl_dir}")
+                if not list(tl_dir.rglob("*.rpy")):
+                    raise ValueError("未找到 .rpy 文件")
+            except Exception as exc:
+                emoji_preflight_error = str(exc)
+
         excel_dir = base_out / "1_Excels"
         rpy_dir = base_out / "2_RPY_Files"
-        excel_dir.mkdir(parents=True, exist_ok=True)
-        rpy_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            excel_dir.mkdir(parents=True, exist_ok=True)
+            rpy_dir.mkdir(parents=True, exist_ok=True)
 
-        # 写 Excel
-        self._save_to_excel(final_names, excel_dir / "names.xlsx", ["Original", "Translation"])
-        self._save_to_excel(final_others, excel_dir / "others.xlsx", ["Original", "Translation"])
-        self._save_to_excel(final_replace, excel_dir / "replace_text.xlsx", ["Text", "Replacement"])
+            raise_if_cancelled(cancel_check)
+            report("写入 Excel…")
+            self._save_to_excel(final_names, excel_dir / "names.xlsx", ["Original", "Translation"], cancel_check=cancel_check, allowed_root=base_out)
+            written.append(str(excel_dir / "names.xlsx"))
+            raise_if_cancelled(cancel_check)
+            self._save_to_excel(final_others, excel_dir / "others.xlsx", ["Original", "Translation"], cancel_check=cancel_check, allowed_root=base_out)
+            written.append(str(excel_dir / "others.xlsx"))
+            raise_if_cancelled(cancel_check)
+            self._save_to_excel(final_replace, excel_dir / "replace_text.xlsx", ["Text", "Replacement"], cancel_check=cancel_check, allowed_root=base_out)
+            written.append(str(excel_dir / "replace_text.xlsx"))
 
-        # AI Prompt
-        ai_prompt = base_out / "AI_Prompt_Names.txt"
-        prompt_lines = ["请翻译以下游戏角色名："]
-        prompt_lines.extend(final_names)
-        ai_prompt.write_text("\n".join(prompt_lines) + "\n", encoding="utf-8")
+            # AI Prompt
+            ai_prompt = base_out / "AI_Prompt_Names.txt"
+            prompt_lines = ["请翻译以下游戏角色名："]
+            prompt_lines.extend(final_names)
+            raise_if_cancelled(cancel_check)
+            _atomic_write_bytes(ai_prompt, "\n".join(prompt_lines) + "\n", newline="\n", has_bom=False, cancel_check=cancel_check, allowed_root=base_out)
+            written.append(str(ai_prompt))
 
-        # RPY
-        self._generate_rpy_file(final_names, rpy_dir / "translate_names.rpy", tl_name)
-        self._generate_rpy_file(final_others, rpy_dir / "translate_others.rpy", tl_name)
-        if final_replace:
-            self._generate_replace_rpy(final_replace, rpy_dir / "replace.rpy", tl_name)
+            # RPY：空池时删除旧残留，避免吞掉人工编辑后仍留下过期文件
+            raise_if_cancelled(cancel_check)
+            if self._write_or_clear_rpy(final_names, rpy_dir / "translate_names.rpy", language, cancel_check=cancel_check, allowed_root=base_out):
+                written.append(str(rpy_dir / "translate_names.rpy"))
+            raise_if_cancelled(cancel_check)
+            if self._write_or_clear_rpy(final_others, rpy_dir / "translate_others.rpy", language, cancel_check=cancel_check, allowed_root=base_out):
+                written.append(str(rpy_dir / "translate_others.rpy"))
+            raise_if_cancelled(cancel_check)
+            replace_path = rpy_dir / "replace.rpy"
+            if final_replace:
+                self._generate_replace_rpy(final_replace, replace_path, language, cancel_check=cancel_check, allowed_root=base_out)
+                written.append(str(replace_path))
+            elif replace_path.exists():
+                ensure_write_path(replace_path, base_out)
+                raise_if_cancelled(cancel_check)
+                replace_path.unlink()
+                written.append(str(replace_path))
 
-        emoji_dir: Optional[Path] = None
-        emoji_count = 0
-        if gen_emoji:
-            emoji_dir = base_out / "3_Emoji_Tools"
-            emoji_dir.mkdir(parents=True, exist_ok=True)
-            emoji_count, pre_path, post_path = generate_emoji_replacement_sheets(tl_dir, emoji_dir)
-            # 额外提供 Tag_Protection_* 命名，兼容旧表引用
-            try:
-                (emoji_dir / "Tag_Protection_Pre(译前).xlsx").write_bytes(pre_path.read_bytes())
-                (emoji_dir / "Tag_Protection_Post(译后).xlsx").write_bytes(post_path.read_bytes())
-            except Exception:
-                pass
+            emoji_dir: Optional[Path] = None
+            emoji_count = 0
+            if gen_emoji:
+                emoji_dir = base_out / "3_Emoji_Tools"
+                emoji_dir.mkdir(parents=True, exist_ok=True)
+                if emoji_preflight_error:
+                    self.logger.warning("Emoji 对照表跳过：%s", emoji_preflight_error)
+                else:
+                    try:
+                        raise_if_cancelled(cancel_check)
+                        report("生成 Emoji 对照表…")
+                        emoji_count, pre_path, post_path = generate_emoji_replacement_sheets(
+                            tl_dir,
+                            emoji_dir,
+                            cancel_check=cancel_check,
+                        )
+                        written.extend([str(pre_path), str(post_path)])
+                        for source, alias in ((pre_path, "Tag_Protection_Pre(译前).xlsx"), (post_path, "Tag_Protection_Post(译后).xlsx")):
+                            book = load_workbook(source)
+                            try:
+                                _atomic_save_workbook(book, emoji_dir / alias, cancel_check=cancel_check, allowed_root=base_out)
+                            finally:
+                                book.close()
+                            written.append(str(emoji_dir / alias))
+                    except AssetSuiteCancelled:
+                        raise
+                    except Exception as exc:
+                        self.logger.warning("Emoji 对照表生成失败（结构输出已写入）：%s", exc)
+                        emoji_preflight_error = str(exc)
 
-        return HakimiResult(
-            names_count=len(final_names),
-            others_count=len(final_others),
-            replace_count=len(final_replace),
-            deleted_count=deleted_total,
-            emoji_replacements=emoji_count,
-            base_dir=base_out,
-            excel_dir=excel_dir,
-            rpy_dir=rpy_dir,
-            emoji_dir=emoji_dir,
-        )
+            result = HakimiResult(
+                names_count=len(final_names),
+                others_count=len(final_others),
+                replace_count=len(final_replace),
+                deleted_count=deleted_total,
+                emoji_replacements=emoji_count,
+                base_dir=base_out,
+                excel_dir=excel_dir,
+                rpy_dir=rpy_dir,
+                emoji_dir=emoji_dir,
+                backup_path=backup_path,
+                warnings=self.warnings + ([emoji_preflight_error] if emoji_preflight_error else []),
+                written=written,
+                partial=bool(self.warnings or emoji_preflight_error),
+            )
+            if emoji_preflight_error:
+                setattr(result, "emoji_warning", emoji_preflight_error)
+            return result
+        except Exception as exc:
+            payload = {"success": False, "level": "warning" if isinstance(exc, AssetSuiteCancelled) else "error",
+                       "output_dir": str(base_out), "backup_path": backup_path,
+                       "written": written, "partial": bool(written), "cancelled": isinstance(exc, AssetSuiteCancelled),
+                       "message": str(exc)}
+            if isinstance(exc, AssetSuiteCancelled):
+                exc.result.update(payload)
+                raise
+            raise AssetSuiteError(str(exc), result=payload) from exc
+
 
     # -------------------- 辅助函数 -------------------- #
     def _resolve_paths(self, target: str | Path) -> Tuple[Path, Path, Optional[Path]]:
@@ -189,6 +316,7 @@ class HakimiSuiteRunner:
         if base.name.lower() == "game":
             base = base.parent
         game_dir = base / "game"
+        ensure_write_path(game_dir, base)
         if not game_dir.exists():
             raise FileNotFoundError(f"未找到 game 目录: {game_dir}")
         return base, game_dir, exe_path
@@ -210,12 +338,19 @@ class HakimiSuiteRunner:
                 return candidates[0]
         return None
 
-    def _scan_files(self, root: Path, extensions: Tuple[str, ...]) -> List[Path]:
+    def _scan_files(
+        self,
+        root: Path,
+        extensions: Tuple[str, ...],
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> List[Path]:
         # v7.5：仅跳过 tl 目录
         ignored_dirs = {"tl"}
         files: List[Path] = []
         self.logger.info(">>> 开始建立扫描索引 (已屏蔽 tl)...")
         for dirpath, dirnames, filenames in os.walk(root):
+            raise_if_cancelled(cancel_check)
             dirnames[:] = [d for d in dirnames if d.lower() not in ignored_dirs]
             for filename in filenames:
                 if filename.lower().endswith(extensions):
@@ -370,7 +505,8 @@ class HakimiSuiteRunner:
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
-            self.logger.warning(f"读取失败 {file_path}: {exc}")
+            self.warnings.append(f"读取失败 {file_path}: {exc}")
+            self.logger.warning(self.warnings[-1])
             return name_strings, text_strings, variable_strings, replace_strings
 
         # 角色名
@@ -439,17 +575,24 @@ class HakimiSuiteRunner:
 
         return name_strings, text_strings, variable_strings, replace_strings
 
-    def _extract_from_external_files(self, file_list: Sequence[Path]) -> List[str]:
+    def _extract_from_external_files(
+        self,
+        file_list: Sequence[Path],
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> List[str]:
         self.logger.info("  >>> 启动 [外部挖掘机] ...")
         found: List[str] = []
         for path in file_list:
+            raise_if_cancelled(cancel_check)
             ext = path.suffix.lower()
             if ext not in {".json", ".yaml", ".yml"}:
                 continue
 
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+            except Exception as exc:
+                self.warnings.append(f"读取失败 {path}: {exc}")
                 continue
 
             try:
@@ -463,7 +606,8 @@ class HakimiSuiteRunner:
                     data = yaml.safe_load(text)
                 if data is not None:
                     self._recursive_find_strings(data, found)
-            except Exception:
+            except Exception as exc:
+                self.warnings.append(f"外部文件解析失败 {path}: {exc}")
                 continue
 
         self.logger.info("  >>> 外部提取: %s 条", len(found))
@@ -491,11 +635,17 @@ class HakimiSuiteRunner:
             found.append(self._unescape(s))
         return found
 
-    def _extract_existing_translations(self, tl_dir: Path) -> Set[str]:
+    def _extract_existing_translations(
+        self,
+        tl_dir: Path,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Set[str]:
         existing: Set[str] = set()
         if not tl_dir.exists():
             return existing
         for rpy in tl_dir.rglob("*.rpy"):
+            raise_if_cancelled(cancel_check)
             try:
                 content = rpy.read_text(encoding="utf-8", errors="replace")
             except Exception:
@@ -505,51 +655,66 @@ class HakimiSuiteRunner:
                 existing.add(self._unescape(s))
         return existing
 
-    def _save_to_excel(self, strings: Sequence[str], path: Path, headers: Sequence[str]) -> None:
-        df = pd.DataFrame({headers[0]: strings, headers[1]: [''] * len(strings)})
-        df.to_excel(path, index=False)
-        try:
-            from openpyxl import load_workbook
-
-            wb = load_workbook(path)
-            ws = wb.active
-            ws.column_dimensions["A"].width = 50
-            ws.column_dimensions["B"].width = 50
-            wb.save(path)
-        except Exception:
-            pass
+    def _save_to_excel(self, strings: Sequence[str], path: Path, headers: Sequence[str], *, cancel_check=None, allowed_root=None) -> None:
+        book = Workbook()
+        sheet = book.active
+        sheet.append([sanitize_excel_text(headers[0]), sanitize_excel_text(headers[1])])
+        for value in strings:
+            raise_if_cancelled(cancel_check)
+            sheet.append([sanitize_excel_text(value), ""])
+        sheet.column_dimensions["A"].width = 50
+        sheet.column_dimensions["B"].width = 50
+        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, max_col=2):
+            for cell in row:
+                cell.data_type = "s"
+                cell.number_format = "@"
+        _atomic_save_workbook(book, path, cancel_check=cancel_check, allowed_root=allowed_root or path.parent)
         self.logger.info("已保存 %s 条到 %s", len(strings), path)
 
-    def _generate_rpy_file(self, strings: Sequence[str], output_path: Path, lang_folder: str) -> None:
+    def _write_or_clear_rpy(self, strings: Sequence[str], output_path: Path, lang_folder: str, *, cancel_check=None, allowed_root=None) -> bool:
+        raise_if_cancelled(cancel_check)
+        ensure_write_path(output_path, allowed_root or output_path.parent)
+        if not strings:
+            if output_path.exists():
+                output_path.unlink()
+                return True
+            return False
+        self._generate_rpy_file(strings, output_path, lang_folder, cancel_check=cancel_check, allowed_root=allowed_root)
+        return True
+
+    def _generate_rpy_file(self, strings: Sequence[str], output_path: Path, lang_folder: str, *, cancel_check=None, allowed_root=None) -> None:
         if not strings:
             return
         lines = [f"translate {lang_folder} strings:", ""]
         for s in strings:
-            escaped = s.replace('"', '\\"')
+            raise_if_cancelled(cancel_check)
+            escaped = escape_tl_string(s)
             lines.append(f'    old "{escaped}"')
             lines.append('    new ""')
             lines.append("")
-        output_path.write_text("\n".join(lines), encoding="utf-8")
+        _atomic_write_bytes(output_path, "\n".join(lines), newline="\n", has_bom=False, cancel_check=cancel_check, allowed_root=allowed_root)
 
-    def _generate_replace_rpy(self, strings: Sequence[str], output_path: Path, lang_folder: str) -> None:
+    def _generate_replace_rpy(self, strings: Sequence[str], output_path: Path, lang_folder: str, *, cancel_check=None, allowed_root=None) -> None:
         if not strings:
             return
         sorted_strings = sorted(list(set(strings)), key=len, reverse=True)
+        safe_lang = escape_tl_string(lang_folder)
         lines = [
             "init python:",
             "    # Generated by Sandbox Special Edition",
-            f'    if preferences.language == "{lang_folder}":',
+            f'    if preferences.language == "{safe_lang}":',
             "        def replace_text(s):",
             "            if not isinstance(s, str): return s",
         ]
         for s in sorted_strings:
-            escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+            raise_if_cancelled(cancel_check)
+            escaped = escape_tl_string(s)
             lines.append(f'            s = s.replace("{escaped}", "{escaped}") # 待翻译: {escaped}')
         lines.extend([
             "            return s",
             "        config.replace_text = replace_text",
         ])
-        output_path.write_text("\n".join(lines), encoding="utf-8")
+        _atomic_write_bytes(output_path, "\n".join(lines), newline="\n", has_bom=False, cancel_check=cancel_check, allowed_root=allowed_root)
 
 
 __all__ = ["HakimiSuiteRunner", "HakimiResult"]

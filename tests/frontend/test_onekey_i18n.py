@@ -300,11 +300,14 @@ def test_official_extraction_heartbeat_is_localized(monkeypatch) -> None:
 
 
 def test_incremental_merge_failure_keeps_recovery_state_in_english(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
     monkeypatch.setattr(Localizer, "APP_LANGUAGE", BaseLanguage.Enum.EN)
 
     class ExtractorStub:
+        def set_progress_callback(self, callback):
+            pass
+
         def merge_incremental_folder(self, *args, **kwargs):
             return SimpleNamespace(
                 success=False,
@@ -315,10 +318,10 @@ def test_incremental_merge_failure_keeps_recovery_state_in_english(
     worker = page_module.ApplyTranslationWorker(
         ExtractorStub(),
         incremental_mode=True,
-        game_dir="game",
+        game_dir=str(tmp_path),
         tl_name="chinese",
-        output_dir="output",
-        main_output="main",
+        output_dir=tmp_path / "RenpyBox_Translation" / "chinese_new",
+        main_output=tmp_path / "RenpyBox_Translation" / "chinese",
         config=SimpleNamespace(),
     )
     worker.finished.connect(

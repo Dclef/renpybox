@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QFileDialog,
+    QMessageBox,
 )
 from qfluentwidgets import (
     CardWidget,
@@ -253,6 +254,30 @@ class MaSuitePage(Base, QWidget):
         exe_path = self.exe_edit.text().strip() if use_official and self.exe_edit.text().strip() else None
         mode = str(self.mode_combo.currentIndex() + 1) if hasattr(self, "mode_combo") else "1"
 
+        confirm_overwrite = False
+        try:
+            project_root = self._resolve_project_root()
+            output_dir = project_root / "translate_output"
+            if output_dir.exists() and any(output_dir.iterdir()):
+                answer = QMessageBox.question(
+                    self,
+                    Localizer.get().notice,
+                    Localizer.localize(
+                        "结构输出已存在，继续将备份后覆盖：\n{path}\n是否继续？",
+                        "Structured output already exists and will be backed up before overwriting:\n{path}\nContinue?",
+                    ).format(path=output_dir),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+                confirm_overwrite = True
+        except Exception as exc:
+            InfoBar.error(Localizer.get().error, str(exc), parent=self)
+            self.status_label.setText(Localizer.get().ma_suite_execution_failed)
+            set_semantic_status(self.status_label, "error")
+            return
+
         self._set_running(True, Localizer.get().ma_suite_generating_structure)
         try:
             result = self.hakimi_runner.run(
@@ -262,6 +287,7 @@ class MaSuitePage(Base, QWidget):
                 exe_path=exe_path,
                 gen_emoji=gen_emoji,
                 mode=mode,
+                confirm_overwrite=confirm_overwrite,
             )
             if result is None:
                 InfoBar.info(Localizer.get().complete, Localizer.get().ma_suite_no_result_check_paths, parent=self)
@@ -300,11 +326,20 @@ class MaSuitePage(Base, QWidget):
                 output=result_path or default_out,
                 extra=extra,
             )
-            InfoBar.success(Localizer.get().complete, detail, parent=self)
-            self.status_label.setText(Localizer.get().ma_suite_complete_status.format(
-                output=result_path or Localizer.get().ma_suite_output_written
-            ))
-            set_semantic_status(self.status_label, "success")
+            warnings = list(getattr(result, "warnings", None) or [])
+            emoji_warning = getattr(result, "emoji_warning", "")
+            if emoji_warning and emoji_warning not in warnings:
+                warnings.append(emoji_warning)
+            if getattr(result, "backup_path", ""):
+                detail += Localizer.localize("\n备份：{path}", "\nBackup: {path}").format(path=result.backup_path)
+            partial = bool(warnings or getattr(result, "partial", False))
+            if warnings:
+                detail += "\n" + "\n".join(warnings[:5])
+            tone = InfoBar.warning if partial else InfoBar.success
+            title = Localizer.localize("部分完成", "Partially Complete") if partial else Localizer.get().complete
+            tone(title, detail, parent=self)
+            self.status_label.setText(title + "：" + (result_path or Localizer.get().ma_suite_output_written))
+            set_semantic_status(self.status_label, "warning" if partial else "success")
 
             # 记住路径
             ProjectStore.get().set_game_folder(self.config, game_path)
@@ -331,26 +366,49 @@ class MaSuitePage(Base, QWidget):
             )
             return
 
+        answer = QMessageBox.question(
+            self,
+            Localizer.get().notice,
+            Localizer.localize(
+                "将对目标目录中的 .rpy 做原地替换，并先备份整个目录：\n{path}\n是否继续？",
+                "This will replace .rpy files in place after backing up the folder:\n{path}\nContinue?",
+            ).format(path=target),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
         try:
             project_root = self._resolve_project_root()
             mapping = load_default_mapping(project_root, mode)
 
-            # 备份
-            backup_path = backup_folder(target)
+            # 备份（位于 game 内时挪到游戏根外侧）
+            backup_path = backup_folder(target, project_root=project_root)
             self.logger.info(f"已备份到: {backup_path}")
 
-            success, failed = apply_replacements_dir(target, mapping, is_restore=(mode == "restore"))
-
-            InfoBar.success(
-                Localizer.get().complete,
-                Localizer.get().ma_suite_folder_processed.format(
-                    target=target,
-                    success=success,
-                    failed=failed,
-                    backup_path=backup_path,
-                ),
-                parent=self,
+            success, failed, changed = apply_replacements_dir(
+                target,
+                mapping,
+                is_restore=(mode == "restore"),
             )
+
+            detail = Localizer.get().ma_suite_folder_processed.format(
+                target=target,
+                success=success,
+                failed=failed,
+                backup_path=backup_path,
+            ) + Localizer.localize(f"（实际变更 {changed}）", f" (changed {changed})")
+            if failed and not success:
+                tone, title = InfoBar.error, Localizer.get().error
+            elif failed:
+                tone, title = InfoBar.warning, Localizer.localize("部分完成", "Partially Complete")
+            elif not success or not changed:
+                tone, title = InfoBar.warning, Localizer.get().notice
+                detail += Localizer.localize("\n没有文件发生变更。", "\nNo files were changed.")
+            else:
+                tone, title = InfoBar.success, Localizer.get().complete
+            tone(title, detail, parent=self)
         except Exception as e:
             self.logger.error(f"Emoji 替换失败: {e}")
             InfoBar.error(Localizer.get().error, str(e), parent=self)

@@ -21,8 +21,8 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
-from base.PathHelper import get_resource_path
 from module.Localizer.Localizer import Localizer
+from module.Tool.LanguageTools import LanguageToolsError, install_default_language
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -211,18 +211,19 @@ class SetDefaultLanguagePage(Base, QWidget):
 
             LogManager.get().info(f"设置默认语言: {language}")
 
-            template = Path(get_resource_path("resource", "templates", "default_langauge_template.txt"))
-            if not template.exists():
-                raise FileNotFoundError(Localizer.get().default_language_template_missing.format(template=template))
-
-            target = game_dir / "set_default_language_at_startup.rpy"
-            data = template.read_text(encoding="utf-8").replace('{tl_name}', language)
-            target.write_text(data, encoding="utf-8")
+            try:
+                result = install_default_language(project_dir, language)
+            except LanguageToolsError as exc:
+                if exc.code == "missing_template":
+                    raise FileNotFoundError(
+                        Localizer.get().default_language_template_missing.format(template=exc.source)
+                    ) from exc
+                raise
 
             LogManager.get().info(f"默认语言已设置为: {language}")
             InfoBar.success(
                 Localizer.get().complete,
-                Localizer.get().default_language_default_language_script_created.format(name=target.name),
+                Localizer.get().default_language_default_language_script_created.format(name=Path(result["path"]).name),
                 parent=self,
             )
             

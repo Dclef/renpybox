@@ -6,7 +6,9 @@
     grid-template-areas:
       'titlebar titlebar'
       'sidebar content';
-    height: 100%;
+    /* 壳层固定为视口高度，body 不滚；长页面由内容区内部滚动容器负责 */
+    height: 100dvh;
+    overflow: hidden;
     background: var(--rb-background);
   }
 
@@ -252,11 +254,16 @@
     line-height: 1.5;
   }
 
+  /* 提示文字不拦截下方表单操作，关闭按钮单独接收点击。 */
+  .rb-toasts .ant-alert-close-icon { pointer-events: auto; }
+
   .rb-toasts {
     position: fixed;
     right: 16px;
-    bottom: 72px;
-    z-index: 400;
+    top: 52px;
+    pointer-events: none;
+    /* 高于 Ant Modal（zIndexPopupBase 1000），弹窗内保存失败时提示仍可读、可关闭 */
+    z-index: 1100;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -305,9 +312,10 @@
 
   .rb-setting-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 8px 16px;
     min-height: 56px;
     padding: 12px 16px;
     border: 1px solid var(--rb-border);
@@ -315,7 +323,8 @@
     background: var(--rb-surface);
   }
 
-  .rb-setting-text { min-width: 0; }
+  /* 说明至少保留 220px，放不下时控件整体换到下一行右对齐，而不是把说明压成窄条 */
+  .rb-setting-text { flex: 1 1 220px; min-width: 0; }
   .rb-setting-title { font-size: 14px; font-weight: 500; line-height: 1.4; }
   .rb-setting-desc { margin-top: 2px; color: var(--rb-text-secondary); font-size: 12px; line-height: 1.45; }
   .rb-setting-control { flex-shrink: 0; }
@@ -377,7 +386,7 @@
   .rb-page-narrow { max-width: 960px; }
 
   .rb-setting-desc:empty { display: none; margin: 0; }
-  .rb-setting-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .rb-setting-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; margin-left: auto; }
   .rb-setting-value { font-size: 13px; font-variant-numeric: tabular-nums; }
   .rb-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -406,7 +415,7 @@
   .rb-identity-paths dd {
     margin: 0;
     overflow: hidden;
-    font-family: var(--mantine-font-family-monospace);
+    font-family: var(--rb-font-mono, "Cascadia Mono", Consolas, monospace);
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -441,6 +450,16 @@
   }
 
   .rb-tool-panel .rb-page-scroll { padding: 0 0 16px; }
+  .rb-onekey-page, .rb-archive-page, .rb-asset-page { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; min-height: 0; }
+  :is(.rb-onekey-page, .rb-archive-page, .rb-asset-page) .rb-settings-body { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+  .rb-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .rb-onekey-page .card-description, .rb-archive-page .card-description, .rb-asset-page .card-description { overflow-wrap: anywhere; }
+  .rb-asset-page .rb-banner-text { white-space: pre-line; overflow-wrap: anywhere; }
+  /* 姓名表：父级 settings-body 是 flex 列，表格根节点保持块级、不参与伸缩，宽度跟随容器以便内部横向滚动 */
+  .rb-asset-page .rb-asset-name-list { display: block; flex: none; width: 100%; min-width: 0; margin: 0; }
+  /* 内边距由页面内 Table token 收紧；antd 不设 vertical-align，这里让输入框首行与上下文首行顶部齐平 */
+  .rb-asset-page .rb-asset-name-list .ant-table-cell { vertical-align: top; }
+  .rb-asset-page .rb-asset-name-list .rb-asset-name-context { overflow-wrap: anywhere; }
   .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-head { border-bottom: 0; }
   .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-body { display: none; }
@@ -452,17 +471,22 @@
   .rb-quality-report { border: 1px solid var(--rb-border); border-radius: 8px; padding: 12px; font-size: 13px; }
   .rb-quality-report summary { cursor: pointer; font-weight: 500; }
   .rb-quality-report ul { max-height: 180px; overflow: auto; overflow-wrap: anywhere; }
-  .proofreading-page .rb-page-scroll { flex: 1; gap: 10px; overflow: hidden; }
+  /* 正常尺寸下表格先收缩、外层不滚；只有表格已到最低高度时外层才滚，分页永不被裁 */
+  .proofreading-page .rb-page-scroll { flex: 1; gap: 10px; overflow: hidden auto; }
   .proofreading-page .rb-embedded-actions { gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
   .proofreading-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-shrink: 0; }
-  .proofreading-filters .mantine-TextInput-root { flex: 2 1 180px; min-width: 0; }
-  .proofreading-filters .mantine-Select-root { flex: 1 1 120px; min-width: 0; }
+  .proofreading-filters .ant-input-affix-wrapper, .proofreading-filters .ant-input { flex: 2 1 180px; min-width: 0; }
+  .proofreading-filters .ant-select { flex: 1 1 120px; min-width: 0; }
   .rb-proofreading-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; flex-shrink: 0; }
-  .rb-proofreading-selection .mantine-Select-root { width: 150px; }
-  .rb-proof-table-scroll { min-height: 120px; flex: 1; overflow: auto; border: 1px solid var(--rb-border); border-radius: 4px; }
+  .rb-proofreading-selection .ant-select { width: 150px; }
+  .rb-proof-table-scroll { min-height: 96px; flex: 1 1 0; overflow: hidden; border: 1px solid var(--rb-border); border-radius: 4px; }
+  .rb-proof-table-scroll .ant-table-wrapper,
+  .rb-proof-table-scroll .ant-spin-nested-loading,
+  .rb-proof-table-scroll .ant-spin-container { height: 100%; }
+  .rb-proof-table .ant-table-cell { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; line-height: 1.65; }
   .rb-proof-table { min-width: 520px; font-size: 13px; }
   .rb-proof-table thead { background: var(--rb-surface); }
-  .rb-proof-table th { font-size: 12px; height: 36px; white-space: nowrap; }
+  .rb-proof-table th { font-size: 12px; height: 36px; white-space: nowrap; background: var(--rb-surface); }
   .rb-proof-table td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: middle; line-height: 1.65; }
   .rb-proofreading-row { cursor: default; }
   .rb-proofreading-row[data-selected='true'] { background: var(--rb-accent-surface); }
@@ -488,7 +512,7 @@
   .rb-quality-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
   .rb-quality-summary strong { padding: 10px 12px; border: 1px solid var(--rb-divider); border-radius: 8px; background: var(--rb-surface-subtle); font-variant-numeric: tabular-nums; }
   .rb-quality-items { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto; padding: 8px 0; }
-  .rb-quality-items .mantine-Checkbox-label { overflow-wrap: anywhere; }
+  .rb-quality-items .ant-checkbox + span, .rb-quality-items .ant-checkbox-label { overflow-wrap: anywhere; }
   .rb-proof-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .rb-proof-status i { width: 8px; height: 8px; border-radius: 999px; background: var(--rb-text-disabled); }
   .rb-proof-status[data-status='TRANSLATED'] i,
@@ -512,6 +536,9 @@
   .rb-embedded-actions { display: flex; justify-content: flex-end; }
 
   .rb-page-scroll > *, .rb-workbench-scroll > *, .rb-platform-list > * { flex-shrink: 0; }
+  /* 可伸缩表格不按普通卡片处理：占用剩余高度并允许收缩，最低高度与 JS 中 scroll.y 下限一致 */
+  .rb-page-scroll > .rb-proof-table-scroll { flex: 1 1 0; min-height: 96px; }
+  .rb-page-scroll > .rb-sheet { flex: 1 1 0; min-height: 160px; }
   .banner { flex-shrink: 0; min-width: 0; max-width: 100%; }
   .rb-proof-loading { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--rb-text-secondary); font-size: 12px; min-height: 26px; }
   .rb-page-scroll {
@@ -524,18 +551,53 @@
     padding: 20px 24px 24px;
   }
 
-  .rb-glossary { min-height: 0; }
+  /* 三张词表：内容占满工具面板剩余高度且自身不滚，表格占余高；窗口过矮时由操作区自己滚动 */
+  .rb-glossary,
+  .rb-lexicon {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    container-type: inline-size;
+    container-name: lexicon;
+  }
+  .rb-lexicon { gap: 12px; padding-bottom: 16px; }
+  .rb-glossary > .rb-lexicon-controls,
+  .rb-lexicon > .rb-lexicon-controls {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 55%;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .rb-lexicon-controls > * { flex-shrink: 0; }
   .rb-sheet-summary { color: var(--rb-text-secondary); font-size: 13px; }
   .rb-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
   .rb-toolbar-spacer { flex: 1; min-width: 8px; }
+  .rb-next-step {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-next-step-hint { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-next-step[data-dirty] .rb-next-step-hint { color: var(--rb-warning); }
 
   .rb-sheet {
     position: relative;
-    container-type: inline-size;
-    flex: 1;
-    min-height: 240px;
+    flex: 1 1 0;
+    min-height: 160px;
     min-width: 0;
     display: flex;
+    flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--rb-border);
     border-radius: 8px;
@@ -543,54 +605,29 @@
   }
 
   .rb-sheet-table { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-  .rb-sheet-scroll { flex: 1; min-height: 160px; overflow: auto; }
-  .rb-sheet-head,
-  .rb-term-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr) 96px;
-    align-items: center;
-    gap: 8px;
-    padding: 0 12px;
+  .rb-sheet-scroll { flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; }
+  .rb-sheet-scroll .ant-table-wrapper,
+  .rb-sheet-scroll .ant-spin-nested-loading,
+  .rb-sheet-scroll .ant-spin-container { height: 100%; }
+  .rb-sheet .ant-table-cell { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+  .rb-term-row { cursor: pointer; }
+  .rb-term-row:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: -2px; }
+  .rb-sheet .rb-term-row[data-selected='true'],
+  .rb-sheet .rb-term-row[data-selected='true'] > td { background: var(--rb-accent-surface); }
+  .rb-term-marks { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .rb-sheet-cell-editable { cursor: text; }
+  .rb-sheet-cell-editor textarea {
+    width: 100%;
+    min-height: 28px;
+    font: inherit;
+    line-height: 1.4;
+    white-space: pre-wrap;
   }
-  .rb-sheet-head {
-    height: 32px;
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-    font-weight: 500;
-    border-bottom: 1px solid var(--rb-divider);
-  }
-  .rb-term-row { font-size: 13px; cursor: pointer; }
-  .rb-term-row > span,
-  .rb-sheet-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rb-term-row:hover { background: var(--rb-surface-hover); }
-  .rb-term-row[data-selected='true'] { background: var(--rb-accent-surface); }
-  .rb-term-marks { display: flex; justify-content: flex-end; gap: 4px; }
   .rb-sheet-foot {
-    display: flex;
-    align-items: center;
-    height: 32px;
-    padding: 0 12px;
+    flex-shrink: 0;
+    padding: 6px 12px;
     border-top: 1px solid var(--rb-divider);
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-  }
-  .rb-term-editor {
-    width: 340px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    overflow: auto;
-    border-left: 1px solid var(--rb-divider);
     background: var(--rb-surface);
-  }
-  .rb-term-editor header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .rb-term-editor h2 { margin: 0; font-size: 16px; font-weight: 600; }
-  .rb-term-formal { color: var(--rb-text-secondary); font-size: 13px; }
-
-  @container (min-width: 900px) {
-    .rb-sheet:has(.rb-term-editor) { display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
-    .rb-term-editor { width: auto; }
   }
 
 
@@ -700,7 +737,7 @@
   .rb-translation-dashboard { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 14px; }
   .rb-translation-dashboard h2 { margin: 0; font-size: 14px; font-weight: 500; }
   .rb-progress { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
-  .rb-progress .mantine-RingProgress-label { text-align: center; }
+  .rb-progress .ant-progress-text { text-align: center; }
   .rb-progress-meta { flex-wrap: wrap; justify-content: center; text-align: center; }
   .rb-progress-time { font-size: 12px; text-align: center; }
   .translation-layout .rb-page-header { margin-bottom: 0; }
@@ -723,6 +760,27 @@
   .rb-feed-head { padding: 12px 16px; }
   .rb-feed-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
   .rb-feed-head > span { margin-left: auto; }
+
+  .rb-feed-table {
+    min-height: 0;
+    max-height: 320px;
+    overflow: hidden;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-feed-table .ant-table-thead > tr > th {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rb-text-secondary);
+    background: var(--rb-surface-subtle);
+  }
+  .rb-feed-table .ant-table-tbody > tr:hover > td { background: var(--rb-surface-hover); }
+  .rb-feed-table .ant-table-cell {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+    font-size: 13px;
+    line-height: 1.65;
+  }
 
   .rb-table { width: 100%; border-collapse: collapse; }
   .rb-table th {
@@ -877,8 +935,9 @@
 
   .rb-platform-list .rb-settings-body { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
   .rb-platform-list .rb-settings-group { flex-shrink: 0; }
-  .rb-platform-card { width: 280px; max-width: 100%; min-height: 72px; padding: 10px 10px 10px 14px; cursor: default; }
-  .rb-platform-card[data-active='true'] { background: var(--rb-accent-surface); border-color: var(--rb-accent); }
+  .rb-platform-card { width: 280px; max-width: 100%; min-height: 72px; padding: 10px 10px 10px 14px; cursor: default; border: 1px solid var(--rb-border); border-radius: 8px; background: var(--rb-surface); transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease; }
+  /* 当前接口：Ant 主色淡底 + 蓝边 + 极淡外圈，暗色下 --rb-accent* 由 darkAlgorithm 推导仍可读。 */
+  .rb-platform-card[data-active='true'] { background: var(--rb-accent-surface); border-color: var(--rb-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent); }
   .rb-platform-card-head { display: flex; align-items: center; gap: 4px; }
   .rb-platform-card-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
   .platform-row-actions { display: flex; flex-shrink: 0; gap: 0; }
@@ -989,6 +1048,57 @@
   .rb-tool-title { font-size: 14px; font-weight: 500; }
   .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; white-space: normal; }
   .rb-tool-availability { color: var(--rb-text-secondary); font-size: 12px; }
+  /* 推荐流程：轻边框面板 + 蓝色序号，贴近旧 Qt 版的步骤卡 */
+  .rb-flow-guide {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid var(--rb-border);
+    border-left: 3px solid var(--rb-accent);
+    border-radius: 8px;
+    background: var(--rb-surface);
+  }
+  .rb-flow-guide-head { display: flex; flex-direction: column; gap: 4px; }
+  .rb-flow-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .rb-flow-steps > li { display: flex; min-width: 0; }
+  .rb-flow-step.ant-btn {
+    flex: 1;
+    min-width: 0;
+    /* Ant 按钮默认固定高度，流程说明较长时必须允许自然增高。 */
+    height: auto !important;
+    min-height: 44px;
+    padding: 10px 12px;
+    justify-content: flex-start;
+    align-items: flex-start;
+    gap: 10px;
+    text-align: left;
+    white-space: normal !important;
+  }
+  .rb-flow-step-index {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--rb-accent);
+    color: var(--rb-on-accent);
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .rb-flow-step.ant-btn:disabled .rb-flow-step-index { background: var(--rb-text-disabled); }
+  .rb-flow-step-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .rb-flow-step .rb-tool-desc[data-warning] { color: var(--rb-warning); }
   .rb-workbench {
     display: flex;
     flex-direction: column;
@@ -1257,12 +1367,46 @@
     50% { opacity: 0.35; }
   }
 
-  .agent-project-text {
-    overflow: hidden;
+  /* 项目状态胶囊：对齐 Qt5 agentProjectPill，圆点区分已设置 / 未设置项目。 */
+  .agent-project-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    max-width: 260px;
+    min-height: 22px;
+    padding: 0 9px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
     color: var(--rb-text-secondary);
     font-size: 12px;
+  }
+
+  .agent-project-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--rb-accent);
+  }
+
+  .agent-project-pill[data-state='unset'] .agent-project-dot {
+    background: var(--rb-warning);
+  }
+
+  .agent-project-label {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .agent-settings-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 240px;
   }
 
   .agent-controls {
@@ -1325,6 +1469,23 @@
   .agent-control-actions .btn:hover:not(:disabled) {
     background: var(--rb-surface-hover);
     border-color: var(--rb-border);
+  }
+
+  /* 对话区外框只负责定位「回到最新消息」按钮，滚动仍由 .agent-chat 承担。 */
+  .agent-chat-frame {
+    position: relative;
+    flex: 1;
+    min-height: 140px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .agent-scroll-latest {
+    position: absolute;
+    right: 20px;
+    bottom: 16px;
+    z-index: 1;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
   }
 
   .agent-chat {
@@ -1431,8 +1592,26 @@
     cursor: not-allowed;
   }
 
+  .agent-suggestion-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .agent-suggestion-text {
     min-width: 0;
+    font-weight: 600;
+  }
+
+  .agent-suggestion-desc {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-empty .agent-empty-hint {
+    color: var(--rb-warning);
+    font-size: 12px;
   }
 
   .agent-suggestion-arrow {
@@ -1642,6 +1821,31 @@
     background: color-mix(in srgb, var(--rb-error) 12%, var(--rb-surface));
   }
 
+  /* 拒绝、确认超时、项目变化：未执行但不是错误，用警告色区分。 */
+  .agent-tool[data-status='cancelled'] .agent-tool-status {
+    color: var(--rb-warning);
+    background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface));
+  }
+
+  .agent-tool-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-tool-message {
+    white-space: pre-wrap;
+    color: var(--rb-text-primary);
+  }
+
+  .agent-tool-label {
+    display: block;
+    margin: 0 0 4px;
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
   .agent-detail p {
     margin: 0 0 8px;
   }
@@ -1667,6 +1871,11 @@
     background: color-mix(in srgb, var(--rb-error) 10%, var(--rb-surface));
     color: var(--rb-error);
     font-size: 13px;
+  }
+
+  .agent-message-error[data-tone='cancelled'] {
+    background: color-mix(in srgb, var(--rb-warning) 10%, var(--rb-surface));
+    color: var(--rb-text-secondary);
   }
 
   .agent-copy {
@@ -1738,11 +1947,14 @@
     }
   }
 
+  /* 确认区限高并内部滚动：参数很长时也不把底部输入区挤出视口。 */
   .agent-confirmation {
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     gap: 10px;
+    max-height: 40vh;
+    overflow-y: auto;
     padding: 14px 16px;
     border: 1px solid color-mix(in srgb, var(--rb-accent) 28%, var(--rb-border));
     border-radius: 14px;
@@ -1774,10 +1986,43 @@
     gap: 8px;
   }
 
-  .agent-confirmation-actions span {
+  .agent-confirmation-actions > span {
     flex: 1;
     color: var(--rb-text-secondary);
     font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-confirmation-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 6px 16px;
+    margin: 0;
+  }
+
+  .agent-confirmation-facts > div {
+    display: flex;
+    min-width: 0;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .agent-confirmation-facts dt {
+    flex-shrink: 0;
+    color: var(--rb-text-secondary);
+  }
+
+  .agent-confirmation-facts dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--rb-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-confirmation .agent-detail {
+    margin: 0;
   }
 
   .agent-composer {
@@ -1860,6 +2105,8 @@
   .agent-workspace { max-width: none; height: 100%; }
   .agent-chat, .agent-composer, .agent-confirmation, .agent-topbar, .agent-workspace > .banner { width: 100%; min-width: 0; max-width: 100%; margin-inline: 0; }
   .agent-workspace { align-self: stretch; width: auto; padding: 20px 24px 16px; gap: 12px; }
+  /* 多条横幅 + 确认区同时出现的矮窗口里，整页滚动而不是裁掉底部输入区。 */
+  .agent-workspace { overflow-x: hidden; overflow-y: auto; }
   .agent-controls { padding: 0; border: 0; border-radius: 0; background: transparent; }
   .agent-topbar { align-items: center; gap: 8px 16px; }
   .agent-title { font-size: 18px; font-weight: 600; }
@@ -1871,7 +2118,7 @@
   .agent-empty h2 { font-size: 18px; }
   .agent-empty p { max-width: 480px; }
   .agent-empty-icon { width: 42px; height: 42px; border-radius: 10px; }
-  .agent-suggestions { width: 100%; }
+  .agent-suggestions { width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
   .agent-suggestion { min-height: 38px; padding: 8px 12px; border-radius: 6px; }
   .rb-workbench .rb-settings-body { padding: 12px 16px; }
   .rb-workbench-switch { min-height: 40px; }
@@ -1932,5 +2179,276 @@
   @media (max-width: 800px) {
     .rb-workbench-analysis { grid-template-columns: minmax(0, 1fr) auto; }
     .rb-workbench-draft-fields > div { grid-template-columns: 88px minmax(0, 1fr); }
+  }
+}
+
+/* ---------- Qt5 Fluent 视觉复刻：翻译任务 / 接口管理 / 工具箱 ---------- */
+/* 只作用于这三页：浅灰页面底 + 白色圆角面板 + 细边框轻阴影；颜色全部取 --rb-* 变量，暗色主题自动跟随。 */
+/* antd 运行时样式未分层，会压过 @layer app，只有改 Ant 内部结构的少数规则才加 !important。 */
+@layer app {
+  :is(.translation-layout, .rb-platform, .rb-toolbox) {
+    --rb-qt-page: color-mix(in srgb, var(--rb-chrome) 75%, var(--rb-surface));
+    --rb-qt-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+    --rb-qt-shadow-hover: 0 3px 10px rgb(0 0 0 / 8%);
+    background: var(--rb-qt-page);
+  }
+
+  /* ---- 翻译任务 ---- */
+  /* 整页只有这一个纵向滚动；右内边距 + 11px 滚动槽 = 24px，滚动条出现时内容不跳动 */
+  .translation-layout .rb-page-scroll {
+    gap: 14px;
+    padding: 20px 13px 20px 24px;
+    overflow: hidden auto;
+    scrollbar-gutter: stable;
+  }
+  .translation-layout .rb-page-header { align-items: center; }
+  .translation-layout .task-state {
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    background: var(--rb-surface);
+    font-size: 12px;
+  }
+  .translation-layout .task-state[data-active='true'] { border-color: color-mix(in srgb, var(--rb-success) 35%, var(--rb-border)); color: var(--rb-success); }
+  .translation-layout .task-state[data-warning='true'] { border-color: color-mix(in srgb, var(--rb-warning) 35%, var(--rb-border)); color: var(--rb-warning); }
+
+  /* 上下文条：白色面板，窄窗口时语言对与接口按钮换到第二行 */
+  .translation-layout .task-context {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    padding: 6px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .translation-layout .task-context-button { max-width: 100%; background: transparent; color: var(--rb-text-primary); }
+  .translation-layout .task-context-button:hover { background: var(--rb-surface-hover); }
+  .translation-layout .task-context-button svg { color: var(--rb-text-secondary); }
+  .translation-layout .task-input { flex: 1 1 280px; }
+  .translation-layout .task-language-pair {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent-text);
+    font-weight: 500;
+  }
+
+  .translation-layout .rb-panel { border-color: var(--rb-border); box-shadow: var(--rb-qt-shadow); }
+
+  /* 指标卡：标签在上、数值在下，三张等宽 */
+  .translation-layout .rb-translation-summary .rb-panel { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; }
+  .translation-layout .rb-translation-summary .rb-metric-value { margin: 0; font-size: 22px; line-height: 1.35; }
+
+  /* 双栏统计：两块等高，标题统一靠左 */
+  .translation-layout .rb-translation-dashboard { gap: 12px; }
+  .translation-layout .rb-translation-dashboard h2 { font-size: 14px; font-weight: 600; }
+  .translation-layout .rb-progress h2 { align-self: stretch; }
+  .translation-layout .rb-throughput .rb-metric-value { margin: 0; }
+
+  /* 流水：表格随内容展开，由页面统一滚动；表头吸顶 */
+  .translation-layout .feed-card { overflow: clip; }
+  .translation-layout .rb-feed-head { flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .translation-layout .rb-feed-head h2 { font-size: 14px; }
+  .translation-layout .rb-feed-table { max-height: none; overflow: visible; }
+  .translation-layout .rb-feed-table .ant-table-thead > tr > th { position: sticky !important; top: 0; z-index: 2; }
+  /* 表格贴着卡片边框，去掉外圈重复的边线 */
+  .translation-layout .rb-feed-table .ant-table-container { border-inline-start: 0 !important; border-top: 0 !important; }
+  .translation-layout .rb-feed-table .ant-table-cell:last-child { border-inline-end: 0 !important; }
+  .translation-layout .rb-feed-table .ant-table-tbody > tr:last-child > td { border-bottom: 0 !important; }
+
+  /* 底部命令栏：固定在页面网格最后一行，白底细上边线，窄窗口自动换行 */
+  .translation-layout .translation-footer {
+    position: relative;
+    z-index: 3;
+    gap: 8px;
+    padding: 10px 24px;
+    border-top: 1px solid var(--rb-border);
+    background: var(--rb-surface);
+    box-shadow: 0 -1px 3px rgb(0 0 0 / 4%);
+  }
+
+  /* ---- 接口管理 ---- */
+  .rb-platform { gap: 14px; }
+  .rb-platform .rb-page-header { margin-bottom: 0; }
+  .rb-platform .platform-toolbar { flex-wrap: wrap; }
+  .rb-platform-summary {
+    flex-shrink: 0;
+    padding: 12px 16px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .rb-platform-summary[data-active='true'] { border-left: 3px solid var(--rb-accent); }
+  .platform-summary-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 列表滚动条移到页面右侧留白里，不压在分组面板边缘；左侧留 2px 避免阴影被裁 */
+  .rb-platform-list {
+    gap: 14px;
+    margin: 0 -14px 0 -2px;
+    padding: 0 3px 4px 2px;
+    scrollbar-gutter: stable;
+  }
+  .rb-platform .rb-settings-group { border-color: var(--rb-border); box-shadow: var(--rb-qt-shadow); }
+  .rb-platform .rb-settings-head { align-items: center; }
+  .rb-platform .rb-settings-title { font-size: 14px; }
+  .rb-platform-count {
+    display: inline-grid;
+    place-items: center;
+    min-width: 22px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 卡片网格：最多三列，宽度不足时自动降到两列 / 一列，不产生横向溢出 */
+  .rb-platform-list .rb-settings-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 220px), calc((100% - 24px) / 3)), 1fr));
+    gap: 12px;
+    padding: 14px 16px 16px;
+  }
+  .rb-platform-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 6px;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    min-height: 76px;
+    padding: 10px 8px 12px 14px;
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .rb-platform-card:hover { border-color: var(--rb-border-strong); box-shadow: var(--rb-qt-shadow-hover); }
+  /* 当前接口：淡蓝底 + 蓝边 + 淡蓝外圈，悬停时保持不变 */
+  .rb-platform-card[data-active='true'],
+  .rb-platform-card[data-active='true']:hover {
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  }
+  .rb-platform-card-meta { min-width: 0; }
+  .rb-platform-badge {
+    flex-shrink: 0;
+    border: 1px solid var(--rb-border);
+    background: var(--rb-surface-subtle);
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  .rb-platform-card[data-active='true'] .rb-platform-badge { background: var(--rb-surface); }
+  .rb-platform-card-meta i { flex-shrink: 0; }
+
+  /* ---- 工具箱 ---- */
+  .rb-toolbox { gap: 14px; }
+  .rb-toolbox .rb-page-header { align-items: center; margin-bottom: 0; }
+  /* 与接口列表同样把滚动条移到右侧留白；四周留 4px 给卡片阴影 */
+  .rb-toolbox-scroll {
+    gap: 20px;
+    margin: 0 -14px 0 -4px;
+    padding: 2px 3px 8px 4px;
+    scrollbar-gutter: stable;
+  }
+  .rb-toolbox .tool-group { gap: 10px; }
+  .rb-toolbox .tool-group-header { align-items: center; }
+  .rb-toolbox .tool-group-title { font-size: 14px; font-weight: 600; }
+  .rb-toolbox .tool-group-count {
+    padding: 0 8px;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    background: var(--rb-surface);
+    line-height: 20px;
+  }
+
+  /* 卡片网格：最多三列，放不下时自动降列 */
+  .rb-toolbox .rb-tool-list {
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 264px), calc((100% - 24px) / 3)), 1fr));
+    gap: 12px;
+  }
+  /* 卡片：序号胶囊 + 淡蓝图标块 + 标题 / 两行说明 + 右箭头 */
+  .rb-toolbox .tool-card {
+    grid-template-columns: auto 32px minmax(0, 1fr) 16px;
+    gap: 12px;
+    min-height: 104px;
+    padding: 14px 14px 14px 16px;
+    border-color: var(--rb-border);
+    box-shadow: var(--rb-qt-shadow);
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+  }
+  .rb-toolbox .tool-card:not(:has(.rb-tool-step)) { grid-template-columns: 32px minmax(0, 1fr) 16px; }
+  .rb-toolbox .tool-card:hover:not(:disabled) {
+    transform: none;
+    background: var(--rb-surface);
+    border-color: color-mix(in srgb, var(--rb-accent) 45%, var(--rb-border));
+    box-shadow: var(--rb-qt-shadow-hover);
+  }
+  .rb-toolbox .tool-card:disabled { cursor: not-allowed; opacity: 0.7; }
+  .rb-toolbox .tool-card .tool-card-icon {
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent);
+  }
+  .rb-toolbox .tool-card-icon svg { width: 18px; height: 18px; }
+  .rb-toolbox .tool-card:disabled .tool-card-icon { background: var(--rb-surface-subtle); color: var(--rb-text-disabled); }
+  .rb-toolbox .rb-tool-step {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    margin-top: 6px;
+    border: 1px solid var(--rb-accent);
+    border-radius: 999px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+  }
+  .rb-toolbox .tool-card .rb-tool-copy { gap: 4px; }
+  .rb-toolbox .tool-card .rb-tool-title { overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-toolbox .tool-card .rb-tool-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    line-height: 1.5;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .rb-toolbox .tool-card .rb-tool-availability {
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--rb-surface-subtle);
+    font-size: 11px;
+    line-height: 18px;
+  }
+  .rb-toolbox .tool-card > svg:last-child { margin-top: 8px; color: var(--rb-text-disabled); transition: color 140ms ease; }
+  .rb-toolbox .tool-card:hover:not(:disabled) > svg:last-child { color: var(--rb-accent); }
+
+  /* ---- 窄窗口（侧栏收起为图标栏） ---- */
+  @media (max-width: 999px) {
+    .rb-platform,
+    .rb-toolbox { padding: 16px 16px 12px; }
+    .translation-layout .rb-page-scroll { padding: 16px 5px 16px 16px; }
+    .translation-layout .translation-footer { gap: 6px; padding: 8px 16px; }
+  }
+  /* 头部搜索 / 新增改为整行，输入框吃满宽度；inline 宽度需 !important 才能覆盖 */
+  @media (max-width: 720px) {
+    :is(.rb-platform, .rb-toolbox) .rb-page-actions { flex: 1 1 100%; }
+    .rb-toolbox .rb-page-actions > .toolbox-search { width: 100% !important; }
+    .rb-platform .platform-toolbar { width: 100%; }
+    .rb-platform .platform-toolbar > .ant-input { flex: 1 1 160px; width: auto !important; }
+  }
+  @media (max-width: 600px) {
+    .translation-layout .rb-translation-summary { grid-template-columns: minmax(0, 1fr); }
   }
 }

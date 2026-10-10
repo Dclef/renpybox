@@ -14,11 +14,35 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Sidecar } from '../main/sidecar.js';
+import { stdioConsole } from '../main/stdio-console.js';
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const webOnly = process.argv.includes('--web');
-const sidecar = new Sidecar({ onLog: console.log });
+const viteBinary = path.join(DESKTOP_ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
+
+// 先检查开发依赖，避免前端无法启动时仍拉起后端。
+if (!existsSync(viteBinary)) {
+  stdioConsole.error('[dev] Vite 依赖缺失，请在 desktop 目录执行 npm ci --include=dev 后重试。');
+  process.exit(1);
+}
+let electronBinary;
+if (!webOnly) {
+  try {
+    // 保留包入口解析，以兼容 Electron 自带的缓存安装逻辑。
+    electronBinary = require('electron');
+    if (typeof electronBinary !== 'string' || !existsSync(electronBinary)) {
+      throw new Error('未找到 Electron 可执行文件。');
+    }
+  } catch (error) {
+    const repair = error.code === 'MODULE_NOT_FOUND'
+      ? 'npm ci --include=dev'
+      : 'node node_modules/electron/install.js';
+    stdioConsole.error(`[dev] Electron 运行时不可用：${error.message}\n[dev] 请在 desktop 目录执行 ${repair} 后重试。`);
+    process.exit(1);
+  }
+}
+const sidecar = new Sidecar({ onLog: stdioConsole.log });
 
 const SIDECAR_PORT = Number(process.env.RENPYBOX_SIDECAR_PORT || 9712);
 const WEB_PORT = Number(process.env.RENPYBOX_WEB_PORT || 5173);
@@ -62,35 +86,35 @@ async function stopAll(code) {
 process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));
 
-console.log(`[dev] sidecar 端口 ${SIDECAR_PORT}，渲染端 ${WEB_URL}`);
+stdioConsole.log(`[dev] sidecar 端口 ${SIDECAR_PORT}，渲染端 ${WEB_URL}`);
 
 try {
   await sidecar.start();
 } catch (error) {
-  console.error(`[dev] 后端启动失败：${error.message}`);
+  stdioConsole.error(`[dev] 后端启动失败：${error.message}`);
   await stopAll(1);
 }
 
 const vite = spawn(
   process.execPath,
-  [path.join(DESKTOP_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), '--config', 'renderer/vite.config.ts'],
+  [viteBinary, '--config', 'renderer/vite.config.ts'],
   { cwd: DESKTOP_ROOT, stdio: ['ignore', 'inherit', 'inherit'], env: process.env },
 );
 children.push(vite);
-vite.on('error', error => { console.error(`[dev] Vite 启动失败：${error.message}`); void stopAll(1); });
+vite.on('error', error => { stdioConsole.error(`[dev] Vite 启动失败：${error.message}`); void stopAll(1); });
 vite.on('exit', (code) => {
-  console.log(`[dev] vite 退出（${code}）`);
+  stdioConsole.log(`[dev] vite 退出（${code}）`);
   stopAll(code ?? 0);
 });
 
 if (!(await waitForWeb())) {
-  console.error('[dev] vite 未就绪，停止开发服务');
+  stdioConsole.error('[dev] vite 未就绪，停止开发服务');
   await stopAll(1);
 }
 
 if (webOnly) {
-  console.log(`[dev] 网页与真实后端已就绪：${WEB_URL}`);
-  console.log('[dev] 可同时打开 Electron（npm run dev:shell）；关掉任一客户端不会杀死后端。Ctrl+C 停止。');
+  stdioConsole.log(`[dev] 网页与真实后端已就绪：${WEB_URL}`);
+  stdioConsole.log('[dev] 可同时打开 Electron（npm run dev:shell）；关掉任一客户端不会杀死后端。Ctrl+C 停止。');
 } else {
   // ELECTRON_RUN_AS_NODE=1 会让 electron.exe 以纯 Node 模式跑，必须清掉
   const electronEnv = {
@@ -102,16 +126,7 @@ if (webOnly) {
   };
   delete electronEnv.ELECTRON_RUN_AS_NODE;
 
-  console.log('[dev] 启动 Electron；后端由开发脚本托管，关窗不会断开网页端');
-  let electronBinary;
-  try {
-    // 通过 Electron 包入口解析真实二进制；缺失时可触发其缓存安装逻辑。
-    electronBinary = require('electron');
-    if (typeof electronBinary !== 'string' || !existsSync(electronBinary)) throw new Error('运行 npm rebuild electron --foreground-scripts 修复 Electron 安装。');
-  } catch (error) {
-    console.error(`[dev] Electron 运行时不可用：${error.message}`);
-    await stopAll(1);
-  }
+  stdioConsole.log('[dev] 启动 Electron；后端由开发脚本托管，关窗不会断开网页端');
   const electron = spawn(electronBinary, ['.'], {
     cwd: DESKTOP_ROOT,
     stdio: ['ignore', 'inherit', 'inherit'],
@@ -119,11 +134,11 @@ if (webOnly) {
   });
   children.push(electron);
   electron.on('error', (error) => {
-    console.error(`[dev] Electron 启动失败：${error.message}`);
+    stdioConsole.error(`[dev] Electron 启动失败：${error.message}`);
     stopAll(1);
   });
   electron.on('exit', (code) => {
-    console.log(`[dev] Electron 退出（${code}）；vite 与后端仍在运行，可继续用浏览器或再次打开桌面端`);
+    stdioConsole.log(`[dev] Electron 退出（${code}）；vite 与后端仍在运行，可继续用浏览器或再次打开桌面端`);
     // 不再 stopAll：允许网页继续联调同一后端
   });
 }

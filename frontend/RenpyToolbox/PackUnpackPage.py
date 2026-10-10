@@ -1,6 +1,4 @@
 """解包/反编译/打包页面 - 后台线程调用 UnRen/rpatool 解包，unrpyc 反编译，以及 rpatool 打包能力。"""
-import re
-from decimal import Decimal
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -22,38 +20,21 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from module.Tool.ArchiveOps import (
+    decompile_target,
+    pack_directory,
+    parse_rpa_size_limit as _parse_rpa_size_limit,
+    resolve_game_dir,
+    unpack_game,
+)
+from module.Tool.ArchiveOps import SIZE_LIMIT_PATTERN  # noqa: F401 — 兼容旧测试引用
 from module.Tool.Packer import Packer, PackerUnpackError
-from module.Tool.RenpyDecompiler import RenpyDecompiler
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 EXE_SUFFIX = ".exe"
 GAME_DIR_NAME = "game"
 RPY_SUFFIX = ".rpy"
 RPYC_SUFFIX = ".rpyc"
-SIZE_LIMIT_PATTERN = re.compile(
-    r"^\s*([0-9]+(?:\.[0-9]+)?)\s*(G(?:I?B)?|M(?:I?B)?)?\s*$",
-    re.IGNORECASE,
-)
-
-
-def _parse_rpa_size_limit(value: str) -> int:
-    """解析 G、GB、GiB、M、MB、MiB 容量格式，无单位时按 MiB。"""
-    match = SIZE_LIMIT_PATTERN.fullmatch(value)
-    if not match:
-        raise ValueError(
-            Localizer.get().pack_unpack_invalid_part_size_enter_1g_1_5g
-        )
-
-    number = Decimal(match.group(1))
-    if number <= 0:
-        raise ValueError(Localizer.get().pack_unpack_part_size_must_greater_than_0)
-
-    unit = (match.group(2) or "M").upper()
-    multiplier = 1024 ** 3 if unit.startswith("G") else 1024 ** 2
-    size_bytes = int(number * multiplier)
-    if size_bytes <= 0:
-        raise ValueError(Localizer.get().pack_unpack_part_size_must_greater_than_0)
-    return size_bytes
 
 
 class PackWorker(QThread):
@@ -75,18 +56,14 @@ class PackWorker(QThread):
 
     def run(self):
         try:
-            packer = Packer()
-            output_paths = packer.pack_from_dir(
+            result = pack_directory(
                 self.src_dir,
                 self.output_file,
+                max_part_size_bytes=self.max_part_size_bytes,
                 progress_callback=self._on_progress,
                 stop_check=lambda: self.should_stop,
-                max_part_size_bytes=self.max_part_size_bytes,
             )
-            self.finished.emit(
-                True,
-                Localizer.get().pack_unpack_packaging_complete_generated_rpa_file_s.format(output_paths_count=len(output_paths)),
-            )
+            self.finished.emit(True, result["message"])
         except Exception as e:
             LogManager.get().error(f"打包失败: {e}")
             self.finished.emit(
@@ -121,43 +98,21 @@ class UnpackWorker(QThread):
 
     def run(self):
         try:
-            packer = Packer()
-
-            progress_messages = {
-                "direct": Localizer.get().pack_unpack_trying_direct_unpacking,
-                "direct_failed": Localizer.get().pack_unpack_direct_unpacking_failed_trying_external_tools,
-                "external": Localizer.get().pack_unpack_unpacking,
-                "unren_bat": Localizer.get().pack_unpack_trying_unren_fallback,
-            }
-            result = packer.unpack_rpa_files(
+            result = unpack_game(
                 self.game_dir,
                 direct=self.direct,
                 script_only=self.script_only,
-                remove_archives=False,
-                progress_callback=lambda stage: self.progress.emit(
-                    progress_messages.get(stage, stage)
-                ),
+                progress_callback=self.progress.emit,
             )
-            method = result.get("method")
-            count = int(result.get("count", 0))
-            if result.get("success"):
-                if method == "direct":
-                    message = Localizer.get().pack_unpack_directly_unpacked_archive_s.format(count=count)
-                elif method == "external":
-                    message = Localizer.get().pack_unpack_unpacked_rpa_file_s.format(count=count)
-                else:
-                    message = Localizer.get().pack_unpack_unpacked_unren_fallback_check_game_folder_output
-                self.finished.emit({
-                    "level": "success",
-                    "title": Localizer.get().local_glossary_completed,
-                    "message": message,
-                })
-                return
-
+            title = (
+                Localizer.get().local_glossary_completed
+                if result.get("success")
+                else Localizer.get().notice
+            )
             self.finished.emit({
-                "level": "info",
-                "title": Localizer.get().notice,
-                "message": Localizer.get().pack_unpack_error(str(result.get("code") or "")),
+                "level": result.get("level", "info"),
+                "title": title,
+                "message": result["message"],
             })
         except PackerUnpackError as exc:
             LogManager.get().error(f"解包失败: {exc}")
@@ -189,85 +144,26 @@ class DecompileWorker(QThread):
         self.use_unren = use_unren
 
     def _resolve_game_dir(self) -> Path:
-        target = Path(self.target).resolve()
-        if target.is_file() and target.suffix.lower() == ".exe":
-            root_dir = target.parent
-        else:
-            root_dir = target
-
-        if target.is_dir() and target.name.lower() == "game":
-            return target
-
-        game_dir = root_dir / "game"
-        if game_dir.is_dir():
-            return game_dir
-
-        raise FileNotFoundError(
-            Localizer.get().pack_unpack_could_not_locate_game_folder_unren_fallback
-        )
+        return resolve_game_dir(self.target)
 
     def run(self):
-        # 先运行匹配游戏 Python 版本的 unrpyc（Ren'Py 7 使用 v1，Ren'Py 8 使用 v2）。
-        # UnRen 仅作为兼容旧游戏或特殊脚本格式的兜底，避免 current/legacy 选错导致卡住。
-        unrpyc_error: Exception | None = None
-        try:
-            self.progress.emit(Localizer.get().pack_unpack_decompiling_unrpyc)
-            game_dir = self._resolve_game_dir()
-            decompiler = RenpyDecompiler()
-            decompiler.decompile(
-                self.target,
-                overwrite=self.overwrite,
-                output_callback=lambda line: self.progress.emit(f"unrpyc：{line}"),
-            )
-            self.finished.emit({
-                "level": "success",
-                "title": Localizer.get().local_glossary_completed,
-                "message": Localizer.get().pack_unpack_decompilation_complete_generated_rpy_files,
-            })
-            return
-        except Exception as exc:
-            unrpyc_error = exc
-            LogManager.get().error(f"unrpyc 反编译失败: {exc}")
-
-        unren_error: Exception | None = None
-        if self.use_unren and self.fallback_unren_options:
-            try:
-                self.progress.emit(Localizer.get().pack_unpack_decompiling_unren)
-                game_dir = self._resolve_game_dir()
-                ok, _lines = Packer().unpack_all_unren_bat(
-                    str(game_dir),
-                    lang="zh",
-                    options=self.fallback_unren_options,
-                    purpose="反编译兜底",
-                    timeout_s=60 * 60,
-                    output_callback=lambda line: self.progress.emit(
-                        f"UnRen：{line}"
-                    ),
-                )
-                if ok:
-                    self.finished.emit({
-                        "level": "success",
-                        "title": Localizer.get().local_glossary_completed,
-                        "message": Localizer.get().pack_unpack_decompilation_completed_unren,
-                    })
-                    return
-                unren_error = RuntimeError("UnRen 返回失败")
-            except Exception as unren_exc:
-                unren_error = unren_exc
-                LogManager.get().error(f"UnRen 反编译兜底失败: {unren_exc}")
-
-        extra = ""
-        if unrpyc_error:
-            extra += f"\nunrpyc：{unrpyc_error}"
-        if unren_error:
-            extra += "\n" + Localizer.get().pack_unpack_unren_failed.format(unren_error=unren_error)
+        # 先 unrpyc，失败再用 UnRen 兜底（与 ArchiveOps.decompile_target 一致）。
+        result = decompile_target(
+            self.target,
+            overwrite=self.overwrite,
+            use_unren=self.use_unren,
+            fallback_unren_options=self.fallback_unren_options,
+            progress_callback=self.progress.emit,
+        )
+        title = (
+            Localizer.get().local_glossary_completed
+            if result.get("success")
+            else Localizer.get().error
+        )
         self.finished.emit({
-            "level": "error",
-            "title": Localizer.get().error,
-            "message": Localizer.get().pack_unpack_decompilation_failed_2.format(
-                exc=unrpyc_error or unren_error or "未知错误",
-                extra=extra,
-            ),
+            "level": result.get("level", "error"),
+            "title": title,
+            "message": result["message"],
         })
 class CleanupWorker(QThread):
     """后台清理工作线程（避免阻塞 UI）"""

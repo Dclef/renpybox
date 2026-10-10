@@ -4,11 +4,14 @@
  * SpinCard / SwitchButtonCard / ComboBoxCard / PushButtonCard 在这里分别是
  * FieldRow + 一行 FieldControl；GroupCard 是 Card。标题与说明的排版
  * （标题 14px、说明 12px 灰字）沿用 qfluentwidgets 的 StrongBodyLabel +
- * CaptionLabel 组合。
+ * CaptionLabel 组合。内部使用真实 Ant Design API。
  */
 
 import type { ReactNode } from 'react';
-import { Alert, Button, Modal, NumberInput as MantineNumberInput, Select, Switch as MantineSwitch, TextInput as MantineTextInput } from '@mantine/core';
+import { Alert, Button, Input, InputNumber as AntInputNumber, Modal, Select, Switch as AntSwitch } from 'antd';
+import { ArrowRight } from 'lucide-react';
+
+import { useT } from './i18n';
 
 /**
  * 卡片说明的极简富文本 —— 只支持 <b>（加粗）与换行。
@@ -37,7 +40,7 @@ function RichDescription(props: { text: string }) {
   );
 }
 
-const TONE_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
+const TONE_TYPE = { info: 'info', success: 'success', warning: 'warning', error: 'error' } as const;
 
 /** 设置行。单独出现时自带面板；放进 SettingsGroup 后只保留分隔线。 */
 export function SettingCard(props: {
@@ -112,11 +115,11 @@ export function Switch(props: {
 }) {
   const { checked, disabled, onChange, label } = props;
   return (
-    <MantineSwitch
+    <AntSwitch
       checked={checked}
       disabled={disabled}
       aria-label={label}
-      onChange={(event) => onChange(event.currentTarget.checked)}
+      onChange={(next) => onChange(next)}
     />
   );
 }
@@ -132,10 +135,10 @@ export function NumberInput(props: {
 }) {
   const { value, min, max, disabled, label, onCommit } = props;
   return (
-    <MantineNumberInput
-      w={120}
+    <AntInputNumber
+      style={{ width: 120 }}
       aria-label={label}
-      value={Number.isFinite(value) ? value : ''}
+      value={Number.isFinite(value) ? value : null}
       min={min}
       max={max}
       disabled={disabled}
@@ -156,14 +159,14 @@ export function TextInput(props: {
 }) {
   const { value, label, disabled, placeholder, allowEmpty, onCommit } = props;
   return (
-    <MantineTextInput
-      w={240}
+    <Input
+      style={{ width: 240, maxWidth: '100%' }}
       aria-label={label}
       value={value}
       disabled={disabled}
       placeholder={placeholder}
       onChange={(event) => {
-        const next = event.currentTarget.value;
+        const next = event.target.value;
         if (allowEmpty || next !== '') onCommit(next);
       }}
     />
@@ -180,14 +183,15 @@ export function SelectInput(props: {
   const { value, options, label, disabled, onCommit } = props;
   return (
     <Select
-      w={200}
+      style={{ width: 200, maxWidth: '100%' }}
+      popupMatchSelectWidth={false}
       aria-label={label}
       value={value}
-      data={options}
+      options={options}
       disabled={disabled}
-      allowDeselect={false}
+      allowClear={false}
       onChange={(next) => {
-        if (next != null) onCommit(next);
+        if (next != null) onCommit(String(next));
       }}
     />
   );
@@ -200,14 +204,19 @@ export function Banner(props: {
 }) {
   const { tone = 'info', children, onDismiss } = props;
   return (
-    <Alert className="banner" variant="light" color={TONE_COLOR[tone]}>
-      <div className="rb-banner">
-        <div className="rb-banner-text">{children}</div>
-        {onDismiss ? (
-          <Button variant="subtle" size="xs" onClick={onDismiss}>知道了</Button>
-        ) : null}
-      </div>
-    </Alert>
+    <Alert
+      className="banner"
+      type={TONE_TYPE[tone]}
+      showIcon
+      title={
+        <div className="rb-banner">
+          <div className="rb-banner-text">{children}</div>
+          {onDismiss ? (
+            <Button type="link" size="small" onClick={onDismiss}>知道了</Button>
+          ) : null}
+        </div>
+      }
+    />
   );
 }
 
@@ -234,23 +243,36 @@ export function Dialog(props: {
   } = props;
   return (
     <Modal
-      opened
-      onClose={onCancel}
-      size={560}
+      open
+      onCancel={onCancel}
+      width={560}
       title={title}
-      withCloseButton={false}
-      classNames={{ content: 'dialog' }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') onCancel();
-      }}
+      closable={false}
+      mask={{ closable: false }}
+      keyboard
+      className="dialog"
+      footer={
+        <div className="rb-dialog-actions">
+          <Button onClick={onCancel}>{cancelText}</Button>
+          {extraText ? <Button onClick={onExtra ?? onCancel}>{extraText}</Button> : null}
+          {onConfirm ? <Button type="primary" autoFocus onClick={onConfirm}>{confirmText}</Button> : null}
+        </div>
+      }
     >
       {children}
-      <div className="rb-dialog-actions">
-        <Button variant="default" onClick={onCancel}>{cancelText}</Button>
-        {extraText ? <Button variant="default" onClick={onExtra ?? onCancel}>{extraText}</Button> : null}
-        {onConfirm ? <Button data-autofocus onClick={onConfirm}>{confirmText}</Button> : null}
-      </div>
     </Modal>
+  );
+}
+
+/** 推荐流程的下一步入口。未保存提示只做说明，离开确认仍由 App 的 dirty 守卫负责。 */
+export function NextStepBar(props: { label: string; dirty: boolean; onNext: () => void }) {
+  const { label, dirty, onNext } = props;
+  const t = useT();
+  return (
+    <div className="rb-next-step" data-dirty={dirty || undefined}>
+      <span className="rb-next-step-hint">{t(dirty ? 'flow_next_dirty' : 'flow_next_clean')}</span>
+      <Button onClick={onNext} icon={<ArrowRight size={16} strokeWidth={1.75} />} iconPlacement="end">{label}</Button>
+    </div>
   );
 }
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import re
 import os
-import shutil
-import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+
+from module.Tool.AssetSuiteOps import (AssetSuiteCancelled, backup_directory_safe, raise_if_cancelled, sanitize_excel_text, write_text_cell, ensure_write_path, _atomic_save_workbook, _read_text_bytes, _atomic_write_bytes)
 
 # 内置 Emoji 库
 GRS_EMBEDDED_EMOJIS: List[str] = [
@@ -91,7 +91,12 @@ def _generate_combinations(emoji_list: Iterable[str], count: int) -> List[str] |
     return combos
 
 
-def generate_emoji_replacement_sheets(tl_dir: Path, output_dir: Path) -> Tuple[int, Path, Path]:
+def generate_emoji_replacement_sheets(
+    tl_dir: Path,
+    output_dir: Path,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Tuple[int, Path, Path]:
     """扫描 tl 目录并生成译前/译后替换表，返回 (条目数, 译前路径, 译后路径)。"""
     if not tl_dir.exists():
         raise FileNotFoundError(f"语言目录不存在: {tl_dir}")
@@ -102,6 +107,7 @@ def generate_emoji_replacement_sheets(tl_dir: Path, output_dir: Path) -> Tuple[i
 
     all_text = {"{}": set(), "[]": set()}
     for rpy in rpy_files:
+        raise_if_cancelled(cancel_check)
         result = _extract_bracketed_text(rpy)
         all_text["{}"].update(result["{}"])
         all_text["[]"].update(result["[]"])
@@ -122,6 +128,7 @@ def generate_emoji_replacement_sheets(tl_dir: Path, output_dir: Path) -> Tuple[i
         if not replacements or len(replacements) < total:
             raise RuntimeError("无法生成足够的唯一 Emoji 组合")
 
+    raise_if_cancelled(cancel_check)
     output_dir.mkdir(parents=True, exist_ok=True)
     pre_path = output_dir / "译前替换.xlsx"
     post_path = output_dir / "译后替换.xlsx"
@@ -132,8 +139,10 @@ def generate_emoji_replacement_sheets(tl_dir: Path, output_dir: Path) -> Tuple[i
     ws_pre.title = "译前替换"
     for text, emoji in zip(combined_text, replacements):
         ws_pre.append([text, emoji])
+        for cell in ws_pre[ws_pre.max_row]:
+            write_text_cell(cell, cell.value)
     _auto_width(ws_pre, 2)
-    wb_pre.save(pre_path)
+    _atomic_save_workbook(wb_pre, pre_path, cancel_check=cancel_check, allowed_root=output_dir)
 
     # 译后
     wb_post = Workbook()
@@ -141,8 +150,10 @@ def generate_emoji_replacement_sheets(tl_dir: Path, output_dir: Path) -> Tuple[i
     ws_post.title = "译后替换"
     for text, emoji in zip(combined_text, replacements):
         ws_post.append([emoji, text])
+        for cell in ws_post[ws_post.max_row]:
+            write_text_cell(cell, cell.value)
     _auto_width(ws_post, 2)
-    wb_post.save(post_path)
+    _atomic_save_workbook(wb_post, post_path, cancel_check=cancel_check, allowed_root=output_dir)
 
     return total, pre_path, post_path
 
@@ -207,41 +218,75 @@ def load_default_mapping(base_dir: Path, mode: str) -> Dict[str, str]:
     return load_replacement_map(path)
 
 
-def backup_folder(src_folder: Path) -> Path:
-    """拷贝备份目录，返回备份路径；若存在则自动生成唯一目录。"""
-    dir_name = src_folder.parent
-    base_name = src_folder.name
-    timestamp = int(time.time())
-    backup_path = dir_name / f"{base_name}_backup_{timestamp}"
-    counter = 1
-    while backup_path.exists():
-        backup_path = dir_name / f"{base_name}_backup_{timestamp}_{counter}"
-        counter += 1
-    shutil.copytree(src_folder, backup_path)
-    return backup_path
+def backup_folder(src_folder: Path, *, project_root: Path | None = None, cancel_check: Callable[[], bool] | None = None) -> Path:
+    """拷贝备份目录；目标位于 game 内时放到游戏根外侧安全目录。"""
+    return backup_directory_safe(Path(src_folder), project_root=project_root, cancel_check=cancel_check)
 
 
-def apply_replacements_dir(folder: Path, mapping: Dict[str, str], *, is_restore: bool = False) -> Tuple[int, int]:
-    """对目录下所有 .rpy 进行替换，返回 (成功文件数, 失败数)。"""
+def apply_replacements_dir(
+    folder: Path,
+    mapping: Dict[str, str],
+    *,
+    is_restore: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
+    details: dict | None = None,
+) -> Tuple[int, int, int]:
+    """对目录下所有 .rpy 进行替换。
+
+    is_restore 不反转 mapping，由调用方选择 Post 表。返回 (成功文件数, 失败数, 实际变更数)。
+    """
+    del is_restore  # 兼容旧签名；行为由 mapping 决定
+    selected = folder.resolve(strict=True)
     success = 0
     failed = 0
-    for root, _, files in os.walk(folder):
-        for file in files:
-            if not file.endswith(".rpy"):
-                continue
-            file_path = Path(root) / file
-            try:
-                content = file_path.read_text(encoding="utf-8")
-                original = content
-                for key, val in mapping.items():
-                    if key in content:
-                        content = content.replace(key, val)
-                if content != original:
-                    file_path.write_text(content, encoding="utf-8")
-                success += 1
-            except Exception:
-                failed += 1
-    return success, failed
+    changed_count = 0
+    written: list[str] = []
+    warnings: list[str] = []
+    try:
+        for root, dirs, files in os.walk(selected, followlinks=False):
+            raise_if_cancelled(cancel_check)
+            safe_dirs = []
+            for directory in dirs:
+                try:
+                    ensure_write_path(Path(root) / directory, selected)
+                    safe_dirs.append(directory)
+                except Exception as exc:
+                    failed += 1
+                    warnings.append(str(exc))
+            dirs[:] = safe_dirs
+            for file in files:
+                raise_if_cancelled(cancel_check)
+                if not file.endswith(".rpy"):
+                    continue
+                file_path = Path(root) / file
+                try:
+                    ensure_write_path(file_path, selected)
+                    raw, content, newline, bom = _read_text_bytes(file_path)
+                    original = content
+                    for key in sorted(mapping, key=len, reverse=True):
+                        raise_if_cancelled(cancel_check)
+                        content = content.replace(key, mapping[key])
+                    if content != original:
+                        raise_if_cancelled(cancel_check)
+                        _atomic_write_bytes(file_path, content, newline=newline, has_bom=bom,
+                                            cancel_check=cancel_check, allowed_root=selected)
+                        changed_count += 1
+                        written.append(str(file_path))
+                    success += 1
+                except AssetSuiteCancelled:
+                    raise
+                except Exception as exc:
+                    failed += 1
+                    warnings.append(f"{file_path}: {exc}")
+    except AssetSuiteCancelled as exc:
+        exc.result = {"success_files": success, "failed_files": failed, "changed_count": changed_count,
+                      "written": written, "warnings": warnings, "partial": bool(written),
+                      "cancelled": True, "success": False, "level": "warning"}
+        raise
+
+    if details is not None:
+        details.update({"written": written, "warnings": warnings})
+    return success, failed, changed_count
 
 
 __all__ = [
@@ -249,4 +294,8 @@ __all__ = [
     "generate_emoji_replacement_sheets",
     "load_replacement_map",
     "apply_replacements",
+    "find_mapping_path",
+    "load_default_mapping",
+    "backup_folder",
+    "apply_replacements_dir",
 ]

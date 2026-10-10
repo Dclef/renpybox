@@ -6,8 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Notification, Tooltip } from '@mantine/core';
-import { useMediaQuery } from '@mantine/hooks';
+import { Alert, Tooltip } from 'antd';
 import { ChevronDown, FileText, Folder, Moon, Sun } from 'lucide-react';
 
 import {
@@ -33,45 +32,89 @@ import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
 import { HonorificPage } from './pages/HonorificPage';
+import { OneKeyTranslatePage } from './pages/OneKeyTranslatePage';
+import { PackUnpackPage } from './pages/PackUnpackPage';
+import { MaSuitePage } from './pages/MaSuitePage';
+import { BatchCorrectionPage } from './pages/BatchCorrectionPage';
+import { NameExtractionPage } from './pages/NameExtractionPage';
 import { createT, I18nContext } from './i18n';
 import { Dialog, Empty } from './ui';
-import { applyTheme } from './theme';
 import type { AppState } from './useAppState';
 import type { DesktopAppInfo } from './preload';
 
-const TOAST_COLOR = { info: 'brand', success: 'green', warning: 'yellow', error: 'red' } as const;
+const TOAST_TYPE = { info: 'info', success: 'success', warning: 'warning', error: 'error' } as const;
 
-type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific';
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(query).matches : false,
+  );
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const onChange = () => setMatches(media.matches);
+    onChange();
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
+
+type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific' | 'onekey' | 'onekey-apply' | 'pack-unpack' | 'ma-suite' | 'batch-correction' | 'name-extraction';
 const TOOL_PAGE_TOOL_KEY: Record<ToolPageKey, string> = {
   proofreading: 'proofreading',
   glossary: 'local_glossary',
   preserve: 'text_preserve',
   honorific: 'honorific_placeholder',
+  onekey: 'one_key_translate',
+  'onekey-apply': 'apply_translation',
+  'pack-unpack': 'pack_unpack',
+  'ma-suite': 'ma_suite',
+  'batch-correction': 'batch_correction',
+  'name-extraction': 'name_extraction',
 };
 const TOOL_PAGE_DESC: Record<ToolPageKey, TextKey> = {
   proofreading: 'app_tool_desc_proofreading',
   glossary: 'app_tool_desc_glossary',
   preserve: 'app_tool_desc_preserve',
   honorific: 'app_tool_desc_honorific',
+  onekey: 'app_tool_desc_onekey',
+  'onekey-apply': 'app_tool_desc_onekey_apply',
+  'pack-unpack': 'app_tool_desc_pack_unpack',
+  'ma-suite': 'app_tool_desc_ma_suite',
+  'batch-correction': 'app_tool_desc_batch_correction',
+  'name-extraction': 'app_tool_desc_name_extraction',
 };
+
+// 警告与错误需要更长阅读时间，其余提示短暂停留即可。
+const TOAST_DURATION_MS: Record<AppState['toasts'][number]['tone'], number> = {
+  info: 3500,
+  success: 3500,
+  warning: 6000,
+  error: 6000,
+};
+
+function ToastItem(props: { toast: AppState['toasts'][number]; onDismiss: (id: number) => void }) {
+  const { toast, onDismiss } = props;
+  // 每条提示各自持有计时器，卸载或 id 变化时清理，避免关闭已被替换的提示。
+  useEffect(() => {
+    const timer = setTimeout(() => onDismiss(toast.id), TOAST_DURATION_MS[toast.tone]);
+    return () => clearTimeout(timer);
+  }, [toast.id, toast.tone, onDismiss]);
+  return (
+    <Alert
+      data-rb-toast=""
+      type={TOAST_TYPE[toast.tone]}
+      title={toast.text}
+      closable={{ 'aria-label': '知道了', onClose: () => onDismiss(toast.id) }}
+    />
+  );
+}
 
 function Toasts(props: { toasts: AppState['toasts']; onDismiss: (id: number) => void }) {
   const { toasts, onDismiss } = props;
   if (toasts.length === 0) return null;
   return (
     <div className="rb-toasts">
-      {toasts.map((toast) => (
-        <Notification
-          key={toast.id}
-          data-rb-toast=""
-          withBorder
-          color={TOAST_COLOR[toast.tone]}
-          onClose={() => onDismiss(toast.id)}
-          closeButtonProps={{ 'aria-label': '知道了' }}
-        >
-          {toast.text}
-        </Notification>
-      ))}
+      {toasts.map((toast) => <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />)}
     </div>
   );
 }
@@ -101,11 +144,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
   }, [dirty]);
-
-  // 主题跟着配置走：用户在应用设置里改、点侧边栏切换都落到同一个字段。
-  useEffect(() => {
-    applyTheme(state.theme);
-  }, [state.theme]);
 
   // 无边框窗口：最大化状态由主进程回推，标题栏的按钮图标要对上。
   useEffect(() => {
@@ -147,7 +185,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       </ToolPageFrame>
     );
   };
-  const collapsed = useMediaQuery('(max-width: 999px)') ?? false;
+  const collapsed = useMediaQuery('(max-width: 999px)');
   const version = window.renpy ? desktopInfo?.appVersion ?? '' : state.version?.app_version ?? '';
   const showDesktopRecovery = Boolean(window.renpy) && desktopInfo?.packaged !== false;
   const projectPath = String(state.project?.renpy_project_path ?? '');
@@ -182,11 +220,39 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'proofreading':
         return toolPage('proofreading', <ProofreadingPage state={state} onDirtyChange={setDirty} embedded />);
       case 'glossary':
-        return toolPage('glossary', <GlossaryPage state={state} onDirtyChange={setDirty} embedded />);
+        return toolPage('glossary', <GlossaryPage state={state} onDirtyChange={setDirty} onNextStep={() => navigate('preserve')} embedded />);
       case 'preserve':
-        return toolPage('preserve', <PreservePage state={state} onDirtyChange={setDirty} />);
+        return toolPage('preserve', <PreservePage state={state} onDirtyChange={setDirty} onNextStep={() => navigate('honorific')} />);
       case 'honorific':
-        return toolPage('honorific', <HonorificPage state={state} onDirtyChange={setDirty} />);
+        return toolPage('honorific', <HonorificPage state={state} onDirtyChange={setDirty} onNextStep={() => navigate('onekey')} />);
+      case 'onekey':
+        return toolPage('onekey', (
+          <OneKeyTranslatePage
+            state={state}
+            onOpenTranslation={() => navigate('translation')}
+            onOpenWorkbench={() => navigate('workbench')}
+            onOpenGlossary={() => navigate('glossary')}
+            onOpenPreserve={() => navigate('preserve')}
+          />
+        ));
+      case 'onekey-apply':
+        return toolPage('onekey-apply', (
+          <OneKeyTranslatePage
+            state={state}
+            mode="apply"
+            onOpenTranslation={() => navigate('translation')}
+            onOpenWorkbench={() => navigate('workbench')}
+            onOpenGlossary={() => navigate('glossary')}
+          />
+        ));
+      case 'pack-unpack':
+        return toolPage('pack-unpack', <PackUnpackPage state={state} />);
+      case 'ma-suite':
+        return toolPage('ma-suite', <MaSuitePage state={state} />);
+      case 'batch-correction':
+        return toolPage('batch-correction', <BatchCorrectionPage state={state} />);
+      case 'name-extraction':
+        return toolPage('name-extraction', <NameExtractionPage state={state} />);
       case 'project':
         return <ProjectPage state={state} />;
       case 'toolbox':
@@ -254,7 +320,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
                 const Icon = NAV_ICONS[item.icon];
                 const label = t(item.labelKey);
                 return (
-                  <Tooltip key={item.key} label={label} disabled={!collapsed} position="right">
+                  <Tooltip key={item.key} title={collapsed ? label : ''} placement="right">
                     <button
                       type="button"
                       className="nav-item rb-nav-item"
@@ -273,12 +339,12 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         </div>
 
         <div className="sidebar-footer rb-sidebar-footer">
-          <Tooltip label={t('app_toggle_theme')} disabled={!collapsed} position="right">
+          <Tooltip title={collapsed ? t('app_toggle_theme') : ''} placement="right">
             <button type="button" className="nav-item rb-icon-button" title={t('app_toggle_theme')} aria-label={t('app_toggle_theme')} onClick={() => state.setTheme(state.theme === 'DARK' ? 'LIGHT' : 'DARK')}>
               {state.theme === 'DARK' ? <Sun size={18} strokeWidth={1.75} /> : <Moon size={18} strokeWidth={1.75} />}
             </button>
           </Tooltip>
-          <Tooltip label={t('app_settings_page')} disabled={!collapsed} position="right">
+          <Tooltip title={collapsed ? t('app_settings_page') : ''} placement="right">
             <button
               type="button"
               className="nav-item rb-icon-button"
@@ -293,7 +359,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
               })()}
             </button>
           </Tooltip>
-          {window.renpy ? <Tooltip label={t('app_logs')} disabled={!collapsed} position="right">
+          {window.renpy ? <Tooltip title={collapsed ? t('app_logs') : ''} placement="right">
             <button
               type="button"
               className="nav-item rb-icon-button"
@@ -325,7 +391,11 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       {pendingPage ? (
         <Dialog title="有未保存的修改" confirmText="放弃并继续" onCancel={() => setPendingPage(null)} onConfirm={() => {
           setDirty(false);
-          if (pendingPage === 'close') { allowClose.current = true; window.renpy?.close?.(); }
+          if (pendingPage === 'close') {
+            allowClose.current = true;
+            // 已在本 Dialog 确认放弃修改，主进程不再追加退出确认。
+            window.renpy?.closeConfirmed?.();
+          }
           else setActive(pendingPage);
           setPendingPage(null);
         }}>离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>

@@ -4,14 +4,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication
 
-import frontend.RenpyToolbox.PackUnpackPage as pack_page_module
+import module.Tool.ArchiveOps as archive_ops
 from frontend.RenpyToolbox.PackUnpackPage import DecompileWorker, UnpackWorker
 
 
 APP = QApplication.instance() or QApplication([])
 
 
-def test_unpack_worker_reuses_shared_packer(monkeypatch) -> None:
+def test_unpack_worker_reuses_shared_packer(monkeypatch, tmp_path) -> None:
     captured = {}
 
     class PackerStub:
@@ -25,8 +25,8 @@ def test_unpack_worker_reuses_shared_packer(monkeypatch) -> None:
                 "message": "ignored",
             }
 
-    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
-    worker = UnpackWorker("game", direct=True, script_only=True)
+    monkeypatch.setattr(archive_ops, "Packer", PackerStub)
+    worker = UnpackWorker(str(tmp_path), direct=True, script_only=True)
     progress = []
     results = []
     worker.progress.connect(progress.append)
@@ -34,7 +34,7 @@ def test_unpack_worker_reuses_shared_packer(monkeypatch) -> None:
 
     worker.run()
 
-    assert captured["game_dir"] == "game"
+    assert captured["game_dir"] == str(tmp_path)
     assert captured["direct"] is True
     assert captured["script_only"] is True
     assert captured["remove_archives"] is False
@@ -47,7 +47,7 @@ def test_unpack_worker_reuses_shared_packer(monkeypatch) -> None:
     }]
 
 
-def test_unpack_worker_localizes_module_errors_by_language(monkeypatch) -> None:
+def test_unpack_worker_localizes_module_errors_by_language(monkeypatch, tmp_path) -> None:
     from base.BaseLanguage import BaseLanguage
     from module.Localizer.Localizer import Localizer
     from module.Tool.Packer import PackerUnpackError
@@ -56,11 +56,11 @@ def test_unpack_worker_localizes_module_errors_by_language(monkeypatch) -> None:
         def unpack_rpa_files(self, game_dir, **kwargs):
             raise PackerUnpackError("UNSAFE_INDEX", "无法安全读取 RPA 索引，已拒绝解包")
 
-    monkeypatch.setattr(pack_page_module, "Packer", RaisingPacker)
+    monkeypatch.setattr(archive_ops, "Packer", RaisingPacker)
     original = Localizer.get_app_language()
     try:
         Localizer.set_app_language(BaseLanguage.Enum.EN)
-        worker = UnpackWorker("game", direct=True, script_only=False)
+        worker = UnpackWorker(str(tmp_path), direct=True, script_only=False)
         results = []
         worker.finished.connect(results.append)
         worker.run()
@@ -68,7 +68,7 @@ def test_unpack_worker_localizes_module_errors_by_language(monkeypatch) -> None:
         assert not any("\u4e00" <= ch <= "\u9fff" for ch in results[0]["message"])
 
         Localizer.set_app_language(BaseLanguage.Enum.ZH)
-        worker = UnpackWorker("game", direct=True, script_only=False)
+        worker = UnpackWorker(str(tmp_path), direct=True, script_only=False)
         results = []
         worker.finished.connect(results.append)
         worker.run()
@@ -77,7 +77,7 @@ def test_unpack_worker_localizes_module_errors_by_language(monkeypatch) -> None:
         Localizer.set_app_language(original)
 
 
-def test_unpack_worker_localizes_failure_result(monkeypatch) -> None:
+def test_unpack_worker_localizes_failure_result(monkeypatch, tmp_path) -> None:
     from base.BaseLanguage import BaseLanguage
     from module.Localizer.Localizer import Localizer
 
@@ -91,11 +91,11 @@ def test_unpack_worker_localizes_failure_result(monkeypatch) -> None:
                 "message": "未找到可解包的 RPA 文件，或所有解包方式均失败",
             }
 
-    monkeypatch.setattr(pack_page_module, "Packer", FailingPacker)
+    monkeypatch.setattr(archive_ops, "Packer", FailingPacker)
     original = Localizer.get_app_language()
     try:
         Localizer.set_app_language(BaseLanguage.Enum.EN)
-        worker = UnpackWorker("game", direct=True, script_only=False)
+        worker = UnpackWorker(str(tmp_path), direct=True, script_only=False)
         results = []
         worker.finished.connect(results.append)
         worker.run()
@@ -104,7 +104,7 @@ def test_unpack_worker_localizes_failure_result(monkeypatch) -> None:
         )
 
         Localizer.set_app_language(BaseLanguage.Enum.ZH)
-        worker = UnpackWorker("game", direct=True, script_only=False)
+        worker = UnpackWorker(str(tmp_path), direct=True, script_only=False)
         results = []
         worker.finished.connect(results.append)
         worker.run()
@@ -113,15 +113,15 @@ def test_unpack_worker_localizes_failure_result(monkeypatch) -> None:
         Localizer.set_app_language(original)
 
 
-def test_unpack_worker_unknown_error_falls_back(monkeypatch) -> None:
+def test_unpack_worker_unknown_error_falls_back(monkeypatch, tmp_path) -> None:
     """非 Packer 异常走通用兜底文案，不把异常文本直接抛给界面。"""
 
     class RaisingPacker:
         def unpack_rpa_files(self, game_dir, **kwargs):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(pack_page_module, "Packer", RaisingPacker)
-    worker = UnpackWorker("game", direct=True, script_only=False)
+    monkeypatch.setattr(archive_ops, "Packer", RaisingPacker)
+    worker = UnpackWorker(str(tmp_path), direct=True, script_only=False)
     results = []
     worker.finished.connect(results.append)
     worker.run()
@@ -144,8 +144,8 @@ def test_decompile_worker_tries_matching_unrpyc_before_unren(tmp_path, monkeypat
         def unpack_all_unren_bat(self, *args, **kwargs):
             raise AssertionError("unrpyc 成功后不应调用 UnRen")
 
-    monkeypatch.setattr(pack_page_module, "RenpyDecompiler", DecompilerStub)
-    monkeypatch.setattr(pack_page_module, "Packer", UnexpectedPacker)
+    monkeypatch.setattr(archive_ops, "RenpyDecompiler", DecompilerStub)
+    monkeypatch.setattr(archive_ops, "Packer", UnexpectedPacker)
     (root / "game" / "script.rpy").write_text("label start:\n    pass\n", encoding="utf-8")
     rpyc = root / "game" / "script.rpyc"
     rpyc.write_bytes(b"compiled")
@@ -181,8 +181,8 @@ def test_decompile_worker_falls_back_to_unren_after_unrpyc_failure(tmp_path, mon
             kwargs["output_callback"]("Unpacking script.rpyc")
             return True, ["操作完成。"]
 
-    monkeypatch.setattr(pack_page_module, "RenpyDecompiler", DecompilerStub)
-    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
+    monkeypatch.setattr(archive_ops, "RenpyDecompiler", DecompilerStub)
+    monkeypatch.setattr(archive_ops, "Packer", PackerStub)
     (root / "game" / "script.rpy").write_text("label start:\n    pass\n", encoding="utf-8")
     rpyc = root / "game" / "script.rpyc"
     rpyc.write_bytes(b"compiled")

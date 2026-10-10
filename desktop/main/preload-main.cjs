@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('renpy', {
   /** 打开日志 / 更新窗口。 */
   openShell: (kind) => ipcRenderer.invoke('shell:open', kind),
   close: () => ipcRenderer.send('shell:close'),
+  /** 未保存修改已在页面内确认放弃时关闭主窗口，不再弹退出确认 */
+  closeConfirmed: () => ipcRenderer.send('window:close-confirmed'),
   /** 无边框窗口的窗口控制（渲染端画在 38px 标题栏右侧） */
   minimize: () => ipcRenderer.send('window:minimize'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),

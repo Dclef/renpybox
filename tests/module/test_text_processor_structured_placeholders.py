@@ -15,6 +15,36 @@ def test_honorific_bridge_uses_structured_tokens_and_reuses_placeholder_token():
     assert processor.srcs == ["Mr.<n0/> took <n0/>'s hat"]
 
 
+def test_honorific_titles_accept_dict_src_and_ignore_comment_payload():
+    """配置里带备注的字典只取 src，禁止把整个 dict 当称呼词。"""
+    config = Config()
+    config.honorific_placeholder_bridge_enable = True
+    config.honorific_placeholder_titles = [
+        {"src": "captain", "comment": "舰长"},
+        "mr",
+        {"src": "  ", "comment": "空称呼应忽略"},
+    ]
+    assert TextProcessor(config, CacheItem())._get_honorific_titles() == ["captain", "mr"]
+
+    item = CacheItem(src="Captain.[eh] and Mr.[eh]", text_type=CacheItem.TextType.RENPY)
+    processor = TextProcessor(config, item)
+    processor.pre_process()
+    assert processor.srcs == ["Captain.<n0/> and Mr.<n0/>"]
+
+
+def test_honorific_serialize_keeps_comments_and_legacy_strings():
+    stored = TextProcessor.serialize_honorific_titles([
+        {"src": "Mr", "comment": ""},
+        {"src": "Dr", "comment": "医生"},
+        {"src": "  ", "comment": "x"},
+    ])
+    assert stored == ["mr", {"src": "dr", "comment": "医生"}]
+    assert TextProcessor.parse_honorific_title_entries(stored) == [
+        {"src": "mr", "comment": ""},
+        {"src": "dr", "comment": "医生"},
+    ]
+
+
 def test_structured_token_restore_handles_exact_and_spaced_variants():
     restored = TextProcessor._replace_bridge_token_with_placeholder(
         "< n0 /> says <n0/>",
