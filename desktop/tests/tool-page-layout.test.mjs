@@ -14,6 +14,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const css = fs.readFileSync(path.join(root, 'renderer/src/styles/app.css'), 'utf8');
 const frame = fs.readFileSync(path.join(root, 'renderer/src/components/ToolPageFrame.tsx'), 'utf8');
 const ui = fs.readFileSync(path.join(root, 'renderer/src/ui.tsx'), 'utf8');
+const layoutScript = fs.readFileSync(path.join(root, 'scripts/check-tool-layout.cjs'), 'utf8');
 
 test('ToolPageFrame 使用 rb-tool-page / rb-tool-panel 层次', () => {
   assert.match(frame, /rb-tool-page/);
@@ -37,6 +38,19 @@ test('checkbox 占满一行，避免横向挤成一排', () => {
 
 test('含 SettingCard 行时去掉 body 双份边距', () => {
   assert.match(css, /\.rb-settings-body:has\(>\s*\.rb-setting-row\)\s*\{[^}]*padding:\s*0/s);
+});
+
+test('settings-body 直接子级 SettingCard 行拉满全宽，避免 flex-wrap 多列', () => {
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*flex:\s*1 1 100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*width:\s*100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*min-width:\s*0/s);
+});
+
+test('Electron 布局脚本覆盖应用/专家设置行宽与更新确认流程', () => {
+  assert.match(layoutScript, /capture\('AppSettingsPage'\)/);
+  assert.match(layoutScript, /capture\('ExpertSettingsPage'\)/);
+  assert.match(layoutScript, /body\.manual===false/);
+  assert.match(layoutScript, /确认前无 \/download/);
 });
 
 test('tool-panel 滚动页统一 padding/gap（含 .rb-page 子页）', () => {

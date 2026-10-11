@@ -139,7 +139,9 @@ export interface UpdateState {
     tag_name?: string;
     body?: string;
     published_at?: string;
-    assets?: { name?: string; size?: number; browser_download_url?: string }[];
+    /** 后端 _normalize_release 选出的下载资源，含真实 asset.size */
+    asset?: { name?: string; size?: number; browser_download_url?: string; digest?: string };
+    assets?: { name?: string; size?: number; browser_download_url?: string; digest?: string }[];
   };
   downloaded_size: number;
   total_size: number;

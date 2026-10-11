@@ -1,5 +1,7 @@
 /**
  * 工具详情页布局受控截图：翻译方式、工程修复与 Android / HTML。
+ * 另含应用设置 / 专家设置：SettingCard 行宽与纵向顺序、网页端启动静默检查更新、
+ * 「查看更新」详情确认后才下载（/api/update 全部由 fixture 模拟，不访问网络）。
  *
  * 运行（pwsh，勿终止已有 Vite；本脚本要求 5179）：
  *   $env:RENPYBOX_UI_URL='http://127.0.0.1:5179'
@@ -58,7 +60,29 @@ function fixture() {
     progressSource: 'none',
     jobs: {},
     serial: 0,
+    // 记录全部 /api/update* 请求，用于断言静默检查与「确认后才下载」
+    updates: [],
   };
+
+  const release = {
+    tag_name: 'v9.9.9',
+    body: '## 更新说明\n- 修复设置页卡片宽度',
+    published_at: '2026-10-01T08:00:00Z',
+    asset: { name: 'RenpyBox_v9.9.9.zip', size: 52428800, browser_download_url: 'https://example.invalid/RenpyBox_v9.9.9.zip' },
+  };
+  const updateState = (status, extra = {}) => ({
+    ok: true,
+    status,
+    version: 'ui-check',
+    latest: status === 'NONE' ? {} : release,
+    downloaded_size: 0,
+    total_size: 0,
+    error: '',
+    new_version: status !== 'NONE',
+    release_url: 'https://example.invalid/releases/latest',
+    can_install: false,
+    ...extra,
+  });
 
   window.confirm = () => true;
   const response = (data) => new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -129,6 +153,17 @@ function fixture() {
       });
     }
     if (p.startsWith('/api/html-import')) return response({ project_key: 'c:\\ui-check|tool', job: null });
+    if (p === '/api/update' || p.startsWith('/api/update/')) {
+      f.updates.push({ p, method, body });
+      // GET 固定 NONE；只有 POST /check 返回 NEW_VERSION，避免页面未经检查就出现下载入口
+      if (p === '/api/update' && method === 'GET') return response(updateState('NONE'));
+      if (p === '/api/update/check' && method === 'POST') return response(updateState('NEW_VERSION'));
+      if (p === '/api/update/download' && method === 'POST') {
+        return response(updateState('UPDATING', { total_size: release.asset.size }));
+      }
+      if (p === '/api/update/changelog') return response({ markdown: '', empty: true });
+      return response(updateState('NONE'));
+    }
     if (p.startsWith('/api/')) return response({ ok: true });
     return nativeFetch(url, options);
   };
@@ -334,10 +369,68 @@ app.whenReady().then(async () => {
     return metrics;
   };
 
+  /** 设置页：每个 .rb-settings-body > .rb-setting-row 撑满 body 内容宽（±4px），且行按文档顺序自上而下 */
+  const measureSettingRows = async (label) => {
+    const groups = await js(`(()=>{
+      return [...document.querySelectorAll('.rb-content .rb-settings-body')].map(body=>{
+        const bs=getComputedStyle(body);
+        const br=body.getBoundingClientRect();
+        const rows=[...body.querySelectorAll(':scope > .rb-setting-row')].map(row=>{
+          const r=row.getBoundingClientRect();
+          return { title: row.querySelector('.rb-setting-title')?.textContent||'', left: r.left, width: r.width, top: r.top, bottom: r.bottom };
+        });
+        return {
+          contentLeft: br.left + body.clientLeft + parseFloat(bs.paddingLeft),
+          contentWidth: body.clientWidth - parseFloat(bs.paddingLeft) - parseFloat(bs.paddingRight),
+          rows,
+        };
+      }).filter(g=>g.rows.length>0);
+    })()`);
+    log('ROWS ' + label + ' ' + JSON.stringify(groups));
+    if (!groups || !groups.length) throw new Error(label + ' 缺少 .rb-settings-body > .rb-setting-row');
+    for (const group of groups) {
+      let prevBottom = -Infinity;
+      for (const row of group.rows) {
+        if (Math.abs(row.width - group.contentWidth) > 4 || Math.abs(row.left - group.contentLeft) > 4) {
+          throw new Error(label + ' 设置行未撑满 body 内容宽: ' + JSON.stringify({ row, contentLeft: group.contentLeft, contentWidth: group.contentWidth }));
+        }
+        // 允许 1px 亚像素重叠；更大重叠说明行被挤到同一行或顺序错乱
+        if (row.top < prevBottom - 1) {
+          throw new Error(label + ' 设置行未纵向排列: ' + JSON.stringify(group.rows));
+        }
+        prevBottom = row.bottom;
+      }
+    }
+    log('PASS rows ' + label + ' groups=' + groups.length + ' rows=' + groups.reduce((n, g) => n + g.rows.length, 0));
+  };
+
+  /** 按可见文本点击按钮（antd 两字按钮会插空格，比较前去掉空白） */
+  const clickButton = async (scope, text) => {
+    const ok = await js(`(()=>{
+      const b=[...document.querySelectorAll(${JSON.stringify(scope + ' button')})]
+        .find(e=>e.textContent.replace(/\\s/g,'')===${JSON.stringify(text)} && !e.disabled);
+      if(!b) return false;
+      b.click();
+      return true;
+    })()`);
+    if (!ok) throw new Error('未找到可点击按钮: ' + scope + ' ' + text);
+  };
+
+  const updateRequests = (p, method = 'POST') =>
+    `window.__uiFixture.updates.filter(r=>r.p===${JSON.stringify(p)}&&r.method===${JSON.stringify(method)})`;
+
   await assert("document.querySelector('.rb-shell')", '壳已渲染');
   await assert(
     "document.querySelector('.workspace-project')?.title==='C:/ui-check'",
     'fixture 已绑定项目',
+  );
+
+  // --- 网页端启动约 3s 静默检查更新：只发一次且 manual=false ---
+  await pause(3500);
+  log('UPDATES startup ' + JSON.stringify(await js('window.__uiFixture.updates')));
+  await assert(
+    `(()=>{const c=${updateRequests('/api/update/check')};return c.length===1&&c[0].body.manual===false;})()`,
+    '启动静默检查更新 manual=false',
   );
 
   // --- ErrorRepair ---
@@ -432,6 +525,48 @@ app.whenReady().then(async () => {
     }
   }
   await win.setSize(1280, 800);
+  await pause(200);
+
+  // --- 应用设置：行宽 + 查看更新 → 详情确认 → 才下载 ---
+  await js(`document.querySelector('.rb-sidebar-footer .nav-item[title="应用设置"]')?.click()`);
+  await assert("document.querySelector('.rb-content[data-page=app-settings] .rb-settings-body > .rb-setting-row')", '应用设置页打开');
+  await assert("document.querySelector('.rb-content').innerText.includes('关于与更新')", '应用设置含关于与更新');
+  await measureSettingRows('app-settings');
+  await clickButton('.rb-content', '检查更新');
+  await assert(
+    `(()=>{const c=${updateRequests('/api/update/check')};return c.length===2&&c[1].body.manual===true;})()`,
+    '手动检查更新 manual=true',
+  );
+  await assert(
+    "[...document.querySelectorAll('.rb-content button')].some(b=>b.textContent.replace(/\\s/g,'')==='查看更新')",
+    '出现查看更新',
+  );
+  await measureSettingRows('app-settings-new-version');
+  await capture('AppSettingsPage');
+
+  await clickButton('.rb-content', '查看更新');
+  await assert("document.querySelector('.ant-modal')?.innerText.includes('修复设置页卡片宽度')", '详情弹窗含 release body');
+  await assert("/安装包\\s*50\\.0 MB/.test(document.querySelector('.ant-modal')?.innerText||'')", '详情弹窗含安装包大小');
+  await assert("/发布于\\s*2026-10-01/.test(document.querySelector('.ant-modal')?.innerText||'')", '详情弹窗含发布日期');
+  const downloadsBefore = await js(`${updateRequests('/api/update/download')}.length`);
+  log('UPDATES before-confirm ' + JSON.stringify(await js('window.__uiFixture.updates')));
+  if (downloadsBefore !== 0) throw new Error('FAIL 确认前已请求 /download: ' + downloadsBefore);
+  log('PASS 确认前无 /download');
+  await clickButton('.ant-modal', '下载更新');
+  await assert(`${updateRequests('/api/update/download')}.length===1`, '确认后请求一次 /download');
+  await pause(500);
+  const downloadsAfter = await js(`${updateRequests('/api/update/download')}.length`);
+  log('UPDATES after-confirm ' + JSON.stringify(await js('window.__uiFixture.updates')));
+  if (downloadsAfter !== 1) throw new Error('FAIL /download 次数应为 1: ' + downloadsAfter);
+
+  // --- 专家设置：先在应用设置打开专家模式，侧栏才出现入口 ---
+  await js(`document.querySelector('.rb-content button[aria-label="专家模式"]')?.click()`);
+  await assert(`document.querySelector('.nav-item[title="专家设置"]')`, '专家设置入口出现');
+  await js(`document.querySelector('.nav-item[title="专家设置"]')?.click()`);
+  await assert("document.querySelector('.rb-content[data-page=expert-settings] .rb-settings-body > .rb-setting-row')", '专家设置页打开');
+  await pause(200);
+  await measureSettingRows('expert-settings');
+  await capture('ExpertSettingsPage');
 
   if (errors.length) throw new Error('console errors: ' + errors.slice(0, 3).join(' | '));
   log('OK tool-layout');

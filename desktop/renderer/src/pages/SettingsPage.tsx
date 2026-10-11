@@ -34,6 +34,7 @@ import type { AppState } from '../useAppState';
 import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
 import { Button, Progress, Tooltip } from 'antd';
+import { displayVersion, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
 
 type Variant = 'basic' | 'expert' | 'app';
 
@@ -156,15 +157,6 @@ export function SettingsPage(props: {
       </div>
     </div>
   );
-}
-
-function displayVersion(tag: string): string {
-  const match = /^(?:RenpyBox_)?v?(\d+(?:\.\d+){2,3})$/.exec(String(tag).trim());
-  return match ? `v${match[1]}` : tag;
-}
-
-function formatMegabytes(size: number): string {
-  return `${(Math.max(0, size) / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 type MarkdownBlock =
@@ -479,6 +471,8 @@ function WebAboutCard(props: { state: AppState }) {
   const [busy, setBusy] = useState(false);
   const [changelog, setChangelog] = useState<string | null>(null);
   const [installConfirm, setInstallConfirm] = useState(false);
+  // 对齐 Qt UpdateDetailsDialog：先看说明，确认后再开始下载
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -502,9 +496,9 @@ function WebAboutCard(props: { state: AppState }) {
       }
       if (event.event === 'APP_UPDATE_DOWNLOAD_ERROR') {
         setCancelling(false);
-        const data = event.data as { cancelled?: boolean; error?: string };
+        // 失败 toast 由 VersionManager 的 APP_TOAST_SHOW 统一弹出；这里只补「已取消」
+        const data = event.data as { cancelled?: boolean };
         if (data.cancelled) state.pushToast('info', '已取消下载');
-        else if (data.error) state.pushToast('error', String(data.error));
       }
       if (event.event === 'APP_UPDATE_DOWNLOAD_DONE') setCancelling(false);
       void refresh();
@@ -526,24 +520,22 @@ function WebAboutCard(props: { state: AppState }) {
     }
   };
 
-  const tag = displayVersion(String(update.latest.tag_name || ''));
-  const status = String(update.status || 'NONE');
-  const progress = Math.max(0, Math.min(100, Math.round((update.downloaded_size / Math.max(1, update.total_size)) * 100)));
-  let statusText = '尚未检查更新';
-  if (checking) statusText = '检查中…';
-  else if (status === 'NEW_VERSION' || update.new_version) statusText = `发现新版本 ${tag || ''}`.trim();
-  else if (status === 'UPDATING') {
-    statusText = `正在下载 ${formatMegabytes(update.downloaded_size)} / ${formatMegabytes(update.total_size)}`;
-  } else if (status === 'DOWNLOADED' || update.can_install) statusText = '下载完成，重启后生效';
-  else if (update.error) statusText = '检查更新失败，请重试';
-  else if (update.latest.tag_name) statusText = '已是最新版本';
+  const ui = resolveWebUpdateUi(update, checking);
+  // 对齐 Qt UpdateDetailsDialog：包大小取 latest.asset.size，日期取 published_at 前十位
+  const releaseSize = Number(update.latest?.asset?.size) || 0;
+  const publishedAt = String(update.latest?.published_at || '').trim();
 
   return (
     <>
       <SettingsGroup title="关于与更新" description="查看当前版本、检查并安装更新">
         <SettingCard title="当前版本" description={null}>
           <span className="rb-setting-value">{version}</span>
-          <Button type="default" size="small" disabled={busy || checking || status === 'UPDATING' || state.link !== 'open'} onClick={() => void run(() => api.checkUpdate(true), { checking: true })}>
+          <Button
+            type="default"
+            size="small"
+            disabled={busy || checking || ui.status === 'UPDATING' || state.link !== 'open'}
+            onClick={() => void run(() => api.checkUpdate(true), { checking: true })}
+          >
             {checking ? '检查中…' : '检查更新'}
           </Button>
         </SettingCard>
@@ -551,27 +543,25 @@ function WebAboutCard(props: { state: AppState }) {
           <span className="rb-setting-value">{python}</span>
         </SettingCard>
         <SettingCard title="更新状态" description={null}>
-          <div className="rb-update-status">
-            <span>{statusText}</span>
-            {status === 'UPDATING' ? (
-              <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
-                <Progress percent={progress} style={{ width: 160 }} size="small" />
-                <span>{progress}%</span>
+          <div className="rb-update-status" aria-live="polite">
+            <span>{ui.statusText}</span>
+            {ui.showProgress ? (
+              <div className="rb-update-progress" aria-label={`下载进度 ${ui.progress}%`}>
+                <Progress percent={ui.progress} style={{ width: 160 }} size="small" />
+                <span>{ui.progress}%</span>
               </div>
             ) : null}
             <div className="rb-update-actions">
-              {(status === 'NEW_VERSION' || update.new_version) && status !== 'UPDATING' && status !== 'DOWNLOADED' ? (
-                <>
-                  <Button type="default" size="small" disabled={busy} onClick={() => window.open(update.release_url, '_blank', 'noopener,noreferrer')}>查看详情</Button>
-                  <Button size="small" disabled={busy || state.link !== 'open'} onClick={() => void run(api.downloadUpdate)}>下载更新</Button>
-                </>
+              {/* 与 Qt 一致：单入口「查看更新」，下载只在 Dialog 确认后触发 */}
+              {ui.offerUpdate ? (
+                <Button type="default" size="small" disabled={busy} onClick={() => setDetailsOpen(true)}>查看更新</Button>
               ) : null}
-              {status === 'UPDATING' ? (
+              {ui.showCancel ? (
                 <Button type="default" size="small" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
                   {cancelling ? '正在取消…' : '取消'}
                 </Button>
               ) : null}
-              {(status === 'DOWNLOADED' || update.can_install) ? (
+              {ui.showInstall ? (
                 <Button size="small" disabled={busy} onClick={() => setInstallConfirm(true)}>立即重启并安装</Button>
               ) : null}
             </div>
@@ -592,6 +582,25 @@ function WebAboutCard(props: { state: AppState }) {
           </Button>
         </SettingCard>
       </SettingsGroup>
+
+      {detailsOpen ? (
+        <Dialog
+          title={`发现新版本 ${ui.tag}`.trim()}
+          confirmText="下载更新"
+          cancelText="稍后"
+          onCancel={() => setDetailsOpen(false)}
+          onConfirm={() => {
+            setDetailsOpen(false);
+            void run(api.downloadUpdate);
+          }}
+        >
+          {/* ChangelogView 只渲染文本节点，不注入 HTML */}
+          <ChangelogView markdown={String(update.latest?.body || '').trim() || '此版本暂无更新说明'} />
+          <p className="rb-update-release-meta">
+            {`安装包 ${releaseSize <= 0 ? '未知' : formatMegabytes(releaseSize)} · 发布于 ${publishedAt ? publishedAt.slice(0, 10) : '未知'}`}
+          </p>
+        </Dialog>
+      ) : null}
 
       {installConfirm ? (
         <Dialog
