@@ -437,6 +437,8 @@ export const zh = {
   platform_test: '测试接口',
   platform_edit: '编辑',
   platform_parameters: '模型参数',
+  platform_add: '新增接口',
+  platform_add_blank: '空白新增…',
   workbench_analysis_title: '扫描与 AI 草稿',
   workbench_analysis_description: '先扫描角色，再按需生成资料；生成的草稿需审核后应用。',
   workbench_analysis_scope: '分析范围',
