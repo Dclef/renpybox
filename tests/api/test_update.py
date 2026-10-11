@@ -95,11 +95,31 @@ def test_download_cancel_and_install(update_client):
 
     downloading = client.post("/api/update/download").json()
     assert downloading["status"] == "UPDATING"
+    # 下载中即便版本更高，也不应被前端当成可点「下载更新」的空闲态
+    assert downloading["new_version"] is True
+    assert downloading["can_install"] is False
 
     cancelled = client.post("/api/update/cancel").json()
     assert cancelled["status"] == "NEW_VERSION"
+    assert cancelled["can_install"] is False
 
     manager.status = VersionManager.Status.DOWNLOADED
+    ready = client.get("/api/update").json()
+    assert ready["status"] == "DOWNLOADED"
+    assert ready["can_install"] is True
+    assert set(ready) >= {
+        "ok",
+        "status",
+        "version",
+        "latest",
+        "downloaded_size",
+        "total_size",
+        "error",
+        "new_version",
+        "release_url",
+        "can_install",
+    }
+
     installed = client.post("/api/update/install").json()
     assert installed["ok"] is True
     assert any(event == Base.Event.APP_UPDATE_EXTRACT for event, _ in manager.events)

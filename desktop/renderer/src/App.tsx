@@ -53,12 +53,16 @@ import { FormatterPage } from './pages/FormatterPage';
 import { AndroidBuildPage } from './pages/AndroidBuildPage';
 import { HtmlImportPage } from './pages/HtmlImportPage';
 import { GameModPage } from './pages/GameModPage';
+import * as api from './api';
 import { createT, I18nContext } from './i18n';
 import { Dialog, Empty } from './ui';
 import type { AppState } from './useAppState';
 import type { DesktopAppInfo } from './preload';
 
 const TOAST_TYPE = { info: 'info', success: 'success', warning: 'warning', error: 'error' } as const;
+
+// 对齐 Qt AppFluentWindow 启动约 3s 自动检查更新：模块级防重，StrictMode 双挂载或重渲染只发一次
+let webStartupUpdateCheckFired = false;
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() =>
@@ -226,6 +230,20 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
   }, [dirty, active]);
+
+  // 仅网页端：启动约 3s 后静默检查更新（manual=false 不弹 toast）；Electron 由主进程自行处理。
+  useEffect(() => {
+    if (window.renpy) return;
+    if (webStartupUpdateCheckFired) return;
+    const timer = window.setTimeout(() => {
+      if (webStartupUpdateCheckFired) return;
+      webStartupUpdateCheckFired = true;
+      void api.checkUpdate(false).catch(() => {
+        /* 失败静默；结果由设置页的 APP_UPDATE_* 订阅刷新 */
+      });
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // 无边框窗口：最大化状态由主进程回推，标题栏的按钮图标要对上。
   useEffect(() => {
