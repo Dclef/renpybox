@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 import threading
 from typing import Literal
 from urllib.parse import urlsplit
@@ -14,7 +16,9 @@ from api.routes.settings import REDACTED, read_settings
 from api.schemas import SettingsResponse
 from base.Base import Base
 from base.EventManager import EventManager
+from base.PathHelper import get_resource_path
 from module.Engine.Engine import Engine
+from module.Localizer.Localizer import Localizer
 from module.Secret.SecretStore import CREDENTIAL_ID_FIELD, LEGACY_CREDENTIAL_ID_FIELD, SecretStore
 
 router = APIRouter(prefix = "/api/platforms", tags = ["接口管理"])
@@ -133,6 +137,49 @@ def _write(request: Request, body: PlatformWrite, platform_id: int | None = None
             # 清理失败只留下不可达的旧凭据，不影响已落盘的新接口。
             SecretStore.get().clear_keys(original)
         return read_settings(request)
+
+
+PRESET_SAFE_FIELDS = ("name", "group", "api_format", "api_url", "model")
+
+
+def _presets_path() -> str:
+    # 与 Qt5 端一致：预设按界面语言目录加载；资源缺失时回落中文目录。
+    language = str(Localizer.get_app_language()).lower()
+    path = get_resource_path("resource", "platforms", language)
+    if not os.path.isdir(path) and language != "zh":
+        path = get_resource_path("resource", "platforms", "zh")
+    return path
+
+
+def load_platform_presets() -> list[dict]:
+    """读取内置接口预设；剔除密钥与凭据身份字段，只回传可安全预填的展示字段。"""
+    path = _presets_path()
+    if not os.path.isdir(path):
+        return []
+    presets: list[dict] = []
+    # 文件名前缀（0_sakura → 19_bing）决定展示顺序，与 Qt5 的 id 排序一致。
+    entries = sorted(
+        (item for item in os.scandir(path) if item.is_file() and item.name.endswith(".json")),
+        key = lambda item: item.name,
+    )
+    for entry in entries:
+        try:
+            with open(entry.path, "r", encoding="utf-8-sig") as reader:
+                data = json.load(reader)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        preset = {field: data.get(field) for field in PRESET_SAFE_FIELDS}
+        if isinstance(preset.get("name"), str) and preset["name"]:
+            presets.append(preset)
+    return presets
+
+
+@router.get("/presets")
+def read_presets() -> dict:
+    """内置接口预设，用于「新增接口」菜单预填名称、协议与地址。"""
+    return {"presets": load_platform_presets()}
 
 
 @router.post("", response_model = SettingsResponse)

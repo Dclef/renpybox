@@ -51,6 +51,15 @@ interface Editor {
   frequency_penalty_custom_enable: boolean;
 }
 
+/** 后端 /api/platforms/presets 返回的安全预填字段（无密钥）。 */
+interface PlatformPreset {
+  name: string;
+  group?: string;
+  api_format?: string;
+  api_url?: string;
+  model?: string;
+}
+
 const GROUPS = [
   { key: 'local', title: '本地模型', description: '本机部署，延迟低', icon: Cpu },
   { key: 'machine', title: '传统机翻', description: '无需模型配置', icon: Languages },
@@ -112,6 +121,8 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const modelRequest = useRef(0);
+  const [presets, setPresets] = useState<PlatformPreset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [editor, setEditor] = useState<Editor | null>(null);
   const [original, setOriginal] = useState<Editor | null>(null);
@@ -185,6 +196,27 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
     setOriginal(next);
     setCollapseKeys(openSampling ? ['sampling'] : []);
     window.requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+  /** 从预设打开编辑器：只预填名称/协议/地址/模型/分组，密钥留空由用户填写。 */
+  function openPresetEditor(preset: PlatformPreset) {
+    openEditor({
+      id: undefined as unknown as number,
+      name: preset.name,
+      group: preset.group,
+      api_format: preset.api_format,
+      api_url: preset.api_url,
+      model: preset.model,
+    });
+  }
+  async function loadPresets() {
+    try {
+      const result = await request<{ presets: PlatformPreset[] }>('/api/platforms/presets');
+      setPresets(Array.isArray(result.presets) ? result.presets : []);
+    } catch {
+      setPresets([]);
+    } finally {
+      setPresetsLoaded(true);
+    }
   }
   function closeEditor() {
     if (!dirty || window.confirm('放弃尚未保存的接口修改？')) {
@@ -269,9 +301,33 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
             />
-            <Button icon={<Plus size={16} strokeWidth={1.75} />} disabled={disabled} onClick={() => openEditor()}>
-              新增接口
-            </Button>
+            <Dropdown
+              trigger={['click']}
+              placement="bottomRight"
+              menu={{
+                items: [
+                  ...presets.map((preset) => ({
+                    key: `preset-${preset.name}`,
+                    label: preset.name,
+                    onClick: () => openPresetEditor(preset),
+                  })),
+                  ...(presets.length ? [{ type: 'divider' as const }] : []),
+                  {
+                    key: 'blank',
+                    label: t('platform_add_blank'),
+                    icon: <Plus size={14} strokeWidth={1.75} />,
+                    onClick: () => openEditor(),
+                  },
+                ],
+              }}
+              onOpenChange={(open) => {
+                if (open && !presetsLoaded) void loadPresets();
+              }}
+            >
+              <Button icon={<Plus size={16} strokeWidth={1.75} />} disabled={disabled}>
+                {t('platform_add')}
+              </Button>
+            </Dropdown>
           </div>
         )}
       />

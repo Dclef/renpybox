@@ -439,6 +439,8 @@ export const en: Record<keyof typeof zh, string> = {
   platform_test: 'Test connection',
   platform_edit: 'Edit',
   platform_parameters: 'Model parameters',
+  platform_add: 'Add Platform',
+  platform_add_blank: 'Blank entry…',
   workbench_analysis_title: 'Scan and AI drafts',
   workbench_analysis_description: 'Scan characters, then generate details as needed. Review drafts before applying.',
   workbench_analysis_scope: 'Analysis scope',
