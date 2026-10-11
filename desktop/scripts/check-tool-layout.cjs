@@ -1,5 +1,5 @@
 /**
- * 工具详情页布局受控截图：ErrorRepair / Formatter / Android / HTML。
+ * 工具详情页布局受控截图：翻译方式、工程修复与 Android / HTML。
  *
  * 运行（pwsh，勿终止已有 Vite；本脚本要求 5179）：
  *   $env:RENPYBOX_UI_URL='http://127.0.0.1:5179'
@@ -240,12 +240,12 @@ app.whenReady().then(async () => {
     await pause(360);
   };
 
-  /** 量测详情页：外边距、SettingsGroup body padding、滚动 gap */
+  /** 量测详情页：外边距、SettingsGroup body padding、滚动 gap；兼容 .rb-page / .rb-page-scroll */
   const measureLayout = async (label) => {
     const metrics = await js(`(()=>{
       const page=document.querySelector('.rb-tool-page');
       const panel=document.querySelector('.rb-tool-panel');
-      const scroll=document.querySelector('.rb-tool-panel .rb-page-scroll');
+      const scroll=document.querySelector('.rb-tool-panel > .rb-page-scroll, .rb-tool-panel > .rb-page');
       const group=document.querySelector('.rb-settings-group');
       const body=document.querySelector('.rb-settings-body');
       if(!page||!scroll||!group||!body) return null;
@@ -254,29 +254,37 @@ app.whenReady().then(async () => {
       const bs=getComputedStyle(body);
       const pr=page.getBoundingClientRect();
       const gr=group.getBoundingClientRect();
+      const form=body.querySelector(':scope > form, :scope > .ant-form');
+      const banner=scroll.querySelector(':scope > .banner');
       const boxes=[...document.querySelectorAll('.rb-settings-body > .ant-checkbox-wrapper')].slice(0,4).map(el=>{
         const r=el.getBoundingClientRect();
         return { top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width) };
       });
+      let bannerOverlap=false;
+      if(banner){
+        const br=banner.getBoundingClientRect();
+        const hr=group.querySelector('.rb-settings-title')?.getBoundingClientRect();
+        if(hr) bannerOverlap = br.bottom > hr.top + 1;
+      }
       return {
         pagePadLeft: parseFloat(ps.paddingLeft),
         pagePadRight: parseFloat(ps.paddingRight),
         scrollPadLeft: parseFloat(ss.paddingLeft),
         scrollPadBottom: parseFloat(ss.paddingBottom),
         scrollGap: parseFloat(ss.gap) || parseFloat(ss.rowGap) || 0,
+        scrollDisplay: ss.display,
         bodyPad: parseFloat(bs.paddingLeft),
+        bodyContentWidth: body.clientWidth - parseFloat(bs.paddingLeft) - parseFloat(bs.paddingRight),
         bodyFlexWrap: bs.flexWrap,
         groupInsetLeft: gr.left - pr.left,
         hasPanel: !!panel,
-        bannerFlex: (()=>{
-          const b=scroll.querySelector(':scope > .banner');
-          return b ? getComputedStyle(b).flexGrow : null;
-        })(),
+        formWidth: form ? form.getBoundingClientRect().width : null,
+        bodyWidth: body.getBoundingClientRect().width,
+        bannerFlex: banner ? getComputedStyle(banner).flexGrow : null,
+        bannerPosition: banner ? getComputedStyle(banner).position : null,
         scrollWidth: scroll.clientWidth,
-        bannerWidth: (()=>{
-          const b=scroll.querySelector(':scope > .banner');
-          return b ? b.getBoundingClientRect().width : null;
-        })(),
+        bannerWidth: banner ? banner.getBoundingClientRect().width : null,
+        bannerOverlap,
         checkboxes: boxes,
       };
     })()`);
@@ -297,12 +305,22 @@ app.whenReady().then(async () => {
     if (!(metrics.scrollGap >= 11.5)) {
       throw new Error(label + ' 滚动页 gap 应约 12px: ' + JSON.stringify(metrics));
     }
+    if (metrics.scrollDisplay !== 'flex') {
+      throw new Error(label + ' 滚动页应为 flex 列: ' + JSON.stringify(metrics));
+    }
     if (metrics.bannerFlex != null && Number(metrics.bannerFlex) !== 0) {
       throw new Error(label + ' Banner 不应 flex-grow: ' + JSON.stringify(metrics));
     }
+    if (metrics.bannerOverlap) {
+      throw new Error(label + ' Banner 与首个卡片标题重叠: ' + JSON.stringify(metrics));
+    }
+    // 直接子级 Form 应接近 body 可用宽度（允许 padding/亚像素误差）
+    if (metrics.formWidth != null && metrics.bodyContentWidth > 0 && metrics.formWidth < metrics.bodyContentWidth - 4) {
+      throw new Error(label + ' SettingsGroup 内 Form 被压窄: ' + JSON.stringify(metrics));
+    }
     // 短状态条不应贴满滚动区宽度（允许长文案接近满宽）
     if (metrics.bannerWidth != null && metrics.scrollWidth > 0 && metrics.bannerWidth > metrics.scrollWidth - 8) {
-      const textLen = await js(`(document.querySelector('.rb-tool-panel > .rb-page-scroll > .banner')?.innerText||'').trim().length`);
+      const textLen = await js(`(document.querySelector('.rb-tool-panel > .rb-page-scroll > .banner, .rb-tool-panel > .rb-page > .banner')?.innerText||'').trim().length`);
       if (textLen > 0 && textLen < 24) {
         throw new Error(label + ' 短 Banner 不应撑满滚动区: ' + JSON.stringify({ ...metrics, textLen }));
       }
@@ -341,6 +359,19 @@ app.whenReady().then(async () => {
   await measureLayout('formatter');
   await capture('FormatterPage');
 
+  // --- 翻译方式：这些页根节点是 .rb-page，必须验证不会回到旧 grid 两行布局 ---
+  for (const item of [
+    ['直接翻译 RPY', 'direct-rpy-translate', 'DirectRpyTranslatePage'],
+    ['HOOK 翻译', 'hook-translate', 'HookTranslatePage'],
+    ['源码翻译', 'source-translate', 'SourceTranslatePage'],
+  ]) {
+    const [query, pageKey, shot] = item;
+    await openTool(query);
+    await assert(`document.querySelector('[data-rb-page=${pageKey}]')`, `${query} 页打开`);
+    await measureLayout(pageKey);
+    await capture(shot);
+  }
+
   // --- Android（需项目；blocked 时只报告） ---
   await openTool('安卓打包');
   const androidReady = await js("Boolean(document.querySelector('[data-rb-page=android-build]'))");
@@ -377,18 +408,21 @@ app.whenReady().then(async () => {
     log('LIMIT HTML 页未就绪，仅报告: ' + htmlText);
   }
 
-  // 窄屏可读性：四页各截一张
+  // 窄屏可读性：核心详情页各截一张
   await win.setSize(720, 800);
   for (const item of [
     ['错误修复', 'ErrorRepairPage-narrow', 'error-repair-narrow'],
     ['代码格式化', 'FormatterPage-narrow', 'formatter-narrow'],
     ['安卓打包', 'AndroidBuildPage-narrow', 'android-narrow'],
     ['网页', 'HtmlImportPage-narrow', 'html-narrow'],
+    ['直接翻译 RPY', 'DirectRpyTranslatePage-narrow', 'direct-narrow'],
+    ['HOOK 翻译', 'HookTranslatePage-narrow', 'hook-narrow'],
+    ['源码翻译', 'SourceTranslatePage-narrow', 'source-narrow'],
   ]) {
     const [query, shot, label] = item;
     await openTool(query);
     await pause(200);
-    const ready = await js("Boolean(document.querySelector('.rb-tool-panel .rb-page-scroll .rb-settings-body'))");
+    const ready = await js("Boolean(document.querySelector('.rb-tool-panel > .rb-page-scroll .rb-settings-body, .rb-tool-panel > .rb-page .rb-settings-body'))");
     if (ready) {
       await measureLayout(label);
       await capture(shot);

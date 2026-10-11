@@ -102,7 +102,7 @@ export function SettingsGroup(props: {
           {actions ? <div className="rb-settings-actions">{actions}</div> : null}
         </header>
       ) : null}
-      {/* body 默认 16px 内边距由 .rb-settings-body 提供；含 SettingCard 行时 CSS 去掉双份边距 */}
+      {/* body 默认 16px；直接子级 Form 由 CSS 拉满宽度；含 SettingCard 行时去掉双份边距 */}
       <div className="rb-settings-body">{children}</div>
     </section>
   );

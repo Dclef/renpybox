@@ -366,8 +366,22 @@
     padding: 0;
   }
 
+  /*
+   * 直接子级 Form：align-items:flex-start 时默认不拉满交叉轴，
+   * 若不显式 width:100% 会缩到约内容宽（截图里约 220px）。
+   */
+  .rb-settings-body > form,
+  .rb-settings-body > .ant-form {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .rb-settings-body > .ant-form-item {
     flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
     margin-bottom: 8px;
     max-width: 100%;
   }
@@ -391,7 +405,21 @@
     max-width: 100%;
   }
 
+  .rb-settings-body .ant-form-item-control-input,
   .rb-settings-body .ant-form-item-control-input-content {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Form 内输入类控件占满可用宽；Switch 等保持内容宽 */
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-affix-wrapper,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-textarea,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-select,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-number,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-radio-group {
+    width: 100%;
+    max-width: 100%;
     min-width: 0;
   }
 
@@ -536,42 +564,64 @@
     margin-bottom: 0;
   }
 
+  /* panel 吃掉页头以下余高；真正滚动落在直接子级 scroll/page 上 */
   .rb-tool-panel {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
 
-  /* 滚动页统一外边距/间距：左右 4px 给卡片阴影，底 16px；页级 24px 由 .rb-tool-page 承担 */
-  .rb-tool-panel > .rb-page-scroll {
+  /*
+   * 滚动页统一外边距/间距：左右 4px 给卡片阴影，底 16px；页级 24px 由 .rb-tool-page 承担。
+   * Direct/Hook/Source 根节点是 .rb-page（不是 .rb-page-scroll），须同样打断 .rb-page 的
+   * grid + 首行 1fr，否则 Banner 行被压到 0 后内容溢出叠在首张卡片标题上。
+   */
+  .rb-tool-panel > .rb-page-scroll,
+  .rb-tool-panel > .rb-page {
     flex: 1 1 auto;
+    min-width: 0;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
     gap: 12px;
     padding: 0 4px 16px;
     overflow: hidden auto;
     scrollbar-gutter: stable;
+    grid-template-rows: none;
   }
 
-  /* 详情页卡片层次对齐工具箱：白底 + 细边 + 轻阴影 */
+  .rb-tool-panel > .rb-page-scroll > *,
+  .rb-tool-panel > .rb-page > * {
+    flex-shrink: 0;
+  }
+
+  /* 详情页卡片层次对齐工具箱：白底 + 细边 + 轻阴影；占满滚动区宽度 */
   .rb-tool-page .rb-settings-group {
+    width: 100%;
+    min-width: 0;
     border: 1px solid var(--rb-border);
     border-radius: 8px;
     background: var(--rb-surface);
     box-shadow: var(--rb-qt-shadow);
   }
 
-  /* 状态 Banner：短文案按内容宽，长文案封顶；不占 flex 余高、不每条撑满 */
+  /* 状态 Banner：正常文档流独立块；短文案按内容宽，长文案封顶；不占 flex 余高 */
   .rb-tool-page > .banner,
-  .rb-tool-panel > .rb-page-scroll > .banner {
+  .rb-tool-panel > .rb-page-scroll > .banner,
+  .rb-tool-panel > .rb-page > .banner {
+    position: relative;
     flex: 0 0 auto;
     align-self: flex-start;
     width: fit-content !important;
     max-width: 100%;
+    margin-bottom: 0;
   }
 
-  .rb-tool-panel > .rb-page-scroll > .banner + .banner {
+  .rb-tool-panel > .rb-page-scroll > .banner + .banner,
+  .rb-tool-panel > .rb-page > .banner + .banner {
     margin-top: -4px;
   }
 
