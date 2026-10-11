@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -145,6 +146,80 @@ def test_prepare_rejects_unknown_mode(parity_app):
     client, _, paths, engine = parity_app
     response = client.post("/api/onekey/prepare", json=_body(paths, mode="merge"))
     assert response.status_code == 422
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_prepare_skip_extraction_reuses_existing_tl_without_extract(parity_app, monkeypatch):
+    """已有主 TL：跳过抽取只配置主路径，四个抽取相关函数均不应被调用。"""
+    client, config, paths, engine = parity_app
+    (paths.tl_language_dir / "script.rpy").write_text("translate chinese strings:\n", encoding="utf-8")
+    config.input_folder = str(paths.project_root / "stale_input")
+    config.output_folder = str(paths.project_root / "stale_output")
+    config.save(strict=True)
+    called: list[str] = []
+
+    def mark(name):
+        def _fail(*_args, **_kwargs):
+            called.append(name)
+            raise AssertionError(f"跳过抽取不应调用 {name}")
+        return _fail
+
+    monkeypatch.setattr(onekey, "detect_game_status", mark("detect_game_status"))
+    monkeypatch.setattr(onekey, "unpack_game", mark("unpack_game"))
+    monkeypatch.setattr(onekey, "decompile_target", mark("decompile_target"))
+    monkeypatch.setattr(onekey, "extract_project_text", mark("extract_project_text"))
+    find_calls: list = []
+    monkeypatch.setattr(
+        onekey.RenpyDecompiler,
+        "_find_game_exe",
+        lambda self, root: find_calls.append(root) or None,
+    )
+
+    response = client.post(
+        "/api/onekey/prepare",
+        json=_body(paths, skip_extraction=True, mode="full", incremental=False),
+    )
+    assert response.status_code == 200, response.text
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "done", job
+    assert job["result"]["stage"] == "ready"
+    assert job["result"]["skipped_extraction"] is True
+    assert job["result"]["incremental"] is False
+    assert called == []
+    assert find_calls == []
+    assert Path(config.input_folder) == paths.tl_language_dir
+    assert Path(config.output_folder) == paths.translation_output_dir
+    assert job["result"]["tl_dir"] == str(paths.tl_language_dir)
+    assert job["result"]["input_folder"] == str(paths.tl_language_dir)
+    assert job["result"]["output_folder"] == str(paths.translation_output_dir)
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_prepare_skip_extraction_rejects_empty_tl_without_config_change(parity_app, monkeypatch):
+    """空主 TL：跳过抽取返回 400，不改配置、不启动任务。"""
+    client, config, paths, engine = parity_app
+    before = (
+        config.input_folder,
+        config.output_folder,
+        config.extract_supplement_mode,
+        config.onekey_inject_base_box,
+    )
+    monkeypatch.setattr(
+        onekey,
+        "configure_main_translation_paths",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("空 TL 不应配置路径")),
+    )
+    response = client.post(
+        "/api/onekey/prepare",
+        json=_body(paths, skip_extraction=True, mode="full", incremental=False),
+    )
+    assert response.status_code == 400
+    assert (
+        config.input_folder,
+        config.output_folder,
+        config.extract_supplement_mode,
+        config.onekey_inject_base_box,
+    ) == before
     assert engine.get_status() == Engine.Status.IDLE
 
 

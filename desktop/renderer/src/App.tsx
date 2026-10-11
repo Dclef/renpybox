@@ -37,6 +37,22 @@ import { PackUnpackPage } from './pages/PackUnpackPage';
 import { MaSuitePage } from './pages/MaSuitePage';
 import { BatchCorrectionPage } from './pages/BatchCorrectionPage';
 import { NameExtractionPage } from './pages/NameExtractionPage';
+import { DirectRpyTranslatePage } from './pages/DirectRpyTranslatePage';
+import { SourceTranslatePage } from './pages/SourceTranslatePage';
+import { HookTranslatePage } from './pages/HookTranslatePage';
+import { HookSupplementPage } from './pages/HookSupplementPage';
+import { FontReplacePage } from './pages/FontReplacePage';
+import { RpyExtractionPage } from './pages/RpyExtractionPage';
+import { ExtractToTlPage } from './pages/ExtractToTlPage';
+import { ExtractJsonPage } from './pages/ExtractJsonPage';
+import { AddLanguagePage } from './pages/AddLanguagePage';
+import { SetDefaultLanguagePage } from './pages/SetDefaultLanguagePage';
+import { ErrorRepairPage } from './pages/ErrorRepairPage';
+import { TranslationReusePage } from './pages/TranslationReusePage';
+import { FormatterPage } from './pages/FormatterPage';
+import { AndroidBuildPage } from './pages/AndroidBuildPage';
+import { HtmlImportPage } from './pages/HtmlImportPage';
+import { GameModPage } from './pages/GameModPage';
 import { createT, I18nContext } from './i18n';
 import { Dialog, Empty } from './ui';
 import type { AppState } from './useAppState';
@@ -58,7 +74,7 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific' | 'onekey' | 'onekey-apply' | 'pack-unpack' | 'ma-suite' | 'batch-correction' | 'name-extraction';
+type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific' | 'onekey' | 'onekey-apply' | 'pack-unpack' | 'ma-suite' | 'batch-correction' | 'name-extraction' | 'direct-rpy-translate' | 'source-translate' | 'hook-translate' | 'hook-supplement' | 'font-replace' | 'rpy-extraction' | 'extract-to-tl' | 'extract-json' | 'add-language' | 'set-default-language' | 'error-repair' | 'translation-reuse' | 'formatter' | 'android-build' | 'html-import' | 'game-mod';
 const TOOL_PAGE_TOOL_KEY: Record<ToolPageKey, string> = {
   proofreading: 'proofreading',
   glossary: 'local_glossary',
@@ -70,6 +86,22 @@ const TOOL_PAGE_TOOL_KEY: Record<ToolPageKey, string> = {
   'ma-suite': 'ma_suite',
   'batch-correction': 'batch_correction',
   'name-extraction': 'name_extraction',
+  'direct-rpy-translate': 'direct_rpy_translate',
+  'source-translate': 'source_translate',
+  'hook-translate': 'hook_translate',
+  'hook-supplement': 'hook_supplement',
+  'font-replace': 'font_replace',
+  'rpy-extraction': 'rpy_extraction_settings',
+  'extract-to-tl': 'extract_to_tl',
+  'extract-json': 'extract_json',
+  'add-language': 'add_language',
+  'set-default-language': 'set_default_language',
+  'error-repair': 'error_repair',
+  'translation-reuse': 'translation_reuse',
+  formatter: 'formatter',
+  'android-build': 'android_build',
+  'html-import': 'html_import',
+  'game-mod': 'game_mod',
 };
 const TOOL_PAGE_DESC: Record<ToolPageKey, TextKey> = {
   proofreading: 'app_tool_desc_proofreading',
@@ -82,6 +114,22 @@ const TOOL_PAGE_DESC: Record<ToolPageKey, TextKey> = {
   'ma-suite': 'app_tool_desc_ma_suite',
   'batch-correction': 'app_tool_desc_batch_correction',
   'name-extraction': 'app_tool_desc_name_extraction',
+  'direct-rpy-translate': 'app_tool_desc_direct_rpy_translate',
+  'source-translate': 'app_tool_desc_source_translate',
+  'hook-translate': 'app_tool_desc_hook_translate',
+  'hook-supplement': 'app_tool_desc_hook_supplement',
+  'font-replace': 'app_tool_desc_font_replace',
+  'rpy-extraction': 'app_tool_desc_rpy_extraction',
+  'extract-to-tl': 'app_tool_desc_extract_to_tl',
+  'extract-json': 'app_tool_desc_extract_json',
+  'add-language': 'app_tool_desc_add_language',
+  'set-default-language': 'app_tool_desc_set_default_language',
+  'error-repair': 'app_tool_desc_error_repair',
+  'translation-reuse': 'app_tool_desc_translation_reuse',
+  formatter: 'app_tool_desc_formatter',
+  'android-build': 'app_tool_desc_android_build',
+  'html-import': 'app_tool_desc_html_import',
+  'game-mod': 'app_tool_desc_game_mod',
 };
 
 // 警告与错误需要更长阅读时间，其余提示短暂停留即可。
@@ -126,24 +174,58 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const [desktopInfo, setDesktopInfo] = useState<DesktopAppInfo | null>(null);
   const [dirty, setDirty] = useState(false);
   const allowClose = useRef(false);
+  /** RPY 页关页/切换前取消并等待后台 worker 真正结束 */
+  const rpyLeaveGuardRef = useRef<(() => Promise<void>) | null>(null);
+  /** RPY 后台仍在收尾时阻止原生关闭绕过 guard */
+  const rpyLeaveBlockedRef = useRef(false);
   const [pendingPage, setPendingPage] = useState<PageKey | 'close' | null>(null);
+
+  const leaveRpyIfNeeded = async (): Promise<boolean> => {
+    if (active !== 'rpy-extraction') return true;
+    try {
+      await rpyLeaveGuardRef.current?.();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const navigate = (page: PageKey | 'close') => {
     if (page === active) return;
     if (dirty) { setPendingPage(page); return; }
-    if (page === 'close') window.renpy?.close?.();
-    else setActive(page);
+    // dirty=false 也必须走同一 RPY guard；失败留在本页
+    void (async () => {
+      if (!(await leaveRpyIfNeeded())) return;
+      if (page === 'close') {
+        allowClose.current = true;
+        window.renpy?.close?.();
+      } else {
+        setActive(page);
+      }
+    })();
   };
 
-  // 系统关闭按钮或 Alt+F4 也要保护未保存编辑。
+  // 系统关闭：未保存或 RPY worker 收尾中都不能直接放行。
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirty || allowClose.current) return;
+      if (allowClose.current) return;
+      const rpyBlocked = active === 'rpy-extraction' && rpyLeaveBlockedRef.current;
+      if (!dirty && !rpyBlocked) return;
       event.preventDefault(); event.returnValue = '';
-      setPendingPage('close');
+      if (dirty) setPendingPage('close');
+      else if (rpyBlocked) {
+        void (async () => {
+          if (await leaveRpyIfNeeded()) {
+            allowClose.current = true;
+            if (window.renpy?.closeConfirmed) window.renpy.closeConfirmed();
+            else window.renpy?.close?.();
+          }
+        })();
+      }
     };
     window.addEventListener('beforeunload', beforeUnload);
     return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [dirty]);
+  }, [dirty, active]);
 
   // 无边框窗口：最大化状态由主进程回推，标题栏的按钮图标要对上。
   useEffect(() => {
@@ -253,6 +335,45 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         return toolPage('batch-correction', <BatchCorrectionPage state={state} />);
       case 'name-extraction':
         return toolPage('name-extraction', <NameExtractionPage state={state} />);
+      case 'direct-rpy-translate':
+        return toolPage('direct-rpy-translate', <DirectRpyTranslatePage state={state} onNavigate={navigate} />);
+      case 'source-translate':
+        return toolPage('source-translate', <SourceTranslatePage state={state} onNavigate={navigate} />);
+      case 'hook-translate':
+        return toolPage('hook-translate', <HookTranslatePage state={state} />);
+      case 'hook-supplement':
+        return toolPage('hook-supplement', <HookSupplementPage state={state} />);
+      case 'font-replace':
+        return toolPage('font-replace', <FontReplacePage state={state} />);
+      case 'rpy-extraction':
+        return toolPage('rpy-extraction', (
+          <RpyExtractionPage
+            state={state}
+            onDirtyChange={setDirty}
+            leaveGuardRef={rpyLeaveGuardRef}
+            leaveBlockedRef={rpyLeaveBlockedRef}
+          />
+        ));
+      case 'extract-to-tl':
+        return toolPage('extract-to-tl', <ExtractToTlPage state={state} />);
+      case 'extract-json':
+        return toolPage('extract-json', <ExtractJsonPage state={state} />);
+      case 'add-language':
+        return toolPage('add-language', <AddLanguagePage state={state} />);
+      case 'set-default-language':
+        return toolPage('set-default-language', <SetDefaultLanguagePage state={state} />);
+      case 'error-repair':
+        return toolPage('error-repair', <ErrorRepairPage state={state} />);
+      case 'translation-reuse':
+        return toolPage('translation-reuse', <TranslationReusePage state={state} />);
+      case 'formatter':
+        return toolPage('formatter', <FormatterPage state={state} />);
+      case 'android-build':
+        return toolPage('android-build', <AndroidBuildPage state={state} />);
+      case 'html-import':
+        return toolPage('html-import', <HtmlImportPage state={state} />);
+      case 'game-mod':
+        return toolPage('game-mod', <GameModPage state={state} />);
       case 'project':
         return <ProjectPage state={state} />;
       case 'toolbox':
@@ -390,14 +511,23 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
       {pendingPage ? (
         <Dialog title="有未保存的修改" confirmText="放弃并继续" onCancel={() => setPendingPage(null)} onConfirm={() => {
-          setDirty(false);
-          if (pendingPage === 'close') {
-            allowClose.current = true;
-            // 已在本 Dialog 确认放弃修改，主进程不再追加退出确认。
-            window.renpy?.closeConfirmed?.();
-          }
-          else setActive(pendingPage);
-          setPendingPage(null);
+          const next = pendingPage;
+          void (async () => {
+            // RPY：确认离开时先取消并等待真 worker 结束；失败则留在页并保持 dirty
+            if (!(await leaveRpyIfNeeded())) {
+              setPendingPage(null);
+              return;
+            }
+            setPendingPage(null);
+            setDirty(false);
+            if (next === 'close') {
+              allowClose.current = true;
+              // 已在本 Dialog 确认放弃修改，主进程不再追加退出确认。
+              window.renpy?.closeConfirmed?.();
+            } else if (next) {
+              setActive(next);
+            }
+          })();
         }}>离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />

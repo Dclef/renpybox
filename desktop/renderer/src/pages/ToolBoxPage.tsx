@@ -15,6 +15,14 @@ const TOOL_PAGES: Record<string, PageKey> = {
   proofreading: 'proofreading', continue_translation: 'translation',
   one_key_translate: 'onekey', apply_translation: 'onekey-apply', pack_unpack: 'pack-unpack',
   ma_suite: 'ma-suite', batch_correction: 'batch-correction', name_extraction: 'name-extraction',
+  direct_rpy_translate: 'direct-rpy-translate', source_translate: 'source-translate',
+  hook_translate: 'hook-translate', hook_supplement: 'hook-supplement',
+  font_replace: 'font-replace', rpy_extraction_settings: 'rpy-extraction',
+  extract_to_tl: 'extract-to-tl', extract_json: 'extract-json',
+  add_language: 'add-language', set_default_language: 'set-default-language',
+  error_repair: 'error-repair', translation_reuse: 'translation-reuse',
+  formatter: 'formatter', android_build: 'android-build',
+  html_import: 'html-import', game_mod: 'game-mod',
 };
 
 /** 把 Lucide SVG 源码塞进内联 SVG；颜色靠 currentColor 跟随主题。 */

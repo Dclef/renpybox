@@ -12,35 +12,542 @@ WS 订阅同一条流（见 api/events.py）。
   * status 属于 PROJECT_RESUMABLE_STATUSES 时先绑定到上次运行清单选中的缓存目录；
   * UNTRANSLATED 时跑 ``ProjectAssetsRepository`` + ``TranslationPreflightService``，
     没有有效资产就不自动开始，把决定权交回前端（跳工作台 or 明确继续）。
+
+工具箱「翻译方式」（mode=direct|source|supplement）在同一 /start 契约内原子处理：
+先建请求级候选并校验，ASSETS_MISSING / 校验失败时不写盘、不改 live；
+受理后再只持久化变更字段，快照直接用候选 deepcopy，禁止再 Config().load()。
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import os
+import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from api.jobs import Job
 from api.routes.settings import sync_output_protocol
 from api.schemas import (
+    TRANSLATION_TOOLBOX_LANG_CODES,
+    TRANSLATION_TOOLBOX_MODES,
     TokenEstimateRequest,
     TokenEstimateResult,
+    TranslationReinjectRequest,
     TranslationStartRequest,
     TranslationStartResponse,
     TranslationStateResponse,
 )
 from base.Base import Base
+from base.BaseLanguage import BaseLanguage
 from base.EventManager import EventManager
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
-from module.Renpy.ProjectPaths import resolve_translation_output
+from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
+from module.File.SourceBackup import backup_source_rpy
+from module.Project.ProjectStore import ProjectStore
+from module.Renpy.ProjectPaths import RenpyProjectPaths, normalise_path, resolve_translation_output
 
 router = APIRouter(prefix = "/api/translation", tags = ["translation"])
 
 BUSY_DETAIL = "上一次翻译仍在停止收尾，请稍候再开始。"
+SOURCE_PREBACKUP_KIND = "source_prebackup"
+
+# 工具箱 mode 可能改动的字段；落盘时只写这些，避免冲掉并发改动的其它设置。
+_TOOLBOX_FIELD_NAMES = (
+    "renpy_project_path",
+    "renpy_game_folder",
+    "renpy_tl_folder",
+    "input_folder",
+    "output_folder",
+    "renpy_source_translate",
+    "renpy_hook_translate",
+    "renpy_backup_original",
+    "auto_write_back",
+    "source_language",
+    "target_language",
+    "traditional_chinese_enable",
+    "renpy_hook_incremental",
+)
+
+# 与 Qt ProjectStore.apply_resolved 持久化后广播对齐：仅真实绑定路径变动才发 PROJECT_CHANGED。
+_PROJECT_BROADCAST_FIELDS = (
+    "renpy_project_path",
+    "renpy_game_folder",
+    "renpy_tl_folder",
+)
+
+
+def _path_key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _norm_identity(value: str) -> str:
+    return os.path.normcase(os.path.abspath(value)) if value else ""
+
+
+def _project_identity(config: Any) -> tuple[str, ...]:
+    """当前配置所属 owner 身份；与手动 target 分开。"""
+    return tuple(
+        _norm_identity(str(getattr(config, field, "") or ""))
+        for field in (
+            "renpy_project_path",
+            "renpy_game_folder",
+            "renpy_tl_folder",
+            "input_folder",
+            "output_folder",
+        )
+    )
+
+
+def _check_owner_key(live: Any, body_project_key: str | None) -> tuple[str, tuple[str, ...]]:
+    """校验 body.project_key 对应绑定 owner，不锁死手动 target。
+
+    返回 (owner_project_key, owner_identity)。无绑定时 key 为空，允许未绑定工具继续。
+    """
+    bound = RenpyProjectPaths.from_config(live)
+    identity = _project_identity(live)
+    body_key = str(body_project_key or "").strip()
+    owner_key = bound.project_key if bound is not None else ""
+    if bound is not None and body_key and body_key != owner_key:
+        raise HTTPException(status_code = 409, detail = "项目已切换，请重新加载后再操作")
+    return owner_key, identity
+
+
+def _acquire_testing() -> Engine:
+    """原子预占 TESTING；忙碌时 409，且调用方尚未产生副作用。"""
+    engine = Engine.get()
+    if engine.has_stop_barrier() or engine.has_single_tasks():
+        raise HTTPException(status_code = 409, detail = BUSY_DETAIL)
+    if engine.get_status() != Engine.Status.IDLE:
+        raise HTTPException(status_code = 409, detail = "已有任务正在运行或收尾，请稍后再试")
+    if not engine.try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
+        raise HTTPException(status_code = 409, detail = "已有任务正在运行或收尾，请稍后再试")
+    return engine
+
+
+class TranslationStartResultWaiter:
+    """在 emit TRANSLATION_START 之前订阅，等待对应 request_id 的 START_RESULT。"""
+
+    def __init__(self, request_id: str) -> None:
+        self.request_id = request_id
+        self.holder: dict[str, Any] = {}
+        self._manager = EventManager.get()
+        self._manager.subscribe(Base.Event.TRANSLATION_START_RESULT, self._on_result)
+
+    def _on_result(self, _event: Any, data: dict | None) -> None:
+        payload = data if isinstance(data, dict) else {}
+        if str(payload.get("request_id") or "") == self.request_id:
+            self.holder.update(payload)
+
+    async def wait(self, *, timeout: float = 5.0) -> dict[str, Any]:
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                EventManager.drain_all()
+                if "accepted" in self.holder:
+                    return dict(self.holder)
+                await asyncio.sleep(0.02)
+            return {
+                "accepted": False,
+                "request_id": self.request_id,
+                "reason": "START_RESULT_TIMEOUT",
+            }
+        finally:
+            self._manager.unsubscribe(Base.Event.TRANSLATION_START_RESULT, self._on_result)
+
+
+async def await_translation_start_result(
+    request_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """兼容旧调用：若尚未订阅则无法收到同步 START_RESULT，请改用 Waiter。"""
+    waiter = TranslationStartResultWaiter(request_id)
+    return await waiter.wait(timeout = timeout)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """输入输出相同或互相包含时视为冲突（源码翻译禁止）。"""
+    try:
+        left_resolved = left.resolve(strict = False)
+        right_resolved = right.resolve(strict = False)
+    except Exception:
+        left_resolved, right_resolved = left, right
+    if _path_key(left_resolved) == _path_key(right_resolved):
+        return True
+    try:
+        left_resolved.relative_to(right_resolved)
+        return True
+    except ValueError:
+        pass
+    try:
+        right_resolved.relative_to(left_resolved)
+        return True
+    except ValueError:
+        pass
+    return False
+
+
+def _parse_toolbox_language(value: str | None, *, field: str) -> BaseLanguage.Enum | None:
+    """校验工具箱语言码；空值表示沿用候选里已有设置。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    code = text.upper()
+    if code not in TRANSLATION_TOOLBOX_LANG_CODES:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{field} 仅支持 { '/'.join(TRANSLATION_TOOLBOX_LANG_CODES) }",
+        )
+    return BaseLanguage.Enum(code)
+
+
+def _tl_language_name(body: TranslationStartRequest) -> str:
+    return str(body.tl_name or body.language or "").strip() or "chinese"
+
+
+def _apply_language_fields(
+    candidate: Any,
+    body: TranslationStartRequest,
+    *,
+    source_default: BaseLanguage.Enum | None = None,
+    target_default: BaseLanguage.Enum | None = None,
+) -> None:
+    """写入 source/target 与繁体开关；繁体独立于语言码。"""
+    source = _parse_toolbox_language(body.source_language, field = "source_language")
+    target = _parse_toolbox_language(body.target_language, field = "target_language")
+    if source is None and source_default is not None:
+        source = source_default
+    if target is None and target_default is not None:
+        target = target_default
+    if source is not None:
+        candidate.source_language = source
+    if target is not None:
+        candidate.target_language = target
+    if body.traditional_chinese_enable is not None:
+        candidate.traditional_chinese_enable = bool(body.traditional_chinese_enable)
+
+
+def _collect_changed_fields(live: Any, candidate: Any, field_names: tuple[str, ...]) -> dict[str, Any]:
+    changed: dict[str, Any] = {}
+    for name in field_names:
+        if not hasattr(candidate, name):
+            continue
+        new_val = getattr(candidate, name)
+        old_val = getattr(live, name, None)
+        if new_val != old_val:
+            changed[name] = copy.deepcopy(new_val)
+    return changed
+
+
+def _persist_changed_fields(live: Any, changed: dict[str, Any]) -> None:
+    """只把变更字段写盘并同步到 live，避免整表覆盖并发设置。
+
+    保存成功且真实项目绑定字段（规范化后）变动时广播 PROJECT_CHANGED。
+    保存失败/空变更/仅候选不落盘/同项目字段字面改写时绝不发事件。
+    """
+    if not changed:
+        return
+    before_identity = tuple(
+        _norm_identity(str(getattr(live, field, "") or ""))
+        for field in _PROJECT_BROADCAST_FIELDS
+    )
+    to_save = copy.deepcopy(live)
+    for name, value in changed.items():
+        setattr(to_save, name, value)
+    try:
+        to_save.save(strict = True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code = 500, detail = f"翻译方式配置保存失败：{exc}") from exc
+    for name, value in changed.items():
+        setattr(live, name, value)
+    after_identity = tuple(
+        _norm_identity(str(getattr(live, field, "") or ""))
+        for field in _PROJECT_BROADCAST_FIELDS
+    )
+    if after_identity != before_identity:
+        EventManager.get().emit(Base.Event.PROJECT_CHANGED, {
+            "project_root": str(getattr(live, "renpy_project_path", "") or ""),
+        })
+
+
+def _default_source_output(input_path: Path) -> Path:
+    if input_path.is_file():
+        return input_path.parent / f"{input_path.stem}_source_out"
+    return input_path.parent / f"{input_path.name}_source_out"
+
+
+def _resolve_source_input(raw: Path) -> Path:
+    """若输入是项目根且存在 game/，解析为真实 game 目录。"""
+    if not raw.is_dir():
+        return raw
+    game_dir = raw / "game"
+    if not game_dir.is_dir():
+        return raw
+    paths = RenpyProjectPaths.from_path(raw)
+    if paths is None:
+        return raw
+    try:
+        if raw.resolve(strict = False) == paths.project_root.resolve(strict = False):
+            return paths.game_dir
+    except Exception:
+        if _path_key(raw) == _path_key(paths.project_root):
+            return paths.game_dir
+    return raw
+
+
+def _has_effective_tl_files(tl_dir: Path) -> bool:
+    """与 Qt HookSupplementPage 一致：忽略 hook_/replace_text_auto 等非有效 TL。"""
+    if not tl_dir.is_dir():
+        return False
+    for path in tl_dir.rglob("*.rpy"):
+        name = path.name.lower()
+        if name.startswith("miss_ready_replace"):
+            continue
+        if name.startswith("hook_"):
+            continue
+        if name in {"replace_text_auto.rpy", "set_default_language_at_startup.rpy"}:
+            continue
+        return True
+    return False
+
+
+def _resolve_supplement_tl_dir(
+    live: Any,
+    body: TranslationStartRequest,
+    paths: RenpyProjectPaths,
+    tl_name: str,
+) -> Path:
+    """补全模式 tl 目录：请求 tl_parent 与配置自定义 tl 优先于 canonical game/tl。"""
+    tl_parent = normalise_path(body.tl_parent)
+    if tl_parent is not None:
+        custom = tl_parent / tl_name
+        if not custom.is_dir():
+            raise HTTPException(status_code = 400, detail = f"tl 目录不存在：{custom}")
+        return custom
+
+    configured_tl = str(getattr(live, "renpy_tl_folder", "") or "").strip()
+    if configured_tl:
+        candidate = Path(configured_tl)
+        if candidate.is_dir():
+            try:
+                candidate.resolve(strict = False).relative_to(
+                    paths.project_root.resolve(strict = False),
+                )
+                same_project = True
+            except ValueError:
+                same_project = False
+            except Exception:
+                same_project = False
+            if same_project:
+                if candidate.parent.name.casefold() == "tl":
+                    return candidate
+                try:
+                    canonical_key = _path_key(paths.tl_language_dir.resolve(strict = False))
+                    candidate_key = _path_key(candidate.resolve(strict = False))
+                except Exception:
+                    canonical_key = _path_key(paths.tl_language_dir)
+                    candidate_key = _path_key(candidate)
+                if candidate_key != canonical_key:
+                    return candidate
+
+    return paths.tl_language_dir
+
+
+def _resolve_direct_tl(
+    live: Any,
+    body: TranslationStartRequest,
+) -> tuple[Path, RenpyProjectPaths]:
+    """解析直接翻译的 tl 语言目录；可不依赖事先绑定项目。"""
+    tl_name = _tl_language_name(body)
+    tl_parent = normalise_path(body.tl_parent)
+    game_path = normalise_path(body.game_path)
+
+    if tl_parent is not None:
+        tl_dir = tl_parent / tl_name
+        if not tl_dir.is_dir():
+            raise HTTPException(status_code = 400, detail = f"tl 目录不存在：{tl_dir}")
+        paths = RenpyProjectPaths.from_path(tl_dir, tl_name)
+        if paths is None:
+            raise HTTPException(status_code = 400, detail = "无法解析 Ren'Py 项目路径")
+        # 显式 tl_parent 始终使用 tl_parent/tl_name，不因 from_path 再改写。
+        return tl_dir, paths
+
+    if game_path is not None:
+        project_dir = game_path.parent if game_path.is_file() else game_path
+        tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
+        if tl_dir is None:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"未找到 tl/{tl_name}，请先抽取或显式指定 tl 父目录",
+            )
+        paths = RenpyProjectPaths.from_path(tl_dir, tl_name)
+        if paths is None:
+            raise HTTPException(status_code = 400, detail = "无法解析 Ren'Py 项目路径")
+        return paths.tl_language_dir, paths
+
+    paths = RenpyProjectPaths.from_config(live, tl_name if body.tl_name or body.language else "")
+    if paths is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "无法解析 Ren'Py 项目路径，请绑定项目或提供游戏/tl 路径",
+        )
+    tl_dir = paths.tl_language_dir
+    if not tl_dir.is_dir():
+        raise HTTPException(status_code = 400, detail = f"tl 目录不存在：{tl_dir}")
+    return tl_dir, paths
+
+
+def _build_direct_candidate(live: Any, body: TranslationStartRequest) -> Any:
+    candidate = copy.deepcopy(live)
+    tl_dir, paths = _resolve_direct_tl(live, body)
+    backup = bool(body.renpy_backup_original) if body.renpy_backup_original is not None else False
+    auto_write = bool(body.auto_write_back) if body.auto_write_back is not None else True
+
+    def _mutate(current: Any) -> None:
+        current.renpy_backup_original = backup
+        current.auto_write_back = auto_write
+        current.renpy_source_translate = False
+        current.renpy_hook_translate = False
+        _apply_language_fields(current, body)
+
+    ProjectStore.get().apply_resolved(
+        candidate,
+        paths,
+        input_folder = tl_dir,
+        output_folder = tl_dir,
+        mutate = _mutate,
+        persist = False,
+    )
+    return candidate
+
+
+def _build_source_candidate(live: Any, body: TranslationStartRequest) -> Any:
+    candidate = copy.deepcopy(live)
+    input_path = normalise_path(body.input_folder)
+    if input_path is None:
+        raise HTTPException(status_code = 400, detail = "源码翻译需要完整的输入路径")
+    if not input_path.exists():
+        raise HTTPException(status_code = 400, detail = "源码翻译输入路径不存在")
+    if input_path.is_file():
+        if input_path.suffix.lower() != ".rpy":
+            raise HTTPException(status_code = 400, detail = "源码翻译单文件输入必须是 .rpy 文件")
+    elif not input_path.is_dir():
+        raise HTTPException(status_code = 400, detail = "源码翻译输入必须是目录或 .rpy 文件")
+
+    input_path = _resolve_source_input(input_path)
+    # Qt 无可编辑输出：始终按输入推导 *_source_out，忽略客户端 output_folder。
+    output_path = _default_source_output(input_path)
+
+    if output_path.exists() and not output_path.is_dir():
+        raise HTTPException(status_code = 400, detail = "源码翻译输出必须是目录")
+    if _paths_overlap(input_path, output_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = "源码翻译的输入与输出不能相同或互相包含，请使用独立输出目录",
+        )
+    if input_path.is_file() and _path_key(output_path / input_path.name) == _path_key(input_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = "源码翻译的输出目录不能直接写回原文件所在位置，请使用独立输出目录",
+        )
+
+    if body.external_backup_dir is not None and str(body.external_backup_dir).strip():
+        backup_root = normalise_path(body.external_backup_dir)
+        if backup_root is None:
+            raise HTTPException(status_code = 400, detail = "外部备份目录无效")
+
+    candidate.input_folder = str(input_path.resolve(strict = False))
+    candidate.output_folder = str(output_path.resolve(strict = False))
+    candidate.renpy_source_translate = True
+    candidate.renpy_hook_translate = False
+    candidate.renpy_backup_original = (
+        bool(body.renpy_backup_original) if body.renpy_backup_original is not None else False
+    )
+    _apply_language_fields(
+        candidate,
+        body,
+        source_default = BaseLanguage.Enum.EN,
+        target_default = BaseLanguage.Enum.ZH,
+    )
+    return candidate
+
+
+def _source_needs_prebackup(body: TranslationStartRequest, candidate: Any) -> bool:
+    if str(body.external_backup_dir or "").strip():
+        return True
+    return bool(getattr(candidate, "renpy_backup_original", False))
+
+
+def _source_backup_root(body: TranslationStartRequest) -> Path | None:
+    if not str(body.external_backup_dir or "").strip():
+        return None
+    return normalise_path(body.external_backup_dir)
+
+def _build_supplement_candidate(live: Any, body: TranslationStartRequest) -> Any:
+    candidate = copy.deepcopy(live)
+    tl_name = _tl_language_name(body)
+    game_path = normalise_path(body.game_path)
+    if game_path is None:
+        # 允许沿用已绑定项目
+        paths = RenpyProjectPaths.from_config(live, tl_name)
+        if paths is None:
+            raise HTTPException(status_code = 400, detail = "补全翻译需要项目目录")
+    else:
+        root = game_path.parent if game_path.is_file() else game_path
+        if root.name.lower() == "game":
+            root = root.parent
+        paths = RenpyProjectPaths.from_path(root, tl_name)
+        if paths is None:
+            raise HTTPException(status_code = 400, detail = "无法解析 Ren'Py 项目路径")
+
+    if not paths.game_dir.is_dir():
+        raise HTTPException(status_code = 400, detail = f"未找到 game 目录：{paths.game_dir}")
+    tl_dir = _resolve_supplement_tl_dir(live, body, paths, tl_name)
+    if not tl_dir.is_dir():
+        raise HTTPException(status_code = 400, detail = f"未找到 tl 目录：{tl_dir}")
+    if not _has_effective_tl_files(tl_dir):
+        raise HTTPException(status_code = 400, detail = "未检测到有效 tl 文件，请先完成 tl 抽取")
+
+    def _mutate(current: Any) -> None:
+        current.renpy_source_translate = False
+        current.renpy_hook_translate = True
+        current.renpy_tl_folder = str(tl_dir)
+        _apply_language_fields(
+            current,
+            body,
+            source_default = BaseLanguage.Enum.EN,
+            target_default = BaseLanguage.Enum.ZH,
+        )
+
+    ProjectStore.get().apply_resolved(
+        candidate,
+        paths,
+        input_folder = tl_dir,
+        output_folder = tl_dir,
+        mutate = _mutate,
+        persist = False,
+    )
+    return candidate
+
+
+def _build_toolbox_candidate(live: Any, body: TranslationStartRequest) -> Any:
+    """按 mode 建请求级候选：只改 mode 相关字段，不落盘、不改 live。"""
+    mode = str(body.mode or "").strip()
+    if mode not in TRANSLATION_TOOLBOX_MODES:
+        raise HTTPException(status_code = 400, detail = f"未知翻译方式：{body.mode}")
+    if mode == "direct":
+        return _build_direct_candidate(live, body)
+    if mode == "source":
+        return _build_source_candidate(live, body)
+    return _build_supplement_candidate(live, body)
 
 
 def _emit(event, data: dict) -> None:
@@ -84,8 +591,13 @@ def _prepare_payload(
     status: Base.TranslationStatus,
     request_id: str,
     preflight_confirmed: bool = False,
+    *,
+    config_snapshot: Any | None = None,
 ) -> tuple[dict[str, Any] | None, TranslationStartResponse | None]:
     """构造 TRANSLATION_START 载荷。返回 (payload, 拒绝原因)。
+
+    ``config_snapshot`` 为工具箱 mode 的请求级候选：受理快照必须用它，
+    禁止再 ``Config().load()``，以免异步全局改动污染本轮或读到未受理的写盘。
 
     ``preflight_confirmed`` 是用户对「无有效资产」的明确继续决定：PyQt 页在
     preflight 弹窗选「仍然继续」后会置 ``payload["preflight_confirmed"]=True``
@@ -93,7 +605,10 @@ def _prepare_payload(
     停在弹窗里。
     """
     try:
-        config = Config().load()
+        if config_snapshot is not None:
+            config = copy.deepcopy(config_snapshot)
+        else:
+            config = Config().load()
         config = _bind_resumable_output(config, status)
         # 旧桌面端可能已保存「SINGLE_TEXT + 单行关闭」，快照里规范化，避免整轮请求失败。
         sync_output_protocol(config)
@@ -129,12 +644,209 @@ def _prepare_payload(
         )
 
 
+async def _start_source_with_prebackup(
+    request: Request,
+    body: TranslationStartRequest,
+    *,
+    live: Any,
+    candidate: Any,
+    payload: dict[str, Any],
+    request_id: str,
+    owner_key: str,
+    owner_identity: tuple[str, ...],
+) -> TranslationStartResponse:
+    """源码前置备份：先原子占 TESTING，后台 job 可取消/有进度，再启动翻译。"""
+    jobs = getattr(request.app.state, "jobs", None)
+    if jobs is None:
+        raise HTTPException(status_code = 500, detail = "任务管理器未初始化")
+
+    engine = _acquire_testing()
+    try:
+        job = jobs.create(SOURCE_PREBACKUP_KIND, total = 100, cooperative_cancel = True)
+    except Exception:
+        engine.release_status(Engine.Status.TESTING)
+        raise
+
+    backup_root = _source_backup_root(body)
+    input_path = Path(candidate.input_folder)
+    output_path = normalise_path(getattr(candidate, "output_folder", ""))
+    game_path = normalise_path(getattr(candidate, "renpy_game_folder", ""))
+    frozen_candidate = copy.deepcopy(candidate)
+    frozen_payload = copy.deepcopy(payload)
+    frozen_owner = owner_identity
+
+    job.result = {
+        "project_key": owner_key,
+        "owner_identity": list(frozen_owner),
+        "target_input": str(input_path),
+        "request_id": request_id,
+        "stage": "backing_up",
+        "message": "正在备份源码…",
+        "copied": 0,
+        "warnings": [],
+        "written_files": [],
+        "translation_started": False,
+        "translation_run_id": 0,
+        "worker_active": True,
+    }
+
+    loop = asyncio.get_running_loop()
+    released = {"done": False}
+
+    def release_testing() -> None:
+        if released["done"]:
+            return
+        released["done"] = True
+        engine.release_status(Engine.Status.TESTING)
+
+    def publish(message: str, *, done: int | None = None) -> None:
+        if not isinstance(job.result, dict) or not job.result.get("worker_active"):
+            return
+        job.result["message"] = message
+        jobs.progress(job.id, done = done, total = 100)
+
+    def compute() -> dict[str, Any]:
+        if job.cancel_event.is_set():
+            raise asyncio.CancelledError()
+
+        def progress_callback(current: int, total: int, message: str) -> None:
+            if job.cancel_event.is_set():
+                return
+            percent = int(max(0, min(99, (current / total) * 100))) if total else 0
+            loop.call_soon_threadsafe(lambda: publish(message, done = percent))
+
+        backup_result = backup_source_rpy(
+            input_path,
+            backup_root,
+            should_stop = job.cancel_event.is_set,
+            progress_callback = progress_callback,
+            output_dir = output_path,
+            game_dir = game_path,
+        )
+        return {
+            "copied": int(backup_result.get("copied") or 0),
+            "warnings": [str(item) for item in backup_result.get("warnings", []) if item],
+            "written_files": [str(item) for item in backup_result.get("written_files", []) if item],
+            "cancelled": bool(backup_result.get("cancelled")),
+        }
+
+    async def worker(_: Job) -> dict:
+        try:
+            if job.cancel_event.is_set():
+                raise asyncio.CancelledError()
+            future = loop.run_in_executor(None, compute)
+            try:
+                result = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                job.cancel_event.set()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    finished = await asyncio.shield(future)
+                    # 与 HOOK 一致：真实 cancel 后仍合并已备份结果，不得丢弃。
+                    if isinstance(finished, dict) and isinstance(job.result, dict):
+                        for key in ("copied", "warnings", "written_files"):
+                            if key in finished:
+                                job.result[key] = finished[key]
+                raise
+
+            if isinstance(job.result, dict):
+                job.result["copied"] = result["copied"]
+                job.result["warnings"] = result["warnings"]
+                job.result["written_files"] = result["written_files"]
+
+            if job.cancel_event.is_set() or result.get("cancelled"):
+                if isinstance(job.result, dict):
+                    job.result["stage"] = "cancelled"
+                    job.result["message"] = "备份已取消"
+                    job.result["translation_started"] = False
+                raise asyncio.CancelledError()
+
+            with CacheManager.LOCK:
+                live_config = request.app.state.config
+                if frozen_owner and _project_identity(live_config) != frozen_owner:
+                    raise RuntimeError("项目已切换，本次备份结果未用于翻译")
+                changed = _collect_changed_fields(
+                    live_config, frozen_candidate, _TOOLBOX_FIELD_NAMES,
+                )
+                # 先落盘再释放 TESTING，避免与其它写配置交错。
+                _persist_changed_fields(live_config, changed)
+
+            release_testing()
+            waiter = TranslationStartResultWaiter(request_id)
+            _emit(Base.Event.TRANSLATION_START, frozen_payload or {})
+            start_result = await waiter.wait()
+            started = bool(start_result.get("accepted"))
+            if isinstance(job.result, dict):
+                job.result["translation_started"] = started
+                job.result["translation_run_id"] = int(start_result.get("run_id") or 0)
+                job.result["start_reason"] = str(start_result.get("reason") or "")
+                job.result["warnings"] = result["warnings"]
+                if started:
+                    job.result["stage"] = "translating"
+                    detail = "备份完成，翻译已启动"
+                    if result["warnings"]:
+                        detail = f"{detail}（备份提示：{'；'.join(result['warnings'])}）"
+                    job.result["message"] = detail
+                else:
+                    job.result["stage"] = "failed"
+                    job.result["message"] = (
+                        f"备份完成，但翻译未启动：{start_result.get('reason') or '未知原因'}"
+                    )
+                    raise RuntimeError(job.result["message"])
+            jobs.progress(job.id, done = 100, total = 100)
+            return job.result if isinstance(job.result, dict) else result
+        except asyncio.CancelledError:
+            if isinstance(job.result, dict):
+                job.result["stage"] = "cancelled"
+                job.result["message"] = "任务已取消"
+                job.result["translation_started"] = False
+            raise
+        except Exception as exc:
+            if job.cancel_event.is_set():
+                if isinstance(job.result, dict):
+                    job.result["stage"] = "cancelled"
+                    job.result["message"] = "任务已取消"
+                    job.result["translation_started"] = False
+                raise asyncio.CancelledError() from exc
+            if isinstance(job.result, dict):
+                job.result["stage"] = "failed"
+                job.result["message"] = str(exc)
+                job.result["translation_started"] = False
+            raise
+        finally:
+            if isinstance(job.result, dict):
+                job.result["worker_active"] = False
+            release_testing()
+
+    try:
+        await jobs.run(job.id, worker)
+    except BaseException:
+        if isinstance(job.result, dict):
+            job.result["worker_active"] = False
+        release_testing()
+        raise
+
+    return TranslationStartResponse(
+        accepted = True,
+        request_id = request_id,
+        reason = "STARTED",
+        detail = "已受理源码备份，完成后将启动翻译",
+        stage = "backing_up",
+        job = job.snapshot(),
+    )
+
+
 @router.post("/start", response_model = TranslationStartResponse)
-def start_translation(request: Request, body: TranslationStartRequest) -> TranslationStartResponse:
+async def start_translation(
+    request: Request,
+    body: TranslationStartRequest,
+) -> TranslationStartResponse:
     """受理翻译启动请求。
 
-    ``accepted=True`` 只代表事件已投递。线程是否真的起来、run_id 是多少，
-    仍以 WS 上的 ``TRANSLATION_START_RESULT`` 为准。
+    无备份时 ``accepted=True`` 表示事件已投递；线程是否真的起来以
+    ``TRANSLATION_START_RESULT`` 为准。source 前置备份走后台 job。
+
+    先解析 ``status``（未知立即 400，不落盘不 emit），合法后再按 ``mode``
+    建请求级候选；拒绝时不写盘；不带 mode 时保持旧行为。
     """
     engine = Engine.get()
     if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier():
@@ -150,20 +862,49 @@ def start_translation(request: Request, body: TranslationStartRequest) -> Transl
             detail = "有单条重译任务正在运行，请稍候再开始。",
         )
 
-    request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
     try:
         status = Base.TranslationStatus(body.status)
     except ValueError:
         raise HTTPException(status_code = 400, detail = f"未知翻译状态：{body.status}") from None
 
+    live = request.app.state.config
+    # 工具箱 mode：先校验 owner，再建候选；失败不写盘。
+    owner_key = ""
+    owner_identity: tuple[str, ...] = ()
+    if body.mode is not None:
+        owner_key, owner_identity = _check_owner_key(live, body.project_key)
+
+    candidate: Any | None = None
+    if body.mode is not None:
+        candidate = _build_toolbox_candidate(live, body)
+
+    request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
+
     payload, rejection = _prepare_payload(
         request,
         status,
         request_id,
-        preflight_confirmed=bool(body.preflight_confirmed),
+        preflight_confirmed = bool(body.preflight_confirmed),
+        config_snapshot = candidate,
     )
     if rejection is not None:
         return rejection
+
+    if candidate is not None and str(body.mode or "") == "source" and _source_needs_prebackup(body, candidate):
+        return await _start_source_with_prebackup(
+            request,
+            body,
+            live = live,
+            candidate = candidate,
+            payload = payload or {},
+            request_id = request_id,
+            owner_key = owner_key,
+            owner_identity = owner_identity,
+        )
+
+    if candidate is not None:
+        changed = _collect_changed_fields(live, candidate, _TOOLBOX_FIELD_NAMES)
+        _persist_changed_fields(live, changed)
 
     _emit(Base.Event.TRANSLATION_START, payload or {})
     return TranslationStartResponse(
@@ -171,8 +912,8 @@ def start_translation(request: Request, body: TranslationStartRequest) -> Transl
         request_id = request_id,
         reason = "STARTED",
         detail = "已受理，翻译线程正在启动。",
+        stage = "translating",
     )
-
 
 @router.post("/stop")
 def stop_translation(request: Request) -> dict:
@@ -217,6 +958,71 @@ def export_translation(request: Request) -> dict:
 
     _emit(Base.Event.TRANSLATION_MANUAL_EXPORT, {"output_folder": output_folder})
     return {"ok": True, "output_folder": output_folder}
+
+
+def _resolve_reinject_tl(live: Any, body: TranslationReinjectRequest) -> Path:
+    """解析手动写回目标 TL：显式 tl_parent/tl_name 或 output_folder，对齐 Direct 选定 TL。"""
+    tl_name = str(body.tl_name or "").strip() or "chinese"
+    tl_parent = normalise_path(body.tl_parent)
+    if tl_parent is not None:
+        tl_dir = tl_parent / tl_name
+        if not tl_dir.is_dir():
+            raise HTTPException(status_code = 400, detail = f"tl 目录不存在：{tl_dir}")
+        return tl_dir
+
+    if str(body.output_folder or "").strip():
+        output = normalise_path(body.output_folder)
+        if output is None:
+            raise HTTPException(status_code = 400, detail = "请指定有效的输出目录")
+        if not output.is_dir():
+            raise HTTPException(status_code = 400, detail = f"输出目录不存在：{output}")
+        return output
+
+    game_path = normalise_path(body.game_path)
+    if game_path is not None:
+        project_dir = game_path.parent if game_path.is_file() else game_path
+        tl_dir = SimpleRpyExtractor.find_tl_directory(project_dir, tl_name)
+        if tl_dir is None:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"未找到 tl/{tl_name}，请显式指定 tl 父目录",
+            )
+        return tl_dir
+
+    paths = RenpyProjectPaths.from_config(live, tl_name)
+    if paths is None or not paths.tl_language_dir.is_dir():
+        raise HTTPException(status_code = 400, detail = "请指定有效的 TL 目录")
+    return paths.tl_language_dir
+
+
+@router.post("/reinject")
+def reinject_translation(request: Request, body: TranslationReinjectRequest) -> dict:
+    """手动把缓存译文写回选定 TL（对齐 Qt DirectRpyTranslatePage 手动写回）。
+
+    拒绝阶段校验 owner / 缓存存在性，不写盘、不 emit。
+    """
+    live = request.app.state.config
+    _check_owner_key(live, body.project_key)
+
+    engine = Engine.get()
+    if engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier():
+        raise HTTPException(status_code = 409, detail = "翻译任务正在运行或停止收尾，请结束后再写回")
+    if engine.has_single_tasks():
+        raise HTTPException(status_code = 409, detail = "有单条重译任务正在运行，请稍候再写回")
+
+    output = _resolve_reinject_tl(live, body)
+    cache_dir = output / "cache"
+    db_file = output / "cache.db"
+    if not cache_dir.exists() and not db_file.exists():
+        raise HTTPException(status_code = 404, detail = "目标目录没有可写回的翻译缓存")
+
+    folder = str(output.resolve(strict = False))
+    request_id = str(body.request_id or "").strip()
+    payload: dict[str, Any] = {"output_folder": folder}
+    if request_id:
+        payload["request_id"] = request_id
+    _emit(Base.Event.TRANSLATION_CACHE_REINJECT, payload)
+    return {"ok": True, "output_folder": folder}
 
 
 @router.get("/state", response_model = TranslationStateResponse)

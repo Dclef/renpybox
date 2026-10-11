@@ -4,30 +4,28 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QDialog, QFileDia
 from qfluentwidgets import BodyLabel, CaptionLabel, TitleLabel, ComboBox, PushButton, PrimaryPushButton, LineEdit, CheckBox
 
 from module.Config import Config
-from module.Extract.GameExtractionRules import RuleStore, RuleError, new_profile, new_rule
-from module.Extract.RpyExtractionSettings import context_for_path
+from module.Extract.GameExtractionRules import RuleStore, RuleError
+from module.Extract.RpyExtractionSettings import context_for_path, starter_profile as _starter_profile_template
 from module.Localizer.Localizer import Localizer
 from widget.ThemeHelper import mark_app_dialog, mark_app_page
 
+# 规则名与模板与 module/API 一致；仅方案名与规则展示名走本地化。
+_RULE_NAME_KEYS = {
+    '对白 / 旁白': 'rpy_rules_dialogue',
+    '菜单选项': 'rpy_rules_menu',
+    '界面文本': 'rpy_rules_ui',
+    'old/new 字符串': 'rpy_rules_strings',
+}
+
 
 def starter_profile(category):
-    """提供可编辑的常见语法模板，内置语法解析器本身不转换为正则。"""
     l = Localizer.get()
-    profile = new_profile(category)
+    profile = _starter_profile_template(category)
     profile['name'] = l.rpy_rules_template
-    literal = r'(?P<text>"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27)'
-    examples = (
-        [(l.rpy_rules_dialogue, r'^\s*(?:[a-zA-Z_]\w*\s+)?' + literal + r'\s*$', 'e "Hello."'),
-         (l.rpy_rules_menu, r'^\s*' + literal + r'\s*:\s*$', '"Continue":'),
-         (l.rpy_rules_ui, r'^\s*(?:text|textbutton)\s+' + literal + r'\s*$', 'text "Hello."')]
-        if category == 'source' else
-        [(l.rpy_rules_strings, r'^\s*old\s+' + literal + r'\s*$', 'old "Hello."'),
-         (l.rpy_rules_dialogue, r'^\s*(?!(?:old|new)\b)(?:[a-zA-Z_]\w*\s+)?' + literal + r'\s*$', 'e "Hello."')]
-    )
-    for name, pattern, example in examples:
-        rule = new_rule()
-        rule.update(name=name, enabled=True, pattern=pattern, positive_samples=[example], negative_samples=['jump next_label'])
-        profile['rules'].append(rule)
+    for rule in profile['rules']:
+        key = _RULE_NAME_KEYS.get(rule.get('name', ''))
+        if key:
+            rule['name'] = getattr(l, key)
     return profile
 
 

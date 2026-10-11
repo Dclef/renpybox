@@ -14,6 +14,7 @@
     "dev:renderer": "vite --config renderer/vite.config.ts",
     "build:renderer": "vite build --config renderer/vite.config.ts",
     "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
+    "check:translation-parity": "electron scripts/check-translation-parity.cjs",
     "start": "electron .",
     "build:backend": "node scripts/build-backend.mjs",
     "verify:package": "node scripts/verify-package.mjs",

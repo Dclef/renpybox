@@ -18,6 +18,22 @@ export type PageKey =
   | 'ma-suite'
   | 'batch-correction'
   | 'name-extraction'
+  | 'direct-rpy-translate'
+  | 'source-translate'
+  | 'hook-translate'
+  | 'hook-supplement'
+  | 'font-replace'
+  | 'rpy-extraction'
+  | 'extract-to-tl'
+  | 'extract-json'
+  | 'add-language'
+  | 'set-default-language'
+  | 'error-repair'
+  | 'translation-reuse'
+  | 'formatter'
+  | 'android-build'
+  | 'html-import'
+  | 'game-mod'
   | 'agent'
   | 'project'
   | 'platform'
@@ -54,6 +70,22 @@ const PAGES: NavItem[] = [
   { key: 'ma-suite', labelKey: 'app_ma_suite_page', label: '终极结构导出', icon: 'Wrench' },
   { key: 'batch-correction', labelKey: 'app_batch_correction_page', label: '批量修正', icon: 'Wrench' },
   { key: 'name-extraction', labelKey: 'app_name_extraction_page', label: '姓名提取', icon: 'Wrench' },
+  { key: 'direct-rpy-translate', labelKey: 'app_direct_rpy_translate_page', label: '直接翻译 RPY', icon: 'Languages' },
+  { key: 'source-translate', labelKey: 'app_source_translate_page', label: '源码翻译', icon: 'Languages' },
+  { key: 'hook-translate', labelKey: 'app_hook_translate_page', label: 'HOOK 翻译', icon: 'Languages' },
+  { key: 'hook-supplement', labelKey: 'app_hook_supplement_page', label: '补全翻译', icon: 'Languages' },
+  { key: 'font-replace', labelKey: 'app_font_replace_page', label: '字体注入', icon: 'Wrench' },
+  { key: 'rpy-extraction', labelKey: 'app_rpy_extraction_page', label: 'RPY 抽取设置', icon: 'Wrench' },
+  { key: 'extract-to-tl', labelKey: 'app_extract_to_tl_page', label: '翻译抽取到 TL', icon: 'Wrench' },
+  { key: 'extract-json', labelKey: 'app_extract_json_page', label: '文本提取 JSON', icon: 'Wrench' },
+  { key: 'add-language', labelKey: 'app_add_language_page', label: '添加语言入口', icon: 'Wrench' },
+  { key: 'set-default-language', labelKey: 'app_set_default_language_page', label: '设置默认语言', icon: 'Wrench' },
+  { key: 'error-repair', labelKey: 'app_error_repair_page', label: '错误修复', icon: 'Wrench' },
+  { key: 'translation-reuse', labelKey: 'app_translation_reuse_page', label: '更新翻译复用', icon: 'Wrench' },
+  { key: 'formatter', labelKey: 'app_formatter_page', label: '代码格式化', icon: 'Wrench' },
+  { key: 'android-build', labelKey: 'app_android_build_page', label: '安卓打包', icon: 'Wrench' },
+  { key: 'html-import', labelKey: 'app_html_import_page', label: '网页 / AI 翻译向导', icon: 'Wrench' },
+  { key: 'game-mod', labelKey: 'app_game_mod_page', label: '游戏模组注入', icon: 'Wrench' },
   { key: 'workbench', labelKey: 'app_workbench_page', label: '角色 / 世界观工作台', icon: 'UsersRound' },
   { key: 'basic-settings', labelKey: 'app_basic_settings_page', label: '基础设置', icon: 'SlidersHorizontal' },
   { key: 'expert-settings', labelKey: 'app_expert_settings_page', label: '专家设置', icon: 'SlidersHorizontal' },
@@ -70,7 +102,7 @@ export const APP_SETTINGS_NAV: NavItem = {
 
 const page = (key: PageKey): NavItem => PAGES.find((item) => item.key === key)!;
 
-export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve', 'honorific', 'onekey', 'onekey-apply', 'pack-unpack', 'ma-suite', 'batch-correction', 'name-extraction'];
+export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve', 'honorific', 'onekey', 'onekey-apply', 'pack-unpack', 'ma-suite', 'batch-correction', 'name-extraction', 'direct-rpy-translate', 'source-translate', 'hook-translate', 'hook-supplement', 'font-replace', 'rpy-extraction', 'extract-to-tl', 'extract-json', 'add-language', 'set-default-language', 'error-repair', 'translation-reuse', 'formatter', 'android-build', 'html-import', 'game-mod'];
 
 /** 侧栏四段。段间留白，不显示分组标题。 */
 export const NAV_SECTIONS: NavItem[][] = [

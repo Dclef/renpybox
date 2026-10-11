@@ -583,6 +583,7 @@ def remove_repeat_extracted_from_tl(
     duplicate_action=DUPLICATE_ACTION_COMMENT,
     should_stop=None,
     progress_callback=None,
+    result_meta=None,
 ):
     """
     去除 tl 目录中的重复翻译条目
@@ -592,143 +593,171 @@ def remove_repeat_extracted_from_tl(
         is_py2: 是否为 Python 2 版本的游戏
         cross_file_dedup: 是否进行跨文件去重（默认开启）
         duplicate_action: comment（默认，保留记录）或 delete（兼容旧行为）
+        result_meta: 可选 dict；取消/异常时也写入已改路径 written_files / partial
     """
     duplicate_action = _normalize_duplicate_action(duplicate_action)
     p = tl_dir
     if p[len(p) - 1] != '/' and p[len(p) - 1] != '\\':
         p = p + '/'
-    paths = os.walk(p, topdown=False)
-    
-    # 收集所有 rpy 文件路径
-    rpy_files = []
-    for path, dir_lst, file_lst in paths:
-        _check_cancel(should_stop)
-        for file_name in file_lst:
-            i = os.path.join(path, file_name)
-            if not file_name.endswith("rpy"):
-                continue
-            if is_builtin_ui_file(i, p):
-                continue
-            rpy_files.append(i)
-    rpy_files.sort(key=lambda value: os.path.relpath(value, p).replace('\\', '/').casefold())
-    
-    # 第一步只做单文件去重。这里的 extracted 结果只会写入一个从未被消费的
-    # 全局列表，重新运行完整源码提取会在大文件上产生大量无效开销。
-    # 注意：这一步会修改文件内容，必须先执行
-    for file_index, file_path in enumerate(rpy_files, 1):
-        _check_cancel(should_stop)
-        if progress_callback and (file_index == 1 or file_index % 100 == 0):
-            progress_callback(f"清理补充翻译 {file_index}/{len(rpy_files)}: {file_path}")
-        remove_repeat_for_file(file_path, duplicate_action=duplicate_action)
+    written_files = []
+    seen_written = set()
 
-    # 第二步：收集所有文件中的 old/new 对，用于跨文件去重
-    # 同时收集 dialogue 块中的原文，用于删除 strings 中的冗余
-    global_old_entries = {}  # {old_text: [(file_path, first_occurrence_line), ...]}
-    block_originals = set()  # 旧扫描结果；strings 去重有意不使用它。
-    
-    if cross_file_dedup:
-        for file_path in rpy_files:
+    def _note_written(path):
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key in seen_written:
+            return
+        seen_written.add(key)
+        written_files.append(str(path))
+
+    def _publish_meta(*, partial=False):
+        if result_meta is None:
+            return
+        result_meta["written_files"] = list(written_files)
+        result_meta["partial"] = bool(partial)
+        result_meta["written"] = bool(written_files)
+
+    try:
+        paths = os.walk(p, topdown=False)
+
+        # 收集所有 rpy 文件路径
+        rpy_files = []
+        for path, dir_lst, file_lst in paths:
             _check_cancel(should_stop)
-            try:
-                with io.open(file_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                
-                in_dialogue_block = False
-                for idx, line in enumerate(lines):
-                    line_stripped = line.strip()
-                    
-                    # 检查是否进入/离开 dialogue 块
-                    if line_stripped.startswith('translate ') and line_stripped.endswith(':'):
-                        if 'strings:' not in line_stripped:
-                            in_dialogue_block = True
-                        else:
-                            in_dialogue_block = False
-                        continue
-                    
-                    # 如果在 dialogue 块中，提取原文（通常在注释中）
-                    if in_dialogue_block:
-                        if line_stripped.startswith('#'):
-                            # 提取双引号中的内容，一行可能有多个（如名字+对白），都提取
-                            matches = re.findall(r'"((?:\\.|[^"])*)"', line_stripped)
-                            for m in matches:
-                                txt = m.replace('\\"', '"').replace("\\'", "'")
-                                block_originals.add(txt)
-                        # 如果遇到非空且非注释且无缩进的行，说明块可能结束了（虽然 translate 块通常有缩进，但这作为防御）
-                        if line_stripped and not line.startswith(' ') and not line_stripped.startswith('#'):
-                            in_dialogue_block = False
+            for file_name in file_lst:
+                i = os.path.join(path, file_name)
+                if not file_name.endswith("rpy"):
+                    continue
+                if is_builtin_ui_file(i, p):
+                    continue
+                rpy_files.append(i)
+        rpy_files.sort(key=lambda value: os.path.relpath(value, p).replace('\\', '/').casefold())
 
-                    # 收集 strings 块中的 old 条目
-                    if line_stripped.startswith('old '):
-                        # 提取 old 文本内容
-                        old_text = line_stripped.strip()
-                        # 去除 old "..." 的外层引号和 old 前缀
-                        m = re.match(r'old\s+"((?:\\.|[^"])*)"', old_text)
-                        if m:
-                            content = m.group(1).replace('\\"', '"').replace("\\'", "'")
-                            if content not in global_old_entries:
-                                global_old_entries[content] = []
-                            global_old_entries[content].append((file_path, idx))
-                        else:
-                            # 尝试匹配单引号
-                            m = re.match(r"old\s+'((?:\\.|[^'])*)'", old_text)
+        # 第一步只做单文件去重。这里的 extracted 结果只会写入一个从未被消费的
+        # 全局列表，重新运行完整源码提取会在大文件上产生大量无效开销。
+        # 注意：这一步会修改文件内容，必须先执行
+        for file_index, file_path in enumerate(rpy_files, 1):
+            _check_cancel(should_stop)
+            if progress_callback and (file_index == 1 or file_index % 100 == 0):
+                progress_callback(f"清理补充翻译 {file_index}/{len(rpy_files)}: {file_path}")
+            if remove_repeat_for_file(file_path, duplicate_action=duplicate_action):
+                _note_written(file_path)
+
+        # 第二步：收集所有文件中的 old/new 对，用于跨文件去重
+        # 同时收集 dialogue 块中的原文，用于删除 strings 中的冗余
+        global_old_entries = {}  # {old_text: [(file_path, first_occurrence_line), ...]}
+        block_originals = set()  # 旧扫描结果；strings 去重有意不使用它。
+
+        if cross_file_dedup:
+            for file_path in rpy_files:
+                _check_cancel(should_stop)
+                try:
+                    with io.open(file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+
+                    in_dialogue_block = False
+                    for idx, line in enumerate(lines):
+                        line_stripped = line.strip()
+
+                        # 检查是否进入/离开 dialogue 块
+                        if line_stripped.startswith('translate ') and line_stripped.endswith(':'):
+                            if 'strings:' not in line_stripped:
+                                in_dialogue_block = True
+                            else:
+                                in_dialogue_block = False
+                            continue
+
+                        # 如果在 dialogue 块中，提取原文（通常在注释中）
+                        if in_dialogue_block:
+                            if line_stripped.startswith('#'):
+                                # 提取双引号中的内容，一行可能有多个（如名字+对白），都提取
+                                matches = re.findall(r'"((?:\\.|[^"])*)"', line_stripped)
+                                for m in matches:
+                                    txt = m.replace('\\"', '"').replace("\\'", "'")
+                                    block_originals.add(txt)
+                            # 如果遇到非空且非注释且无缩进的行，说明块可能结束了（虽然 translate 块通常有缩进，但这作为防御）
+                            if line_stripped and not line.startswith(' ') and not line_stripped.startswith('#'):
+                                in_dialogue_block = False
+
+                        # 收集 strings 块中的 old 条目
+                        if line_stripped.startswith('old '):
+                            # 提取 old 文本内容
+                            old_text = line_stripped.strip()
+                            # 去除 old "..." 的外层引号和 old 前缀
+                            m = re.match(r'old\s+"((?:\\.|[^"])*)"', old_text)
                             if m:
-                                content = m.group(1).replace("\\'", "'")
+                                content = m.group(1).replace('\\"', '"').replace("\\'", "'")
                                 if content not in global_old_entries:
                                     global_old_entries[content] = []
                                 global_old_entries[content].append((file_path, idx))
-            except Exception:
-                continue
-    
-    # 第三步：跨文件去重
-    if cross_file_dedup:
-        duplicates_to_process = {}  # {file_path: {line_index: (first_file, first_line)}}
-        
-        for old_text, occurrences in global_old_entries.items():
-            # 情况1：如果该文本已经存在于 dialogue 翻译块中，删除 strings 中的所有条目
-            # 情况2：strings 中出现多次，保留第一次
-            if len(occurrences) > 1:
-                first_occurrence = occurrences[0]
-                for file_path, line_idx in occurrences[1:]:
-                    duplicates_to_process.setdefault(file_path, {})[line_idx] = first_occurrence
-        
-        # 执行跨文件去重删除
-        for file_path, duplicate_entries in duplicates_to_process.items():
-            _check_cancel(should_stop)
-            try:
-                with io.open(file_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                
-                modified = False
-                sorted_indices = sorted(duplicate_entries, reverse=True)
-                
-                for idx in sorted_indices:
-                    if 0 <= idx < len(lines):
-                        first_file, first_idx = duplicate_entries[idx]
-                        first_location = (
-                            f"{os.path.relpath(first_file, p).replace(os.sep, '/')}:{first_idx + 1}"
-                        )
-                        new_idx = _find_entry_new_line(lines, idx)
-                        _mark_duplicate_entry(
+                            else:
+                                # 尝试匹配单引号
+                                m = re.match(r"old\s+'((?:\\.|[^'])*)'", old_text)
+                                if m:
+                                    content = m.group(1).replace("\\'", "'")
+                                    if content not in global_old_entries:
+                                        global_old_entries[content] = []
+                                    global_old_entries[content].append((file_path, idx))
+                except Exception:
+                    continue
+
+        # 第三步：跨文件去重
+        if cross_file_dedup:
+            duplicates_to_process = {}  # {file_path: {line_index: (first_file, first_line)}}
+
+            for old_text, occurrences in global_old_entries.items():
+                # 情况1：如果该文本已经存在于 dialogue 翻译块中，删除 strings 中的所有条目
+                # 情况2：strings 中出现多次，保留第一次
+                if len(occurrences) > 1:
+                    first_occurrence = occurrences[0]
+                    for file_path, line_idx in occurrences[1:]:
+                        duplicates_to_process.setdefault(file_path, {})[line_idx] = first_occurrence
+
+            # 执行跨文件去重删除
+            for file_path, duplicate_entries in duplicates_to_process.items():
+                _check_cancel(should_stop)
+                try:
+                    with io.open(file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+
+                    modified = False
+                    sorted_indices = sorted(duplicate_entries, reverse=True)
+
+                    for idx in sorted_indices:
+                        if 0 <= idx < len(lines):
+                            first_file, first_idx = duplicate_entries[idx]
+                            first_location = (
+                                f"{os.path.relpath(first_file, p).replace(os.sep, '/')}:{first_idx + 1}"
+                            )
+                            new_idx = _find_entry_new_line(lines, idx)
+                            _mark_duplicate_entry(
+                                lines,
+                                idx,
+                                new_idx,
+                                first_location,
+                                duplicate_action,
+                            )
+                            modified = True
+
+                    if modified:
+                        _cleanup_empty_string_blocks(
                             lines,
-                            idx,
-                            new_idx,
-                            first_location,
-                            duplicate_action,
+                            preserve_duplicate_comments=(duplicate_action == DUPLICATE_ACTION_COMMENT),
                         )
-                        modified = True
-                
-                if modified:
-                    _cleanup_empty_string_blocks(
-                        lines,
-                        preserve_duplicate_comments=(duplicate_action == DUPLICATE_ACTION_COMMENT),
-                    )
-                    lines = get_remove_consecutive_empty_lines(lines)
-                    with io.open(file_path, 'w', encoding='utf-8') as f:
-                        f.writelines(lines)
-            except Exception as e:
-                log.warning(f'跨文件去重失败 {file_path}: {e}')
-    
-    return
+                        lines = get_remove_consecutive_empty_lines(lines)
+                        with io.open(file_path, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        _note_written(file_path)
+                except Exception as e:
+                    log.warning(f'跨文件去重失败 {file_path}: {e}')
+
+        _publish_meta(partial=False)
+        return
+    except ExtractionCancelled:
+        _publish_meta(partial=bool(written_files))
+        raise
+    except Exception:
+        _publish_meta(partial=bool(written_files))
+        raise
 
 def get_remove_consecutive_empty_lines(lines):
     last_line_empty = False
@@ -752,6 +781,9 @@ def remove_repeat_for_file(p, duplicate_action=DUPLICATE_ACTION_COMMENT):
     1. 在同一文件内，相同的 old/new 对只保留第一次出现
     2. 移除空的 translate 块
     3. 清理连续空行
+
+    Returns:
+        bool: 是否实际写入了文件（供清理副作用元数据累积；旧调用可忽略）
     """
     duplicate_action = _normalize_duplicate_action(duplicate_action)
     try:
@@ -760,7 +792,7 @@ def remove_repeat_for_file(p, duplicate_action=DUPLICATE_ACTION_COMMENT):
         f.close()
     except Exception as e:
         log.error(f'读取文件失败 {p}: {e}')
-        return
+        return False
     
     first_occurrences = {}
     modified = False
@@ -809,8 +841,11 @@ def remove_repeat_for_file(p, duplicate_action=DUPLICATE_ACTION_COMMENT):
             f = io.open(p, 'w', encoding='utf-8')
             f.writelines(lines)
             f.close()
+            return True
         except Exception as e:
             log.error(f'写入文件失败 {p}: {e}')
+            return False
+    return False
 
 
 class extractThread(threading.Thread):
