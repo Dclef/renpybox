@@ -367,6 +367,18 @@
   }
 
   /*
+   * body 是 flex-wrap：直接子级 SettingCard 若不拉满主轴，会缩成多列。
+   * flex:1 1 100% 保证每行全宽；行内仍靠 .rb-setting-row 的 flex-wrap 窄窗换行。
+   */
+  .rb-settings-body > .rb-setting-row {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  /*
    * 直接子级 Form：align-items:flex-start 时默认不拉满交叉轴，
    * 若不显式 width:100% 会缩到约内容宽（截图里约 220px）。
    */
@@ -537,6 +549,13 @@
   .rb-update-status,
   .rb-update-actions,
   .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  /* 对齐 Qt UpdateDetailsDialog CaptionLabel：changelog 下方的包大小 / 发布日期 */
+  .rb-update-release-meta {
+    margin: 8px 0 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
   .rb-page-header { flex-wrap: wrap; }
 
   .rb-page {
