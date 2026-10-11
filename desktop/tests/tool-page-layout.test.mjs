@@ -39,14 +39,30 @@ test('含 SettingCard 行时去掉 body 双份边距', () => {
   assert.match(css, /\.rb-settings-body:has\(>\s*\.rb-setting-row\)\s*\{[^}]*padding:\s*0/s);
 });
 
-test('tool-panel 滚动页统一 padding/gap', () => {
-  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*\{[^}]*padding:\s*0 4px 16px/s);
-  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*\{[^}]*gap:\s*12px/s);
+test('tool-panel 滚动页统一 padding/gap（含 .rb-page 子页）', () => {
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*padding:\s*0 4px 16px/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*gap:\s*12px/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*overflow:\s*hidden auto/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*grid-template-rows:\s*none/s);
+});
+
+test('tool-panel 纵向 flex 链可收缩', () => {
+  assert.match(css, /\.rb-tool-panel\s*\{[^}]*flex:\s*1 1 auto/s);
+  assert.match(css, /\.rb-tool-panel\s*\{[^}]*min-height:\s*0/s);
+  assert.match(css, /\.rb-tool-page\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.rb-tool-page\s*\{[^}]*overflow:\s*hidden/s);
+});
+
+test('settings-body 直接子级 Form 拉满宽度', () => {
+  assert.match(css, /\.rb-settings-body\s*>\s*form,\s*\.rb-settings-body\s*>\s*\.ant-form\s*\{[^}]*width:\s*100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*form,\s*\.rb-settings-body\s*>\s*\.ant-form\s*\{[^}]*min-width:\s*0/s);
 });
 
 test('详情页有 Qt 底色与卡片阴影层次', () => {
   assert.match(css, /\.rb-tool-page\s*\{[^}]*background:\s*var\(--rb-qt-page\)/s);
   assert.match(css, /\.rb-tool-page\s+\.rb-settings-group\s*\{[^}]*box-shadow:\s*var\(--rb-qt-shadow\)/s);
+  assert.match(css, /\.rb-tool-page\s+\.rb-settings-group\s*\{[^}]*width:\s*100%/s);
 });
 
 test('onekey/archive/asset body 规则保留且不叠双份', () => {
@@ -56,6 +72,17 @@ test('onekey/archive/asset body 规则保留且不叠双份', () => {
   );
 });
 
-test('工具页短 Banner 不强制撑满', () => {
-  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner\s*\{[^}]*width:\s*fit-content/s);
+test('工具页短 Banner 不强制撑满，且为相对定位独立块', () => {
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*width:\s*fit-content/s,
+  );
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*position:\s*relative/s,
+  );
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*flex:\s*0 0 auto/s,
+  );
 });

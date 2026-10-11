@@ -7,7 +7,8 @@ import { Banner, PageHeader } from '../ui';
 
 /**
  * 工具详情页外框：对齐 Qt5 工具箱子页层次。
- * 外边距/底色由 .rb-tool-page 负责；可滚动内容落在 .rb-tool-panel，避免卡片贴边。
+ * 外边距/底色由 .rb-tool-page 负责；.rb-tool-panel 承接余高；
+ * 子页根节点（.rb-page-scroll 或 .rb-page）负责内部滚动与 4px 阴影边距。
  */
 export function ToolPageFrame(props: {
   title: string;
