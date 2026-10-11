@@ -160,3 +160,45 @@ def test_model_list_shared_sdk_paths(monkeypatch):
     before = len(calls)
     assert list_models("", "", next(iter(Base.MACHINE_API_FORMATS))) == ["free"]
     assert len(calls) == before
+
+
+def test_presets_return_safe_fields_sorted_by_filename(monkeypatch, tmp_path):
+    """/presets 只回传展示字段（无密钥/凭据身份），文件名前缀决定顺序，坏文件跳过。"""
+    zh = tmp_path / "zh"
+    zh.mkdir()
+    (zh / "2_beta.json").write_text(
+        '{"id": 2, "name": "预设乙", "api_format": "OpenAI", "api_url": "https://b.example", "model": "m-b", "api_key": ["preset-secret"]}',
+        encoding = "utf-8",
+    )
+    (zh / "1_alpha.json").write_text(
+        '{"id": 1, "name": "预设甲", "group": "local", "api_format": "SakuraLLM", "api_url": "http://127.0.0.1:8080", "model": "no_model_required", "thinking": false}',
+        encoding = "utf-8",
+    )
+    (zh / "0_broken.json").write_text("{invalid", encoding = "utf-8")
+    (zh / "2_unnamed.json").write_text('{"api_format": "OpenAI"}', encoding = "utf-8")
+    monkeypatch.setattr(platforms, "_presets_path", lambda: str(zh))
+
+    app = FastAPI()
+    app.include_router(platforms.router)
+    with TestClient(app) as client:
+        response = client.get("/api/platforms/presets")
+        assert response.status_code == 200
+        presets = response.json()["presets"]
+        assert [item["name"] for item in presets] == ["预设甲", "预设乙"]
+        assert presets[1] == {"name": "预设乙", "group": None, "api_format": "OpenAI", "api_url": "https://b.example", "model": "m-b"}
+        assert "preset-secret" not in response.text
+        assert "thinking" not in response.text
+
+
+def test_presets_path_falls_back_to_zh(monkeypatch, tmp_path):
+    """界面语言目录缺失时回落中文资源目录；目录不存在时返回空列表而非报错。"""
+    resource_root = tmp_path / "resource"
+    (resource_root / "platforms" / "zh").mkdir(parents = True)
+    monkeypatch.setattr(platforms.Localizer, "get_app_language", lambda: "en")
+    monkeypatch.setattr(platforms, "get_resource_path", lambda *parts: str(tmp_path.joinpath(*parts)))
+    assert platforms._presets_path().endswith("zh")
+
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(platforms.Localizer, "get_app_language", lambda: "en")
+    monkeypatch.setattr(platforms, "get_resource_path", lambda *parts: str(missing))
+    assert platforms.load_platform_presets() == []
