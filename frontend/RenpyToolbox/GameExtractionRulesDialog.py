@@ -305,7 +305,7 @@ class GameExtractionRulesDialog(QDialog):
         self._flush()
         rule = new_rule()
         if self.category == 'tl':
-            from frontend.RenpyToolbox.RpyExtractionPage import starter_profile
+            from module.Extract.RpyExtractionSettings import starter_profile
             rule = starter_profile('tl')['rules'][0]
         rule['name'] = Localizer.get().game_rules_default_rule.format(number=len(self.profile['rules']) + 1)
         rule['enabled'] = True

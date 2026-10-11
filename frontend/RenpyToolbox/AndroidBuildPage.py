@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import re
-import shutil
-import zipfile
-from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl
@@ -33,6 +28,16 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Project.ProjectStore import ProjectStore
 from module.Tool.AndroidBuilder import AndroidBuilder
+from module.Tool.AndroidProjectTools import (
+    AndroidProjectToolsError,
+    DEFAULT_DETECT_HINTS,
+    detect_resource_dirs,
+    make_shell_archive,
+    merge_items,
+    preflight_shell_archive,
+    sanitize_android_dist_assets,
+    split_items,
+)
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -60,27 +65,6 @@ class AndroidTaskWorker(QThread):
 
 class AndroidBuildPage(Base, QWidget):
     """安卓打包页面"""
-
-    RESOURCE_EXTENSIONS = {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        ".bmp",
-        ".mp3",
-        ".ogg",
-        ".wav",
-        ".flac",
-        ".m4a",
-        ".aac",
-        ".opus",
-        ".mp4",
-        ".webm",
-        ".mkv",
-        ".avi",
-        ".mov",
-    }
 
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
@@ -497,67 +481,11 @@ class AndroidBuildPage(Base, QWidget):
             return None
         return project_dir
 
-    def _split_items(self, text: str) -> list[str]:
-        if not text:
-            return []
-        return [item.strip() for item in re.split(r"[;,\n\r]+", text) if item.strip()]
-
     def _get_detect_hints(self) -> list[str]:
         text = self.shell_remove_dirs_edit.text().strip()
         if not text:
-            text = (self.config.android_shell_remove_dirs or "").strip()
-        return self._split_items(text)
-
-    def _merge_items(self, existing: list[str], items: list[str]) -> list[str]:
-        merged = list(existing)
-        seen = {item.lower() if os.name == "nt" else item: True for item in existing}
-        for item in items:
-            key = item.lower() if os.name == "nt" else item
-            if key in seen:
-                continue
-            merged.append(item)
-            seen[key] = True
-        return merged
-
-    def _detect_resource_dirs(self, game_dir: Path) -> list[str]:
-        detected: list[str] = []
-        seen = set()
-        ignored = {"gui"}
-
-        for name in self._get_detect_hints():
-            if name.lower() in ignored:
-                continue
-            path = game_dir / name
-            if path.exists():
-                key = name.lower() if os.name == "nt" else name
-                if key not in seen:
-                    detected.append(name)
-                    seen.add(key)
-
-        for child in game_dir.iterdir():
-            if not child.is_dir():
-                continue
-            if child.name.lower() in ignored:
-                continue
-            key = child.name.lower() if os.name == "nt" else child.name
-            if key in seen:
-                continue
-            if self._dir_has_resource_files(child):
-                detected.append(child.name)
-                seen.add(key)
-
-        return detected
-
-    def _dir_has_resource_files(self, folder: Path) -> bool:
-        checked = 0
-        for entry in folder.rglob("*"):
-            if entry.is_file():
-                if entry.suffix.lower() in self.RESOURCE_EXTENSIONS:
-                    return True
-                checked += 1
-                if checked >= 20000:
-                    break
-        return False
+            text = (self.config.android_shell_remove_dirs or DEFAULT_DETECT_HINTS).strip()
+        return split_items(text)
 
     def _apply_detected_items(self, line_edit: LineEdit, items: list[str], *, replace: bool) -> bool:
         if not items:
@@ -567,8 +495,8 @@ class AndroidBuildPage(Base, QWidget):
         if replace:
             line_edit.setText(";".join(items))
             return True
-        existing = self._split_items(line_edit.text().strip())
-        merged = self._merge_items(existing, items)
+        existing = split_items(line_edit.text().strip())
+        merged = merge_items(existing, items)
         line_edit.setText(";".join(merged))
         return True
 
@@ -577,7 +505,11 @@ class AndroidBuildPage(Base, QWidget):
         if not project_dir:
             return
         game_dir = project_dir / "game"
-        detected = self._detect_resource_dirs(game_dir)
+        try:
+            detected = detect_resource_dirs(game_dir, hints=self._get_detect_hints())
+        except AndroidProjectToolsError as exc:
+            InfoBar.error(Localizer.get().error, str(exc), parent=self)
+            return
         if not self._apply_detected_items(self.archive_source_edit, detected, replace=True):
             InfoBar.warning(
                 Localizer.get().notice,
@@ -596,7 +528,11 @@ class AndroidBuildPage(Base, QWidget):
         if not project_dir:
             return
         game_dir = project_dir / "game"
-        detected = self._detect_resource_dirs(game_dir)
+        try:
+            detected = detect_resource_dirs(game_dir, hints=self._get_detect_hints())
+        except AndroidProjectToolsError as exc:
+            InfoBar.error(Localizer.get().error, str(exc), parent=self)
+            return
         if not self._apply_detected_items(self.shell_remove_dirs_edit, detected, replace=True):
             InfoBar.warning(
                 Localizer.get().notice,
@@ -609,96 +545,6 @@ class AndroidBuildPage(Base, QWidget):
             Localizer.get().android_build_detected_folder_s_replaced_current_list.format(detected_count=len(detected)),
             parent=self,
         )
-
-    def _get_external_archive_dir(self, project_dir: Path) -> Path:
-        return project_dir
-
-
-    def _sanitize_android_dist_assets(self, dist_dir: Path, output) -> None:
-        assets_dir = dist_dir / "assets"
-        android_prefix = "android-"
-        if assets_dir.exists():
-            target_dir = assets_dir
-            keep_dirs = {"game", "renpy"}
-            keep_names = {"android.json"}
-            keep_py = False
-            keep_hint = "game/renpy/android-*/android.json"
-        else:
-            target_dir = dist_dir
-            keep_dirs = {"game", "renpy", "lib"}
-            keep_names = {"android.json"}
-            keep_py = True
-            keep_hint = "game/renpy/lib/.py/android-*/android.json"
-
-        if not target_dir.exists():
-            output(f"未找到分发目录，跳过清理: {target_dir}")
-            return
-
-        output(f"清理分发目录: {target_dir}")
-        removed = []
-        for path in target_dir.iterdir():
-            name_lower = path.name.lower()
-            if name_lower.startswith(android_prefix):
-                continue
-            if path.is_dir() and name_lower in keep_dirs:
-                continue
-            if path.is_file() and name_lower in keep_names:
-                continue
-            if keep_py and path.is_file() and path.suffix.lower() == ".py":
-                continue
-            try:
-                if path.is_dir():
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    path.unlink()
-                removed.append(path)
-            except Exception:
-                continue
-        if removed:
-            output(f"已清理 {len(removed)} 个文件（保留 {keep_hint}）")
-        else:
-            output("未发现需要清理的文件")
-
-    def _resolve_archive_source_dirs(self, project_dir: Path) -> list[Path]:
-        game_dir = project_dir / "game"
-        tokens = self._split_items(self.archive_source_edit.text().strip())
-        if not tokens:
-            return [game_dir]
-
-        resolved: list[Path] = []
-        for token in tokens:
-            path = Path(token)
-            if not path.is_absolute():
-                path = (game_dir / token).resolve()
-            else:
-                path = path.resolve()
-            resolved.append(path)
-
-        unique: list[Path] = []
-        seen = set()
-        for path in resolved:
-            key = str(path).lower() if os.name == "nt" else str(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(path)
-        return unique
-
-    def _parse_remove_dirs(self) -> list[str]:
-        text = self.shell_remove_dirs_edit.text().strip()
-        if not text:
-            return []
-        return [item.strip() for item in re.split(r"[;,\s]+", text) if item.strip()]
-
-    def _to_long_path(self, path: Path) -> str:
-        if os.name != "nt":
-            return str(path)
-        path_str = str(path)
-        if path_str.startswith("\\\\?\\"):
-            return path_str
-        if path_str.startswith("\\\\"):
-            return "\\\\?\\UNC\\" + path_str[2:]
-        return "\\\\?\\" + path_str
 
     def _write_android_json(self) -> None:
         builder = self._get_builder()
@@ -816,7 +662,9 @@ class AndroidBuildPage(Base, QWidget):
             )
             return
 
-        dist_dir = str(Path(builder.project_dir) / "android.dist")
+        dist_dir = str(builder.project_dist_dir())
+        update_always = self.update_always_check.isChecked()
+        update_icons = self.update_icons_check.isChecked()
 
         def task(output):
             output("更新 android.json...")
@@ -824,16 +672,28 @@ class AndroidBuildPage(Base, QWidget):
                 package_name=package,
                 app_name=app_name,
                 version=version,
-                update_always=self.update_always_check.isChecked(),
-                update_icons=self.update_icons_check.isChecked(),
+                update_always=update_always,
+                update_icons=update_icons,
             )
             output(f"准备分发目录: {dist_dir}")
             if not builder.run_distribute(dist_dir=dist_dir, on_output=output):
                 return False, Localizer.get().android_build_failed_create_distribution_folder
-            self._sanitize_android_dist_assets(Path(dist_dir), output)
+            try:
+                sanitize_android_dist_assets(
+                    builder.project_dir,
+                    dist_dir,
+                    on_output=output,
+                )
+            except AndroidProjectToolsError as exc:
+                return False, str(exc)
 
             output("开始构建 Android 包...")
-            ok = builder.build_android(dist_dir=dist_dir, on_output=output)
+            ok = builder.build_android(
+                dist_dir=dist_dir,
+                install=False,
+                launch=False,
+                on_output=output,
+            )
             if not ok:
                 return False, Localizer.get().android_build_build_failed
 
@@ -861,162 +721,50 @@ class AndroidBuildPage(Base, QWidget):
             return
 
         self._open_bin_after_build = False
+        source_text = self.archive_source_edit.text().strip()
+        remove_text = self.shell_remove_dirs_edit.text().strip()
+        backup = self.shell_backup_check.isChecked()
+
+        # 与 API 同一 preflight：非法路径/联接在 save 之前拒绝
+        try:
+            plan = preflight_shell_archive(
+                project_dir,
+                source_text=source_text,
+                remove_text=remove_text,
+                backup=backup,
+            )
+        except AndroidProjectToolsError as exc:
+            InfoBar.error(Localizer.get().error, str(exc), parent=self)
+            return
 
         def task(output):
-            ok, message = self._make_shell_archive(project_dir, output)
+            try:
+                result = make_shell_archive(
+                    project_dir,
+                    source_text=source_text,
+                    remove_text=remove_text,
+                    backup=backup,
+                    on_output=output,
+                    plan=plan,
+                )
+            except AndroidProjectToolsError as exc:
+                return False, str(exc)
+            ok = bool(result.get("success"))
+            message = result.get("message") or (
+                Localizer.get().android_build_shell_package_completed
+                if ok
+                else Localizer.get().android_build_task_failed
+            )
+            if ok and result.get("partial"):
+                failed = result.get("failed") or []
+                if failed:
+                    message = f"{message}: {'; '.join(failed[:3])}"
             return ok, message
 
         self._save_config()
         self._start_worker(
             task, Localizer.get().android_build_processing_shell_package
         )
-
-    def _make_shell_archive(self, project_dir: Path, output) -> tuple[bool, str]:
-        game_dir = project_dir / "game"
-        if not game_dir.exists():
-            return False, Localizer.get().android_build_game_folder_not_found.format(game_dir=game_dir)
-
-        source_dirs = self._resolve_archive_source_dirs(project_dir)
-        for source_dir in source_dirs:
-            if not source_dir.exists():
-                return False, Localizer.get().android_build_package_folder_does_not_exist.format(source_dir=source_dir)
-            if not source_dir.is_dir():
-                return False, Localizer.get().android_build_package_path_not_folder.format(source_dir=source_dir)
-
-        external_dir = self._get_external_archive_dir(project_dir)
-        external_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = external_dir / "archive.rpa"
-        internal_archive = game_dir / "archive.rpa"
-        exclude_paths = {archive_path.resolve(), internal_archive.resolve()}
-
-        if self.shell_backup_check.isChecked():
-            try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_path = external_dir / f"archive_backup_{timestamp}.zip"
-                exclude_paths.add(backup_path.resolve())
-                output(f"正在备份打包目录: {backup_path}")
-                with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                    seen_arc = set()
-                    for source_dir in source_dirs:
-                        try:
-                            prefix = source_dir.relative_to(project_dir).as_posix()
-                        except ValueError:
-                            prefix = source_dir.name
-                        if not prefix:
-                            prefix = source_dir.name
-                        for entry in source_dir.rglob("*"):
-                            if entry.is_dir():
-                                continue
-                            if entry.resolve() in exclude_paths:
-                                continue
-                            rel = entry.relative_to(source_dir)
-                            arcname = f"{prefix}/{rel.as_posix()}"
-                            if arcname in seen_arc:
-                                continue
-                            seen_arc.add(arcname)
-                            zf.write(entry, arcname)
-                output("备份完成")
-            except Exception as exc:
-                return False, Localizer.get().android_build_backup_failed.format(exc=exc)
-
-        output(f"开始打包 archive.rpa: {archive_path}")
-        ok, message = self._pack_archive_from_dirs(
-            source_dirs,
-            game_dir,
-            archive_path,
-            exclude_paths,
-            output,
-        )
-        if not ok:
-            return False, message
-
-        output("archive.rpa 打包完成，开始清理资源目录...")
-        remove_dirs = self._parse_remove_dirs()
-        removed = []
-        for name in remove_dirs:
-            target = game_dir / name
-            if not target.exists():
-                continue
-            try:
-                if target.is_dir():
-                    shutil.rmtree(target, ignore_errors=True)
-                else:
-                    target.unlink(missing_ok=True)
-                removed.append(name)
-            except Exception as exc:
-                output(f"清理失败 {target}: {exc}")
-
-        if removed:
-            output("已删除目录: " + ", ".join(removed))
-        else:
-            if remove_dirs:
-                output("未发现需要删除的目录")
-            else:
-                output("未配置清理目录，已跳过删除")
-
-        if internal_archive.exists():
-            try:
-                internal_archive.unlink()
-                output("已移除 game/archive.rpa，避免打进 APK")
-            except Exception as exc:
-                output(f"移除 game/archive.rpa 失败: {exc}")
-
-        return True, Localizer.get().android_build_shell_package_completed
-
-    def _pack_archive_from_dirs(
-        self,
-        source_dirs: list[Path],
-        game_dir: Path,
-        archive_path: Path,
-        exclude_paths: set[Path],
-        output,
-    ) -> tuple[bool, str]:
-        from module.Tool.rpatool_core import RenPyArchive
-
-        seen = set()
-
-        out_path = archive_path.resolve()
-        if os.name == "nt" and not str(out_path).startswith("\\\\?\\"):
-            out_path = Path(self._to_long_path(out_path))
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if out_path.exists():
-            out_path.unlink()
-
-        archive = RenPyArchive(version=3, verbose=False)
-        added = 0
-        for source_dir in source_dirs:
-            try:
-                prefix = source_dir.relative_to(game_dir).as_posix()
-            except ValueError:
-                prefix = source_dir.name
-            if prefix == ".":
-                prefix = ""
-
-            for entry in source_dir.rglob("*"):
-                if entry.is_dir():
-                    continue
-                entry_resolved = entry.resolve()
-                if entry_resolved in exclude_paths:
-                    continue
-                rel = entry.relative_to(source_dir).as_posix()
-                archive_name = f"{prefix}/{rel}" if prefix else rel
-                if archive_name in seen:
-                    continue
-                seen.add(archive_name)
-                path_str = self._to_long_path(entry_resolved)
-                archive.add_file_path(archive_name, path_str)
-                added += 1
-                if added % 500 == 0:
-                    output(f"已加入 {added} 个文件...")
-
-        if added == 0:
-            return False, Localizer.get().android_build_no_files_found_package
-
-        output(f"已加入 {added} 个文件，正在写入 RPA 文件...")
-        archive.save(str(out_path))
-        output("RPA 写入完成")
-        return True, Localizer.get().android_build_archive_rpa_created
 
     def _open_bin_dir(self) -> None:
         builder = self._get_builder()

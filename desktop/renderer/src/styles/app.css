@@ -344,8 +344,72 @@
     border-bottom: 1px solid var(--rb-divider);
   }
 
+  .rb-settings-head-copy { min-width: 0; flex: 1 1 auto; }
+  .rb-settings-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
   .rb-settings-title { margin: 0; font-size: 16px; font-weight: 600; }
-  .rb-settings-desc { margin: 4px 0 0; color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-settings-desc { margin: 4px 0 0; color: var(--rb-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+
+  /* SettingsGroup body：默认 16px；表单/checkbox/操作 flex 换行，避免 checkbox 横向挤成一排 */
+  .rb-settings-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    align-content: flex-start;
+    gap: 8px 16px;
+    padding: 16px;
+    min-width: 0;
+  }
+
+  /* 组内已是 SettingCard 行时去掉 body 边距，避免与行内 padding 叠成双份 */
+  .rb-settings-body:has(> .rb-setting-row) {
+    gap: 0;
+    padding: 0;
+  }
+
+  .rb-settings-body > .ant-form-item {
+    flex: 1 1 100%;
+    margin-bottom: 8px;
+    max-width: 100%;
+  }
+
+  .rb-settings-body > .ant-form-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .rb-settings-body .ant-form-item {
+    max-width: 100%;
+  }
+
+  .rb-settings-body .ant-form-item-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .rb-settings-body .ant-form-item-label,
+  .rb-settings-body .ant-form-item-control {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rb-settings-body .ant-form-item-control-input-content {
+    min-width: 0;
+  }
+
+  /* 每个 checkbox 占满一行，窄屏可换行但不被压成横向窄条 */
+  .rb-settings-body > .ant-checkbox-wrapper {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+    align-items: flex-start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .rb-settings-body > .ant-btn,
+  .rb-settings-body > .rb-tool-actions {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
 
   .rb-settings-group .rb-setting-row {
     border: 0;
@@ -362,9 +426,10 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 8px;
+    flex-wrap: wrap;
   }
 
-  .rb-banner-text { flex: 1; min-width: 0; }
+  .rb-banner-text { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
 
   .rb-dialog-actions {
     display: flex;
@@ -454,11 +519,21 @@
     grid-template-rows: minmax(0, 1fr) auto;
   }
 
+  /* 工具详情页：对齐 Qt5 工具箱层次——浅灰底 + 24px 外边距，卡片不贴窗边 */
   .rb-tool-page {
+    --rb-qt-page: color-mix(in srgb, var(--rb-chrome) 75%, var(--rb-surface));
+    --rb-qt-shadow: 0 1px 2px rgb(0 0 0 / 5%);
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 20px 24px 0;
+    gap: 14px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+    background: var(--rb-qt-page);
+  }
+
+  .rb-tool-page .rb-page-header {
+    flex-shrink: 0;
+    margin-bottom: 0;
   }
 
   .rb-tool-panel {
@@ -469,10 +544,53 @@
     overflow: hidden;
   }
 
-  .rb-tool-panel .rb-page-scroll { padding: 0 0 16px; }
-  .rb-onekey-page, .rb-archive-page, .rb-asset-page { display: flex; flex-direction: column; gap: 16px; overflow-y: auto; min-height: 0; }
-  :is(.rb-onekey-page, .rb-archive-page, .rb-asset-page) .rb-settings-body { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
-  .rb-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  /* 滚动页统一外边距/间距：左右 4px 给卡片阴影，底 16px；页级 24px 由 .rb-tool-page 承担 */
+  .rb-tool-panel > .rb-page-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 12px;
+    padding: 0 4px 16px;
+    overflow: hidden auto;
+    scrollbar-gutter: stable;
+  }
+
+  /* 详情页卡片层次对齐工具箱：白底 + 细边 + 轻阴影 */
+  .rb-tool-page .rb-settings-group {
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+
+  /* 状态 Banner：短文案按内容宽，长文案封顶；不占 flex 余高、不每条撑满 */
+  .rb-tool-page > .banner,
+  .rb-tool-panel > .rb-page-scroll > .banner {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    width: fit-content !important;
+    max-width: 100%;
+  }
+
+  .rb-tool-panel > .rb-page-scroll > .banner + .banner {
+    margin-top: -4px;
+  }
+
+  .rb-tool-blocked {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+  }
+
+  .rb-onekey-page, .rb-archive-page, .rb-asset-page { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; }
+  /* 与默认 body 同值，仅锁定这些页仍走列布局；不叠第二份 padding */
+  :is(.rb-onekey-page, .rb-archive-page, .rb-asset-page) .rb-settings-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 16px;
+  }
+  .rb-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 100%; }
   .rb-onekey-page .card-description, .rb-archive-page .card-description, .rb-asset-page .card-description { overflow-wrap: anywhere; }
   .rb-asset-page .rb-banner-text { white-space: pre-line; overflow-wrap: anywhere; }
   /* 姓名表：父级 settings-body 是 flex 列，表格根节点保持块级、不参与伸缩，宽度跟随容器以便内部横向滚动 */
@@ -2422,7 +2540,8 @@
   /* ---- 窄窗口（侧栏收起为图标栏） ---- */
   @media (max-width: 999px) {
     .rb-platform,
-    .rb-toolbox { padding: 16px 16px 12px; }
+    .rb-toolbox,
+    .rb-tool-page { padding: 16px 16px 12px; }
     .translation-layout .rb-page-scroll { padding: 16px 5px 16px 16px; }
     .translation-layout .translation-footer { gap: 6px; padding: 8px 16px; }
   }

@@ -1441,7 +1441,7 @@ def test_hook_entries_keep_static_source_missing_from_tl(tmp_path, monkeypatch):
         "collect_static_source_strings",
         lambda *args, **kwargs: {text: "script.rpy"},
     )
-    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args, **kwargs: set())
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
     monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
 
@@ -1469,7 +1469,7 @@ def test_hook_name_discovery_uses_only_rpy_candidates(tmp_path, monkeypatch):
             {"Captain Rowan"}, set(), 0,
         ),
     )
-    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args, **kwargs: set())
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
     monkeypatch.setattr(
         generator,
@@ -1755,6 +1755,54 @@ def test_candidate_sets_keep_substring_constants(tmp_path, monkeypatch):
     assert "Save your progress before continuing?" in compiled
     assert "fool around" in compiled
     assert "Fool around with the task list for a while." in compiled
+
+
+def test_tl_covered_strings_respects_custom_tl_dir(tmp_path):
+    from module.Extract.ReplaceGenerator import _get_tl_covered_strings
+
+    game = tmp_path / "game"
+    game.mkdir()
+    custom_tl = tmp_path / "custom_tl" / "chinese"
+    custom_tl.mkdir(parents=True)
+    (custom_tl / "ui.rpy").write_text(
+        'translate chinese strings:\n    old "Custom covered"\n    new "已覆盖"\n',
+        encoding="utf-8",
+    )
+
+    covered = _get_tl_covered_strings(game, "chinese", tl_dir=custom_tl)
+
+    assert "Custom covered" in covered
+
+
+def test_collect_hook_entries_use_custom_tl_dir_for_coverage(tmp_path, monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    game = tmp_path / "game"
+    game.mkdir()
+    custom_tl = tmp_path / "outside" / "chinese"
+    custom_tl.mkdir(parents=True)
+    (custom_tl / "only.rpy").write_text(
+        'translate chinese strings:\n    old "Only in custom"\n    new "仅自定义"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        generator,
+        "_collect_glossary_candidate_sets",
+        lambda *args, **kwargs: ({"Only in custom", "Missing line"}, set(), 0),
+    )
+    monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
+    monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
+
+    entries, stats = generator.collect_hook_translation_entries(
+        game,
+        "chinese",
+        write_manifest=False,
+        auto_update_glossary=False,
+        tl_dir=custom_tl,
+    )
+
+    assert stats["missing_count"] == 1
+    assert [entry["src"] for entry in entries] == ["Missing line"]
 
 
 def test_tl_coverage_includes_builtin_ui_pack(tmp_path):
@@ -2633,7 +2681,7 @@ def test_hook_entries_exclude_acronyms_and_keep_ui_words(tmp_path, monkeypatch):
         "_collect_glossary_candidate_sets",
         lambda *args, **kwargs: ({"START", "USB"}, set(), 0),
     )
-    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args: set())
+    monkeypatch.setattr(generator, "_get_tl_covered_strings", lambda *args, **kwargs: set())
     monkeypatch.setattr(generator, "_load_glossary_map", lambda: {})
     monkeypatch.setattr(generator, "_detect_missing_character_names", lambda items: set())
     monkeypatch.setattr(generator, "record_declined_candidates", lambda *a, **k: len(a[2]))

@@ -122,25 +122,72 @@ class ProjectInfo(BaseModel):
 
 # ---------- 翻译主流程 ----------
 
+# 工具箱「翻译方式」白名单；未知值由路由返回 400。
+# hook（运行时 EXE 抽取）走独立 /api/hook-translate，不在此列。
+TRANSLATION_TOOLBOX_MODES = ("direct", "source", "supplement")
+
+# 工具箱语言码：与 BaseLanguage.Enum 对齐；繁体由 traditional_chinese_enable 单独控制。
+TRANSLATION_TOOLBOX_LANG_CODES = ("ZH", "EN", "JA", "KO")
+
+
 class TranslationStartRequest(BaseModel):
     status: str = "UNTRANSLATED"
     request_id: str | None = None
+    # 当前配置所属项目 owner；与手动 target 分开。有绑定且传入时须匹配 owner，
+    # 不能拿 target.project_key 误判合法的另一个目录任务。
+    project_key: str | None = None
     # 用户对「无有效资产」的明确继续决定（渲染端 preflight 弹窗选「仍然继续」）。
     # 不带这个标志时缺资产会被拒，避免静默跑出一个没有项目背景的翻译。
     preflight_confirmed: bool = False
+    # 工具箱翻译方式：缺省则走普通 start（兼容既有调用）。
+    # 取值仅允许 direct / source / supplement；带 mode 时先建请求级候选，
+    # 受理后再落盘变更字段并发 TRANSLATION_START（拒绝时不写盘）。
+    mode: str | None = None
+    # 路径：direct 可用 game_path 或 tl_parent+tl_name；source 用 input（输出由服务端推导）；
+    # supplement 用 game_path + tl_name（可带 tl_parent 保留自定义 TL）。
+    game_path: str | None = None
+    tl_parent: str | None = None
+    tl_name: str | None = None
+    language: str | None = None  # tl 语言目录名别名，与 tl_name 等价
+    input_folder: str | None = None
+    output_folder: str | None = None  # source 忽略；服务端按 Qt 推导 _source_out
+    source_language: str | None = None
+    target_language: str | None = None
+    traditional_chinese_enable: bool | None = None
+    renpy_backup_original: bool | None = None
+    auto_write_back: bool | None = None
+    external_backup_dir: str | None = None
+    renpy_hook_incremental: bool | None = None
+    generate_empty: bool | None = None
+
+
+class TranslationReinjectRequest(BaseModel):
+    """手动把缓存译文写回选定 TL（TRANSLATION_CACHE_REINJECT）。"""
+
+    output_folder: str | None = None
+    # 与 direct 相同的选定 TL 解析：显式 tl_parent+tl_name 优先。
+    tl_parent: str | None = None
+    tl_name: str | None = None
+    game_path: str | None = None
+    project_key: str | None = None
+    request_id: str | None = None
 
 
 class TranslationStartResponse(BaseModel):
     """受理结果。
 
-    ``accepted`` 只表示请求已被受理并投递到事件总线；线程是否真的起来、
+    ``accepted`` 对无备份的 mode/普通 start 表示事件已投递；线程是否真的起来、
     run_id 是多少，仍以 WS 上的 ``TRANSLATION_START_RESULT`` 为准。
+    source 前置备份时 ``job`` 非空，``stage=backing_up``，翻译启动以 job 终态为准。
     """
 
     accepted: bool
     request_id: str = ""
     reason: str = ""
     detail: str = ""
+    warnings: list[str] = []
+    stage: str = ""
+    job: dict[str, Any] | None = None
 
 
 class TranslationStateResponse(BaseModel):

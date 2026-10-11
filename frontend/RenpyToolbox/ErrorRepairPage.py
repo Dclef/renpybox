@@ -458,8 +458,8 @@ class ErrorRepairPage(Base, QWidget):
         if Path(output_path).suffix.lower() != ".xlsx":
             output_path += ".xlsx"
 
-        ErrorRepairer().export_error_report(self._last_scan_report, output_path)
-        if Path(output_path).is_file():
+        ok = ErrorRepairer().export_error_report(self._last_scan_report, output_path)
+        if ok and Path(output_path).is_file():
             InfoBar.success(Localizer.localize("导出完成", "Export Complete"), Localizer.localize("报告已保存到 {path}", "The report was saved to {path}").format(path=output_path), parent=self)
         else:
             InfoBar.error(Localizer.localize("导出失败", "Export Failed"), Localizer.localize("未能生成报告文件", "The report file could not be generated."), parent=self)
