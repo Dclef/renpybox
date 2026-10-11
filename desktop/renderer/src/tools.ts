@@ -6,6 +6,7 @@
  * 同名字段：这些工具在没有项目时入口是禁用的。
  */
 
+import { TOOL_REQUIRES_PROJECT } from './toolRequiresProject.mjs';
 import archive from './icons/toolbox/archive.svg?raw';
 import bookOpenText from './icons/toolbox/book-open-text.svg?raw';
 import braces from './icons/toolbox/braces.svg?raw';
@@ -100,7 +101,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '继续翻译',
     description: '检测到上次未完成的翻译任务',
     group: 'flow',
-    requiresProject: false,
+    requiresProject: true,
     icon: 'CONTINUE',
     step: 0,
     keywords: ['恢复', '未完成', '进度', 'resume'],
@@ -172,7 +173,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: 'RPY 抽取设置',
     description: '分类管理源码和 TL 的内置抽取、自定义正则及使用方案',
     group: 'translate',
-    requiresProject: false,
+    requiresProject: TOOL_REQUIRES_PROJECT.rpy_extraction_settings,
     icon: 'EXTRACT_TL',
     step: 0,
     keywords: ['rpy', '抽取', '正则', '规则', 'regex'],
@@ -182,7 +183,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '翻译抽取到 TL',
     description: '使用官方抽取、运行时抽取等高级抽取方式',
     group: 'translate',
-    requiresProject: false,
+    requiresProject: TOOL_REQUIRES_PROJECT.extract_to_tl,
     icon: 'EXTRACT_TL',
     step: 0,
     keywords: ['tl', '抽取', 'extract', '官方抽取', '运行时抽取'],
@@ -192,7 +193,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '直接翻译 RPY',
     description: '直接翻译 tl/*.rpy 文件',
     group: 'translate',
-    requiresProject: false,
+    requiresProject: TOOL_REQUIRES_PROJECT.direct_rpy_translate,
     icon: 'DIRECT_RPY',
     step: 0,
     keywords: ['rpy', 'tl', '脚本', 'translate'],
@@ -202,7 +203,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: 'HOOK 翻译',
     description: '运行游戏并抽取文本后直接翻译',
     group: 'translate',
-    requiresProject: true,
+    requiresProject: TOOL_REQUIRES_PROJECT.hook_translate,
     icon: 'HOOK',
     step: 0,
     keywords: ['hook', '钩子', '运行时', '抽取'],
@@ -212,7 +213,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '源码翻译',
     description: '直接翻译 game/*.rpy 源码',
     group: 'translate',
-    requiresProject: true,
+    requiresProject: TOOL_REQUIRES_PROJECT.source_translate,
     icon: 'SOURCE',
     step: 0,
     keywords: ['rpy', '源码', 'game', '脚本', 'source'],
@@ -222,7 +223,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '补全翻译',
     description: '扫描漏提文本并生成补全脚本',
     group: 'translate',
-    requiresProject: true,
+    requiresProject: TOOL_REQUIRES_PROJECT.hook_supplement,
     icon: 'SUPPLEMENT',
     step: 0,
     keywords: ['hook', '补丁', '漏翻', '漏提', 'supplement'],
@@ -232,7 +233,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '文本提取 JSON',
     description: '导出 JSON 供人工翻译，再导入并应用到 TL',
     group: 'translate',
-    requiresProject: false,
+    requiresProject: TOOL_REQUIRES_PROJECT.extract_json,
     icon: 'JSON',
     step: 0,
     keywords: ['json', '导出', '导入', '人工翻译', 'excel'],
@@ -244,7 +245,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '术语表',
     description: '管理当前项目专有名词对照，统一译法',
     group: 'asset',
-    requiresProject: false,
+    requiresProject: true,
     icon: 'GLOSSARY',
     step: 0,
     keywords: ['术语', '词表', 'glossary', 'csv', 'excel'],

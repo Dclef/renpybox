@@ -7,12 +7,13 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.jobs import Job
 from module.Cache.CacheManager import CacheManager
 from module.Engine.Engine import Engine
+from module.Extract.GameExtractionRules import project_key as derive_project_key
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Tool.ArchiveOps import (
@@ -73,16 +74,38 @@ def _project_key(config: Any) -> str:
     return paths.project_key
 
 
+def _archive_target_key(path: str | Path) -> str:
+    """由操作路径派生任务键，与绑定项目 owner 分离。"""
+    raw = Path(path).expanduser()
+    try:
+        game_dir = resolve_game_dir(raw)
+        root = game_dir.parent if game_dir.name.casefold() == "game" else game_dir
+        return derive_project_key(root)
+    except (FileNotFoundError, ValueError, OSError):
+        try:
+            resolved = raw.resolve(strict=False)
+        except OSError:
+            resolved = raw
+        return derive_project_key(resolved)
+
+
 def _latest_archive_job(request: Request, project_key: str | None = None) -> Job | None:
     key = project_key if project_key is not None else _project_key(request.app.state.config)
-    return next(
-        (
-            job for job in request.app.state.jobs.list()
-            if job.kind in ARCHIVE_KINDS and isinstance(job.result, dict)
-            and job.result.get("project_key") == key
-        ),
-        None,
-    )
+    jobs = [
+        job for job in request.app.state.jobs.list()
+        if job.kind in ARCHIVE_KINDS and isinstance(job.result, dict)
+    ]
+    if key:
+        return next(
+            (
+                job for job in jobs
+                if job.result.get("project_key") == key
+                or job.result.get("owner_project_key") == key
+            ),
+            None,
+        )
+    # 未绑定：返回最近一次 archive 任务，避免独立目标被空 key 找不到
+    return jobs[0] if jobs else None
 
 
 def _acquire_engine() -> Engine:
@@ -92,11 +115,13 @@ def _acquire_engine() -> Engine:
     return engine
 
 
-def _ensure_path_snapshot(body_key: str, config: Any) -> str:
-    current = _project_key(config)
-    if body_key and body_key != current:
+def _resolve_archive_keys(body_key: str, config: Any, path: str | Path) -> tuple[str, str]:
+    """返回 (target_key, owner_key)。body_key 可匹配目标或 owner。"""
+    owner = _project_key(config)
+    target = _archive_target_key(path)
+    if body_key and body_key not in {target, owner}:
         raise HTTPException(status_code=409, detail="项目已切换，请重新加载后再操作")
-    return current or body_key
+    return target, owner
 
 
 async def _run_archive_job(
@@ -109,6 +134,7 @@ async def _run_archive_job(
     path_label: str,
     output_file: str | None = None,
     cancellable: bool = False,
+    owner_project_key: str = "",
 ) -> dict:
     engine = _acquire_engine()
     manager = request.app.state.jobs
@@ -120,6 +146,7 @@ async def _run_archive_job(
         raise
     job.result = {
         "project_key": project_key,
+        "owner_project_key": owner_project_key,
         "message": message,
         "worker_active": True,
         "path": path_label,
@@ -198,24 +225,35 @@ async def _run_archive_job(
 
 
 @router.get("")
-def read_archive(request: Request) -> dict:
-    """返回当前项目最近一次解包/反编译/打包任务。"""
-    job = _latest_archive_job(request)
-    return {"job": job.snapshot() if job else None}
+def read_archive(request: Request, path: str = Query(default="")) -> dict:
+    """按操作路径或绑定项目返回最近 archive 任务。"""
+    raw = str(path or "").strip()
+    with CacheManager.LOCK:
+        owner = _project_key(request.app.state.config)
+    if raw:
+        key = _archive_target_key(raw)
+        job = _latest_archive_job(request, key)
+        return {"job": job.snapshot() if job else None, "project_key": key, "owner_project_key": owner}
+    job = _latest_archive_job(request, owner if owner else None)
+    return {
+        "job": job.snapshot() if job else None,
+        "project_key": owner,
+        "owner_project_key": owner,
+    }
 
 
 @router.post("/unpack")
 async def start_unpack(request: Request, body: UnpackBody) -> dict:
     """解包 RPA；永不删除源档。"""
-    with CacheManager.LOCK:
-        config = request.app.state.config
-        project_key = _ensure_path_snapshot(body.project_key, config)
     try:
         game_dir = resolve_game_dir(body.path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not game_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"游戏目录不存在：{game_dir}")
+    with CacheManager.LOCK:
+        config = request.app.state.config
+        project_key, owner_key = _resolve_archive_keys(body.project_key, config, game_dir)
     snapshot_dir = str(game_dir)
 
     def compute(check_cancel, progress):
@@ -243,6 +281,7 @@ async def start_unpack(request: Request, body: UnpackBody) -> dict:
         message=Localizer.get().pack_unpack_preparing,
         compute=compute,
         path_label=snapshot_dir,
+        owner_project_key=owner_key,
     )
 
 
@@ -251,14 +290,14 @@ async def start_decompile(request: Request, body: DecompileBody) -> dict:
     """反编译 rpyc；覆盖已有 rpy 需显式确认。"""
     if body.overwrite and not body.confirm_overwrite:
         raise HTTPException(status_code=400, detail="覆盖已有 .rpy 需要 confirm_overwrite=true")
-    with CacheManager.LOCK:
-        config = request.app.state.config
-        project_key = _ensure_path_snapshot(body.project_key, config)
     try:
-        game_dir = resolve_game_dir(body.path)
+        resolve_game_dir(body.path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot_target = str(Path(body.path).expanduser().resolve())
+    with CacheManager.LOCK:
+        config = request.app.state.config
+        project_key, owner_key = _resolve_archive_keys(body.project_key, config, snapshot_target)
 
     def compute(check_cancel, progress):
         check_cancel()
@@ -277,6 +316,7 @@ async def start_decompile(request: Request, body: DecompileBody) -> dict:
         message=Localizer.get().pack_unpack_preparing,
         compute=compute,
         path_label=snapshot_target,
+        owner_project_key=owner_key,
     )
 
 
@@ -285,15 +325,15 @@ async def start_pack(request: Request, body: PackBody) -> dict:
     """打包目录为 RPA；写入前需 confirm。"""
     if not body.confirm:
         raise HTTPException(status_code=400, detail="打包会写入输出文件，需要 confirm=true")
-    with CacheManager.LOCK:
-        config = request.app.state.config
-        project_key = _ensure_path_snapshot(body.project_key, config)
     try:
         source = Path(body.source_dir).expanduser().resolve()
         output = resolve_pack_output(source, body.output_file)
         max_part = None if body.max_part_size is None else parse_rpa_size_limit(body.max_part_size)
     except (FileNotFoundError, FileExistsError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with CacheManager.LOCK:
+        config = request.app.state.config
+        project_key, owner_key = _resolve_archive_keys(body.project_key, config, source)
     snapshot_source = str(source)
     snapshot_output = str(output)
 
@@ -334,19 +374,20 @@ async def start_pack(request: Request, body: PackBody) -> dict:
         path_label=snapshot_source,
         output_file=snapshot_output,
         cancellable=True,
+        owner_project_key=owner_key,
     )
 
 
 @router.post("/cleanup-temp")
 async def start_cleanup_temp(request: Request, body: ArchivePathBody) -> dict:
     """按白名单清理解包/反编译遗留的临时文件；逐项检查取消。"""
-    with CacheManager.LOCK:
-        config = request.app.state.config
-        project_key = _ensure_path_snapshot(body.project_key, config)
     try:
         game_dir = resolve_game_dir(body.path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with CacheManager.LOCK:
+        config = request.app.state.config
+        project_key, owner_key = _resolve_archive_keys(body.project_key, config, game_dir)
     snapshot_dir = str(game_dir)
 
     def compute(check_cancel, progress):
@@ -368,19 +409,20 @@ async def start_cleanup_temp(request: Request, body: ArchivePathBody) -> dict:
         message=Localizer.get().pack_unpack_preparing_cleanup,
         compute=compute,
         path_label=snapshot_dir,
+        owner_project_key=owner_key,
     )
 
 
 @router.post("/cleanup-rpyc")
 async def start_cleanup_rpyc(request: Request, body: ArchivePathBody) -> dict:
     """删除已有同名 .rpy 的 .rpyc；开始删除前可取消。"""
-    with CacheManager.LOCK:
-        config = request.app.state.config
-        project_key = _ensure_path_snapshot(body.project_key, config)
     try:
         game_dir = resolve_game_dir(body.path)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with CacheManager.LOCK:
+        config = request.app.state.config
+        project_key, owner_key = _resolve_archive_keys(body.project_key, config, game_dir)
     snapshot_dir = str(game_dir)
 
     def compute(check_cancel, progress):
@@ -395,4 +437,5 @@ async def start_cleanup_rpyc(request: Request, body: ArchivePathBody) -> dict:
         message=Localizer.get().pack_unpack_preparing_cleanup,
         compute=compute,
         path_label=snapshot_dir,
+        owner_project_key=owner_key,
     )

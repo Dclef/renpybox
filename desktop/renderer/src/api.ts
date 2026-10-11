@@ -11,11 +11,15 @@ import type {
   AgentThinkingLevel,
   ChangelogResponse,
   HealthInfo,
+  HookTranslateStartOptions,
+  HookTranslateStartResponse,
   JobSnapshot,
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
   TokenEstimate,
+  TranslationReinjectOptions,
+  TranslationStartOptions,
   TranslationStartResponse,
   TranslationState,
   UpdateState,
@@ -253,14 +257,39 @@ export function startTranslation(
   status: StartableProjectStatus,
   requestId?: string,
   preflightConfirmed = false,
+  options?: TranslationStartOptions,
 ): Promise<TranslationStartResponse> {
+  const opts = options ?? {};
+  const body: Record<string, unknown> = {
+    status,
+    request_id: opts.requestId ?? requestId ?? null,
+    preflight_confirmed: opts.preflightConfirmed ?? preflightConfirmed,
+  };
+  // 仅在显式带 mode 时附加工具箱字段，避免影响普通 start 契约。
+  if (opts.mode) {
+    body.mode = opts.mode;
+    if (opts.project_key != null) body.project_key = opts.project_key;
+    if (opts.game_path != null) body.game_path = opts.game_path;
+    if (opts.tl_parent != null) body.tl_parent = opts.tl_parent;
+    if (opts.tl_name != null) body.tl_name = opts.tl_name;
+    if (opts.language != null) body.language = opts.language;
+    if (opts.input_folder != null) body.input_folder = opts.input_folder;
+    // source 输出由服务端推导；前端不再传可编辑 output_folder。
+    if (opts.mode !== 'source' && opts.output_folder != null) body.output_folder = opts.output_folder;
+    if (opts.source_language != null) body.source_language = opts.source_language;
+    if (opts.target_language != null) body.target_language = opts.target_language;
+    if (opts.traditional_chinese_enable != null) {
+      body.traditional_chinese_enable = opts.traditional_chinese_enable;
+    }
+    if (opts.renpy_backup_original != null) body.renpy_backup_original = opts.renpy_backup_original;
+    if (opts.auto_write_back != null) body.auto_write_back = opts.auto_write_back;
+    if (opts.external_backup_dir != null) body.external_backup_dir = opts.external_backup_dir;
+    if (opts.renpy_hook_incremental != null) body.renpy_hook_incremental = opts.renpy_hook_incremental;
+    if (opts.generate_empty != null) body.generate_empty = opts.generate_empty;
+  }
   return request<TranslationStartResponse>('/api/translation/start', {
     method: 'POST',
-    body: JSON.stringify({
-      status,
-      request_id: requestId ?? null,
-      preflight_confirmed: preflightConfirmed,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -270,6 +299,54 @@ export function stopTranslation(): Promise<{ ok: boolean; status: string }> {
 
 export function exportTranslation(): Promise<{ ok: boolean }> {
   return request('/api/translation/export', { method: 'POST' });
+}
+
+export function reinjectTranslation(
+  options: string | TranslationReinjectOptions,
+): Promise<{ ok: boolean; output_folder: string }> {
+  const body = typeof options === 'string'
+    ? { output_folder: options }
+    : options;
+  return request('/api/translation/reinject', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function getHookTranslateStatus(
+  projectKey?: string,
+  requestId?: string,
+): Promise<{
+  project_key: string;
+  job: JobSnapshot | null;
+}> {
+  const params = new URLSearchParams();
+  if (projectKey) params.set('project_key', projectKey);
+  if (requestId) params.set('request_id', requestId);
+  const q = params.toString() ? `?${params.toString()}` : '';
+  return request(`/api/hook-translate/status${q}`);
+}
+
+export function startHookTranslate(
+  options: HookTranslateStartOptions,
+): Promise<HookTranslateStartResponse> {
+  return request('/api/hook-translate/start', {
+    method: 'POST',
+    body: JSON.stringify(options),
+  });
+}
+
+export function stopHookTranslate(options?: {
+  projectKey?: string;
+  requestId?: string;
+  runId?: number;
+}): Promise<{ ok: boolean; stage?: string; job_id?: string }> {
+  const params = new URLSearchParams();
+  if (options?.projectKey) params.set('project_key', options.projectKey);
+  if (options?.requestId) params.set('request_id', options.requestId);
+  if (options?.runId) params.set('run_id', String(options.runId));
+  const q = params.toString() ? `?${params.toString()}` : '';
+  return request(`/api/hook-translate/stop${q}`, { method: 'POST' });
 }
 
 /** 只重置失败条目，不启动翻译；detail 兼容旧后端可能缺省。 */

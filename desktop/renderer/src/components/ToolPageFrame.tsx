@@ -5,6 +5,10 @@ import { ArrowLeft } from 'lucide-react';
 import { useT } from '../i18n';
 import { Banner, PageHeader } from '../ui';
 
+/**
+ * 工具详情页外框：对齐 Qt5 工具箱子页层次。
+ * 外边距/底色由 .rb-tool-page 负责；可滚动内容落在 .rb-tool-panel，避免卡片贴边。
+ */
 export function ToolPageFrame(props: {
   title: string;
   description: string;
@@ -16,7 +20,7 @@ export function ToolPageFrame(props: {
   const { title, description, blocked, onBack, onOpenProject, children } = props;
   const t = useT();
   return (
-    <div className="rb-page rb-tool-page">
+    <div className="rb-page rb-tool-page" data-rb-tool-frame="">
       <PageHeader
         title={title}
         description={description}
@@ -24,8 +28,10 @@ export function ToolPageFrame(props: {
       />
       {blocked ? (
         <Banner tone="warning">
-          {t('app_tool_needs_project')}
-          <Button type="default" onClick={onOpenProject}>{t('app_go_project_settings')}</Button>
+          <div className="rb-tool-blocked">
+            <span>{t('app_tool_needs_project')}</span>
+            <Button type="default" onClick={onOpenProject}>{t('app_go_project_settings')}</Button>
+          </div>
         </Banner>
       ) : (
         <div className="rb-tool-panel">{children}</div>

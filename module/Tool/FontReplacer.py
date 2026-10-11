@@ -7,13 +7,16 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import time
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 
 from base.LogManager import LogManager
 from base.PathHelper import get_resource_path
+from module.File.AtomicWrite import atomic_write_text
 
 
 class FontReplacer:
@@ -199,6 +202,29 @@ class FontReplacer:
 
     # ========== 备份与恢复功能 ==========
 
+    # Ren'Py 可加载的脚本扩展名；备份时一律加 .bak，避免备份树被执行
+    _BACKUP_SCRIPT_SUFFIXES = {".rpy", ".rpym", ".rpyc", ".rpymc"}
+
+    @classmethod
+    def _backup_storage_rel(cls, rel_path: str) -> str:
+        """脚本备份一开始就带 .bak，避免 Ren'Py 加载 fonts_backup 下的源码/编译脚本。"""
+        suffix = Path(rel_path).suffix.lower()
+        if suffix in cls._BACKUP_SCRIPT_SUFFIXES:
+            return f"{rel_path}.bak"
+        return rel_path
+
+    def _unique_backup_dir(self, backup_root: Path, prefix: str = "backup") -> tuple[Path, str]:
+        """生成唯一备份目录名，避免同一秒多次操作互相覆盖。"""
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        name = f"{prefix}_{stamp}"
+        candidate = backup_root / name
+        counter = 1
+        while candidate.exists() or candidate.is_symlink():
+            name = f"{prefix}_{stamp}_{counter}"
+            candidate = backup_root / name
+            counter += 1
+        return candidate, name
+
     def create_backup(
         self,
         game_dir: str,
@@ -215,11 +241,13 @@ class FontReplacer:
         Returns:
             (是否成功, 消息, 备份目录名)
         """
+        backup_name = ""
+        backup_dir: Optional[Path] = None
         try:
             game_path = self._resolve_game_dir(game_dir)
             backup_root = game_path / self.BACKUP_DIR_NAME
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_dir = backup_root / f"backup_{timestamp}"
+            backup_dir, backup_name = self._unique_backup_dir(backup_root, "backup")
+            timestamp = backup_name.removeprefix("backup_")
             
             # 创建备份目录
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -244,7 +272,14 @@ class FontReplacer:
                         rel_path = str(script_path.relative_to(game_path)).replace("\\", "/")
                         files_to_backup.append((rel_path, str(script_path)))
                     except Exception as e:
-                        self.logger.warning(f"检查待备份脚本失败 {script_path}: {e}")
+                        # 探测读失败绝不能当「无待备份」继续；禁止随后复制字体/改源码
+                        self.logger.error(f"检查待备份脚本失败 {script_path}: {e}")
+                        return (
+                            False,
+                            f"检查待备份脚本失败 {script_path}: {e}；"
+                            f"可恢复路径: {backup_dir}",
+                            backup_name,
+                        )
 
             deduplicated_files = {
                 rel_path: abs_path
@@ -254,47 +289,73 @@ class FontReplacer:
                 self.logger.warning("未发现需要备份的字体或脚本")
                 return True, "未发现需要备份的文件", ""
             
-            # 备份字体文件
+            # 备份字体文件；脚本一开始就以 .bak 落盘，防止被 Ren'Py 执行
             backed_up_files = []
+            copy_errors: List[str] = []
             for rel_path, abs_path in deduplicated_files.items():
                 try:
-                    dest = backup_dir / "original" / rel_path
+                    storage_rel = self._backup_storage_rel(rel_path)
+                    dest = backup_dir / "original" / storage_rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(abs_path, dest)
                     backed_up_files.append({
                         "rel_path": rel_path,
+                        "storage_rel": storage_rel,
                         "original_path": abs_path,
                         "backup_path": str(dest),
                         "size": os.path.getsize(abs_path),
                     })
                 except Exception as e:
                     self.logger.warning(f"备份文件失败 {rel_path}: {e}")
-            
-            # 生成备份清单
+                    copy_errors.append(f"{rel_path}: {e}")
+
+            manifest_status = "failed" if copy_errors else "success"
             manifest = {
                 "timestamp": timestamp,
                 "source_font": source_font,
                 "game_dir": str(game_path),
                 "files": backed_up_files,
-                "status": "success",
+                "status": manifest_status,
+                "errors": copy_errors,
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
-            
+
             manifest_path = backup_dir / "fonts_manifest.json"
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, ensure_ascii=False, indent=2)
-            
+            try:
+                with open(manifest_path, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                # .bak 已落盘：必须保留可恢复路径，绝不能丢 backup_name
+                self.logger.error(f"写入备份清单失败（备份文件已保留）: {e}")
+                return (
+                    False,
+                    f"备份清单写入失败，可恢复路径: {backup_dir}",
+                    backup_name,
+                )
+
+            if copy_errors:
+                self.logger.error(
+                    f"字体备份不完整，已拒绝继续修改: {backup_dir} "
+                    f"({len(backed_up_files)}/{len(deduplicated_files)}；可恢复路径保留)"
+                )
+                return (
+                    False,
+                    f"备份失败（{len(copy_errors)} 个文件），可恢复路径: {backup_dir}",
+                    backup_name,
+                )
+
             self.logger.info(f"字体替换备份完成: {backup_dir} ({len(backed_up_files)} 个文件)")
-            
-            # 清理旧备份
+
+            # 仅完整成功时清理旧备份，避免误删可恢复副本
             self._cleanup_old_backups(backup_root)
-            
-            return True, f"备份完成，共 {len(backed_up_files)} 个文件", f"backup_{timestamp}"
-            
+
+            return True, f"备份完成，共 {len(backed_up_files)} 个文件", backup_name
+
         except Exception as e:
             self.logger.error(f"创建字体备份失败: {e}")
+            if backup_name and backup_dir is not None:
+                return False, f"{e}；可恢复路径: {backup_dir}", backup_name
             return False, str(e), ""
-
     def list_backups(self, game_dir: str) -> List[Dict]:
         """
         列出所有可用备份
@@ -367,27 +428,53 @@ class FontReplacer:
                 manifest = json.load(f)
             
             files = manifest.get("files", [])
+            if not files:
+                return False, "备份清单为空，无法恢复"
             restored_count = 0
-            
+            restore_errors: List[str] = []
+            manifest_incomplete = (
+                str(manifest.get("status") or "").lower() == "failed"
+                or bool(manifest.get("errors"))
+            )
+
             for file_info in files:
                 rel_path = file_info.get("rel_path")
-                backup_path = backup_dir / "original" / rel_path
+                if not rel_path:
+                    restore_errors.append("清单项缺少 rel_path")
+                    continue
+                storage_rel = file_info.get("storage_rel") or self._backup_storage_rel(rel_path)
+                backup_path = Path(file_info["backup_path"]) if file_info.get("backup_path") else backup_dir / "original" / storage_rel
+                # 兼容旧清单：脚本曾按原扩展名落盘
+                if not backup_path.exists():
+                    legacy = backup_dir / "original" / rel_path
+                    if legacy.exists():
+                        backup_path = legacy
                 target_path = game_path / rel_path
-                
+
                 if not backup_path.exists():
                     self.logger.warning(f"备份文件不存在: {backup_path}")
+                    restore_errors.append(f"缺失: {rel_path}")
                     continue
-                
+
                 try:
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(backup_path, target_path)
                     restored_count += 1
                 except Exception as e:
                     self.logger.warning(f"恢复文件失败 {rel_path}: {e}")
-            
+                    restore_errors.append(f"{rel_path}: {e}")
+
             self.logger.info(f"字体恢复完成: {restored_count}/{len(files)} 个文件")
+            # 备份本身不完整或恢复有失败：可恢复可用部分，但绝不能宣称完整恢复
+            if restore_errors or manifest_incomplete:
+                reason = restore_errors[0] if restore_errors else "备份清单标记为不完整"
+                return (
+                    False,
+                    f"部分恢复（{restored_count}/{len(files)}）：{reason}；"
+                    f"备份路径保留: {backup_dir}",
+                )
             return True, f"恢复完成，共 {restored_count} 个文件"
-            
+
         except Exception as e:
             self.logger.error(f"恢复备份失败: {e}")
             return False, str(e)
@@ -433,10 +520,17 @@ class FontReplacer:
         Returns:
             (是否成功, 消息, 详情 {backup_name, replaced_count, ...})
         """
-        details = {
+        details: Dict = {
             "backup_name": "",
             "replaced_files": 0,
             "replaced_count": 0,
+            "failed_files": [],
+            "font_copied": False,
+            "font_created": False,
+            "font_dest": "",
+            "scripts_written": False,
+            "partial": False,
+            "font_residue": "",
         }
         
         try:
@@ -464,44 +558,155 @@ class FontReplacer:
                     source_font_path,
                     fonts_to_replace,
                 )
+                details["backup_name"] = backup_name or ""
                 if not success:
+                    # 不完整备份也带上可恢复路径，且绝不继续改源码
                     return False, f"备份失败: {msg}", details
-                details["backup_name"] = backup_name
-            
-            # 2. 复制新字体到 game/fonts
+
+            # 2. 复制新字体到 game/fonts（先记录是否新建，供失败清理）
             font_name = Path(source_font_path).name
+            dest_probe = Path(game_path) / "fonts" / font_name
+            existed_before = dest_probe.is_file()
+            source_resolved = Path(source_font_path)
+            already_in_place = False
+            if existed_before:
+                try:
+                    already_in_place = source_resolved.resolve() == dest_probe.resolve()
+                except OSError:
+                    already_in_place = False
             dest_path = self.ensure_font_in_game(str(game_path), source_font_path, font_name)
             if not dest_path:
-                # 备份恢复
-                if create_backup and details["backup_name"]:
-                    self.restore_backup(game_dir, details["backup_name"])
-                return False, "复制字体文件失败", details
-            
+                return False, self._failure_after_backup(
+                    "复制字体文件失败",
+                    game_dir,
+                    details,
+                    create_backup=create_backup,
+                ), details
+            details["font_dest"] = dest_path
+            if not already_in_place:
+                details["font_copied"] = True
+                details["font_created"] = not existed_before
+
             new_font_ref = f"fonts/{font_name}"
-            
+
             # 3. 每个脚本只读取和写入一次，避免按字体数量重复扫描目录。
-            total_files, total_replacements = self.replace_fonts_in_folder(
+            total_files, total_replacements, failed_files = self.replace_fonts_in_folder(
                 str(game_path),
                 fonts_to_replace,
                 new_font_ref,
                 encoding="utf-8",
             )
-            
+
             details["replaced_files"] = total_files
             details["replaced_count"] = total_replacements
-            
+            details["failed_files"] = list(failed_files)
+            details["scripts_written"] = total_files > 0
+
+            if failed_files:
+                details["partial"] = True
+                fail_msg = (
+                    f"部分替换失败：成功 {total_files} 个文件/{total_replacements} 处，"
+                    f"失败 {len(failed_files)} 个（{failed_files[0]}）"
+                )
+                self.logger.error(fail_msg)
+                return False, self._failure_after_backup(
+                    fail_msg,
+                    game_dir,
+                    details,
+                    create_backup=create_backup,
+                ), details
+
             self.logger.info(
                 f"字体替换完成: {total_files} 个文件, {total_replacements} 处替换"
             )
-            
+
             return True, f"替换完成，共 {total_replacements} 处", details
-            
+
         except Exception as e:
             self.logger.error(f"安全替换字体失败: {e}")
-            # 尝试恢复
-            if create_backup and details.get("backup_name"):
-                self.restore_backup(game_dir, details["backup_name"])
-            return False, str(e), details
+            details["partial"] = bool(
+                details.get("font_copied")
+                or details.get("scripts_written")
+                or details.get("replaced_files")
+                or details.get("failed_files")
+            )
+            return False, self._failure_after_backup(
+                str(e),
+                game_dir,
+                details,
+                create_backup=create_backup,
+            ), details
+
+    def _remove_created_font(self, details: Dict) -> bool:
+        """尝试移除本次新建的字体文件；成功返回 True，残留则写入 details。"""
+        if not details.get("font_created"):
+            return True
+        font_dest = str(details.get("font_dest") or "")
+        if not font_dest:
+            return True
+        path = Path(font_dest)
+        if not path.is_file():
+            return True
+        try:
+            path.unlink()
+            details["font_copied"] = False
+            details["font_created"] = False
+            return True
+        except Exception as e:
+            self.logger.warning(f"清理新建字体失败 {font_dest}: {e}")
+            details["font_residue"] = font_dest
+            return False
+
+    def _failure_after_backup(
+        self,
+        message: str,
+        game_dir: str,
+        details: Dict,
+        *,
+        create_backup: bool,
+    ) -> str:
+        """失败消息：仅在脚本与新建字体都回到原状时声明完整恢复。"""
+        backup_name = str(details.get("backup_name") or "")
+        restored = False
+        restore_msg = ""
+        if create_backup and backup_name:
+            restored, restore_msg = self.restore_backup(game_dir, backup_name)
+            details["restore_message"] = restore_msg
+        else:
+            details["restored"] = False
+
+        # 恢复成功：去掉本次新建字体；无备份且尚未改脚本时也尽量撤回复制
+        scripts_touched = bool(
+            details.get("scripts_written")
+            or int(details.get("replaced_files") or 0) > 0
+        )
+        should_drop_font = restored or (not scripts_touched and bool(details.get("font_created")))
+        font_clean = True
+        if should_drop_font:
+            font_clean = self._remove_created_font(details)
+
+        if restored and font_clean:
+            details["restored"] = True
+            details["partial"] = False
+            return f"{message}；已从备份完整恢复：{restore_msg}"
+        if restored and not font_clean:
+            details["restored"] = False
+            details["partial"] = True
+            residue = details.get("font_residue") or details.get("font_dest") or ""
+            return (
+                f"{message}；脚本已从备份恢复，但新字体仍残留: {residue}；"
+                f"备份路径: fonts_backup/{backup_name}"
+            )
+        details["restored"] = False
+        if create_backup and backup_name:
+            return (
+                f"{message}；自动恢复未成功（{restore_msg}），"
+                f"请手动从 fonts_backup/{backup_name} 恢复"
+            )
+        if details.get("font_residue") or (details.get("font_copied") and not font_clean):
+            residue = details.get("font_residue") or details.get("font_dest") or ""
+            return f"{message}；新字体可能残留: {residue}"
+        return message
 
     def replace_in_file(
         self,
@@ -536,7 +741,7 @@ class FontReplacer:
         target_font: str,
         encoding: str = "utf-8",
     ) -> Tuple[bool, int]:
-        """一次性替换单个脚本中的多个字体引用。"""
+        """一次性替换单个脚本中的多个字体引用。写回使用同目录临时文件替换，避免先 truncate。"""
         try:
             with open(file_path, "r", encoding=encoding, errors="ignore") as f:
                 content = f.read()
@@ -552,8 +757,7 @@ class FontReplacer:
                 total_replacements += count
 
             if total_replacements > 0:
-                with open(file_path, "w", encoding=encoding) as f:
-                    f.write(new_content)
+                atomic_write_text(file_path, new_content, encoding=encoding)
                 self.logger.info(f"替换字体: {file_path} ({total_replacements} 处)")
 
             return True, total_replacements
@@ -615,13 +819,18 @@ class FontReplacer:
         target_font: str,
         encoding: str = "utf-8",
         file_extensions: List[str] = None,
-    ) -> Tuple[int, int]:
-        """遍历目录一次并替换所有指定字体。"""
+    ) -> Tuple[int, int, List[str]]:
+        """遍历目录一次并替换所有指定字体。
+
+        Returns:
+            (成功写入的文件数, 总替换次数, 失败文件相对路径列表)
+        """
         if file_extensions is None:
             file_extensions = [".rpy", ".rpym"]
 
         success_count = 0
         total_replacements = 0
+        failed_files: List[str] = []
         base_dir = Path(self._resolve_game_dir(folder_path))
         files = self._iter_game_files(base_dir, file_extensions)
         self.logger.info(f"找到 {len(files)} 个脚本文件")
@@ -633,12 +842,22 @@ class FontReplacer:
                 target_font,
                 encoding,
             )
-            if success and count > 0:
+            if not success:
+                try:
+                    rel = str(file_path.relative_to(base_dir)).replace("\\", "/")
+                except ValueError:
+                    rel = str(file_path)
+                failed_files.append(rel)
+                continue
+            if count > 0:
                 success_count += 1
                 total_replacements += count
 
-        self.logger.info(f"字体替换完成: {success_count} 个文件, {total_replacements} 处替换")
-        return success_count, total_replacements
+        self.logger.info(
+            f"字体替换完成: {success_count} 个文件, {total_replacements} 处替换"
+            + (f", {len(failed_files)} 个失败" if failed_files else "")
+        )
+        return success_count, total_replacements, failed_files
 
     def _extract_font_file_tokens(self, blob: str) -> List[str]:
         """从 .rpyc 解码内容中捞取字体文件名 token（编译后字符串不再带引号）。"""
@@ -751,16 +970,42 @@ class FontReplacer:
 
         return None
 
+    def _unlink_font_temp(self, temp_path: Path) -> bool:
+        """删除字体临时文件。
+
+        Windows 上 shutil.copy 会复制源只读属性，直接 unlink 会 PermissionError。
+        先清只读再删；清理失败必须如实记录，不得静默吞掉后假装完成。
+        """
+        try:
+            if not temp_path.exists():
+                return True
+            try:
+                # 去掉只读位，保留可读，避免 Windows 拒绝删除
+                os.chmod(temp_path, stat.S_IWRITE | stat.S_IREAD)
+            except OSError as chmod_err:
+                self.logger.warning(
+                    f"清除字体临时文件只读属性失败 {temp_path}: {chmod_err}"
+                )
+            temp_path.unlink(missing_ok=True)
+            return True
+        except Exception as e:
+            self.logger.error(f"清理字体临时文件失败 {temp_path}: {e}")
+            return False
+
     def ensure_font_in_game(
         self,
         game_dir: str,
         source_path: Optional[str],
         dest_filename: Optional[str] = None,
     ) -> Optional[str]:
-        """确保字体文件复制到 game/fonts 目录，返回目标路径"""
+        """确保字体文件复制到 game/fonts 目录，返回目标路径。
+
+        同目录临时文件复制成功后再 os.replace，避免中途失败留下 partial 目标。
+        """
         if not source_path:
             return None
 
+        temp_path: Optional[Path] = None
         try:
             game_path = self._resolve_game_dir(game_dir)
             fonts_dir = Path(game_path) / "fonts"
@@ -779,13 +1024,38 @@ class FontReplacer:
                 self.logger.info(f"字体文件已在目标目录: {dest}")
                 return str(dest)
 
-            shutil.copy(source, dest)
+            # 同目录临时文件 + 原子替换（与 AtomicWrite 惯例一致）
+            for _attempt in range(100):
+                candidate = fonts_dir / f".{dest_name}.{secrets.token_hex(8)}.tmp"
+                try:
+                    fd = os.open(
+                        str(candidate),
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o666,
+                    )
+                    os.close(fd)
+                    temp_path = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if temp_path is None:
+                self.logger.error(f"无法创建字体临时文件: {dest}")
+                return None
+
+            shutil.copy(source, temp_path)
+            os.replace(str(temp_path), str(dest))
+            temp_path = None
             self.logger.info(f"复制字体文件: {source} -> {dest}")
             return str(dest)
 
         except Exception as e:
             self.logger.error(f"复制字体文件失败: {e}")
             return None
+        finally:
+            if temp_path is not None:
+                # 失败路径：清只读后删除；清理失败记 error，绝不静默吞掉
+                if not self._unlink_font_temp(temp_path):
+                    self.logger.error(f"字体复制失败后仍残留临时文件: {temp_path}")
 
     # ========== 预置字体包部署 ==========
 

@@ -81,15 +81,16 @@ export function PackUnpackPage(props: { state: AppState }) {
   }, [gameFolder, projectRoot]);
 
   useEffect(() => {
+    // 绑定变化时重新拉取，但不清空仍在跑/刚取消的任务（避免独立目标被 owner key 覆盖）
     sequence.current += 1;
-    watched.current = '';
-    setJob(null);
     setError('');
     setConfirm(null);
-    setCancelling(false);
     setChecking(true);
     return () => { sequence.current += 1; };
   }, [projectKey]);
+
+  const pathHintRef = useRef('');
+  pathHintRef.current = jobResult(job)?.path || unpackPath || decompilePath || packSource;
 
   useEffect(() => {
     if (state.link !== 'open') return;
@@ -102,7 +103,10 @@ export function PackUnpackPage(props: { state: AppState }) {
       try {
         if (pending.current) return;
         const requestRevision = revision.current;
-        const { job: next } = await request<{ job: ArchiveJob | null }>('/api/archive');
+        // 优先用任务自身 path，否则用当前卡片路径，避免未绑定任务在绑定后丢失
+        const pathHint = pathHintRef.current;
+        const qs = pathHint.trim() ? `?path=${encodeURIComponent(pathHint.trim())}` : '';
+        const { job: next } = await request<{ job: ArchiveJob | null }>(`/api/archive${qs}`);
         if (!alive || key !== projectRef.current || current !== sequence.current || requestRevision !== revision.current || pending.current) return;
         setJob(next);
         setChecking(false);

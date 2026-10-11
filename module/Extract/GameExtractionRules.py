@@ -165,11 +165,17 @@ class RuleStore:
         if any(r['enabled'] for r in profile['rules']):
             if proof is None or not proof.completed or proof.error or proof.profile != profile or proof.root != Path(root).resolve():
                 raise RuleError("preview_required")
+            # 写库前必须真实 verify；API 层预检不能替代此处
             proof.verify_sources(cancel, time.monotonic() + 20)
         data = self.load()
+        # 禁止同 id 跨分类替换：否则会保留原 binding 却改掉 profile.category，读另一分类时报 binding
+        category = profile.get('category', 'source')
+        existing = next((p for p in data['profiles'] if p['id'] == profile['id']), None)
+        if existing is not None and existing.get('category', 'source') != category:
+            raise RuleError('binding')
         data['profiles'] = [p for p in data['profiles'] if p['id'] != profile['id']] + [copy.deepcopy(profile)]
         if bind:
-            data['bindings'][binding_key(root, profile.get('category', 'source'))] = profile['id']
+            data['bindings'][binding_key(root, category)] = profile['id']
         self._write(data)
 
     def unbind(self, root: Path, category="source"):

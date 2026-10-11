@@ -196,6 +196,27 @@ def test_stale_project_key_rejected_after_project_is_cleared(archive_client, tmp
     assert engine.get_status() == Engine.Status.IDLE
 
 
+def test_archive_get_by_path_finds_unbound_job(archive_client, tmp_path, monkeypatch):
+    """独立目标任务以路径键归属；GET ?path= 可找回，不被空绑定 key 丢掉。"""
+    client, engine, _, _ = archive_client
+    game = tmp_path / "game"
+    game.mkdir()
+    monkeypatch.setattr(
+        "api.routes.archive.unpack_game",
+        lambda *args, **kwargs: {"success": True, "message": "ok", "archives_removed": False},
+    )
+    response = client.post("/api/archive/unpack", json={"path": str(game)})
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job"]["id"]
+    finish(client, job_id)
+    by_path = client.get("/api/archive", params={"path": str(game)}).json()
+    assert by_path["job"]["id"] == job_id
+    # 无 path 未绑定时也应能拿到最近 archive 任务
+    latest = client.get("/api/archive").json()
+    assert latest["job"]["id"] == job_id
+    assert engine.get_status() == Engine.Status.IDLE
+
+
 def test_decompile_api_preserves_existing_rpyc(archive_client, tmp_path, monkeypatch):
     client, engine, _, _ = archive_client
     game = tmp_path / "game"

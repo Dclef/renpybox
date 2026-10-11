@@ -48,6 +48,64 @@ export type ProjectStatus = 'UNTRANSLATED' | 'TRANSLATING' | 'TRANSLATED';
  */
 export type StartableProjectStatus = 'UNTRANSLATED' | 'TRANSLATING';
 
+/** 工具箱翻译方式：与 api/schemas.TRANSLATION_TOOLBOX_MODES 对齐（hook 走独立路由） */
+export type TranslationToolboxMode = 'direct' | 'source' | 'supplement';
+
+/** 带 mode 时后端原子写入路径/开关后再 TRANSLATION_START */
+export interface TranslationStartOptions {
+  requestId?: string;
+  preflightConfirmed?: boolean;
+  /** 当前绑定项目 owner；与手动 target 分开 */
+  project_key?: string;
+  mode?: TranslationToolboxMode;
+  game_path?: string;
+  tl_parent?: string;
+  tl_name?: string;
+  language?: string;
+  input_folder?: string;
+  output_folder?: string;
+  source_language?: string;
+  target_language?: string;
+  traditional_chinese_enable?: boolean;
+  renpy_backup_original?: boolean;
+  auto_write_back?: boolean;
+  external_backup_dir?: string;
+  renpy_hook_incremental?: boolean;
+  generate_empty?: boolean;
+}
+
+/** 手动写回选定 TL 缓存 */
+export interface TranslationReinjectOptions {
+  output_folder?: string;
+  tl_parent?: string;
+  tl_name?: string;
+  game_path?: string;
+  project_key?: string;
+  request_id?: string;
+}
+
+export interface HookTranslateStartOptions {
+  game_path: string;
+  tl_name?: string;
+  source_language?: string;
+  target_language?: string;
+  traditional_chinese_enable?: boolean;
+  renpy_backup_original?: boolean;
+  renpy_hook_incremental?: boolean;
+  generate_empty?: boolean;
+  preflight_confirmed?: boolean;
+  project_key?: string;
+  request_id?: string;
+}
+
+export interface HookTranslateStartResponse {
+  accepted: boolean;
+  reason?: string;
+  detail?: string;
+  request_id?: string;
+  job?: JobSnapshot | null;
+}
+
 /** 引擎状态：Engine.Status */
 export type EngineStatus =
   | 'IDLE'
@@ -139,9 +197,12 @@ export interface TranslationState {
 
 export interface TranslationStartResponse {
   accepted: boolean;
-  reason: 'STARTED' | 'STOPPING' | 'ENGINE_BUSY' | 'ASSETS_MISSING' | 'PREPARE_FAILED';
+  reason: 'STARTED' | 'STOPPING' | 'ENGINE_BUSY' | 'ASSETS_MISSING' | 'PREPARE_FAILED' | string;
   detail?: string;
   request_id?: string;
+  warnings?: string[];
+  stage?: string;
+  job?: JobSnapshot | null;
 }
 
 export interface TokenEstimate {

@@ -3,11 +3,13 @@ Ren'Py 错误修复工具
 检查并修复常见语法错误，支持深度 Lint 检查
 """
 
+import contextlib
 import dataclasses
 import io
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 from collections import Counter
@@ -104,18 +106,10 @@ class ErrorRepairer:
 
     @staticmethod
     def get_rpy_files(folder_path: str | Path) -> list[Path]:
-        """返回目录下的 Ren'Py 脚本，统一处理大小写扩展名。"""
-        root = Path(folder_path)
-        if not root.is_dir():
-            return []
-        return sorted(
-            (
-                path
-                for path in root.rglob("*")
-                if path.is_file() and path.suffix.casefold() == ".rpy"
-            ),
-            key=lambda path: path.as_posix().casefold(),
-        )
+        """返回目录下的 Ren'Py 脚本；不跟随 symlink/junction（lexical 边界）。"""
+        from module.Tool.LexicalFs import iter_rpy_files_lexical
+
+        return iter_rpy_files_lexical(folder_path)
 
     def _split_line_ending(self, line: str) -> tuple[str, str]:
         """拆分行内容和换行符，修复后保持原始换行风格。"""
@@ -1185,14 +1179,19 @@ class ErrorRepairer:
             self.logger.error(f"修复失败 {file_path}: {e}")
             return False, 0
 
-    def export_error_report(self, errors: Dict[str, List[Dict]], output_path: str):
+    def export_error_report(self, errors: Dict[str, List[Dict]], output_path: str) -> bool:
         """
-        导出错误报告为 Excel
+        导出错误报告为 Excel。
 
-        Args:
-            errors: 错误字典 {文件路径: 错误列表}
-            output_path: 输出路径
+        成功写入后返回 True；失败返回 False（不因旧目标已存在而假成功）。
+        使用临时文件写完再原子替换，避免半截 XLSX。
         """
+        # 与 Qt 一致：缺 .xlsx 后缀时追加（含 .txt 等也会变成 *.txt.xlsx）
+        output_text = str(output_path)
+        if not output_text.lower().endswith(".xlsx"):
+            output_text += ".xlsx"
+        target = Path(output_text)
+        temp_path: Path | None = None
         try:
             from openpyxl import Workbook
 
@@ -1200,11 +1199,9 @@ class ErrorRepairer:
             ws = wb.active
             ws.title = "Error Report"
 
-            # 写入表头
             headers = ["文件", "行号", "错误类型", "错误信息", "内容", "详情"]
             ws.append(headers)
 
-            # 写入数据
             for file_path, file_errors in errors.items():
                 for error in file_errors:
                     details = {
@@ -1221,11 +1218,28 @@ class ErrorRepairer:
                         json.dumps(details, ensure_ascii=False, sort_keys=True),
                     ])
 
-            wb.save(output_path)
-            self.logger.info(f"错误报告已导出: {output_path}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            for _attempt in range(100):
+                candidate = target.parent / f".{target.name}.{secrets.token_hex(8)}.tmp.xlsx"
+                if not candidate.exists():
+                    temp_path = candidate
+                    break
+            if temp_path is None:
+                raise FileExistsError(f"无法创建临时导出文件: {target}")
+
+            wb.save(str(temp_path))
+            os.replace(str(temp_path), str(target))
+            temp_path = None
+            self.logger.info(f"错误报告已导出: {target}")
+            return True
 
         except Exception as e:
             self.logger.error(f"导出错误报告失败: {e}")
+            return False
+        finally:
+            if temp_path is not None:
+                with contextlib.suppress(OSError):
+                    temp_path.unlink(missing_ok=True)
 
     # ========== 深度 Lint 检查 (调用 Ren'Py 内置 lint) ==========
     

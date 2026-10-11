@@ -612,23 +612,24 @@ class SourceTranslatePage(Base, QWidget):
     # ------------------------------------------------------------------ helpers
     def _backup_sources(self, target: Path, backup_root: Optional[str]) -> None:
         """简单备份 .rpy 源文件（目录模式：全部 .rpy；单文件模式：仅备份目标文件）。"""
+        from module.File.SourceBackup import backup_source_rpy
+
+        root = Path(backup_root) if backup_root else None
+        output_dir = self._build_safe_output_dir(target, target.is_file())
+        game_dir = None
         try:
-            base_dir = target.parent if target.is_file() else target
-            candidates = [target] if target.is_file() else list(Path(target).rglob("*.rpy"))
-            for path in candidates:
-                if not path.is_file():
-                    continue
-                if backup_root:
-                    try:
-                        rel = path.relative_to(base_dir)
-                    except Exception:
-                        rel = Path(path.name)
-                    dest = Path(backup_root) / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(path.read_bytes())
-                else:
-                    bak = path.with_suffix(path.suffix + ".bak")
-                    if not bak.exists():
-                        bak.write_bytes(path.read_bytes())
-        except Exception as exc:
-            self.logger.warning(f"备份源码失败: {exc}")
+            from module.Config import Config
+            raw_game = str(Config().load().renpy_game_folder or "").strip()
+            if raw_game:
+                game_dir = Path(raw_game)
+        except Exception:
+            game_dir = None
+        result = backup_source_rpy(
+            target,
+            root,
+            output_dir=output_dir,
+            game_dir=game_dir,
+        )
+        for message in result.get("warnings", []):
+            if message:
+                self.logger.warning(str(message))

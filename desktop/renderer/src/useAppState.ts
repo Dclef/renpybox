@@ -18,6 +18,7 @@ import type {
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
+  TranslationStartOptions,
   TokenEstimate,
   TranslationStartResponse,
   TranslationState,
@@ -70,6 +71,7 @@ export interface AppState {
   startTranslation: (
     status: StartableProjectStatus,
     preflightConfirmed?: boolean,
+    options?: TranslationStartOptions,
   ) => Promise<TranslationStartResponse>;
   stopTranslation: () => Promise<void>;
   setTranslationTimer: (deadline: number | null, projectKey?: string) => void;
@@ -196,12 +198,21 @@ export function useAppState(): AppState {
   );
 
   const startTranslation = useCallback(
-    async (status: StartableProjectStatus, preflightConfirmed = false) => {
+    async (
+      status: StartableProjectStatus,
+      preflightConfirmed = false,
+      options?: TranslationStartOptions,
+    ) => {
       // 手动开始或定时开始后都不能保留旧的截止时间。
       setTranslationTimer(null);
-      const response = await api.startTranslation(status, undefined, preflightConfirmed);
+      const response = await api.startTranslation(status, undefined, preflightConfirmed, options);
       if (response.accepted) {
-        await reloadTranslation();
+        // 工具箱 mode 会规范化全局项目路径；成功后同步 project，避免下次仍发旧 owner。
+        if (options?.mode) {
+          await Promise.all([reloadProject(), reloadSettings(), reloadTranslation()]);
+        } else {
+          await reloadTranslation();
+        }
       } else if (response.reason !== 'ASSETS_MISSING') {
         // ASSETS_MISSING 由翻译页弹窗处理（去工作台 or 仍然继续），
         // 这里再弹一次 toast 只会和弹窗抢注意力。
@@ -209,7 +220,7 @@ export function useAppState(): AppState {
       }
       return response;
     },
-    [pushToast, reloadTranslation, setTranslationTimer],
+    [pushToast, reloadProject, reloadSettings, reloadTranslation, setTranslationTimer],
   );
 
   const stopTranslation = useCallback(async () => {

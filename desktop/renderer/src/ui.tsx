@@ -95,13 +95,14 @@ export function SettingsGroup(props: {
     <section className="rb-settings-group">
       {headed ? (
         <header className="rb-settings-head">
-          <div>
+          <div className="rb-settings-head-copy">
             {title ? <h2 className="rb-settings-title">{title}</h2> : null}
             {description ? <p className="rb-settings-desc">{description}</p> : null}
           </div>
           {actions ? <div className="rb-settings-actions">{actions}</div> : null}
         </header>
       ) : null}
+      {/* body 默认 16px 内边距由 .rb-settings-body 提供；含 SettingCard 行时 CSS 去掉双份边距 */}
       <div className="rb-settings-body">{children}</div>
     </section>
   );
@@ -205,7 +206,7 @@ export function Banner(props: {
   const { tone = 'info', children, onDismiss } = props;
   return (
     <Alert
-      className="banner"
+      className="banner rb-banner-alert"
       type={TONE_TYPE[tone]}
       showIcon
       title={

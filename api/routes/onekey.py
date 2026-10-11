@@ -60,6 +60,8 @@ class PrepareBody(OneKeyBase):
     # None 为旧 API 调用，沿用 incremental 字段；auto 按是否已有译文自动选择。
     mode: Literal["auto", "full", "incremental"] | None = None
     confirm_write: bool = False
+    # True：已有主 TL 时跳过解包/反编译/抽取，仅配置主翻译路径（兼容旧调用，默认 False）。
+    skip_extraction: bool = False
     # None 为旧 API 调用，保留自动查找游戏 EXE；False 表示明确关闭官方抽取。
     official_extract: bool | None = None
     exe_path: str | None = None
@@ -259,32 +261,40 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
     game_root = str(paths.project_root)
     game_dir = str(paths.game_dir)
     existing = existing_translation_summary(paths)
-    if body.mode is None:
-        incremental = bool(body.incremental)
+    # 跳过抽取：复用已有主 TL，不查找 EXE、不落盘抽取选项、不触碰主 TL / <lang>_new。
+    if body.skip_extraction:
+        if not existing["exists"]:
+            raise HTTPException(status_code=400, detail="主 TL 目录没有可复用的译文，无法跳过抽取")
+        incremental = False
+        exe_path = None
+        option_values: dict[str, Any] = {}
     else:
-        incremental = resolve_extraction_incremental(body.mode, bool(existing["exists"]))
-    if body.official_extract is False and body.supplement_mode == "off":
-        raise HTTPException(status_code=400, detail="未启用官方抽取时不能选择“仅官方抽取”，否则没有可执行的抽取方式")
-    if body.official_extract is False:
-        selected_exe = None
-    else:
-        selected_exe = body.exe_path or RenpyDecompiler()._find_game_exe(paths.project_root)
-    exe_path = None
-    if selected_exe:
-        executable = Path(selected_exe).resolve()
-        if not executable.is_file() or executable.suffix.lower() != ".exe" or executable.parent != paths.project_root:
-            raise HTTPException(status_code=400, detail="游戏可执行文件必须位于当前项目根目录")
-        exe_path = str(executable)
-    # 与旧 Qt 下拉框一致：off 即“仅官方抽取”，同步关闭补充抽取总开关。
-    option_values: dict[str, Any] = {}
-    if body.supplement_mode is not None:
-        option_values["extract_supplement_mode"] = body.supplement_mode
-        option_values["extract_use_custom"] = body.supplement_mode != "off"
-    if body.inject_ui_pack is not None:
-        option_values["onekey_inject_base_box"] = bool(body.inject_ui_pack)
-    if exe_path and not getattr(live, "extract_use_official", True):
-        # 抽取器还会检查该开关；用户已明确选择并确认 EXE，不能被旧配置静默跳过。
-        option_values["extract_use_official"] = True
+        if body.mode is None:
+            incremental = bool(body.incremental)
+        else:
+            incremental = resolve_extraction_incremental(body.mode, bool(existing["exists"]))
+        if body.official_extract is False and body.supplement_mode == "off":
+            raise HTTPException(status_code=400, detail="未启用官方抽取时不能选择“仅官方抽取”，否则没有可执行的抽取方式")
+        if body.official_extract is False:
+            selected_exe = None
+        else:
+            selected_exe = body.exe_path or RenpyDecompiler()._find_game_exe(paths.project_root)
+        exe_path = None
+        if selected_exe:
+            executable = Path(selected_exe).resolve()
+            if not executable.is_file() or executable.suffix.lower() != ".exe" or executable.parent != paths.project_root:
+                raise HTTPException(status_code=400, detail="游戏可执行文件必须位于当前项目根目录")
+            exe_path = str(executable)
+        # 与旧 Qt 下拉框一致：off 即“仅官方抽取”，同步关闭补充抽取总开关。
+        option_values = {}
+        if body.supplement_mode is not None:
+            option_values["extract_supplement_mode"] = body.supplement_mode
+            option_values["extract_use_custom"] = body.supplement_mode != "off"
+        if body.inject_ui_pack is not None:
+            option_values["onekey_inject_base_box"] = bool(body.inject_ui_pack)
+        if exe_path and not getattr(live, "extract_use_official", True):
+            # 抽取器还会检查该开关；用户已明确选择并确认 EXE，不能被旧配置静默跳过。
+            option_values["extract_use_official"] = True
     engine = _acquire_engine()
     manager = request.app.state.jobs
     try:
@@ -309,13 +319,14 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         "incremental": incremental,
         "mode": body.mode or ("incremental" if incremental else "full"),
         "existing_translation": existing,
+        "skipped_extraction": bool(body.skip_extraction),
         "official_exe": exe_path,
         "supplement_mode": str(getattr(live, "extract_supplement_mode", "precise") or "precise")
         if getattr(live, "extract_use_custom", True) else "off",
         "inject_ui_pack": bool(getattr(live, "onekey_inject_base_box", False)),
-        "message": "准备检测项目",
+        "message": "正在配置翻译路径" if body.skip_extraction else "准备检测项目",
         "worker_active": True,
-        "stage": "detect",
+        "stage": "paths" if body.skip_extraction else "detect",
     }
     loop = asyncio.get_running_loop()
 
@@ -340,6 +351,40 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         )
 
     def compute() -> dict:
+        # 已有译文：只配置主 TL → RenpyBox_Translation/<lang>，不跑检测/解包/反编译/抽取。
+        if body.skip_extraction:
+            check_cancel()
+            progress("正在配置翻译路径", 90, stage="paths")
+            with CacheManager.LOCK:
+                live_config = request.app.state.config
+                if _project_identity(live_config) != owner_identity:
+                    raise RuntimeError("项目或翻译路径已切换，本次路径配置未写入")
+                configured = copy.deepcopy(live_config)
+                tl_dir, output_dir = configure_main_translation_paths(
+                    configured, game_root, language, remember_run=True,
+                )
+                _persist_project_paths(live_config, configured)
+            return {
+                "project_key": project_key,
+                "game_dir": game_dir,
+                "project_root": game_root,
+                "language": language,
+                "incremental": False,
+                "skipped_extraction": True,
+                "detect_status": "ready",
+                "message": "已跳过抽取，可开始翻译",
+                "stage": "ready",
+                "tl_dir": str(tl_dir),
+                "output_dir": str(output_dir),
+                "incremental_dir": None,
+                "main_output_dir": str(output_dir),
+                "preserved_cache": None,
+                "input_folder": str(tl_dir),
+                "output_folder": str(output_dir),
+                "extraction_success": True,
+                "worker_active": True,
+            }
+
         check_cancel()
         progress("正在检测脚本状态", 5, stage="detect")
         status, message = detect_game_status(
@@ -440,6 +485,7 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
             "project_root": game_root,
             "language": language,
             "incremental": incremental,
+            "skipped_extraction": False,
             "detect_status": "ready",
             "message": extract_message,
             "stage": "ready",

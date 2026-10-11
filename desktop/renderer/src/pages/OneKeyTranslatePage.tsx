@@ -4,13 +4,34 @@ import { Button, Checkbox, Form, Input, Progress, Radio, Select } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT } from '../i18n';
-import { isIncrementalOutput } from '../onekeyView.mjs';
+import {
+  canRetryPrepare,
+  isIncrementalOutput,
+  prepareFailureSummary,
+  prepareStageSummaryLines,
+} from '../onekeyView.mjs';
+import { LANGUAGE_OPTIONS } from '../settingsSchema';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
-import { Banner, Dialog, SettingsGroup } from '../ui';
+import { Banner, Dialog, SelectInput, SettingsGroup, Switch } from '../ui';
 
 type ExtractMode = 'auto' | 'full' | 'incremental';
 type SupplementMode = 'off' | 'precise' | 'aggressive';
+
+/** 准备任务解包结果（字段存在才展示） */
+interface OneKeyUnpack {
+  method?: string;
+  count?: number;
+  archives_removed?: boolean;
+  success?: boolean;
+}
+
+/** 准备任务反编译结果（字段存在才展示） */
+interface OneKeyDecompile {
+  method?: string;
+  success?: boolean;
+  overwrite?: boolean;
+}
 
 interface OneKeyResult {
   project_key?: string;
@@ -18,7 +39,12 @@ interface OneKeyResult {
   worker_active?: boolean;
   stage?: string;
   incremental?: boolean;
+  // 已有主 TL 时跳过抽取的准备结果
+  skipped_extraction?: boolean;
   detect_status?: string;
+  unpack?: OneKeyUnpack;
+  decompile?: OneKeyDecompile;
+  extraction_success?: boolean;
   output_dir?: string;
   incremental_dir?: string;
   main_output_dir?: string;
@@ -76,6 +102,11 @@ export function OneKeyTranslatePage(props: {
   const { state, mode = 'full', onOpenTranslation, onOpenWorkbench, onOpenGlossary, onOpenPreserve } = props;
   const t = useT();
   const values = state.settings?.values ?? {};
+  // 语言类 Config 仅在 settings 已加载后渲染，避免首帧用缺省值写回
+  const languageSettingsReady = state.settings?.values != null;
+  const sourceLanguage = String(values.source_language ?? 'EN');
+  const targetLanguage = String(values.target_language ?? 'ZH');
+  const traditionalChinese = values.traditional_chinese_enable === true;
   const projectRoot = String(state.project?.renpy_project_path ?? '');
   const tlFolder = String(state.project?.renpy_tl_folder ?? '');
   const defaultLanguage = tlFolder.split(/[\\/]/).filter(Boolean).at(-1) || 'chinese';
@@ -270,6 +301,42 @@ export function OneKeyTranslatePage(props: {
     }
   }
 
+  /** 已有主 TL：跳过解包/抽取确认，直接配置主翻译路径。 */
+  async function runSkipExtraction() {
+    if (pending.current) return;
+    pending.current = true;
+    revision.current += 1;
+    setSubmitting(true);
+    const context = projectRef.current;
+    const expected = selectionRef.current;
+    setConfirm(null);
+    setError('');
+    setNotice('');
+    setReady(null);
+    try {
+      const { job: next } = await request<{ job: OneKeyJob }>('/api/onekey/prepare', {
+        method: 'POST',
+        body: JSON.stringify({
+          game_dir: gameDir,
+          language,
+          mode: 'full',
+          incremental: false,
+          confirm_write: true,
+          skip_extraction: true,
+          project_key: detect?.project_key || '',
+        }),
+      });
+      if (context !== projectRef.current || expected !== selectionRef.current) return;
+      setJob(next);
+      await Promise.all([state.reloadTranslation(), state.reloadSettings()]);
+    } catch (failure) {
+      if (context === projectRef.current && expected === selectionRef.current) setError(errorText(failure));
+    } finally {
+      pending.current = false;
+      setSubmitting(false);
+    }
+  }
+
   async function runApply() {
     if (pending.current) return;
     pending.current = true;
@@ -362,21 +429,38 @@ export function OneKeyTranslatePage(props: {
   const prepared = ready?.stage === 'ready';
   const applied = job?.status === 'done' && result?.stage === 'done';
   const missingGameDir = !gameDir.trim();
+  const failedSummary = prepareFailureSummary(
+    { status: job?.status, error: job?.error, message: result?.message },
+    t('onekey_failed'),
+  );
   const statusText = checking
     ? t('onekey_checking')
     : active
       ? (cancelling || job?.cancel_requested ? t('onekey_cancelling') : (result?.message || t('onekey_running')))
-      : job?.status === 'failed'
-        ? (job.error || result?.message || t('onekey_failed'))
+      : failedSummary
+        ? failedSummary
         : job?.status === 'cancelled'
           ? (result?.stage === 'done' ? t('onekey_apply_finished_after_cancel') : t('onekey_cancelled'))
           : job?.status === 'done' && result?.stage === 'done'
             ? (result.message || t('archive_done'))
           : prepared
-            ? (ready?.message || t('onekey_ready'))
+            ? (ready?.skipped_extraction ? t('onekey_skip_extraction_ready') : (ready?.message || t('onekey_ready')))
             : detect
               ? detect.message
               : t('onekey_idle');
+  // 已完成阶段摘要：仅在字段存在时输出，跳过抽取不展示过程行
+  const stageSummaryLines = prepareStageSummaryLines(result ?? ready, {
+    detect: t('onekey_stage_detect_done'),
+    unpack: t('onekey_stage_unpack_done'),
+    decompile: t('onekey_stage_decompile_done'),
+    extract: t('onekey_stage_extract_done'),
+  }, fill);
+  const showPrepareRetry = canRetryPrepare({
+    mode,
+    status: job?.status,
+    active,
+    kind: job?.kind,
+  });
 
   const layout = detect?.layout;
   const existing = detect?.existing_translation;
@@ -413,6 +497,13 @@ export function OneKeyTranslatePage(props: {
       {error ? <Banner tone="error">{error}</Banner> : null}
       {notice ? <Banner tone="success" onDismiss={() => setNotice('')}>{notice}</Banner> : null}
       <Banner tone={prepared ? 'success' : 'info'}>{statusText}</Banner>
+      {stageSummaryLines.length ? (
+        <div>
+          {stageSummaryLines.map((line) => (
+            <p key={line} className="card-description">{line}</p>
+          ))}
+        </div>
+      ) : null}
       {mode === 'full' && (missingGameDir || !projectRoot) ? (
         <Banner tone="warning">
           {t(missingGameDir ? 'onekey_need_game_dir' : 'onekey_need_project')}
@@ -429,12 +520,53 @@ export function OneKeyTranslatePage(props: {
           </Button>
         </div>
       ) : null}
+      {showPrepareRetry ? (
+        <div className="rb-tool-actions">
+          <Button
+            type="primary"
+            onClick={() => void openConfirm('prepare')}
+            disabled={busy || engineBusy || extractConflict || !gameDir.trim() || state.link !== 'open'}
+          >
+            {t('onekey_retry_prepare')}
+          </Button>
+        </div>
+      ) : null}
 
       {mode === 'full' ? (
         <SettingsGroup title={t('onekey_prepare_title')} description={t('onekey_prepare_desc')}>
           <Form.Item label={t('onekey_game_dir')} style={{ marginBottom: 0 }}>
             <Input value={gameDir} onChange={(event) => { selectionEdited.current = true; setGameDir(event.target.value); }} disabled={busy} />
           </Form.Item>
+          {languageSettingsReady ? (
+            <>
+              <Form.Item label={t('onekey_source_language')} style={{ marginBottom: 0 }}>
+                <SelectInput
+                  label={t('onekey_source_language')}
+                  value={sourceLanguage}
+                  options={LANGUAGE_OPTIONS}
+                  disabled={busy || state.saving || state.link !== 'open'}
+                  onCommit={(next) => void state.setSetting('source_language', next)}
+                />
+              </Form.Item>
+              <Form.Item label={t('onekey_target_language')} style={{ marginBottom: 0 }}>
+                <SelectInput
+                  label={t('onekey_target_language')}
+                  value={targetLanguage}
+                  options={LANGUAGE_OPTIONS}
+                  disabled={busy || state.saving || state.link !== 'open'}
+                  onCommit={(next) => void state.setSetting('target_language', next)}
+                />
+              </Form.Item>
+              <Form.Item label={t('onekey_traditional_chinese_enable')} extra={t('onekey_traditional_chinese_hint')} style={{ marginBottom: 0 }}>
+                <Switch
+                  label={t('onekey_traditional_chinese_enable')}
+                  checked={traditionalChinese}
+                  disabled={busy || state.saving || state.link !== 'open'}
+                  onChange={(next) => void state.setSetting('traditional_chinese_enable', next)}
+                />
+              </Form.Item>
+            </>
+          ) : null}
           <Form.Item label={t('onekey_language')} style={{ marginBottom: 0 }}>
             <Input value={language} onChange={(event) => { selectionEdited.current = true; setLanguage(event.target.value); }} disabled={busy} />
           </Form.Item>
@@ -459,6 +591,11 @@ export function OneKeyTranslatePage(props: {
             <Button type="primary" onClick={() => void openConfirm('prepare')} disabled={busy || engineBusy || extractConflict || !gameDir.trim() || state.link !== 'open'}>
               {t('onekey_prepare')}
             </Button>
+            {detect?.existing_translation?.exists && !busy ? (
+              <Button onClick={() => void runSkipExtraction()} disabled={engineBusy || !gameDir.trim() || state.link !== 'open'}>
+                {t('onekey_skip_extraction')}
+              </Button>
+            ) : null}
           </div>
           <p className="card-description">{t('onekey_no_auto_translate')}</p>
         </SettingsGroup>
