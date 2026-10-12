@@ -186,6 +186,10 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
   const leaveRpyIfNeeded = async (): Promise<boolean> => {
     if (active !== 'rpy-extraction') return true;
+    // A dirty editor is independent from the background worker.  Do not enter
+    // the asynchronous cancel/poll guard for an ordinary draft-only change;
+    // that guard is reserved for an actually running RPY job.
+    if (!rpyLeaveBlockedRef.current) return true;
     try {
       await rpyLeaveGuardRef.current?.();
       return true;
@@ -528,7 +532,12 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       </main>
 
       {pendingPage ? (
-        <Dialog title="有未保存的修改" confirmText="放弃并继续" onCancel={() => setPendingPage(null)} onConfirm={() => {
+        <Dialog
+          title="放弃未保存修改？"
+          confirmText={pendingPage === 'toolbox' ? '放弃修改并返回工具箱' : '放弃并继续'}
+          cancelText="留在当前页"
+          onCancel={() => setPendingPage(null)}
+          onConfirm={() => {
           const next = pendingPage;
           void (async () => {
             // RPY：确认离开时先取消并等待真 worker 结束；失败则留在页并保持 dirty
@@ -546,7 +555,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
               setActive(next);
             }
           })();
-        }}>离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>
+        }}
+        >离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
     </div>

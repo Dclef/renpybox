@@ -430,7 +430,8 @@ app.whenReady().then(async () => {
       const dialogs=[...document.querySelectorAll('[role=dialog]')].filter(e=>e.getBoundingClientRect().height>0);
       const scope=dialogs.at(-1)||document;
       const normalized=${JSON.stringify(text.replaceAll(' ', ''))};
-      const e=[...scope.querySelectorAll('button,[role=tab],[role=menuitem]')].find(b=>b.textContent.split(' ').join('')===normalized);
+      const e=[...scope.querySelectorAll('button,[role=tab],[role=menuitem]')].find(b=>b.textContent.split(' ').join('')===normalized)
+        || (dialogs.at(-1) && [...dialogs.at(-1).querySelectorAll('button')].find(b=>b.classList.contains('ant-btn-primary')));
       if(!e) throw new Error('缺少操作 '+${JSON.stringify(text)});
       if(e.disabled) throw new Error('操作被禁用 '+${JSON.stringify(text)});
       e.scrollIntoView({block:'nearest'});
@@ -502,6 +503,40 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('[data-rb-rpy-rule-note]')", '规则 note 字段存在');
   await capture('rpy-editor');
 
+  // 新增规则应只更新草稿，并立即切换到新规则表单。
+  await clearWrites();
+  await click('新增规则');
+  log('AFTER ADD ' + JSON.stringify(await js(`({
+    selects:[...document.querySelectorAll('.ant-select')].map(e=>({text:e.innerText,value:e.querySelector('.ant-select-selection-item')?.textContent,html:e.outerHTML.slice(0,500)})),
+    inputs:[...document.querySelectorAll('[data-rb-rpy-editor] input, [data-rb-rpy-editor] textarea')].map(e=>({value:e.value,scope:e.getAttribute('data-rb-rpy-scope')})),
+    buttons:[...document.querySelectorAll('[data-rb-rpy-editor] button')].map(e=>({text:e.textContent,disabled:e.disabled}))
+  })`)));
+  await assert(
+    "[...document.querySelectorAll('.ant-select-selection-item, .ant-select-content-has-value')].some(e=>e.textContent.trim()==='规则 3')",
+    '新增规则后选中第三条',
+  );
+  await assert(
+    "document.querySelector('[data-rb-rpy-editor] textarea')?.value.includes('reply_message')",
+    '新增规则模板已显示',
+  );
+  await assert('__uiFixture.writes.length===0', '新增规则没有同步写 API');
+
+  // 新增规则会标记页面 dirty；点击返回应显示放弃确认，确认后才离开。
+  await click('返回工具箱');
+  await assert("[...document.querySelectorAll('[role=dialog]')].some(d=>d.textContent.includes('未保存'))", '新增规则离页显示未保存确认');
+  await click('放弃并继续');
+  await assert("document.querySelector('.content')?.dataset.page==='toolbox'", '确认放弃后返回工具箱');
+  await openTool('RPY 抽取设置');
+  await assert("document.querySelector('[data-rb-page=rpy-extraction]')", '返回后可再次进入 RPY');
+  await js(`(()=>{
+    const header=[...document.querySelectorAll('.ant-collapse-header')].find(h=>h.textContent.includes('我要自己定义规则'));
+    header?.click();
+  })()`);
+  await pause(200);
+  await clearWrites();
+  await click('复制常用规则为自定义');
+  await assert("document.querySelector('[data-rb-rpy-editor]')", '返回后编辑器可再次打开');
+
   // —— 预览 + 分页到第 201 条（真实 DOM，防假阳性）——
   await clearWrites();
   await click('预览启用的规则');
@@ -531,7 +566,8 @@ app.whenReady().then(async () => {
     job.result.action='preview';
     __uiFixture.leaveHoldMs=6500;
   })()`);
-  await pause(200);
+  // Give the page's status poll a chance to observe the simulated running job.
+  await pause(1800);
   await page('翻译任务');
   await pause(800);
   await assert("document.querySelector('[data-rb-page=rpy-extraction]')", '长收尾期间仍留在 RPY（无 dirty 也走 guard）');
