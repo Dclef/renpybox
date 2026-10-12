@@ -47,9 +47,8 @@ from module.Engine.Translator.TranslationPreflightService import TranslationPref
 from module.Localizer.Localizer import Localizer
 from module.TokenEstimator import TokenEstimator
 from module.Renpy.ProjectPaths import (
-    RenpyProjectPaths,
-    read_run_manifest,
     resolve_translation_output,
+    restore_resumable_translation_paths,
 )
 from widget.WaveformWidget import WaveformWidget
 from widget.CommandBarCard import CommandBarCard
@@ -71,29 +70,6 @@ class QualityTaskCoordinator:
         )
 
         return RuntimeQualityTaskCoordinator.get()
-
-
-def restore_resumable_translation_paths(config: Config) -> Config:
-    """Bind a resume request to the cache selected by the last-run manifest."""
-    output_path = resolve_translation_output(config)
-    if output_path is None:
-        return config
-
-    config.output_folder = str(output_path)
-    paths = RenpyProjectPaths.from_config(config)
-    manifest = read_run_manifest(paths) if paths is not None else None
-    if manifest is None:
-        return config
-
-    manifest_output = os.path.normcase(os.path.abspath(manifest["output_folder"]))
-    selected_output = os.path.normcase(os.path.abspath(str(output_path)))
-    if manifest_output != selected_output:
-        return config
-
-    input_folder = str(manifest.get("input_folder", "") or "").strip()
-    if input_folder:
-        config.input_folder = input_folder
-    return config
 
 
 class DashboardCard(CardWidget):

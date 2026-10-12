@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -12,7 +11,7 @@ from module.Engine.Engine import Engine
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document, validate_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
-from module.File.AtomicWrite import atomic_write_text
+from module.File.AtomicWrite import atomic_write_text, validate_write_path
 
 
 class RENPY(Base):
@@ -109,6 +108,14 @@ class RENPY(Base):
         hook_languages: set[str] = set()
         errors: list[str] = []
         for rel_path, group_items in grouped.items():
+            target_path = self.output_path / rel_path
+            try:
+                validate_write_path(target_path, [self.output_path])
+            except Exception as exc:
+                self.error(f"Failed to write Ren'Py file {target_path}", exc)
+                errors.append(f"写入失败 {target_path}: {exc}")
+                continue
+
             from module.Extract.RpyExtractionSettings import RecordedTlExtractor
             extractor = RecordedTlExtractor(group_items)
             source_path = self._resolve_source_path(rel_path)
@@ -197,15 +204,16 @@ class RENPY(Base):
                 )
                 continue
 
-            target_path = self.output_path / rel_path
-            os.makedirs(target_path.parent, exist_ok=True)
-
             # 写回前备份（仅本地 .bak）
             if getattr(self.config, "renpy_backup_original", False):
                 bak_path = target_path.with_suffix(target_path.suffix + ".bak")
                 if target_path.exists() and not bak_path.exists():
                     try:
-                        bak_path.write_text(target_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+                        atomic_write_text(
+                            bak_path,
+                            target_path.read_text(encoding="utf-8", errors="replace"),
+                            allowed_roots=[self.output_path],
+                        )
                     except Exception:
                         pass
 
@@ -236,9 +244,10 @@ class RENPY(Base):
         if report:
             report_path = self.output_path / "writeback_report_renpy.json"
             try:
-                report_path.write_text(
+                atomic_write_text(
+                    report_path,
                     json.dumps(report, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+                    allowed_roots=[self.output_path],
                 )
             except Exception:
                 pass
@@ -468,38 +477,52 @@ class RENPY(Base):
         result_items: list[CacheItem],
     ) -> list[CacheItem]:
         """返回未能在最终 AST 中找到对应译文的缓存条目。"""
-        remaining = list(result_items)
+        if not expected_items:
+            return []
+
+        candidates: dict[tuple, list[int]] = {}
+        exact_candidates: dict[tuple, list[int]] = {}
+        consumed: set[int] = set()
+
+        def item_keys(item: CacheItem) -> tuple[list[tuple], tuple]:
+            source = item.get_src()
+            name = item.get_name_src()
+            exact_name = tuple(name) if isinstance(name, list) else name
+            keys = self.build_ast_keys(item) + [(source, self._normalize_name_key(name))]
+            return keys, (source, exact_name)
+
+        for index in range(len(result_items) - 1, -1, -1):
+            keys, exact = item_keys(result_items[index])
+            for key in keys:
+                candidates.setdefault(key, []).append(index)
+                exact_candidates.setdefault((key, *exact), []).append(index)
+
+        def find_candidate(keys: list[tuple], exact: tuple) -> int | None:
+            for index_map, match_exact in ((exact_candidates, True), (candidates, False)):
+                candidate_indexes: list[int] = []
+                for key in keys:
+                    bucket = index_map.get((key, *exact) if match_exact else key, [])
+                    while bucket and bucket[-1] in consumed:
+                        bucket.pop()
+                    if bucket:
+                        candidate_indexes.append(bucket[-1])
+                if candidate_indexes:
+                    return min(candidate_indexes)
+            return None
+
         unapplied: list[CacheItem] = []
 
         for expected in expected_items:
-            expected_keys = set(self.build_ast_keys(expected))
-            candidate_indexes = [
-                index
-                for index, actual in enumerate(remaining)
-                if expected_keys.intersection(self.build_ast_keys(actual))
-            ]
-            if not candidate_indexes:
-                expected_name = self._normalize_name_key(expected.get_name_src())
-                candidate_indexes = [
-                    index
-                    for index, actual in enumerate(remaining)
-                    if actual.get_src() == expected.get_src()
-                    and self._normalize_name_key(actual.get_name_src()) == expected_name
-                ]
-            if not candidate_indexes:
+            keys, exact = item_keys(expected)
+            picked_index = find_candidate(keys[:-1], exact)
+            if picked_index is None:
+                picked_index = find_candidate(keys[-1:], exact)
+            if picked_index is None:
                 unapplied.append(expected)
                 continue
 
-            picked_index = candidate_indexes[0]
-            for index in candidate_indexes:
-                actual = remaining[index]
-                if (
-                    actual.get_src() == expected.get_src()
-                    and actual.get_name_src() == expected.get_name_src()
-                ):
-                    picked_index = index
-                    break
-            actual = remaining.pop(picked_index)
+            consumed.add(picked_index)
+            actual = result_items[picked_index]
             dialogue_unapplied = (
                 self._has_translated_value(expected.get_src(), expected.get_dst())
                 and self._normalize_compare_value(actual.get_dst())
@@ -598,7 +621,7 @@ class RENPY(Base):
             return False
 
     def _resolve_source_path(self, rel_path: str) -> Path:
-        input_path = self.input_path / rel_path
+        input_path = self.input_path if self.input_path.is_file() else self.input_path / rel_path
         target_path = self.output_path / rel_path
         # 缓存元数据来自当前输入文件。复用输出目录中的旧文件会错开行号和哈希，
         # 导致增量重跑时出现行号越界或写回不匹配。

@@ -7,6 +7,19 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 
+def validate_write_path(path: str | Path, allowed_roots: Iterable[Path]) -> None:
+    """Reject destinations whose resolved path leaves the permitted roots."""
+    requested_target = Path(path)
+    resolved_target = requested_target.resolve(strict=False)
+    if not any(
+        resolved_target.is_relative_to(Path(root).resolve(strict=False))
+        for root in allowed_roots
+    ):
+        raise RuntimeError(
+            f"Write target escapes allowed roots: {requested_target} -> {resolved_target}"
+        )
+
+
 def atomic_write_text(
     path: str | Path,
     text: str,
@@ -18,7 +31,9 @@ def atomic_write_text(
 ) -> None:
     """Validate and atomically replace a text file in its destination directory."""
     requested_target = Path(path)
-    requested_target.parent.mkdir(parents=True, exist_ok=True)
+    allowed_roots = tuple(allowed_roots or ())
+    if allowed_roots:
+        validate_write_path(requested_target, allowed_roots)
     if validator is not None:
         validator(text)
 
@@ -37,19 +52,11 @@ def atomic_write_text(
                 f"Symbolic-link write target is not a file: {requested_target}"
             )
         if allowed_roots:
-            resolved_target = target.resolve(strict=False)
-            resolved_roots = [root.resolve(strict=False) for root in allowed_roots]
-            if not any(
-                resolved_target == root or root in resolved_target.parents
-                for root in resolved_roots
-            ):
-                raise RuntimeError(
-                    f"Symbolic-link write target escapes allowed roots: "
-                    f"{requested_target} -> {resolved_target}"
-                )
+            validate_write_path(target, allowed_roots)
     else:
         target = requested_target
 
+    target.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     try:
         descriptor: int | None = None
