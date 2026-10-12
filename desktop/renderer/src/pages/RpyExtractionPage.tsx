@@ -620,6 +620,16 @@ export function RpyExtractionPage(props: {
     }
   }
 
+  /** 与工具箱其他页面一致：用主进程原生 dialog 选目录（Qt5 RpyExtractionPage.py:231-232 同款入口）。 */
+  async function pickPath() {
+    const picked = await window.renpy?.pickFolder?.(path || undefined);
+    if (!picked || picked === path) return;
+    if (pageDirty && !confirmDiscard()) return;
+    setPath(picked);
+    setScanOverride(null);
+    setScanPage(1);
+  }
+
   const displayError = localError || error;
   const statusText = toolStatusText(t, {
     ...suite,
@@ -676,19 +686,24 @@ export function RpyExtractionPage(props: {
 
       <SettingsGroup title={t('rpy_rules_title')} description={t('rpy_rules_beginner_steps')}>
         <Form.Item label={t('rpy_rules_path')} style={{ marginBottom: 12 }}>
-          <Input
-            value={path}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (value !== path && pageDirty && !confirmDiscard()) return;
-              setPath(value);
-              setScanOverride(null);
-              setScanPage(1);
-            }}
-            placeholder={t('rpy_rules_path')}
-            disabled={busy || mutating}
-            data-rb-rpy-path
-          />
+          <div className="rb-tool-actions" style={{ display: 'flex', gap: 8 }}>
+            <Input
+              value={path}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value !== path && pageDirty && !confirmDiscard()) return;
+                setPath(value);
+                setScanOverride(null);
+                setScanPage(1);
+              }}
+              placeholder={t('rpy_rules_path')}
+              disabled={busy || mutating}
+              data-rb-rpy-path
+            />
+            <Button onClick={() => void pickPath()} disabled={busy || mutating} data-rb-rpy-browse>
+              {t('rpy_rules_browse')}
+            </Button>
+          </div>
         </Form.Item>
         <Form.Item label={t('rpy_rules_category')} style={{ marginBottom: 12 }}>
           <Select

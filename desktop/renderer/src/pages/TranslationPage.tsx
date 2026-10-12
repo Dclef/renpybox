@@ -105,8 +105,9 @@ export function TranslationPage(props: {
   const lastSampleAt = useRef(0);
 
   const status = state.translation.engine_status;
-  const running = state.translation.running.running;
-  const max = state.translation.running.max;
+  // 后端一定带 running，但快照事件在非进度期间会整包替换状态；缺字段时退回 0，不能让整页崩掉。
+  const running = state.translation.running?.running ?? 0;
+  const max = state.translation.running?.max ?? 0;
   const isTranslating = status === 'TRANSLATING';
   const isStopping = status === 'STOPPING' || state.translation.stop_barrier;
 

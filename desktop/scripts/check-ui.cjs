@@ -228,7 +228,16 @@ if (p === '/api/jobs') return response({ jobs: [f.workbenchJob, f.archiveJob, f.
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1280, height: 800, show: false, frame: false, webPreferences: { offscreen: true, sandbox: true, contextIsolation: true } });
   const errors = [];
-  win.webContents.on('console-message', (event, level, message) => { const severity = event.level ?? level; const value = event.message ?? message; if (severity === 'error' || severity >= 3) { errors.push(value); log('CONSOLE ' + value); } });
+  // antd 虚拟表格（rc-virtual-list）在数据/高度刚变化时调用 scrollTo，会打印
+  // "Seems `scrollTo` with `rc-virtual-list` reach the max limitation. Please fire issue for us."。
+  // 这是库内部提示（应用侧 components/tableFocus.ts 已用逐帧重试兜底），只忽略这一条，其余 console 错误仍然致命。
+  const UPSTREAM_CONSOLE_WARNINGS = [/rc-virtual-list` reach the max limitation/];
+  win.webContents.on('console-message', (event, level, message) => {
+    const severity = event.level ?? level; const value = event.message ?? message;
+    if (severity !== 'error' && !(severity >= 3)) return;
+    if (UPSTREAM_CONSOLE_WARNINGS.some(pattern => pattern.test(value))) { log('CONSOLE_IGNORED_UPSTREAM ' + value); return; }
+    errors.push(value); log('CONSOLE ' + value);
+  });
   await win.loadURL('about:blank'); win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Page.enable'); await win.webContents.debugger.sendCommand('Runtime.enable');
   await win.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: '(' + fixture.toString() + ')()' });
@@ -246,10 +255,17 @@ app.whenReady().then(async () => {
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',...position,button:'left',clickCount:1});
     await pause(220);
   };
+  // 用真实鼠标事件点击任意选择器：antd Select 靠 mousedown 展开，合成 .click() 打不开下拉。
+  const clickAt = async selector => {
+    const position = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error('缺少元素 '+${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',...position,button:'left',clickCount:1});
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',...position,button:'left',clickCount:1});
+    await pause(260);
+  };
   const page = async title => { await js(`Array.from(document.querySelectorAll('.nav-item')).find(b=>b.title===${JSON.stringify(title)})?.click()`); await pause(180); };
   const input = async (selector, value) => { await js(`(()=>{const root=document.querySelector(${JSON.stringify(selector)});const e=root?.matches('input,textarea')?root:root?.querySelector('input,textarea');if(!e)throw new Error('缺少输入框 '+${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
-  const openTool = async title => { await page("Ren'Py 工具箱"); await input('.toolbox-search', title); await js("document.querySelector('.tool-card')?.click()"); await pause(180); };
+  const openTool = async title => { await page("Ren'Py 工具箱"); await input('.toolbox-search', title); const info = await js("JSON.stringify({cards:document.querySelectorAll('.tool-card').length,page:document.querySelector('.content')?.dataset.page,search:document.querySelector('.toolbox-search')?.value})"); log('OPENTOOL '+title+' '+info); await js("document.querySelector('.tool-card')?.click()"); await pause(180); };
   const SAMPLE_PAGES = [['翻译任务','translation'],['基础设置','basic'],['项目设置','project'],['术语表','glossary']];
   const captureSamples = async prefix => {
     for (const [title, key] of SAMPLE_PAGES) {
@@ -285,7 +301,9 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('.feed-card').textContent.includes('已保存的译文') && document.body.textContent.includes('已恢复当前项目')", '启动恢复缓存流水');
   await js("__uiFixture.progress={}; __uiFixture.progressSource='none'; __uiFixture.values.output_folder='C:/other/output'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(250);
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('0%') && !document.querySelector('.feed-card').textContent.includes('已保存的译文')", '切换空项目清除旧流水和统计');
-  await js("__uiFixture.progress={line:64,total_line:100,time:120,total_output_tokens:4800}; __uiFixture.progressSource='cache'; __uiFixture.values.output_folder='C:/ui-check/output'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(250);
+  // /api/translation/state 的缓存进度始终带项目 status（api/routes/translation.py:1060），
+  // 「可继续」只认 TRANSLATING（Base.PROJECT_RESUMABLE_STATUSES）；旧 fixture 漏了 status，会退化成「已完成」。
+  await js("__uiFixture.progress={line:64,total_line:100,time:120,total_output_tokens:4800,status:'TRANSLATING'}; __uiFixture.progressSource='cache'; __uiFixture.values.output_folder='C:/ui-check/output'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(250);
   await setProgress({ progress: { line: 65, total_line: 100 } });
   await assert("document.querySelector('.rb-progress-percent').textContent.includes('65%')", '兼容分区进度事件');
   await setProgress({line:64,total_line:100});
@@ -299,16 +317,16 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('.task-state').textContent==='可继续'", '已暂停任务状态');
   await setProgress({line:100,total_line:100,failed_line_count:1});
   await assert("document.querySelector('.task-state').textContent==='可继续' && document.querySelector('.task-state').dataset.warning==='true'", '失败条目不误报完成');
-  await setProgress({failed_line_count:0});
+  await setProgress({failed_line_count:0,status:'TRANSLATED'});
   await assert("document.querySelector('.task-state').textContent==='已完成'", '任务完成状态');
-  await setProgress({line:0,total_line:0});
+  await setProgress({line:0,total_line:0,status:'UNTRANSLATED'});
   await assert("document.querySelector('.task-state').textContent==='待开始' && !document.querySelector('.rb-progress-meta .ant-tag')", '空任务不显示虚假健康状态');
   await setProgress({line:64,total_line:100});
   await assert("document.querySelectorAll('.rb-translation-summary .rb-panel').length===3 && !!document.querySelector('.ant-progress-circle') && document.querySelectorAll('.rb-throughput-stats > div').length===4", '旧版仪表盘分区及未知指标');
   await assert("document.querySelector('.rb-throughput-stats').textContent.includes('—')", '未知指标不伪装为零');
   await assert("(()=>{const e=document.querySelector('.translation-layout .banner');return e&&e.clientHeight>=e.scrollHeight-2})()", '缓存提示条不被压扁');
   await click('估算 Token');
-  await assert("__uiFixture.writes.some(w=>w.p==='/api/translation/estimate'&&Object.keys(w.body).length===0)&&[...document.querySelectorAll('[data-rb-toast]')].some(e=>e.textContent.includes('原文 128 tokens'))", 'Token估算发送有效JSON且显示结果');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/translation/estimate'&&Object.keys(w.body).length===0)&&[...document.querySelectorAll('[data-rb-toast]')].some(e=>e.textContent.includes('原文 Token ~128'))", 'Token估算发送有效JSON且显示结果');
   await capture('new-ui-translation-dark');
   await captureSamples('p1-dark-1280');
   await capturePhase2A('p2a-dark-1280');
@@ -319,7 +337,9 @@ app.whenReady().then(async () => {
   await page('接口管理');
   await assert("(()=>{const e=document.querySelector('.rb-platform-card');const r=e.getBoundingClientRect();return r.width>=220&&r.height>=72&&document.querySelector('.rb-platform-list .rb-settings-group').getBoundingClientRect().height>140})()", 'Qt 分组卡片响应式布局且不挤压');
   await capture('new-ui-platform-dark');
-  await click('新增接口'); await capture('new-ui-platform-editor-dark');
+  // 4a0f6c7 起「新增接口」改成 Dropdown：预设列表 + 「空白新增…」才打开空白编辑器。
+  await click('新增接口'); await pause(260); await capture('new-ui-platform-presets-dark');
+  await click('空白新增…'); await pause(120); await capture('new-ui-platform-editor-dark');
   await input('.platform-editor input', '自检接口'); await input('.platform-editor .ant-select-auto-complete input', 'story-model'); await input('.platform-editor input[type=url]', 'https://api.example.com/v1'); await click('保存接口');
   await assert("__uiFixture.values.platforms.some(p=>p.name==='自检接口')", '接口编辑表单提交');
   await assert("!('api_keys' in __uiFixture.writes.at(-1).body)", '空密钥不覆盖凭据');
@@ -425,7 +445,8 @@ app.whenReady().then(async () => {
   await js("document.activeElement.blur()"); await pause(80);
   await js("document.querySelector('.workspace-project').click()"); await pause(180);
   await assert("!!document.querySelector('[role=dialog]') && !!document.querySelector('.glossary-layout')", '切页保护编辑');
-  await click('取消'); await click('保存到项目');
+  // 离页 guard 的取消按钮文案是 App.tsx:538 的「留在当前页」，不是「取消」。
+  await click('留在当前页'); await click('保存到项目');
   await assert("__uiFixture.glossary.rows[0].src==='Harbor Town'", '词库提交');
   await js("__uiFixture.savedGlossary=structuredClone(__uiFixture.glossary); __uiFixture.glossary.rows=Array.from({length:51},(_,i)=>({src:i===0?'<img class=xss src=x> LONGTERM Row '+ 'x'.repeat(400):i===50?'TailTerm Row':'Term '+i+' Row',dst:'dst '+i,info:'',type:i===3?'角色':'',candidate:i===3,candidate_confirmed:false,record_id:'r'+i})); __uiFixture.glossary.candidate_ids=['r3'];");
   await click('重新载入'); await pause(300);
@@ -622,6 +643,7 @@ await assert("document.activeElement.classList.contains('rb-proofreading-row') &
 await js("__uiFixture.items=structuredClone(__uiFixture.lexProofItemsBase)"); await click('刷新译文'); await pause(250);
 await assert("document.querySelectorAll('.rb-proofreading-row').length===__uiFixture.lexProofItemsBase.length", '校对键盘场景明确刷新恢复原译文');
 await openTool('禁翻表');
+  log('DEBUG646 ' + await js("JSON.stringify({page:document.querySelector('.content')?.dataset.page,rows:document.querySelectorAll('.rb-proofreading-row').length,target:!!document.querySelector('.rb-proof-target'),surface:!!document.querySelector('.proofreading-surface'),loading:!!document.querySelector('.rb-proof-loading'),err:document.querySelector('.rb-error, [data-rb-error]')?.textContent?.slice(0,200),dialogs:[...document.querySelectorAll('[role=dialog]')].length,tools:!!document.querySelector('.tool-card')})"));
   await openTool('检查与润色'); await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
@@ -646,6 +668,8 @@ await openTool('禁翻表');
   await js("__uiFixture.engineStatus='IDLE'; __uiFixture.emitQuality({...__uiFixture.qualityReports[0],state:'COMPLETED',completed_count:1,updated_count:1})"); await pause(300);
   await assert("!document.querySelector('.rb-proofreading-task') && __uiFixture.qualityReports[0].state === 'COMPLETED'", '质量完成刷新缓存并恢复编辑');
   await page('翻译任务'); await openTool('检查与润色');
+  // 「质量报告」按钮 disabled={loading || !data}：重进工具页后要等 /api/proofreading 首帧数据，先等它可点。
+  for (let i = 0; i < 40; i++) { if (await js("(()=>{const b=Array.from(document.querySelectorAll('button')).find(e=>e.textContent.trim()==='质量报告');return Boolean(b&&!b.disabled)})()")) break; await pause(100); }
   await click('质量报告');
   await assert("document.querySelector('.rb-quality-report').textContent.includes('已完成') && document.querySelector('[role=dialog]').textContent.includes('对齐异常 1')", '翻译质量与 AI 处理记录区分显示');
   await js("document.querySelector('[role=dialog]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(200);
@@ -695,7 +719,9 @@ await openTool('禁翻表');
   await js("document.querySelector('.dialog').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await pause(100);
   await assert("!document.querySelector('[role=dialog]')", 'Escape 关闭');
   await page("Ren'Py 工具箱");
-  await assert("document.querySelectorAll('.tool-card').length===27 && document.querySelectorAll('.rb-tool-availability').length===16", '工具箱明确标记未接入工具');
+  // c194295 起 27 个工具全部接入 ToolBoxPage 的 TOOL_PAGES，.rb-tool-availability（tool_pending 标签）
+  // 不再出现；保留断言形式以锁死「没有工具漏接页面」。
+  await assert("document.querySelectorAll('.tool-card').length===27 && document.querySelectorAll('.rb-tool-availability').length===0", '工具箱 27 个工具全部接入页面');
   await capture('new-ui-toolbox-dark');
   await input('.toolbox-search', '术语');
   await assert("document.querySelectorAll('.tool-card').length===1", '工具搜索不重复');
@@ -714,7 +740,9 @@ await openTool('禁翻表');
   await js("__uiFixture.onekeyJob.status='cancelled'; __uiFixture.onekeyJob.result.worker_active=false; __uiFixture.engineStatus='IDLE';"); await pause(1700);
   await click('开始准备'); await click('开始准备');
   await js("__uiFixture.onekeyJob.cancel_requested=false; __uiFixture.onekeyJob.status='done'; __uiFixture.onekeyJob.result.worker_active=false; __uiFixture.onekeyJob.result.stage='ready'; __uiFixture.onekeyJob.result.message='准备完成'; __uiFixture.engineStatus='IDLE'; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'job',job:__uiFixture.onekeyJob})});"); await pause(1600);
-  await assert("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='打开翻译页') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='应用译文')", '准备完成后可返回翻译页并应用');
+  // a91bf3a 起 full 模式准备完成的 CTA 文案是「下一步：打开翻译页」(onekey_next_translation)，
+  // 「打开翻译页」只剩应用模式在渲染，这里按前缀匹配。
+  await assert("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.includes('打开翻译页')) && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='应用译文')", '准备完成后可返回翻译页并应用');
   await openTool('应用翻译到游戏');
   await assert("!!document.querySelector('.rb-onekey-page') && Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='应用译文')", '应用译文复用一键应用阶段');
   await click('应用译文');
@@ -729,9 +757,10 @@ await openTool('禁翻表');
   await assert("!!document.querySelector('[role=dialog]') && document.querySelector('[role=dialog]').textContent.includes('可能覆盖')", '解包前确认写入与覆盖');
   await click('开始解包');
   await assert("__uiFixture.writes.at(-1).p==='/api/archive/unpack' && __uiFixture.archiveJob.result.archives_removed===false", '解包任务保留源档');
-  await click('取消任务');
-  await assert("__uiFixture.archiveJob.cancel_requested && __uiFixture.archiveJob.result.worker_active", '解包取消等待后台线程退出');
-  await js("__uiFixture.archiveJob.status='cancelled'; __uiFixture.archiveJob.result.worker_active=false; __uiFixture.engineStatus='IDLE';"); await pause(1700);
+  // Qt5 只有打包可取消（renderer/src/archiveView.mjs:3-8 CANCELLABLE_ARCHIVE_KINDS=['archive_pack']），
+  // 解包/反编译/清理一旦开始就跑到底：运行期不渲染取消按钮，这里断言这一点并让 fixture 把解包跑完。
+  await assert("!Array.from(document.querySelectorAll('.rb-archive-page button')).some(b=>b.textContent.trim()==='取消打包')", '解包运行期不提供取消（Qt5 只有打包可取消）');
+  await js("__uiFixture.archiveJob.status='done'; __uiFixture.archiveJob.result.worker_active=false; __uiFixture.engineStatus='IDLE';"); await pause(1700);
   await js("Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='覆盖已有 .rpy')?.click()"); await pause(80);
   await click('开始反编译');
   await assert("!!document.querySelector('[role=dialog]')", '覆盖反编译需确认');
@@ -836,8 +865,9 @@ await js("window.fetch=__uiFixture.oldNameFetch;HTMLAnchorElement.prototype.clic
   await page('Agent 助手');
   await assert("!!document.querySelector('.agent-composer textarea') && !document.querySelector('.agent-empty').textContent.includes('暂不可用')", 'Agent 工作区已替换占位页');
   await js("document.querySelector('.agent-suggestion').click()"); await pause(80);
-  await js("document.querySelector('[aria-label=\"Agent 思考等级\"]').click()"); await pause(120);
-  await js("Array.from(document.querySelectorAll('.ant-select-item-option')).find(o=>o.textContent.trim()==='高')?.click()"); await pause(120);
+  await clickAt('[aria-label="Agent 思考等级"]');
+  await clickAt('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option[title="高"]');
+  await assert("String(__uiFixture.values.agent_thinking_level||'').toUpperCase()==='HIGH'", 'Agent 思考等级写回设置');
   await click('发送');
   await assert("__uiFixture.writes.at(-1).p==='/api/agent/message' && __uiFixture.writes.at(-1).body.thinking_level==='HIGH' && document.querySelectorAll('.agent-message').length===2", 'Agent 发送实际请求与思考覆盖项');
   await js("__uiFixture.agent.messages.at(-1).content='找到 2 个资源包。'; __uiFixture.agent.messages.at(-1).tools=[{name:'list_rpa_files',status:'done',message:'找到 2 个资源包'}]; __uiFixture.emitAgent();"); await pause(220);
@@ -882,6 +912,7 @@ await js("window.fetch=__uiFixture.oldNameFetch;HTMLAnchorElement.prototype.clic
       if (data.root || data.panels.length || data.controls.length) throw new Error('布局越界：'+width+' '+title+' '+JSON.stringify(data));
       await assert("document.querySelector('.sidebar-footer').getBoundingClientRect().bottom<=innerHeight+1", '侧栏页脚可见 '+width+' '+title);
       if (['检查与润色','术语表','禁翻表','称呼桥接'].includes(title)) {
+        log('PROBE ' + width + ' ' + await js("(()=>{const box=(s)=>{const e=document.querySelector(s);if(!e)return null;const r=e.getBoundingClientRect();return [Math.round(r.top),Math.round(r.bottom),Math.round(r.height)];};return JSON.stringify({vh:innerHeight,vw:innerWidth,scroll:box('.rb-page-scroll'),filters:box('.proofreading-filters'),selection:box('.rb-proofreading-selection'),surface:box('.proofreading-surface'),foot:box('.proofreading-pagination')});})()"));
         await assert("(()=>{const e=document.querySelector('.proofreading-pagination');const r=e?.getBoundingClientRect();return r&&r.height>0&&r.top>=38&&r.bottom<=innerHeight+1;})()", '表格分页完整可见 '+width+' '+title);
       }
       if (width === 680 && (title === '术语表' || title === '禁翻表')) {

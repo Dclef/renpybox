@@ -644,6 +644,37 @@
     margin-top: -4px;
   }
 
+  /*
+   * 工具页表单行对齐 Qt5 工具页：frontend/RenpyToolbox/SourceTranslatePage.py:134-147
+   * 里 game 目录行就是「QLabel("game 目录:") + LineEdit(stretch=1) + 浏览按钮」同一水平行。
+   * SourceTranslate / DirectRpyTranslate / HookSupplement / HookTranslate / HtmlImport
+   * 这 5 个页面原来用 layout="vertical"（标签压在控件上方、行高翻倍，也和其余工具页
+   * 裸 Form.Item 走 antd 水平行不一致），现已改成 layout="horizontal"：
+   * 标签列 / 控件列全交给 antd 自己的水平表单规则（label 右对齐按内容占宽、
+   * control flex:1 1 0 撑满），这里只补一处 antd 默认没覆盖的细节。
+   */
+  /* 内容宽控件（Switch）靠行尾对齐，与设置页 SettingCard 的开关位置一致 */
+  .rb-tool-page .ant-form-horizontal .ant-form-item-control-input-content:has(> .ant-switch:only-child) {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /*
+   * 「输入框 + 浏览/选择」同一行：antd 未分层的 .ant-input { width: 100% } 会把按钮挤到下一行
+   * （安卓打包的 Ren'Py SDK / 项目目录 就是输入框一行、按钮另起一行），
+   * app.css 全在 @layer app 里，压不过未分层样式，只能用 !important（同文件既有做法）。
+   * Qt5 同一行是 LineEdit(stretch=1) + PushButton：输入框吃满剩余宽度，按钮留在行尾。
+   * 只作用于同层带按钮的行，纯开关 / 纯按钮的 .rb-tool-actions 不受影响。
+   */
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input-affix-wrapper,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-select,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input-number {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0;
+  }
+
   .rb-tool-blocked {
     display: flex;
     flex-wrap: wrap;
@@ -697,7 +728,7 @@
     padding: 9px 11px;
     border: 1px solid var(--rb-divider);
     border-left: 2px solid var(--rb-accent);
-    border-radius: 5px;
+    border-radius: 6px;
     background: var(--rb-surface-subtle);
     line-height: 1.55;
   }
@@ -1367,14 +1398,22 @@
     overflow: hidden;
   }
 
-  .rb-workbench-status {
+  .rb-workbench-statusbar {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px 16px;
+    align-items: center;
+    gap: 8px 12px;
     margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 8px;
+    background: var(--rb-surface);
     color: var(--rb-text-secondary);
     font-size: 12px;
   }
+
+  .rb-workbench-status-metrics { color: var(--rb-text-primary); }
+  .rb-workbench-status-hint { margin-left: auto; }
 
   .rb-workbench-tabs { flex-shrink: 0; }
 
@@ -1415,13 +1454,21 @@
 
   .rb-workbench-stats {
     display: flex;
-    gap: 20px;
+    gap: 0;
+    align-self: center;
   }
 
   .rb-workbench-stats div {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    padding: 0 20px;
+    border-left: 1px solid var(--rb-divider);
+  }
+
+  .rb-workbench-stats div:first-child {
+    padding-left: 0;
+    border-left: 0;
   }
 
   .rb-workbench-stats strong {
@@ -1436,6 +1483,12 @@
     font-size: 12px;
   }
 
+  .rb-workbench-switches {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 24px;
+  }
+
   .rb-workbench-switch {
     display: flex;
     align-items: center;
@@ -1443,6 +1496,21 @@
     gap: 12px;
     min-height: 36px;
     border-top: 1px solid var(--rb-divider);
+  }
+
+  .rb-workbench-switch span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .rb-workbench-switch small {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  @media (max-width: 800px) {
+    .rb-workbench-switches { grid-template-columns: minmax(0, 1fr); }
   }
 
   .rb-workbench-characters {
@@ -1780,7 +1848,7 @@
     display: grid;
     place-items: center;
     margin-bottom: 2px;
-    border-radius: 18px;
+    border-radius: 16px;
     background: var(--rb-accent-surface);
     color: var(--rb-accent);
   }
@@ -2402,12 +2470,19 @@
 /* 工作台分析操作与草稿审核保持可扫读，长文本按字段换行。 */
 @layer app {
   .rb-workbench-analysis {
-    display: grid;
-    grid-template-columns: minmax(150px, 1fr) auto minmax(160px, 1fr) auto;
+    display: flex;
+    flex-direction: column;
     gap: 12px;
-    align-items: end;
   }
   .rb-workbench-analysis > * { min-width: 0; }
+  /* 分析区按「标签 + 控件 + 动作」逐行排布，与工具箱页的行语言一致。 */
+  .rb-workbench-analysis-row {
+    display: grid;
+    grid-template-columns: 152px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .rb-workbench-analysis-label { color: var(--rb-text-secondary); font-size: 13px; }
   .rb-workbench-analysis-hint { margin: 10px 0 0; color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; }
   .rb-workbench-analysis-status {
     display: flex;
@@ -2437,7 +2512,8 @@
   .rb-workbench-draft-character[open] summary { margin-bottom: 12px; }
   .rb-workbench-draft-review .rb-workbench-preview-actions { flex-wrap: wrap; }
   @media (max-width: 800px) {
-    .rb-workbench-analysis { grid-template-columns: minmax(0, 1fr) auto; }
+    .rb-workbench-analysis-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .rb-workbench-analysis-label { grid-column: 1 / -1; }
     .rb-workbench-draft-fields > div { grid-template-columns: 88px minmax(0, 1fr); }
   }
 }
@@ -2728,7 +2804,7 @@
     justify-content: center;
     width: 28px;
     height: 28px;
-    border-radius: 7px;
+    border-radius: 8px;
     background: color-mix(in srgb, var(--rb-accent) 9%, var(--rb-surface-subtle));
     color: var(--rb-accent);
     transition: all 0.2s ease;
@@ -2824,7 +2900,7 @@
   }
 
   .rb-toolbox .tool-card:disabled .tool-card-body .rb-tool-desc {
-    color: var(--rb-text-tertiary);
+    color: var(--rb-text-disabled);
   }
 
   /* 底部状态行：左侧接入状态，右侧工程依赖提示（对齐 Qt5 description_layout） */
@@ -2854,7 +2930,8 @@
     line-height: 1;
   }
 
-  /* 需先选择游戏目录：Ant Design Warning Tag 风格，右对齐（对齐 Qt5 project_requirement_label） */
+  /* 需先选择游戏目录：Ant Design Warning Tag 风格，右对齐（对齐 Qt5 project_requirement_label）
+     颜色走 --rb-warning 令牌：LIGHT/DARK 各自取值，不再写死琥珀 hex。 */
   .rb-toolbox .rb-tool-requirement {
     margin-left: auto;
     display: inline-flex;
@@ -2862,20 +2939,13 @@
     height: 20px;
     padding: 0 6px;
     border-radius: 4px;
-    background: color-mix(in srgb, #faad14 12%, var(--rb-surface));
-    color: #d46b08;
-    border: 1px solid color-mix(in srgb, #faad14 32%, transparent);
+    background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface));
+    color: var(--rb-warning);
+    border: 1px solid color-mix(in srgb, var(--rb-warning) 32%, transparent);
     font-size: 11px;
     font-weight: 500;
     line-height: 1;
     white-space: nowrap;
-  }
-
-  [data-theme='DARK'] .rb-toolbox .rb-tool-requirement,
-  [data-theme='dark'] .rb-toolbox .rb-tool-requirement {
-    background: color-mix(in srgb, #faad14 16%, #1f1f1f);
-    color: #faad14;
-    border-color: color-mix(in srgb, #faad14 36%, transparent);
   }
 
   /* ---- 窄窗口（侧栏收起为图标栏） ---- */
@@ -2895,5 +2965,36 @@
   }
   @media (max-width: 600px) {
     .translation-layout .rb-translation-summary { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* 页面渲染异常的兜底卡片（components/ErrorBoundary.tsx）：单页出错不再整窗白屏。 */
+  .rb-error-boundary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 20px 22px;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-shadow-overlay);
+  }
+  .rb-error-boundary h1 { margin: 0; font-size: 18px; color: var(--rb-text-primary); }
+  .rb-error-boundary p { margin: 0; color: var(--rb-text-secondary); }
+  /* 技术细节默认折叠：终端用户先看到可读的说明，报障时再展开复制。 */
+  .rb-error-boundary-more { width: 100%; font-size: 12px; color: var(--rb-text-placeholder); }
+  .rb-error-boundary-more summary { cursor: pointer; user-select: none; }
+  .rb-error-boundary-detail {
+    max-width: 100%;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 }

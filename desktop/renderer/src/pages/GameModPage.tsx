@@ -1,6 +1,6 @@
 /** 游戏模组注入：对齐 Qt5 GameModPage，走 /api/game-mod。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Progress } from 'antd';
+import { Button, Form, Input, Progress, Space } from 'antd';
 
 import {
   MOD_COPY,
@@ -106,7 +106,7 @@ export function GameModPage(props: { state: AppState }) {
 
       <SettingsGroup title={t(MOD_COPY.gameDir)} description={t(MOD_COPY.gameHint)}>
         <Form.Item style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input
               value={gamePath}
               onChange={(event) => setGamePath(event.target.value)}
@@ -120,7 +120,7 @@ export function GameModPage(props: { state: AppState }) {
             >
               {t(MOD_COPY.browse)}
             </Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         {!gamePathReady(gamePath) ? (
           <p className="muted">

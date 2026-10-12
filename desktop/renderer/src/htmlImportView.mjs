@@ -11,8 +11,8 @@ export const HTML_COPY = {
   },
   step1Title: { ZH: '第 1 步：提取待翻译文本', EN: 'Step 1: Extract pending text' },
   step1Hint: {
-    ZH: '选择一键翻译抽取后的 game/tl/<语言> 目录。只会提取官方抽取、尚未翻译的条目。',
-    EN: 'Pick the game/tl/<language> folder from extraction. Only untranslated official entries are exported.',
+    ZH: '选择一键翻译抽取后的 game/tl/<语言> 目录（例如 game/tl/chinese）。只会提取官方抽取产生、还没翻译的条目，补充抽取的内容不参与。',
+    EN: 'Pick the game/tl/<language> folder produced by extraction (e.g. game/tl/chinese). Only untranslated official entries are exported; supplemental entries are skipped.',
   },
   tlDir: { ZH: 'TL 目录', EN: 'TL Folder' },
   txtOut: { ZH: '输出 TXT', EN: 'Output TXT' },

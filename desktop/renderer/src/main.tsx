@@ -9,6 +9,7 @@ import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
 
 import { App } from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyRbCssVariables, buildAntdTheme } from './antdTheme';
 import { applyTheme, readStoredTheme, type ThemeName } from './theme';
 import { useAppState } from './useAppState';
@@ -39,7 +40,10 @@ function Root() {
     <ConfigProvider locale={locale} theme={antdTheme} button={{ autoInsertSpace: false }}>
       {/* 不输出 .ant-app 包裹层，保持 #root > .rb-shell 的百分比高度链。 */}
       <AntApp component={false}>
-        <App state={state} link={state.link} />
+        {/* 最后一层兜底：整棵业务树都出问题时不至于只剩白屏。 */}
+        <ErrorBoundary>
+          <App state={state} link={state.link} />
+        </ErrorBoundary>
       </AntApp>
     </ConfigProvider>
   );

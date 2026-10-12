@@ -75,7 +75,7 @@ export interface ToolSpec {
   title: string;
   description: string;
   group: ToolGroup;
-  /** 需要先选好项目，否则工具无从下手 */
+  /** 需要先选好项目（= 先选游戏目录），否则工具无从下手。新 UI 只有「推荐流程」整组 + 术语表 / 禁翻表为 true，见 tests/tools-registry.test.mjs */
   requiresProject: boolean;
   icon: ToolIconName;
   /** 推荐流程里的执行序号，0 表示不显示（对齐 ItemCard 的 step） */
@@ -95,7 +95,7 @@ export const TOOL_GROUP_TITLES: Record<ToolGroup, string> = {
 export const TOOL_GROUP_ORDER: ToolGroup[] = ['flow', 'translate', 'asset', 'engineer'];
 
 export const TOOL_SPECS: ToolSpec[] = [
-  // ---------- 推荐流程 ----------
+  // ---------- 推荐流程（唯一要求先选游戏目录的分组；术语表 / 禁翻表 也放这一组，与 Qt5 的 ASSET 分组有意不同） ----------
   {
     key: 'continue_translation',
     title: '继续翻译',
@@ -165,6 +165,26 @@ export const TOOL_SPECS: ToolSpec[] = [
     icon: 'DEFAULT_LANGUAGE',
     step: 6,
     keywords: ['启动语言', '默认语言', 'language', 'locale'],
+  },
+  {
+    key: 'local_glossary',
+    title: '术语表',
+    description: '管理当前项目专有名词对照，统一译法',
+    group: 'flow',
+    requiresProject: true,
+    icon: 'GLOSSARY',
+    step: 0,
+    keywords: ['术语', '词表', 'glossary', 'csv', 'excel'],
+  },
+  {
+    key: 'text_preserve',
+    title: '禁翻表',
+    description: '管理不需要翻译的变量和代码',
+    group: 'flow',
+    requiresProject: true,
+    icon: 'PRESERVE',
+    step: 0,
+    keywords: ['禁翻', '保留', '变量', '正则', 'placeholder'],
   },
 
   // ---------- 翻译方式 ----------
@@ -241,26 +261,6 @@ export const TOOL_SPECS: ToolSpec[] = [
 
   // ---------- 资源与词表 ----------
   {
-    key: 'local_glossary',
-    title: '术语表',
-    description: '管理当前项目专有名词对照，统一译法',
-    group: 'asset',
-    requiresProject: true,
-    icon: 'GLOSSARY',
-    step: 0,
-    keywords: ['术语', '词表', 'glossary', 'csv', 'excel'],
-  },
-  {
-    key: 'text_preserve',
-    title: '禁翻表',
-    description: '管理不需要翻译的变量和代码',
-    group: 'asset',
-    requiresProject: false,
-    icon: 'PRESERVE',
-    step: 0,
-    keywords: ['禁翻', '保留', '变量', '正则', 'placeholder'],
-  },
-  {
     key: 'honorific_placeholder',
     title: '称呼桥接',
     description: '处理称呼和变量组合文本',
@@ -295,7 +295,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '姓名提取',
     description: '扫描脚本与 JSON，生成角色名清单',
     group: 'asset',
-    requiresProject: true,
+    requiresProject: false,
     icon: 'NAME',
     step: 0,
     keywords: ['姓名', '角色名', '人名', 'json', 'rpy', 'name'],
@@ -327,7 +327,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '更新翻译复用',
     description: '按原文将旧译文安全填入新版本的空条目',
     group: 'engineer',
-    requiresProject: true,
+    requiresProject: false,
     icon: 'REUSE',
     step: 0,
     keywords: ['更新', '复用', '旧译文', '哈希', 'reuse', 'migrate'],
@@ -347,7 +347,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '安卓打包',
     description: '安装 SDK、生成签名并构建 APK',
     group: 'engineer',
-    requiresProject: true,
+    requiresProject: false,
     icon: 'ANDROID',
     step: 0,
     keywords: ['apk', 'sdk', '签名', 'rapt', 'android', 'gradle'],

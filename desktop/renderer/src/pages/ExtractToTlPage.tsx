@@ -1,6 +1,6 @@
 /** 抽取到 TL：对齐 Qt RenpyTranslationPage，走 /api/extract-to-tl。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, Collapse, Form, Input, Progress, Select } from 'antd';
+import { Button, Checkbox, Collapse, Form, Input, Progress, Select, Space } from 'antd';
 
 import { request } from '../api';
 import {
@@ -204,10 +204,10 @@ export function ExtractToTlPage(props: { state: AppState }) {
 
       <SettingsGroup title={t('extract_tl_title')} description={t('extract_tl_desc')}>
         <Form.Item label={t('extract_tl_game_dir')} style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={gameDir} onChange={(e) => setGameDir(e.target.value)} style={{ flex: 1 }} />
             <Button onClick={() => void pickGameDir()} disabled={writeBlocked}>{t('extract_tl_browse')}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Form.Item label={t('extract_tl_language')} style={{ marginBottom: 12 }}>
           <Input value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="chinese" />
@@ -250,10 +250,10 @@ export function ExtractToTlPage(props: { state: AppState }) {
                 />
               </Form.Item>
               <Form.Item label={t('extract_tl_exe')} style={{ marginBottom: 12 }}>
-                <Input.Group compact style={{ display: 'flex' }}>
+                <Space.Compact block>
                   <Input value={exePath} onChange={(e) => setExePath(e.target.value)} disabled={!useOfficial} style={{ flex: 1 }} placeholder={t('extract_tl_exe_hint')} />
                   <Button onClick={() => void pickExe()} disabled={writeBlocked || !useOfficial}>{t('extract_tl_browse')}</Button>
-                </Input.Group>
+                </Space.Compact>
               </Form.Item>
               <Checkbox checked={skipHooks} onChange={(e) => setSkipHooks(e.target.checked)}>
                 {t('extract_tl_skip_hooks')}

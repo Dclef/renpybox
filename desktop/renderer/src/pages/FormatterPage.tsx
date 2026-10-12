@@ -1,6 +1,6 @@
 /** 代码格式化：对齐 Qt5 FormatterPage（仅格式化，无预览/备份）。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, Form, Input, Progress } from 'antd';
+import { Button, Checkbox, Form, Input, Progress, Space } from 'antd';
 
 import {
   FORMATTER_DEFAULTS,
@@ -105,10 +105,10 @@ export function FormatterPage(props: { state: AppState }) {
 
       <SettingsGroup title={copy.folderTitle} description={copy.folderDesc}>
         <Form.Item label={copy.folderTitle}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={folder} disabled={blocked} onChange={(e) => setFolder(e.target.value)} />
             <Button onClick={() => void pickFolder()} disabled={blocked}>{copy.browse}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
       </SettingsGroup>
 

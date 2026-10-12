@@ -6,9 +6,13 @@
   const status = $('status');
   const sourceSelect = $('source');
   const autoRefresh = $('auto-refresh');
+  const exportButton = $('export');
+  const revealButton = $('reveal');
   let source = 'app';
   let loading = false;
   let copying = false;
+  let exporting = false;
+  let revealing = false;
   let disposed = false;
   let firstRead = true;
   let text = '';
@@ -43,6 +47,7 @@
       }
       firstRead = false;
       $('copy').disabled = copying || !text;
+      exportButton.disabled = exporting || !text;
       $('truncation').hidden = result.truncated !== true;
       if (manual || Date.now() >= noticeUntil) {
         const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -81,6 +86,7 @@
     output.scrollTop = 0;
     $('truncation').hidden = true;
     $('copy').disabled = true;
+    exportButton.disabled = true;
     void refresh(true);
   });
   $('copy').addEventListener('click', async () => {
@@ -98,14 +104,50 @@
       if (!disposed) $('copy').disabled = !text;
     }
   });
+  exportButton.addEventListener('click', async () => {
+    if (exporting || !text || !bridge?.logs?.export) return;
+    const exportedSource = source;
+    exporting = true;
+    exportButton.disabled = true;
+    try {
+      const result = await bridge.logs.export(exportedSource, text);
+      if (disposed || source !== exportedSource) return;
+      if (result?.canceled) setStatus('已取消导出', false, true);
+      else if (result?.written === false) setStatus('日志还没有内容，暂无可导出的文件', true, true);
+      else setStatus('已导出日志 · ' + (result?.path || ''), false, true);
+    } catch (error) {
+      if (!disposed && source === exportedSource) setStatus('导出失败：' + (error?.message || error), true, true);
+    } finally {
+      exporting = false;
+      if (!disposed) exportButton.disabled = !text;
+    }
+  });
+  revealButton.addEventListener('click', async () => {
+    if (revealing || !bridge?.logs?.reveal) return;
+    const revealedSource = source;
+    revealing = true;
+    revealButton.disabled = true;
+    try {
+      const result = await bridge.logs.reveal(revealedSource);
+      if (disposed || source !== revealedSource) return;
+      setStatus(result?.kind === 'file' ? '已在文件管理器中定位日志文件' : '日志文件尚未生成，已打开日志目录', false, true);
+    } catch (error) {
+      if (!disposed && source === revealedSource) setStatus('打开日志失败：' + (error?.message || error), true, true);
+    } finally {
+      revealing = false;
+      if (!disposed) revealButton.disabled = false;
+    }
+  });
   $('close').addEventListener('click', () => bridge?.close ? bridge.close() : window.close());
   window.addEventListener('unload', () => { disposed = true; clearInterval(timer); }, { once: true });
 
-  if (!bridge?.logs?.read || !bridge?.logs?.copy) {
+  if (!bridge?.logs?.read || !bridge?.logs?.copy || !bridge?.logs?.export || !bridge?.logs?.reveal) {
     setStatus('日志接口不可用，请重新打开应用。', true);
     output.textContent = '暂无可显示的日志';
     $('refresh').disabled = true;
     $('copy').disabled = true;
+    exportButton.disabled = true;
+    revealButton.disabled = true;
     sourceSelect.disabled = true;
     autoRefresh.disabled = true;
     return;

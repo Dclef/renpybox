@@ -61,7 +61,7 @@ jobs:
         run: npm run typecheck --prefix desktop
 
       - name: Check desktop process and updater contracts
-        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs
+        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/log-export.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs
 
       - name: Build Windows installer
         run: npm run pack:win --prefix desktop
