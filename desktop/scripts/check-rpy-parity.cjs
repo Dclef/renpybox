@@ -601,8 +601,11 @@ app.whenReady().then(async () => {
     const job=__uiFixture.toolJobs.rpy;
     job.status='running';
     job.result.worker_active=true;
-    __uiFixture.leaveGetFailOnce=true;
   })()`);
+  // 页面每 1.5s 轮询状态接口取 job（renderer/src/pages/projectToolJob.tsx:124），
+  // 必须先等它看到 running，离开守卫才会真正去 GET 任务状态；否则守卫读到的还是上一次的快照。
+  await pause(1800);
+  await js("__uiFixture.leaveGetFailOnce=true");
   await pause(100);
   await page('翻译任务');
   await pause(600);

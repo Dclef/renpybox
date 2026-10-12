@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.8.1-newui.1",
+  "version": "0.8.1-newui.2",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -15,6 +15,7 @@
     "build:renderer": "vite build --config renderer/vite.config.ts",
     "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
     "check:translation-parity": "electron scripts/check-translation-parity.cjs",
+    "check:logs-shell": "electron scripts/check-logs-shell.cjs",
     "start": "electron .",
     "build:backend": "node scripts/build-backend.mjs",
     "verify:package": "node scripts/verify-package.mjs",

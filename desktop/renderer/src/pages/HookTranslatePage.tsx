@@ -328,7 +328,7 @@ export function HookTranslatePage(props: { state: AppState }) {
       {!gate.canStart && !extracting ? <Banner tone="warning">{gate.hint}</Banner> : null}
 
       <SettingsGroup title="目标与语言" description="注入临时 hook 启动 EXE 抽取，成功后才启动统一翻译引擎。">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="游戏 EXE / 项目目录" style={{ marginBottom: 8 }}>
             <Input
               value={gamePath}
@@ -379,7 +379,7 @@ export function HookTranslatePage(props: { state: AppState }) {
       </SettingsGroup>
 
       <SettingsGroup title="抽取选项">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="写回前备份 .bak" style={{ marginBottom: 12 }}>
             <Switch label="写回前备份 .bak" checked={backup} disabled={busy || extracting || pageTranslating} onChange={setBackup} />
           </Form.Item>

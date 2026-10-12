@@ -500,7 +500,7 @@ body {
 
 .tool-card:disabled .tool-card-description,
 .tool-card:disabled .tool-card-body .rb-tool-desc {
-  color: var(--rb-text-tertiary);
+  color: var(--rb-text-disabled);
 }
 
 .tool-card-footer {
@@ -1547,16 +1547,54 @@ body {
 }
 
 .proofreading-filters {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) 150px 180px auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.proofreading-filters .rb-proof-search {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.proofreading-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.proofreading-filter-row .ant-select {
+  max-width: 200px;
+}
+
+.rb-proof-filter-hint {
+  color: var(--rb-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .proofreading-filters input,
 .proofreading-filters select {
   width: 100%;
   min-width: 0;
+}
+
+.proofreading-filter-row .ant-select,
+.proofreading-filters > .ant-select {
+  max-width: 220px;
+}
+
+.rb-proof-filter-hint {
+  display: inline-flex;
+  align-items: center;
+  color: var(--rb-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .proofreading-surface {
@@ -1971,7 +2009,9 @@ body {
   .workbench-roster { padding: 0 0 14px; border: 0; border-bottom: 1px solid var(--rb-divider); }
   .workbench-roster-list { flex-direction: row; flex-wrap: wrap; max-height: 200px; overflow: auto; }
   .workbench-header { flex-wrap: wrap; }
-  .proofreading-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .proofreading-filters { flex-direction: column; align-items: stretch; }
+  .proofreading-filters .rb-proof-search { flex-basis: auto; }
+  .proofreading-filter-row .ant-select { max-width: none; }
 }
 @media (max-width: 680px) {
   .workbench-form-grid { grid-template-columns: minmax(0, 1fr); }

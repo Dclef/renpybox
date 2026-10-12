@@ -167,7 +167,7 @@ export function DirectRpyTranslatePage(props: {
       ) : null}
 
       <SettingsGroup title="路径与语言" description="可直接选游戏/EXE，或显式指定 tl 父目录 + 语言文件夹名；不必事先绑定项目。">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="游戏 EXE / 项目目录" style={{ marginBottom: 8 }}>
             <Input
               value={gamePath}
@@ -218,7 +218,7 @@ export function DirectRpyTranslatePage(props: {
       </SettingsGroup>
 
       <SettingsGroup title="写入选项">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="写入前备份 .bak" style={{ marginBottom: 12 }}>
             <Switch label="写入前备份 .bak" checked={backup} disabled={busy || engineBusy} onChange={setBackup} />
           </Form.Item>

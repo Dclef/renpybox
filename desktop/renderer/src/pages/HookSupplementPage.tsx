@@ -126,7 +126,7 @@ export function HookSupplementPage(props: { state: AppState }) {
       {hintOut ? <Banner tone="info">{`补全输出：${hintOut}`}</Banner> : null}
 
       <SettingsGroup title="项目与语言">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="项目目录" style={{ marginBottom: 8 }}>
             <Input
               value={gamePath}

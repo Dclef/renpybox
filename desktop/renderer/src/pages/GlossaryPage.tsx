@@ -208,7 +208,8 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   }, [dirty, cellDirty, onDirtyChange]);
 
   const apply = (next: GlossarySnapshot) => {
-    const normalized = next.rows.map((row) => ({
+    // 载荷可能缺字段（后端异常/套餐差异），缺失时按空表处理，避免渲染期抛错。
+    const normalized = (next.rows ?? []).map((row) => ({
       ...row,
       info: noteOf(row),
       type: String(row.type ?? ''),
@@ -387,7 +388,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
         body: JSON.stringify({ kind: 'glossary', content_base64, filename: file.name }),
       });
       if (id !== operation.current || key !== projectRef.current || version !== generation.current) return;
-      setRows(result.rows.map((row) => ({
+      setRows((result.rows ?? []).map((row) => ({
         src: String(row.src ?? ''),
         dst: String(row.dst ?? ''),
         type: String(row.type ?? ''),

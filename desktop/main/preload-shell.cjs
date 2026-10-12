@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('shellBridge', {
   logs: {
     read: (source = 'app') => ipcRenderer.invoke('app:read-logs', source),
     copy: text => ipcRenderer.invoke('app:copy-logs', text),
+    export: (source = 'app', snapshot = '') => ipcRenderer.invoke('app:export-logs', { source, snapshot }),
+    reveal: (source = 'app') => ipcRenderer.invoke('app:reveal-logs', source),
   },
   openExternal: url => ipcRenderer.invoke('app:open-external', url),
   updater: {
