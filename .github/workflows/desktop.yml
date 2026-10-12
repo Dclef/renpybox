@@ -61,7 +61,7 @@ jobs:
         run: npm run typecheck --prefix desktop
 
       - name: Check desktop process and updater contracts
-        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/log-export.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs
+        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/log-export.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs desktop/tests/tools-registry.test.mjs desktop/tests/proofreading-view.test.mjs
 
       - name: Build Windows installer
         run: npm run pack:win --prefix desktop
@@ -75,6 +75,7 @@ jobs:
           path: |
             desktop/release/RenpyBox-NewUI-*-x64.exe
             desktop/release/RenpyBox-NewUI-*-x64.exe.blockmap
+            desktop/release/RenpyBox-NewUI-*-x64.zip
             desktop/release/newui.yml
           if-no-files-found: error
 
@@ -100,6 +101,7 @@ jobs:
           $files = @(
             "desktop/release/RenpyBox-NewUI-$version-x64.exe",
             "desktop/release/RenpyBox-NewUI-$version-x64.exe.blockmap",
+            "desktop/release/RenpyBox-NewUI-$version-x64.zip",
             'desktop/release/newui.yml'
           )
           foreach ($file in $files) { if (!(Test-Path -LiteralPath $file)) { throw "Missing artifact: $file" } }

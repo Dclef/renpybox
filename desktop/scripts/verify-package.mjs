@@ -11,6 +11,11 @@ const hash = filename => createHash('sha256').update(readFileSync(filename)).dig
 assert.match(config.version, /^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$/);
 assert.equal(config.build.publish.channel, 'newui');
 assert.equal(config.build.publish.releaseType, 'prerelease');
+// 免安装 zip 与安装包必须一起构建：app-update.yml 只在同一次构建里带 nsis 目标时才写入
+// （app-builder-lib/out/publish/PublishManager.js 的 isSuitableWindowsTarget 只认 nsis），
+// 两个产物共用同一个 win-unpacked，所以一起构建才能让 zip 也带上更新配置。
+assert.match(config.scripts['pack:win'], /--win nsis zip/,
+  'pack:win must build both nsis and zip so the portable zip carries app-update.yml');
 for (const file of ['app.asar', 'app-update.yml', 'backend/RenpyBoxBackend.exe',
   'backend/_internal/resource/icon.ico', 'backend/build-manifest.json', 'renpybox/icon.ico']) {
   assert(existsSync(path.join(packaged, file)), `Missing packaged file: ${file}`);
@@ -38,4 +43,10 @@ if (existsSync(metadata)) {
   assert(contents.includes(`version: ${config.version}`), 'Stale newui update metadata');
   assert(contents.includes(`RenpyBox-NewUI-${config.version}-x64.exe`), 'Update metadata points to a different artifact');
 }
-console.log('[package] Bundled Python, original icon, private-file exclusions and newui updater configuration verified.');
+// 免安装 zip 里的更新配置：zip 的中央目录文件名是明文存储，直接扫字节即可确认
+const zip = path.join(desktop, 'release', `RenpyBox-NewUI-${config.version}-x64.zip`);
+if (existsSync(zip)) {
+  assert(readFileSync(zip).includes(Buffer.from('resources/app-update.yml')),
+    'Portable zip is missing resources/app-update.yml: build nsis and zip in the same electron-builder run');
+}
+console.log('[package] Bundled Python, original icon, private-file exclusions, newui updater configuration and portable zip update config verified.');
