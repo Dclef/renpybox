@@ -1,6 +1,6 @@
 /** 错误修复：扫描 / 自动修复 / lint / 导出，对齐 Qt5 ErrorRepairPage。 */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, Form, Input, Progress } from 'antd';
+import { Button, Checkbox, Form, Input, Progress, Space } from 'antd';
 
 import { request } from '../api';
 import {
@@ -195,10 +195,10 @@ export function ErrorRepairPage(props: { state: AppState }) {
 
       <SettingsGroup title={copy.folderTitle} description={copy.folderDesc}>
         <Form.Item label={copy.folderLabel}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={folder} onChange={(e) => setFolder(e.target.value)} disabled={blocked} />
             <Button onClick={() => void pickFolder()} disabled={blocked}>{copy.browse}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
       </SettingsGroup>
 
@@ -211,10 +211,10 @@ export function ErrorRepairPage(props: { state: AppState }) {
 
       <SettingsGroup title={copy.lintTitle} description={copy.lintDesc}>
         <Form.Item label={copy.exeLabel}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={gameExe} onChange={(e) => setGameExe(e.target.value)} disabled={blocked} />
             <Button onClick={() => void pickExe()} disabled={blocked}>{copy.browse}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Button
           disabled={blocked || !folderReady || !gameExe.trim()}

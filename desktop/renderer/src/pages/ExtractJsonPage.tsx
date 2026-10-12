@@ -1,6 +1,6 @@
 /** 文本提取 JSON：对齐 Qt ExtractTab，走 /api/extract-json。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Progress } from 'antd';
+import { Button, Form, Input, Progress, Space } from 'antd';
 
 import {
   exportJsonReady,
@@ -142,10 +142,10 @@ export function ExtractJsonPage(props: { state: AppState }) {
 
       <SettingsGroup title={t('extract_json_title')} description={t('extract_json_desc')}>
         <Form.Item label={t('extract_json_game_file')} style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={gameFile} onChange={(e) => setGameFile(e.target.value)} style={{ flex: 1 }} />
             <Button onClick={() => void pickGameFile()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Form.Item label={t('extract_json_language')} style={{ marginBottom: 12 }}>
           <Input value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="chinese" />
@@ -167,10 +167,10 @@ export function ExtractJsonPage(props: { state: AppState }) {
 
       <SettingsGroup title={t('extract_json_export_title')} description={t('extract_json_export_desc')}>
         <Form.Item label={t('extract_json_output')} style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
             <Button onClick={() => void pickOutput()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Button
           type="primary"
@@ -189,10 +189,10 @@ export function ExtractJsonPage(props: { state: AppState }) {
 
       <SettingsGroup title={t('extract_json_import_title')} description={t('extract_json_import_desc')}>
         <Form.Item label={t('extract_json_json_path')} style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={jsonPath} onChange={(e) => setJsonPath(e.target.value)} style={{ flex: 1 }} />
             <Button onClick={() => void pickJson()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <div className="rb-tool-actions">
           <Button
@@ -221,10 +221,10 @@ export function ExtractJsonPage(props: { state: AppState }) {
 
       <SettingsGroup title={t('extract_json_tl_export_title')} description={t('extract_json_tl_export_desc')}>
         <Form.Item label={t('extract_json_output')} style={{ marginBottom: 12 }}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input value={tlExportPath} onChange={(e) => setTlExportPath(e.target.value)} style={{ flex: 1 }} />
             <Button onClick={() => void pickTlExport()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Button
           onClick={() => void suite.submit('/api/extract-json/export-tl-json', {

@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
+import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
 import { createDesktopUpdater } from './updater.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
@@ -208,14 +209,30 @@ ipcMain.handle('app:info', async () => {
 });
 ipcMain.handle('app:changelog', () => readFileSync(isDev ? path.join(DESKTOP_ROOT, '..', 'CHANGELOG.md') : path.join(process.resourcesPath, 'renpybox', 'CHANGELOG.md'), 'utf8'));
 ipcMain.handle('app:open-logs', () => { openShellWindow('logs'); });
-ipcMain.handle('app:read-logs', (_event, source = 'app') => {
-  const filename = source === 'app' ? 'app.log' : source === 'desktop' ? 'desktop.log' : null;
-  if (!filename) throw new Error('未知日志类型');
-  return readLogTail(path.join(logDirectory, filename));
-});
+ipcMain.handle('app:read-logs', (_event, source = 'app') => readLogTail(resolveLogFile(logDirectory, source)));
 ipcMain.handle('app:copy-logs', (_event, text) => {
   if (typeof text !== 'string' || text.length > 512 * 1024) throw new Error('日志内容无效');
   clipboard.writeText(text);
+});
+// 导出日志：优先导出整份日志文件，文件还没生成时退化为导出界面当前显示的内容。
+ipcMain.handle('app:export-logs', async (event, payload = {}) => {
+  const source = payload?.source === 'desktop' ? 'desktop' : 'app';
+  const owner = BrowserWindow.fromWebContents(event.sender) || undefined;
+  const { canceled, filePath } = await dialog.showSaveDialog(owner, {
+    title: '导出运行日志',
+    defaultPath: path.join(app.getPath('documents'), exportFilename(source)),
+    filters: [{ name: '日志文件', extensions: ['log', 'txt'] }, { name: '全部文件', extensions: ['*'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+  const result = await writeLogExport({ source, logDirectory, destination: filePath, snapshot: payload?.snapshot });
+  return { canceled: false, ...result, path: filePath };
+});
+// 打开日志：文件存在就定位文件，否则打开日志目录，避免「文件不存在」的死路。
+ipcMain.handle('app:reveal-logs', async (_event, source = 'app') => {
+  const target = await logRevealTarget(logDirectory, source === 'desktop' ? 'desktop' : 'app');
+  if (target.kind === 'file') shell.showItemInFolder(target.path);
+  else await shell.openPath(target.path);
+  return target;
 });
 ipcMain.handle('app:open-external', (_event, url) => openExternal(url));
 ipcMain.handle('app:update-state', () => updater.state());

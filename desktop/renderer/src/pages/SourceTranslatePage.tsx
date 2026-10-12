@@ -243,7 +243,7 @@ export function SourceTranslatePage(props: {
       ) : null}
 
       <SettingsGroup title="路径与语言" description="输入可为 game 目录或单个 .rpy；输出目录由输入自动推导（与 Qt 一致，不可手改）。">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="输入类型" style={{ marginBottom: 12 }}>
             <Radio.Group
               value={inputKind}
@@ -308,7 +308,7 @@ export function SourceTranslatePage(props: {
       </SettingsGroup>
 
       <SettingsGroup title="备份选项">
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label="自动备份 .bak" style={{ marginBottom: 12 }}>
             <Switch label="自动备份 .bak" checked={backup} disabled={busy || backingUp || engineBusy} onChange={setBackup} />
           </Form.Item>

@@ -113,11 +113,11 @@ export function SettingsPage(props: {
   const values = state.settings?.values;
   const fields = fieldsFor(variant);
 
-  const applyBalanced = useCallback(() => {
-    // 一次改三个字段：逐个 PATCH 会在中途失败时留下半套配置
-    state.setSetting('token_threshold', BALANCED_THROUGHPUT.values.token_threshold);
-    state.setSetting('max_batch_source_tokens', BALANCED_THROUGHPUT.values.max_batch_source_tokens);
-    state.setSetting('max_output_tokens', BALANCED_THROUGHPUT.values.max_output_tokens);
+  const applyBalanced = useCallback(async () => {
+    // 一次改三个字段：串行应用并在失败处停下，避免留下半套配置。
+    for (const [key, value] of Object.entries(BALANCED_THROUGHPUT.values)) {
+      if (!(await state.setSetting(key, value))) return;
+    }
   }, [state]);
 
   const cards = (specs: FieldSpec[]) =>
@@ -133,7 +133,7 @@ export function SettingsPage(props: {
 
   const balancedButton = variant === 'basic' ? (
     <Tooltip title={BALANCED_THROUGHPUT.tooltip}>
-      <Button type="default" onClick={applyBalanced}>{BALANCED_THROUGHPUT.label}</Button>
+      <Button type="default" disabled={state.saving} onClick={() => void applyBalanced()}>{BALANCED_THROUGHPUT.label}</Button>
     </Tooltip>
   ) : null;
 

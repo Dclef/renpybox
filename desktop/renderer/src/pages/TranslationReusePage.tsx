@@ -1,6 +1,6 @@
 /** 更新翻译复用：预览只读 / 执行写入，对齐 Qt5 TranslationReusePage。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Form, Input, Progress } from 'antd';
+import { Button, Form, Input, Progress, Space } from 'antd';
 
 import {
   formatReuseSummary,
@@ -131,7 +131,7 @@ export function TranslationReusePage(props: { state: AppState }) {
 
       <SettingsGroup title={copy.pathsTitle}>
         <Form.Item label={copy.source}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input
               value={sourceDir}
               placeholder={copy.sourcePh}
@@ -139,10 +139,10 @@ export function TranslationReusePage(props: { state: AppState }) {
               onChange={(e) => setSourceDir(e.target.value)}
             />
             <Button onClick={() => void pickSource()} disabled={blocked}>{copy.browse}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
         <Form.Item label={copy.target}>
-          <Input.Group compact style={{ display: 'flex' }}>
+          <Space.Compact block>
             <Input
               value={targetDir}
               placeholder={copy.targetPh}
@@ -150,7 +150,7 @@ export function TranslationReusePage(props: { state: AppState }) {
               onChange={(e) => setTargetDir(e.target.value)}
             />
             <Button onClick={() => void pickTarget()} disabled={blocked}>{copy.browse}</Button>
-          </Input.Group>
+          </Space.Compact>
         </Form.Item>
       </SettingsGroup>
 

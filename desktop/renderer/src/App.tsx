@@ -16,6 +16,7 @@ import {
   IconChromeRestore,
   NAV_ICONS,
 } from './icons';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToolPageFrame } from './components/ToolPageFrame';
 import { APP_SETTINGS_NAV, findNavItem, isNavCurrent, NAV_SECTIONS, type PageKey } from './nav';
 import { TOOL_SPECS } from './tools';
@@ -298,6 +299,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   // 翻译页 preflight 判定缺资产时，让用户能直接跳到工作台补齐，
   // 不必自己找侧边栏（对齐 TranslationPage._open_workbench）。
   const [workbenchRequested, setWorkbenchRequested] = useState(0);
+  // 页面渲染异常后的重挂计数：让「重试这一页」重新取数而不是复用坏状态。
+  const [pageRetry, setPageRetry] = useState(0);
   useEffect(() => {
     if (workbenchRequested > 0) {
       setActive('workbench');
@@ -409,7 +412,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'app-settings':
         return <SettingsPage state={state} variant="app" title="应用设置" description="管理语言、更新、声音和应用级显示选项" />;
       case 'workbench':
-        return <WorkbenchPage state={state} onDirtyChange={setDirty} />;
+        return <WorkbenchPage state={state} onDirtyChange={setDirty} onNavigate={navigate} />;
       case 'agent':
         return <AgentPage state={state} onOpenPlatforms={() => navigate('platform')} />;
       case 'platform':
@@ -528,7 +531,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
             后端未连接，正在自动重试。请用 <code>npm run dev</code> 或 <code>npm run dev:web</code> 启动（二者共用同一后端，关桌面端不会杀掉服务）；仅 <code>npm run dev:renderer</code> 不会起 Python。
           </>)}
         </div> : null}
-        {state.ready ? body : <Empty>正在启动 …</Empty>}
+        <ErrorBoundary key={`${active}-${pageRetry}`} onRetry={() => setPageRetry((count) => count + 1)}>
+          {state.ready ? body : <Empty>正在启动 …</Empty>}
+        </ErrorBoundary>
       </main>
 
       {pendingPage ? (

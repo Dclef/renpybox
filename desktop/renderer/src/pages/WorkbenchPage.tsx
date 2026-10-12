@@ -1,9 +1,10 @@
 /** 项目资料工作台：手动编辑保存在项目资产仓库，提示词预览复用真实构造器。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Form, Input, Select, Spin, Tabs } from 'antd';
+import { Button, Dropdown, Form, Input, Select, Spin, Tabs, Tag } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT, type TextKey } from '../i18n';
+import type { PageKey } from '../nav';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, Empty, PageHeader, SettingsGroup, Switch } from '../ui';
@@ -82,17 +83,19 @@ const LIST_FIELDS = new Set(['aliases', 'match_keywords', 'sample_lines']);
 
 function editable(snapshot: WorkbenchSnapshot): EditableAssets {
   // 扩展世界观字段由后端保留，表单只编辑原工作台公开的九个字段。
+  // 载荷缺字段时（后端异常）按空对象/空数组兜底，否则渲染期会抛 TypeError 把整页打到 ErrorBoundary。
+  const worldbook = snapshot.worldbook ?? {};
   return {
-    worldbook: Object.fromEntries(WORLD_FIELDS.map(([key]) => [key, String(snapshot.worldbook[key] ?? '')])),
-    characters: structuredClone(snapshot.characters),
+    worldbook: Object.fromEntries(WORLD_FIELDS.map(([key]) => [key, String(worldbook[key] ?? '')])),
+    characters: structuredClone(snapshot.characters ?? []),
     worldbook_enabled: snapshot.worldbook_enabled,
     characters_enabled: snapshot.characters_enabled,
   };
 }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: boolean) => void }) {
-  const { state, onDirtyChange } = props;
+export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: boolean) => void; onNavigate?: (page: PageKey) => void }) {
+  const { state, onDirtyChange, onNavigate } = props;
   const t = useT();
   const [tab, setTab] = useState<TabKey>('overview');
   const [snapshot, setSnapshot] = useState<WorkbenchSnapshot | null>(null);
@@ -127,7 +130,8 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   projectRef.current = projectKey;
   const dirty = Boolean(snapshot && draft && JSON.stringify(editable(snapshot)) !== JSON.stringify(draft));
   dirtyRef.current = dirty;
-  const hasDrafts = Boolean(snapshot && (Object.values(snapshot.worldbook_draft).some(Boolean) || snapshot.character_drafts.length));
+  // 后端 _snapshot() 总是带 worldbook_draft/character_drafts，但载荷意外缺字段时不能让整页崩掉。
+  const hasDrafts = Boolean(snapshot && (Object.values(snapshot.worldbook_draft ?? {}).some(Boolean) || (snapshot.character_drafts ?? []).length));
   busyRef.current = busy || loading;
   snapshotRef.current = snapshot;
   analysisJobRef.current = analysisJob;
@@ -149,10 +153,12 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
 
   const adopt = useCallback((next: WorkbenchSnapshot) => {
+    // 载荷缺字段（后端异常/老版本）时按空数组兜底，否则这里会抛 TypeError 让整页落到 ErrorBoundary。
+    const characters = next.characters ?? [];
     setSnapshot(next);
     setSnapshotProjectKey(projectRef.current);
     setDraft(editable(next));
-    setSelectedId((current) => next.characters.some((card) => card.id === current) ? current : next.characters[0]?.id ?? '');
+    setSelectedId((current) => characters.some((card) => card.id === current) ? current : characters[0]?.id ?? '');
     setPreview(null);
     setError('');
   }, []);
@@ -419,16 +425,33 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
         description="维护当前项目的背景、角色资料与翻译上下文"
         actions={(
           <>
+            <Dropdown
+              menu={{
+                items: [
+                  { key: 'glossary', label: '术语表' },
+                  { key: 'preserve', label: '禁翻表' },
+                  { key: 'custom-prompt', label: '翻译提示词' },
+                ],
+                onClick: ({ key }) => onNavigate?.(key as PageKey),
+              }}
+            >
+              <Button type="default">快捷入口</Button>
+            </Dropdown>
             <Button type="default" disabled={!draft || busy || loading} onClick={exportAssets}>导出资料</Button>
             <Button type="default" disabled={!hasDrafts || dirty || mutationBlocked} title={dirty ? '先保存手动编辑，再应用草稿' : undefined} onClick={() => setConfirm('apply')}>应用草稿</Button>
-            <Button disabled={!dirty || mutationBlocked} onClick={() => void save()}>{busy ? '处理中…' : '保存修改'}</Button>
+            <Button type={dirty ? 'primary' : 'default'} disabled={!dirty || mutationBlocked} onClick={() => void save()}>{busy ? '处理中…' : '保存修改'}</Button>
           </>
         )}
       />
-      <p className="rb-workbench-status">
-        <span>{loading ? '正在读取项目资料…' : dirty ? '有未保存的修改' : snapshot ? '项目资料已同步' : '等待选择项目'}</span>
-        <span>{draft ? `世界观 ${worldCount} 项 · 角色 ${draft.characters.length} 位${dirty ? ' · 点击保存后用于后续翻译' : ''}` : '选择项目后，即可维护独立的背景与角色资料。'}</span>
-      </p>
+      <div className="rb-workbench-statusbar">
+        <Tag bordered={false} color={loading ? 'default' : dirty ? 'warning' : snapshot ? 'success' : 'default'}>
+          {loading ? '正在读取项目资料…' : dirty ? '有未保存的修改' : snapshot ? '项目资料已同步' : '等待选择项目'}
+        </Tag>
+        <span className="rb-workbench-status-metrics">
+          {draft ? `背景设定 ${worldCount} 项 · 角色资料 ${draft.characters.length} 位 · 待审核草稿 ${snapshot?.character_drafts?.length ?? 0} 张` : '选择项目后，即可维护独立的背景与角色资料。'}
+        </span>
+        <span className="rb-workbench-status-hint">{dirty ? '点击「保存修改」后用于后续翻译。' : '保存后立即用于下一次翻译与提示词预览。'}</span>
+      </div>
       {error ? (
         <Banner tone="error">
           {error}{' '}
@@ -441,7 +464,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             <strong>{analysisActive ? <Spin size="small" aria-hidden /> : null}{cancellationRequested ? t('workbench_status_cancelling') : statusLabels[analysisJob.status]}</strong>
             <span>{jobResult ? analysisLabels[jobResult.action] : t('workbench_analysis_title')} · {jobResult ? scopeLabels[jobResult.scope] : scopeLabels[analysisScope]}</span>
             {analysisJob.error || jobResult?.message ? <p>{analysisJob.error || jobResult?.message}</p> : null}
-            {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts.length ?? 0))}</p> : null}
+            {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts?.length ?? 0))}</p> : null}
             {cancellationRequested ? <p>{t('workbench_cancel_hint')}</p> : null}
           </div>
           {analysisActive ? <Button type="default" size="small" disabled={cancellationRequested || state.link !== 'open'} onClick={() => void cancelAnalysis()}>{t('workbench_cancel_analysis')}</Button> : null}
@@ -467,12 +490,13 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
               <div className="rb-workbench-stats">
                 <div><strong>{worldCount}</strong><span>背景设定</span></div>
                 <div><strong>{draft.characters.length}</strong><span>角色资料</span></div>
-                <div><strong>{snapshot?.character_drafts.length ?? 0}</strong><span>待审核角色</span></div>
+                <div><strong>{snapshot?.character_drafts?.length ?? 0}</strong><span>待审核草稿</span></div>
               </div>
             </div>
             <SettingsGroup title={t('workbench_analysis_title')} description={t('workbench_analysis_description')}>
               <div className="rb-workbench-analysis">
-                <Form.Item label={t('workbench_analysis_scope')} style={{ marginBottom: 0 }}>
+                <div className="rb-workbench-analysis-row">
+                  <span className="rb-workbench-analysis-label">{t('workbench_analysis_scope')}</span>
                   <Select
                     value={analysisScope}
                     allowClear={false}
@@ -480,9 +504,10 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                     disabled={busy || analysisActive}
                     onChange={(value) => setAnalysisScope(value as AnalysisScope)}
                   />
-                </Form.Item>
-                <Button type="default" disabled={!canAnalyze} onClick={() => void startAnalysis('scan')}>{t('workbench_scan')}</Button>
-                <Form.Item label={t('workbench_analysis_content')} style={{ marginBottom: 0 }}>
+                  <Button type="default" disabled={!canAnalyze} onClick={() => void startAnalysis('scan')}>{t('workbench_scan')}</Button>
+                </div>
+                <div className="rb-workbench-analysis-row">
+                  <span className="rb-workbench-analysis-label">{t('workbench_analysis_content')}</span>
                   <Select
                     value={analysisAction}
                     allowClear={false}
@@ -490,14 +515,22 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                     disabled={busy || analysisActive}
                     onChange={(value) => setAnalysisAction(value as Exclude<AnalysisAction, 'scan'>)}
                   />
-                </Form.Item>
-                <Button disabled={!canAnalyze} onClick={() => setConfirm('analysis')}>{t('workbench_generate')}</Button>
+                  <Button type="primary" disabled={!canAnalyze} onClick={() => setConfirm('analysis')}>{t('workbench_generate')}</Button>
+                </div>
               </div>
               <p className="rb-workbench-analysis-hint">{analysisChecking && projectCurrent ? t('workbench_analysis_checking') : analysisHint}</p>
             </SettingsGroup>
             <SettingsGroup title="翻译上下文" description="世界观作为全局背景；角色卡根据原文中的名称、别名和关键词按需匹配。">
-              <div className="rb-workbench-switch"><span>注入世界观</span><Switch checked={draft.worldbook_enabled} disabled={busy} label="注入世界观" onChange={(value) => { setDraft({ ...draft, worldbook_enabled: value }); setPreview(null); }} /></div>
-              <div className="rb-workbench-switch"><span>注入角色卡</span><Switch checked={draft.characters_enabled} disabled={busy} label="注入角色卡" onChange={(value) => { setDraft({ ...draft, characters_enabled: value }); setPreview(null); }} /></div>
+              <div className="rb-workbench-switches">
+                <div className="rb-workbench-switch">
+                  <span><strong>注入世界观</strong><small>把背景设定作为全局上下文注入提示词。</small></span>
+                  <Switch checked={draft.worldbook_enabled} disabled={busy} label="注入世界观" onChange={(value) => { setDraft({ ...draft, worldbook_enabled: value }); setPreview(null); }} />
+                </div>
+                <div className="rb-workbench-switch">
+                  <span><strong>注入角色卡</strong><small>命中角色名、别名或关键词时注入角色资料。</small></span>
+                  <Switch checked={draft.characters_enabled} disabled={busy} label="注入角色卡" onChange={(value) => { setDraft({ ...draft, characters_enabled: value }); setPreview(null); }} />
+                </div>
+              </div>
             </SettingsGroup>
             {hasDrafts ? (
               <SettingsGroup title={t('workbench_drafts_title')} description={t('workbench_drafts_description')}>
@@ -506,16 +539,16 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                     <section>
                       <h3>{t('workbench_draft_worldbook')}</h3>
                       <dl className="rb-workbench-draft-fields">
-                        {WORLD_FIELDS.map(([key]) => snapshot?.worldbook_draft[key] ? (
-                          <div key={key}><dt>{t('workbench_world_' + key as TextKey)}</dt><dd>{snapshot.worldbook_draft[key]}</dd></div>
+                        {WORLD_FIELDS.map(([key]) => snapshot?.worldbook_draft?.[key] ? (
+                          <div key={key}><dt>{t('workbench_world_' + key as TextKey)}</dt><dd>{snapshot?.worldbook_draft?.[key]}</dd></div>
                         ) : null)}
                       </dl>
                     </section>
                   ) : null}
-                  {snapshot?.character_drafts.length ? (
+                  {(snapshot?.character_drafts ?? []).length ? (
                     <section>
-                      <h3>{t('workbench_draft_characters')} · {snapshot.character_drafts.length}</h3>
-                      {snapshot.character_drafts.map((card) => (
+                      <h3>{t('workbench_draft_characters')} · {(snapshot?.character_drafts ?? []).length}</h3>
+                      {(snapshot?.character_drafts ?? []).map((card) => (
                         <details className="rb-workbench-draft-character" key={card.id}>
                           <summary><strong>{card.name || t('workbench_unnamed')}</strong><span>{card.name_translation || card.identity || t('workbench_draft_review_hint')}</span></summary>
                           <dl className="rb-workbench-draft-fields">

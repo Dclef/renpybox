@@ -30,7 +30,7 @@ fs.writeFileSync(logPath, '');
 
 function fixture() {
   const values = {
-    theme: 'LIGHT',
+    theme: '__RB_UI_THEME__',
     source_language: 'EN',
     target_language: 'ZH',
     input_folder: 'C:/ui-check/game/tl/chinese',
@@ -217,7 +217,8 @@ app.whenReady().then(async () => {
   await win.webContents.debugger.sendCommand('Page.enable');
   await win.webContents.debugger.sendCommand('Runtime.enable');
   await win.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
-    source: '(' + fixture.toString() + ')()',
+    // fixture() 会被序列化后在渲染进程里执行，浏览器没有 process，主题只能在这里注入源码。
+    source: '(' + fixture.toString().replace("'__RB_UI_THEME__'", JSON.stringify(process.env.RENPYBOX_UI_THEME || 'LIGHT')) + ')()',
   });
   await win.loadURL(uiUrl);
 

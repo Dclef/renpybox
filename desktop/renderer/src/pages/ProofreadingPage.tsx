@@ -1,15 +1,26 @@
 /** 平行校对台：分页读取真实缓存，保存前由服务端检查项目和译文版本。 */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Spin, Table } from 'antd';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tooltip } from 'antd';
 import type { ColumnsType, TableRef } from 'antd/es/table';
 import type { MenuProps } from 'antd';
 import { request } from '../api';
 import { focusTableRow } from '../components/tableFocus';
 import type { AppState } from '../useAppState';
-import { MoreHorizontal, AlertTriangle, Copy, Pencil, RotateCcw } from 'lucide-react';
+import { MoreHorizontal, AlertTriangle, ChevronDown, ChevronUp, Copy, Info, Pencil, RotateCcw } from 'lucide-react';
 import type { MouseEvent, KeyboardEvent } from 'react';
 import { Banner, Dialog, PageHeader } from '../ui';
 import { useT } from '../i18n';
+import {
+  NO_WARNING, collectGlossaryTerms, collectWarnings, compilePattern, exportFilename, exportText,
+  filterRows, matchRowIndices, pageSlice, replaceImpact, stepMatch,
+} from '../proofreadingView.mjs';
+
+interface GlossaryTerm {
+  key: string;
+  src: string;
+  dst: string;
+  label: string;
+}
 
 interface ProofreadingRow {
   id: number;
@@ -20,6 +31,7 @@ interface ProofreadingRow {
   file_path: string;
   row: number;
   warnings?: string[];
+  glossary_terms?: { src?: string; dst?: string }[];
 }
 
 interface QualityReport {
@@ -79,8 +91,15 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [data, setData] = useState<ProofreadingData | null>(null);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
+  const [searchRegex, setSearchRegex] = useState(false);
+  const [matchIndex, setMatchIndex] = useState(-1);
   const [status, setStatus] = useState('');
   const [file, setFile] = useState('');
+  const [filterStatus, setFilterStatus] = useState<string[]>([]);
+  const [filterFiles, setFilterFiles] = useState<string[]>([]);
+  const [filterWarnings, setFilterWarnings] = useState<string[]>([]);
+  const [filterTerms, setFilterTerms] = useState<string[]>([]);
+  const [exportRowsState, setExportRowsState] = useState<{ filename: string; text: string; count: number; truncated: boolean } | null>(null);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
   const [onlyIssues, setOnlyIssues] = useState(false);
@@ -110,11 +129,16 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [find, setFind] = useState('');
   const [replacement, setReplacement] = useState('');
   const [caseSensitive, setCaseSensitive] = useState(true);
+  const [replaceRegex, setReplaceRegex] = useState(false);
+  const [replaceScope, setReplaceScope] = useState<'selected' | 'page' | 'all'>('page');
+  const [replacePlan, setReplacePlan] = useState<{ rows: { id: number; version: string; dst: string }[]; matchCount: number } | null>(null);
+  const [replaceBusy, setReplaceBusy] = useState('');
   const [reportSelection, setReportSelection] = useState<Set<number>>(new Set());
   const [scrollY, setScrollY] = useState(200);
   const [scrollX, setScrollX] = useState(900);
   const requestId = useRef(0);
   const projectRef = useRef('');
+  const matchIndexRef = useRef(-1);
   const dirtyRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<TableRef>(null);
@@ -153,8 +177,16 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     setLocationOpen(false);
     setLocation(null);
     selectionAnchor.current = null;
+    setMatchIndex(-1);
     setPage(1);
     setFile('');
+    setStatus('');
+    setFilterStatus([]);
+    setFilterFiles([]);
+    setFilterWarnings([]);
+    setFilterTerms([]);
+    setExportRowsState(null);
+    setReplacePlan(null);
   }, [projectIdentity]);
 
   // 返回页面或重连时补取状态，避免漏掉质量任务事件后一直只读。
@@ -192,6 +224,8 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     setLoading(true);
     setData(null);
     setError('');
+    setReplacePlan(null);
+    setReplaceBusy('');
     const load = async () => {
       try {
         const result = await request<ProofreadingData>('/api/proofreading?' + params, { signal: controller.signal });
@@ -254,7 +288,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
 
   useLayoutEffect(() => {
     tableRef.current?.scrollTo({ top: 0 });
-  }, [page, limit, search, status, file, onlyIssues, warning]);
+  }, [page, limit, search, status, file, onlyIssues, warning, filterStatus, filterFiles, filterTerms]);
 
   useEffect(() => () => cancelFocus.current?.(), []);
 
@@ -292,24 +326,69 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     } finally { setSaving(false); }
   };
 
-  const replaceRows = async () => {
-    if (!replaceSnapshot || !find || saving || readonly) return;
-    const targets = replaceSnapshot.rows;
+  const replaceRows = async (plan: { rows: { id: number; version: string; dst: string }[]; matchCount: number }) => {
+    if (!replaceSnapshot || !find || saving || readonly || !plan.rows.length) return;
+    const identity = projectRef.current;
+    const token = replaceSnapshot.cache_token;
     setSaving(true);
+    setReplaceBusy('');
+    let changed = 0;
     try {
-      const result = await request<{ changed: number }>('/api/proofreading/replace', {
-        method: 'POST', body: JSON.stringify({
-          cache_token: replaceSnapshot.cache_token,
-          rows: targets.map((row) => ({ id: row.id, version: row.version })),
-          find, replace: replacement, case_sensitive: caseSensitive,
-        }),
-      });
+      // 后端 /api/proofreading/replace 只接受纯文本；正则与影响范围在渲染端算好后逐行走 /item 落盘。
+      for (const row of plan.rows) {
+        setReplaceBusy(String(changed + 1) + '/' + String(plan.rows.length));
+        await request('/api/proofreading/item', {
+          method: 'PATCH', body: JSON.stringify({ cache_token: token, row: { id: row.id, version: row.version }, dst: row.dst }),
+        });
+        changed += 1;
+        if (identity !== projectRef.current) return;
+      }
       setReplaceOpen(false);
-      state.pushToast(result.changed ? 'success' : 'info', result.changed ? `已替换并保存 ${result.changed} 条译文。` : '没有匹配的译文，内容未改变。');
+      setReplacePlan(null);
+      state.pushToast('success', t('proofreading_batch_replace_summary').replace('{count}', String(changed)));
       reload();
     } catch (failure) {
+      if (identity === projectRef.current) {
+        state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
+        if (changed) reload();
+      }
+    } finally {
+      setReplaceBusy('');
+      setSaving(false);
+    }
+  };
+
+  const previewReplace = async () => {
+    if (!replaceOpen || saving || readonly || !find) return;
+    const compiled = compilePattern(find, { regex: replaceRegex, caseSensitive });
+    if (!compiled.ok) { setReplacePlan(null); return; }
+    try {
+      let candidates = items;
+      if (replaceScope === 'selected') candidates = items.filter((row) => selected.has(row.id));
+      else if (replaceScope === 'all') candidates = items;
+      const impact = replaceImpact(candidates, find, replacement, { regex: replaceRegex, caseSensitive });
+      setReplacePlan({ rows: impact.rows.map((row) => ({ id: row.id, version: row.version, dst: row.after })), matchCount: impact.matchCount });
+    } catch (failure) {
       state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
-    } finally { setSaving(false); }
+    }
+  };
+
+  /** 「全部结果」作用域或已载入行数不足一页时，先按当前筛选拉回整批命中行再算影响范围。 */
+  const previewReplaceAll = async () => {
+    if (!replaceOpen || saving || readonly || !find || !replaceSnapshot) return;
+    if (!compilePattern(find, { regex: replaceRegex, caseSensitive }).ok) return;
+    setSaving(true);
+    try {
+      const loaded = await loadAllRows();
+      const candidates = replaceScope === 'selected' ? loaded.rows.filter((row) => selected.has(row.id)) : loaded.rows;
+      const impact = replaceImpact(candidates, find, replacement, { regex: replaceRegex, caseSensitive });
+      setReplacePlan({ rows: impact.rows.map((row) => ({ id: row.id, version: row.version, dst: row.after })), matchCount: impact.matchCount });
+      if (!impact.rows.length) state.pushToast('info', t('proofreading_batch_replace_summary_none'));
+    } catch (failure) {
+      state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const startQuality = async () => {
@@ -350,6 +429,124 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
 
   const items = data?.items ?? [];
   const activeRow = items.find((row) => row.id === active);
+
+  // 筛选维度（状态 / 文件 / 问题类型 / 术语表）在已载入的结果上求值，对齐 FilterDialog 的客户端筛选口径。
+  const filterActive = Boolean(filterStatus.length || filterFiles.length || filterWarnings.length || filterTerms.length);
+  const filteredItems = useMemo(
+    () => filterRows(items, { statuses: filterStatus, files: filterFiles, warnings: filterWarnings, terms: filterTerms }),
+    [items, filterStatus, filterFiles, filterWarnings, filterTerms],
+  );
+  const clientPage = filterActive ? pageSlice(filteredItems, page, limit) : null;
+  const visibleItems = clientPage ? clientPage.items : filteredItems;
+  const termOptions = useMemo(() => collectGlossaryTerms(items), [items]);
+  const availableWarnings = useMemo(() => collectWarnings(items), [items]);
+  const warningOptions = useMemo(() => [
+    { value: '', label: '全部问题类型' },
+    ...(availableWarnings.length ? availableWarnings : Object.keys(WARNING_LABELS)).map((value) => ({ value, label: WARNING_LABELS[value] ?? value })),
+  ], [availableWarnings]);
+  /** 客户端「问题类型」多选：与 Qt5 FilterDialog 的问题类型区一致，含「无警告」占位。 */
+  const warningFilterOptions = useMemo(() => {
+    const values = availableWarnings.length ? availableWarnings : [...Object.keys(WARNING_LABELS), NO_WARNING];
+    return values.map((value) => ({ value, label: value === NO_WARNING ? t('proofreading_filter_no_warning') : WARNING_LABELS[value] ?? value }));
+  }, [availableWarnings, t]);
+
+  // 正则搜索：非法正则只提示，不影响列表；搜索永远只作用于当前筛选结果。
+  const searchPattern = compilePattern(search, { regex: searchRegex });
+  const searchError = searchPattern.ok ? '' : searchPattern.error;
+  const matches = useMemo(
+    () => (searchError || !search ? [] : matchRowIndices(filteredItems, search, { regex: searchRegex })),
+    [filteredItems, search, searchRegex, searchError],
+  );
+  const matchedRows = matches.map((index) => filteredItems[index]).filter(Boolean);
+  /** 批量替换对话框里的实时状态：非法正则不允许继续，影响范围由 previewReplace 计算。 */
+  const planPreview = compilePattern(find, { regex: replaceRegex, caseSensitive });
+  const needPreviewAll = Boolean(find) && planPreview.ok && (replaceScope === 'all' || items.length >= 100);
+  const waitingForAll = needPreviewAll && !replacePlan;
+
+  /** 批量替换的「全部结果」作用域与筛选导出共用：按后端分页上限拉回全部命中行。 */
+  const loadAllRows = async () => {
+    if (!data) return { rows: items, truncated: false };
+    const params = new URLSearchParams({
+      page: '1', limit: '100', query: search, status, file_path: file, only_issues: 'false', warning,
+      incremental: 'true',
+    });
+    const result = await request<ProofreadingData>('/api/proofreading?' + params);
+    return { rows: result.items ?? [], truncated: (result.matched ?? 0) > (result.items ?? []).length };
+  };
+
+  const focusMatch = (row: ProofreadingRow) => {
+    setActive(row.id);
+    setSelected(new Set([row.id]));
+    setPage(Math.floor(filteredItems.indexOf(row) / Math.max(1, limit)) + 1);
+    window.requestAnimationFrame(() => {
+      cancelFocus.current?.();
+      cancelFocus.current = focusTableRow(tableRef, String(row.id), (target) => target.focus());
+    });
+  };
+  const stepSearchMatch = (delta: number) => {
+    if (searchError || !matches.length) return;
+    const next = stepMatch(matchIndex, matches.length, delta);
+    if (next < 0) return;
+    matchIndexRef.current = next;
+    setMatchIndex(next);
+    focusMatch(matchedRows[next]);
+  };
+
+  const closeReplace = () => {
+    if (saving) return;
+    setReplaceOpen(false);
+    setReplacePlan(null);
+    setReplaceBusy('');
+  };
+  const copyFilteredExport = async () => {
+    if (!exportRowsState) return;
+    await copyText(exportRowsState.text);
+    state.pushToast('success', t('proofreading_filter_export_copied'));
+    setExportRowsState(null);
+  };
+  /** 导出筛选结果：按当前服务端筛选拉回整批命中行，再套用客户端筛选维度，对齐 FilterDialog 的导出报告。 */
+  const exportFilteredRows = async () => {
+    if (saving || loading) return;
+    setSaving(true);
+    try {
+      const loaded = await loadAllRows();
+      const warnings = filterWarnings.length ? filterWarnings : (warning ? [warning] : []);
+      const rows = filterRows(loaded.rows, { statuses: filterStatus, files: filterFiles, terms: filterTerms, warnings });
+      if (!rows.length) {
+        state.pushToast('info', t('proofreading_filter_export_empty'));
+        return;
+      }
+      setExportRowsState({ filename: exportFilename(), text: exportText(rows), count: rows.length, truncated: loaded.truncated });
+    } catch (failure) {
+      state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const applyFilter = (next: { statuses?: string[]; files?: string[]; warnings?: string[]; terms?: string[] }) => {
+    if (next.statuses) setFilterStatus(next.statuses);
+    if (next.files) setFilterFiles(next.files);
+    if (next.warnings) setFilterWarnings(next.warnings);
+    if (next.terms) setFilterTerms(next.terms);
+    setPage(1);
+  };
+
+  useEffect(() => {
+    matchIndexRef.current = -1;
+    setMatchIndex(-1);
+  }, [search, searchRegex, filterStatus, filterFiles, filterWarnings, filterTerms, page, limit]);
+
+  useEffect(() => {
+    if (!filterActive || !clientPage || clientPage.page === page) return;
+    setPage(clientPage.page);
+  }, [filterActive, clientPage, page]);
+
+  useEffect(() => {
+    if (!replaceOpen || saving) return;
+    if (!find || !planPreview.ok) { setReplacePlan(null); return; }
+    if (replaceScope === 'all' || items.length >= 100) { setReplacePlan(null); return; }
+    void previewReplace();
+  }, [replaceOpen, find, replacement, replaceRegex, caseSensitive, replaceScope, items, planPreview.ok, saving]);
   const toggle = (id: number) => {
     setSelected((previous) => {
       const next = new Set(previous);
@@ -375,9 +572,9 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   };
   const selectRow = (row: ProofreadingRow, event: MouseEvent | KeyboardEvent) => {
     if (event.shiftKey && selectionAnchor.current != null) {
-      const from = items.findIndex((item) => item.id === selectionAnchor.current);
-      const to = items.findIndex((item) => item.id === row.id);
-      if (from >= 0) setSelected(new Set(items.slice(Math.min(from, to), Math.max(from, to) + 1).map((item) => item.id)));
+      const from = visibleItems.findIndex((item) => item.id === selectionAnchor.current);
+      const to = visibleItems.findIndex((item) => item.id === row.id);
+      if (from >= 0) setSelected(new Set(visibleItems.slice(Math.min(from, to), Math.max(from, to) + 1).map((item) => item.id)));
     } else {
       if (event.ctrlKey || event.metaKey) toggle(row.id); else setSelected(new Set([row.id]));
       selectionAnchor.current = row.id;
@@ -629,20 +826,96 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         {retranslate.state !== 'IDLE' && <div className="rb-proofreading-task">重译：{retranslate.done ?? 0} / {retranslate.total ?? 0} · 已保存 {retranslate.updated ?? 0} · 失败 {retranslate.failed ?? 0} · {retranslateRunning ? retranslate.state === 'CANCELLING' ? '等待已发出的请求结束…' : '处理中…' : retranslate.state === 'FAILED' ? '失败：' + retranslate.error : retranslate.state === 'CANCELLED' ? '已取消' : '已完成'}</div>}
         {error && <Banner tone="warning">{error}</Banner>}
         <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
-          <Input aria-label="搜索原文或译文" placeholder="搜索原文、译文或文件…" value={query} onChange={(event) => setQuery(event.target.value)} />
-          <Select
-            aria-label="翻译状态"
-            value={status}
-            options={[{ value: '', label: '全部状态' }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))]}
-            onChange={(value) => { setStatus(value ?? ''); setPage(1); }}
-          />
-          <Select
-            aria-label="源文件"
-            value={file}
-            options={[{ value: '', label: '全部文件' }, ...(data?.files ?? []).map((path) => ({ value: path, label: path || '未分类' }))]}
-            onChange={(value) => { setFile(value ?? ''); setPage(1); }}
-          />
+          <Space.Compact className="rb-proof-search">
+            <Input
+              aria-label="搜索原文或译文"
+              placeholder="搜索原文、译文或文件…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  const keyword = query.trim();
+                  if (keyword !== search) { setPage(1); setSearch(keyword); return; }
+                  stepSearchMatch(event.shiftKey ? -1 : 1);
+                }
+              }}
+            />
+            <Tooltip title={t('proofreading_match_prev')}>
+              <Button
+                aria-label={t('proofreading_match_prev')}
+                disabled={loading || !!searchError || !matches.length}
+                icon={<ChevronUp size={14} />}
+                onClick={() => stepSearchMatch(-1)}
+              />
+            </Tooltip>
+            <Tooltip title={t('proofreading_match_next')}>
+              <Button
+                aria-label={t('proofreading_match_next')}
+                disabled={loading || !!searchError || !matches.length}
+                icon={<ChevronDown size={14} />}
+                onClick={() => stepSearchMatch(1)}
+              />
+            </Tooltip>
+          </Space.Compact>
           <Button htmlType="submit" disabled={loading}>搜索</Button>
+          <Checkbox checked={searchRegex} onChange={(event) => setSearchRegex(event.target.checked)}>{t('proofreading_regex_toggle')}</Checkbox>
+          <span className="rb-metric-note" aria-live="polite">
+            {searchError ? t('proofreading_regex_invalid').replace('{error}', searchError)
+              : !search ? ''
+                : matches.length ? t('proofreading_match_counter').replace('{current}', String(matchIndex >= 0 ? matchIndex + 1 : 1)).replace('{total}', String(matches.length))
+                  : t('proofreading_match_none')}
+          </span>
+          <span className="proofreading-filter-row">
+          <Select
+            mode="multiple"
+            aria-label={t('proofreading_filter_statuses')}
+            placeholder={t('proofreading_filter_statuses_placeholder')}
+            maxTagCount="responsive"
+            value={filterStatus}
+            options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+            onChange={(values) => applyFilter({ statuses: values })}
+          />
+          <Select
+            mode="multiple"
+            aria-label={t('proofreading_filter_files')}
+            placeholder={t('proofreading_filter_files_placeholder')}
+            maxTagCount="responsive"
+            value={filterFiles}
+            options={(data?.files ?? []).map((path) => ({ value: path, label: path || '未分类' }))}
+            onChange={(values) => applyFilter({ files: values })}
+          />
+          <Select
+            mode="multiple"
+            aria-label={t('proofreading_filter_warnings')}
+            placeholder={t('proofreading_filter_warnings_placeholder')}
+            maxTagCount="responsive"
+            value={filterWarnings}
+            options={warningFilterOptions}
+            onChange={(values) => applyFilter({ warnings: values })}
+          />
+          <Select
+            mode="multiple"
+            aria-label={t('proofreading_filter_terms')}
+            placeholder={t('proofreading_filter_terms_placeholder')}
+            maxTagCount="responsive"
+            value={filterTerms}
+            options={termOptions.map((term: GlossaryTerm) => ({ value: term.key, label: term.label }))}
+            onChange={(values) => applyFilter({ terms: values })}
+          />
+          {termOptions.length ? null : (
+            <Tooltip title={t('proofreading_filter_terms_empty')}>
+              <span className="rb-proof-filter-hint" aria-label={t('proofreading_filter_terms_empty')}><Info size={14} /></span>
+            </Tooltip>
+          )}
+          {(termOptions.length || filterTerms.length) ? (
+            <span className="rb-tool-actions">
+              <Button type="link" size="small" onClick={() => applyFilter({ terms: termOptions.map((term: GlossaryTerm) => term.key) })}>{t('proofreading_filter_select_all')}</Button>
+              <Button type="link" size="small" disabled={!filterActive} onClick={() => applyFilter({ statuses: [], files: [], warnings: [], terms: [] })}>{t('proofreading_filter_clear')}</Button>
+            </span>
+          ) : null}
+          <Button size="small" disabled={saving || loading} onClick={() => void exportFilteredRows()}>{t('proofreading_filter_export')}</Button>
+          </span>
         </form>
         <div className="rb-proofreading-selection">
           <Checkbox checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setPage(1); }}>仅看问题</Checkbox>
@@ -650,11 +923,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             aria-label="问题类型"
             size="small"
             value={warning}
-            options={[{ value: '', label: '全部问题类型' }, ...Object.entries(WARNING_LABELS).map(([value, label]) => ({ value, label }))]}
+            options={warningOptions}
             onChange={(value) => { setWarning(value ?? ''); setPage(1); }}
           />
-          <Button type="link" size="small" disabled={!selected.size} onClick={() => copyPairs(items.filter((row) => selected.has(row.id)))}>复制所选双语</Button>
-          <span className="rb-metric-note">单击选行 · Ctrl / Shift 多选 · 双击或 F2 编辑</span>
+          {filterActive && <Tooltip title={t('proofreading_filter_scope_note')}><span className="rb-proof-filter-hint" aria-hidden="true">筛选已生效</span></Tooltip>}
+          <Button type="link" size="small" disabled={!selected.size} onClick={() => copyPairs(items.filter((row) => selected.has(row.id)))}>{t('proofreading_copy_pairs')}</Button>
+          <span className="rb-proof-filter-hint">{t('proofreading_select_hint')}</span>
         </div>
         {loading && <div className="rb-proof-loading" role="status" aria-live="polite">
           <Spin size="small" />
@@ -669,7 +943,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             tableLayout="fixed"
             rowKey="id"
             columns={columns}
-            dataSource={items}
+            dataSource={visibleItems}
             pagination={false}
             loading={false}
             virtual={true}
@@ -677,7 +951,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             locale={{
               emptyText: (
                 <div className="rb-proof-empty">
-                  {loading ? t('proofreading_loading') : data ? '没有符合筛选条件的译文。' : '先完成一次翻译，再来这里校对译文。'}
+                  {loading ? t('proofreading_loading') : data ? t('proofreading_empty_filtered') : t('proofreading_empty_before')}
                 </div>
               ),
             }}
@@ -710,7 +984,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           />
         </div>
         <footer className="proofreading-pagination">
-          <span>{data ? `${data.matched.toLocaleString()}${data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${data.total.toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
+          <span>{data ? `${(filterActive ? filteredItems.length : data.matched ?? 0).toLocaleString()}${data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${(data.total ?? 0).toLocaleString()} 条` : '原译对照'}{filterActive ? ` · 已筛选 ${visibleItems.length} / ${items.length} 行（本页）` : ''}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
           <div className="proofreading-toolbar">
             <Select
               aria-label="每页条数"
@@ -725,13 +999,19 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
               size="small"
               style={{ width: 64 }}
               min={1}
-              max={Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}
+              max={filterActive ? (clientPage?.pages ?? 1) : Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}
               value={page}
               onChange={(value) => { if (typeof value === 'number') setPage(value); }}
             />
             <Button size="small" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
-            <span>{data?.page ?? 1} / {Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}</span>
-            <Button size="small" disabled={loading || !data || page * limit >= data.matched} onClick={() => setPage((value) => value + 1)}>下一页</Button>
+            <span>{filterActive ? (clientPage?.page ?? 1) : data?.page ?? 1} / {filterActive ? (clientPage?.pages ?? 1) : Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}</span>
+            <Button
+              size="small"
+              disabled={loading || !data || (filterActive ? (clientPage?.page ?? 1) >= (clientPage?.pages ?? 1) : page * limit >= data.matched)}
+              onClick={() => setPage((value) => value + 1)}
+            >
+              下一页
+            </Button>
           </div>
         </footer>
         <div className="rb-proofreading-location" title={activeRow?.file_path}>
@@ -812,6 +1092,19 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         <p>将当前缓存中的全部译文按原文件格式写入输出目录，可能覆盖已有译文文件。当前筛选不会限制导出范围。</p>
         <p>{data?.cache_folder}</p>
       </Dialog>}
+      {exportRowsState && (
+        <Dialog
+          title={t('proofreading_filter_export')}
+          confirmText="复制到剪贴板"
+          onCancel={() => setExportRowsState(null)}
+          onConfirm={() => void copyFilteredExport()}
+        >
+          <p>{t('proofreading_filter_export_confirm').replace('{count}', String(exportRowsState.count))}</p>
+          {exportRowsState.truncated && <Banner tone="info">{t('proofreading_filter_export_truncated').replace('{loaded}', String(exportRowsState.count)).replace('{limit}', '100').replace('{total}', String(data?.matched ?? exportRowsState.count))}</Banner>}
+          <p className="rb-metric-note">{t('proofreading_filter_export_copied')}{exportRowsState.filename}</p>
+          <Input.TextArea readOnly value={exportRowsState.text} autoSize={{ minRows: 6, maxRows: 12 }} />
+        </Dialog>
+      )}
       {reportOpen && (
         <Modal open onCancel={() => setReportOpen(false)} title="质量报告" width={720} footer={null}>
           {reportError ? <Banner tone="warning">{reportError}</Banner> : !report ? <p>正在读取报告…</p> : <>
@@ -859,20 +1152,51 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         </Dialog>
       )}
       {replaceOpen && (
-        <Dialog title="批量替换译文" confirmText="替换并保存" onCancel={() => { if (!saving) setReplaceOpen(false); }} onConfirm={!find || saving || readonly ? undefined : () => void replaceRows()}>
-          <p>对{selected.size ? `已选 ${selected.size} 条` : `当前页 ${replaceSnapshot?.rows.length ?? 0} 条`}译文执行纯文本替换，并立即保存。</p>
+        <Dialog
+          title="批量替换译文"
+          confirmText={replacePlan ? '替换并保存' : needPreviewAll ? '预览全部结果' : '替换并保存'}
+          onCancel={closeReplace}
+          onConfirm={!find || saving || readonly || !planPreview.ok ? undefined
+            : needPreviewAll && !replacePlan ? () => void previewReplaceAll()
+              : replacePlan?.rows.length ? () => void replaceRows(replacePlan) : undefined}
+        >
+          <p>
+            作用范围：{replaceScope === 'selected' ? t('proofreading_batch_replace_scope_selected').replace('{count}', String(selected.size))
+              : replaceScope === 'page' ? t('proofreading_batch_replace_scope_page').replace('{count}', String(items.length))
+                : t('proofreading_batch_replace_scope_all').replace('{count}', String(data?.matched ?? items.length))}
+            {replaceScope === 'all' ? '（先按当前筛选拉回全部命中行）' : ''}
+          </p>
           <div className="proofreading-replacement-grid">
             <label>
               <span>查找</span>
-              <Input value={find} disabled={saving} placeholder="需要替换的内容" onChange={(event) => setFind(event.target.value)} />
+              <Input value={find} disabled={saving} placeholder="需要替换的内容" onChange={(event) => { setFind(event.target.value); setReplacePlan(null); }} />
             </label>
             <label>
               <span>替换为</span>
-              <Input value={replacement} disabled={saving} placeholder="留空可删除匹配内容" onChange={(event) => setReplacement(event.target.value)} />
+              <Input value={replacement} disabled={saving} placeholder="留空可删除匹配内容" onChange={(event) => { setReplacement(event.target.value); setReplacePlan(null); }} />
             </label>
           </div>
-          <Checkbox checked={caseSensitive} disabled={saving} onChange={(event) => setCaseSensitive(event.target.checked)}>区分大小写</Checkbox>
-          {saving && <p>正在保存替换结果…</p>}
+          <Checkbox checked={caseSensitive} disabled={saving} onChange={(event) => { setCaseSensitive(event.target.checked); setReplacePlan(null); }}>区分大小写</Checkbox>
+          <Checkbox checked={replaceRegex} disabled={saving} onChange={(event) => { setReplaceRegex(event.target.checked); setReplacePlan(null); }}>{t('proofreading_batch_replace_regex')}</Checkbox>
+          <label className="proofreading-scope">
+            <span>{t('proofreading_batch_replace_scope')}</span>
+            <Select
+              aria-label={t('proofreading_batch_replace_scope')}
+              value={replaceScope}
+              disabled={saving}
+              onChange={(value) => { setReplaceScope(value ?? 'page'); setReplacePlan(null); }}
+              options={[
+                ...(selected.size ? [{ value: 'selected', label: t('proofreading_batch_replace_scope_selected').replace('{count}', String(selected.size)) }] : []),
+                { value: 'page', label: t('proofreading_batch_replace_scope_page').replace('{count}', String(items.length)) },
+                { value: 'all', label: t('proofreading_batch_replace_scope_all').replace('{count}', String(data?.matched ?? items.length)) },
+              ]}
+            />
+          </label>
+          {find && !planPreview.ok && <Banner tone="warning">{t('proofreading_batch_replace_regex_invalid').replace('{error}', String(planPreview.error ?? ''))}</Banner>}
+          {waitingForAll && <p className="rb-metric-note">{t('proofreading_batch_replace_impact_hint')}</p>}
+          {replacePlan && <p className="rb-metric-note">{replacePlan.rows.length ? t('proofreading_batch_replace_impact').replace('{rows}', String(replacePlan.rows.length)).replace('{matches}', String(replacePlan.matchCount)) : t('proofreading_batch_replace_impact_none')}</p>}
+          {saving && <p>{replaceBusy ? '正在保存 ' + replaceBusy + ' …' : '正在计算影响范围…'}</p>}
+          <p className="rb-metric-note">{t('proofreading_batch_replace_regex_tip')}</p>
         </Dialog>
       )}
     </div>

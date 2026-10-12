@@ -1,6 +1,6 @@
 /** 网页/AI 翻译向导：对齐 Qt5 HtmlImportPage，走 /api/html-import。 */
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, Collapse, Form, Input, Progress, Select } from 'antd';
+import { Button, Checkbox, Collapse, Form, Input, Progress, Select, Space } from 'antd';
 
 import {
   HTML_COPY,
@@ -164,9 +164,9 @@ export function HtmlImportPage(props: { state: AppState }) {
       ) : null}
 
       <SettingsGroup title={t(HTML_COPY.step1Title)} description={t(HTML_COPY.step1Hint)}>
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label={t(HTML_COPY.tlDir)}>
-            <Input.Group compact style={{ display: 'flex' }}>
+            <Space.Compact block>
               <Input value={tlDir} onChange={(event) => setTlDir(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
               <Button
                 disabled={blocked}
@@ -176,10 +176,10 @@ export function HtmlImportPage(props: { state: AppState }) {
               >
                 {t(HTML_COPY.browse)}
               </Button>
-            </Input.Group>
+            </Space.Compact>
           </Form.Item>
           <Form.Item label={t(HTML_COPY.txtOut)}>
-            <Input.Group compact style={{ display: 'flex' }}>
+            <Space.Compact block>
               <Input value={txtOut} onChange={(event) => setTxtOut(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
               <Button
                 disabled={blocked}
@@ -187,7 +187,7 @@ export function HtmlImportPage(props: { state: AppState }) {
               >
                 {t(HTML_COPY.browse)}
               </Button>
-            </Input.Group>
+            </Space.Compact>
           </Form.Item>
           <Button
             type="primary"
@@ -206,25 +206,25 @@ export function HtmlImportPage(props: { state: AppState }) {
       <SettingsGroup title={t(HTML_COPY.step2Title)} description={t(HTML_COPY.step2Hint)} />
 
       <SettingsGroup title={t(HTML_COPY.step3Title)} description={t(HTML_COPY.step3Hint)}>
-        <Form layout="vertical">
+        <Form layout="horizontal">
           <Form.Item label={t(HTML_COPY.manifest)}>
-            <Input.Group compact style={{ display: 'flex' }}>
+            <Space.Compact block>
               <Input value={manifestPath} onChange={(event) => setManifestPath(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
               <Button disabled={blocked} onClick={() => void pickFile(setManifestPath, [{ name: 'Manifest', extensions: ['json'] }])}>
                 {t(HTML_COPY.browse)}
               </Button>
-            </Input.Group>
+            </Space.Compact>
           </Form.Item>
           <Form.Item label={t(HTML_COPY.translated)}>
-            <Input.Group compact style={{ display: 'flex' }}>
+            <Space.Compact block>
               <Input value={translatedTxt} onChange={(event) => setTranslatedTxt(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
               <Button disabled={blocked} onClick={() => void pickFile(setTranslatedTxt, [{ name: 'TXT', extensions: ['txt'] }])}>
                 {t(HTML_COPY.browse)}
               </Button>
-            </Input.Group>
+            </Space.Compact>
           </Form.Item>
           <Form.Item label={t(HTML_COPY.outputTl)}>
-            <Input.Group compact style={{ display: 'flex' }}>
+            <Space.Compact block>
               <Input
                 value={outputTl}
                 onChange={(event) => setOutputTl(event.target.value)}
@@ -235,7 +235,7 @@ export function HtmlImportPage(props: { state: AppState }) {
               <Button disabled={blocked} onClick={() => void pickDir(setOutputTl)}>
                 {t(HTML_COPY.browse)}
               </Button>
-            </Input.Group>
+            </Space.Compact>
           </Form.Item>
           <Checkbox
             checked={confirmOverwrite}
@@ -271,14 +271,14 @@ export function HtmlImportPage(props: { state: AppState }) {
           children: (
             <>
               <SettingsGroup title={t(HTML_COPY.htmlToTxt)}>
-                <Form layout="vertical">
+                <Form layout="horizontal">
                   <Form.Item label="HTML">
-                    <Input.Group compact style={{ display: 'flex' }}>
+                    <Space.Compact block>
                       <Input value={htmlPath} onChange={(event) => setHtmlPath(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
                       <Button disabled={blocked} onClick={() => void pickFile(setHtmlPath, [{ name: 'HTML', extensions: ['html', 'htm'] }])}>
                         {t(HTML_COPY.browse)}
                       </Button>
-                    </Input.Group>
+                    </Space.Compact>
                   </Form.Item>
                   <Form.Item label="TXT">
                     <Input value={htmlTxtOut} onChange={(event) => setHtmlTxtOut(event.target.value)} disabled={blocked} />
@@ -303,14 +303,14 @@ export function HtmlImportPage(props: { state: AppState }) {
               </SettingsGroup>
 
               <SettingsGroup title={t(HTML_COPY.txtToHtml)}>
-                <Form layout="vertical">
+                <Form layout="horizontal">
                   <Form.Item label="TXT">
-                    <Input.Group compact style={{ display: 'flex' }}>
+                    <Space.Compact block>
                       <Input value={txtPath} onChange={(event) => setTxtPath(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
                       <Button disabled={blocked} onClick={() => void pickFile(setTxtPath, [{ name: 'TXT', extensions: ['txt'] }])}>
                         {t(HTML_COPY.browse)}
                       </Button>
-                    </Input.Group>
+                    </Space.Compact>
                   </Form.Item>
                   <Form.Item label="HTML">
                     <Input value={htmlOut} onChange={(event) => setHtmlOut(event.target.value)} disabled={blocked} />
@@ -335,14 +335,14 @@ export function HtmlImportPage(props: { state: AppState }) {
               </SettingsGroup>
 
               <SettingsGroup title={t(HTML_COPY.excelToTxt)}>
-                <Form layout="vertical">
+                <Form layout="horizontal">
                   <Form.Item label="Excel">
-                    <Input.Group compact style={{ display: 'flex' }}>
+                    <Space.Compact block>
                       <Input value={excelPath} onChange={(event) => setExcelPath(event.target.value)} style={{ flex: 1 }} disabled={blocked} />
                       <Button disabled={blocked} onClick={() => void pickFile(setExcelPath, [{ name: 'Excel', extensions: ['xlsx'] }])}>
                         {t(HTML_COPY.browse)}
                       </Button>
-                    </Input.Group>
+                    </Space.Compact>
                   </Form.Item>
                   <Form.Item label="TXT">
                     <Input value={excelTxtOut} onChange={(event) => setExcelTxtOut(event.target.value)} disabled={blocked} />
