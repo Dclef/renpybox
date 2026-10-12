@@ -25,7 +25,8 @@ export function buildAntdTheme(scheme: ThemeName): ThemeConfig {
       colorInfo: PRIMARY,
       colorBgBase: palette.background,
       colorBgContainer: palette.surface,
-      colorBgElevated: isDark ? '#232326' : '#FFFFFF',
+      // Explicit surfaces keep Ant overlays aligned with the Qt5 dark palette.
+      colorBgElevated: isDark ? palette.surfaceSubtle : '#FFFFFF',
       colorBgLayout: palette.chrome,
       colorBorder: palette.borderStrong,
       colorBorderSecondary: palette.border,
@@ -59,6 +60,20 @@ export function buildAntdTheme(scheme: ThemeName): ThemeConfig {
       },
       Checkbox: {
         borderRadiusSM: 4,
+      },
+      Input: {
+        activeBorderColor: palette.borderStrong,
+        hoverBorderColor: palette.borderStrong,
+      },
+      Select: {
+        activeBorderColor: palette.borderStrong,
+        hoverBorderColor: palette.borderStrong,
+      },
+      Tabs: {
+        itemColor: palette.textSecondary,
+        itemHoverColor: palette.textPrimary,
+        itemSelectedColor: palette.textPrimary,
+        inkBarColor: PRIMARY,
       },
     },
   };

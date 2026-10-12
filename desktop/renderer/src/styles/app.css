@@ -662,6 +662,105 @@
   .rb-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 100%; }
   .rb-onekey-page .card-description, .rb-archive-page .card-description, .rb-asset-page .card-description { overflow-wrap: anywhere; }
   .rb-asset-page .rb-banner-text { white-space: pre-line; overflow-wrap: anywhere; }
+
+  /* RPY extraction keeps the Qt5 settings rhythm: a quiet surface, compact fields,
+     and a separate work area for custom rules instead of one continuous form. */
+  .rb-asset-page[data-rb-page='rpy-extraction'] {
+    gap: 14px;
+    padding-bottom: 20px;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group {
+    border-color: color-mix(in srgb, var(--rb-accent) 28%, var(--rb-border));
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(220px, .65fr);
+    align-items: start;
+    gap: 10px 18px;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .ant-form-item,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .rb-tool-actions {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .ant-form-item:first-child,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .rb-tool-actions {
+    grid-column: 1 / -1;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description {
+    padding: 9px 11px;
+    border: 1px solid var(--rb-divider);
+    border-left: 2px solid var(--rb-accent);
+    border-radius: 5px;
+    background: var(--rb-surface-subtle);
+    line-height: 1.55;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-form-item-label > label {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-input,
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-input-affix-wrapper,
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-select-selector {
+    border-color: var(--rb-border-strong);
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse {
+    border: 1px solid color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
+    border-radius: 8px;
+    background: var(--rb-surface);
+    overflow: hidden;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse-header {
+    min-height: 44px;
+    align-items: center;
+    color: var(--rb-text-primary);
+    font-weight: 600;
+    background: color-mix(in srgb, var(--rb-accent-surface) 42%, var(--rb-surface));
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse-content {
+    border-top-color: var(--rb-divider);
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] {
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid var(--rb-border-strong);
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-form-item {
+    margin-bottom: 10px !important;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-wrapper {
+    border: 1px solid var(--rb-border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-cell {
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-thead > tr > th {
+    color: var(--rb-text-primary);
+    background: color-mix(in srgb, var(--rb-accent-surface) 35%, var(--rb-surface));
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-tbody > tr:hover > td {
+    background: var(--rb-surface-hover);
+  }
+  @media (max-width: 720px) {
+    .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
   /* 姓名表：父级 settings-body 是 flex 列，表格根节点保持块级、不参与伸缩，宽度跟随容器以便内部横向滚动 */
   .rb-asset-page .rb-asset-name-list { display: block; flex: none; width: 100%; min-width: 0; margin: 0; }
   /* 内边距由页面内 Table token 收紧；antd 不设 vertical-align，这里让输入框首行与上下文首行顶部齐平 */
@@ -1227,34 +1326,39 @@
   /* 恢复旧版分组卡片及两行说明；按可用宽度自动换列。 */
   .rb-tool-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 280px), calc((100% - 24px) / 3)), 1fr));
     gap: 12px;
   }
 
   .tool-card {
-    display: grid;
-    grid-template-columns: auto 20px minmax(0, 1fr) 16px;
-    align-items: start;
-    gap: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+    height: 132px;
     min-width: 0;
-    height: auto;
-    min-height: 112px;
-    padding: 16px;
+    padding: 12px 14px 10px 14px;
     border: 1px solid var(--rb-border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--rb-surface);
-    box-shadow: none;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
     text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    position: relative;
+    transition: border-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                box-shadow 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                transform 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                background-color 0.15s ease;
   }
 
-  .tool-card:not(:has(.rb-tool-step)) { grid-template-columns: 20px minmax(0, 1fr) 16px; }
   .tool-card-icon { display: flex; width: 20px; height: 20px; color: var(--rb-text-secondary); }
-  .tool-card-icon svg { width: 20px; height: 20px; }
+  .tool-card-icon svg { width: 18px; height: 18px; }
   .rb-tool-step { color: var(--rb-text-secondary); font-size: 12px; line-height: 20px; }
-  .rb-tool-copy { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  .rb-tool-title { font-size: 14px; font-weight: 500; }
-  .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; white-space: normal; }
-  .rb-tool-availability { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-tool-title { font-size: 14px; font-weight: 600; }
+  .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.5; white-space: normal; }
+  .rb-tool-availability { color: var(--rb-text-secondary); font-size: 11px; }
   .rb-workbench {
     display: flex;
     flex-direction: column;
@@ -2523,88 +2627,256 @@
 
   /* 卡片网格：最多三列，放不下时自动降列 */
   .rb-toolbox .rb-tool-list {
-    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 264px), calc((100% - 24px) / 3)), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 280px), calc((100% - 24px) / 3)), 1fr));
     gap: 12px;
   }
-  /* 卡片：序号胶囊 + 中性图标块 + 标题 / 两行说明 + 右箭头；默认白底中性边框 */
+  /* Ant Design 风格卡片：垂直流式分层，对齐 Qt5 ItemCard 结构（头/体/尾） */
   .rb-toolbox .tool-card {
-    grid-template-columns: auto 32px minmax(0, 1fr) 16px;
-    gap: 12px;
-    min-height: 104px;
-    padding: 14px 14px 14px 16px;
-    border-color: var(--rb-border);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+    height: 132px;
+    min-width: 0;
+    padding: 12px 14px 10px 14px;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
     background: var(--rb-surface);
-    box-shadow: var(--rb-qt-shadow);
-    transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    position: relative;
+    transition: border-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                box-shadow 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                transform 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                background-color 0.15s ease;
   }
-  .rb-toolbox .tool-card:not(:has(.rb-tool-step)) { grid-template-columns: 32px minmax(0, 1fr) 16px; }
+
   .rb-toolbox .tool-card:hover:not(:disabled) {
-    transform: none;
+    transform: translateY(-2px);
     background: var(--rb-surface);
-    border-color: var(--rb-border-strong);
-    box-shadow: var(--rb-qt-shadow-hover);
+    border-color: var(--rb-accent);
+    box-shadow: 0 6px 16px -4px color-mix(in srgb, var(--rb-accent) 18%, rgba(0, 0, 0, 0.08)),
+                0 3px 6px -2px rgba(0, 0, 0, 0.04);
   }
-  /* 与接口管理当前卡片一致：只有键盘聚焦、按下和当前打开说明的卡片才淡蓝底 + 蓝边 + 轻外圈 */
+
+  /* 与接口管理当前卡片一致：键盘聚焦、按下和当前打开说明的卡片淡蓝底 + 蓝边 + 轻外圈 */
   .rb-toolbox .tool-card:focus-visible,
   .rb-toolbox .tool-card:active:not(:disabled),
   .rb-toolbox .tool-card[data-active='true'],
   .rb-toolbox .tool-card[data-active='true']:hover {
     outline: none;
+    transform: translateY(0);
     background: var(--rb-accent-surface);
     border-color: var(--rb-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
   }
-  .rb-toolbox .tool-card:disabled { cursor: not-allowed; opacity: 0.7; }
-  .rb-toolbox .tool-card .tool-card-icon {
+
+  .rb-toolbox .tool-card:disabled {
+    cursor: not-allowed;
+    background: var(--rb-surface-subtle);
+    border-color: var(--rb-border);
+    box-shadow: none;
+    transform: none;
+    opacity: 0.88;
+  }
+
+  /* 顶部行：序号 + 图标 + 标题 与 右侧动作箭头（对齐 Qt5 title_container） */
+  .rb-toolbox .tool-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 30px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .rb-toolbox .tool-card-head-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  /* 流程序号：Ant Design 风格胶囊徽标 */
+  .rb-toolbox .rb-tool-step {
+    flex-shrink: 0;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    background: var(--rb-surface-subtle);
-    color: var(--rb-text-secondary);
-  }
-  .rb-toolbox .tool-card:is(:focus-visible, :active:not(:disabled), [data-active='true']) .tool-card-icon {
-    background: var(--rb-surface);
-    color: var(--rb-accent);
-  }
-  .rb-toolbox .tool-card-icon svg { width: 18px; height: 18px; }
-  .rb-toolbox .tool-card:disabled .tool-card-icon { background: var(--rb-surface-subtle); color: var(--rb-text-disabled); }
-  .rb-toolbox .rb-tool-step {
-    display: inline-grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    margin-top: 6px;
-    border: 1px solid var(--rb-accent);
+    width: 22px;
+    height: 22px;
     border-radius: 999px;
     background: var(--rb-accent-surface);
     color: var(--rb-accent);
+    border: 1.5px solid var(--rb-accent);
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1;
+    box-shadow: 0 1px 2px rgba(22, 119, 255, 0.12);
   }
-  .rb-toolbox .tool-card .rb-tool-copy { gap: 4px; }
-  .rb-toolbox .tool-card .rb-tool-title { overflow: hidden; font-size: 14px; font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
-  .rb-toolbox .tool-card .rb-tool-desc {
-    display: -webkit-box;
+
+  /* 图标容器：Ant Design 风格圆角底色块 + 强调色微交互 */
+  .rb-toolbox .tool-card-icon-container {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--rb-accent) 9%, var(--rb-surface-subtle));
+    color: var(--rb-accent);
+    transition: all 0.2s ease;
+  }
+
+  .rb-toolbox .tool-card-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
+  }
+
+  .rb-toolbox .tool-card-icon svg {
+    width: 17px;
+    height: 17px;
+    display: block;
+    stroke-width: 2;
+  }
+
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-icon-container {
+    background: color-mix(in srgb, var(--rb-accent) 18%, var(--rb-surface-subtle));
+    transform: scale(1.04);
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-icon-container {
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-disabled);
+    transform: none;
+  }
+
+  /* 标题：对齐 Qt5 SubtitleLabel 14px 粗体 */
+  .rb-toolbox .rb-tool-title {
     overflow: hidden;
-    line-height: 1.5;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--rb-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
-  .rb-toolbox .tool-card .rb-tool-availability {
-    align-self: flex-start;
-    margin-top: 2px;
+
+  .rb-toolbox .tool-card:disabled .rb-tool-title {
+    color: var(--rb-text-secondary);
+  }
+
+  /* 右侧动作箭头：Ant Design 风格圆圈底微悬浮交互（对齐 Qt5 TransparentToolButton） */
+  .rb-toolbox .tool-card-action {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: var(--rb-text-disabled);
+    transition: all 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+  }
+
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-action {
+    color: var(--rb-accent);
+    transform: translateX(3px);
+    background: color-mix(in srgb, var(--rb-accent) 10%, transparent);
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-action {
+    color: var(--rb-text-disabled);
+    transform: none;
+    background: none;
+  }
+
+  /* 中间说明区域：对齐 Qt5 TwoLineElideLabel（两行截断） */
+  .rb-toolbox .tool-card-body {
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    margin-top: 6px;
+    min-height: 0;
+    width: 100%;
+  }
+
+  .rb-toolbox .rb-tool-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--rb-text-secondary);
+    width: 100%;
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-body .rb-tool-desc {
+    color: var(--rb-text-tertiary);
+  }
+
+  /* 底部状态行：左侧接入状态，右侧工程依赖提示（对齐 Qt5 description_layout） */
+  .rb-toolbox .tool-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 22px;
+    min-height: 22px;
+    margin-top: 4px;
+    width: 100%;
+  }
+
+  /* 未接入工具提示标签：Ant Design 标签风格 */
+  .rb-toolbox .rb-tool-availability {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
     padding: 0 6px;
     border-radius: 4px;
     background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    border: 1px solid var(--rb-border);
     font-size: 11px;
-    line-height: 18px;
+    font-weight: 500;
+    line-height: 1;
   }
-  .rb-toolbox .tool-card > svg:last-child { margin-top: 8px; color: var(--rb-text-disabled); transition: color 140ms ease; }
-  .rb-toolbox .tool-card:hover:not(:disabled) > svg:last-child { color: var(--rb-text-secondary); }
-  .rb-toolbox .tool-card:is(:focus-visible, :active:not(:disabled), [data-active='true']) > svg:last-child { color: var(--rb-accent); }
+
+  /* 需先选择游戏目录：Ant Design Warning Tag 风格，右对齐（对齐 Qt5 project_requirement_label） */
+  .rb-toolbox .rb-tool-requirement {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: color-mix(in srgb, #faad14 12%, var(--rb-surface));
+    color: #d46b08;
+    border: 1px solid color-mix(in srgb, #faad14 32%, transparent);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  [data-theme='DARK'] .rb-toolbox .rb-tool-requirement,
+  [data-theme='dark'] .rb-toolbox .rb-tool-requirement {
+    background: color-mix(in srgb, #faad14 16%, #1f1f1f);
+    color: #faad14;
+    border-color: color-mix(in srgb, #faad14 36%, transparent);
+  }
 
   /* ---- 窄窗口（侧栏收起为图标栏） ---- */
   @media (max-width: 999px) {

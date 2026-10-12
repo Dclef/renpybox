@@ -43,15 +43,33 @@ function ToolCard(props: { tool: ToolSpec; blocked: boolean; active: boolean; on
       onClick={() => onOpen(tool)}
       title={blocked ? '需先选择游戏目录' : `打开${tool.title}`}
     >
-      {tool.step > 0 ? <span className="rb-tool-step">{tool.step}</span> : null}
-      <InlineSvg markup={TOOL_ICONS[tool.icon]} />
-      <span className="rb-tool-copy">
-        <span className="rb-tool-title">{tool.title}</span>
+      <div className="tool-card-head">
+        <div className="tool-card-head-left">
+          {tool.step > 0 ? <span className="rb-tool-step">{tool.step}</span> : null}
+          <div className="tool-card-icon-container">
+            <InlineSvg markup={TOOL_ICONS[tool.icon]} />
+          </div>
+          <span className="rb-tool-title">{tool.title}</span>
+        </div>
+        <span className="tool-card-action" aria-hidden="true">
+          <ChevronRight size={16} strokeWidth={2} />
+        </span>
+      </div>
+      <div className="tool-card-body">
         <span className="rb-tool-desc">{tool.description}</span>
-        {!TOOL_PAGES[tool.key] && <span className="rb-tool-availability">{t('tool_pending')}</span>}
-        {blocked ? <span className="rb-tool-desc">需先选择游戏目录</span> : null}
-      </span>
-      <ChevronRight size={16} strokeWidth={1.75} />
+      </div>
+      <div className="tool-card-footer">
+        {!TOOL_PAGES[tool.key] && (
+          <span className="rb-tool-availability ant-tag ant-tag-borderless">
+            {t('tool_pending')}
+          </span>
+        )}
+        {blocked && (
+          <span className="rb-tool-requirement rb-tool-desc ant-tag ant-tag-warning ant-tag-borderless">
+            需先选择游戏目录
+          </span>
+        )}
+      </div>
     </button>
   );
 }
@@ -78,11 +96,12 @@ export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey
         description="集中管理翻译流程、文本处理、术语资产与工程辅助工具"
         actions={(
           <Input
-            style={{ width: 240, maxWidth: '100%' }}
+            style={{ width: 260, maxWidth: '100%' }}
             prefix={<Search size={16} strokeWidth={1.75} />}
             className="toolbox-search"
             aria-label="搜索工具"
             placeholder="搜索工具"
+            allowClear
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
