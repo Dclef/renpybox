@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.8.1-newui.2",
+  "version": "0.8.2-newui.1",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -20,7 +20,7 @@
     "build:backend": "node scripts/build-backend.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "pack:dir": "npm run build:backend && npm run build:renderer && electron-builder --dir --publish never && npm run verify:package",
-    "pack:win": "npm run build:backend && npm run build:renderer && electron-builder --win nsis --x64 --publish never && npm run verify:package",
+    "pack:win": "npm run build:backend && npm run build:renderer && electron-builder --win nsis zip --x64 --publish never && npm run verify:package",
     "dist": "npm run pack:win"
   },
   "dependencies": {
