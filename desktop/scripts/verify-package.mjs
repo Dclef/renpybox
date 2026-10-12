@@ -9,23 +9,22 @@ const config = JSON.parse(readFileSync(path.join(desktop, 'package.json'), 'utf8
 const packaged = path.join(desktop, 'release', 'win-unpacked', 'resources');
 const hash = filename => createHash('sha256').update(readFileSync(filename)).digest('hex');
 assert.match(config.version, /^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$/);
-assert.equal(config.build.publish.channel, 'newui');
-assert.equal(config.build.publish.releaseType, 'prerelease');
-// 免安装 zip 与安装包必须一起构建：app-update.yml 只在同一次构建里带 nsis 目标时才写入
-// （app-builder-lib/out/publish/PublishManager.js 的 isSuitableWindowsTarget 只认 nsis），
-// 两个产物共用同一个 win-unpacked，所以一起构建才能让 zip 也带上更新配置。
-assert.match(config.scripts['pack:win'], /--win nsis zip/,
-  'pack:win must build both nsis and zip so the portable zip carries app-update.yml');
-for (const file of ['app.asar', 'app-update.yml', 'backend/RenpyBoxBackend.exe',
+// 更新逻辑改为 desktop/main/updater.js 直接查 GitHub Releases API：不再需要 electron-builder
+// 的 publish 配置，也不再生成 app-update.yml / blockmap / newui.yml。
+assert.equal(config.build.publish, undefined, 'Desktop updates must not fall back to electron-builder publish metadata');
+const dependencies = { ...config.dependencies, ...config.devDependencies };
+assert(!('electron-updater' in dependencies), 'electron-updater must stay removed: the updater talks to the GitHub API directly');
+assert(!('builder-util-runtime' in dependencies), 'builder-util-runtime was only used by electron-updater');
+assert(!existsSync(path.join(packaged, 'app-update.yml')), 'Stale app-update.yml found inside the packaged resources');
+// 安装包与免安装 zip 一次构建，两个产物共用同一个 win-unpacked。
+assert.match(config.scripts['pack:win'], /--win nsis zip/, 'pack:win must build both nsis and the portable zip');
+for (const file of ['app.asar', 'backend/RenpyBoxBackend.exe',
   'backend/_internal/resource/icon.ico', 'backend/build-manifest.json', 'renpybox/icon.ico']) {
   assert(existsSync(path.join(packaged, file)), `Missing packaged file: ${file}`);
 }
 const backendFiles = readdirSync(path.join(packaged, 'backend', '_internal'));
 assert(backendFiles.some(name => /^python[0-9]+[.]dll$/.test(name)), 'Bundled Python DLL is missing');
 assert.equal(hash(path.join(packaged, 'renpybox', 'icon.ico')), hash(path.join(desktop, '..', 'resource', 'icon.ico')));
-const update = readFileSync(path.join(packaged, 'app-update.yml'), 'utf8');
-assert.match(update, /provider:[ ]*github/);
-assert.match(update, /channel:[ ]*newui/);
 const resources = path.join(packaged, 'backend', '_internal', 'resource');
 const pending = [resources];
 while (pending.length) {
@@ -37,16 +36,12 @@ while (pending.length) {
       `Private configuration included: ${path.relative(resources, filename)}`);
   }
 }
-const metadata = path.join(desktop, 'release', 'newui.yml');
-if (existsSync(metadata)) {
-  const contents = readFileSync(metadata, 'utf8');
-  assert(contents.includes(`version: ${config.version}`), 'Stale newui update metadata');
-  assert(contents.includes(`RenpyBox-NewUI-${config.version}-x64.exe`), 'Update metadata points to a different artifact');
+// 老的 electron-updater 产物不应再留在发布目录里误导用户
+assert.equal(config.build.nsis.differentialPackage, false,
+  'NSIS differentialPackage must stay false: blockmap assets are no longer published');
+const releaseFiles = readdirSync(path.join(desktop, 'release'), { withFileTypes: true })
+  .filter(entry => entry.isFile()).map(entry => entry.name);
+for (const unwanted of releaseFiles.filter(name => name.endsWith('.blockmap') || name === 'newui.yml')) {
+  assert.fail(`Remove stale update metadata from release/: ${unwanted}`);
 }
-// 免安装 zip 里的更新配置：zip 的中央目录文件名是明文存储，直接扫字节即可确认
-const zip = path.join(desktop, 'release', `RenpyBox-NewUI-${config.version}-x64.zip`);
-if (existsSync(zip)) {
-  assert(readFileSync(zip).includes(Buffer.from('resources/app-update.yml')),
-    'Portable zip is missing resources/app-update.yml: build nsis and zip in the same electron-builder run');
-}
-console.log('[package] Bundled Python, original icon, private-file exclusions, newui updater configuration and portable zip update config verified.');
+console.log('[package] Bundled Python, original icon, private-file exclusions, direct GitHub update feed and portable zip verified.');
