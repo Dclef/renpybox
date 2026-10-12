@@ -24,7 +24,6 @@ import { createDesktopUpdater } from './updater.js';
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, nativeTheme } = require('electron');
-const { autoUpdater } = require('electron-updater');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = path.resolve(__dirname, '..');
@@ -71,13 +70,15 @@ let cleanupDone = false;
 let closeConfirmed = false;
 let closePrompting = false;
 const updater = createDesktopUpdater({
-  autoUpdater, packaged: !isDev, version: app.getVersion(), log,
+  packaged: !isDev, version: app.getVersion(), log,
+  tempDir: path.join(dataPath, 'update'),
   broadcast: state => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('app:update-state', state);
     }
   },
   beforeInstall: async () => { await sidecar.stop(); cleanupDone = true; },
+  quit: () => app.quit(),
 });
 app.on('second-instance', () => {
   if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }

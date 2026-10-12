@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.8.2-newui.1",
+  "version": "0.8.2-newui.2",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -26,8 +26,6 @@
   "dependencies": {
     "@esbuild/win32-x64": "^0.25.12",
     "antd": "6.6.5",
-    "builder-util-runtime": "^9.7.0",
-    "electron-updater": "^6.8.9",
     "lucide-react": "^1.54.0",
     "ws": "^8.18.0"
   },
@@ -47,7 +45,6 @@
     "appId": "com.dclef.renpybox.newui",
     "productName": "RenpyBox New UI",
     "asar": true,
-    "generateUpdatesFilesForAllChannels": false,
     "directories": {
       "output": "release",
       "buildResources": "../resource"
@@ -93,14 +90,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "dclef",
-      "repo": "RenpyBox",
-      "channel": "newui",
-      "releaseType": "prerelease"
+      "createStartMenuShortcut": true,
+      "differentialPackage": false
     }
   }
 }

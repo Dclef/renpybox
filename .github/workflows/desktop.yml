@@ -74,9 +74,7 @@ jobs:
           name: renpybox-newui-windows
           path: |
             desktop/release/RenpyBox-NewUI-*-x64.exe
-            desktop/release/RenpyBox-NewUI-*-x64.exe.blockmap
             desktop/release/RenpyBox-NewUI-*-x64.zip
-            desktop/release/newui.yml
           if-no-files-found: error
 
   publish:
@@ -96,13 +94,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 客户端直接查 GitHub Releases API（desktop/main/updater.js），只用安装包资产，
+          # 因此这里只上传 exe 与 zip，不再产生 blockmap / newui.yml。
           $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
           if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$') { throw 'Expected a newui prerelease version' }
           $files = @(
             "desktop/release/RenpyBox-NewUI-$version-x64.exe",
-            "desktop/release/RenpyBox-NewUI-$version-x64.exe.blockmap",
-            "desktop/release/RenpyBox-NewUI-$version-x64.zip",
-            'desktop/release/newui.yml'
+            "desktop/release/RenpyBox-NewUI-$version-x64.zip"
           )
           foreach ($file in $files) { if (!(Test-Path -LiteralPath $file)) { throw "Missing artifact: $file" } }
           gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --latest=false --title "RenpyBox New UI $version" --notes "new_UI branch desktop test build; includes the Python backend."

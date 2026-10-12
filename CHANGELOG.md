@@ -2,6 +2,18 @@
 
 <!-- 发版时，请同步更新 base/Version.py、version.txt、desktop/package.json 与锁文件，并在本文件顶部添加对应版本。 -->
 
+## v0.8.2-newui.2 - 2026-10-12（New UI 测试版，基于 Python 版 v0.8.2）
+
+### 优化
+
+- 自动更新改为直接查 GitHub Releases：发布时不再需要上传 `blockmap` 与 `newui.yml`，Release 里只留安装包与免安装 zip
+- 不再依赖 `electron-updater`，安装包体积随之缩小；「检查更新 / 下载更新 / 取消下载 / 重启安装」的界面与流程保持原样
+
+### 注意
+
+- 更新为**全量下载**安装包：不再有按块差分（那需要每次发布都带 `blockmap`）。装过 `0.8.2-newui.1` 的用户点「检查更新」即可收到这一版
+- 未发布任何 New UI 版本时，检查更新显示「当前已是最新版本」；GitHub 访问受限或断网会给出可读提示
+
 ## v0.8.2-newui.1 - 2026-10-12（New UI 测试版，基于 Python 版 v0.8.2）
 
 ### 新增
