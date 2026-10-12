@@ -291,143 +291,245 @@ body {
   gap: 14px;
 }
 
-/* 固定 132px 高、最小 260px 宽 —— 与 ItemCard 一致，网格才不参差 */
+/* 固定 132px 高、最小 260px 宽 —— 与 Qt5 ItemCard 一致，网格不参差 */
 .tool-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  justify-content: space-between;
+  box-sizing: border-box;
   height: 132px;
   min-width: 0;
-  padding: 13px 15px;
+  padding: 12px 14px 10px 14px;
   border: 1px solid var(--rb-border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--rb-surface);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
   text-align: left;
   cursor: pointer;
   font: inherit;
   color: inherit;
+  position: relative;
+  transition: border-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+              box-shadow 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+              transform 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+              background-color 0.15s ease;
 }
 
 .tool-card:hover:not(:disabled) {
-  background: var(--rb-surface-hover);
-  border-color: var(--rb-border-strong);
+  transform: translateY(-2px);
+  background: var(--rb-surface);
+  border-color: var(--rb-accent);
+  box-shadow: 0 6px 16px -4px color-mix(in srgb, var(--rb-accent) 18%, rgba(0, 0, 0, 0.08)),
+              0 3px 6px -2px rgba(0, 0, 0, 0.04);
 }
 
 .tool-card:active:not(:disabled),
-.tool-card[aria-pressed='true'] {
-  background: var(--rb-surface-pressed);
+.tool-card[aria-pressed='true'],
+.tool-card[data-active='true'] {
+  outline: none;
+  transform: translateY(0);
+  background: var(--rb-accent-surface);
+  border-color: var(--rb-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
 }
 
 .tool-card:focus-visible {
-  outline: 2px solid var(--rb-accent);
-  outline-offset: 2px;
+  outline: none;
   border-color: var(--rb-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 20%, transparent);
 }
 
 .tool-card:disabled {
-  cursor: default;
-  background: var(--rb-surface);
+  cursor: not-allowed;
+  background: var(--rb-surface-subtle);
+  border-color: var(--rb-border);
+  box-shadow: none;
+  transform: none;
+  opacity: 0.88;
 }
 
 .tool-card:disabled:hover {
-  background: var(--rb-surface);
+  background: var(--rb-surface-subtle);
   border-color: var(--rb-border);
 }
 
 .tool-card-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  justify-content: space-between;
+  gap: 8px;
   min-width: 0;
   height: 30px;
+  width: 100%;
 }
 
-.tool-card-title {
+.tool-card-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tool-card-title,
+.rb-tool-title {
   font-size: 14px;
-  font-weight: 700;
-  line-height: 1.3;
+  font-weight: 600;
+  line-height: 1.35;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--rb-text-primary);
 }
 
-.tool-card:disabled .tool-card-title {
+.tool-card:disabled .tool-card-title,
+.tool-card:disabled .rb-tool-title {
   color: var(--rb-text-secondary);
+}
+
+.tool-card-icon-container {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--rb-accent) 9%, var(--rb-surface-subtle));
+  color: var(--rb-accent);
+  transition: all 0.2s ease;
+}
+
+.tool-card:hover:not(:disabled) .tool-card-icon-container {
+  background: color-mix(in srgb, var(--rb-accent) 18%, var(--rb-surface-subtle));
+  transform: scale(1.04);
+}
+
+.tool-card:disabled .tool-card-icon-container {
+  background: var(--rb-surface-subtle);
+  color: var(--rb-text-disabled);
+  transform: none;
 }
 
 .tool-card-icon {
   display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  color: var(--rb-text-primary);
-}
-
-.tool-card:disabled .tool-card-icon {
-  color: var(--rb-text-secondary);
+  color: inherit;
 }
 
 .tool-card-icon svg {
-  width: 20px;
-  height: 20px;
+  width: 17px;
+  height: 17px;
   display: block;
+  stroke-width: 2;
 }
 
-/* 流程序号：圆形胶囊，accent 边框 + accent_surface 底 */
-.tool-card-step {
+/* 流程序号：Ant Design 胶囊徽标 */
+.tool-card-step,
+.rb-tool-step {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 22px;
   height: 22px;
-  border: 1px solid var(--rb-accent);
-  border-radius: 11px;
+  border: 1.5px solid var(--rb-accent);
+  border-radius: 999px;
   background: var(--rb-accent-surface);
   color: var(--rb-accent);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(22, 119, 255, 0.12);
 }
 
-.tool-card-go {
-  width: 36px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  margin-left: auto;
+.tool-card-go,
+.tool-card-action {
   flex-shrink: 0;
-  color: var(--rb-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: var(--rb-text-disabled);
+  transition: all 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+}
+
+.tool-card:hover:not(:disabled) .tool-card-go,
+.tool-card:hover:not(:disabled) .tool-card-action {
+  color: var(--rb-accent);
+  transform: translateX(3px);
+  background: color-mix(in srgb, var(--rb-accent) 10%, transparent);
+}
+
+.tool-card:disabled .tool-card-go,
+.tool-card:disabled .tool-card-action {
+  color: var(--rb-text-disabled);
+  transform: none;
+  background: none;
 }
 
 .tool-card-body {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  align-items: flex-start;
+  margin-top: 6px;
   flex: 1;
   min-height: 0;
+  width: 100%;
 }
 
-/* 两行截断 —— 对齐 TwoLineElideLabel */
-.tool-card-description {
-  flex: 1;
+/* 两行截断 —— 对齐 Qt5 TwoLineElideLabel */
+.tool-card-description,
+.rb-tool-desc {
+  width: 100%;
   min-width: 0;
   font-size: 12px;
   color: var(--rb-text-secondary);
-  line-height: 1.35;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.tool-card:disabled .tool-card-description {
-  color: var(--rb-text-disabled);
+.tool-card:disabled .tool-card-description,
+.tool-card:disabled .tool-card-body .rb-tool-desc {
+  color: var(--rb-text-tertiary);
 }
 
-.tool-card-requirement {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--rb-text-secondary);
+.tool-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 22px;
+  min-height: 22px;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.tool-card-requirement,
+.rb-tool-requirement {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #faad14 12%, var(--rb-surface));
+  color: #d46b08;
+  border: 1px solid color-mix(in srgb, #faad14 32%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
 }
 
 /* ---------- 翻译页 ---------- */
@@ -1884,5 +1986,4 @@ body {
   .proofreading-target-wrap { grid-column: 2; }
   .proofreading-source { color: var(--rb-text-secondary); }
   .proofreading-replacement-grid { grid-template-columns: minmax(0, 1fr); }
-}
 }

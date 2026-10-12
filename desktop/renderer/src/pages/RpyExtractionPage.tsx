@@ -176,6 +176,7 @@ export function RpyExtractionPage(props: {
   const [scanOverride, setScanOverride] = useState<ScanInfo | null | undefined>(undefined);
   const mutateSeq = useRef(0);
   const jobIdRef = useRef<string | null>(null);
+  const jobRef = useRef<ToolJob<RpyResult> | null>(null);
   /** 已处理完的预览 job：同 job 恢复/翻页轮询不得把页码打回 1 */
   const handledPreviewJobRef = useRef<string | null>(null);
   /** 保存受理时冻结的正文；仅 done∧written 后写入 baseline */
@@ -211,7 +212,8 @@ export function RpyExtractionPage(props: {
 
   useEffect(() => {
     jobIdRef.current = job?.id ?? null;
-  }, [job?.id]);
+    jobRef.current = job;
+  }, [job]);
 
   const modeLabels = status?.mode_labels || {
     builtin: t('rpy_rules_builtin'),
@@ -245,14 +247,28 @@ export function RpyExtractionPage(props: {
   const jobForCategory = result?.category === category ? job : null;
   const activeForCategory = toolJobRunning(jobForCategory);
 
+  const withTimeout = useCallback(async <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+    let timer: number | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = window.setTimeout(() => reject(new Error('request timed out')), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+  }, []);
+
   const cancelAndWait = useCallback(async () => {
     const id = jobIdRef.current;
-    if (!id) {
+    if (!id || !toolJobRunning(jobRef.current)) {
       setLeaveWaiting(false);
       return;
     }
     try {
-      await cancelJob(id);
+      await withTimeout(cancelJob(id), 3000);
     } catch {
       // 任务可能已结束；仍须确认终态
     }
@@ -261,7 +277,7 @@ export function RpyExtractionPage(props: {
     // 仅在明确 !toolJobRunning（含 worker_active=false）时放行；超时/网络失败抛错留在页
     for (;;) {
       try {
-        const snap = await request<ToolJob<RpyResult>>(`/api/jobs/${id}`);
+        const snap = await withTimeout(request<ToolJob<RpyResult>>(`/api/jobs/${id}`), 2500);
         if (!toolJobRunning(snap)) {
           setLeaveWaiting(false);
           return;
@@ -277,14 +293,14 @@ export function RpyExtractionPage(props: {
         setLeaveWaiting(true);
         setLocalError(t('rpy_rules_leave_waiting'));
       }
-      if (elapsed >= 120000) {
+      if (elapsed >= 15000) {
         setLeaveWaiting(false);
         setLocalError(t('rpy_rules_leave_wait_failed'));
         throw new Error(t('rpy_rules_leave_wait_failed'));
       }
       await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
-  }, [t]);
+  }, [t, withTimeout]);
 
   useEffect(() => {
     if (!leaveGuardRef) return;
