@@ -44,6 +44,8 @@ interface RenpyBridge {
   close: () => void;
   /** 未保存修改已在页面内确认放弃时关闭主窗口，不再弹退出确认 */
   closeConfirmed: () => void;
+  /** 将已生效的界面语言同步给主进程原生提示。 */
+  setLocale?: (locale: 'ZH' | 'EN') => void;
   /** 标题栏、Alt+F4、任务栏关闭统一交给页面内的 Ant 弹窗确认。 */
   onCloseRequested: (callback: () => void) => () => void;
   /** 无边框窗口的窗口控制（标题栏右侧三个按钮） */

@@ -369,6 +369,30 @@ export function useAppState(): AppState {
     };
   }, [link]);
 
+  // 工具页卸载后仍需收敛引擎状态。仅任务终态变化触发立即刷新，进度消息不刷屏；
+  // 忙碌时串行轮询，覆盖 WS 漏报和短暂 HTTP 失败，不猜测任务是否已释放锁。
+  const engineBusy = translation.engine_status !== 'IDLE' || translation.stop_barrier || translation.single_tasks;
+  const settledJobsKey = jobs
+    .filter((job) => job.status === 'done' || job.status === 'failed' || job.status === 'cancelled')
+    .map((job) => `${job.id}:${job.status}`).sort().join('|');
+  useEffect(() => {
+    if (link !== 'open') return;
+    let alive = true;
+    let timer = 0;
+    const sync = async () => {
+      let retry = engineBusy;
+      try {
+        await reloadTranslation();
+      } catch {
+        retry = true;
+      } finally {
+        if (alive && retry) timer = window.setTimeout(() => void sync(), 1500);
+      }
+    };
+    timer = window.setTimeout(() => void sync(), 100);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [link, engineBusy, settledJobsKey, reloadTranslation]);
+
   useSidecarEvents(
     useCallback((message: WsEventMessage) => {
       if (message.type === 'event') {

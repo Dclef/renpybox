@@ -109,10 +109,10 @@ export function useProjectToolJob<R extends ToolResultBase, S extends { project_
         setChecking(false);
         if (!toolJobRunning(next)) setCancelling(false);
         if (next && !toolJobRunning(next) && completed.current !== next.id) {
-          completed.current = next.id;
-          // 只读扫描无需刷新翻译状态
-          if (toolJobResult(next)?.action !== 'scan') {
-            await state.reloadTranslation();
+          // 只读扫描也持有 TESTING；从后端确认释放，刷新失败则下轮重试。
+          await state.reloadTranslation();
+          if (alive && local === identityRef.current && current === sequence.current) {
+            completed.current = next.id;
           }
         }
       } catch (failure) {

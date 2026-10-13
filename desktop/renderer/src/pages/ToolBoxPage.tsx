@@ -1,11 +1,10 @@
-/** 工具箱：沿用旧版四组分类与卡片入口，未接入工具明确提示使用原桌面版。 */
-
+/** 工具箱：保留 Qt5 工具注册与入口，提供分类筛选和清晰的项目依赖提示。 */
 import { useMemo, useState } from 'react';
+import { Button, Input } from 'antd';
+import { ChevronRight, FolderOpen, Search } from 'lucide-react';
 import { useT } from '../i18n';
-import { Input } from 'antd';
-import { ChevronRight, Search } from 'lucide-react';
-
-import { searchTools, TOOL_ICONS, toolsByGroup, type ToolSpec } from '../tools';
+import { searchTools, TOOL_ICONS, toolsByGroup, type ToolGroup, type ToolSpec } from '../tools';
+import { localizeTool, TOOLBOX_COPY } from '../toolboxCopy';
 import type { AppState } from '../useAppState';
 import type { PageKey } from '../nav';
 import { Banner, Dialog, Empty, PageHeader } from '../ui';
@@ -25,152 +24,101 @@ const TOOL_PAGES: Record<string, PageKey> = {
   html_import: 'html-import', game_mod: 'game-mod',
 };
 
-/** 把 Lucide SVG 源码塞进内联 SVG；颜色靠 currentColor 跟随主题。 */
-function InlineSvg(props: { markup: string }) {
-  return <span className="tool-card-icon" dangerouslySetInnerHTML={{ __html: props.markup }} />;
-}
-
-/** active 仅表示当前打开说明的卡片；聚焦与按下由 CSS 伪类处理。 */
-function ToolCard(props: { tool: ToolSpec; blocked: boolean; active: boolean; onOpen: (tool: ToolSpec) => void }) {
-  const { tool, blocked, active, onOpen } = props;
+type ToolboxCopy = typeof TOOLBOX_COPY.ZH;
+function ToolCard({ tool, blocked, active, onOpen, copy }: {
+  tool: ToolSpec; blocked: boolean; active: boolean;
+  onOpen: (tool: ToolSpec) => void; copy: ToolboxCopy;
+}) {
   const t = useT();
+  const pending = !TOOL_PAGES[tool.key];
   return (
     <button
-      type="button"
-      className="tool-card"
-      data-active={active}
-      disabled={blocked}
-      onClick={() => onOpen(tool)}
-      title={blocked ? '需先选择游戏目录' : `打开${tool.title}`}
+      type="button" className="tool-card" data-active={active} data-tool-key={tool.key}
+      disabled={blocked} onClick={() => onOpen(tool)}
+      title={`${blocked ? copy.projectRequired : copy.open(tool.title)}\n${tool.description}`}
     >
       <div className="tool-card-head">
         <div className="tool-card-head-left">
-          {tool.step > 0 ? <span className="rb-tool-step">{tool.step}</span> : null}
-          <div className="tool-card-icon-container">
-            <InlineSvg markup={TOOL_ICONS[tool.icon]} />
+          <div className="tool-card-icon-container" aria-hidden="true">
+            <span className="tool-card-icon" dangerouslySetInnerHTML={{ __html: TOOL_ICONS[tool.icon] }} />
           </div>
           <span className="rb-tool-title">{tool.title}</span>
         </div>
-        <span className="tool-card-action" aria-hidden="true">
-          <ChevronRight size={16} strokeWidth={2} />
-        </span>
+        {tool.step > 0 ? <span className="rb-tool-step" aria-hidden="true">{tool.step}</span> : null}
+        <span className="tool-card-action" aria-hidden="true"><ChevronRight size={16} strokeWidth={1.75} /></span>
       </div>
-      <div className="tool-card-body">
-        <span className="rb-tool-desc">{tool.description}</span>
-      </div>
-      <div className="tool-card-footer">
-        {!TOOL_PAGES[tool.key] && (
-          <span className="rb-tool-availability ant-tag ant-tag-borderless">
-            {t('tool_pending')}
-          </span>
-        )}
-        {blocked && (
-          <span className="rb-tool-requirement rb-tool-desc ant-tag ant-tag-warning ant-tag-borderless">
-            需先选择游戏目录
-          </span>
-        )}
-      </div>
+      <div className="tool-card-body"><span className="rb-tool-desc">{tool.description}</span></div>
+      {pending || blocked ? <div className="tool-card-footer">
+        {pending ? <span className="rb-tool-availability">{t('tool_pending')}</span> : null}
+        {blocked ? <span className="rb-tool-requirement">{copy.projectRequired}</span> : null}
+      </div> : null}
     </button>
   );
 }
 
-export function ToolBoxPage(props: { state: AppState; onNavigate: (page: PageKey) => void }) {
-  const { state, onNavigate } = props;
+export function ToolBoxPage({ state, onNavigate }: { state: AppState; onNavigate: (page: PageKey) => void }) {
+  const t = useT();
+  const lang = state.bootLanguage === 'EN' ? 'EN' : 'ZH';
+  const copy = TOOLBOX_COPY[lang];
   const [selected, setSelected] = useState<ToolSpec | null>(null);
   const [query, setQuery] = useState('');
-
+  const [category, setCategory] = useState<ToolGroup | 'all'>('all');
+  const hasProject = Boolean(state.project?.renpy_project_path);
+  const groups = useMemo(() => toolsByGroup().map(group => ({
+    ...group, tools: group.tools.map(tool => localizeTool(tool, lang)),
+  })), [lang]);
+  const needle = query.trim().toLocaleLowerCase();
+  const originalMatches = useMemo(() => new Set(searchTools(query).map(tool => tool.key)), [query]);
+  const filteredGroups = groups.filter(group => category === 'all' || group.group === category)
+    .map(group => ({ ...group, tools: group.tools.filter(tool => !needle || originalMatches.has(tool.key)
+      || `${tool.title} ${tool.description}`.toLocaleLowerCase().includes(needle)) }));
+  const matchCount = filteredGroups.reduce((count, group) => count + group.tools.length, 0);
   const openTool = (tool: ToolSpec) => {
     const page = TOOL_PAGES[tool.key];
-    if (page) { onNavigate(page); return; }
-    setSelected(tool);
+    if (page) onNavigate(page);
+    else setSelected(tool);
   };
-  const hasProject = Boolean(state.project?.renpy_project_path);
-  const groups = useMemo(() => toolsByGroup(), []);
-  const searching = query.trim().length > 0;
-  const matches = useMemo(() => (searching ? searchTools(query) : null), [query, searching]);
+  const card = (tool: ToolSpec) => <ToolCard key={tool.key} tool={tool}
+    blocked={tool.requiresProject && !hasProject} active={selected?.key === tool.key} onOpen={openTool} copy={copy} />;
 
   return (
     <div className="rb-page rb-toolbox">
-      <PageHeader
-        title="Ren'Py 工具箱"
-        description="集中管理翻译流程、文本处理、术语资产与工程辅助工具"
-        actions={(
-          <Input
-            style={{ width: 260, maxWidth: '100%' }}
-            prefix={<Search size={16} strokeWidth={1.75} />}
-            className="toolbox-search"
-            aria-label="搜索工具"
-            placeholder="搜索工具"
-            allowClear
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        )}
-      />
-
+      <PageHeader title={copy.title} description={copy.description} actions={(
+        <Input prefix={<Search size={16} strokeWidth={1.75} />} className="toolbox-search"
+          aria-label={copy.search} placeholder={copy.search} allowClear value={query}
+          onChange={event => setQuery(event.target.value)} />
+      )} />
+      <nav className="rb-toolbox-categories" aria-label={copy.categories}>
+        <button type="button" aria-pressed={category === 'all'} onClick={() => setCategory('all')}>{copy.all}</button>
+        {groups.map(group => <button key={group.group} type="button" data-tool-group={group.group}
+          aria-pressed={category === group.group} onClick={() => setCategory(group.group)}>
+          {copy.groups[group.group][0]}<span>{group.tools.length}</span>
+        </button>)}
+      </nav>
       <div className="rb-toolbox-scroll">
-        {hasProject ? null : (
-          <Banner tone="warning">尚未绑定工程。需要项目的工具暂时不可用，请先到项目设置选择带 game/ 的目录。</Banner>
-        )}
-
-        {searching && matches ? (
-          <section className="tool-group">
-            <div className="tool-group-header">
-              <span className="tool-group-title">搜索结果</span>
-              <span className="tool-group-count">{matches.length} 款工具</span>
-            </div>
-            {matches.length === 0 ? (
-              <Empty>没有匹配的工具</Empty>
-            ) : (
-              <div className="rb-tool-list">
-                {matches.map((tool) => (
-                  <ToolCard
-                    key={tool.key}
-                    tool={tool}
-                    blocked={tool.requiresProject && !hasProject}
-                    active={selected?.key === tool.key}
-                    onOpen={openTool}
-                  />
-                ))}
-              </div>
-            )}
+        {!hasProject ? <Banner tone="info"><div className="rb-toolbox-project-hint">
+          <span>{copy.unbound}</span>
+          <Button size="small" icon={<FolderOpen size={14} />} onClick={() => onNavigate('project')}>{copy.selectProject}</Button>
+        </div></Banner> : null}
+        {needle ? <section className="tool-group">
+          <div className="tool-group-header"><span className="tool-group-title">{copy.results}</span>
+            <span className="tool-group-count" role="status">{copy.count(matchCount)}</span></div>
+          {matchCount ? <div className="rb-tool-list">{filteredGroups.flatMap(group => group.tools).map(card)}</div>
+            : <Empty><div className="rb-toolbox-empty"><span>{copy.empty}</span>
+              <Button onClick={() => { setQuery(''); setCategory('all'); }}>{copy.reset}</Button></div></Empty>}
+        </section> : filteredGroups.filter(group => group.tools.length).map(group => (
+          <section className="tool-group" key={group.group}>
+            <div className="tool-group-header"><div className="rb-toolbox-group-copy">
+              <h2 className="tool-group-title">{copy.groups[group.group][0]}</h2>
+              <p>{copy.groups[group.group][1]}</p>
+            </div><span className="tool-group-count">{copy.count(group.tools.length)}</span></div>
+            <div className="rb-tool-list">{group.tools.map(card)}</div>
           </section>
-        ) : null}
-
-        {!searching ? groups.map((group) => {
-          const tools = searching && matches ? group.tools.filter((tool) => matches.includes(tool)) : group.tools;
-          if (tools.length === 0) return null;
-          return (
-            <section className="tool-group" key={group.group}>
-              <div className="tool-group-header">
-                <span className="tool-group-title">{group.title}</span>
-                <span className="tool-group-count">{tools.length} 款工具</span>
-              </div>
-              <div className="rb-tool-list">
-                {tools.map((tool) => (
-                  <ToolCard
-                    key={tool.key}
-                    tool={tool}
-                    blocked={tool.requiresProject && !hasProject}
-                    active={selected?.key === tool.key}
-                    onOpen={openTool}
-                  />
-                ))}
-              </div>
-            </section>
-          );
-        }) : null}
+        ))}
       </div>
-
-      {selected ? (
-        <Dialog title={selected.title} cancelText="关闭" onCancel={() => setSelected(null)}>
-          <p>{selected.description}</p>
-          <p className="card-description">关键词：{selected.keywords.join('、')}</p>
-          <Banner tone="info">
-            此工具暂不可用，请在原桌面版中执行。当前页面仅展示工具说明和使用条件。
-          </Banner>
-        </Dialog>
-      ) : null}
+      {selected ? <Dialog title={selected.title} cancelText={lang === 'EN' ? 'Close' : '关闭'} onCancel={() => setSelected(null)}>
+        <p>{selected.description}</p><Banner tone="info">{t('tool_pending')}</Banner>
+      </Dialog> : null}
     </div>
   );
 }

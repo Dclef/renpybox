@@ -444,7 +444,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
         )}
       />
       <div className="rb-workbench-statusbar">
-        <Tag bordered={false} color={loading ? 'default' : dirty ? 'warning' : snapshot ? 'success' : 'default'}>
+        <Tag variant="filled" color={loading ? 'default' : dirty ? 'warning' : snapshot ? 'success' : 'default'}>
           {loading ? '正在读取项目资料…' : dirty ? '有未保存的修改' : snapshot ? '项目资料已同步' : '等待选择项目'}
         </Tag>
         <span className="rb-workbench-status-metrics">

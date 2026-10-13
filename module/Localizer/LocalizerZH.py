@@ -731,6 +731,7 @@ class LocalizerZH():
     agent_rpa_not_found: str = "当前项目没有找到 RPA 文件。"
     agent_rpa_found: str = "当前项目找到 {count} 个 RPA 文件：{files}"
     agent_scan_no_errors: str = "脚本扫描完成，未发现错误。"
+    agent_scan_incomplete: str = "脚本扫描未完成（已取消或达到预算上限），以下仅为已扫描部分的结果，不能据此判断目录无错误。"
     agent_scan_errors: str = "脚本扫描完成，发现 {total} 个问题，已返回前 {returned} 个。"
     agent_unpack_project_changed: str = "项目目录已变化，请重新确认后再试。"
     agent_unpack_complete: str = "RPA 解包完成，共处理 {count} 个归档；原 RPA 文件已保留。"

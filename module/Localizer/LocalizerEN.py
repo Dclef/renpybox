@@ -748,6 +748,7 @@ class LocalizerEN(LocalizerZH):
     agent_rpa_not_found: str = "No RPA files were found in the current project."
     agent_rpa_found: str = "Found {count} RPA file(s) in the current project: {files}"
     agent_scan_no_errors: str = "Script scan completed with no errors found."
+    agent_scan_incomplete: str = "Script scan incomplete (cancelled or budget limit reached). Results cover only the scanned portion and do not establish that the folder is error-free."
     agent_scan_errors: str = "Script scan completed with {total} issue(s); the first {returned} are included."
     agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
     agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."

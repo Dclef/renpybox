@@ -51,7 +51,12 @@ def iter_rpy_files_lexical(folder_path: str | Path, *, checkpoint: Callable[[], 
     if not root.is_dir() or is_link_or_reparse(root):
         return []
     found: list[Path] = []
-    for current, dirnames, filenames in os.walk(root, followlinks=False):
+
+    def raise_walk_error(error: OSError) -> None:
+        # Partial enumeration must not look like a complete, error-free scan.
+        raise error
+
+    for current, dirnames, filenames in os.walk(root, followlinks=False, onerror=raise_walk_error):
         if checkpoint is not None:
             checkpoint()
         base = Path(current)

@@ -1,6 +1,7 @@
 import './styles/layers.css';
 import './styles.css';
 import './styles/app.css';
+import './styles/toolbox.css';
 
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
