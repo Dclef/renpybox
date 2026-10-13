@@ -14,7 +14,8 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
@@ -31,6 +32,8 @@ const RENDERER_DIST = path.join(DESKTOP_ROOT, 'dist', 'index.html');
 const SHELL_DIR = path.join(DESKTOP_ROOT, 'shell');
 
 const isDev = !app.isPackaged;
+app.setName('RenpyBox');
+if (process.platform === 'win32') app.setAppUserModelId('com.dclef.renpybox.newui');
 if (!isDev) {
   const profile = app.commandLine.getSwitchValue('user-data-dir');
   app.setPath('userData', profile ? path.resolve(profile) : path.join(app.getPath('appData'), 'RenpyBox-newUI'));
@@ -66,9 +69,8 @@ let logWindow = null;
 let backendHealth = null;
 let quitting = false;
 let cleanupDone = false;
-// 主窗口关闭确认：closeConfirmed 表示用户已同意退出，closePrompting 防止重复弹框。
+// The renderer owns the Ant confirmation; only its explicit confirmation closes the window.
 let closeConfirmed = false;
-let closePrompting = false;
 const updater = createDesktopUpdater({
   packaged: !isDev, version: app.getVersion(), log,
   tempDir: path.join(dataPath, 'update'),
@@ -77,7 +79,8 @@ const updater = createDesktopUpdater({
       if (!win.isDestroyed()) win.webContents.send('app:update-state', state);
     }
   },
-  beforeInstall: async () => { await sidecar.stop(); cleanupDone = true; },
+  beforeInstall: async () => { await sidecar.stop(); },
+  afterInstallFailure: async () => { if (!quitting) await sidecar.restart(); },
   quit: () => app.quit(),
 });
 app.on('second-instance', () => {
@@ -98,6 +101,19 @@ function webPreferences(preloadFile) {
     webSecurity: true,
     spellcheck: false,
   };
+}
+
+function applyWindowBranding(win) {
+  if (process.platform !== 'win32') return;
+  // Explorer's taskbar menu uses relaunch metadata, not BrowserWindow.title/icon.
+  // Development runs through electron.exe, so include the project path when reopening.
+  win.setAppDetails({
+    appId: 'com.dclef.renpybox.newui',
+    appIconPath: appIcon,
+    appIconIndex: 0,
+    relaunchDisplayName: 'RenpyBox',
+    relaunchCommand: isDev ? `"${process.execPath}" "${DESKTOP_ROOT}"` : `"${process.execPath}"`,
+  });
 }
 
 async function createMainWindow() {
@@ -121,6 +137,7 @@ async function createMainWindow() {
     icon: appIcon,
     webPreferences: webPreferences('preload-main.cjs'),
   });
+  applyWindowBranding(mainWindow);
 
   // 最大化状态回推给渲染端，标题栏右侧的「最大化 / 还原」图标才能对上。
   const forwardMaximizeState = () => {
@@ -145,22 +162,7 @@ async function createMainWindow() {
   mainWindow.on('close', (event) => {
     if (closeConfirmed || quitting || cleanupDone) return;
     event.preventDefault();
-    if (closePrompting) return;
-    closePrompting = true;
-    const win = mainWindow;
-    void dialog.showMessageBox(win, {
-      type: 'warning',
-      title: '警告',
-      message: '确定是否退出程序 … ？',
-      buttons: ['确认', '取消'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    }).then(({ response }) => {
-      if (response !== 0 || win.isDestroyed()) return;
-      closeConfirmed = true;
-      win.close();
-    }).catch(error => log.error(error)).finally(() => { closePrompting = false; });
+    mainWindow.webContents.send('window:close-requested');
   });
   // 渲染端 beforeunload 拦下（有未保存修改）时撤销确认，交给页面内 Dialog 继续处理。
   mainWindow.webContents.on('will-prevent-unload', () => { closeConfirmed = false; });
@@ -191,6 +193,7 @@ function openShellWindow(kind) {
     icon: appIcon,
     webPreferences: webPreferences('preload-shell.cjs'),
   });
+  applyWindowBranding(win);
   if (isLogs) { logWindow = win; win.on('closed', () => { logWindow = null; }); }
   win.once('ready-to-show', () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => { void openExternal(url).catch(error => log.error(error)); return { action: 'deny' }; });
@@ -208,7 +211,7 @@ ipcMain.handle('app:info', async () => {
   try { backendHealth = await sidecar.probe(); } catch { backendHealth = { ok: false, port: SIDECAR_PORT }; }
   return { appVersion: app.getVersion(), packaged: !isDev, logPath: log.path, dataPath, icon: pathToFileURL(appIcon).href, health: { ...backendHealth, port: SIDECAR_PORT } };
 });
-ipcMain.handle('app:changelog', () => readFileSync(isDev ? path.join(DESKTOP_ROOT, '..', 'CHANGELOG.md') : path.join(process.resourcesPath, 'renpybox', 'CHANGELOG.md'), 'utf8'));
+ipcMain.handle('app:changelog', () => readFile(isDev ? path.join(DESKTOP_ROOT, '..', 'CHANGELOG.md') : path.join(process.resourcesPath, 'renpybox', 'CHANGELOG.md'), 'utf8'));
 ipcMain.handle('app:open-logs', () => { openShellWindow('logs'); });
 ipcMain.handle('app:read-logs', (_event, source = 'app') => readLogTail(resolveLogFile(logDirectory, source)));
 ipcMain.handle('app:copy-logs', (_event, text) => {
@@ -250,7 +253,7 @@ ipcMain.on('shell:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
-// 渲染端「有未保存的修改」Dialog 已确认放弃并退出，跳过退出确认，避免二次弹框。
+// 渲染端已通过退出或放弃修改 Dialog 确认关闭，避免二次弹框。
 ipcMain.on('window:close-confirmed', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win !== mainWindow) return;
@@ -321,7 +324,6 @@ ipcMain.handle('shell:open-path', async (_event, target) => {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  if (!isDev) app.setAppUserModelId('com.dclef.renpybox.newui');
   try {
     await createMainWindow();
     if (!isDev) setTimeout(() => void updater.check(), 2500).unref();

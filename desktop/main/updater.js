@@ -6,7 +6,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 /**
- * 桌面更新：直接查 GitHub Releases 的 New UI 预发布，只用安装包资产。
+ * 桌面更新：直接查 GitHub Releases 的桌面发布，只用安装包资产。
  *
  * 有意不使用 electron-updater：那条链路要求每次发布同时上传 blockmap 与 newui.yml，
  * 这两个文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
@@ -15,7 +15,7 @@ import { pipeline } from 'node:stream/promises';
  */
 
 export const DEFAULT_UPDATE_REPO = 'dclef/renpybox';
-export const NEWUI_TAG_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)-newui\.(\d+)$/;
+export const DESKTOP_TAG_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)(?:-newui\.(\d+))?$/;
 const INSTALLER_PATTERN = /^RenpyBox-NewUI-.+-x64[.]exe$/i;
 const API_ROOT = 'https://api.github.com';
 const USER_AGENT = 'RenpyBox-NewUI';
@@ -25,11 +25,11 @@ const REQUEST_HEADERS = Object.freeze({
   'x-github-api-version': '2022-11-28',
 });
 
-/** 解析 `0.8.2-newui.1` / `v0.8.2-newui.1`；非 New UI 版本返回 null。 */
+/** 支持正式版和旧 New UI 测试版；Qt 发布的 RenpyBox_v* 标签不属于桌面更新。 */
 export function parseDesktopVersion(value) {
-  const match = NEWUI_TAG_PATTERN.exec(String(value ?? '').trim());
+  const match = DESKTOP_TAG_PATTERN.exec(String(value ?? '').trim());
   if (!match) return null;
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), build: Number(match[4]) };
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), build: match[4] === undefined ? null : Number(match[4]) };
 }
 
 /** 版本比较：left 更新返回正数。无法解析的一侧视为更旧。 */
@@ -39,10 +39,13 @@ export function compareDesktopVersions(left, right) {
   if (!a && !b) return 0;
   if (!a) return -1;
   if (!b) return 1;
-  for (const key of ['major', 'minor', 'patch', 'build']) {
+  for (const key of ['major', 'minor', 'patch']) {
     if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1;
   }
-  return 0;
+  if (a.build === b.build) return 0;
+  if (a.build === null) return 1;
+  if (b.build === null) return -1;
+  return a.build > b.build ? 1 : -1;
 }
 
 /** 发布里的 Windows x64 安装包（zip / blockmap 一律忽略）。 */
@@ -51,11 +54,13 @@ export function selectInstallerAsset(release) {
   return assets.find(asset => INSTALLER_PATTERN.test(String(asset?.name ?? ''))) ?? null;
 }
 
-/** 从 release 列表里挑出比 currentVersion 新的最新一条 New UI 发布。 */
+/** 正式版只接收正式发布；测试版也能升级到正式版。 */
 export function pickLatestRelease(releases, currentVersion) {
+  const stable = parseDesktopVersion(currentVersion)?.build === null;
   const candidates = (Array.isArray(releases) ? releases : [])
     .filter(release => release && release.draft !== true)
     .filter(release => parseDesktopVersion(release.tag_name) && selectInstallerAsset(release))
+    .filter(release => !stable || (release.prerelease !== true && parseDesktopVersion(release.tag_name).build === null))
     .filter(release => compareDesktopVersions(release.tag_name, currentVersion) > 0);
   return candidates.sort((a, b) => compareDesktopVersions(b.tag_name, a.tag_name))[0] ?? null;
 }
@@ -63,7 +68,7 @@ export function pickLatestRelease(releases, currentVersion) {
 /** 把内部错误翻译成界面上能直接看的文案。 */
 export function friendlyUpdateError(error) {
   switch (error?.kind) {
-    case 'not-published': return 'GitHub 尚未发布可用的 New UI 测试版本，发布后可检查更新。';
+    case 'not-published': return 'GitHub 尚未发布可用的桌面版本，发布后可检查更新。';
     case 'rate-limited': return 'GitHub 接口访问受限（可能触发频率限制），请稍后重试。';
     case 'network': return `无法连接 GitHub：${error.message || '网络不可用'}`;
     case 'download': return `下载更新失败：${error.message || '网络中断'}`;
@@ -134,6 +139,7 @@ export function createDesktopUpdater({
   broadcast = () => {},
   log = console,
   beforeInstall = async () => {},
+  afterInstallFailure = async () => {},
   quit = () => {},
   tempDir = '',
   repo = DEFAULT_UPDATE_REPO,
@@ -238,10 +244,13 @@ export function createDesktopUpdater({
       try {
         await beforeInstall();
         await launchInstaller(installerPath);
+        // The installer was launched successfully; the main process can now
+        // continue through its normal shutdown cleanup.
         quit();
         return snapshot();
       } catch (error) {
         installing = false;
+        try { await afterInstallFailure(); } catch (restartError) { log.error('[update] backend recovery failed', restartError); }
         return failed(error?.kind ? error : Object.assign(error ?? new Error('未知原因'), { kind: 'install' }));
       }
     },

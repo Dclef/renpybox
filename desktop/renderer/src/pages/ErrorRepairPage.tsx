@@ -23,6 +23,8 @@ import {
 interface RepairResult extends ToolResultBase {
   report?: Record<string, Array<Record<string, unknown>>>;
   total_issues?: number;
+  affected_files?: number;
+  has_scan_report?: boolean;
   fixed_files?: number;
   fixed_items?: number;
   failed_files?: number;
@@ -53,6 +55,7 @@ const COPY = {
     fixIndentLevel: '修复缩进层级问题（按父块回退）',
     fixQuotes: '规范化外层中文引号',
     fixDialogue: '修复未转义引号（源码翻译）',
+    fixEmpty: '删除空的 translate strings 块',
     lintTitle: '深度 Lint 检查',
     lintDesc: "调用 Ren'Py 内置 lint 命令进行深度语法检查",
     exeLabel: '游戏主程序',
@@ -60,8 +63,9 @@ const COPY = {
     fix: '自动修复',
     export: '导出报告',
     runLint: '执行 Lint 检查',
-    fixConfirm: '将直接修改选定翻译目录下的 .rpy，不会自动备份。继续？',
-    noBackup: '共享实现不会自动备份。',
+    fixConfirm: '将按勾选项修改 .rpy；每个有改动的文件会先在原目录保存独立的 .bak 备份。缩进层级和引号修复需要核对结果。继续？',
+    scanHelp: '扫描只读文件，检查格式、占位符和译文完整性；不能验证游戏剧情逻辑。自动修复会先保存 .bak 备份。',
+    cancel: '取消任务',
     browse: '浏览',
   },
   EN: {
@@ -73,6 +77,7 @@ const COPY = {
     fixIndentLevel: 'Fix Indentation Levels (Follow Parent Blocks)',
     fixQuotes: 'Normalize Outer Chinese Quotation Marks',
     fixDialogue: 'Fix Unescaped Quotes (Source Translation)',
+    fixEmpty: 'Remove Empty translate strings Blocks',
     lintTitle: 'Deep Lint Check',
     lintDesc: "Run Ren'Py's built-in lint command for a deeper syntax check",
     exeLabel: 'Game Executable',
@@ -80,8 +85,9 @@ const COPY = {
     fix: 'Repair Automatically',
     export: 'Export Report',
     runLint: 'Run Lint Check',
-    fixConfirm: 'Files under the selected translation folder will be modified in place. No automatic backup. Continue?',
-    noBackup: 'The shared repairer does not create backups.',
+    fixConfirm: 'Apply the selected repairs to .rpy files? Each changed file gets a separate .bak backup in the same folder. Review indentation-level and quote repairs afterward.',
+    scanHelp: 'Scanning is read-only and checks formatting, placeholders and translation integrity. It cannot verify game logic. Repairs create .bak backups first.',
+    cancel: 'Cancel Task',
     browse: 'Browse',
   },
 } as const;
@@ -97,6 +103,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
   const [fixIndentLevel, setFixIndentLevel] = useState(ERROR_REPAIR_DEFAULTS.fixIndentLevel);
   const [fixQuotes, setFixQuotes] = useState(ERROR_REPAIR_DEFAULTS.fixQuotes);
   const [fixDialogueQuotes, setFixDialogueQuotes] = useState(ERROR_REPAIR_DEFAULTS.fixDialogueQuotes);
+  const [fixEmptyBlocks, setFixEmptyBlocks] = useState(ERROR_REPAIR_DEFAULTS.fixEmptyBlocks);
   const [confirmFix, setConfirmFix] = useState(false);
   const [exportError, setExportError] = useState('');
   // 按目录身份保留上次成功扫描，失败不清
@@ -117,6 +124,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
     setFixIndentLevel(ERROR_REPAIR_DEFAULTS.fixIndentLevel);
     setFixQuotes(ERROR_REPAIR_DEFAULTS.fixQuotes);
     setFixDialogueQuotes(ERROR_REPAIR_DEFAULTS.fixDialogueQuotes);
+    setFixEmptyBlocks(ERROR_REPAIR_DEFAULTS.fixEmptyBlocks);
     setConfirmFix(false);
     setExportError('');
   }, [suite.identity]);
@@ -131,14 +139,16 @@ export function ErrorRepairPage(props: { state: AppState }) {
     ? Object.values(lastScanByFolder.current).find((item) => {
       const a = String(item.folder || '').replace(/\\/g, '/').toLowerCase();
       const b = folder.trim().replace(/\\/g, '/').toLowerCase();
-      return a === b || a.endsWith(`/tl`) && b.includes(a);
+      // A scan of game/tl covers multiple languages; do not reuse it for a
+      // more specific language folder. Cached reports must match exactly.
+      return a === b;
     })
     : undefined;
   const scanResult = (result?.action === 'scan' && job?.status === 'done' ? result : null)
     || (cachedScan && result?.action !== 'scan' ? cachedScan : null)
     || cachedScan
     || null;
-  const canExport = Boolean(scanResult?.report !== undefined || status?.has_scan_report);
+  const canExport = Boolean(status?.has_scan_report);
 
   async function pickFolder() {
     const context = suite.identityRef.current;
@@ -170,7 +180,6 @@ export function ErrorRepairPage(props: { state: AppState }) {
         project_key: suite.currentKey() || '',
         owner_project_key: ownerKey,
       };
-      if (scanResult?.report) body.report = scanResult.report;
       const payload = await request<{ success: boolean; message?: string; output_path?: string }>(
         '/api/error-repair/export',
         { method: 'POST', body: JSON.stringify(body) },
@@ -187,7 +196,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
     <div className="rb-page-scroll">
       {error ? <Banner tone="error">{error}</Banner> : null}
       {exportError ? <Banner tone="error">{exportError}</Banner> : null}
-      <Banner tone="info">{copy.noBackup}</Banner>
+      <Banner tone="info">{copy.scanHelp}</Banner>
       <Banner tone={active ? 'info' : job?.status === 'failed' ? 'error' : job?.status === 'done' ? 'success' : 'info'}>
         {statusText}
       </Banner>
@@ -207,6 +216,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
         <Checkbox checked={fixIndentLevel} disabled={blocked} onChange={(e) => setFixIndentLevel(e.target.checked)}>{copy.fixIndentLevel}</Checkbox>
         <Checkbox checked={fixQuotes} disabled={blocked} onChange={(e) => setFixQuotes(e.target.checked)}>{copy.fixQuotes}</Checkbox>
         <Checkbox checked={fixDialogueQuotes} disabled={blocked} onChange={(e) => setFixDialogueQuotes(e.target.checked)}>{copy.fixDialogue}</Checkbox>
+        <Checkbox checked={fixEmptyBlocks} disabled={blocked} onChange={(e) => setFixEmptyBlocks(e.target.checked)}>{copy.fixEmpty}</Checkbox>
       </SettingsGroup>
 
       <SettingsGroup title={copy.lintTitle} description={copy.lintDesc}>
@@ -246,6 +256,11 @@ export function ErrorRepairPage(props: { state: AppState }) {
         <Button disabled={blocked || !canExport} onClick={() => void exportReport()}>
           {copy.export}
         </Button>
+        {active ? (
+          <Button onClick={() => void suite.cancel()} disabled={suite.cancelling || job?.cancel_requested}>
+            {copy.cancel}
+          </Button>
+        ) : null}
       </div>
 
       {scanResult?.action === 'scan' || scanResult?.report ? (
@@ -273,6 +288,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
               fix_indent_level: fixIndentLevel,
               fix_quotes: fixQuotes,
               fix_dialogue_quotes: fixDialogueQuotes,
+              fix_empty_blocks: fixEmptyBlocks,
               confirm: true,
               owner_project_key: ownerKey,
             });

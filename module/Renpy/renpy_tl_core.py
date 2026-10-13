@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 from enum import Enum
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 from module.Cache.CacheItem import CacheItem
 
@@ -427,11 +427,13 @@ def parse_tl_statement(
     )
 
 
-def parse_tl_document(lines: list[str]) -> TlDocument:
+def parse_tl_document(lines: list[str], *, checkpoint: Callable[[], None] | None = None) -> TlDocument:
     blocks: list[TlBlock] = []
 
     i = 0
     while i < len(lines):
+        if checkpoint is not None and i % 256 == 0:
+            checkpoint()
         header = parse_tl_header(lines[i])
         if header is None:
             i += 1
@@ -444,6 +446,8 @@ def parse_tl_document(lines: list[str]) -> TlDocument:
 
         stmts: list[TlStatement] = []
         while i < len(lines):
+            if checkpoint is not None and i % 256 == 0:
+                checkpoint()
             if parse_tl_header(lines[i]) is not None:
                 break
             stmts.append(parse_tl_statement(i + 1, lines[i], kind))
@@ -571,18 +575,25 @@ LCS_MAX_EXACT_CELLS = 1_000_000
 LCS_BAND = 64
 
 
+class TlAlignmentLimitError(ValueError):
+    """An explicitly budgeted alignment could not be completed."""
+
+
 def _backtrack_lcs(
     templates: list[TlStatement],
     targets: list[TlStatement],
     rows: Sequence[Sequence[int]],
     lows: Sequence[int],
     highs: Sequence[int],
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[int, int]:
     """用已算好的 DP 行回溯出模板行号→译文行号。"""
     mapping: dict[int, int] = {}
     i = 0
     j = 0
     while i < len(templates) and j < len(targets):
+        if checkpoint is not None and (i + j) % 256 == 0:
+            checkpoint()
         if statements_equal(templates[i], targets[j]):
             mapping[templates[i].line_no] = targets[j].line_no
             i += 1
@@ -599,17 +610,21 @@ def _backtrack_lcs(
     return mapping
 
 
-def match_tpl_to_target(block: TlBlock) -> dict[int, int]:
-    templates = [
-        s
-        for s in block.statements
-        if s.stmt_kind == TlStmtKind.TEMPLATE and s.strict_key != ""
-    ]
-    targets = [
-        s
-        for s in block.statements
-        if s.stmt_kind == TlStmtKind.TARGET and s.strict_key != ""
-    ]
+def match_tpl_to_target(
+    block: TlBlock, *, checkpoint: Callable[[], None] | None = None,
+    max_alignment_cells: int | None = None,
+) -> dict[int, int]:
+    templates: list[TlStatement] = []
+    targets: list[TlStatement] = []
+    for index, statement in enumerate(block.statements):
+        if checkpoint is not None and index % 256 == 0:
+            checkpoint()
+        if not statement.strict_key:
+            continue
+        if statement.stmt_kind == TlStmtKind.TEMPLATE:
+            templates.append(statement)
+        elif statement.stmt_kind == TlStmtKind.TARGET:
+            targets.append(statement)
 
     if not templates or not targets:
         return {}
@@ -617,19 +632,23 @@ def match_tpl_to_target(block: TlBlock) -> dict[int, int]:
     # 生成式 TL 的模板与译文严格交替、数量相等，按下标配对即可。结果与整表
     # DP 一致：回溯遇到相等位置必定取对角线，而对角线长度已达到 LCS 上界
     # min(n, m)，不存在更长的对齐方式。
-    if len(templates) == len(targets) and all(
-        statements_equal(template, target)
-        for template, target in zip(templates, targets)
-    ):
-        return {
-            template.line_no: target.line_no
-            for template, target in zip(templates, targets)
-        }
+    if len(templates) == len(targets):
+        direct: dict[int, int] = {}
+        for index, (template, target) in enumerate(zip(templates, targets)):
+            if checkpoint is not None and index % 256 == 0:
+                checkpoint()
+            if not statements_equal(template, target):
+                break
+            direct[template.line_no] = target.line_no
+        else:
+            return direct
 
     if len(templates) * len(targets) <= LCS_MAX_EXACT_CELLS:
-        return _exact_lcs_mapping(templates, targets)
+        if max_alignment_cells is not None and len(templates) * len(targets) > max_alignment_cells:
+            raise TlAlignmentLimitError("翻译块过大且原文/译文严重错位，无法在扫描内存限额内完成配对；请检查该文件")
+        return _exact_lcs_mapping(templates, targets, checkpoint=checkpoint)
     # 超大块：整表会同时打满 CPU 与内存，改为只在插值对角线附近对齐。
-    return _banded_lcs_mapping(templates, targets)
+    return _banded_lcs_mapping(templates, targets, checkpoint=checkpoint, max_cells=max_alignment_cells)
 
 
 def _banded_get(row: Sequence[int], low: int, high: int, column: int) -> int:
@@ -642,11 +661,16 @@ def _banded_get(row: Sequence[int], low: int, high: int, column: int) -> int:
 def _exact_lcs_mapping(
     templates: list[TlStatement],
     targets: list[TlStatement],
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[int, int]:
     """整表 LCS 对齐，结果与原实现一致。"""
     dp: list[list[int]] = [[0] * (len(targets) + 1) for _ in range(len(templates) + 1)]
     for i in range(len(templates) - 1, -1, -1):
+        if checkpoint is not None:
+            checkpoint()
         for j in range(len(targets) - 1, -1, -1):
+            if checkpoint is not None and j % 256 == 0:
+                checkpoint()
             if statements_equal(templates[i], targets[j]):
                 dp[i][j] = dp[i + 1][j + 1] + 1
             else:
@@ -658,12 +682,15 @@ def _exact_lcs_mapping(
         dp,
         [0] * (len(templates) + 1),
         [len(targets)] * (len(templates) + 1),
+        checkpoint,
     )
 
 
 def _banded_lcs_mapping(
     templates: list[TlStatement],
     targets: list[TlStatement],
+    checkpoint: Callable[[], None] | None = None,
+    max_cells: int | None = None,
 ) -> dict[int, int]:
     """只对齐插值对角线附近的 LCS，避免超大 translate 块卡死扫描。"""
     n = len(templates)
@@ -673,17 +700,27 @@ def _banded_lcs_mapping(
 
     lows: list[int] = []
     highs: list[int] = []
+    cells = 0
     for i in range(n + 1):
+        if checkpoint is not None and i % 256 == 0:
+            checkpoint()
         center = (i * m) // n
         lows.append(max(0, center - band))
         highs.append(min(m, ((i * m + n - 1) // n) + band))
+        cells += highs[-1] - lows[-1] + 1
+        if max_cells is not None and cells > max_cells:
+            raise TlAlignmentLimitError("翻译块过大且原文/译文严重错位，无法在扫描内存限额内完成配对；请检查该文件")
 
     rows: list[Sequence[int]] = [()] * (n + 1)
     for i in range(n, -1, -1):
+        if checkpoint is not None:
+            checkpoint()
         low = lows[i]
         high = highs[i]
         row = [0] * (high - low + 1)
         for offset in range(high - low, -1, -1):
+            if checkpoint is not None and offset % 256 == 0:
+                checkpoint()
             j = low + offset
             if i == n or j == m:
                 continue
@@ -700,14 +737,16 @@ def _banded_lcs_mapping(
             )
         rows[i] = row
 
-    return _backtrack_lcs(templates, targets, rows, lows, highs)
+    return _backtrack_lcs(templates, targets, rows, lows, highs, checkpoint)
 
 
-def pair_old_new_lines(block: TlBlock) -> dict[int, int]:
+def pair_old_new_lines(block: TlBlock, *, checkpoint: Callable[[], None] | None = None) -> dict[int, int]:
     pending_old: int | None = None
     mapping: dict[int, int] = {}
 
-    for stmt in block.statements:
+    for index, stmt in enumerate(block.statements):
+        if checkpoint is not None and index % 256 == 0:
+            checkpoint()
         code = stmt.code.strip()
 
         if stmt.stmt_kind == TlStmtKind.TEMPLATE and code.startswith("old "):

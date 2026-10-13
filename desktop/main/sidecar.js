@@ -182,7 +182,11 @@ export class Sidecar {
     });
 
     try {
-      return await this.waitHealthy();
+      const info = await this.waitHealthy();
+      // Count only consecutive startup crashes. A backend that has recovered
+      // should not permanently lose its restart budget after later failures.
+      this.restarts = 0;
+      return info;
     } catch (error) {
       if (this.stopping || !restarting) await this.stop();
       else await this.terminateOwnedProcess();
@@ -217,6 +221,14 @@ export class Sidecar {
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (!this.stopPromise) this.stopPromise = this.terminateOwnedProcess().finally(() => { this.owned = false; });
     return this.stopPromise;
+  }
+
+  restart() {
+    this.stopping = false;
+    this.stopPromise = null;
+    this.lastFailure = null;
+    this.restarts = 0;
+    return this.start();
   }
 
   async terminateOwnedProcess() {
