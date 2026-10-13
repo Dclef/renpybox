@@ -215,6 +215,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
   closeRequestedRef.current = () => navigate('close');
   useEffect(() => window.renpy?.onCloseRequested?.(() => closeRequestedRef.current()), []);
+  useEffect(() => {
+    if (state.bootLanguage) window.renpy?.setLocale?.(state.bootLanguage);
+  }, [state.bootLanguage]);
 
   // 系统关闭：未保存或 RPY worker 收尾中都不能直接放行。
   useEffect(() => {
@@ -540,9 +543,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
       {exitConfirm ? (
         <Dialog
-          title="退出 RenpyBox？"
-          confirmText="退出"
-          cancelText="取消"
+          title={t('exit_title')}
+          confirmText={t('exit_confirm')}
+          cancelText={t('exit_cancel')}
           onCancel={() => { if (!closeInFlight.current) setExitConfirm(false); }}
           onConfirm={() => {
             if (closeInFlight.current) return;
@@ -558,7 +561,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
               }
             })();
           }}
-        >确定要退出程序吗？退出前请确认工作已保存。</Dialog>
+        >{t('exit_description')}</Dialog>
       ) : null}
       {pendingPage ? (
         <Dialog

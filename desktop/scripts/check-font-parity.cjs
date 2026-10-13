@@ -2,10 +2,10 @@
  * 字体注入页受控 UI 自检（不改动 check-ui / check-translation-parity）。
  *
  * 运行方式：
- * 1. 在 desktop 目录启动 Vite：`npm run dev:renderer`
+ * 1. 在 desktop 目录构建页面：`npm run build:renderer`
  * 2. 清除 ELECTRON_RUN_AS_NODE，以 Electron 主进程执行：
  *    `cd desktop && npx electron scripts/check-font-parity.cjs`
- * 3. 可选：RENPYBOX_UI_URL、RENPYBOX_UI_CAPTURE_DIR
+ * 3. 可选：RENPYBOX_UI_URL 指向开发服务器，RENPYBOX_UI_CAPTURE_DIR 保存证据
  *
  * mock HTTP/WS，不触真实游戏或付费 API。
  */
@@ -14,11 +14,12 @@ if (process.type !== 'browser') throw new Error('请使用 Electron 主进程运
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+app.setPath('userData', fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'renpybox-font-profile-')));
 
 const out = process.env.RENPYBOX_UI_CAPTURE_DIR || require('node:os').tmpdir();
 const logPath = path.join(out, 'font-parity.log');
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (value) => fs.appendFileSync(logPath, value + '\n');
+const log = (value) => { fs.appendFileSync(logPath, value + '\n'); console.log(value); };
 
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(logPath, '');
@@ -151,6 +152,11 @@ function fixture() {
       return response({ values, masked: [] });
     }
     if (p === '/api/translation/state') {
+      if (f.translationFailuresRemaining > 0) {
+        f.translationFailuresRemaining -= 1;
+        f.translationFailures = (f.translationFailures || 0) + 1;
+        return new Response(JSON.stringify({ detail: '模拟短暂状态读取失败' }), { status: 503 });
+      }
       return response({
         engine_status: f.engineStatus,
         stop_barrier: false,
@@ -217,6 +223,24 @@ function fixture() {
       f.fontStatus.fonts_scanned = true;
       f.fontStatus.scan_stale = false;
       f.fontJob = job;
+      // 可控的真实生命周期：提交时持有 TESTING，工作线程退出后才释放。
+      if (f.holdEngineScan) {
+        f.holdEngineScan = false;
+        job.status = 'running';
+        job.done = 0;
+        job.progress = 0;
+        job.result.worker_active = true;
+        f.engineStatus = 'TESTING';
+        f.finishEngineScan = (status = 'done', emit = true) => {
+          job.status = status;
+          job.done = status === 'done' ? 1 : 0;
+          job.progress = job.done;
+          job.result.worker_active = false;
+          f.engineStatus = 'IDLE';
+          if (emit) f.sockets.forEach((socket) => socket.onmessage?.({ data: JSON.stringify({ type: 'job', job }) }));
+        };
+        return response({ job });
+      }
       // 晚到结果：先返回 running，稍后变为 done（验证手动目标上下文）
       if (f.deferScanDone) {
         job.status = 'running';
@@ -340,7 +364,8 @@ app.whenReady().then(async () => {
   await win.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
     source: '(' + fixture.toString() + ')()',
   });
-  await win.loadURL(process.env.RENPYBOX_UI_URL || 'http://127.0.0.1:5173');
+  if (process.env.RENPYBOX_UI_URL) await win.loadURL(process.env.RENPYBOX_UI_URL);
+  else await win.loadFile(path.join(__dirname, '../dist/index.html'));
 
   const js = async (code) => {
     const result = await win.webContents.debugger.sendCommand('Runtime.evaluate', {
@@ -360,7 +385,7 @@ app.whenReady().then(async () => {
   }
 
   const assert = async (expression, name) => {
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
       if (await js(`Boolean(${expression})`)) {
         log('PASS ' + name);
         return;
@@ -436,9 +461,14 @@ app.whenReady().then(async () => {
 
   // —— 打开页面：自动扫描 + 检测数量 ——
   await assert("document.querySelector('.workspace-project').title==='C:/ui-check'", 'fixture 已绑定项目');
+  await js('__uiFixture.holdEngineScan = true');
   await openFontPage();
   await assert("document.querySelector('[data-rb-font-game-dir]')", '游戏目录可编辑输入');
   await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '自动扫描已触发');
+  await assert("__uiFixture.engineStatus==='TESTING' && [...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && b.disabled)", '扫描占用引擎时禁止写入');
+  await js('__uiFixture.translationFailuresRemaining = 1; __uiFixture.finishEngineScan("done", false)');
+  await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '只读扫描完成后恢复可操作状态');
+  await assert('__uiFixture.translationFailures === 1', '终态状态读取短暂失败后自动重试');
 
   // 高级折叠 + 确认检测计数 + 打开字体下拉（同一次确保面板仍挂载）
   await js(`(()=>{
@@ -636,6 +666,19 @@ app.whenReady().then(async () => {
   await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '恢复路径后可扫描');
   await assert("!document.querySelector('[data-rb-font-game-empty]')", '恢复后空目录提示消失');
 
+  // 扫描中离开工具页：由应用级同步收尾，不能依赖已卸载的页面 hook。
+  for (const outcome of ['done', 'failed', 'cancelled']) {
+    await page('翻译任务');
+    await js('__uiFixture.holdEngineScan = true');
+    await openFontPage();
+    await assert("__uiFixture.engineStatus==='TESTING' && __uiFixture.fontJob?.status==='running'", `${outcome}：扫描正在运行`);
+    await page('翻译任务');
+    await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='开始翻译' && b.disabled)", `${outcome}：运行期间全局禁用`);
+    await js(`__uiFixture.translationFailuresRemaining = 1; __uiFixture.finishEngineScan(${JSON.stringify(outcome)}, ${outcome !== 'cancelled'})`);
+    await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='开始翻译' && !b.disabled)", `${outcome}：离开页面后恢复全局操作`);
+  }
+  await openFontPage();
+  await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '返回字体页仍可注入');
   await capture('font-parity-desktop');
 
   // 窄屏

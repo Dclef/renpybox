@@ -21,6 +21,7 @@ import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
 import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
 import { createDesktopUpdater } from './updater.js';
+import { createWindowCloseGuard } from './window-close-guard.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
@@ -65,12 +66,12 @@ const sidecar = new Sidecar({
 });
 
 let mainWindow = null;
+let mainWindowCloseGuard = null;
 let logWindow = null;
 let backendHealth = null;
 let quitting = false;
 let cleanupDone = false;
-// The renderer owns the Ant confirmation; only its explicit confirmation closes the window.
-let closeConfirmed = false;
+let rendererLocale = null;
 const updater = createDesktopUpdater({
   packaged: !isDev, version: app.getVersion(), log,
   tempDir: path.join(dataPath, 'update'),
@@ -137,40 +138,44 @@ async function createMainWindow() {
     icon: appIcon,
     webPreferences: webPreferences('preload-main.cjs'),
   });
-  applyWindowBranding(mainWindow);
+  const win = mainWindow;
+  applyWindowBranding(win);
+  mainWindowCloseGuard = createWindowCloseGuard({
+    window: win,
+    showMessageBox: (owner, options) => dialog.showMessageBox(owner, options),
+    requestQuit: () => app.quit(),
+    isQuitting: () => quitting || cleanupDone,
+    getLocale: () => rendererLocale || app.getLocale(),
+    log: error => log.error('窗口关闭保护', error),
+  });
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = null;
+      mainWindowCloseGuard = null;
+    }
+    // The guard authorizes user closes. Quit even if a log/update window remains,
+    // so before-quit always stops the sidecar after the main window is closed.
+    if (!quitting) app.quit();
+  });
 
   // 最大化状态回推给渲染端，标题栏右侧的「最大化 / 还原」图标才能对上。
   const forwardMaximizeState = () => {
-    mainWindow.webContents.send('window:maximized', mainWindow.isMaximized());
+    win.webContents.send('window:maximized', win.isMaximized());
   };
-  mainWindow.on('maximize', forwardMaximizeState);
-  mainWindow.on('unmaximize', forwardMaximizeState);
+  win.on('maximize', forwardMaximizeState);
+  win.on('unmaximize', forwardMaximizeState);
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.once('ready-to-show', () => win.show());
+  win.webContents.setWindowOpenHandler(({ url }) => {
     void openExternal(url).catch(error => log.error(error));
     return { action: 'deny' };
   });
 
   if (isDev) {
-    await mainWindow.loadURL(DEV_SERVER_URL);
+    await win.loadURL(DEV_SERVER_URL);
   } else {
-    await mainWindow.loadFile(RENDERER_DIST);
+    await win.loadFile(RENDERER_DIST);
   }
-  // 对齐 AppFluentWindow.closeEvent：标题栏关闭、Alt+F4、任务栏关闭都先确认。
-  // 程序化退出（更新安装、before-quit 清理）不再弹框，避免卡住退出流程。
-  mainWindow.on('close', (event) => {
-    if (closeConfirmed || quitting || cleanupDone) return;
-    event.preventDefault();
-    mainWindow.webContents.send('window:close-requested');
-  });
-  // 渲染端 beforeunload 拦下（有未保存修改）时撤销确认，交给页面内 Dialog 继续处理。
-  mainWindow.webContents.on('will-prevent-unload', () => { closeConfirmed = false; });
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-    // 已确认退出时直接走 app.quit，让 before-quit 停止 sidecar，不因更新窗口仍开着而残留进程。
-    if (closeConfirmed) app.quit();
-  });
 }
 
 /** 轻量壳窗口：vanilla 页面 + 独立 preload，按 DeepSeek 的做法不背 UI 框架 */
@@ -253,12 +258,17 @@ ipcMain.on('shell:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
+// Cache the UI locale while it is healthy, so native recovery stays in that language.
+ipcMain.on('window:set-locale', (event, locale) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+  if (locale === 'ZH' || locale === 'EN') rendererLocale = locale;
+});
+
 // 渲染端已通过退出或放弃修改 Dialog 确认关闭，避免二次弹框。
 ipcMain.on('window:close-confirmed', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win !== mainWindow) return;
-  closeConfirmed = true;
-  win.close();
+  mainWindowCloseGuard?.confirm();
 });
 
 // 无边框窗口的控制按钮由渲染端画在 38px 标题栏右侧，这里只做转发。
@@ -335,7 +345,7 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow().catch(error => { log.error(error); dialog.showErrorBox('RenpyBox', error.message); });
+    if (!quitting && BrowserWindow.getAllWindows().length === 0) createMainWindow().catch(error => { log.error(error); dialog.showErrorBox('RenpyBox', error.message); });
   });
 });
 
@@ -348,5 +358,10 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (quitting) return;
   quitting = true;
-  void sidecar.stop().catch(error => log.error(error)).finally(() => { cleanupDone = true; app.quit(); });
+  mainWindowCloseGuard?.beginQuit();
+  void sidecar.stop().catch(error => log.error(error)).finally(() => {
+    cleanupDone = true;
+    mainWindowCloseGuard?.finishQuit();
+    app.quit();
+  });
 });

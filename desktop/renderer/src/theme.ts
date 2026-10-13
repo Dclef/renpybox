@@ -14,6 +14,7 @@ export interface ThemePalette {
   sidebarHover: string;
   textPrimary: string;
   textSecondary: string;
+  textTertiary: string;
   textPlaceholder: string;
   textDisabled: string;
   border: string;
@@ -47,6 +48,7 @@ export const LIGHT: ThemePalette = {
   sidebarHover: '#E4E4E7',
   textPrimary: '#18181B',
   textSecondary: '#52525B',
+  textTertiary: '#71717A',
   textPlaceholder: '#71717A',
   textDisabled: '#A1A1AA',
   border: '#E4E4E7',
@@ -73,13 +75,14 @@ export const DARK: ThemePalette = {
   sidebarHover: '#282B30',
   textPrimary: '#FFFFFF',
   textSecondary: '#D5D9E0',
+  textTertiary: '#A7ADB8',
   textPlaceholder: '#A7ADB8',
   textDisabled: '#7D8490',
-  border: '#465B76',
-  borderStrong: '#607FA8',
-  divider: '#35465C',
-  scrollbar: '#53647A',
-  scrollbarHover: '#7187A6',
+  border: '#44474E',
+  borderStrong: '#666B75',
+  divider: '#383B42',
+  scrollbar: '#5C626D',
+  scrollbarHover: '#7D8490',
   success: '#4ADE80',
   warning: '#FBBF24',
   error: '#F87171',
@@ -97,6 +100,7 @@ const NEUTRAL_VARS: Record<keyof ThemePalette, string> = {
   sidebarHover: '--rb-sidebar-hover',
   textPrimary: '--rb-text-primary',
   textSecondary: '--rb-text-secondary',
+  textTertiary: '--rb-text-tertiary',
   textPlaceholder: '--rb-text-placeholder',
   textDisabled: '--rb-text-disabled',
   border: '--rb-border',

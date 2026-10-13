@@ -655,15 +655,185 @@ def test_scan_folder_stops_at_file_budget(tmp_path) -> None:
     assert len(result.errors) == 2
 
 
-def test_scan_folder_stops_when_cancelled(tmp_path) -> None:
+def test_scan_folder_stops_when_cancelled(tmp_path, monkeypatch) -> None:
     repairer = ErrorRepairer()
-    (tmp_path / "script.rpy").write_text("\tnew \"文本\"\n", encoding="utf-8")
+    script = tmp_path / "script.rpy"
+    original = b'\tnew "text"\n'
+    script.write_bytes(original)
 
+    def unexpected_enumeration(*args, **kwargs):
+        pytest.fail("Cancellation before enumeration must not walk the directory")
+
+    monkeypatch.setattr(repairer, "get_rpy_files", unexpected_enumeration)
     result = repairer.scan_folder(str(tmp_path), should_cancel=lambda: True)
 
     assert result.scanned_files == 0
+    assert result.total_files == 0
+    assert result.total_files_known is False
     assert result.budget_exhausted is True
     assert result.errors == {}
+    assert script.read_bytes() == original
+
+
+def test_scan_folder_empty_directory_has_known_total(tmp_path) -> None:
+    result = ErrorRepairer().scan_folder(str(tmp_path))
+
+    assert result.total_files == result.scanned_files == 0
+    assert result.total_files_known is True
+    assert result.budget_exhausted is False
+    assert result.errors == {}
+
+
+@pytest.mark.parametrize(("limits", "total_known"), [
+    ({"deadline": 0}, False),
+    ({"max_files": 0}, True),
+    ({"max_bytes": 0}, True),
+])
+def test_scan_folder_budget_stop_is_not_an_empty_scan(tmp_path, limits, total_known) -> None:
+    script = tmp_path / "script.rpy"
+    original = b'\tnew "text"\n'
+    script.write_bytes(original)
+
+    result = ErrorRepairer().scan_folder(str(tmp_path), **limits)
+
+    assert result.budget_exhausted is True
+    assert result.total_files_known is total_known
+    assert result.total_files == (1 if total_known else 0)
+    assert result.scanned_files == result.scanned_bytes == 0
+    assert result.errors == {}
+    assert script.read_bytes() == original
+
+
+def test_scan_folder_cancel_during_enumeration_has_unknown_total(tmp_path, monkeypatch) -> None:
+    lexical = import_module("module.Tool.LexicalFs")
+    script = tmp_path / "script.rpy"
+    original = b'\tnew "text"\n'
+    script.write_bytes(original)
+    cancelled = False
+    original_link_check = lexical.is_link_or_reparse
+
+    def link_check(path):
+        nonlocal cancelled
+        if path == script:
+            cancelled = True
+        return original_link_check(path)
+
+    monkeypatch.setattr(lexical, "is_link_or_reparse", link_check)
+    result = ErrorRepairer().scan_folder(str(tmp_path), should_cancel=lambda: cancelled)
+
+    assert cancelled is True
+    assert result.total_files == result.scanned_files == result.scanned_bytes == 0
+    assert result.total_files_known is False
+    assert result.budget_exhausted is True
+    assert result.errors == {}
+    assert script.read_bytes() == original
+
+
+def test_scan_folder_cancel_keeps_only_completed_files_and_never_writes(tmp_path, monkeypatch) -> None:
+    originals = {}
+    for index in range(3):
+        script = tmp_path / f"script_{index}.rpy"
+        originals[script] = f'\tnew "text {index}"\n'.encode()
+        script.write_bytes(originals[script])
+    original_parse = error_repairer_module.parse_tl_document
+    cancelled = False
+    parsed = 0
+
+    def parsing(lines, *, checkpoint):
+        nonlocal cancelled, parsed
+        parsed += 1
+        if parsed == 2:
+            cancelled = True
+        return original_parse(lines, checkpoint=checkpoint)
+
+    monkeypatch.setattr(error_repairer_module, "parse_tl_document", parsing)
+    result = ErrorRepairer().scan_folder(str(tmp_path), should_cancel=lambda: cancelled)
+
+    assert parsed == 2
+    assert result.total_files == 3
+    assert result.total_files_known is True
+    assert result.scanned_files == 1
+    assert result.budget_exhausted is True
+    assert list(result.errors) == [str(tmp_path / "script_0.rpy")]
+    assert any(error["type"] == "indent" for error in result.errors[str(tmp_path / "script_0.rpy")])
+    assert set(tmp_path.iterdir()) == set(originals)
+    assert all(script.read_bytes() == original for script, original in originals.items())
+
+
+@pytest.mark.parametrize("stage", ["enumerate", "stat", "read"])
+@pytest.mark.parametrize("error_type", [PermissionError, FileNotFoundError])
+def test_scan_folder_io_errors_fail_instead_of_reporting_clean(tmp_path, monkeypatch, stage, error_type) -> None:
+    import builtins
+
+    repairer = ErrorRepairer()
+    script = tmp_path / "script.rpy"
+    original = b'\tnew "text"\n'
+    script.write_bytes(original)
+    failure = error_type("simulated scan I/O failure")
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    if stage == "enumerate":
+        monkeypatch.setattr(repairer, "get_rpy_files", fail)
+    else:
+        monkeypatch.setattr(repairer, "get_rpy_files", lambda *args, **kwargs: [script])
+        if stage == "stat":
+            original_stat = type(script).stat
+
+            def stat(path, *args, **kwargs):
+                if path == script:
+                    raise failure
+                return original_stat(path, *args, **kwargs)
+
+            monkeypatch.setattr(type(script), "stat", stat)
+        else:
+            original_open = builtins.open
+
+            def opening(file, *args, **kwargs):
+                if file == script:
+                    raise failure
+                return original_open(file, *args, **kwargs)
+
+            monkeypatch.setattr(builtins, "open", opening)
+
+    with pytest.raises(RuntimeError, match="扫描未完成") as caught:
+        repairer.scan_folder(str(tmp_path))
+
+    assert caught.value.__cause__ is failure
+    assert script.read_bytes() == original
+
+
+@pytest.mark.parametrize("method", ["_iter_translation_pairs", "_scan_extra_empty_strings", "_scan_translation_issues"])
+def test_translation_helpers_can_cancel_fallback_parsing(monkeypatch, method) -> None:
+    repairer = ErrorRepairer()
+    original_parse = error_repairer_module.parse_tl_document
+    parsing = False
+    cancelled_during_parse = False
+
+    class Cancelled(BaseException):
+        pass
+
+    def checkpoint():
+        nonlocal cancelled_during_parse
+        cancelled_during_parse = parsing
+        raise Cancelled()
+
+    def parse(lines, **kwargs):
+        nonlocal parsing
+        parsing = True
+        try:
+            return original_parse(lines, **kwargs)
+        finally:
+            parsing = False
+
+    monkeypatch.setattr(error_repairer_module, "parse_tl_document", parse)
+    lines = ['translate chinese strings:', '    old "Hello"', '    new "你好"']
+    args = (lines, "script.rpy") if method == "_scan_translation_issues" else (lines,)
+    with pytest.raises(Cancelled):
+        list(getattr(repairer, method)(*args, checkpoint=checkpoint))
+
+    assert cancelled_during_parse is True
 
 
 def test_large_single_file_cancels_during_parse_without_writing(tmp_path, monkeypatch):

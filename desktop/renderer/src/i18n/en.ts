@@ -1,6 +1,20 @@
 import type { zh } from './zh';
 
 export const en: Record<keyof typeof zh, string> = {
+  exit_title: 'Quit RenpyBox?',
+  exit_confirm: 'Quit',
+  exit_cancel: 'Cancel',
+  exit_description: 'Are you sure you want to quit? Save your work before closing.',
+  changelog_plain_fallback: 'Formatting could not be completed. Showing plain text.',
+  changelog_loading: 'Loading changelog…',
+  changelog_truncated: 'Showing the first 256,000 characters. View the full changelog on the releases page.',
+  proofreading_more_filters: 'More filters',
+  proofreading_filters_active: '{count} active',
+  font_scan_overview: 'Font scan overview',
+  font_scan_ready: 'Scan complete. Fonts are ready to inject or replace.',
+  font_scan_references: 'Script font references',
+  font_scan_files: 'Font files',
+  font_scan_languages: 'Translation languages',
   app_translation_page: 'Translation Task',
   app_agent_page: 'Agent Assistant',
   app_project_page: 'Project Settings',

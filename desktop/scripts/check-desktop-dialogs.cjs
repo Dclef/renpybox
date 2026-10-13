@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'renpybox-dialogs-profile-')));
 
 function fixture(markdown, appVersion) {
   const state = window.__dialogFixture = { markdown, confirmed: 0, closeListener: null, patches: [], failSave: false, proofRows: [] };

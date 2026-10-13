@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('renpy', {
   close: () => ipcRenderer.send('shell:close'),
   /** 未保存修改已在页面内确认放弃时关闭主窗口，不再弹退出确认 */
   closeConfirmed: () => ipcRenderer.send('window:close-confirmed'),
+  setLocale: (locale) => ipcRenderer.send('window:set-locale', locale),
   onCloseRequested: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('window:close-requested', handler);
