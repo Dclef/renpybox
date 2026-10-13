@@ -30,6 +30,10 @@ for package in ("api", "base", "module", "utils"):
                 parts.pop()
             hiddenimports.append(".".join(parts))
 
+# Rich selects versioned Unicode tables via importlib while rendering console logs.
+# A static import-only self-test cannot detect these missing frozen modules.
+hiddenimports += collect_submodules("rich._unicode_data")
+
 binaries = []
 for package in ("opencc", "tiktoken", "pygtrans", "translators", "json_repair"):
     pkg_data, pkg_binaries, pkg_imports = collect_all(package)

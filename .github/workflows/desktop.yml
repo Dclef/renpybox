@@ -60,13 +60,31 @@ jobs:
       - name: Check renderer types
         run: npm run typecheck --prefix desktop
 
-      - name: Check desktop process and updater contracts
-        run: node --test desktop/tests/logger-contract.test.mjs desktop/tests/log-reader.test.mjs desktop/tests/log-export.test.mjs desktop/tests/sidecar-contract.test.mjs desktop/tests/updater-contract.test.mjs desktop/tests/tools-registry.test.mjs desktop/tests/proofreading-view.test.mjs
+      - name: Check desktop contracts
+        run: |
+          $testFiles = Get-ChildItem desktop/tests -Filter '*.test.mjs' -File | ForEach-Object FullName
+          node --test @testFiles
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows installer
         run: npm run pack:win --prefix desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Check desktop windows, font lifecycle and toolbox
+        working-directory: desktop
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = $null
+          & .\node_modules\.bin\electron.cmd scripts/check-window-close.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\node_modules\.bin\electron.cmd scripts/check-window-recovery.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\node_modules\.bin\electron.cmd scripts/check-font-parity.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\node_modules\.bin\electron.cmd scripts/check-desktop-dialogs.cjs --workflows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\node_modules\.bin\electron.cmd scripts/check-toolbox-ui.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -108,6 +126,7 @@ jobs:
           if (!$section.Success) { throw "Missing changelog for v$version" }
           $notesPath = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
           $section.Groups[1].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
-          $releaseFlags = if ($version -match '-newui[.]') { @('--prerelease', '--latest=false') } else { @('--latest') }
+          # Qt 客户端读取 /releases/latest 并期待 RenpyBox_v*.zip；桌面版自行扫描 release 列表。
+          $releaseFlags = if ($version -match '-newui[.]') { @('--prerelease', '--latest=false') } else { @('--latest=false') }
           gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA @releaseFlags --title "RenpyBox $version" --notes-file $notesPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

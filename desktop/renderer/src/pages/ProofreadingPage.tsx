@@ -879,7 +879,10 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           </span>
           )}
           <details className="rb-proof-filter-details">
-          <summary>更多筛选{filterActive ? ' · 已启用' : ''}</summary>
+          <summary>
+             {t('proofreading_more_filters')}
+             {filterActive ? <span className="rb-proof-filter-count">{t('proofreading_filters_active').replace('{count}', String(filterStatus.length + filterFiles.length + filterWarnings.length + filterTerms.length))}</span> : null}
+           </summary>
           <div className="proofreading-filter-row">
           <Select
             mode="multiple"
@@ -959,7 +962,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             locale={{
               emptyText: (
                 <div className="rb-proof-empty" style={{ minHeight: Math.max(80, scrollY - 32) }}>
-                  {loading ? t('proofreading_loading') : data ? t('proofreading_empty_filtered') : t('proofreading_empty_before')}
+                  {loading ? t('proofreading_loading') : data && data.total > 0 ? t('proofreading_empty_filtered') : t('proofreading_empty_before')}
                 </div>
               ),
             }}

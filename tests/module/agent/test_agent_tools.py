@@ -16,6 +16,9 @@ from module.Agent.tools.translation_tools import (
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+import pytest
+
+from module.Agent.tools import project_tools
 from base.BaseLanguage import BaseLanguage
 
 
@@ -461,14 +464,20 @@ def test_scan_script_errors_only_checks_current_translation_folder(tmp_path) -> 
     assert str(generated) in result.data["errors"]
 
 
-def test_scan_script_errors_stops_when_cancelled(tmp_path) -> None:
+def test_scan_script_errors_stops_when_cancelled(tmp_path, monkeypatch) -> None:
     root = tmp_path / "Game"
     game = root / "game"
     translation_dir = game / "tl" / "chinese"
     translation_dir.mkdir(parents=True)
-    (translation_dir / "script.rpy").write_text("\tnew \"文本\"\n", encoding="utf-8")
+    script = translation_dir / "script.rpy"
+    original = '\tnew "文本"\n'.encode("utf-8")
+    script.write_bytes(original)
     config = _config_for(root)
 
+    def unexpected_enumeration(*args, **kwargs):
+        pytest.fail("Agent cancellation must not enumerate the translation directory")
+
+    monkeypatch.setattr(project_tools.ErrorRepairer, "get_rpy_files", unexpected_enumeration)
     result = scan_script_errors(
         config_loader=lambda: config,
         should_cancel=lambda: True,
@@ -477,9 +486,85 @@ def test_scan_script_errors_stops_when_cancelled(tmp_path) -> None:
     assert result.success is True
     assert result.data["budget_exhausted"] is True
     assert result.data["scanned_files"] == 0
-    assert result.data["total_files"] == 1
+    assert result.data["total_files"] == 0
+    assert result.data["total_files_known"] is False
+    assert result.data["scan_complete"] is False
+    assert result.data["errors"] == {}
+    assert result.data["error_count"] == result.data["file_count"] == 0
+    assert result.message == Localizer.get().agent_scan_incomplete
+    assert result.message != Localizer.get().agent_scan_no_errors
+    assert script.read_bytes() == original
 
 
+@pytest.mark.parametrize("language", [BaseLanguage.Enum.ZH, BaseLanguage.Enum.EN])
+@pytest.mark.parametrize("with_errors", [False, True])
+def test_scan_script_errors_reports_partial_results_on_budget(tmp_path, monkeypatch, language, with_errors) -> None:
+    root = tmp_path / "Game"
+    translation_dir = root / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    content = '\tnew "text"\n' if with_errors else 'translate chinese strings:\n    old "Hello"\n    new "Hi"\n'
+    for name in ("first.rpy", "second.rpy"):
+        (translation_dir / name).write_text(content, encoding="utf-8")
+    config = _config_for(root)
+    monkeypatch.setattr(project_tools, "SCAN_MAX_FILES", 1)
+    original_language = Localizer.get_app_language()
+    Localizer.set_app_language(language)
+    try:
+        result = scan_script_errors(config=config)
+
+        assert result.success is True
+        assert result.data["budget_exhausted"] is True
+        assert result.data["scanned_files"] == 1
+        assert result.data["total_files"] == 2
+        assert result.data["total_files_known"] is True
+        assert result.data["scan_complete"] is False
+        assert bool(result.data["error_count"]) is with_errors
+        assert result.message == Localizer.get().agent_scan_incomplete
+        assert result.message != Localizer.get().agent_scan_no_errors
+        # The warning remains first even when the model's result payload is truncated.
+        assert result.model_message().startswith(result.message)
+    finally:
+        Localizer.set_app_language(original_language)
+
+
+def test_scan_script_errors_empty_folder_is_a_complete_clean_scan(tmp_path) -> None:
+    root = tmp_path / "Game"
+    (root / "game" / "tl" / "chinese").mkdir(parents=True)
+
+    result = scan_script_errors(config=_config_for(root))
+
+    assert result.success is True
+    assert result.data["budget_exhausted"] is False
+    assert result.data["scanned_files"] == result.data["total_files"] == 0
+    assert result.data["error_count"] == 0
+    assert result.data["total_files_known"] is True
+    assert result.data["scan_complete"] is True
+    assert result.message == Localizer.get().agent_scan_no_errors
+
+
+def test_scan_script_errors_dispatcher_reports_read_failure(tmp_path, monkeypatch) -> None:
+    import builtins
+
+    root = tmp_path / "Game"
+    translation_dir = root / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    script = translation_dir / "script.rpy"
+    original = b'\tnew "text"\n'
+    script.write_bytes(original)
+    original_open = builtins.open
+
+    def opening(file, *args, **kwargs):
+        if file == script:
+            raise PermissionError("simulated permission failure")
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", opening)
+    result = ToolDispatcher(config_loader=lambda: _config_for(root)).execute("scan_script_errors")
+
+    assert result.success is False
+    assert result.code == "TOOL_FAILED"
+    assert result.message != Localizer.get().agent_scan_no_errors
+    assert script.read_bytes() == original
 
 
 class _FakeEngine:

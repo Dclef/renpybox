@@ -7,7 +7,8 @@ import { parseDesktopVersion } from '../main/updater.js';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = JSON.parse(readFileSync(path.join(desktop, 'package.json'), 'utf8'));
-const packaged = path.join(desktop, 'release', 'win-unpacked', 'resources');
+const release = path.resolve(desktop, process.argv[2] || 'release');
+const packaged = path.join(release, 'win-unpacked', 'resources');
 const hash = filename => createHash('sha256').update(readFileSync(filename)).digest('hex');
 assert(parseDesktopVersion(config.version), 'Expected a desktop release version');
 // 更新逻辑改为 desktop/main/updater.js 直接查 GitHub Releases API：不再需要 electron-builder
@@ -40,7 +41,7 @@ while (pending.length) {
 // 老的 electron-updater 产物不应再留在发布目录里误导用户
 assert.equal(config.build.nsis.differentialPackage, false,
   'NSIS differentialPackage must stay false: blockmap assets are no longer published');
-const releaseFiles = readdirSync(path.join(desktop, 'release'), { withFileTypes: true })
+const releaseFiles = readdirSync(release, { withFileTypes: true })
   .filter(entry => entry.isFile()).map(entry => entry.name);
 for (const unwanted of releaseFiles.filter(name => name.endsWith('.blockmap') || name === 'newui.yml')) {
   assert.fail(`Remove stale update metadata from release/: ${unwanted}`);

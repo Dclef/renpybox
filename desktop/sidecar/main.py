@@ -73,6 +73,22 @@ def self_test() -> None:
     import module.Agent.tools as tools
     for name in tools.__all__:
         getattr(tools, name)
+    # Render through the real log manager: Rich dynamically imports Unicode width
+    # tables only on non-ASCII output, which plain import checks never exercise.
+    import io
+    from rich.console import Console
+    from base.LogManager import LogManager
+
+    log_manager = LogManager.get()
+    capture = io.StringIO()
+    previous_console = log_manager.console_handler.console
+    try:
+        log_manager.console_handler.console = Console(file=capture, width=100, color_system=None)
+        log_manager.info("字体扫描 ✓ 中文日志", file=False)
+    finally:
+        log_manager.console_handler.console = previous_console
+    if "字体扫描" not in capture.getvalue():
+        raise RuntimeError("Bundled Rich Unicode log rendering failed")
     assert ToolDispatcher and validate_installed_files and validate_manifest_paths
     print(json.dumps({"ok": True, "frozen": bool(getattr(sys, "frozen", False)),
                       "python": sys.version.split()[0], "resource_root": str(paths.resource())}))

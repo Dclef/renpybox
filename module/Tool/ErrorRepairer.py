@@ -31,13 +31,22 @@ from utils.call_game_python import get_python_path_from_game_path, get_py_path
 
 @dataclasses.dataclass
 class FolderScanResult:
-    """文件夹扫描结果：错误表加本次预算执行情况。"""
+    """文件夹扫描结果：错误表加本次预算执行情况。
+
+    ``total_files`` 仅在 ``total_files_known`` 为真时表示完整枚举的文件数。
+    枚举完成前取消或超时会返回 0 和 False，不继续遍历以补齐总数。
+    ``scanned_files`` 和 ``errors`` 只包含已完成检查的文件；
+    ``budget_exhausted`` 表示取消或预算中断，不能将其视为目录无错误。
+    """
 
     errors: Dict[str, List[Dict]]
     scanned_files: int
     total_files: int
     scanned_bytes: int
     budget_exhausted: bool
+    # Enumeration can be cancelled before it returns a list. In that case the
+    # legacy integer total remains 0, but it must not mean an empty directory.
+    total_files_known: bool = True
 
 
 class _ScanStopped(BaseException):
@@ -428,7 +437,7 @@ class ErrorRepairer:
         """返回 tl 文档中可可靠配对的模板/译文语句。"""
         if document is None:
             content_lines = [self._split_line_ending(line)[0] for line in lines]
-            document = parse_tl_document(content_lines)
+            document = parse_tl_document(content_lines, checkpoint=checkpoint)
 
         for block in document.blocks:
             if checkpoint is not None:
@@ -501,7 +510,7 @@ class ErrorRepairer:
         """报告简单翻译语句中与其他字面量相邻的多余空字符串。"""
         if document is None:
             content_lines = [self._split_line_ending(line)[0] for line in lines]
-            document = parse_tl_document(content_lines)
+            document = parse_tl_document(content_lines, checkpoint=checkpoint)
 
         errors: list[Dict] = []
 
@@ -660,7 +669,7 @@ class ErrorRepairer:
         """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
         if document is None:
             content_lines = [self._split_line_ending(line)[0] for line in lines]
-            document = parse_tl_document(content_lines)
+            document = parse_tl_document(content_lines, checkpoint=checkpoint)
 
         errors: list[Dict] = []
         if seen_old is None:
@@ -1048,6 +1057,7 @@ class ErrorRepairer:
         """同 :meth:`check_folder`，另外返回本次扫描覆盖了多少文件与字节。"""
         all_errors: Dict[str, List[Dict]] = {}
         rpy_files: list[Path] = []
+        total_files_known = False
         scanned_bytes = 0
         scanned_files = 0
         budget_exhausted = False
@@ -1068,6 +1078,7 @@ class ErrorRepairer:
                 last_push = now
                 on_progress({
                     **state, "scanned_files": scanned_files, "total_files": len(rpy_files),
+                    "total_files_known": total_files_known,
                     "elapsed": now - started,
                 })
 
@@ -1078,6 +1089,7 @@ class ErrorRepairer:
         try:
             checkpoint()
             rpy_files = self.get_rpy_files(folder_path, checkpoint=checkpoint)
+            total_files_known = True
             for file_path in rpy_files:
                 checkpoint()
                 if max_files is not None and scanned_files >= max_files:
@@ -1131,8 +1143,9 @@ class ErrorRepairer:
             raise RuntimeError(f"扫描未完成 {state['file'] or folder_path}: {exc}") from exc
 
         if budget_exhausted:
+            total_label = str(len(rpy_files)) if total_files_known else "未知（文件枚举未完成）"
             self.logger.warning(
-                f"检查中断: 已取消或达到预算上限，只扫描了 {scanned_files}/{len(rpy_files)} 个文件"
+                f"检查中断: 已取消或达到预算上限，只扫描了 {scanned_files}/{total_label} 个文件"
             )
         else:
             self.logger.info(f"检查完成: 发现 {sum(map(len, all_errors.values()))} 个错误")
@@ -1143,6 +1156,7 @@ class ErrorRepairer:
             total_files=len(rpy_files),
             scanned_bytes=scanned_bytes,
             budget_exhausted=budget_exhausted,
+            total_files_known=total_files_known,
         )
 
     def auto_fix_file(

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Pagination, Spin } from 'antd';
+import { useT } from '../i18n';
 import ChangelogWorker from '../changelog.worker?worker&inline';
 import { stripChangelogComments, type ChangelogResult, type InlinePart } from '../changelogMarkdown';
 
@@ -14,6 +15,7 @@ function Inline({ parts }: { parts?: InlinePart[] }) {
 
 /** Worker isolation keeps malformed release notes from blocking window controls. */
 export function ChangelogView({ markdown }: { markdown: string }) {
+  const t = useT();
   const [result, setResult] = useState<ChangelogResult | null>(null);
   const [plain, setPlain] = useState(false);
   const [page, setPage] = useState(1);
@@ -42,12 +44,12 @@ export function ChangelogView({ markdown }: { markdown: string }) {
   }, [markdown]);
 
   if (plain) return <div className="update-changelog">
-    <Alert type="info" title="格式解析未完成，已切换为纯文本" />
+    <Alert type="info" title={t('changelog_plain_fallback')} />
     <pre style={{ whiteSpace: 'pre-wrap' }}>{stripChangelogComments(markdown.slice(0, 256_000))}</pre>
   </div>;
-  if (!result) return <Spin description="正在读取更新日志…"><div style={{ minHeight: 100 }} /></Spin>;
+  if (!result) return <Spin description={t('changelog_loading')}><div style={{ minHeight: 100 }} /></Spin>;
   return <>
-    {result.truncated ? <Alert type="info" title="更新日志较长，当前显示前 256,000 个字符。完整内容可在项目发布页查看。" /> : null}
+    {result.truncated ? <Alert type="info" title={t('changelog_truncated')} /> : null}
     <div className="update-changelog" key={page}>
       {(result.pages[page - 1] ?? []).map((block, index) => {
         if (block.type === 'heading') {

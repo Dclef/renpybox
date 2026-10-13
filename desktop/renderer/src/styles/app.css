@@ -704,6 +704,30 @@
   .rb-onekey-page .card-description, .rb-archive-page .card-description, .rb-asset-page .card-description { overflow-wrap: anywhere; }
   .rb-asset-page .rb-banner-text { white-space: pre-line; overflow-wrap: anywhere; }
 
+  .rb-font-overview { background: var(--rb-surface); border: 1px solid var(--rb-border); border-radius: 12px; padding: 16px; }
+  .rb-font-intro { margin: 0 0 12px; color: var(--rb-text-secondary); font-size: 13px; line-height: 1.65; }
+  .rb-font-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .rb-font-status > .rb-banner { flex: 1 1 240px; min-width: 0; }
+  .rb-font-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--rb-divider); }
+  .rb-font-metrics > div { min-width: 0; }
+  .rb-font-metrics dt { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .rb-font-metrics dd { margin: 4px 0 0; color: var(--rb-text-primary); font-size: 24px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .rb-font-form { width: 100%; min-width: 0; }
+  .rb-font-form .ant-form-item-label { flex: 0 0 132px !important; text-align: left !important; }
+  .rb-font-form .ant-form-item-control { flex: 1 1 0 !important; min-width: 0 !important; }
+  .rb-font-form .rb-tool-actions > .ant-input { flex: 1 1 160px !important; min-width: 0 !important; width: auto !important; }
+  .rb-font-actions { margin-left: 132px; padding-top: 4px; }
+  @media (max-width: 760px) {
+    .rb-font-overview { padding: 12px; }
+    .rb-font-metrics { gap: 12px; }
+    .rb-font-metrics dd { font-size: 21px; }
+    .rb-font-form .ant-form-item-row { flex-flow: column nowrap !important; align-items: stretch !important; }
+    .rb-font-form .ant-form-item-label { flex: none !important; padding-bottom: 6px !important; }
+    .rb-font-form .ant-form-item-control { flex: none !important; width: 100%; }
+    .rb-font-actions { margin-left: 0; }
+  }
+
+
   /* RPY extraction keeps the Qt5 settings rhythm: a quiet surface, compact fields,
      and a separate work area for custom rules instead of one continuous form. */
   .rb-asset-page[data-rb-page='rpy-extraction'] {
@@ -832,6 +856,8 @@
   .rb-proof-search-row > .ant-checkbox-wrapper { white-space: nowrap; }
   .rb-proof-filter-details { border-bottom: 1px solid var(--rb-divider); padding-bottom: 10px; }
   .rb-proof-filter-details > summary { cursor: pointer; width: fit-content; color: var(--rb-text-secondary); font-size: 13px; padding: 2px 0; }
+  .rb-proof-filter-details > summary:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: 4px; border-radius: 4px; }
+  .rb-proof-filter-count { display: inline-flex; align-items: center; margin-left: 8px; padding: 1px 8px; border-radius: 999px; color: var(--rb-accent); background: var(--rb-accent-surface); font-size: 12px; }
   .rb-proof-filter-details[open] > summary { margin-bottom: 10px; }
   .rb-proof-filter-details .proofreading-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .rb-proof-filter-details .ant-select { flex: 1 1 160px; max-width: none; }

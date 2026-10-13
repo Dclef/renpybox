@@ -310,8 +310,25 @@ export function FontReplacePage(props: { state: AppState }) {
           <Banner tone="warning">{fontCopy(FONT_GAME_DIR_EMPTY_LABEL, uiLang)}</Banner>
         </div>
       ) : null}
-      <Banner tone="info">{t('font_inject_intro')}</Banner>
-      <Banner tone={statusTone}>{statusText}</Banner>
+      <section className="rb-font-overview" aria-label={t('font_scan_overview')}>
+        <p className="rb-font-intro">{t('font_inject_intro')}</p>
+        <div className="rb-font-status" role="status">
+          <Banner tone={statusTone}>{scanResultFresh && !active ? t('font_scan_ready') : statusText}</Banner>
+          {active && canCancel ? (
+            <Button onClick={() => void suite.cancel()} disabled={cancelling || Boolean(job?.cancel_requested)}>
+              {cancelling || job?.cancel_requested ? t('tool_job_cancelling') : t('tool_job_cancel')}
+            </Button>
+          ) : null}
+        </div>
+        {hasProject ? (
+          <dl className="rb-font-metrics" aria-label={scanSummary}>
+            <div><dt>{t('font_scan_references')}</dt><dd>{fontsScanned || scanResultFresh ? fontRefCount : '—'}</dd></div>
+            <div><dt>{t('font_scan_files')}</dt><dd>{fontsScanned || scanResultFresh ? fontFileCount : '—'}</dd></div>
+            <div><dt>{t('font_scan_languages')}</dt><dd>{languages.length}</dd></div>
+          </dl>
+        ) : null}
+        {active ? <Progress percent={Math.min(100, 100 * (job?.progress || 0))} aria-label={t('tool_job_running')} /> : null}
+      </section>
       {showFailureSideEffects ? (
         <Banner tone="warning">
           {result?.written || result?.partial
@@ -338,20 +355,12 @@ export function FontReplacePage(props: { state: AppState }) {
           </Banner>
         </div>
       ) : null}
-      {hasProject ? <Banner tone="info">{scanSummary}</Banner> : null}
       {status?.scan_stale ? (
         <Banner tone="warning">{fontCopy(FONT_SCAN_STALE_LABEL, uiLang)}</Banner>
       ) : null}
-      {active ? <Progress percent={Math.min(100, 100 * (job?.progress || 0))} aria-label={t('tool_job_running')} /> : null}
-      {active && canCancel ? (
-        <div className="rb-tool-actions">
-          <Button onClick={() => void suite.cancel()} disabled={cancelling || Boolean(job?.cancel_requested)}>
-            {t('tool_job_cancel')}
-          </Button>
-        </div>
-      ) : null}
 
       <SettingsGroup title={t('font_inject_title')} description={t('font_inject_desc')}>
+        <Form layout="horizontal" component="div" className="rb-font-form" labelAlign="left" colon={false}>
         <Form.Item label={t('lang_tools_game_dir')} style={{ marginBottom: 12 }}>
           <div className="rb-tool-actions" style={{ display: 'flex', gap: 8 }}>
             <Input
@@ -376,7 +385,7 @@ export function FontReplacePage(props: { state: AppState }) {
             allowClear={false}
           />
         </Form.Item>
-        <Form.Item label={t('font_inject_custom_language')} style={{ marginBottom: 12 }}>
+        <Form.Item label={t('font_inject_custom_language')} extra={t('font_inject_language_hint')} style={{ marginBottom: 12 }}>
           <Input
             value={custom}
             onChange={(event) => setCustom(event.target.value)}
@@ -384,8 +393,7 @@ export function FontReplacePage(props: { state: AppState }) {
             disabled={busy || !hasProject}
           />
         </Form.Item>
-        <p className="card-description">{t('font_inject_language_hint')}</p>
-        <div className="rb-tool-actions">
+        <div className="rb-tool-actions rb-font-actions">
           <Button type="primary" onClick={() => setConfirmInject(true)} disabled={injectBlocked}>
             {t('font_inject_run')}
           </Button>
@@ -393,6 +401,7 @@ export function FontReplacePage(props: { state: AppState }) {
             {t('font_inject_rescan')}
           </Button>
         </div>
+        </Form>
       </SettingsGroup>
 
       <Collapse
