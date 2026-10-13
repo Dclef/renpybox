@@ -2,7 +2,7 @@ import './styles/layers.css';
 import './styles.css';
 import './styles/app.css';
 
-import { StrictMode, useEffect, useMemo } from 'react';
+import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App as AntApp, ConfigProvider } from 'antd';
 import enUS from 'antd/locale/en_US';
@@ -25,7 +25,18 @@ let appliedScheme: ThemeName = initialScheme;
 function Root() {
   const state = useAppState();
   const scheme = state.theme === 'DARK' ? 'DARK' : 'LIGHT';
-  const antdTheme = useMemo(() => buildAntdTheme(scheme), [scheme]);
+  const [reduceMotion, setReduceMotion] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReduceMotion(media.matches);
+    media.addEventListener('change', update);
+    update();
+    return () => media.removeEventListener('change', update);
+  }, []);
+  const antdTheme = useMemo(() => {
+    const base = buildAntdTheme(scheme);
+    return { ...base, token: { ...base.token, motion: !reduceMotion } };
+  }, [scheme, reduceMotion]);
   const locale = state.bootLanguage === 'EN' ? enUS : zhCN;
 
   // 主题切换只改 ConfigProvider token 与 CSS 变量，不 remount 业务树以免丢稿。

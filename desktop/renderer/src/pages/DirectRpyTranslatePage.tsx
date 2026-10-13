@@ -11,7 +11,6 @@ import {
   toolboxStartGate,
   toolboxTlLanguageName,
   TOOLBOX_LANG_OPTIONS,
-  translationModeSummary,
   translationProgressView,
 } from '../toolboxTranslateView.mjs';
 import type { PageKey } from '../nav';
@@ -160,42 +159,45 @@ export function DirectRpyTranslatePage(props: {
 
   return (
     <div className="rb-page" data-rb-page="direct-rpy-translate">
-      <Banner tone="info">{translationModeSummary('direct')}</Banner>
+      <Banner tone="info">翻译所选 TL 目录中的文本，译文可自动写回原文件。</Banner>
       {!gate.canStart ? <Banner tone="warning">{gate.hint}</Banner> : null}
       {explicitTlParent ? (
         <Banner tone="info">{`显式 TL 目录：${explicitTlDir}（tl 父目录 + 语言名，不再走 game/tl 自动查找）`}</Banner>
       ) : null}
 
-      <SettingsGroup title="路径与语言" description="可直接选游戏/EXE，或显式指定 tl 父目录 + 语言文件夹名；不必事先绑定项目。">
-        <Form layout="horizontal">
-          <Form.Item label="游戏 EXE / 项目目录" style={{ marginBottom: 8 }}>
+      <SettingsGroup title="路径与语言" description="选择游戏，或填写 TL 父目录与语言目录名。">
+        <Form layout="horizontal" labelCol={{ flex: '160px' }} wrapperCol={{ flex: 1 }} labelAlign="left" colon={false}>
+          <Form.Item label="游戏 / 项目目录" style={{ marginBottom: 12 }}>
+            <div className="rb-direct-path">
             <Input
+              aria-label="游戏 / 项目目录"
               value={gamePath}
               disabled={busy || engineBusy}
               onChange={(e) => setGamePath(e.target.value)}
               placeholder="选择 .exe 或项目根目录"
             />
-          </Form.Item>
-          {window.renpy?.pickFolder || window.renpy?.pickFile ? (
-            <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
+            {window.renpy?.pickFolder || window.renpy?.pickFile ? (
               <Button disabled={busy || engineBusy} onClick={() => void pickGame()}>选择游戏</Button>
+            ) : null}
             </div>
-          ) : null}
-          <Form.Item label="tl 父目录（可选）" style={{ marginBottom: 8 }}>
+          </Form.Item>
+          <Form.Item label="TL 父目录（可选）" style={{ marginBottom: 12 }}>
+            <div className="rb-direct-path">
             <Input
+              aria-label="TL 父目录"
               value={tlParent}
               disabled={busy || engineBusy}
               onChange={(e) => setTlParent(e.target.value)}
               placeholder="默认使用 game/tl"
             />
-          </Form.Item>
-          {window.renpy?.pickFolder ? (
-            <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
-              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>选择 tl 父目录</Button>
+            {window.renpy?.pickFolder ? (
+              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>选择目录</Button>
+            ) : null}
             </div>
-          ) : null}
+          </Form.Item>
           <Form.Item label="语言目录名" style={{ marginBottom: 12 }}>
             <Input
+              aria-label="语言目录名"
               value={tlName}
               disabled={busy || engineBusy}
               onChange={(e) => setTlName(e.target.value)}
@@ -204,6 +206,7 @@ export function DirectRpyTranslatePage(props: {
           </Form.Item>
           <Form.Item label="目标语言" style={{ marginBottom: 0 }}>
             <Select
+              aria-label="目标语言"
               value={langChoice}
               disabled={busy || engineBusy}
               options={TOOLBOX_LANG_OPTIONS.map((item) => ({
@@ -218,17 +221,19 @@ export function DirectRpyTranslatePage(props: {
       </SettingsGroup>
 
       <SettingsGroup title="写入选项">
-        <Form layout="horizontal">
-          <Form.Item label="写入前备份 .bak" style={{ marginBottom: 12 }}>
+        <div className="rb-direct-options">
+          <label>
+            <span>写入前备份 .bak</span>
             <Switch label="写入前备份 .bak" checked={backup} disabled={busy || engineBusy} onChange={setBackup} />
-          </Form.Item>
-          <Form.Item label="自动写回文件" style={{ marginBottom: 0 }}>
+          </label>
+          <label>
+            <span>自动写回文件</span>
             <Switch label="自动写回文件" checked={autoWrite} disabled={busy || engineBusy} onChange={setAutoWrite} />
-          </Form.Item>
-        </Form>
+          </label>
+        </div>
       </SettingsGroup>
 
-      <SettingsGroup title="开始翻译">
+      <div className="rb-direct-footer">
         <div className="rb-tool-actions">
           <Button type="primary" disabled={!gate.canStart || busy} loading={busy} onClick={() => void start(false)}>
             开始翻译
@@ -251,7 +256,7 @@ export function DirectRpyTranslatePage(props: {
             <p className="card-description">{progress.label || '翻译中…'}</p>
           </>
         ) : null}
-      </SettingsGroup>
+      </div>
 
       {assetsMissing ? (
         <Banner tone="warning">

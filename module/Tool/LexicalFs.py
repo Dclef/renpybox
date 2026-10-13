@@ -8,11 +8,17 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import Callable
 
 
 def lexical_abs(path: str | Path) -> Path:
     """规范化绝对路径但不跟随 reparse/symlink。"""
     return Path(os.path.normcase(os.path.abspath(os.path.expanduser(str(path)))))
+
+
+def lexical_display_abs(path: str | Path) -> Path:
+    """Return an absolute lexical path without changing its casing."""
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
 def is_link_or_reparse(path: str | Path) -> bool:
@@ -38,19 +44,28 @@ def reject_if_link_root(path: str | Path, *, label: str = "路径") -> Path:
     return root
 
 
-def iter_rpy_files_lexical(folder_path: str | Path) -> list[Path]:
+def iter_rpy_files_lexical(folder_path: str | Path, *, checkpoint: Callable[[], None] | None = None) -> list[Path]:
     """在 lexical 根下收集 .rpy；不进入 symlink/junction 子树，也不跟随文件链接。"""
-    root = lexical_abs(folder_path)
+    # Keep report paths readable; lexical_abs remains the comparison key.
+    root = lexical_display_abs(folder_path)
     if not root.is_dir() or is_link_or_reparse(root):
         return []
     found: list[Path] = []
     for current, dirnames, filenames in os.walk(root, followlinks=False):
+        if checkpoint is not None:
+            checkpoint()
         base = Path(current)
         # 就地过滤，阻止 walk 进入联接目录
-        dirnames[:] = sorted(
-            name for name in dirnames if not is_link_or_reparse(base / name)
-        )
-        for name in filenames:
+        safe_dirs: list[str] = []
+        for index, name in enumerate(dirnames):
+            if checkpoint is not None and index % 256 == 0:
+                checkpoint()
+            if not is_link_or_reparse(base / name):
+                safe_dirs.append(name)
+        dirnames[:] = sorted(safe_dirs)
+        for index, name in enumerate(filenames):
+            if checkpoint is not None and index % 256 == 0:
+                checkpoint()
             if not name.casefold().endswith(".rpy"):
                 continue
             path = base / name
@@ -59,6 +74,8 @@ def iter_rpy_files_lexical(folder_path: str | Path) -> list[Path]:
             if path.is_file():
                 found.append(path)
     found.sort(key=lambda item: item.as_posix().casefold())
+    if checkpoint is not None:
+        checkpoint()
     return found
 
 

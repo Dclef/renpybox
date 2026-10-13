@@ -27,6 +27,7 @@ test('error repair defaults match Qt', () => {
   assert.equal(ERROR_REPAIR_DEFAULTS.fixIndentLevel, false);
   assert.equal(ERROR_REPAIR_DEFAULTS.fixQuotes, false);
   assert.equal(ERROR_REPAIR_DEFAULTS.fixDialogueQuotes, false);
+  assert.equal(ERROR_REPAIR_DEFAULTS.fixEmptyBlocks, false);
 });
 
 test('error repair status path encodes folder', () => {
@@ -36,6 +37,7 @@ test('error repair status path encodes folder', () => {
 
 test('scan/fix summaries', () => {
   assert.match(formatScanSummary({ total_issues: 0, report: {} }, 'ZH'), /0/);
+  assert.equal(formatScanSummary({ total_issues: 100000, affected_files: 42 }, 'ZH'), '发现 100000 个问题（42 个文件）');
   assert.match(formatFixSummary({ fixed_files: 1, fixed_items: 2, failed_files: 1 }, 'ZH'), /失败/);
 });
 

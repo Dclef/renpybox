@@ -11,13 +11,13 @@ export function errorRepairStatusPath(folder) {
 }
 
 /**
- * @param {{ total_issues?: number, report?: Record<string, unknown[]> } | null | undefined} result
+ * @param {{ total_issues?: number, affected_files?: number, report?: Record<string, unknown[]> } | null | undefined} result
  * @param {'ZH'|'EN'} lang
  */
 export function formatScanSummary(result, lang = 'ZH') {
   if (!result) return lang === 'EN' ? 'Not scanned' : '尚未扫描';
   const total = Number(result.total_issues ?? 0);
-  const files = result.report ? Object.keys(result.report).length : 0;
+  const files = result.affected_files ?? (result.report ? Object.keys(result.report).length : 0);
   if (lang === 'EN') return `Found ${total} issue(s) in ${files} file(s)`;
   return `发现 ${total} 个问题（${files} 个文件）`;
 }
@@ -47,6 +47,7 @@ export const ERROR_REPAIR_DEFAULTS = {
   fixIndentLevel: false,
   fixQuotes: false,
   fixDialogueQuotes: false,
+  fixEmptyBlocks: false,
 };
 
 /** 提交用的 owner 快照：有绑定则用 status.owner_project_key，未绑定为空。 */

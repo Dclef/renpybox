@@ -21,7 +21,7 @@ type JobHandler = (message: WsJobMessage) => void;
 function socketUrl(): string {
   const { protocol, host } = window.location;
   // 打包版是 file:// 源，没有 host；此时 sidecar 固定在回环地址。
-  if (protocol === 'file:' || !host) return 'ws://127.0.0.1:9712/ws';
+  if (protocol === 'file:' || !host) return `ws://127.0.0.1:${window.renpy?.sidecarPort || 9712}/ws`;
   return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/ws`;
 }
 

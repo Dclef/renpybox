@@ -3,12 +3,13 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseDesktopVersion } from '../main/updater.js';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = JSON.parse(readFileSync(path.join(desktop, 'package.json'), 'utf8'));
 const packaged = path.join(desktop, 'release', 'win-unpacked', 'resources');
 const hash = filename => createHash('sha256').update(readFileSync(filename)).digest('hex');
-assert.match(config.version, /^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$/);
+assert(parseDesktopVersion(config.version), 'Expected a desktop release version');
 // 更新逻辑改为 desktop/main/updater.js 直接查 GitHub Releases API：不再需要 electron-builder
 // 的 publish 配置，也不再生成 app-update.yml / blockmap / newui.yml。
 assert.equal(config.build.publish, undefined, 'Desktop updates must not fall back to electron-builder publish metadata');

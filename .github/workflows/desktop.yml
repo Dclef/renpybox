@@ -1,10 +1,10 @@
-name: RenpyBox New UI desktop
+name: RenpyBox desktop
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish this new_UI build as a GitHub prerelease
+        description: Publish this desktop build to GitHub Releases
         required: true
         default: false
         type: boolean
@@ -89,7 +89,7 @@ jobs:
         with:
           name: renpybox-newui-windows
           path: desktop/release
-      - name: Publish isolated New UI prerelease
+      - name: Publish desktop release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,11 +97,17 @@ jobs:
           # 客户端直接查 GitHub Releases API（desktop/main/updater.js），只用安装包资产，
           # 因此这里只上传 exe 与 zip，不再产生 blockmap / newui.yml。
           $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
-          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+-newui[.][0-9]+$') { throw 'Expected a newui prerelease version' }
+          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+(-newui[.][0-9]+)?$') { throw 'Expected a desktop release version' }
           $files = @(
             "desktop/release/RenpyBox-NewUI-$version-x64.exe",
             "desktop/release/RenpyBox-NewUI-$version-x64.zip"
           )
           foreach ($file in $files) { if (!(Test-Path -LiteralPath $file)) { throw "Missing artifact: $file" } }
-          gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease --latest=false --title "RenpyBox New UI $version" --notes "new_UI branch desktop test build; includes the Python backend."
+          $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
+          $section = [regex]::Match($changelog, ('(?ms)^## v' + [regex]::Escape($version) + '[^\r\n]*\r?\n(.*?)(?=^## |\z)'))
+          if (!$section.Success) { throw "Missing changelog for v$version" }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
+          $section.Groups[1].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
+          $releaseFlags = if ($version -match '-newui[.]') { @('--prerelease', '--latest=false') } else { @('--latest') }
+          gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA @releaseFlags --title "RenpyBox $version" --notes-file $notesPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

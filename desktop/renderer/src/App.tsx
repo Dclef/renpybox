@@ -184,6 +184,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   /** RPY 后台仍在收尾时阻止原生关闭绕过 guard */
   const rpyLeaveBlockedRef = useRef(false);
   const [pendingPage, setPendingPage] = useState<PageKey | 'close' | null>(null);
+  const [exitConfirm, setExitConfirm] = useState(false);
+  const closeRequestedRef = useRef<() => void>(() => {});
+  const closeInFlight = useRef(false);
 
   const leaveRpyIfNeeded = async (): Promise<boolean> => {
     if (active !== 'rpy-extraction') return true;
@@ -202,17 +205,16 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const navigate = (page: PageKey | 'close') => {
     if (page === active) return;
     if (dirty) { setPendingPage(page); return; }
+    if (page === 'close') { setExitConfirm(true); return; }
     // dirty=false 也必须走同一 RPY guard；失败留在本页
     void (async () => {
       if (!(await leaveRpyIfNeeded())) return;
-      if (page === 'close') {
-        allowClose.current = true;
-        window.renpy?.close?.();
-      } else {
-        setActive(page);
-      }
+      setActive(page);
     })();
   };
+
+  closeRequestedRef.current = () => navigate('close');
+  useEffect(() => window.renpy?.onCloseRequested?.(() => closeRequestedRef.current()), []);
 
   // 系统关闭：未保存或 RPY worker 收尾中都不能直接放行。
   useEffect(() => {
@@ -408,7 +410,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'expert-settings':
         return <SettingsPage state={state} variant="expert" title={t('app_expert_settings_page')} description="控制提示词、资产分析和结果检查等高级行为" />;
       case 'custom-prompt':
-        return <CustomPromptPage state={state} />;
+        return <CustomPromptPage state={state} onDirtyChange={setDirty} />;
       case 'app-settings':
         return <SettingsPage state={state} variant="app" title="应用设置" description="管理语言、更新、声音和应用级显示选项" />;
       case 'workbench':
@@ -536,6 +538,28 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         </ErrorBoundary>
       </main>
 
+      {exitConfirm ? (
+        <Dialog
+          title="退出 RenpyBox？"
+          confirmText="退出"
+          cancelText="取消"
+          onCancel={() => { if (!closeInFlight.current) setExitConfirm(false); }}
+          onConfirm={() => {
+            if (closeInFlight.current) return;
+            closeInFlight.current = true;
+            void (async () => {
+              try {
+                if (!(await leaveRpyIfNeeded())) return;
+                allowClose.current = true;
+                window.renpy?.closeConfirmed?.();
+              } finally {
+                closeInFlight.current = false;
+                setExitConfirm(false);
+              }
+            })();
+          }}
+        >确定要退出程序吗？退出前请确认工作已保存。</Dialog>
+      ) : null}
       {pendingPage ? (
         <Dialog
           title="放弃未保存修改？"
