@@ -13,10 +13,11 @@ import secrets
 import subprocess
 import time
 from collections import Counter
-from typing import Callable, List, Dict, Tuple, Optional
+from typing import Callable, Iterator, List, Dict, Tuple, Optional
 from pathlib import Path
 
 from base.LogManager import LogManager
+from module.File.AtomicWrite import atomic_write_text
 from module.Renpy.renpy_tl_core import (
     TlBlockKind,
     TlDocument,
@@ -37,6 +38,10 @@ class FolderScanResult:
     total_files: int
     scanned_bytes: int
     budget_exhausted: bool
+
+
+class _ScanStopped(BaseException):
+    """Unwind a scan without being swallowed by per-file error handling."""
 
 
 class ErrorRepairer:
@@ -105,11 +110,11 @@ class ErrorRepairer:
         return path
 
     @staticmethod
-    def get_rpy_files(folder_path: str | Path) -> list[Path]:
+    def get_rpy_files(folder_path: str | Path, *, checkpoint: Optional[Callable[[], None]] = None) -> list[Path]:
         """返回目录下的 Ren'Py 脚本；不跟随 symlink/junction（lexical 边界）。"""
         from module.Tool.LexicalFs import iter_rpy_files_lexical
 
-        return iter_rpy_files_lexical(folder_path)
+        return iter_rpy_files_lexical(folder_path, checkpoint=checkpoint)
 
     def _split_line_ending(self, line: str) -> tuple[str, str]:
         """拆分行内容和换行符，修复后保持原始换行风格。"""
@@ -417,24 +422,32 @@ class ErrorRepairer:
         self,
         lines: List[str],
         document: Optional[TlDocument] = None,
-    ) -> list[dict]:
+        *,
+        checkpoint: Optional[Callable[[], None]] = None,
+    ) -> Iterator[dict]:
         """返回 tl 文档中可可靠配对的模板/译文语句。"""
         if document is None:
             content_lines = [self._split_line_ending(line)[0] for line in lines]
             document = parse_tl_document(content_lines)
 
-        pairs: list[dict] = []
-
         for block in document.blocks:
+            if checkpoint is not None:
+                checkpoint()
             if block.kind == TlBlockKind.STRINGS:
-                mapping = pair_old_new_lines(block)
+                mapping = pair_old_new_lines(block, checkpoint=checkpoint)
             elif block.kind == TlBlockKind.LABEL:
-                mapping = match_tpl_to_target(block)
+                mapping = match_tpl_to_target(block, checkpoint=checkpoint, max_alignment_cells=4_000_000)
             else:
                 continue
 
-            statements = {statement.line_no: statement for statement in block.statements}
-            for source_line, target_line in mapping.items():
+            statements = {}
+            for index, statement in enumerate(block.statements):
+                if checkpoint is not None and index % 256 == 0:
+                    checkpoint()
+                statements[statement.line_no] = statement
+            for index, (source_line, target_line) in enumerate(mapping.items()):
+                if checkpoint is not None and index % 256 == 0:
+                    checkpoint()
                 source = statements.get(source_line)
                 target = statements.get(target_line)
                 if source is None or target is None:
@@ -445,7 +458,7 @@ class ErrorRepairer:
                 if not source_literals:
                     continue
 
-                pairs.append({
+                yield {
                     "language": block.lang,
                     "is_old_new": block.kind == TlBlockKind.STRINGS,
                     "source": source,
@@ -458,9 +471,7 @@ class ErrorRepairer:
                         literal["value"]
                         for literal in target_literals
                     ],
-                })
-
-        return pairs
+                }
 
     def _duplicate_old_new_error(
         self,
@@ -484,6 +495,8 @@ class ErrorRepairer:
         self,
         lines: List[str],
         document: Optional[TlDocument] = None,
+        *,
+        checkpoint: Optional[Callable[[], None]] = None,
     ) -> List[Dict]:
         """报告简单翻译语句中与其他字面量相邻的多余空字符串。"""
         if document is None:
@@ -495,7 +508,9 @@ class ErrorRepairer:
         for block in document.blocks:
             if block.kind == TlBlockKind.PYTHON:
                 continue
-            for statement in block.statements:
+            for index, statement in enumerate(block.statements):
+                if checkpoint is not None and index % 256 == 0:
+                    checkpoint()
                 if statement.stmt_kind != TlStmtKind.TARGET:
                     continue
 
@@ -543,7 +558,7 @@ class ErrorRepairer:
 
         return errors
 
-    def _scan_empty_translate_blocks(self, lines: List[str]) -> List[Dict]:
+    def _scan_empty_translate_blocks(self, lines: List[str], *, checkpoint: Optional[Callable[[], None]] = None) -> List[Dict]:
         """报告没有任何可执行语句的 ``translate ... strings`` 块。"""
         errors: list[Dict] = []
         header_re = re.compile(
@@ -552,6 +567,8 @@ class ErrorRepairer:
         )
         index = 0
         while index < len(lines):
+            if checkpoint is not None and index % 256 == 0:
+                checkpoint()
             content, _ = self._split_line_ending(lines[index])
             match = header_re.match(content)
             if not match:
@@ -560,22 +577,21 @@ class ErrorRepairer:
 
             base_indent = len(match.group("indent"))
             end = index + 1
+            has_content = False
             while end < len(lines):
+                if checkpoint is not None and end % 256 == 0:
+                    checkpoint()
                 candidate, _ = self._split_line_ending(lines[end])
                 if not candidate.strip():
                     end += 1
                     continue
                 candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
                 if candidate_indent > base_indent:
+                    has_content = has_content or not candidate.lstrip().startswith("#")
                     end += 1
                     continue
                 break
 
-            has_content = any(
-                self._split_line_ending(line)[0].strip()
-                and not self._split_line_ending(line)[0].lstrip().startswith("#")
-                for line in lines[index + 1:end]
-            )
             if not has_content:
                 errors.append({
                     "line": index + 1,
@@ -588,7 +604,7 @@ class ErrorRepairer:
 
         return errors
 
-    def _remove_empty_translate_blocks(self, lines: List[str]) -> tuple[List[str], int]:
+    def _remove_empty_translate_blocks(self, lines: List[str], *, checkpoint=None) -> tuple[List[str], int]:
         """删除空的 ``translate <lang> strings:`` 块并返回删除数量。"""
         header_re = re.compile(
             r"^(?P<indent>[ \t]*)translate\s+(?P<language>[A-Za-z0-9_]+)"
@@ -598,6 +614,8 @@ class ErrorRepairer:
         removed = 0
         index = 0
         while index < len(lines):
+            if checkpoint is not None and index % 256 == 0:
+                checkpoint()
             content, _ = self._split_line_ending(lines[index])
             match = header_re.match(content)
             if not match:
@@ -607,22 +625,21 @@ class ErrorRepairer:
 
             base_indent = len(match.group("indent"))
             end = index + 1
+            has_content = False
             while end < len(lines):
+                if checkpoint is not None and end % 256 == 0:
+                    checkpoint()
                 candidate, _ = self._split_line_ending(lines[end])
                 if not candidate.strip():
                     end += 1
                     continue
                 candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
                 if candidate_indent > base_indent:
+                    has_content = has_content or not candidate.lstrip().startswith("#")
                     end += 1
                     continue
                 break
 
-            has_content = any(
-                self._split_line_ending(line)[0].strip()
-                and not self._split_line_ending(line)[0].lstrip().startswith("#")
-                for line in lines[index + 1:end]
-            )
             if has_content:
                 output.extend(lines[index:end])
             else:
@@ -636,6 +653,9 @@ class ErrorRepairer:
         lines: List[str],
         file_path: str,
         document: Optional[TlDocument] = None,
+        *,
+        seen_old: Optional[dict] = None,
+        checkpoint: Optional[Callable[[], None]] = None,
     ) -> List[Dict]:
         """纯读取扫描占位符、换行、空字符串和同文件重复条目。"""
         if document is None:
@@ -643,9 +663,10 @@ class ErrorRepairer:
             document = parse_tl_document(content_lines)
 
         errors: list[Dict] = []
-        seen_old: dict[tuple, tuple[str, int]] = {}
+        if seen_old is None:
+            seen_old = {}
 
-        for pair in self._iter_translation_pairs(lines, document):
+        for pair in self._iter_translation_pairs(lines, document, checkpoint=checkpoint):
             source = pair["source"]
             target = pair["target"]
             source_values = pair["source_values"]
@@ -717,7 +738,7 @@ class ErrorRepairer:
                     "target_count": target_linebreaks,
                 })
 
-        errors.extend(self._scan_extra_empty_strings(lines, document))
+        errors.extend(self._scan_extra_empty_strings(lines, document, checkpoint=checkpoint))
         return errors
 
     def _get_indent_width(self, line: str) -> int:
@@ -728,14 +749,18 @@ class ErrorRepairer:
         stripped = line.strip()
         return stripped == "" or stripped.startswith("#")
 
-    def _find_previous_non_empty_index(self, lines: List[str], idx: int) -> Optional[int]:
+    def _find_previous_non_empty_index(self, lines: List[str], idx: int, checkpoint=None) -> Optional[int]:
         for current in range(idx - 1, -1, -1):
+            if checkpoint is not None and current % 256 == 0:
+                checkpoint()
             if not self._is_blank_or_comment(lines[current]):
                 return current
         return None
 
-    def _find_previous_block_indent_less_than(self, lines: List[str], idx: int, indent_limit: int) -> Optional[int]:
+    def _find_previous_block_indent_less_than(self, lines: List[str], idx: int, indent_limit: int, checkpoint=None) -> Optional[int]:
         for current in range(idx - 1, -1, -1):
+            if checkpoint is not None and current % 256 == 0:
+                checkpoint()
             line = lines[current]
             if self._is_blank_or_comment(line):
                 continue
@@ -750,7 +775,7 @@ class ErrorRepairer:
         token = stripped.split(maxsplit = 1)[0] if stripped else ""
         return token in self.SCREEN_BLOCK_PREFIXES or stripped.startswith(("if ", "elif ", "else:", "for ", "while "))
 
-    def repair_indentation_level(self, lines: List[str], idx: int) -> tuple[str, bool]:
+    def repair_indentation_level(self, lines: List[str], idx: int, *, checkpoint=None) -> tuple[str, bool]:
         """尝试修复明显错位的块级缩进。"""
         if idx < 0 or idx >= len(lines):
             return lines[idx], False
@@ -762,7 +787,7 @@ class ErrorRepairer:
 
         stripped = content.lstrip(" \t")
         current_indent = self._get_indent_width(content)
-        prev_idx = self._find_previous_non_empty_index(lines, idx)
+        prev_idx = self._find_previous_non_empty_index(lines, idx, checkpoint)
         if prev_idx is None:
             return original_line, False
 
@@ -779,7 +804,7 @@ class ErrorRepairer:
         # 情况 2：当前行自身是块起始，但前一段刚从深层子块退出。
         # 这时按最近父块缩进回退一层，适合修复 screen 里 displayable / textbutton 错位。
         if stripped.endswith(":") and self._looks_like_screen_block_line(stripped) and prev_indent >= current_indent + 8:
-            parent_indent = self._find_previous_block_indent_less_than(lines, idx, current_indent)
+            parent_indent = self._find_previous_block_indent_less_than(lines, idx, current_indent, checkpoint)
             if parent_indent is not None and parent_indent != current_indent:
                 return (" " * parent_indent) + stripped + line_ending, True
 
@@ -849,12 +874,20 @@ class ErrorRepairer:
         check_quotes: bool,
         check_dialogue_quotes: bool,
         check_translation_issues: bool,
+        seen_old: Optional[dict] = None,
+        checkpoint: Optional[Callable[[], None]] = None,
+        on_line: Optional[Callable[[int], None]] = None,
     ) -> List[Dict[str, any]]:
         """对已读入的行执行检查；``document`` 由调用方复用，不再重复解析。"""
         errors = []
 
         try:
             for line_num, line in enumerate(lines, 1):
+                if line_num % 256 == 1:
+                    if on_line is not None:
+                        on_line(line_num)
+                    if checkpoint is not None:
+                        checkpoint()
                 # 语法检查
                 if check_syntax:
                     # 检查 label 后是否有冒号
@@ -888,7 +921,8 @@ class ErrorRepairer:
                 # 缩进检查
                 if check_indent:
                     # 检查是否使用 Tab
-                    if "\t" in line:
+                    leading = line[: len(line) - len(line.lstrip(" \t"))]
+                    if "\t" in leading:
                         errors.append({
                             "line": line_num,
                             "type": "indent",
@@ -897,7 +931,7 @@ class ErrorRepairer:
                         })
 
                 if check_indent_level:
-                    _, changed = self.repair_indentation_level(lines, line_num - 1)
+                    _, changed = self.repair_indentation_level(lines, line_num - 1, checkpoint=checkpoint)
                     if changed:
                         errors.append({
                             "line": line_num,
@@ -929,13 +963,16 @@ class ErrorRepairer:
                         })
 
             if check_syntax:
-                errors.extend(self._scan_empty_translate_blocks(lines))
+                errors.extend(self._scan_empty_translate_blocks(lines, checkpoint=checkpoint))
 
             if check_translation_issues:
-                errors.extend(self._scan_translation_issues(lines, file_path, document))
+                errors.extend(self._scan_translation_issues(
+                    lines, file_path, document, seen_old=seen_old, checkpoint=checkpoint,
+                ))
 
         except Exception as e:
             self.logger.error(f"检查文件失败 {file_path}: {e}")
+            raise
 
         return errors
 
@@ -954,6 +991,7 @@ class ErrorRepairer:
         max_bytes: Optional[int] = None,
         deadline: Optional[float] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ) -> Dict[str, List[Dict]]:
         """
         批量检查文件夹
@@ -968,7 +1006,8 @@ class ErrorRepairer:
             max_files: 最多扫描多少个 .rpy 文件，超出即停止
             max_bytes: 最多累计读取多少字节，超出即停止
             deadline: ``time.monotonic`` 绝对值，到点即停止
-            should_cancel: 每次扫描文件前调用，返回 True 即停止
+            should_cancel: 收集文件及文件内处理期间定期调用，返回 True 即停止
+            on_progress: 接收阶段、文件和已完成数量；回调在工作线程中至多每 0.2 秒一次
 
         Returns:
             {文件路径: 错误列表}
@@ -986,6 +1025,7 @@ class ErrorRepairer:
             max_bytes=max_bytes,
             deadline=deadline,
             should_cancel=should_cancel,
+            on_progress=on_progress,
         ).errors
 
     def scan_folder(
@@ -1003,96 +1043,99 @@ class ErrorRepairer:
         max_bytes: Optional[int] = None,
         deadline: Optional[float] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ) -> FolderScanResult:
         """同 :meth:`check_folder`，另外返回本次扫描覆盖了多少文件与字节。"""
         all_errors: Dict[str, List[Dict]] = {}
-        rpy_files = self.get_rpy_files(folder_path)
+        rpy_files: list[Path] = []
         scanned_bytes = 0
         scanned_files = 0
         budget_exhausted = False
-        # 跨文件 old 重复需要跨文件状态；原实现为此把每个文件重读并重新解析一次，
-        # 这里复用同一份 AST，每个文件只读一次、只解析一次。
         seen_old: dict[tuple, tuple[str, int]] = {}
+        # Throttle in the worker, before enqueueing anything on the API event loop.
+        started = time.monotonic()
+        last_push = float("-inf")
+        state = {"phase": "enumerate", "file": "", "fraction": 0.0, "line": 0}
 
-        self.logger.info(f"检查 {len(rpy_files)} 个 .rpy 文件")
-
-        for file_path in rpy_files:
+        def checkpoint() -> None:
+            nonlocal last_push
             if should_cancel is not None and should_cancel():
-                budget_exhausted = True
-                break
-            if deadline is not None and time.monotonic() >= deadline:
-                budget_exhausted = True
-                break
-            if max_files is not None and scanned_files >= max_files:
-                budget_exhausted = True
-                break
+                raise _ScanStopped()
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                raise _ScanStopped()
+            if on_progress is not None and now - last_push >= 0.2:
+                last_push = now
+                on_progress({
+                    **state, "scanned_files": scanned_files, "total_files": len(rpy_files),
+                    "elapsed": now - started,
+                })
 
-            try:
+        def phase(name: str, fraction: float) -> None:
+            state.update(phase=name, fraction=fraction, line=0)
+            checkpoint()
+
+        try:
+            checkpoint()
+            rpy_files = self.get_rpy_files(folder_path, checkpoint=checkpoint)
+            for file_path in rpy_files:
+                checkpoint()
+                if max_files is not None and scanned_files >= max_files:
+                    raise _ScanStopped()
+                state["file"] = str(file_path)
+                phase("read", 0.0)
                 size = file_path.stat().st_size
-            except OSError:
-                size = 0
-            if max_bytes is not None and scanned_bytes + size > max_bytes:
-                budget_exhausted = True
-                break
-            scanned_bytes += size
+                if max_bytes is not None and scanned_bytes + size > max_bytes:
+                    raise _ScanStopped()
+                scanned_bytes += size
 
-            try:
                 with open(file_path, "r", encoding=encoding, errors="ignore") as source_file:
-                    lines = source_file.readlines()
-            except Exception as e:
-                self.logger.error(f"检查文件失败 {file_path}: {e}")
-                continue
+                    lines = []
+                    for index, line in enumerate(source_file):
+                        if index % 256 == 0:
+                            state["line"] = index + 1
+                            checkpoint()
+                        lines.append(line.rstrip("\r\n"))
+                phase("parse", 0.1)
+                document = parse_tl_document(lines, checkpoint=checkpoint)
+                phase("check", 0.4)
 
-            document = parse_tl_document(
-                [self._split_line_ending(line)[0] for line in lines]
-            )
-            errors = self._check_lines(
-                lines,
-                str(file_path),
-                document,
-                check_syntax=check_syntax,
-                check_indent=check_indent,
-                check_indent_level=check_indent_level,
-                check_quotes=check_quotes,
-                check_dialogue_quotes=check_dialogue_quotes,
-                check_translation_issues=check_translation_issues,
-            )
-            scanned_files += 1
+                def on_line(line_no: int) -> None:
+                    state.update(line=line_no, fraction=0.4 + 0.3 * line_no / max(len(lines), 1))
 
-            if check_translation_issues:
-                # 同文件扫描可能已经报过同一行的重复；预先收集行号，避免
-                # 每新增一条错误就回扫整份列表（旧实现因此是平方级）。
-                reported_lines = {
-                    error.get("line")
-                    for error in errors
-                    if error.get("type") == "duplicate_old_new"
-                }
-                for pair in self._iter_translation_pairs(lines, document):
-                    if not pair["is_old_new"]:
-                        continue
-                    duplicate_key = (pair["language"], tuple(pair["source_values"]))
-                    first = seen_old.get(duplicate_key)
-                    if first is None:
-                        seen_old[duplicate_key] = (str(file_path), pair["source"].line_no)
-                        continue
+                errors = self._check_lines(
+                    lines, str(file_path), document,
+                    check_syntax=check_syntax,
+                    check_indent=check_indent,
+                    check_indent_level=check_indent_level,
+                    check_quotes=check_quotes,
+                    check_dialogue_quotes=check_dialogue_quotes,
+                    check_translation_issues=False,
+                    checkpoint=checkpoint, on_line=on_line,
+                )
+                if check_translation_issues:
+                    phase("translation", 0.75)
+                    # One pairing pass handles both local and cross-file duplicates.
+                    errors.extend(self._scan_translation_issues(
+                        lines, str(file_path), document, seen_old=seen_old, checkpoint=checkpoint,
+                    ))
+                if errors:
+                    all_errors[str(file_path)] = errors
+                # Release the previous file's AST before loading the next large file.
+                del document, lines, errors
+                scanned_files += 1
+                phase("file_done", 0.0)
+        except _ScanStopped:
+            budget_exhausted = True
+        except Exception as exc:
+            raise RuntimeError(f"扫描未完成 {state['file'] or folder_path}: {exc}") from exc
 
-                    line_number = pair["source"].line_no
-                    if line_number in reported_lines:
-                        continue
-                    reported_lines.add(line_number)
-                    errors.append(
-                        self._duplicate_old_new_error(pair, first[0], first[1])
-                    )
-
-            if errors:
-                all_errors[str(file_path)] = errors
-
-        total_errors = sum(len(errs) for errs in all_errors.values())
         if budget_exhausted:
             self.logger.warning(
-                f"检查中断: 已达预算上限，只扫描了 {scanned_files}/{len(rpy_files)} 个文件"
+                f"检查中断: 已取消或达到预算上限，只扫描了 {scanned_files}/{len(rpy_files)} 个文件"
             )
-        self.logger.info(f"检查完成: 发现 {total_errors} 个错误")
+        else:
+            self.logger.info(f"检查完成: 发现 {sum(map(len, all_errors.values()))} 个错误")
 
         return FolderScanResult(
             errors=all_errors,
@@ -1109,7 +1152,10 @@ class ErrorRepairer:
         fix_indent_level: bool = False,
         fix_quotes: bool = False,
         fix_dialogue_quotes: bool = False,
-        encoding: str = "utf-8"
+        encoding: str = "utf-8",
+        *,
+        fix_empty_blocks: bool = True,
+        checkpoint: Optional[Callable[[], None]] = None,
     ) -> Tuple[bool, int]:
         """
         自动修复文件
@@ -1124,18 +1170,26 @@ class ErrorRepairer:
             (是否成功, 修复数量)
         """
         try:
-            with open(file_path, "r", encoding=encoding, errors="ignore") as f:
-                lines = f.readlines()
+            with open(file_path, "r", encoding=encoding, newline="") as f:
+                lines = []
+                for index, line in enumerate(f):
+                    if checkpoint is not None and index % 256 == 0:
+                        checkpoint()
+                    lines.append(line)
 
             new_lines = []
             fix_count = 0
+            temp_lines = list(lines) if fix_indent_level else None
 
             for idx, line in enumerate(lines):
+                if checkpoint is not None and idx % 256 == 0:
+                    checkpoint()
                 new_line = line
 
                 # 修复缩进: Tab 转空格
-                if fix_indent and "\t" in line:
-                    new_line = new_line.replace("\t", "    ")
+                leading = line[: len(line) - len(line.lstrip(" \t"))]
+                if fix_indent and "\t" in leading:
+                    new_line = leading.replace("\t", "    ") + line[len(leading):]
                     fix_count += 1
 
                 if fix_dialogue_quotes:
@@ -1153,24 +1207,35 @@ class ErrorRepairer:
                         fix_count += 1
 
                 if fix_indent_level:
-                    temp_lines = list(lines)
+                    if idx:
+                        temp_lines[idx - 1] = lines[idx - 1]
                     temp_lines[idx] = new_line
-                    repaired_line, changed = self.repair_indentation_level(temp_lines, idx)
+                    repaired_line, changed = self.repair_indentation_level(temp_lines, idx, checkpoint=checkpoint)
                     if changed:
                         new_line = repaired_line
                         fix_count += 1
 
                 new_lines.append(new_line)
 
-            # Empty strings blocks are always safe to remove and are not tied
-            # to any optional quote/indent repair switch.
-            new_lines, removed_blocks = self._remove_empty_translate_blocks(new_lines)
-            fix_count += removed_blocks
+            if fix_empty_blocks:
+                new_lines, removed_blocks = self._remove_empty_translate_blocks(new_lines, checkpoint=checkpoint)
+                fix_count += removed_blocks
 
             # 写回文件
             if fix_count > 0:
-                with open(file_path, "w", encoding=encoding) as f:
-                    f.writelines(new_lines)
+                if checkpoint is not None:
+                    checkpoint()
+                # A unique byte-for-byte backup must succeed before replacing the file.
+                target = Path(file_path)
+                original = target.read_bytes()
+                if original.decode(encoding) != "".join(lines):
+                    raise RuntimeError("文件已被其他程序修改，已停止修复")
+                backup = target.with_name(f"{target.name}.{secrets.token_hex(8)}.bak")
+                with open(backup, "xb") as writer:
+                    writer.write(original)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                atomic_write_text(target, "".join(new_lines), encoding=encoding, newline="")
                 self.logger.info(f"修复完成: {file_path} ({fix_count} 处)")
 
             return True, fix_count
@@ -1243,7 +1308,10 @@ class ErrorRepairer:
 
     # ========== 深度 Lint 检查 (调用 Ren'Py 内置 lint) ==========
     
-    def exec_renpy_lint(self, game_path: str) -> Optional[str]:
+    def exec_renpy_lint(
+        self, game_path: str, *, checkpoint: Optional[Callable[[], None]] = None,
+        timeout: float = 120.0,
+    ) -> Optional[str]:
         """
         执行 Ren'Py 内置 lint 命令
         
@@ -1276,16 +1344,34 @@ class ErrorRepairer:
             self.logger.info(f"执行 Lint 命令: {command}")
             
             # 执行命令
-            result = subprocess.run(
-                command,
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',
-                creationflags=0x08000000 if os.name == 'nt' else 0,  # CREATE_NO_WINDOW
-                cwd=game_dir
+            options = dict(
+                shell=False, text=True, encoding='utf-8', errors='ignore',
+                creationflags=0x08000000 if os.name == 'nt' else 0,
+                cwd=game_dir,
             )
+            if checkpoint is None:
+                result = subprocess.run(command, capture_output=True, timeout=timeout, **options)
+            else:
+                checkpoint()
+                deadline = time.monotonic() + timeout
+                with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as process:
+                    try:
+                        while True:
+                            checkpoint()
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            try:
+                                stdout, stderr = process.communicate(timeout=min(0.2, remaining))
+                                result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                                break
+                            except subprocess.TimeoutExpired:
+                                continue
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
+                checkpoint()
             
             # 合并 stdout 和 stderr
             output = (result.stdout or "") + (result.stderr or "")

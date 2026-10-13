@@ -98,7 +98,9 @@ def test_scan_quotes_always_on_and_empty_report_exportable(repair_client):
     job = _finish(client, response.json()["job"]["id"])
     assert job["status"] == "done", job
     assert job["result"]["action"] == "scan"
-    assert "report" in job["result"]
+    assert "report" not in job["result"]
+    assert job["result"]["has_scan_report"] is True
+    assert job["result"]["affected_files"] == 1
     # 空报告也应可导出
     out = tmp_path / "report.xlsx"
     exported = client.post("/api/error-repair/export", json={
@@ -131,7 +133,7 @@ def test_fix_partial_counts_and_confirm_required(repair_client):
     assert job["status"] == "done", job
     result = job["result"]
     assert "fixed_files" in result and "fixed_items" in result and "failed_files" in result
-    # 四开关 false 仍应能清理空块等共享行为；至少任务成功
+    # Only explicitly selected operations are applied by the desktop API.
     assert result["action"] == "fix"
     assert engine.get_status() == Engine.Status.IDLE
 
@@ -159,7 +161,7 @@ def test_lint_none_fails_empty_succeeds(repair_client, monkeypatch):
 
     monkeypatch.setattr(
         "api.routes.error_repair.ErrorRepairer.exec_renpy_lint",
-        lambda self, path: None,
+        lambda self, path, **kwargs: None,
     )
     response = client.post("/api/error-repair/lint", json={
         "folder": str(tl),
@@ -171,7 +173,7 @@ def test_lint_none_fails_empty_succeeds(repair_client, monkeypatch):
 
     monkeypatch.setattr(
         "api.routes.error_repair.ErrorRepairer.exec_renpy_lint",
-        lambda self, path: "",
+        lambda self, path, **kwargs: "",
     )
     monkeypatch.setattr(
         "api.routes.error_repair.ErrorRepairer.parse_lint_errors",
@@ -412,4 +414,114 @@ def test_fix_rejects_junction_escape(repair_client):
     })
     assert response.status_code in {400, 409}
     assert outside_file.read_text(encoding="utf-8") == before
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_large_scan_status_stays_small_and_full_report_exports(repair_client):
+    from openpyxl import load_workbook
+
+    client, _, tmp_path, _, _ = repair_client
+    tl = tmp_path / "tl"
+    tl.mkdir()
+    script = tl / "large.rpy"
+    script.write_text('translate chinese strings:\n' + ''.join(
+        f'    old "Hello {i} [name]"\n    new "你好 {i}"\n' for i in range(2000)
+    ), encoding="utf-8")
+    before = script.read_bytes()
+    response = client.post("/api/error-repair/scan", json={"folder": str(tl)})
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "done", job
+    assert job["result"]["total_issues"] == 2000
+    assert job["result"]["affected_files"] == 1
+    assert job["result"]["scanned_files"] == 1
+    for _ in range(2):
+        status = client.get("/api/error-repair", params={"folder": str(tl)})
+        assert len(status.content) < 3000
+        assert "report" not in status.json()["job"]["result"]
+        assert status.json()["has_scan_report"] is True
+    output = tmp_path / "full.xlsx"
+    exported = client.post("/api/error-repair/export", json={
+        "folder": str(tl), "output_path": str(output),
+    })
+    assert exported.status_code == 200, exported.text
+    with output.open("rb") as stream:
+        workbook = load_workbook(stream, read_only=True)
+        assert workbook.active.max_row == 2001
+        workbook.close()
+    assert script.read_bytes() == before
+
+
+def test_scan_cancel_during_single_file_releases_engine_and_keeps_previous_report(repair_client, monkeypatch):
+    from importlib import import_module
+
+    client, engine, tmp_path, _, _ = repair_client
+    tl = _tl(tmp_path)
+    first = client.post("/api/error-repair/scan", json={"folder": str(tl)})
+    assert _finish(client, first.json()["job"]["id"])["status"] == "done"
+    module = import_module("module.Tool.ErrorRepairer")
+    parse = module.parse_tl_document
+    entered, release = threading.Event(), threading.Event()
+    touched = False
+
+    def gated_parse(lines, *, checkpoint):
+        def tick():
+            nonlocal touched
+            if not touched:
+                touched = True
+                entered.set()
+                assert release.wait(5)
+            checkpoint()
+        return parse(lines, checkpoint=tick)
+
+    monkeypatch.setattr(module, "parse_tl_document", gated_parse)
+    before = {path: path.read_bytes() for path in tl.glob("*.rpy")}
+    response = client.post("/api/error-repair/scan", json={"folder": str(tl)})
+    job_id = response.json()["job"]["id"]
+    try:
+        assert entered.wait(3)
+        assert client.get("/api/error-repair", params={"folder": str(tl)}).status_code == 200
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    finally:
+        release.set()
+    assert _finish(client, job_id)["status"] == "cancelled"
+    assert engine.get_status() == Engine.Status.IDLE
+    assert client.get("/api/error-repair", params={"folder": str(tl)}).json()["has_scan_report"]
+    assert all(path.read_bytes() == value for path, value in before.items())
+
+
+def test_fix_with_all_options_off_preserves_empty_blocks(repair_client):
+    client, _, tmp_path, _, _ = repair_client
+    tl = tmp_path / "tl"
+    tl.mkdir()
+    script = tl / "empty.rpy"
+    original = b'translate chinese strings:\n    # intentionally empty\n'
+    script.write_bytes(original)
+    body = {"folder": str(tl), "fix_indent": False, "confirm": True}
+    response = client.post("/api/error-repair/fix", json=body)
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "done" and job["result"]["fixed_items"] == 0
+    assert script.read_bytes() == original
+    assert not list(tl.glob("*.bak"))
+    response = client.post("/api/error-repair/fix", json={**body, "fix_empty_blocks": True})
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "done" and job["result"]["fixed_items"] == 1
+    assert script.read_bytes() == b""
+    [backup] = list(tl.glob("*.bak"))
+    assert backup.read_bytes() == original
+
+
+def test_checker_failure_is_not_reported_as_clean_scan(repair_client, monkeypatch):
+    client, engine, tmp_path, _, _ = repair_client
+    tl = _tl(tmp_path)
+
+    def fail_check(*args):
+        raise ValueError("scan probe failed")
+
+    monkeypatch.setattr(ErrorRepairer, "_detect_quote_issue", fail_check)
+    response = client.post("/api/error-repair/scan", json={"folder": str(tl)})
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert "scan probe failed" in job["error"]
+    assert "total_issues" not in job["result"]
+    assert not client.get("/api/error-repair", params={"folder": str(tl)}).json()["has_scan_report"]
     assert engine.get_status() == Engine.Status.IDLE

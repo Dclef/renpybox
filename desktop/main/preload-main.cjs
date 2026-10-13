@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('renpy', {
   sidecar: () => ipcRenderer.invoke('sidecar:info'),
+  sidecarPort: Number(process.env.RENPYBOX_SIDECAR_PORT || 9712),
   appInfo: () => ipcRenderer.invoke('app:info'),
   changelog: () => ipcRenderer.invoke('app:changelog'),
   openLogs: () => ipcRenderer.invoke('app:open-logs'),
@@ -26,6 +27,11 @@ contextBridge.exposeInMainWorld('renpy', {
   close: () => ipcRenderer.send('shell:close'),
   /** 未保存修改已在页面内确认放弃时关闭主窗口，不再弹退出确认 */
   closeConfirmed: () => ipcRenderer.send('window:close-confirmed'),
+  onCloseRequested: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('window:close-requested', handler);
+    return () => ipcRenderer.removeListener('window:close-requested', handler);
+  },
   /** 无边框窗口的窗口控制（渲染端画在 38px 标题栏右侧） */
   minimize: () => ipcRenderer.send('window:minimize'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),

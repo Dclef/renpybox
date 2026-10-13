@@ -70,6 +70,7 @@ class FixBody(FolderBody):
     fix_indent_level: bool = False
     fix_quotes: bool = False
     fix_dialogue_quotes: bool = False
+    fix_empty_blocks: bool = False
     confirm: bool = False
 
 
@@ -222,7 +223,7 @@ async def start_scan(request: Request, body: ScanBody) -> dict:
         check_cancel()
         if not owner_still():
             raise RuntimeError("项目已切换，未执行操作")
-        progress("正在扫描翻译目录", 20)
+        progress("正在收集翻译文件", 0)
         repairer = ErrorRepairer()
 
         def cancelled() -> bool:
@@ -232,7 +233,22 @@ async def start_scan(request: Request, body: ScanBody) -> dict:
                 return True
             return False
 
-        report = repairer.check_folder(
+        def scan_progress(state: dict) -> None:
+            check_cancel()
+            phases = {
+                "enumerate": "收集文件", "read": "读取", "parse": "解析",
+                "check": "检查格式", "translation": "检查译文", "file_done": "文件完成",
+            }
+            done, total = state["scanned_files"], state["total_files"]
+            percent = 0 if not total else int(99 * (done + state["fraction"]) / total)
+            name = Path(state["file"]).name if state["file"] else ""
+            line = f"，第 {state['line']} 行" if state["line"] else ""
+            progress(
+                f"{phases[state['phase']]} {name}{line}（已完成 {done}/{total} 个文件，{state['elapsed']:.0f} 秒）",
+                percent,
+            )
+
+        scan = repairer.scan_folder(
             snapshot,
             check_indent=check_indent,
             check_indent_level=check_indent_level,
@@ -240,18 +256,29 @@ async def start_scan(request: Request, body: ScanBody) -> dict:
             check_dialogue_quotes=True,
             encoding="utf-8",
             should_cancel=cancelled,
+            on_progress=scan_progress,
         )
         check_cancel()
+        if scan.budget_exhausted:
+            raise RuntimeError("扫描未完成，请缩小扫描目录后重试")
         if not owner_still():
             raise RuntimeError("项目已切换，未执行操作")
+        report = scan.errors
         total = sum(len(v) for v in report.values())
+        _LAST_SCAN.pop(folder_key, None)
         _LAST_SCAN[folder_key] = report
+        # Keep recent reports for export without retaining every visited project.
+        while len(_LAST_SCAN) > 4:
+            _LAST_SCAN.pop(next(iter(_LAST_SCAN)))
         progress("扫描完成", 100)
         return {
             "success": True,
             "action": "scan",
             "written": False,
-            "report": report,
+            "has_scan_report": True,
+            "affected_files": len(report),
+            "scanned_files": scan.scanned_files,
+            "total_files": scan.total_files,
             "total_issues": total,
             "folder": snapshot,
             "message": f"发现 {total} 个问题" if total else "未发现问题",
@@ -288,6 +315,7 @@ async def start_fix(request: Request, body: FixBody) -> dict:
         body.fix_indent_level,
         body.fix_quotes,
         body.fix_dialogue_quotes,
+        body.fix_empty_blocks,
     )
 
     def compute(check_cancel, progress, should_stop, touch_result, owner_still):
@@ -315,6 +343,8 @@ async def start_fix(request: Request, body: FixBody) -> dict:
                 fix_indent_level=opts[1],
                 fix_quotes=opts[2],
                 fix_dialogue_quotes=opts[3],
+                fix_empty_blocks=opts[4],
+                checkpoint=check_cancel,
                 encoding="utf-8",
             )
             if not ok:
@@ -389,9 +419,9 @@ async def start_lint(request: Request, body: LintBody) -> dict:
             raise RuntimeError("项目已切换，未执行操作")
         progress("正在执行 Ren'Py lint", 30)
         repairer = ErrorRepairer()
-        lint_output = repairer.exec_renpy_lint(snapshot_exe)
+        lint_output = repairer.exec_renpy_lint(snapshot_exe, checkpoint=check_cancel)
         if lint_output is None:
-            raise RuntimeError("Lint 执行失败（无法启动 Ren'Py Python/入口）")
+            raise RuntimeError("Lint 执行失败或超过 120 秒，请查看日志")
         check_cancel()
         if not owner_still():
             raise RuntimeError("项目已切换，未执行操作")
@@ -403,8 +433,6 @@ async def start_lint(request: Request, body: LintBody) -> dict:
             "success": True,
             "action": "lint",
             "written": bool(lint_output and Path(lint_file).is_file()),
-            "output": lint_output,
-            "errors": filtered,
             "error_count": len(filtered),
             "lint_errors_path": lint_file if lint_output else "",
             "folder": snapshot_folder,

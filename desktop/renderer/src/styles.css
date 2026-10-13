@@ -1427,7 +1427,12 @@ body {
   *,
   *::before,
   *::after {
-    animation: none !important;
+    /* Let completion events fire: removing Ant enter animations leaves opacity: 0
+       and an invisible modal that still intercepts every click. */
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    /* Popup alignment measures temporary top/left values synchronously.
+       A nonzero duration on every element also animates those measurements. */
     transition: none !important;
   }
 
@@ -1524,6 +1529,8 @@ body {
 .workbench-preview-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 
 /* 校对：固定表头，长句可自然换行，保存动作留在对照编辑器中。 */
+/* Keep legacy layout below the current app layer, including the embedded tool page. */
+@layer legacy {
 .proofreading-page {
   gap: 18px;
   width: min(100%, 1480px);
@@ -1612,6 +1619,7 @@ body {
 .proofreading-surface .table {
   border-radius: 0;
   box-shadow: none;
+}
 }
 
 .sheet-cell {

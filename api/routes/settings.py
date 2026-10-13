@@ -236,11 +236,21 @@ def honorific_defaults() -> dict:
     return {"titles": list(TextProcessor.DEFAULT_HONORIFIC_TITLES)}
 
 @router.get("/prompt-preview")
-def preview_prompt(request: Request) -> dict[str, str]:
+def preview_prompt(request: Request, raw: bool = False) -> dict[str, str]:
     """读取当前配置的基础提示、写作风格和固定工程协议，不发起模型请求。"""
     from module.PromptBuilder import PromptBuilder
 
     try:
-        return PromptBuilder(request.app.state.config).build_static_prompt_sections()
+        builder = PromptBuilder(request.app.state.config)
+        if raw:
+            # Editing templates must retain language placeholders for future projects.
+            language, _, _ = builder.get_prompt_language_and_names()
+            with PromptBuilder.LOCK:
+                return {
+                    "base": builder.resolve_base_prompt(language),
+                    "style": builder.build_writing_style(language),
+                    "language": language.value,
+                }
+        return builder.build_static_prompt_sections()
     except Exception as exc:
         raise HTTPException(status_code = 400, detail = f"提示词预览失败：{exc}") from exc

@@ -153,6 +153,37 @@ def test_large_label_block_matching_completes_without_quadratic_blowup() -> None
     assert peak < 160 * 1024 * 1024, f"峰值内存 {peak / 1e6:.1f}MB"
 
 
+def test_alignment_can_cancel_inside_dynamic_programming():
+    import asyncio
+    import pytest
+    from module.Renpy.renpy_tl_core import _exact_lcs_mapping, _banded_lcs_mapping, parse_tl_document
+
+    block = parse_tl_document(_label_block(list(range(300)))).blocks[0]
+    templates, targets = _split_statements(block)
+    for match in (_exact_lcs_mapping, _banded_lcs_mapping):
+        calls = 0
+
+        def checkpoint():
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                raise asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            match(templates, targets, checkpoint=checkpoint)
+        assert calls == 4
+
+
+def test_alignment_budget_fails_explicitly_instead_of_dropping_matches():
+    import pytest
+    from module.Renpy.renpy_tl_core import _banded_lcs_mapping, TlAlignmentLimitError, parse_tl_document
+
+    block = parse_tl_document(_label_block(list(range(300)))).blocks[0]
+    templates, targets = _split_statements(block)
+    with pytest.raises(TlAlignmentLimitError):
+        _banded_lcs_mapping(templates[:20], targets, max_cells=1000)
+
+
 
 def test_replace_only_marker_allows_rpy_and_rpyc_location_comments():
     from module.Renpy.renpy_tl_core import has_replace_only_marker

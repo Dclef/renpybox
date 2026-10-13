@@ -69,8 +69,14 @@ function fixture({
   return { updater, requests, downloads, launches, quits, states, signals: () => downloadSignals, release: () => releaseDownload() };
 }
 
-test('非 New UI 版本号一律不参与比较', () => {
-  assert.equal(parseDesktopVersion('0.8.2'), null);
+test('支持正式版与旧测试版，排除 Qt 发布标签及未知版本格式', () => {
+  assert.equal(parseDesktopVersion('0.9.0').build, null);
+  assert.equal(parseDesktopVersion('RenpyBox_v0.9.0'), null);
+  assert.equal(parseDesktopVersion('0.9.0-beta.1'), null);
+  assert.equal(compareDesktopVersions('0.9.0', '0.9.0-newui.99'), 1);
+  assert.equal(compareDesktopVersions('0.9.0-newui.99', '0.9.0'), -1);
+  assert.equal(compareDesktopVersions('0.9.0', 'v0.9.0'), 0);
+  assert.equal(compareDesktopVersions('0.10.0', '0.9.99'), 1);
   assert.equal(parseDesktopVersion('v0.8.2-newui.1').build, 1);
   assert.equal(parseDesktopVersion('0.8.2-newui.1').patch, 2);
   assert.equal(compareDesktopVersions('0.8.2-newui.2', '0.8.2-newui.1'), 1);
@@ -80,12 +86,29 @@ test('非 New UI 版本号一律不参与比较', () => {
   assert.equal(compareDesktopVersions('0.8.2-newui.1', 'v0.8.2-newui.1'), 0);
 });
 
-test('只认带 Windows 安装包资产的 New UI 发布', () => {
+test('只认带桌面 Windows 安装包资产的发布', () => {
   const zipOnly = release('0.8.2-newui.9', { assets: [{ name: 'RenpyBox-NewUI-0.8.2-newui.9-x64.zip' }] });
   assert.equal(selectInstallerAsset(zipOnly), null);
   assert.equal(pickLatestRelease([zipOnly], '0.8.2-newui.1'), null);
-  const stable = release('0.8.3', { prerelease: false });
-  assert.equal(pickLatestRelease([stable], '0.8.2-newui.1'), null, '旧 Qt 线的稳定版不应被当成 New UI 更新');
+  const qt = { ...release('0.9.0', { prerelease: false, assets: [{ name: 'RenpyBox_v0.9.0.zip' }] }), tag_name: 'RenpyBox_v0.9.0' };
+  assert.equal(pickLatestRelease([qt], '0.8.2-newui.1'), null, 'Qt 发布不能被当作桌面更新');
+  assert.equal(pickLatestRelease([release('0.9.0', { assets: qt.assets })], '0.8.2-newui.1'), null);
+});
+
+test('测试版能升级到正式版，正式版跳过预发布和草稿', async () => {
+  const stable = release('0.9.0', { prerelease: false });
+  assert.equal(pickLatestRelease([stable], '0.8.2-newui.2'), stable);
+  assert.equal(pickLatestRelease([stable], '0.9.0'), null);
+  const next = release('0.9.1', { prerelease: false });
+  const f = fixture({ currentVersion: '0.9.0', releases: [
+    stable, next, release('0.10.0-newui.1'), release('0.10.0', { prerelease: true }),
+    release('0.11.0', { draft: true, prerelease: false }),
+  ] });
+  const offered = await f.updater.check();
+  assert.equal(offered.version, '0.9.1');
+  const done = await f.updater.download();
+  assert.equal(done.status, 'downloaded');
+  assert.equal(done.filePath, path.join('tmp', 'renpybox-update', 'RenpyBox-NewUI-0.9.1-x64.exe'));
 });
 
 test('开发模式不检查、不下载、不安装', async () => {
@@ -109,7 +132,7 @@ test('并发检查共用一次请求', async () => {
 test('挑出比当前版本新的最新一条发布', async () => {
   const f = fixture({
     releases: [
-      release('0.8.3', { prerelease: false }),
+      { ...release('0.8.3', { prerelease: false }), tag_name: 'RenpyBox_v0.8.3' },
       release('0.8.2-newui.1'),
       release('0.8.2-newui.2'),
       release('0.8.2-newui.9', { draft: true }),
@@ -133,11 +156,11 @@ test('已是最新时给出 latest 而不是错误', async () => {
   assert.equal(state.error, '');
 });
 
-test('没有可用的 New UI 发布时给出可读文案', async () => {
+test('没有可用的桌面发布时给出可读文案', async () => {
   const notPublished = fixture({ requestError: Object.assign(new Error('仓库或版本不存在'), { kind: 'not-published' }) });
   const state = await notPublished.updater.check();
   assert.equal(state.status, 'error');
-  assert.match(state.error, /尚未发布可用的 New UI 测试版本/);
+  assert.match(state.error, /尚未发布可用的桌面版本/);
   const limited = fixture({ requestError: Object.assign(new Error('GitHub 返回 403'), { kind: 'rate-limited' }) });
   assert.match((await limited.updater.check()).error, /频率限制/);
   const offline = fixture({ requestError: Object.assign(new Error('fetch failed'), { kind: 'network' }) });

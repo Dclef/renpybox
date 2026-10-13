@@ -64,7 +64,7 @@ export class ApiError extends Error {
  * 打包：窗口是 file:// 源，没有 origin，相对路径会解析成 file:///api/... 而
  * 全部失败，必须走绝对地址。
  */
-const SIDECAR_ORIGIN = 'http://127.0.0.1:9712';
+const SIDECAR_ORIGIN = `http://127.0.0.1:${window.renpy?.sidecarPort || 9712}`;
 
 export function apiBase(): string {
   const { protocol, host } = window.location;

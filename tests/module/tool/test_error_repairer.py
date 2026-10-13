@@ -618,9 +618,9 @@ def test_scan_folder_reads_and_parses_each_file_once(tmp_path, monkeypatch) -> N
         opened.append(Path(file))
         return real_open(file, *args, **kwargs)
 
-    def counting_parse(lines):
+    def counting_parse(lines, **kwargs):
         parsed.append(len(lines))
-        return original_parse(lines)
+        return original_parse(lines, **kwargs)
 
     monkeypatch.setattr(builtins, "open", counting_open)
     monkeypatch.setattr(error_repairer_module, "parse_tl_document", counting_parse)
@@ -664,3 +664,176 @@ def test_scan_folder_stops_when_cancelled(tmp_path) -> None:
     assert result.scanned_files == 0
     assert result.budget_exhausted is True
     assert result.errors == {}
+
+
+def test_large_single_file_cancels_during_parse_without_writing(tmp_path, monkeypatch):
+    script = tmp_path / "large.rpy"
+    original = ('translate chinese strings:\n' + '    old "Hello [name]"\n    new "你好 [name]"\n' * 5000).encode()
+    script.write_bytes(original)
+    parse = error_repairer_module.parse_tl_document
+    cancelled = False
+    checkpoints = 0
+
+    def parsing(lines, *, checkpoint):
+        def tick():
+            nonlocal cancelled, checkpoints
+            checkpoints += 1
+            if checkpoints == 3:
+                cancelled = True
+            checkpoint()
+        return parse(lines, checkpoint=tick)
+
+    monkeypatch.setattr(error_repairer_module, "parse_tl_document", parsing)
+    result = ErrorRepairer().scan_folder(str(tmp_path), should_cancel=lambda: cancelled)
+    assert checkpoints == 3
+    assert result.budget_exhausted and result.scanned_files == 0
+    assert result.errors == {}
+    assert script.read_bytes() == original
+
+
+def test_single_file_progress_is_throttled_and_pairs_built_once(tmp_path, monkeypatch):
+    script = tmp_path / "large.rpy"
+    script.write_text('translate chinese strings:\n' + ''.join(
+        f'    old "Hello {i} [name]"\n    new "你好 {i} [name]"\n' for i in range(1200)
+    ), encoding="utf-8")
+    clock_value = 0.0
+
+    def clock():
+        nonlocal clock_value
+        clock_value += 0.05
+        return clock_value
+
+    monkeypatch.setattr(error_repairer_module, "time", SimpleNamespace(monotonic=clock))
+    repairer = ErrorRepairer()
+    pair = repairer._iter_translation_pairs
+    calls = 0
+
+    def pairs(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield from pair(*args, **kwargs)
+
+    monkeypatch.setattr(repairer, "_iter_translation_pairs", pairs)
+    updates = []
+    result = repairer.scan_folder(str(tmp_path), check_indent_level=False, on_progress=updates.append)
+    assert result.scanned_files == 1 and result.errors == {}
+    assert calls == 1
+    assert {event["phase"] for event in updates} >= {"parse", "check", "translation"}
+    assert all(b["elapsed"] - a["elapsed"] >= 0.2 - 1e-9 for a, b in zip(updates, updates[1:]))
+    completion = [event["scanned_files"] + event["fraction"] for event in updates]
+    assert completion == sorted(completion)
+
+
+def test_repair_backup_preserves_bytes_newlines_and_body_tabs(tmp_path):
+    script = tmp_path / "tabs.rpy"
+    original = b'translate chinese strings:\r\n\told "A\tB"\r\n\tnew "A\tB"\r\n'
+    script.write_bytes(original)
+    assert ErrorRepairer().auto_fix_file(str(script), fix_empty_blocks=False) == (True, 2)
+    assert script.read_bytes() == original.replace(b'\r\n\t', b'\r\n    ')
+    [backup] = list(tmp_path.glob("tabs.rpy.*.bak"))
+    assert backup.read_bytes() == original
+    assert ErrorRepairer().auto_fix_file(str(script), fix_empty_blocks=False) == (True, 0)
+    assert list(tmp_path.glob("*.bak")) == [backup]
+
+
+def test_repair_write_failure_leaves_original_and_backup(tmp_path, monkeypatch):
+    script = tmp_path / "tabs.rpy"
+    original = b'\tnew "Keep me"\n'
+    script.write_bytes(original)
+    atomic_module = import_module("module.File.AtomicWrite")
+
+    def fail_replace(*args):
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr(atomic_module.os, "replace", fail_replace)
+    assert ErrorRepairer().auto_fix_file(str(script)) == (False, 0)
+    assert script.read_bytes() == original
+    [backup] = list(tmp_path.glob("*.bak"))
+    assert backup.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_repair_refuses_invalid_encoding_without_losing_bytes(tmp_path):
+    script = tmp_path / "broken.rpy"
+    script.write_bytes(b'\tnew "\xff"\n')
+    assert ErrorRepairer().auto_fix_file(str(script)) == (False, 0)
+    assert script.read_bytes() == b'\tnew "\xff"\n'
+    assert not list(tmp_path.glob("*.bak"))
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_lint_timeout_and_cancel_reap_real_child(tmp_path, monkeypatch, cancel):
+    import asyncio
+    import sys
+
+    script = tmp_path / "sleeping_game.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(error_repairer_module, "get_python_path_from_game_path", lambda _: sys.executable)
+    monkeypatch.setattr(error_repairer_module, "get_py_path", lambda _: str(script))
+    processes = []
+    popen = error_repairer_module.subprocess.Popen
+
+    def launch(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        processes.append(child)
+        return child
+
+    monkeypatch.setattr(error_repairer_module.subprocess, "Popen", launch)
+    calls = 0
+
+    def checkpoint():
+        nonlocal calls
+        calls += 1
+        if cancel and calls == 3:
+            raise asyncio.CancelledError()
+
+    repairer = ErrorRepairer()
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            repairer.exec_renpy_lint(str(tmp_path / "game.exe"), checkpoint=checkpoint)
+    else:
+        assert repairer.exec_renpy_lint(
+            str(tmp_path / "game.exe"), checkpoint=checkpoint, timeout=0.1,
+        ) is None
+    assert len(processes) == 1 and processes[0].poll() is not None
+    assert not (tmp_path / "lint_errors.txt").exists()
+
+
+def test_repair_cancel_inside_file_leaves_original(tmp_path):
+    import asyncio
+
+    script = tmp_path / "large.rpy"
+    original = b'\tnew "A"\n' * 1000
+    script.write_bytes(original)
+    calls = 0
+
+    def checkpoint():
+        nonlocal calls
+        calls += 1
+        # Four callbacks read the file; then cancel while building repaired lines.
+        if calls == 6:
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        ErrorRepairer().auto_fix_file(str(script), checkpoint=checkpoint)
+    assert script.read_bytes() == original
+    assert not list(tmp_path.glob("*.bak"))
+
+
+def test_repair_backup_failure_prevents_write(tmp_path, monkeypatch):
+    import builtins
+    from pathlib import Path
+
+    script = tmp_path / "tabs.rpy"
+    original = b'\tnew "A"\n'
+    script.write_bytes(original)
+    real_open = builtins.open
+
+    def open_without_backup(path, *args, **kwargs):
+        if Path(path).suffix == ".bak":
+            raise OSError("backup disk full")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", open_without_backup)
+    assert ErrorRepairer().auto_fix_file(str(script)) == (False, 0)
+    assert script.read_bytes() == original

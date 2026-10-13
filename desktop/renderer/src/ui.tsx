@@ -245,6 +245,7 @@ export function Dialog(props: {
   return (
     <Modal
       open
+      centered
       onCancel={onCancel}
       width={560}
       title={title}

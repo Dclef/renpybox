@@ -278,7 +278,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       const headerH = header?.offsetHeight ?? 36;
       // 下限与 .rb-proof-table-scroll 的 CSS min-height 一致，避免低窗口下两层最低高度冲突而裁切
       setScrollY(Math.max(48, el.clientHeight - headerH - 2));
-      setScrollX(Math.max(900, el.clientWidth || 900));
+      setScrollX(Math.max(620, el.clientWidth - 2));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -737,7 +737,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     {
       title: '原文',
       key: 'src',
-      width: 320,
+      width: Math.max(180, Math.floor((scrollX - 228) / 2)),
       className: 'rb-proof-cell-wrap',
       onCell: (row) => ({ onDoubleClick: () => openEdit(row) }),
       render: (_value, row) => row.src,
@@ -745,7 +745,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     {
       title: '译文',
       key: 'dst',
-      width: 320,
+      width: Math.max(180, Math.floor((scrollX - 228) / 2)),
       className: 'rb-proof-cell-wrap',
       onCell: (row) => ({ onDoubleClick: () => openEdit(row) }),
       render: (_value, row) => <span className="rb-proof-target">{row.dst || '（空译文）'}</span>,
@@ -814,18 +814,19 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   return (
     <div className={embedded ? 'proofreading-page rb-embedded' : 'proofreading-page rb-page'}>
       <div className="rb-page-scroll">
-        {embedded ? <div className="rb-embedded-actions">{actions}</div> : (
+        {!embedded && (
           <PageHeader
             title="平行校对台"
             description="原文与译文并排阅读，让每一句更准确、更自然。"
-            actions={actions}
           />
         )}
+        <div className="rb-proofreading-actions">{actions}</div>
         {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
         {qualityRunning && <div className="rb-proofreading-task"><Progress percent={qualityPercent} showInfo={false} size="small" /><span>{t(cancelling ? 'quality_cancelling' : 'quality_running')}</span></div>}
         {retranslate.state !== 'IDLE' && <div className="rb-proofreading-task">重译：{retranslate.done ?? 0} / {retranslate.total ?? 0} · 已保存 {retranslate.updated ?? 0} · 失败 {retranslate.failed ?? 0} · {retranslateRunning ? retranslate.state === 'CANCELLING' ? '等待已发出的请求结束…' : '处理中…' : retranslate.state === 'FAILED' ? '失败：' + retranslate.error : retranslate.state === 'CANCELLED' ? '已取消' : '已完成'}</div>}
         {error && <Banner tone="warning">{error}</Banner>}
         <form className="proofreading-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}>
+          <div className="rb-proof-search-row">
           <Space.Compact className="rb-proof-search">
             <Input
               aria-label="搜索原文或译文"
@@ -860,13 +861,26 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           </Space.Compact>
           <Button htmlType="submit" disabled={loading}>搜索</Button>
           <Checkbox checked={searchRegex} onChange={(event) => setSearchRegex(event.target.checked)}>{t('proofreading_regex_toggle')}</Checkbox>
+          <Checkbox checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setPage(1); }}>仅看问题</Checkbox>
+          <Select
+            aria-label="问题类型"
+            value={warning}
+            options={warningOptions}
+            onChange={(value) => { setWarning(value ?? ''); setPage(1); }}
+            style={{ width: 160 }}
+          />
+          </div>
+          {(search || searchError) && (
           <span className="rb-metric-note" aria-live="polite">
             {searchError ? t('proofreading_regex_invalid').replace('{error}', searchError)
               : !search ? ''
                 : matches.length ? t('proofreading_match_counter').replace('{current}', String(matchIndex >= 0 ? matchIndex + 1 : 1)).replace('{total}', String(matches.length))
                   : t('proofreading_match_none')}
           </span>
-          <span className="proofreading-filter-row">
+          )}
+          <details className="rb-proof-filter-details">
+          <summary>更多筛选{filterActive ? ' · 已启用' : ''}</summary>
+          <div className="proofreading-filter-row">
           <Select
             mode="multiple"
             aria-label={t('proofreading_filter_statuses')}
@@ -908,26 +922,20 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
               <span className="rb-proof-filter-hint" aria-label={t('proofreading_filter_terms_empty')}><Info size={14} /></span>
             </Tooltip>
           )}
-          {(termOptions.length || filterTerms.length) ? (
+          {(termOptions.length || filterActive) ? (
             <span className="rb-tool-actions">
               <Button type="link" size="small" onClick={() => applyFilter({ terms: termOptions.map((term: GlossaryTerm) => term.key) })}>{t('proofreading_filter_select_all')}</Button>
               <Button type="link" size="small" disabled={!filterActive} onClick={() => applyFilter({ statuses: [], files: [], warnings: [], terms: [] })}>{t('proofreading_filter_clear')}</Button>
             </span>
           ) : null}
-          <Button size="small" disabled={saving || loading} onClick={() => void exportFilteredRows()}>{t('proofreading_filter_export')}</Button>
-          </span>
+          </div>
+          <p className="rb-proof-filter-scope">{t('proofreading_filter_scope_note')}</p>
+          </details>
         </form>
         <div className="rb-proofreading-selection">
-          <Checkbox checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setPage(1); }}>仅看问题</Checkbox>
-          <Select
-            aria-label="问题类型"
-            size="small"
-            value={warning}
-            options={warningOptions}
-            onChange={(value) => { setWarning(value ?? ''); setPage(1); }}
-          />
           {filterActive && <Tooltip title={t('proofreading_filter_scope_note')}><span className="rb-proof-filter-hint" aria-hidden="true">筛选已生效</span></Tooltip>}
           <Button type="link" size="small" disabled={!selected.size} onClick={() => copyPairs(items.filter((row) => selected.has(row.id)))}>{t('proofreading_copy_pairs')}</Button>
+          <Button type="link" size="small" disabled={saving || loading || !data?.total} onClick={() => void exportFilteredRows()}>{t('proofreading_filter_export')}</Button>
           <span className="rb-proof-filter-hint">{t('proofreading_select_hint')}</span>
         </div>
         {loading && <div className="rb-proof-loading" role="status" aria-live="polite">
@@ -950,7 +958,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             scroll={{ x: scrollX, y: scrollY }}
             locale={{
               emptyText: (
-                <div className="rb-proof-empty">
+                <div className="rb-proof-empty" style={{ minHeight: Math.max(80, scrollY - 32) }}>
                   {loading ? t('proofreading_loading') : data ? t('proofreading_empty_filtered') : t('proofreading_empty_before')}
                 </div>
               ),
