@@ -86,7 +86,10 @@ jobs:
           $existingJson = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft
           if ($LASTEXITCODE -eq 0) {
             $existing = $existingJson | ConvertFrom-Json
-            if (!$existing.isDraft) { throw 'Refusing to replace an already published release' }
+            if (!$existing.isDraft) {
+              Write-Host "::notice::Release $tag is already published; skipping replacement. Bump the application version before publishing new artifacts."
+              exit 0
+            }
             gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft --target $env:GITHUB_SHA --title "RenpyBox $version" --notes-file $notesPath
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             gh release upload $tag @files --repo $env:GITHUB_REPOSITORY --clobber
