@@ -19,11 +19,20 @@ from base.EventManager import EventManager
 from base.PathHelper import get_resource_path
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+from module.Project.PlatformDefaults import (
+    legacy_active_platform,
+    merge_imported_platforms,
+    normalize_platforms,
+    read_legacy_platforms,
+)
 from module.Project.PlatformNaming import deduplicate_platform_name
 from module.Secret.SecretStore import CREDENTIAL_ID_FIELD, LEGACY_CREDENTIAL_ID_FIELD, SecretStore
 
 router = APIRouter(prefix = "/api/platforms", tags = ["接口管理"])
 _WRITE_LOCK = threading.Lock()
+
+# 导入的配置文件体积上限：真实配置不到 100 KB，超过这个量级说明选错了文件。
+MAX_IMPORT_BYTES = 8 * 1024 * 1024
 
 
 class PlatformWrite(BaseModel):
@@ -45,6 +54,25 @@ class PlatformWrite(BaseModel):
     temperature_custom_enable: bool | None = None
     presence_penalty_custom_enable: bool | None = None
     frequency_penalty_custom_enable: bool | None = None
+
+
+class PlatformImport(BaseModel):
+    """导入旧版（Python / Qt5 版）配置里的接口。
+
+    只接受配置文件的绝对路径：桌面版读文件、Qt5 版在别的目录，渲染层拿不到内容。
+    ``activate`` 为真时一并采用旧配置里启用的接口。
+    """
+
+    model_config = ConfigDict(extra = "forbid")
+    path: str = Field(min_length = 1, max_length = 4096)
+    activate: bool = True
+
+
+class PlatformImportResponse(SettingsResponse):
+    """在设置快照之外补上导入结果，便于界面给出准确提示。"""
+
+    imported: int = 0
+    skipped: int = 0
 
 
 def _idle() -> None:
@@ -187,6 +215,83 @@ def load_platform_presets() -> list[dict]:
 def read_presets() -> dict:
     """内置接口预设，用于「新增接口」菜单预填名称、协议与地址。"""
     return {"presets": load_platform_presets()}
+
+
+def _legacy_active_platform(payload: object, imported: list[dict]) -> dict | None:
+    """旧版配置里启用的那条接口；编号越界或缺失时返回 ``None``。"""
+    index = legacy_active_platform(payload)
+    if not isinstance(index, int) or not 0 <= index < len(imported):
+        return None
+    return imported[index]
+
+
+def _resolve_active(platforms: list[dict], legacy_platform: dict | None, current: int) -> int:
+    """确定导入后启用哪一条接口。
+
+    优先沿用旧版的启用选择（按凭据身份定位，避免归一化重编号后指错条目），
+    否则保留当前选择；当前选择已失效时退回第一条。
+    """
+    if legacy_platform is not None:
+        identity = legacy_platform.get(CREDENTIAL_ID_FIELD)
+        if isinstance(identity, str) and identity.strip():
+            for item in platforms:
+                if str(item.get(CREDENTIAL_ID_FIELD, "")).lower() == identity.strip().lower():
+                    return int(item.get("id", 0))
+    if 0 <= current < len(platforms):
+        return current
+    return 0
+
+
+@router.post("/import", response_model = PlatformImportResponse)
+def import_platforms(request: Request, body: PlatformImport) -> PlatformImportResponse:
+    """从旧版（Python / Qt5）配置导入接口。
+
+    桌面版与旧版把配置放在不同目录，用户升级后接口列表是空的；这里让用户
+    自己选旧版的 config.json，只搬运接口字段与稳定凭据身份 —— 密钥本体存在
+    Windows 凭据管理器里且是全局的，凭身份即可自动认领，不必复制密钥。
+    旧配置里残留的明文密钥交给 ``SecretStore.migrate_platforms`` 落进凭据库
+    后再从配置中清空，不会长期留在 JSON 里。
+    """
+    path = os.path.abspath(os.path.expanduser(body.path.strip()))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code = 400, detail = "找不到这个文件，请选择旧版程序目录下的 config.json。")
+    if os.path.getsize(path) > MAX_IMPORT_BYTES:
+        raise HTTPException(status_code = 400, detail = "配置文件过大，可能不是 RenpyBox 的配置文件。")
+    try:
+        with open(path, "r", encoding = "utf-8-sig") as reader:
+            payload = json.load(reader)
+    except (OSError, ValueError):
+        raise HTTPException(status_code = 400, detail = "无法读取这份配置，请确认它是旧版程序目录下的 config.json。") from None
+    try:
+        imported = read_legacy_platforms(payload)
+    except ValueError as error:
+        raise HTTPException(status_code = 400, detail = str(error)) from None
+    if not imported:
+        raise HTTPException(status_code = 400, detail = "这份配置里没有可导入的接口。")
+
+    with _WRITE_LOCK:
+        _idle()
+        config = request.app.state.config
+        merged, added, skipped = merge_imported_platforms(config.platforms, imported)
+        # 归一化会重排并重新编号，所以要在它之前记下旧版启用的是哪一条
+        legacy_platform = _legacy_active_platform(payload, imported) if body.activate else None
+        # 统一思考字段、补齐机翻接口、生成缺失的凭据身份并连续编号
+        normalize_platforms(merged)
+        # 先落盘稳定身份，再把旧配置里的明文密钥迁进凭据库
+        _save(config, merged)
+        try:
+            migrated = SecretStore.get().migrate_platforms(merged)
+        except Exception:
+            migrated = 0
+        if migrated > 0:
+            _save(config, merged)
+
+        # 按身份把旧版的启用选择映射到重编号后的条目
+        active = _resolve_active(merged, legacy_platform, config.activate_platform)
+        _save(config, merged, active = active)
+
+    response = read_settings(request)
+    return PlatformImportResponse(**response.model_dump(), imported = added, skipped = skipped)
 
 
 @router.post("", response_model = SettingsResponse)
