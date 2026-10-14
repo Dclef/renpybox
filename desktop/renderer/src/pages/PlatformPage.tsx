@@ -13,7 +13,7 @@ import {
   Modal,
   Select,
 } from 'antd';
-import { Cloud, Cpu, Languages, MoreHorizontal, Pencil, Plus, Send, Settings } from 'lucide-react';
+import { Cloud, Cpu, Import, Languages, MoreHorizontal, Pencil, Plug, Plus, Send, Settings } from 'lucide-react';
 
 import { useT } from '../i18n';
 import { getTranslationState, request } from '../api';
@@ -131,6 +131,9 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   const [deleting, setDeleting] = useState<PlatformEntry | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [collapseKeys, setCollapseKeys] = useState<string[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importPath, setImportPath] = useState('');
+  const [importing, setImporting] = useState(false);
   const editorRef = useRef<HTMLFormElement>(null);
   const testPending = useRef(false);
   const dirty = editor !== null && JSON.stringify(editor) !== JSON.stringify(original);
@@ -240,6 +243,39 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       setBusy(false);
     }
   }
+  /** 选择旧版（Python 版）程序目录下的 config.json。 */
+  async function pickLegacyConfig() {
+    const picked = await window.renpy?.pickFile?.({
+      filters: [{ name: 'config.json', extensions: ['json'] }],
+    });
+    if (picked) setImportPath(picked);
+  }
+  /** 把旧版配置里的接口搬进当前配置；密钥靠稳定凭据身份自动认领。 */
+  async function runImport() {
+    if (!importPath.trim()) {
+      state.pushToast('warning', t('platform_import_missing'));
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await request<{ imported: number; skipped: number }>('/api/platforms/import', {
+        method: 'POST',
+        body: JSON.stringify({ path: importPath.trim() }),
+      });
+      await state.reloadSettings();
+      setImportOpen(false);
+      setImportPath('');
+      if (result.imported > 0) {
+        state.pushToast('success', t('platform_import_done').replace('{added}', String(result.imported)).replace('{skipped}', String(result.skipped)));
+      } else {
+        state.pushToast('info', t('platform_import_none').replace('{skipped}', String(result.skipped)));
+      }
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setImporting(false);
+    }
+  }
   async function loadModels() {
     if (editor?.id == null) return;
     const id = ++modelRequest.current;
@@ -317,6 +353,12 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                     label: t('platform_add_blank'),
                     icon: <Plus size={14} strokeWidth={1.75} />,
                     onClick: () => openEditor(),
+                  },
+                  {
+                    key: 'import',
+                    label: t('platform_import'),
+                    icon: <Import size={14} strokeWidth={1.75} />,
+                    onClick: () => setImportOpen(true),
                   },
                 ],
               }}
@@ -454,7 +496,25 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
           })}
 
           {groups.length === 0 ? (
-            <Empty>{keyword ? '没有匹配的接口，试试其他名称或模型' : '还没有翻译接口，点击「新增接口」配置第一个服务'}</Empty>
+            keyword ? (
+              <Empty>{t('platform_empty_search')}</Empty>
+            ) : (
+              <Empty>
+                <span className="rb-empty-stack">
+                  <Plug size={28} strokeWidth={1.75} />
+                  <strong>{t('platform_empty_title')}</strong>
+                  <span>{t('platform_empty_content')}</span>
+                  <span className="rb-empty-actions">
+                    <Button type="primary" icon={<Plus size={16} strokeWidth={1.75} />} disabled={disabled} onClick={() => openEditor()}>
+                      {t('platform_add')}
+                    </Button>
+                    <Button icon={<Import size={16} strokeWidth={1.75} />} disabled={disabled} onClick={() => setImportOpen(true)}>
+                      {t('platform_import')}
+                    </Button>
+                  </span>
+                </span>
+              </Empty>
+            )
           ) : null}
 
           {state.translation.engine_status !== 'IDLE' && testing === null ? (
@@ -642,6 +702,36 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
           </Modal>
         ) : null}
       </div>
+
+      {importOpen ? (
+        <Dialog
+          title={t('platform_import_title')}
+          confirmText={importing ? t('platform_import_running') : t('platform_import_confirm')}
+          onConfirm={() => {
+            if (!importing) void runImport();
+          }}
+          onCancel={() => {
+            if (importing) return;
+            setImportOpen(false);
+            setImportPath('');
+          }}
+        >
+          <p>{t('platform_import_description')}</p>
+          <div className="rb-platform-import-row">
+            <Input
+              readOnly
+              aria-label={t('platform_import_pick')}
+              placeholder="config.json"
+              value={importPath}
+              onClick={() => void pickLegacyConfig()}
+            />
+            <Button htmlType="button" disabled={importing} onClick={() => void pickLegacyConfig()}>
+              {t('platform_import_pick')}
+            </Button>
+          </div>
+          <p className="rb-platform-help">{t('platform_import_hint')}</p>
+        </Dialog>
+      ) : null}
 
       {deleting ? (
         <Dialog

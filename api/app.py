@@ -34,6 +34,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Localizer.set_app_language(config.app_language)
     LogManager.get().info(f"[api] RenpyBox {Version.CURRENT} 启动")
 
+    # 与 Qt5 接口页一致：首次启动播种内置接口并做字段归一化，否则全新安装
+    # 会停在空接口列表，用户会以为接口「丢了」。
+    try:
+        from module.Project.PlatformDefaults import seed_default_platforms
+
+        if seed_default_platforms(config):
+            LogManager.get().info("[api] 已补齐默认接口配置")
+    except Exception as error:
+        LogManager.get().warning(f"[api] 默认接口初始化失败，保留原配置: {error}")
+
     hub = ConnectionHub()
     jobs = JobManager(publish=hub.broadcast_threadsafe)
     bridge = EventBridge(hub)
