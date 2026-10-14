@@ -1,23 +1,15 @@
-name: RenpyBox build
+name: RenpyBox Python compatibility build
 
 on:
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "base/Version.py"
-      - "version.txt"
-      - "main.spec"
-      - "build.bat"
-      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -26,66 +18,63 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Check Version
         id: check_version
         shell: pwsh
         run: |
           $version = python -c "from base.Version import Version; print(Version.CURRENT)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Expected a stable Python compatibility version' }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Install Requirements
-        shell: cmd
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip setuptools
           python -m pip install -r requirements.txt
-          python -m pip cache purge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install pytest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build EXE (build.bat)
+      - name: Check Python migration and update dialogs
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest tests/base/test_version_manager.py tests/base/test_desktop_migration.py tests/frontend/test_desktop_migration_ui.py tests/frontend/test_app_update_ui.py tests/frontend/setting/test_update_dialogs.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Python EXE
         shell: cmd
         run: call build.bat
 
-      - name: Compress Archive
-        shell: cmd
-        run: .\resource\7za.exe a -y -bt -mx5 RenpyBox_${{ steps.check_version.outputs.version }}.zip .\dist\RenpyBox\*
-
-      - name: Embed Update Manifest
-        shell: cmd
-        run: python buildtools\update_assets.py manifest --dist dist\RenpyBox --version ${{ steps.check_version.outputs.version }} --zip RenpyBox_${{ steps.check_version.outputs.version }}.zip
-
-      - name: Generate Incremental Patch
-        id: incremental_patch
+      - name: Verify frozen migration dialog
         shell: pwsh
-        continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.check_version.outputs.version }}
+          QT_QPA_PLATFORM: offscreen
         run: |
-          $version = $env:RELEASE_VERSION
-          $previous = gh release view --repo $env:GITHUB_REPOSITORY --json tagName,assets | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw "读取上一正式版失败，保留全量发布" }
-          $previousVersion = $previous.tagName -replace '^RenpyBox_', ''
-          if ($previousVersion -notmatch '^v\d+\.\d+\.\d+(\.\d+)?$') { exit 0 }
-          if ([version]$previousVersion.TrimStart('v') -ge [version]$version.TrimStart('v')) { exit 0 }
-          $previousName = "RenpyBox_$previousVersion.zip"
-          if (-not ($previous.assets | Where-Object { $_.name -eq $previousName })) { exit 0 }
-          gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $previousName --dir previous-release
-          if ($LASTEXITCODE -ne 0) { throw "下载增量基线失败，保留全量发布" }
-          $patchName = "RenpyBox_$version.from-$previousVersion.patch.zip"
-          python buildtools/update_assets.py patch --dist dist/RenpyBox --version $version --prev-zip "previous-release/$previousName" --prev-version $previousVersion --out $patchName
-          if ($LASTEXITCODE -ne 0) { throw "增量重建校验失败，保留全量发布" }
-          if ((Get-Item -LiteralPath $patchName).Length -ge (Get-Item -LiteralPath "RenpyBox_$version.zip").Length) { exit 0 }
-          "file=$patchName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $probeDirectory = Join-Path $env:RUNNER_TEMP 'renpybox-qt-smoke'
+          New-Item -ItemType Directory -Path $probeDirectory -Force | Out-Null
+          $process = Start-Process -FilePath (Resolve-Path dist/RenpyBox/RenpyBox.exe) -ArgumentList '--self-test' -WorkingDirectory $probeDirectory -NoNewWindow -PassThru
+          if (!$process.WaitForExit(60000)) { $process.Kill(); throw 'Frozen migration self-test timed out' }
+          if ($process.ExitCode -ne 0) { throw "Frozen migration self-test failed: $($process.ExitCode)" }
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Compress compatibility archive
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/RenpyBox/RenpyBox.exe)) { throw 'Missing Python compatibility executable' }
+          & .\resource\7za.exe a -y -bt -mx5 -mcu=on "RenpyBox_${{ steps.check_version.outputs.version }}.zip" .\dist\RenpyBox\*
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python buildtools/update_assets.py manifest --dist dist/RenpyBox --version '${{ steps.check_version.outputs.version }}' --zip 'RenpyBox_${{ steps.check_version.outputs.version }}.zip'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\resource\7za.exe t "RenpyBox_${{ steps.check_version.outputs.version }}.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Python compatibility artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: RenpyBox_${{ steps.check_version.outputs.version }}
-          name: RenpyBox_${{ steps.check_version.outputs.version }}
-          draft: true
-          prerelease: false
-          files: |
-            RenpyBox_${{ steps.check_version.outputs.version }}.zip
-            ${{ steps.incremental_patch.outputs.file }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: renpybox-python-windows
+          path: RenpyBox_${{ steps.check_version.outputs.version }}.zip
+          if-no-files-found: error

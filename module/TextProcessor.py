@@ -90,12 +90,62 @@ class TextProcessor(Base):
         self.inline_preserve_re = None
         self.inline_preserve_re_text_type = None
 
+    @classmethod
+    def extract_honorific_title_text(cls, value: object) -> str:
+        """从 legacy 字符串或 {src, comment} 字典取出称呼词文本。"""
+        if isinstance(value, dict):
+            return str(value.get("src", "") or "").strip().lower()
+        if isinstance(value, str):
+            return value.strip().lower()
+        return ""
+
+    @classmethod
+    def parse_honorific_title_entries(cls, titles: object) -> list[dict[str, str]]:
+        """读取配置中的称呼词列表为统一的 {src, comment} 条目。"""
+        if not isinstance(titles, list):
+            return []
+        items: list[dict[str, str]] = []
+        for value in titles:
+            if isinstance(value, dict):
+                src = str(value.get("src", "") or "").strip().lower()
+                comment = str(value.get("comment", "") or "").strip()
+            elif isinstance(value, str):
+                src = value.strip().lower()
+                comment = ""
+            else:
+                continue
+            if not src:
+                continue
+            items.append({"src": src, "comment": comment})
+        return items
+
+    @classmethod
+    def serialize_honorific_titles(cls, entries: list[dict[str, str]]) -> list[str | dict[str, str]]:
+        """写入配置：无备注存字符串，有备注存 {src, comment}，兼容旧读取。"""
+        result: list[str | dict[str, str]] = []
+        for item in entries:
+            src = str(item.get("src", "") or "").strip().lower()
+            if not src:
+                continue
+            comment = str(item.get("comment", "") or "").strip()
+            if comment:
+                result.append({"src": src, "comment": comment})
+            else:
+                result.append(src)
+        return result
+
     def _get_honorific_titles(self) -> list[str]:
         titles = getattr(self.config, "honorific_placeholder_titles", None)
-        if isinstance(titles, list):
-            result = [str(v).strip().lower() for v in titles if str(v).strip() != ""]
-            if len(result) > 0:
-                return result
+        result = [
+            src
+            for src in (
+                __class__.extract_honorific_title_text(value)
+                for value in (titles if isinstance(titles, list) else [])
+            )
+            if src
+        ]
+        if len(result) > 0:
+            return result
         return list(__class__.DEFAULT_HONORIFIC_TITLES)
 
     def _get_honorific_placeholder_regex(self) -> re.Pattern | None:

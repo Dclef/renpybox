@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,7 +18,10 @@ class AppPaths:
     @classmethod
     def detect(cls) -> "AppPaths":
         """根据当前运行方式定位应用根目录。"""
-        if getattr(sys, "frozen", False):
+        configured_root = os.environ.get("RENPYBOX_APP_ROOT")
+        if configured_root:
+            root = Path(configured_root).expanduser().resolve()
+        elif getattr(sys, "frozen", False):
             root = Path(sys.executable).resolve().parent
         else:
             root = Path(__file__).resolve().parents[1]
@@ -25,7 +29,12 @@ class AppPaths:
         # PyInstaller one-file 程序把只读资源解压到 _MEIPASS；配置、日志等
         # 可写文件仍然放在 exe 所在目录，避免把用户数据写入临时目录。
         meipass = getattr(sys, "_MEIPASS", None)
-        resource_root = Path(meipass).resolve() if meipass else None
+        configured_resources = os.environ.get("RENPYBOX_RESOURCE_ROOT")
+        resource_root = (
+            Path(configured_resources).expanduser().resolve()
+            if configured_resources
+            else Path(meipass).resolve() if meipass else None
+        )
         return cls(root, resource_root=resource_root)
 
     @classmethod

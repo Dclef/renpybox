@@ -2,7 +2,6 @@
 添加语言入口页面 - 向游戏添加语言切换功能
 """
 from pathlib import Path
-import shutil
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
@@ -21,8 +20,8 @@ from qfluentwidgets import (
 
 from base.Base import Base
 from base.LogManager import LogManager
-from base.PathHelper import get_resource_path
 from module.Localizer.Localizer import Localizer
+from module.Tool.LanguageTools import LanguageToolsError, install_language_entrance
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area
 
 
@@ -151,13 +150,15 @@ class AddLanguageEntrancePage(Base, QWidget):
 
             LogManager.get().info(f"添加语言入口: {game_dir}")
 
-            hook_source = Path(get_resource_path("resource", "hooks", "hook_add_change_language_entrance.rpy"))
-            if not hook_source.exists():
-                raise FileNotFoundError(Localizer.get().add_language_hook_file_missing.format(hook_source=hook_source))
-
-            target = Path(game_dir) / "hook_add_change_language_entrance.rpy"
-            shutil.copy2(hook_source, target)
-            LogManager.get().info(f"语言入口 Hook 写入: {target}")
+            try:
+                result = install_language_entrance(game_dir)
+            except LanguageToolsError as exc:
+                if exc.code == "missing_hook":
+                    raise FileNotFoundError(
+                        Localizer.get().add_language_hook_file_missing.format(hook_source=exc.source)
+                    ) from exc
+                raise
+            LogManager.get().info(f"语言入口 Hook 写入: {result['path']}")
 
             InfoBar.success(
                 Localizer.get().complete,

@@ -1,0 +1,96 @@
+name: Prepare RenpyBox release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "api/**"
+      - "base/**"
+      - "frontend/**"
+      - "widget/**"
+      - "module/**"
+      - "resource/**"
+      - "utils/**"
+      - "buildtools/**"
+      - "*.py"
+      - "main.spec"
+      - "build.bat"
+      - "requirements.txt"
+      - "version.txt"
+      - "CHANGELOG.md"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/desktop.yml
+  python:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build.yml
+
+  draft:
+    needs: [desktop, python]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: renpybox-*-windows
+          merge-multiple: true
+          path: release-assets
+      - name: Verify complete release and prepare draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Expected a stable desktop version' }
+          $pythonVersion = python -c "from base.Version import Version; print(Version.CURRENT)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($pythonVersion -ne "v$version") { throw 'Python and desktop versions differ' }
+          if ((Get-Content version.txt -Raw).Trim() -ne "v$version") { throw 'version.txt and application versions differ' }
+          $files = @(
+            "release-assets/RenpyBox-NewUI-$version-x64.exe",
+            "release-assets/RenpyBox-NewUI-$version-x64.zip",
+            "release-assets/RenpyBox_v$version.zip"
+          )
+          foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) { throw "Missing artifact: $file" }
+          }
+          $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
+          $section = [regex]::Match($changelog, ('(?ms)^## v' + [regex]::Escape($version) + '[^\r\n]*\r?\n(.*?)(?=^## |\z)'))
+          if (!$section.Success) { throw "Missing changelog for v$version" }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $bullets = @($section.Groups[1].Value -split '\r?\n' | Where-Object { $_ -match '^- ' })
+          if ($bullets.Count -eq 0) { throw "Missing release notes for v$version" }
+          $releaseDate = [regex]::Match($section.Value, '^## v[^\r\n]*?(\d{4}-\d{2}-\d{2})').Groups[1].Value
+          if (!$releaseDate) { throw 'Missing release date in changelog heading' }
+          $notes = "更新日志：`n$releaseDate v${version}：`n`n" + ($bullets -join "`n")
+          $notes | Set-Content -LiteralPath $notesPath -Encoding utf8
+          # Both shipped Qt clients and desktop preview clients recognize vX.Y.Z.
+          $tag = "v$version"
+          $existingJson = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft
+          if ($LASTEXITCODE -eq 0) {
+            $existing = $existingJson | ConvertFrom-Json
+            if (!$existing.isDraft) { throw 'Refusing to replace an already published release' }
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft --target $env:GITHUB_SHA --title "RenpyBox $version" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release upload $tag @files --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "RenpyBox $version" --notes-file $notesPath
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -111,7 +111,47 @@ def _create_startup_splash(app: QApplication) -> QSplashScreen:
     app.processEvents()
     return splash
 
+def _self_test_update_ui() -> None:
+    """Exercise the bundled Qt migration dialog without starting normal app services."""
+    import json
+    from PyQt5.QtWidgets import QWidget
+    from frontend.Setting.UpdateDetailsDialog import UpdateDetailsDialog
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    version = VersionManager.display_version(Version.CURRENT).removeprefix("v")
+    filename = f"RenpyBox-NewUI-{version}-x64.exe"
+    latest = VersionManager._normalize_release({
+        "tag_name": f"v{version}",
+        "body": "桌面迁移对话框 · Desktop migration",
+        "assets": [{
+            "name": filename,
+            "size": 1,
+            "browser_download_url": f"https://github.com/dclef/RenpyBox/releases/download/v{version}/{filename}",
+        }],
+    })
+    parent = QWidget()
+    parent.resize(960, 720)
+    dialog = UpdateDetailsDialog(latest, parent)
+    dialog.show()
+    app.processEvents()
+    assert latest["delivery"] == "desktop"
+    assert dialog.yesButton.text() == Localizer.get().app_desktop_update_action
+    assert VersionManager.desktop_release_url(latest).endswith(f"/tag/v{version}")
+    output = io.StringIO()
+    Console(file=output, width=80, color_system=None).print("中文日志 ✓")
+    assert "中文日志" in output.getvalue()
+    dialog.close()
+    parent.close()
+    app.processEvents()
+    print(json.dumps({"ok": True, "frozen": bool(getattr(sys, "frozen", False)), "version": Version.CURRENT, "migration_dialog": True}, ensure_ascii=False))
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        _self_test_update_ui()
+        raise SystemExit(0)
+
     # 捕获全局异常
     sys.excepthook = lambda exc_type, exc_value, exc_traceback: excepthook(exc_type, exc_value, exc_traceback)
 
@@ -208,6 +248,11 @@ if __name__ == "__main__":
 
     # 创建全局应用对象
     app = QApplication(sys.argv)
+
+    # 事件总线已解除 Qt 依赖：emit 只做线程安全入队，跨线程投递由 drain 驱动。
+    # Qt 壳在这里把 drain 挂到事件循环；Electron 侧由 api层的 asyncio 任务驱动。
+    from frontend.QtEventBridge import install as install_event_bridge
+    event_bridge = install_event_bridge()
 
     # 设置应用图标
     app.setWindowIcon(QIcon(get_resource_path("resource", "icon.ico")))

@@ -78,41 +78,10 @@ class ModelListPage(MessageBoxBase, Base):
 
     # 获取模型
     def get_models(self, api_url: str, api_key: str, api_format: Base.APIFormat) -> list[str]:
-        result: list[str] = []
+        from module.Engine.API.ModelList import list_models
 
         try:
-            if api_format == Base.APIFormat.GOOGLE:
-                # 三个 SDK 只在本方法里用到。放到模块顶层会让
-                # frontend.Project.PlatformPage 的导入（进而整个 AppFluentWindow
-                # 构造）在启动路径上白付约 2.8s——这些页面的构造并不需要模型列表。
-                from google import genai
-
-                client = genai.Client(
-                    api_key = api_key,
-                )
-                result = [model.name for model in client.models.list()]
-            elif api_format == Base.APIFormat.ANTHROPIC:
-                import anthropic
-
-                client = anthropic.Anthropic(
-                    api_key = api_key,
-                    base_url = api_url,
-                )
-                models = client.models.list()
-                items = getattr(models, "data", models)
-                result = [getattr(model, "id", "") for model in items if getattr(model, "id", "")]
-            elif api_format in Base.MACHINE_API_FORMATS:
-                result = ["free"]
-            else:
-                import openai
-
-                client = openai.OpenAI(
-                    base_url = api_url,
-                    api_key = api_key,
-                )
-                models = client.models.list()
-                items = getattr(models, "data", models)
-                result = [getattr(model, "id", "") for model in items if getattr(model, "id", "")]
+            return list_models(api_url, api_key, api_format)
         except Exception as e:
             self.debug(Localizer.get().model_list_page_fail, e)
             self.emit(Base.Event.APP_TOAST_SHOW, {
@@ -121,7 +90,6 @@ class ModelListPage(MessageBoxBase, Base):
             })
             return []
 
-        return sorted({m for m in result if isinstance(m, str) and m.strip()})
 
     # 更新子控件
     def update_sub_widgets(self, widget: FlowCard) -> None:

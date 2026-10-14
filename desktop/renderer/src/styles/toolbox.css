@@ -1,0 +1,74 @@
+@layer app {
+  /* Tool navigation stays compact; the cards carry the task descriptions. */
+  .rb-toolbox { gap: 16px; }
+  .rb-toolbox > .rb-page-header,
+  .rb-toolbox > .rb-toolbox-categories,
+  .rb-toolbox > .rb-toolbox-scroll { width: 100%; max-width: 1400px; align-self: center; }
+  .rb-toolbox .toolbox-search { width: 280px !important; max-width: 100%; }
+  .rb-toolbox-scroll { margin: 0; padding: 2px 4px 12px 0; gap: 26px; }
+  .rb-toolbox-categories {
+    display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0;
+    padding: 0 0 14px; border-bottom: 1px solid var(--rb-divider);
+  }
+  .rb-toolbox-categories > button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: 32px; padding: 5px 11px; border: 1px solid transparent; border-radius: 6px;
+    background: transparent; color: var(--rb-text-secondary); font: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .rb-toolbox-categories > button:hover { background: var(--rb-surface-hover); color: var(--rb-text-primary); }
+  .rb-toolbox-categories > button[aria-pressed='true'] {
+    background: var(--rb-accent-surface); color: var(--rb-accent-text); font-weight: 600;
+  }
+  .rb-toolbox-categories > button:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: 2px; }
+  .rb-toolbox-categories > button > span { font-size: 11px; font-variant-numeric: tabular-nums; opacity: .8; }
+  .rb-toolbox-project-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
+  .rb-toolbox-project-hint > span { flex: 1 1 280px; }
+  .rb-toolbox-project-hint > button { flex-shrink: 0; }
+  .rb-toolbox-group-copy { min-width: 0; }
+  .rb-toolbox .tool-group-title { margin: 0; line-height: 1.5; font-size: 15px; }
+  .rb-toolbox-group-copy > p { margin: 3px 0 0; color: var(--rb-text-tertiary); font-size: 12px; line-height: 1.5; }
+  .rb-toolbox .tool-group-count {
+    flex-shrink: 0; padding: 0; border: 0; background: transparent; color: var(--rb-text-tertiary); font-size: 12px;
+  }
+  .rb-toolbox .tool-card {
+    height: auto; min-height: 124px; justify-content: flex-start; gap: 10px;
+    padding: 16px; border-radius: 10px; box-shadow: none;
+    transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+  .rb-toolbox .tool-card:hover:not(:disabled) {
+    transform: none; box-shadow: 0 2px 8px color-mix(in srgb, var(--rb-accent) 7%, transparent);
+  }
+  .rb-toolbox .tool-card-head { height: auto; min-height: 32px; }
+  .rb-toolbox .tool-card-head-left { gap: 10px; }
+  .rb-toolbox .tool-card-icon-container {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--rb-surface-subtle); color: var(--rb-text-secondary);
+    transition: background-color .15s ease, color .15s ease;
+  }
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-icon-container {
+    background: var(--rb-accent-surface); color: var(--rb-accent-text); transform: none;
+  }
+  .rb-toolbox .rb-tool-title { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+  .rb-toolbox .rb-tool-step {
+    width: 20px; height: 20px; border: 0; border-radius: 5px; box-shadow: none;
+    color: var(--rb-text-tertiary); background: var(--rb-surface-subtle); font-weight: 500;
+  }
+  .rb-toolbox .tool-card-action { width: 16px; height: 20px; }
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-action { transform: none; background: none; }
+  .rb-toolbox .tool-card-body { margin-top: 0; }
+  .rb-toolbox .rb-tool-desc { line-height: 1.65; }
+  .rb-toolbox .tool-card-footer { margin-top: auto; min-height: 0; padding-top: 0; }
+  .rb-toolbox .tool-card:disabled { opacity: 1; }
+  .rb-toolbox .tool-card:disabled .tool-card-body .rb-tool-desc { color: var(--rb-text-secondary); }
+  .rb-toolbox .rb-tool-requirement { font-size: 11px; height: auto; padding: 3px 6px; line-height: 1.3; }
+  .rb-toolbox-empty { display: flex; align-items: center; flex-direction: column; gap: 12px; }
+  @media (max-width: 720px) {
+    .rb-toolbox .toolbox-search { width: 100%; }
+    .rb-toolbox-categories { gap: 4px; }
+    .rb-toolbox-categories > button { padding-inline: 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rb-toolbox .tool-card, .rb-toolbox .tool-card-icon-container, .rb-toolbox .tool-card-action { transition: none; }
+  }
+}

@@ -2,6 +2,7 @@ import copy
 import dataclasses
 import json
 import os
+import re
 import threading
 from typing import Any
 from typing import ClassVar
@@ -15,6 +16,13 @@ from base.PathHelper import get_resource_path
 from module.File.AtomicWrite import atomic_write_text
 from base.EventTelemetry import record_latency
 from module.Localizer.Localizer import Localizer
+
+# 表外整数字段中「负值一定非法」的命名模式：计数、并发、超时、行数、
+# 长度、上限、预算、token 数与轮次。字段名是 snake_case 小写，模式同步小写。
+_NEGATIVE_INT_SETTING_PATTERN = re.compile(
+    r"(?:count|concurrency|workers?|timeout|seconds?|lines?|length|limit|"
+    r"budget|tokens?|rounds?|items?|max|min)"
+)
 
 @dataclasses.dataclass
 class Config():
@@ -67,6 +75,32 @@ class Config():
 
     DEFAULT_ASSET_PROMPT_TOKEN_BUDGET: ClassVar[int] = 2048
     DEFAULT_ASSET_PROMPT_MAX_ITEMS: ClassVar[int] = 64
+    # Qt5 的数值输入全部是 QSpinBox，上限统一 9999999；0 表示关闭/自动
+    # （asset_prompt_* 下限是 1）。API 写入必须遵守同一范围。
+    SETTING_VALUE_MAX: ClassVar[int] = 9999999
+    # 字段 → (下限, 上限)。表内一律显式给出下限；表外兜底见
+    # ``integer_setting_bounds``（命中命名模式时下限为 0）。
+    # 未声明且未命中模式的整数不下发范围限制（例如 activate_platform 允许 -1）。
+    INTEGER_SETTING_BOUNDS: ClassVar[dict[str, tuple[int, int]]] = {
+        # BasicSettingsPage（QSpinBox setRange(0, 9999999)）
+        "token_threshold": (0, SETTING_VALUE_MAX),
+        "max_batch_source_tokens": (0, SETTING_VALUE_MAX),
+        "max_output_tokens": (0, SETTING_VALUE_MAX),
+        "max_workers": (0, SETTING_VALUE_MAX),
+        "rpm_threshold": (0, SETTING_VALUE_MAX),
+        "request_timeout": (0, SETTING_VALUE_MAX),
+        "max_round": (0, SETTING_VALUE_MAX),
+        # ExpertSettingsPage
+        "preceding_lines_threshold": (0, SETTING_VALUE_MAX),
+        # QSpinBox setRange(1, 9999999)：0 会让资产批次预算失效
+        "asset_prompt_token_budget": (1, SETTING_VALUE_MAX),
+        "asset_prompt_max_items": (1, SETTING_VALUE_MAX),
+        # 无显式 UI 范围但有下限的计数/长度（缩进/行宽不允许负数）
+        "startup_sound_volume": (0, 100),
+        "renpy_format_indent": (0, SETTING_VALUE_MAX),
+        "renpy_format_line_width": (0, SETTING_VALUE_MAX),
+    }
+
     # Qt5 在设备像素比小于 1 时会错误绘制 QWidget 后备缓冲，因此只提供放大比例。
     UI_SCALE_FACTORS: ClassVar[dict[str, str]] = {
         "125%": "1.25",
@@ -134,7 +168,8 @@ class Config():
     sakura_jsonline_retry_enable: bool = True
     token_estimation_output_ratio: float = 1.2
     honorific_placeholder_bridge_enable: bool = True
-    honorific_placeholder_titles: list[str] = dataclasses.field(default_factory = lambda: [
+    # 兼容 legacy 纯字符串与带备注的 {src, comment} 字典
+    honorific_placeholder_titles: list[str | dict[str, str]] = dataclasses.field(default_factory = lambda: [
         "mr",
         "mrs",
         "ms",
@@ -440,6 +475,37 @@ class Config():
         normalized = str(value).strip().upper() if isinstance(value, str) else ""
         return normalized if normalized in allowed else default
 
+    @classmethod
+    def integer_setting_bounds(cls, field: str) -> tuple[int, int] | None:
+        """返回整数字段的合法范围；未声明范围的字段返回 ``None``。
+
+        已声明范围以 ``INTEGER_SETTING_BOUNDS`` 为准；表外的计数/预算/超时/
+        上限类字段（名字命中 ``count/concurrency/timeout/seconds/lines/
+        length/limit/budget/tokens/rounds/items`` 等小写模式）默认下限 0。
+        ``activate_platform`` / ``agent_platform`` 这类允许 -1 的索引字段不在
+        模式内，仍按原行为放行。
+        """
+        declared = cls.INTEGER_SETTING_BOUNDS.get(field)
+        if declared is not None:
+            return declared
+        if _NEGATIVE_INT_SETTING_PATTERN.search(field):
+            return (0, cls.SETTING_VALUE_MAX)
+        return None
+
+    @classmethod
+    def validate_integer_setting(cls, field: str, value: object) -> None:
+        """校验整数设置：拒绝 bool/非 int，再按声明范围检查越界。"""
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{field} 期望整数")
+        bounds = cls.integer_setting_bounds(field)
+        if bounds is None:
+            return
+        minimum, maximum = bounds
+        if value < minimum:
+            raise ValueError(f"{field} 不能小于 {minimum}")
+        if value > maximum:
+            raise ValueError(f"{field} 不能大于 {maximum}")
+
     def is_custom_prompt_enabled_for(self, language: BaseLanguage.Enum | str) -> bool:
         if self.translation_prompt_mode != self.PROMPT_MODE_CUSTOM:
             return False
@@ -640,7 +706,7 @@ class Config():
         self.auto_process_prefix_suffix_preserved_text: bool = False
         self.sakura_jsonline_retry_enable: bool = True
         self.honorific_placeholder_bridge_enable: bool = True
-        self.honorific_placeholder_titles: list[str] = [
+        self.honorific_placeholder_titles: list[str | dict[str, str]] = [
             "mr",
             "mrs",
             "ms",

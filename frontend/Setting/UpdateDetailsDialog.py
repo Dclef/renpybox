@@ -57,10 +57,16 @@ class UpdateDetailsDialog(MessageBoxBase):
         self.widget.setMinimumWidth(720)
         self.viewLayout.setContentsMargins(24, 24, 24, 24)
         self.viewLayout.setSpacing(16)
+        desktop = self.latest.get("delivery") == "desktop"
+        title = strings.app_desktop_update_title if desktop else strings.app_update_details_title
         self.viewLayout.addWidget(SubtitleLabel(
-            strings.app_update_details_title.replace("{VERSION}", version),
+            title.replace("{VERSION}", version),
             self.widget,
         ))
+        if desktop:
+            description = CaptionLabel(strings.app_desktop_update_description, self.widget)
+            description.setWordWrap(True)
+            self.viewLayout.addWidget(description)
 
         notes = TextBrowser(self.widget)
         notes.setReadOnly(True)
@@ -88,7 +94,7 @@ class UpdateDetailsDialog(MessageBoxBase):
         )
         self.viewLayout.addWidget(CaptionLabel(metadata, self.widget))
 
-        self.yesButton.setText(strings.app_update_download)
+        self.yesButton.setText(strings.app_desktop_update_action if desktop else strings.app_update_download)
         self.cancelButton.setText(strings.later)
         self.yesButton.setIcon(FluentIcon.CLOUD_DOWNLOAD)
 

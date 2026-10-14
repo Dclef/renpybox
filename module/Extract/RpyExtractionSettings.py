@@ -3,11 +3,37 @@ import time
 from pathlib import Path
 
 from module.Extract.GameExtractionRules import (
-    RuleError, RuleScan, _check_budget, _matches_scope, compile_rule,
+    RuleError, RuleScan, _check_budget, _matches_scope, compile_rule, new_profile, new_rule,
 )
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import TlBlockKind, TlSlot, TlSlotRole
+
+
+def starter_profile(category: str) -> dict:
+    """提供可编辑的常见语法模板；内置语法解析器本身不转换为正则。"""
+    profile = new_profile(category)
+    profile['name'] = '常用 RPY 规则副本'
+    literal = r'(?P<text>"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27)'
+    examples = (
+        [('对白 / 旁白', r'^\s*(?:[a-zA-Z_]\w*\s+)?' + literal + r'\s*$', 'e "Hello."'),
+         ('菜单选项', r'^\s*' + literal + r'\s*:\s*$', '"Continue":'),
+         ('界面文本', r'^\s*(?:text|textbutton)\s+' + literal + r'\s*$', 'text "Hello."')]
+        if category == 'source' else
+        [('old/new 字符串', r'^\s*old\s+' + literal + r'\s*$', 'old "Hello."'),
+         ('对白 / 旁白', r'^\s*(?!(?:old|new)\b)(?:[a-zA-Z_]\w*\s+)?' + literal + r'\s*$', 'e "Hello."')]
+    )
+    for name, pattern, example in examples:
+        rule = new_rule()
+        rule.update(
+            name=name,
+            enabled=True,
+            pattern=pattern,
+            positive_samples=[example],
+            negative_samples=['jump next_label'],
+        )
+        profile['rules'].append(rule)
+    return profile
 
 
 def context_for_path(path, category, language='chinese'):
