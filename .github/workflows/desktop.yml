@@ -1,13 +1,8 @@
 name: RenpyBox desktop
 
 on:
+  workflow_call:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish this desktop build to GitHub Releases
-        required: true
-        default: false
-        type: boolean
   push:
     branches:
       - new_UI
@@ -28,7 +23,7 @@ permissions:
 
 jobs:
   package:
-    if: github.ref == 'refs/heads/new_UI'
+    if: github.ref == 'refs/heads/new_UI' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
 
     steps:
@@ -61,10 +56,7 @@ jobs:
         run: npm run typecheck --prefix desktop
 
       - name: Check desktop contracts
-        run: |
-          $testFiles = Get-ChildItem desktop/tests -Filter '*.test.mjs' -File | ForEach-Object FullName
-          node --test @testFiles
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: npm test --prefix desktop
 
       - name: Build Windows installer
         run: npm run pack:win --prefix desktop
@@ -75,15 +67,7 @@ jobs:
         working-directory: desktop
         run: |
           $env:ELECTRON_RUN_AS_NODE = $null
-          & .\node_modules\.bin\electron.cmd scripts/check-window-close.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\node_modules\.bin\electron.cmd scripts/check-window-recovery.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\node_modules\.bin\electron.cmd scripts/check-font-parity.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\node_modules\.bin\electron.cmd scripts/check-desktop-dialogs.cjs --workflows
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\node_modules\.bin\electron.cmd scripts/check-toolbox-ui.cjs
+          npm run check:all
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer artifact
@@ -94,39 +78,3 @@ jobs:
             desktop/release/RenpyBox-NewUI-*-x64.exe
             desktop/release/RenpyBox-NewUI-*-x64.zip
           if-no-files-found: error
-
-  publish:
-    needs: package
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/new_UI'
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: renpybox-newui-windows
-          path: desktop/release
-      - name: Publish desktop release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 客户端直接查 GitHub Releases API（desktop/main/updater.js），只用安装包资产，
-          # 因此这里只上传 exe 与 zip，不再产生 blockmap / newui.yml。
-          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
-          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+(-newui[.][0-9]+)?$') { throw 'Expected a desktop release version' }
-          $files = @(
-            "desktop/release/RenpyBox-NewUI-$version-x64.exe",
-            "desktop/release/RenpyBox-NewUI-$version-x64.zip"
-          )
-          foreach ($file in $files) { if (!(Test-Path -LiteralPath $file)) { throw "Missing artifact: $file" } }
-          $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
-          $section = [regex]::Match($changelog, ('(?ms)^## v' + [regex]::Escape($version) + '[^\r\n]*\r?\n(.*?)(?=^## |\z)'))
-          if (!$section.Success) { throw "Missing changelog for v$version" }
-          $notesPath = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
-          $section.Groups[1].Value.Trim() | Set-Content -LiteralPath $notesPath -Encoding utf8
-          # Qt 客户端读取 /releases/latest 并期待 RenpyBox_v*.zip；桌面版自行扫描 release 列表。
-          $releaseFlags = if ($version -match '-newui[.]') { @('--prerelease', '--latest=false') } else { @('--latest=false') }
-          gh release create "v$version" @files --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA @releaseFlags --title "RenpyBox $version" --notes-file $notesPath
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -14,6 +16,12 @@ from buildtools.update_assets import (
     file_sha256,
     validate_patch_zip,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BUNDLED_7ZA = _REPO_ROOT / "resource" / "7za.exe"
+# 与 build.yml Compress compatibility archive 压缩参数对齐（不含路径）。
+_WORKFLOW_7ZA_COMPRESS = ("a", "-y", "-bt", "-mx5")
+_WORKFLOW_7ZA_UTF8 = "-mcu=on"
 
 
 def _make_version_tree(root: Path, version: str, big: bool = False) -> Path:
@@ -69,14 +77,117 @@ def _build_patch_for(tmp_path: Path, v1: Path, v2: Path) -> Path:
     return patch_zip
 
 
-def test_build_workflow_keeps_full_package_and_verified_patch() -> None:
-    workflow = (
-        Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build.yml"
-    ).read_text(encoding="utf-8")
-    assert "Generate Incremental Patch" in workflow
-    assert "RenpyBox_${{ steps.check_version.outputs.version }}.zip" in workflow
-    assert "${{ steps.incremental_patch.outputs.file }}" in workflow
-    assert 'if ($LASTEXITCODE -ne 0) { throw "增量重建校验失败' in workflow
+def test_build_workflow_keeps_verified_compatibility_package_and_draft_gate() -> None:
+    import yaml
+
+    workflow_dir = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    build_text = (workflow_dir / "build.yml").read_text(encoding="utf-8")
+    build = yaml.load(build_text, Loader=yaml.BaseLoader)
+    assert "workflow_call" in build["on"]
+    steps = build["jobs"]["build"]["steps"]
+    assert any("--self-test" in step.get("run", "") for step in steps)
+    assert any("update_assets.py manifest --dist dist/RenpyBox" in step.get("run", "") for step in steps)
+    compress = next(step["run"] for step in steps if "7za.exe" in step.get("run", ""))
+    assert " -mcu=on " in compress or compress.rstrip().endswith("-mcu=on")
+    assert " a -y -bt -mx5 -mcu=on " in compress
+    manifest_idx = compress.index("update_assets.py manifest --dist dist/RenpyBox")
+    test_idx = compress.index("7za.exe t ", manifest_idx)
+    assert test_idx > manifest_idx
+    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in compress[test_idx:]
+    upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
+    assert upload["with"]["name"] == "renpybox-python-windows"
+    assert upload["with"]["path"] == "RenpyBox_${{ steps.check_version.outputs.version }}.zip"
+    assert upload["with"]["if-no-files-found"] == "error"
+
+    release = yaml.load((workflow_dir / "release.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert set(release["jobs"]["draft"]["needs"]) == {"desktop", "python"}
+    assert release["jobs"]["python"]["uses"] == "./.github/workflows/build.yml"
+    assert release["jobs"]["desktop"]["uses"] == "./.github/workflows/desktop.yml"
+    draft_run = next(step["run"] for step in release["jobs"]["draft"]["steps"] if "run" in step)
+    for artifact in (
+        "RenpyBox-NewUI-$version-x64.exe",
+        "RenpyBox-NewUI-$version-x64.zip",
+        "RenpyBox_v$version.zip",
+    ):
+        assert artifact in draft_run
+    assert "version.txt" in draft_run
+    assert "Refusing to replace an already published release" in draft_run
+    release_commands = [line.strip() for line in draft_run.splitlines() if line.strip().startswith(("gh release create", "gh release edit"))]
+    assert len(release_commands) == 2
+    assert all("--draft" in command and "--notes-file" in command for command in release_commands)
+
+
+def _run_7za(*args: str) -> subprocess.CompletedProcess[str]:
+    assert _BUNDLED_7ZA.is_file(), f"missing bundled 7za: {_BUNDLED_7ZA}"
+    return subprocess.run(
+        [str(_BUNDLED_7ZA), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _chinese_release_payload(root: Path) -> Path:
+    """模拟发布包内含中文路径的小载荷（复现 CP936 本地名损坏）。"""
+    payload = root / "payload"
+    files = {
+        "ok.txt": b"ascii-ok",
+        "resource/中文目录/说明.txt": "说明内容".encode("utf-8"),
+        "resource/字体/黑体.ttf": b"font-bytes",
+        "resource/图片/背景.png": b"png-bytes",
+        "resource/语音/欢迎.ogg": b"ogg-bytes",
+        "resource/配置/默认.json": b'{"k":1}',
+        "resource/补丁/更新说明.md": "# 更新\n".encode("utf-8"),
+        "resource/插件/示例插件.py": b"# plugin\n",
+    }
+    for rel, data in files.items():
+        path = payload.joinpath(*rel.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return payload
+
+
+@pytest.mark.skipif(os.name != "nt", reason="7za CP936 ZIP name corruption is Windows-locale specific")
+def test_7za_workflow_zip_utf8_survives_python_manifest_append(tmp_path: Path) -> None:
+    """CP936 下无 -mcu=on 时，append_manifest_to_zip 会改写中央目录致 7za Headers Error；
+    workflow 的 -mcu=on 必须让中文名在追加后仍可被 7za t 与 Python 精确读写。"""
+    payload = _chinese_release_payload(tmp_path)
+    expected_names = {
+        rel.replace("\\", "/")
+        for rel in (
+            "ok.txt",
+            "resource/中文目录/说明.txt",
+            "resource/字体/黑体.ttf",
+            "resource/图片/背景.png",
+            "resource/语音/欢迎.ogg",
+            "resource/配置/默认.json",
+            "resource/补丁/更新说明.md",
+            "resource/插件/示例插件.py",
+        )
+    }
+    expected_bytes = {
+        rel: (payload.joinpath(*rel.split("/"))).read_bytes() for rel in expected_names
+    }
+    version = "v9.9.9"
+    glob = str(payload / "*")
+
+    fixed = tmp_path / "fixed.zip"
+    fixed_pack = _run_7za(*_WORKFLOW_7ZA_COMPRESS, _WORKFLOW_7ZA_UTF8, str(fixed), glob)
+    assert fixed_pack.returncode == 0, fixed_pack.stderr
+    append_manifest_to_zip(fixed, build_manifest(payload, version))
+    fixed_test = _run_7za("t", str(fixed))
+    assert fixed_test.returncode == 0, fixed_test.stdout + fixed_test.stderr
+    assert "Headers Error" not in (fixed_test.stdout + fixed_test.stderr)
+    assert "Everything is Ok" in fixed_test.stdout
+
+    with zipfile.ZipFile(fixed, "r") as zf:
+        names = set(zf.namelist())
+        assert MANIFEST_NAME in names
+        for rel, data in expected_bytes.items():
+            assert rel in names, f"missing exact UTF-8 name: {rel!r} in {sorted(names)}"
+            assert zf.read(rel) == data
 
 
 def test_build_manifest_covers_all_files(tmp_path: Path) -> None:

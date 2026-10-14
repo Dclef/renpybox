@@ -283,13 +283,19 @@ export function useAppState(): AppState {
   }, []);
 
   const setTheme = useCallback((theme: ThemeName) => {
+    // 与 saveSettings 一致：先本地生效，PATCH 失败则回滚到服务端值。
+    const previous = latest.current.settings?.values.theme;
     persistTheme(theme);
     setSettings((prev) => {
       if (!prev) return prev;
       return { ...prev, values: { ...prev.values, theme } };
     });
-    void api.patchSettings({ theme }, true);
-  }, []);
+    void api.patchSettings({ theme }, true).catch(async (error: unknown) => {
+      pushToast('error', '保存设置失败：' + (error instanceof Error ? error.message : String(error)));
+      if (previous === 'LIGHT' || previous === 'DARK') persistTheme(previous);
+      await api.getSettings().then(setSettings).catch(() => {});
+    });
+  }, [pushToast]);
 
   // 启动：并行读取健康、版本、项目、配置、翻译状态。
   useEffect(() => {

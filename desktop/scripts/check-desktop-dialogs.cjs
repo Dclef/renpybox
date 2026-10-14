@@ -105,9 +105,10 @@ app.whenReady().then(async () => {
   const popupRect = await js("document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getBoundingClientRect().toJSON()");
   assert.ok(Math.abs(popupRect.left - selectRect.left) < 3, `Select popup must align to its control (${motion})`);
   assert.ok(popupRect.top >= selectRect.bottom && popupRect.top < selectRect.bottom + 12, `Select popup must stay inside the window (${motion})`);
-  assert.match(await js("document.querySelector('.ant-select-dropdown').textContent"), /English/);
-  await js("[...document.querySelectorAll('.ant-select-item-option')].find(e => e.textContent === 'English').click()");
-  await waitFor("document.querySelector('.ant-select').textContent.includes('English')");
+  assert.match(await js("document.querySelector('.ant-select-dropdown').textContent"), /英文/);
+  await js("[...document.querySelectorAll('.ant-select-item-option')].find(e => e.textContent === '英文').click()");
+  await waitFor("document.querySelector('.ant-select').textContent.includes('英文') && window.__dialogFixture.values.app_language === 'EN'");
+  assert.deepEqual(await js("window.__dialogFixture.patches.at(-1)"), { app_language: 'EN' });
   console.log('PASS: language dropdown opens beside its control and selection updates');
   console.log('Opening changelog');
   await js("[...document.querySelectorAll('button')].find(b => b.textContent === '查看更新日志').click()");

@@ -20,6 +20,7 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import (
     RenpyProjectPaths,
+    guess_language_from_tl_path,
     looks_like_renpy_path,
 )
 from module.Project.ProjectStore import ProjectStore
@@ -114,20 +115,6 @@ class ProjectPage(QWidget, Base):
         label.setText(f"{description} {path}")
         label.setToolTip(path)
 
-    def _guess_lang_from_path(self, path: Path) -> BaseLanguage.Enum | None:
-        lower = str(path).lower()
-        if any(key in lower for key in ["chinese", "schinese", "tchinese", "zh"]):
-            return BaseLanguage.Enum.ZH
-        if any(key in lower for key in ["japanese", "ja", "jp"]):
-            return BaseLanguage.Enum.JA
-        if any(key in lower for key in ["korean", "kr", "ko"]):
-            return BaseLanguage.Enum.KO
-        if any(key in lower for key in ["english", "en"]):
-            return BaseLanguage.Enum.EN
-        if any(key in lower for key in ["russian", "ru"]):
-            return BaseLanguage.Enum.RU
-        return None
-
     def _looks_like_renpy_path(self, raw_path: str) -> bool:
         """判断路径是否明显包含 Ren'Py 项目结构。"""
         return looks_like_renpy_path(raw_path)
@@ -148,7 +135,7 @@ class ProjectPage(QWidget, Base):
             return False
 
         def mutate(current: Config) -> None:
-            guessed = self._guess_lang_from_path(paths.tl_language_dir)
+            guessed = guess_language_from_tl_path(paths.tl_language_dir)
             if guessed is not None:
                 current.target_language = guessed
 
@@ -201,7 +188,7 @@ class ProjectPage(QWidget, Base):
                 output_folder = current_output or paths.translation_output_dir,
                 persist = False,
             )
-            guessed = self._guess_lang_from_path(paths.tl_language_dir)
+            guessed = guess_language_from_tl_path(paths.tl_language_dir)
             if guessed is not None:
                 config.target_language = guessed
             changed = before != (

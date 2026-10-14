@@ -129,7 +129,7 @@ export interface VersionInfo {
   api_version: string;
 }
 
-export type UpdateStatus = 'NONE' | 'NEW_VERSION' | 'UPDATING' | 'DOWNLOADED';
+export type UpdateStatus = 'NONE' | 'NEW_VERSION' | 'DESKTOP_AVAILABLE' | 'UPDATING' | 'DOWNLOADED';
 
 export interface UpdateState {
   ok?: boolean;
@@ -139,6 +139,8 @@ export interface UpdateState {
     tag_name?: string;
     body?: string;
     published_at?: string;
+    /** desktop = 需前往发布页安装桌面版，不可走 Python 自动更新 */
+    delivery?: string;
     /** 后端 _normalize_release 选出的下载资源，含真实 asset.size */
     asset?: { name?: string; size?: number; browser_download_url?: string; digest?: string };
     assets?: { name?: string; size?: number; browser_download_url?: string; digest?: string }[];

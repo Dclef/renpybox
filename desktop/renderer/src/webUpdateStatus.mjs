@@ -19,12 +19,13 @@ export function formatMegabytes(size) {
 /**
  * @param {{
  *   status?: string,
- *   latest?: { tag_name?: string },
+ *   latest?: { tag_name?: string, delivery?: string },
  *   downloaded_size?: number,
  *   total_size?: number,
  *   error?: string,
  *   new_version?: boolean,
  *   can_install?: boolean,
+ *   release_url?: string,
  * }} update
  * @param {boolean} checking
  */
@@ -35,24 +36,30 @@ export function resolveWebUpdateUi(update, checking = false) {
   const downloaded = Number(update?.downloaded_size) || 0;
   const total = Number(update?.total_size) || 0;
   const progress = Math.max(0, Math.min(100, Math.round((downloaded / Math.max(1, total)) * 100)));
+  const delivery = String(latest.delivery || '');
+  const isDesktopMigration = status === 'DESKTOP_AVAILABLE' || delivery === 'desktop';
+  // UPDATING / DOWNLOADED 优先于迁移提示（与后端 busy 契约一致）
   const showProgress = status === 'UPDATING';
   const showCancel = status === 'UPDATING';
-  const showInstall = status === 'DOWNLOADED' || Boolean(update?.can_install);
-  // 与 Qt `_known_update_available` + status==NEW_VERSION 一致；已可安装时不再展示下载入口
-  const offerUpdate = !showInstall && (
+  const showInstall = !isDesktopMigration && (status === 'DOWNLOADED' || Boolean(update?.can_install));
+  const offerMigration = !showProgress && !showInstall && isDesktopMigration && (
+    status === 'DESKTOP_AVAILABLE' || Boolean(update?.new_version)
+  );
+  // 与 Qt `_known_update_available` + status==NEW_VERSION 一致；迁移与已可安装时不再展示下载入口
+  const offerUpdate = !showInstall && !offerMigration && (
     status === 'NEW_VERSION' || (status === 'NONE' && Boolean(update?.new_version))
   );
 
   let statusText = '尚未检查更新';
   if (checking) {
     statusText = '检查中…';
-  } else if (status === 'NEW_VERSION') {
-    statusText = `发现新版本 ${tag}`.trim();
   } else if (status === 'UPDATING') {
     statusText = `正在下载 ${formatMegabytes(downloaded)} / ${formatMegabytes(total)}`;
-  } else if (status === 'DOWNLOADED' || update?.can_install) {
+  } else if (showInstall) {
     statusText = '下载完成，重启后生效';
-  } else if (offerUpdate) {
+  } else if (offerMigration) {
+    statusText = `桌面版 ${tag} 已可用`.trim();
+  } else if (status === 'NEW_VERSION' || offerUpdate) {
     statusText = `发现新版本 ${tag}`.trim();
   } else if (String(update?.error || '').trim()) {
     statusText = '检查更新失败，请重试';
@@ -65,6 +72,7 @@ export function resolveWebUpdateUi(update, checking = false) {
     statusText,
     progress,
     offerUpdate,
+    offerMigration,
     showProgress,
     showCancel,
     showInstall,

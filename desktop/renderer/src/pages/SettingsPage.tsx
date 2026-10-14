@@ -22,12 +22,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import * as api from '../api';
 import { ChangelogView } from '../components/ChangelogView';
+import { useT } from '../i18n';
 import {
   APP_FIELDS,
   BALANCED_THROUGHPUT,
   BASIC_FIELDS,
   EXPERT_FIELDS,
-  PROXY_FIELD,
   type FieldSpec,
 } from '../settingsSchema';
 import type { UpdateState } from '../types';
@@ -38,6 +38,10 @@ import { Button, Progress, Tooltip } from 'antd';
 import { displayVersion, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
 
 type Variant = 'basic' | 'expert' | 'app';
+
+/** 替换文案里的 {name} 占位符，与 OneKeyTranslatePage 同款最小实现。 */
+const fill = (text: string, vars: Record<string, string | number>) =>
+  Object.entries(vars).reduce((acc, [key, value]) => acc.split(`{${key}}`).join(String(value)), text);
 
 function fieldsFor(variant: Variant): FieldSpec[] {
   if (variant === 'basic') return BASIC_FIELDS;
@@ -53,12 +57,19 @@ function SpecCard(props: {
   onChange: (key: string, next: unknown) => void;
 }) {
   const { spec, value, disabled, onChange } = props;
+  const t = useT();
   const set = (next: unknown) => onChange(spec.key, next);
+  const title = spec.titleKey ? t(spec.titleKey) : spec.title;
+  const description = spec.descriptionKey ? t(spec.descriptionKey) : spec.description;
+  const options = (spec.options ?? []).map(option => ({
+    value: option.value,
+    label: option.labelKey ? t(option.labelKey) : option.label,
+  }));
 
   let control: React.ReactNode;
   switch (spec.kind) {
     case 'switch':
-      control = <Switch checked={value === true} disabled={disabled} label={spec.title} onChange={set} />;
+      control = <Switch checked={value === true} disabled={disabled} label={title} onChange={set} />;
       break;
     case 'spin':
       control = (
@@ -67,7 +78,7 @@ function SpecCard(props: {
           min={spec.min ?? 0}
           max={spec.max ?? 9999999}
           disabled={disabled}
-          label={spec.title}
+          label={title}
           onCommit={set}
         />
       );
@@ -76,8 +87,8 @@ function SpecCard(props: {
       control = (
         <SelectInput
           value={typeof value === 'string' ? value : ''}
-          options={spec.options ?? []}
-          label={spec.title}
+          options={options}
+          label={title}
           disabled={disabled}
           onCommit={set}
         />
@@ -87,7 +98,7 @@ function SpecCard(props: {
       control = (
         <TextInput
           value={typeof value === 'string' ? value : ''}
-          label={spec.title}
+          label={title}
           disabled={disabled}
           allowEmpty={spec.allowEmpty}
           onCommit={set}
@@ -97,7 +108,7 @@ function SpecCard(props: {
   }
 
   return (
-    <SettingCard title={spec.title} description={spec.description}>
+    <SettingCard title={title} description={description}>
       {control}
     </SettingCard>
   );
@@ -111,6 +122,7 @@ export function SettingsPage(props: {
   embedded?: boolean;
 }) {
   const { state, variant, title, description, embedded = false } = props;
+  const t = useT();
   const values = state.settings?.values;
   const fields = fieldsFor(variant);
 
@@ -133,8 +145,8 @@ export function SettingsPage(props: {
     ));
 
   const balancedButton = variant === 'basic' ? (
-    <Tooltip title={BALANCED_THROUGHPUT.tooltip}>
-      <Button type="default" disabled={state.saving} onClick={() => void applyBalanced()}>{BALANCED_THROUGHPUT.label}</Button>
+    <Tooltip title={t('setting_balanced_throughput_tooltip')}>
+      <Button type="default" disabled={state.saving} onClick={() => void applyBalanced()}>{t('setting_balanced_throughput_label')}</Button>
     </Tooltip>
   ) : null;
 
@@ -178,6 +190,7 @@ function AboutCard(props: { state: AppState }) {
 
 /** 桌面安装包只通过 Electron 更新，避免调用 Qt 的覆盖安装接口。 */
 function DesktopAboutCard({ state }: { state: AppState }) {
+  const t = useT();
   const [appInfo, setAppInfo] = useState<DesktopAppInfo | null>(null);
   const [update, setUpdate] = useState<DesktopUpdateState | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -203,7 +216,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
       .catch((error) => { if (active && !receivedState) setLoadError(String(error?.message || error)); });
     void bridge.appInfo()
       .then((info) => { if (active) setAppInfo(info); })
-      .catch((error) => { if (active) state.pushToast('error', `读取桌面信息失败：${String(error?.message || error)}`); });
+      .catch((error) => { if (active) state.pushToast('error', fill(t('app_read_desktop_info_failed'), { reason: String(error?.message || error) })); });
     return () => { active = false; unsubscribe(); };
   }, [state.pushToast]);
 
@@ -231,51 +244,51 @@ function DesktopAboutCard({ state }: { state: AppState }) {
 
   const status = update?.status;
   const progress = Math.max(0, Math.min(100, Math.round(update?.progress || 0)));
-  const version = appInfo?.appVersion || update?.currentVersion || '读取中…';
+  const version = appInfo?.appVersion || update?.currentVersion || t('app_read_state_loading');
   const enabled = update?.packaged === true;
-  let statusText = loadError ? `读取更新状态失败：${loadError}` : '读取更新状态…';
-  if (status === 'dev') statusText = '开发模式，请使用安装版测试自动更新';
-  else if (status === 'idle') statusText = '尚未检查更新';
-  else if (status === 'checking') statusText = '正在检查更新…';
-  else if (status === 'available') statusText = `发现新版本 ${displayVersion(update?.version || '')}`;
-  else if (status === 'latest') statusText = '当前已是最新版本';
-  else if (status === 'downloading') statusText = `正在下载 ${progress}%`;
-  else if (status === 'downloaded') statusText = '下载完成，可以重启安装';
-  else if (status === 'error') statusText = update?.error || '更新失败，请重试';
+  let statusText = loadError ? fill(t('app_read_state_failed'), { reason: loadError }) : t('app_read_state_loading');
+  if (status === 'dev') statusText = t('app_update_dev_mode_hint');
+  else if (status === 'idle') statusText = t('app_update_status_not_checked');
+  else if (status === 'checking') statusText = t('app_update_status_checking');
+  else if (status === 'available') statusText = fill(t('app_update_status_new'), { version: displayVersion(update?.version || '') });
+  else if (status === 'latest') statusText = t('app_update_status_latest');
+  else if (status === 'downloading') statusText = fill(t('app_update_status_downloading'), { percent: progress });
+  else if (status === 'downloaded') statusText = t('app_update_status_downloaded');
+  else if (status === 'error') statusText = update?.error || t('app_update_status_failed');
 
   return (
     <>
-      <SettingsGroup title="关于与更新" description="RenpyBox 桌面版 · GitHub 发布更新">
-        <SettingCard title="当前版本" description={appInfo?.packaged === false ? '开发模式' : null}>
+      <SettingsGroup title={t('app_update_group_title')} description={t('app_update_desktop_group_description')}>
+        <SettingCard title={t('app_update_current_version')} description={appInfo?.packaged === false ? t('app_update_dev_mode') : null}>
           <span className="rb-setting-value">{displayVersion(version)}</span>
           <Button type="default" size="small" disabled={!enabled || pending.length > 0 || ['checking', 'downloading', 'downloaded'].includes(status || '')} onClick={() => void run('check')}>
-            {status === 'checking' || pending.includes('check') ? '检查中…' : '检查更新'}
+            {status === 'checking' || pending.includes('check') ? t('app_update_checking') : t('app_update_check')}
           </Button>
         </SettingCard>
-        <SettingCard title="后端 Python" description={null}>
+        <SettingCard title={t('app_update_python_backend')} description={null}>
           <span className="rb-setting-value">{state.health?.python_version || '—'}</span>
         </SettingCard>
-        <SettingCard title="桌面更新" description={null}>
+        <SettingCard title={t('app_update_desktop_status')} description={null}>
           <div className="rb-update-status" aria-live="polite">
             <span>{statusText}</span>
             {status === 'downloading' ? (
-              <div className="rb-update-progress" aria-label={`下载进度 ${progress}%`}>
+              <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: progress })}>
                 <Progress percent={progress} style={{ width: 160 }} size="small" />
                 <span>{progress}%</span>
               </div>
             ) : null}
             <div className="rb-update-actions">
-              {status === 'available' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => void run('download')}>下载更新</Button> : null}
+              {status === 'available' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => void run('download')}>{t('app_update_download')}</Button> : null}
               {status === 'downloading' ? (
                 <Button type="default" size="small" disabled={pending.includes('cancel')} onClick={() => void run('cancel')}>
-                  {pending.includes('cancel') ? '正在取消…' : '取消下载'}
+                  {pending.includes('cancel') ? t('app_update_cancelling') : t('app_update_cancel_download')}
                 </Button>
               ) : null}
-              {status === 'downloaded' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => setInstallConfirm(true)}>重启并安装</Button> : null}
+              {status === 'downloaded' ? <Button size="small" disabled={!enabled || pending.length > 0} onClick={() => setInstallConfirm(true)}>{t('app_update_restart_install')}</Button> : null}
             </div>
           </div>
         </SettingCard>
-        <SettingCard title="更新日志" description={null}>
+        <SettingCard title={t('app_update_changelog_title')} description={null}>
           <Button type="default" size="small" disabled={loadingChangelog} onClick={() => {
             if (update?.releaseNotes?.trim()) {
               setChangelog(update.releaseNotes);
@@ -283,27 +296,27 @@ function DesktopAboutCard({ state }: { state: AppState }) {
             }
             setLoadingChangelog(true);
             void window.renpy?.changelog()
-              .then((markdown) => setChangelog(markdown.trim() ? markdown : '暂无更新日志'))
+              .then((markdown) => setChangelog(markdown.trim() ? markdown : t('app_changelog_empty')))
               .catch((error) => state.pushToast('error', String(error?.message || error)))
               .finally(() => setLoadingChangelog(false));
-          }}>{loadingChangelog ? '读取中…' : '查看更新日志'}</Button>
+          }}>{loadingChangelog ? t('app_read_state_loading') : t('app_update_changelog_action')}</Button>
         </SettingCard>
-        <SettingCard title="运行日志" description="启动、后端与更新记录">
+        <SettingCard title={t('app_update_logs_title')} description={t('app_update_logs_description')}>
           <Button type="default" size="small" onClick={() => {
             void window.renpy?.openLogs().catch((error) => state.pushToast('error', String(error?.message || error)));
-          }}>查看日志</Button>
+          }}>{t('app_update_logs_action')}</Button>
         </SettingCard>
       </SettingsGroup>
       {installConfirm ? (
-        <Dialog title="安装更新" confirmText="重启并安装" onCancel={() => setInstallConfirm(false)} onConfirm={() => {
+        <Dialog title={t('app_update_install')} confirmText={t('app_update_restart_install')} onCancel={() => setInstallConfirm(false)} onConfirm={() => {
           setInstallConfirm(false);
           void run('install');
         }}>
-          安装会关闭并重启 RenpyBox。请先保存工作，并等待正在运行的任务完成。
+          {t('app_update_install_dialog_body')}
         </Dialog>
       ) : null}
       {changelog !== null ? (
-        <Dialog title="桌面更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
+        <Dialog title={t('app_update_desktop_changelog_title')} cancelText={t('app_close')} onCancel={() => setChangelog(null)}>
           <ChangelogView markdown={changelog} />
         </Dialog>
       ) : null}
@@ -314,6 +327,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
 /** 网页端沿用 Python 的更新接口和 WebSocket 事件。 */
 function WebAboutCard(props: { state: AppState }) {
   const { state } = props;
+  const t = useT();
   const version = state.version?.app_version ?? state.health?.app_version ?? '—';
   const python = state.health?.python_version ?? '—';
   const [update, setUpdate] = useState<UpdateState>(EMPTY_UPDATE);
@@ -341,15 +355,15 @@ function WebAboutCard(props: { state: AppState }) {
         setChecking(false);
         const data = event.data as { error?: string; new_version?: boolean; manual?: boolean };
         if (data.manual) {
-          if (data.error) state.pushToast('error', `检查更新失败：${data.error}`);
-          else if (!data.new_version) state.pushToast('success', '当前已是最新版本');
+          if (data.error) state.pushToast('error', `${t('app_update_check_failure')}${data.error}`);
+          else if (!data.new_version) state.pushToast('success', t('app_update_check_latest_toast'));
         }
       }
       if (event.event === 'APP_UPDATE_DOWNLOAD_ERROR') {
         setCancelling(false);
         // 失败 toast 由 VersionManager 的 APP_TOAST_SHOW 统一弹出；这里只补「已取消」
         const data = event.data as { cancelled?: boolean };
-        if (data.cancelled) state.pushToast('info', '已取消下载');
+        if (data.cancelled) state.pushToast('info', t('app_update_cancelled'));
       }
       if (event.event === 'APP_UPDATE_DOWNLOAD_DONE') setCancelling(false);
       void refresh();
@@ -378,8 +392,8 @@ function WebAboutCard(props: { state: AppState }) {
 
   return (
     <>
-      <SettingsGroup title="关于与更新" description="查看当前版本、检查并安装更新">
-        <SettingCard title="当前版本" description={null}>
+      <SettingsGroup title={t('app_update_group_title')} description={t('app_update_group_description')}>
+        <SettingCard title={t('app_update_current_version')} description={null}>
           <span className="rb-setting-value">{version}</span>
           <Button
             type="default"
@@ -387,88 +401,117 @@ function WebAboutCard(props: { state: AppState }) {
             disabled={busy || checking || ui.status === 'UPDATING' || state.link !== 'open'}
             onClick={() => void run(() => api.checkUpdate(true), { checking: true })}
           >
-            {checking ? '检查中…' : '检查更新'}
+            {checking ? t('app_update_checking') : t('app_update_check')}
           </Button>
         </SettingCard>
-        <SettingCard title="后端 Python" description={null}>
+        <SettingCard title={t('app_update_python_backend')} description={null}>
           <span className="rb-setting-value">{python}</span>
         </SettingCard>
-        <SettingCard title="更新状态" description={null}>
+        <SettingCard title={t('app_update_status_title')} description={null}>
           <div className="rb-update-status" aria-live="polite">
-            <span>{ui.statusText}</span>
+            <span>
+              {ui.offerMigration && !checking
+                ? fill(t('app_desktop_update_title'), { version: ui.tag }).trim()
+                : ui.statusText}
+            </span>
             {ui.showProgress ? (
-              <div className="rb-update-progress" aria-label={`下载进度 ${ui.progress}%`}>
+              <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: ui.progress })}>
                 <Progress percent={ui.progress} style={{ width: 160 }} size="small" />
                 <span>{ui.progress}%</span>
               </div>
             ) : null}
             <div className="rb-update-actions">
-              {/* 与 Qt 一致：单入口「查看更新」，下载只在 Dialog 确认后触发 */}
-              {ui.offerUpdate ? (
-                <Button type="default" size="small" disabled={busy} onClick={() => setDetailsOpen(true)}>查看更新</Button>
+              {/* 与 Qt 一致：单入口打开详情；legacy 确认后下载，migration 确认后打开发布页 */}
+              {ui.offerUpdate || ui.offerMigration ? (
+                <Button type="default" size="small" disabled={busy} onClick={() => setDetailsOpen(true)}>
+                  {ui.offerMigration ? t('app_desktop_update_action') : t('app_update_view_update')}
+                </Button>
               ) : null}
               {ui.showCancel ? (
                 <Button type="default" size="small" disabled={busy || cancelling} onClick={() => void run(api.cancelUpdateDownload, { cancelling: true })}>
-                  {cancelling ? '正在取消…' : '取消'}
+                  {cancelling ? t('app_update_cancelling') : t('app_update_cancel')}
                 </Button>
               ) : null}
               {ui.showInstall ? (
-                <Button size="small" disabled={busy} onClick={() => setInstallConfirm(true)}>立即重启并安装</Button>
+                <Button size="small" disabled={busy} onClick={() => setInstallConfirm(true)}>{t('app_update_install')}</Button>
               ) : null}
             </div>
           </div>
         </SettingCard>
-        <SettingCard title="更新日志" description={null}>
+        <SettingCard title={t('app_update_changelog_title')} description={null}>
           <Button
             type="default"
             size="small"
             disabled={busy}
             onClick={() => {
               void api.getChangelog()
-                .then((result) => setChangelog(result.empty ? '暂无更新日志' : result.markdown))
+                .then((result) => setChangelog(result.empty ? t('app_changelog_empty') : result.markdown))
                 .catch((error) => state.pushToast('error', error instanceof Error ? error.message : String(error)));
             }}
           >
-            查看更新日志
+            {t('app_update_changelog_action')}
           </Button>
         </SettingCard>
       </SettingsGroup>
 
       {detailsOpen ? (
         <Dialog
-          title={`发现新版本 ${ui.tag}`.trim()}
-          confirmText="下载更新"
-          cancelText="稍后"
+          title={fill(
+            t(ui.offerMigration ? 'app_desktop_update_title' : 'app_update_details_title'),
+            { version: ui.tag },
+          ).trim()}
+          confirmText={ui.offerMigration ? t('app_desktop_update_action') : t('app_update_download')}
+          cancelText={t('app_update_later')}
           onCancel={() => setDetailsOpen(false)}
           onConfirm={() => {
             setDetailsOpen(false);
+            if (ui.offerMigration) {
+              const url = String(update.release_url || '').trim();
+              if (!url) {
+                state.pushToast('error', t('app_desktop_update_open_failed'));
+                return;
+              }
+              try {
+                // noopener intentionally returns null even when the new tab opens.
+                window.open(url, '_blank', 'noopener,noreferrer');
+              } catch {
+                state.pushToast('error', t('app_desktop_update_open_failed'));
+              }
+              return;
+            }
             void run(api.downloadUpdate);
           }}
         >
+          {ui.offerMigration ? (
+            <p className="rb-update-migration-desc">{t('app_desktop_update_description')}</p>
+          ) : null}
           {/* ChangelogView 只渲染文本节点，不注入 HTML */}
-          <ChangelogView markdown={String(update.latest?.body || '').trim() || '此版本暂无更新说明'} />
+          <ChangelogView markdown={String(update.latest?.body || '').trim() || t('app_update_notes_empty')} />
           <p className="rb-update-release-meta">
-            {`安装包 ${releaseSize <= 0 ? '未知' : formatMegabytes(releaseSize)} · 发布于 ${publishedAt ? publishedAt.slice(0, 10) : '未知'}`}
+            {fill(t('app_update_release_metadata'), {
+              size: releaseSize <= 0 ? t('app_update_size_unknown') : formatMegabytes(releaseSize),
+              date: publishedAt ? publishedAt.slice(0, 10) : t('app_update_date_unknown'),
+            })}
           </p>
         </Dialog>
       ) : null}
 
       {installConfirm ? (
         <Dialog
-          title="安装更新"
-          confirmText="立即重启并安装"
+          title={t('app_update_install')}
+          confirmText={t('app_update_install')}
           onCancel={() => setInstallConfirm(false)}
           onConfirm={() => {
             setInstallConfirm(false);
             void run(api.installUpdate);
           }}
         >
-          当前有任务正在运行时安装会中断任务并重启应用。源码模式下会打开发布页，请下载新版覆盖安装目录。
+          {t('app_update_install_busy')}
         </Dialog>
       ) : null}
 
       {changelog !== null ? (
-        <Dialog title="更新日志" cancelText="关闭" onCancel={() => setChangelog(null)}>
+        <Dialog title={t('app_update_changelog_title')} cancelText={t('app_close')} onCancel={() => setChangelog(null)}>
           <ChangelogView markdown={changelog} />
         </Dialog>
       ) : null}
@@ -483,26 +526,28 @@ function WebAboutCard(props: { state: AppState }) {
  */
 function ProxyCard(props: { state: AppState; value: unknown; proxyEnabled: unknown }) {
   const { state, value, proxyEnabled } = props;
+  const t = useT();
+  const title = t('setting_proxy_url_title');
   return (
     <SettingCard
-      title={PROXY_FIELD.title}
-      description={PROXY_FIELD.description}
+      title={title}
+      description={t('setting_proxy_url_body')}
     >
       <TextInput
         value={typeof value === 'string' ? value : ''}
-        label={PROXY_FIELD.title}
+        label={title}
         disabled={state.saving}
-        placeholder="示例 - http://127.0.0.1:7890"
+        placeholder={t('app_settings_page_proxy_url')}
         allowEmpty
         onCommit={(next) => state.setSetting('proxy_url', next)}
       />
       <Switch
         checked={proxyEnabled === true}
         disabled={state.saving}
-        label="启用网络代理"
+        label={t('app_settings_page_proxy_enable')}
         onChange={(next) => {
           state.setSetting('proxy_enable', next);
-          state.pushToast('info', '代理设置将在重启应用后生效');
+          state.pushToast('info', t('app_settings_page_proxy_restart_hint'));
         }}
       />
     </SettingCard>

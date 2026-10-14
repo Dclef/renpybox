@@ -22,14 +22,16 @@ import type { PageKey } from '../nav';
 import type { AppState } from '../useAppState';
 import type { JobSnapshot } from '../types';
 import { Banner, SettingsGroup, Switch } from '../ui';
+import { useT } from '../i18n';
 
 type InputKind = 'folder' | 'file';
 
+// 进度/结果提示的文案键（模块级常量，避免进入 useEffect 依赖）
 const TXT = {
-  backingUp: { zh: '正在备份源码…', en: 'Backing up source…' },
-  backupDone: { zh: '备份完成，翻译已启动', en: 'Backup done, translation started' },
-  backupCancelled: { zh: '已取消源码备份', en: 'Source backup cancelled' },
-  backupFailed: { zh: '源码备份失败', en: 'Source backup failed' },
+  backingUp: 'source_translate_backing_up',
+  backupDone: 'source_translate_backup_done_started',
+  backupCancelled: 'source_translate_backup_cancelled',
+  backupFailed: 'source_translate_backup_failed',
 } as const;
 
 export function SourceTranslatePage(props: {
@@ -37,6 +39,7 @@ export function SourceTranslatePage(props: {
   onNavigate?: (page: PageKey) => void;
 }) {
   const { state, onNavigate } = props;
+  const t = useT();
   const values = state.settings?.values ?? {};
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const gameFolder = String(state.project?.renpy_game_folder ?? '');
@@ -109,27 +112,27 @@ export function SourceTranslatePage(props: {
         const job = await api.getJob(backupJobId) as JobSnapshot;
         if (cancelled || gen !== pollGen.current) return;
         const result = (job.result || {}) as Record<string, unknown>;
-        setBackupMessage(String(result.message || TXT.backingUp.zh));
+        setBackupMessage(String(result.message || t(TXT.backingUp)));
         setBackupPercent(Math.round(100 * (Number(job.progress) || 0)));
         if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
           setBackingUp(false);
           setBusy(false);
           setBackupJobId('');
           if (job.status === 'failed') {
-            state.pushToast('error', String(result.message || job.error || TXT.backupFailed.zh));
+            state.pushToast('error', String(result.message || job.error || t(TXT.backupFailed)));
           } else if (job.status === 'cancelled') {
-            state.pushToast('warning', TXT.backupCancelled.zh);
+            state.pushToast('warning', t(TXT.backupCancelled));
           } else if (result.translation_started) {
             const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
             state.pushToast(
               'success',
               warnings.length
-                ? `${TXT.backupDone.zh}（${warnings.join('；')}）`
-                : TXT.backupDone.zh,
+                ? `${t(TXT.backupDone)}（${warnings.join('；')}）`
+                : t(TXT.backupDone),
             );
             await Promise.all([state.reloadSettings(), state.reloadTranslation()]);
           } else {
-            state.pushToast('warning', String(result.message || '备份完成，但翻译未启动'));
+            state.pushToast('warning', String(result.message || t('source_translate_backup_done_not_started')));
           }
         }
       } catch {
@@ -177,7 +180,7 @@ export function SourceTranslatePage(props: {
   const start = async (preflightConfirmed = false) => {
     if (!gate.canStart || busy || backingUp) return;
     if (externalBackup && !normalizePath(externalBackupDir)) {
-      state.pushToast('warning', '请选择外部备份目录');
+      state.pushToast('warning', t('source_translate_pick_backup_dir_first'));
       return;
     }
     const input = normalizePath(inputPath);
@@ -208,11 +211,11 @@ export function SourceTranslatePage(props: {
       if (response.stage === 'backing_up' && response.job?.id) {
         setBackingUp(true);
         setBackupJobId(response.job.id);
-        setBackupMessage(TXT.backingUp.zh);
+        setBackupMessage(t(TXT.backingUp));
         setBackupPercent(0);
         return;
       }
-      state.pushToast('success', '已提交源码翻译');
+      state.pushToast('success', t('source_translate_submitted'));
       setBusy(false);
     } catch (error) {
       setBusy(false);
@@ -242,45 +245,45 @@ export function SourceTranslatePage(props: {
         <Banner tone="info">{`输出将写入：${normalizePath(outputPath)}`}</Banner>
       ) : null}
 
-      <SettingsGroup title="路径与语言" description="输入可为 game 目录或单个 .rpy；输出目录由输入自动推导（与 Qt 一致，不可手改）。">
+      <SettingsGroup title={t('direct_rpy_paths_description')} description={t('source_translate_note')}>
         <Form layout="horizontal">
-          <Form.Item label="输入类型" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('source_translate_input_kind_label')} style={{ marginBottom: 12 }}>
             <Radio.Group
               value={inputKind}
               disabled={busy || backingUp || engineBusy}
               onChange={(event) => onInputKindChange(event.target.value as InputKind)}
               options={[
-                { value: 'folder', label: 'game 目录' },
-                { value: 'file', label: '单个 .rpy' },
+                { value: 'folder', label: t('lang_tools_game_dir') },
+                { value: 'file', label: t('source_translate_input_kind_file') },
               ]}
             />
           </Form.Item>
-          <Form.Item label={inputKind === 'file' ? '输入文件' : '输入目录'} style={{ marginBottom: 8 }}>
+          <Form.Item label={inputKind === 'file' ? t('source_translate_input_file') : t('asset_names_input')} style={{ marginBottom: 8 }}>
             <Input
               value={inputPath}
               disabled={busy || backingUp || engineBusy}
               onChange={(event) => setInputPath(event.target.value)}
-              placeholder={inputKind === 'file' ? '选择 .rpy 文件' : '选择 game 目录'}
+              placeholder={inputKind === 'file' ? t('source_translate_pick_rpy') : t('source_translate_pick_game')}
             />
           </Form.Item>
           {window.renpy?.pickFolder || window.renpy?.pickFile ? (
             <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
-              <Button disabled={busy || backingUp || engineBusy} onClick={() => void pickInput()}>选择输入</Button>
+              <Button disabled={busy || backingUp || engineBusy} onClick={() => void pickInput()}>{t('source_translate_choose_input')}</Button>
             </div>
           ) : null}
-          <Form.Item label="输出目录（自动）" style={{ marginBottom: 8 }}>
+          <Form.Item label={t('setting_output_dir_suffix')} style={{ marginBottom: 8 }}>
             <Input
               value={outputPath}
               readOnly
               disabled
               placeholder={
                 inputKind === 'file'
-                  ? '默认：输入同目录/<文件名>_source_out'
-                  : '默认：输入父目录/<目录名>_source_out'
+                  ? t('source_translate_output_default_file')
+                  : t('source_translate_output_default_dir')
               }
             />
           </Form.Item>
-          <Form.Item label="源语言" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('source_translate_source_language')} style={{ marginBottom: 12 }}>
             <Select
               value={sourceChoice}
               disabled={busy || backingUp || engineBusy}
@@ -292,7 +295,7 @@ export function SourceTranslatePage(props: {
               style={{ width: '100%' }}
             />
           </Form.Item>
-          <Form.Item label="目标语言" style={{ marginBottom: 0 }}>
+          <Form.Item label={t('font_inject_language')} style={{ marginBottom: 0 }}>
             <Select
               value={targetChoice}
               disabled={busy || backingUp || engineBusy}
@@ -307,14 +310,14 @@ export function SourceTranslatePage(props: {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="备份选项">
+      <SettingsGroup title={t('source_translate_backup_options')}>
         <Form layout="horizontal">
-          <Form.Item label="自动备份 .bak" style={{ marginBottom: 12 }}>
-            <Switch label="自动备份 .bak" checked={backup} disabled={busy || backingUp || engineBusy} onChange={setBackup} />
+          <Form.Item label={t('source_translate_auto_backup')} style={{ marginBottom: 12 }}>
+            <Switch label={t('source_translate_auto_backup')} checked={backup} disabled={busy || backingUp || engineBusy} onChange={setBackup} />
           </Form.Item>
-          <Form.Item label="备份源码到外部" style={{ marginBottom: 8 }}>
+          <Form.Item label={t('source_translate_backup_external')} style={{ marginBottom: 8 }}>
             <Switch
-              label="备份源码到外部"
+              label={t('source_translate_backup_external')}
               checked={externalBackup}
               disabled={busy || backingUp || engineBusy}
               onChange={setExternalBackup}
@@ -322,17 +325,17 @@ export function SourceTranslatePage(props: {
           </Form.Item>
           {externalBackup ? (
             <>
-              <Form.Item label="外部备份目录" style={{ marginBottom: 8 }}>
+              <Form.Item label={t('source_translate_backup_dir')} style={{ marginBottom: 8 }}>
                 <Input
                   value={externalBackupDir}
                   disabled={busy || backingUp || engineBusy}
                   onChange={(e) => setExternalBackupDir(e.target.value)}
-                  placeholder="选择备份目录"
+                  placeholder={t('source_translate_pick_backup_dir')}
                 />
               </Form.Item>
               {window.renpy?.pickFolder ? (
                 <div className="rb-tool-actions">
-                  <Button disabled={busy || backingUp || engineBusy} onClick={() => void pickBackup()}>选择备份目录</Button>
+                  <Button disabled={busy || backingUp || engineBusy} onClick={() => void pickBackup()}>{t('setting_choose')}</Button>
                 </div>
               ) : null}
             </>
@@ -340,38 +343,34 @@ export function SourceTranslatePage(props: {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="开始翻译">
+      <SettingsGroup title={t('source_translate_start')}>
         <div className="rb-tool-actions">
           <Button type="primary" disabled={!gate.canStart || busy || backingUp} loading={busy || backingUp} onClick={() => void start(false)}>
-            开始翻译
-          </Button>
+            {t('source_translate_start')}</Button>
           <Button danger disabled={!backingUp && !translating} onClick={() => void stop()}>
-            停止
-          </Button>
+            {t('source_translate_stop')}</Button>
           {onNavigate ? (
             <Button disabled={busy || backingUp} onClick={() => onNavigate('rpy-extraction')}>
-              RPY 抽取设置
-            </Button>
+              {t('rpy_extraction_settings')}</Button>
           ) : null}
         </div>
         {backingUp ? (
           <>
             <Progress percent={backupPercent} status="active" style={{ marginTop: 12 }} />
-            <p className="card-description">{backupMessage || TXT.backingUp.zh}</p>
+            <p className="card-description">{backupMessage || t(TXT.backingUp)}</p>
           </>
         ) : null}
         {(translating || progress.label) ? (
           <>
             <Progress percent={progress.percent} style={{ marginTop: 12 }} />
-            <p className="card-description">{progress.label || '翻译中…'}</p>
+            <p className="card-description">{progress.label || t('hook_supplement_translating')}</p>
           </>
         ) : null}
       </SettingsGroup>
 
       {assetsMissing ? (
         <Banner tone="warning">
-          当前项目没有可注入的角色卡、世界观或术语资产。
-          <Button type="link" onClick={() => void start(true)}>仍然继续</Button>
+          {t('hook_supplement_assets_missing')}<Button type="link" onClick={() => void start(true)}>{t('hook_supplement_continue_anyway')}</Button>
         </Banner>
       ) : null}
     </div>

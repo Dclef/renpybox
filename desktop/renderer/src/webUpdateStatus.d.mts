@@ -5,6 +5,8 @@ export interface WebUpdateUi {
   statusText: string;
   progress: number;
   offerUpdate: boolean;
+  /** 桌面迁移：引导打开发布页，不走自动下载/安装 */
+  offerMigration: boolean;
   showProgress: boolean;
   showCancel: boolean;
   showInstall: boolean;

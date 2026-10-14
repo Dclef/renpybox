@@ -118,6 +118,64 @@ def _normalize_honorific_titles(value: Any) -> list[str | dict[str, str]]:
     return TextProcessor.serialize_honorific_titles(entries)
 
 
+def _validate_integer_setting(key: str, value: int) -> None:
+    """按 Config 声明的范围校验整数设置，越界返回 400。
+
+    Qt5 端所有数值输入都是 QSpinBox（``setRange(0, 9999999)``，资产预算类
+    为 ``setRange(1, 9999999)``）；PATCH 之前只做类型检查，负数 max_workers /
+    request_timeout 能直接落盘，导致工作线程池死锁或请求立即超时。
+    """
+    from module.Config import Config
+
+    try:
+        Config.validate_integer_setting(key, value)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
+def _declared_value_kind(field: dataclasses.Field) -> str | None:
+    """从 dataclass 声明的类型/默认值推断标量种类，不看内存里可能被污染的现值。
+
+    只覆盖现有 PATCH 已处理的 bool/int/str/list；其它字段（float、枚举、
+    Optional 等）保持不加类型约束，避免把无关 schema 工程化。
+    """
+    candidates: list[type] = []
+    annotation = field.type
+    origin = getattr(annotation, "__origin__", None)
+    if isinstance(annotation, type):
+        candidates.append(annotation)
+    elif origin is list:
+        return "list"
+    else:
+        for arg in getattr(annotation, "__args__", ()):
+            if arg is type(None):
+                continue
+            if arg is list or getattr(arg, "__origin__", None) is list:
+                return "list"
+            if isinstance(arg, type):
+                candidates.append(arg)
+
+    if field.default is not dataclasses.MISSING:
+        candidates.append(type(field.default))
+    elif field.default_factory is not dataclasses.MISSING:
+        try:
+            candidates.append(type(field.default_factory()))
+        except Exception:
+            pass
+
+    # bool 是 int 子类，必须先判 bool，否则整数字段声明会被 bool 默认值误伤。
+    if any(candidate is bool for candidate in candidates):
+        return "bool"
+    for candidate in candidates:
+        if candidate is int:
+            return "int"
+        if candidate is str:
+            return "str"
+        if candidate is list:
+            return "list"
+    return None
+
+
 def sync_output_protocol(config: Any, changed: frozenset[str] | set[str] = frozenset()) -> None:
     """让「翻译输出协议」与「单行翻译模式」保持同一状态。
 
@@ -183,10 +241,11 @@ def patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
 def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
     original = request.app.state.config
     config = copy.deepcopy(original)
-    known = {f.name for f in dataclasses.fields(config)}
+    fields_by_name = {f.name: f for f in dataclasses.fields(config)}
 
     for key, value in patch.values.items():
-        if key not in known:
+        field = fields_by_name.get(key)
+        if field is None:
             raise HTTPException(status_code = 400, detail = f"未知配置项：{key}")
         if _is_secret(key):
             raise HTTPException(status_code = 403, detail = f"{key} 需通过密钥流程修改")
@@ -197,17 +256,20 @@ def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
             if not isinstance(value, bool):
                 raise HTTPException(status_code=400, detail=f"{key} 期望布尔值")
         else:
-            current = getattr(config, key, None)
-            if isinstance(current, bool):
+            # 类型以声明字段为准：内存/落盘被污染成 bool/str/float 时仍可修复。
+            kind = _declared_value_kind(field)
+            if kind == "bool":
                 if not isinstance(value, bool):
                     raise HTTPException(status_code = 400, detail = f"{key} 期望布尔值")
-            elif isinstance(current, int) and not isinstance(current, bool):
-                if not isinstance(value, int):
+            elif kind == "int":
+                # JSON true/false 在 Python 里是 bool，也是 int 子类，必须显式拒绝。
+                if isinstance(value, bool) or not isinstance(value, int):
                     raise HTTPException(status_code = 400, detail = f"{key} 期望整数")
-            elif isinstance(current, str):
+                _validate_integer_setting(key, value)
+            elif kind == "str":
                 if not isinstance(value, str):
                     raise HTTPException(status_code = 400, detail = f"{key} 期望字符串")
-            elif isinstance(current, list) and not isinstance(value, list):
+            elif kind == "list" and not isinstance(value, list):
                 raise HTTPException(status_code = 400, detail = f"{key} 期望列表")
 
         setattr(config, key, value)

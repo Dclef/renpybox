@@ -204,6 +204,7 @@ export function Banner(props: {
   onDismiss?: () => void;
 }) {
   const { tone = 'info', children, onDismiss } = props;
+  const t = useT();
   return (
     <Alert
       className="banner rb-banner-alert"
@@ -213,7 +214,7 @@ export function Banner(props: {
         <div className="rb-banner">
           <div className="rb-banner-text">{children}</div>
           {onDismiss ? (
-            <Button type="link" size="small" onClick={onDismiss}>知道了</Button>
+            <Button type="link" size="small" onClick={onDismiss}>{t('common_dismiss')}</Button>
           ) : null}
         </div>
       }
@@ -232,11 +233,12 @@ export function Dialog(props: {
   /** 第三个按钮的独立回调；缺省时等同于取消（如「打开工作台」而不是「取消」）。 */
   onExtra?: () => void;
 }) {
+  const t = useT();
   const {
     title,
     children,
-    confirmText = '确认',
-    cancelText = '取消',
+    confirmText = t('common_confirm'),
+    cancelText = t('common_cancel'),
     extraText,
     onConfirm,
     onCancel,

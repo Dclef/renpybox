@@ -32,6 +32,7 @@ test('NONE 且无 latest：尚未检查', () => {
   const ui = resolveWebUpdateUi(state());
   assert.equal(ui.statusText, '尚未检查更新');
   assert.equal(ui.offerUpdate, false);
+  assert.equal(ui.offerMigration, false);
   assert.equal(ui.showInstall, false);
 });
 
@@ -45,16 +46,32 @@ test('NEW_VERSION / NONE+new_version 提供下载操作', () => {
   const fresh = resolveWebUpdateUi(state({ status: 'NEW_VERSION', latest: { tag_name: 'v9.0.0' }, new_version: true }));
   assert.match(fresh.statusText, /发现新版本/);
   assert.equal(fresh.offerUpdate, true);
+  assert.equal(fresh.offerMigration, false);
 
   const cached = resolveWebUpdateUi(state({ status: 'NONE', latest: { tag_name: 'v9.0.0' }, new_version: true }));
   assert.match(cached.statusText, /发现新版本/);
   assert.equal(cached.offerUpdate, true);
 });
 
-test('UPDATING 不被 new_version 盖住，显示进度与取消', () => {
+test('同版本 DESKTOP_AVAILABLE 提供迁移入口，不显示下载/安装/进度', () => {
+  const ui = resolveWebUpdateUi(state({
+    status: 'DESKTOP_AVAILABLE',
+    latest: { tag_name: 'v0.9.0', delivery: 'desktop' },
+    new_version: true,
+    can_install: false,
+  }));
+  assert.match(ui.statusText, /桌面版/);
+  assert.equal(ui.offerMigration, true);
+  assert.equal(ui.offerUpdate, false);
+  assert.equal(ui.showInstall, false);
+  assert.equal(ui.showProgress, false);
+  assert.equal(ui.showCancel, false);
+});
+
+test('UPDATING 不被 new_version / migration 盖住，显示进度与取消', () => {
   const ui = resolveWebUpdateUi(state({
     status: 'UPDATING',
-    latest: { tag_name: 'v9.0.0' },
+    latest: { tag_name: 'v9.0.0', delivery: 'desktop' },
     new_version: true,
     downloaded_size: 12 * 1024 * 1024,
     total_size: 48 * 1024 * 1024,
@@ -62,6 +79,7 @@ test('UPDATING 不被 new_version 盖住，显示进度与取消', () => {
   assert.match(ui.statusText, /正在下载/);
   assert.equal(ui.progress, 25);
   assert.equal(ui.offerUpdate, false);
+  assert.equal(ui.offerMigration, false);
   assert.equal(ui.showProgress, true);
   assert.equal(ui.showCancel, true);
   assert.equal(ui.showInstall, false);
@@ -76,6 +94,7 @@ test('DOWNLOADED / can_install 显示安装，不显示下载', () => {
   }));
   assert.equal(byStatus.statusText, '下载完成，重启后生效');
   assert.equal(byStatus.offerUpdate, false);
+  assert.equal(byStatus.offerMigration, false);
   assert.equal(byStatus.showInstall, true);
 
   const byFlag = resolveWebUpdateUi(state({ status: 'NONE', can_install: true, new_version: true, latest: { tag_name: 'v9.0.0' } }));
@@ -90,17 +109,19 @@ test('错误与已是最新', () => {
   );
 });
 
-test('WebAboutCard offer/确认：单入口查看更新，确认后才 downloadUpdate', () => {
+test('WebAboutCard offer/确认：legacy 确认后 downloadUpdate；migration 打开 release_url', () => {
   // 只抽 WebAboutCard 源码片段做静态契约，不镜像 React 状态机
   const start = settingsPage.indexOf('function WebAboutCard');
   assert.ok(start >= 0, '应存在 WebAboutCard');
   const web = settingsPage.slice(start, settingsPage.indexOf('function ProxyCard', start));
-  assert.match(web, />查看更新</);
+  assert.match(web, /t\('app_update_view_update'\)/);
+  assert.match(web, /t\('app_desktop_update_action'\)/);
+  assert.match(web, /t\('app_desktop_update_description'\)/);
   assert.doesNotMatch(web, /查看详情/);
-  // offer 分支不应并列「下载更新」按钮；确认文案只出现在 Dialog
-  assert.equal((web.match(/confirmText="下载更新"/g) || []).length, 1);
-  assert.match(web, /onConfirm=\{\(\) => \{\s*setDetailsOpen\(false\);\s*void run\(api\.downloadUpdate\);/s);
+  // legacy 确认走 downloadUpdate；migration 确认走 window.open(release_url) 后 return，不调自动更新 API
+  assert.match(web, /if\s*\(\s*ui\.offerMigration\s*\)[\s\S]*?update\.release_url[\s\S]*?window\.open\([\s\S]*?return;[\s\S]*?api\.downloadUpdate/s);
   assert.match(web, /onCancel=\{\(\) => setDetailsOpen\(false\)\}/);
+  assert.doesNotMatch(web, /offerMigration[\s\S]{0,80}api\.downloadUpdate/);
   assert.match(web, /<ChangelogView markdown=\{String\(update\.latest\?\.body/);
   // Dialog 在 ChangelogView 后展示包大小 / 发布日期（对齐 Qt metadata）
   assert.match(web, /rb-update-release-meta/);

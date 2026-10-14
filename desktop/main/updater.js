@@ -1,9 +1,14 @@
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+
+import { downloadInstaller } from './updater-download.js';
+import {
+  DESKTOP_TAG_PATTERN,
+  compareDesktopVersions,
+  parseDesktopVersion,
+  pickLatestRelease,
+  selectInstallerAsset,
+} from './updater-release.js';
 
 /**
  * 桌面更新：直接查 GitHub Releases 的桌面发布，只用安装包资产。
@@ -12,11 +17,13 @@ import { pipeline } from 'node:stream/promises';
  * 这两个文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
  * 自己拉起安装包，所以 release 只需要放 exe 与 zip。
  * 代价：没有差分（block-level）下载，每次更新都是全量安装包。
+ *
+ * 发布解析在 updater-release.js（安装包必须与标签版本同名），
+ * 下载校验在 updater-download.js（大小 + 逐字节 SHA-256）。
  */
 
 export const DEFAULT_UPDATE_REPO = 'dclef/renpybox';
-export const DESKTOP_TAG_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)(?:-newui\.(\d+))?$/;
-const INSTALLER_PATTERN = /^RenpyBox-NewUI-.+-x64[.]exe$/i;
+export { DESKTOP_TAG_PATTERN, compareDesktopVersions, parseDesktopVersion, pickLatestRelease, selectInstallerAsset };
 const API_ROOT = 'https://api.github.com';
 const USER_AGENT = 'RenpyBox-NewUI';
 const REQUEST_HEADERS = Object.freeze({
@@ -24,46 +31,6 @@ const REQUEST_HEADERS = Object.freeze({
   'user-agent': USER_AGENT,
   'x-github-api-version': '2022-11-28',
 });
-
-/** 支持正式版和旧 New UI 测试版；Qt 发布的 RenpyBox_v* 标签不属于桌面更新。 */
-export function parseDesktopVersion(value) {
-  const match = DESKTOP_TAG_PATTERN.exec(String(value ?? '').trim());
-  if (!match) return null;
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), build: match[4] === undefined ? null : Number(match[4]) };
-}
-
-/** 版本比较：left 更新返回正数。无法解析的一侧视为更旧。 */
-export function compareDesktopVersions(left, right) {
-  const a = parseDesktopVersion(left);
-  const b = parseDesktopVersion(right);
-  if (!a && !b) return 0;
-  if (!a) return -1;
-  if (!b) return 1;
-  for (const key of ['major', 'minor', 'patch']) {
-    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1;
-  }
-  if (a.build === b.build) return 0;
-  if (a.build === null) return 1;
-  if (b.build === null) return -1;
-  return a.build > b.build ? 1 : -1;
-}
-
-/** 发布里的 Windows x64 安装包（zip / blockmap 一律忽略）。 */
-export function selectInstallerAsset(release) {
-  const assets = Array.isArray(release?.assets) ? release.assets : [];
-  return assets.find(asset => INSTALLER_PATTERN.test(String(asset?.name ?? ''))) ?? null;
-}
-
-/** 正式版只接收正式发布；测试版也能升级到正式版。 */
-export function pickLatestRelease(releases, currentVersion) {
-  const stable = parseDesktopVersion(currentVersion)?.build === null;
-  const candidates = (Array.isArray(releases) ? releases : [])
-    .filter(release => release && release.draft !== true)
-    .filter(release => parseDesktopVersion(release.tag_name) && selectInstallerAsset(release))
-    .filter(release => !stable || (release.prerelease !== true && parseDesktopVersion(release.tag_name).build === null))
-    .filter(release => compareDesktopVersions(release.tag_name, currentVersion) > 0);
-  return candidates.sort((a, b) => compareDesktopVersions(b.tag_name, a.tag_name))[0] ?? null;
-}
 
 /** 把内部错误翻译成界面上能直接看的文案。 */
 export function friendlyUpdateError(error) {
@@ -90,35 +57,12 @@ async function defaultRequestJson(url) {
   return response.json();
 }
 
-async function defaultDownloadFile(url, destination, { onProgress, signal } = {}) {
-  const directory = path.dirname(destination);
-  if (directory) await mkdir(directory, { recursive: true });
-  const partial = `${destination}.part`;
-  let response;
-  try {
-    response = await fetch(url, { headers: { 'user-agent': USER_AGENT }, signal });
-  } catch (error) {
-    throw Object.assign(new Error(error?.message || '网络不可用'), { kind: 'network', cause: error });
-  }
-  if (!response.ok) throw Object.assign(new Error(`GitHub 返回 ${response.status}`), { kind: 'download' });
-  const total = Number(response.headers.get('content-length') || 0);
-  let received = 0;
-  const counter = new Transform({
-    transform(chunk, _encoding, callback) {
-      received += chunk.length;
-      onProgress?.({ received, total });
-      callback(null, chunk);
-    },
-  });
-  try {
-    await pipeline(Readable.fromWeb(response.body), counter, createWriteStream(partial));
-    await rename(partial, destination);
-  } catch (error) {
-    await rm(partial, { force: true }).catch(() => {});
-    if (error?.kind) throw error;
-    throw Object.assign(new Error(error?.message || '写入文件失败'), { kind: 'download', cause: error });
-  }
-  return { path: destination, size: received, total };
+/**
+ * 默认下载实现：交给 updater-download.js，只有发布资产的大小与 SHA-256
+ * 都对得上时才会把文件交给安装流程；注入 downloadFile 的测试可自行决定行为。
+ */
+function defaultDownloadFile(url, destination, { onProgress, signal, expectedSize, expectedDigest } = {}) {
+  return downloadInstaller(url, destination, { onProgress, signal, expectedSize, expectedDigest });
 }
 
 async function defaultLaunchInstaller(filePath) {
@@ -194,6 +138,7 @@ export function createDesktopUpdater({
             assetName: String(asset.name ?? ''),
             assetUrl: String(asset.browser_download_url ?? ''),
             assetSize: Number(asset.size) || 0,
+            assetDigest: String(asset.digest ?? ''),
           });
         })
         .catch(failed)
@@ -214,6 +159,8 @@ export function createDesktopUpdater({
       downloadPromise = Promise.resolve()
         .then(() => downloadFile(assetUrl, destination, {
           signal: controller.signal,
+          expectedSize: state.assetSize,
+          expectedDigest: state.assetDigest,
           onProgress: ({ received, total }) => {
             if (cancelling) return;
             update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0 });

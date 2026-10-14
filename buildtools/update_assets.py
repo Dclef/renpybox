@@ -1,6 +1,6 @@
 """RenpyBox 更新资产生成工具（发布侧）。
 
-生成全量包内嵌 manifest 与版本间增量 patch，协议见 docs 内 P0.5 施工单：
+生成全量包内嵌 manifest 与版本间增量 patch：
 
 - manifest：遍历 dist 目录生成 sha256 清单，以追加模式写入全量 zip 顶层
   `_update_manifest.json`；
