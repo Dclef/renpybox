@@ -1,6 +1,4 @@
 import copy
-import json
-import os
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
@@ -17,7 +15,6 @@ from qfluentwidgets import (
 )
 
 from base.Base import Base
-from base.PathHelper import get_resource_path
 from frontend.Project.ArgsEditPage import ArgsEditPage
 from frontend.Project.PlatformEditPage import PlatformEditPage
 from frontend.Project.PlatformGroupCard import PlatformGroupCard
@@ -25,6 +22,10 @@ from frontend.Project.PlatformHeaderCard import PlatformHeaderCard
 from frontend.Project.PlatformItemCard import PlatformItemCard
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Project.PlatformDefaults import (
+    load_default_platforms,
+    normalize_platforms,
+)
 from module.Project.PlatformNaming import (
     deduplicate_platform_name as _deduplicate_platform_name,
 )
@@ -151,100 +152,16 @@ class PlatformPage(QWidget, Base):
 
     # 加载默认平台数据
     def load_default_platforms(self) -> list[dict]:
-        platforms: list[dict[str, str | list[str]]] = []
+        """默认接口模板；实现收口在 ``module/Project/PlatformDefaults.py``。
 
-        platforms_path = get_resource_path("resource", "platforms", Localizer.get_app_language().lower())
-
-        if not os.path.exists(platforms_path):
-            print(f"Warning: Platforms path not found: {platforms_path}")
-            return []
-
-        for path in [file.path for file in os.scandir(platforms_path) if file.is_file() and file.name.endswith(".json")]:
-            with open(path, "r", encoding="utf-8-sig") as reader:
-                platforms.append(json.load(reader))
-
-        # 重设 id 以避免 id 不连续的问题
-        for i, platform in enumerate(sorted(platforms, key=lambda x: x.get("id"))):
-            platform["id"] = i
-
-        # 默认模板每次加载都生成新身份，不能继承可能属于旧平台的数字凭据别名。
-        for platform in platforms:
-            SecretStore.ensure_platform_identity(platform, preserve_legacy = False)
-
-        return sorted(platforms, key=lambda x: x.get("id"))
+        Electron 端启动播种与「从旧版导入」使用同一份模板与归一化规则，
+        两端行为不能漂移。
+        """
+        return load_default_platforms()
 
     # 补全默认平台（用于旧配置升级）
     def ensure_default_platforms(self, platforms: list[dict]) -> bool:
-        if not isinstance(platforms, list):
-            return False
-
-        changed = SecretStore.ensure_platform_identities(platforms) > 0
-        defaults = self.load_default_platforms()
-        existing_formats = {str(item.get("api_format", "")) for item in platforms}
-
-        # DeepSeek 官方接口已停用旧模型别名；自定义中转保持用户原值。
-        for item in platforms:
-            api_url = str(item.get("api_url", "")).strip().lower().rstrip("/")
-            if (
-                str(item.get("api_format", "")) == str(Base.APIFormat.OPENAI)
-                and api_url in ("https://api.deepseek.com", "https://api.deepseek.com/v1")
-                and str(item.get("model", "")).strip().lower() == "deepseek-chat"
-            ):
-                item["model"] = "deepseek-v4-flash"
-                changed = True
-
-        # 统一思考字段：旧版 bool -> 新版 {"level": "..."}，并修正非法值。
-        for item in platforms:
-            raw_thinking = item.get("thinking")
-            level = "OFF"
-
-            if isinstance(raw_thinking, dict):
-                raw_level = str(raw_thinking.get("level", "OFF")).upper().strip()
-                level = raw_level if raw_level in ("OFF", "LOW", "MEDIUM", "HIGH", "MAX") else "OFF"
-            elif raw_thinking == True:
-                level = "HIGH"
-
-            normalized_thinking = {"level": level}
-            if raw_thinking != normalized_thinking:
-                item["thinking"] = normalized_thinking
-                changed = True
-
-        # 旧配置中没有机翻接口时，自动补齐到默认列表
-        for fmt in Base.MACHINE_API_FORMATS:
-            if str(fmt) in existing_formats:
-                continue
-            template = next((item for item in defaults if str(item.get("api_format", "")) == str(fmt)), None)
-            if template is None:
-                continue
-
-            cloned = {
-                k: (v.copy() if isinstance(v, list) else v)
-                for k, v in template.items()
-            }
-            platforms.append(cloned)
-            existing_formats.add(str(fmt))
-            changed = True
-
-        if SecretStore.ensure_platform_identities(platforms) > 0:
-            changed = True
-
-        ids = [item.get("id") for item in platforms if isinstance(item, dict)]
-        if len(ids) != len(set(ids)):
-            changed = True
-
-        if not changed:
-            return False
-
-        # 非自定义接口在前，自定义接口在后；并重新连续编号 id
-        def is_custom(item: dict) -> bool:
-            name = str(item.get("name", "")).strip().lower()
-            return name.startswith("自定义") or name.startswith("custom")
-
-        platforms.sort(key=lambda x: (1 if is_custom(x) else 0, x.get("id", 0)))
-        for i, item in enumerate(platforms):
-            item["id"] = i
-
-        return True
+        return normalize_platforms(platforms, defaults = self.load_default_platforms())
 
     # 添加接口
     def add_platform(self, item: dict) -> None:

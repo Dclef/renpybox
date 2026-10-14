@@ -1352,6 +1352,29 @@
     font-size: 12px;
   }
 
+  /* 空接口状态：给出「新增接口 / 从旧版导入」两个直接入口 */
+  .rb-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  /* 从旧版导入：只读路径输入框 + 选择按钮 */
+  .rb-platform-import-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .rb-platform-import-row > .ant-input {
+    flex: 1 1 260px;
+    width: auto !important;
+    cursor: pointer;
+  }
+
   .rb-platform-params {
     display: flex;
     flex-direction: column;

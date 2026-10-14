@@ -22,25 +22,52 @@
 - Intended users: visual novel developers, fan translation teams, and Ren'Py translators.
 - **[SiliconFlow](https://cloud.siliconflow.cn/i/Cvmvkm5d) is recommended for translation.**
 
+<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Translation Task page (dark)" src="./docs/screenshots/desktop-translation-en.png" />
+
+<p align="center">Desktop 0.9.0; project paths, translations, and progress are demo data</p>
+
+<details>
+<summary>More screenshots</summary>
+
+**Ren'Py Toolbox** (light; English UI)
+
+<img width="1600" height="1120" alt="RenpyBox 0.9.0 desktop Toolbox (light, English)" src="./docs/screenshots/desktop-toolbox-en.png" />
+
+**Proofreading** (Chinese UI, optional)
+
+<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Proofreading (dark, Chinese UI)" src="./docs/screenshots/desktop-proofreading-zh.png" />
+
+**Character / Worldbook Workbench** (Chinese UI, optional; includes prompt preview)
+
+<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Character and Worldbook Workbench (light, Chinese UI)" src="./docs/screenshots/desktop-workbench-zh.png" />
+
+</details>
+
 ## Special Notice ⚠️
 
 - This tool is for lawful use only. Any use of this tool for unlawful, infringing, or illegal profit-making activities is neither endorsed nor supported by the project; the person engaging in such conduct bears the relevant legal responsibility under applicable law.
 
 ## Feature Advantages 📌
 
-- One-click translation wizard: automatically detects `game/tl/<lang>` and supports incremental or full extraction, resume from checkpoints, pause, and continue.
-- Glossary and do-not-translate management: extract character names, manage local glossaries and do-not-translate lists, protect text, apply replacements, and clean mixed-language text.
-- Free translation: built-in Google and Bing free engines, no API key required; usable for batch translation and the local glossary.
-- Concurrent engines: built-in templates for OpenAI, DeepSeek, Anthropic, Google, Volcano Engine, and more; custom endpoints can be added in Interface Management.
+- Desktop UI: Translation Task, Proofreading, Ren'Py Toolbox, Character / Worldbook Workbench, and Agent Assistant; light / dark themes and Chinese / English UI (some strings may still appear in Chinese).
+- One-click translation wizard: automatically detects `game/tl/<lang>` and supports incremental or full extraction and resume from checkpoints. On the task page you can Stop, Continue Task, Write translation files, and Retry failed items.
+- Glossary and do-not-translate management: extract character names, manage local glossaries and preserved-text lists, protect text, apply replacements, and clean mixed-language text. The workbench maintains character cards and worldbook entries, with prompt preview and editing.
+- Free translation: built-in Google and Bing free engines, no API key required (network access to those services is required); usable for batch translation and the local glossary.
+- Concurrent engines: built-in templates for OpenAI, DeepSeek, Anthropic, Google, Volcano Engine, and more; custom endpoints can be added under API. Adjust concurrent-task and RPM limits in Basic Settings.
 - High-fidelity formatting: AST completion, missing-text scanning, and `miss_patch` support generate `replace_text*.rpy` patches while preserving existing translations.
 - Ren'Py toolbox: RPY formatting, indentation and quote checks and repairs, trailing-space cleanup, batch font replacement, RPA unpacking and packing, RPYC decompilation, language entry and default-language settings, and Android packaging through the Android wrapper workflow.
-- Progress visibility: concurrency controls, rate limits, and token/progress dashboards.
+- Progress visibility: the Translation Task page shows tokens, progress, and task status.
 
 ## Toolbox Modules 🧰
 
-- One-click translation, translation extraction, direct translation of RPY/source files, and incremental translation
-- Local glossaries, text protection, replacements, name-field extraction, partial retranslation, and batch corrections
-- RPA unpacking/packing, RPYC decompilation, font injection, default-language and entry configuration, formatting and error repair, and HTML/Excel/JSON import and export
+The desktop Ren'Py Toolbox has 27 tools in four groups:
+
+- **Recommended (9)**: Resume translation, One-click translation, Review & polish, Apply translations, Install fonts, Add language switch, Default language, Glossary, Preserved text
+- **Translation (7)**: RPY extraction rules, Extract to TL, Translate RPY, HOOK translation, Translate source, Fill missing text, Text extract JSON
+- **Text & assets (4)**: Honorific bridge, Structure export, Batch correction, Name extraction
+- **Engineering (7)**: Unpack / pack, Error repair, Translation reuse, Code formatting, Android packaging, Web / AI translation wizard, Game mod injection
+
+Open proofreading from Toolbox **Review & polish**, or from Translation Task via **Open Proofreading**. Edits save to the translation cache; writing back to the game uses **Write translation files** or **Apply translations**. Editing in proofreading does not automatically rewrite game files.
 
 ## Supported Text Formats 🏷️
 
@@ -52,19 +79,40 @@
 
 Get the Windows x64 installer or ZIP from [GitHub Releases](https://github.com/dclef/RenpyBox/releases). The desktop app includes its runtime, so a separate Python installation is not required. See the [desktop guide](./desktop/README.md) for details.
 
-The original Python app remains available. Existing clients can first update through their usual updater to the Python compatibility build, then follow its desktop migration notice. You can also download the desktop app directly. Migration does not automatically replace the Python app or copy its settings; confirm your project and API settings in the new interface.
+Release assets:
+
+| File | Purpose |
+| --- | --- |
+| `RenpyBox-NewUI-0.9.0-x64.exe` | Windows installer (recommended) |
+| `RenpyBox-NewUI-0.9.0-x64.zip` | Portable ZIP; extract fully, then run the app inside |
+| `RenpyBox_v0.9.0.zip` | Python compatibility package that keeps the previous UI for existing updaters |
+
+Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). That differs from the older Python app's incremental update mechanism. The original Python app remains available. Existing clients can first update through their usual updater to the Python compatibility build, then follow its desktop migration notice. You can also download the desktop app directly. Migration does not automatically replace the Python app or copy its settings; confirm your project and API settings in the new interface. The desktop app keeps its config in `%APPDATA%\RenpyBox-newUI`, separate from the Python app. To reuse your existing platforms, open **Platforms** and choose **Add Platform → Import from older version**, then select the `config.json` in the Python app directory; keys live in Windows Credential Manager and are picked up automatically.
+
+## Quick Start
+
+1. In **API**, select or add a translation interface and test it. Free Google / Bing need no API key, but require network access to those services; paid APIs need keys as required by each provider.
+2. In **Project Settings**, choose the input folder and languages, or open Toolbox **One-click translation** and select a game folder to prepare text.
+3. Open **Translation Task**, confirm the active API and input / output folders, then start. Use **Stop** and **Continue Task**; failed items can be retried with **Retry failed items**.
+4. Review via Toolbox **Review & polish** or **Open Proofreading** on the task page; when ready, use **Write translation files**. Proofreading does not write game files by itself.
+5. If needed, use **Apply translations**, install fonts, add a language switch, or set the default language.
 
 ## Recent Updates 📅
 
-- 0.9.0 (release preparation):
-  - New desktop interface with translation, proofreading, 27 Ren'Py tools, and character/worldbuilding workspaces.
-  - Fixed the interface staying busy after font scanning; added window recovery and log export.
-  - Added a desktop migration notice in the Python app while keeping its source and compatibility package.
+- 2026-10-14 v0.9.0:
+  - New desktop interface (Windows installer and portable build) with Translation Task, Ren'Py Toolbox, Proofreading, and Character / Worldbook Workbench; prompts support preview and editing.
+  - Check for updates and install downloads; view, export, and locate runtime logs. Installer downloads verify size and SHA-256.
+  - Large TL file checks show progress and can be cancelled; automatic repair keeps a backup first. Improved recovery when a page fails or the window stops responding.
+  - Python compatibility build adds a desktop migration notice; the Python app and source remain available.
 
 - 2026-10-09 v0.8.2:
   - Fixed slow write-back validation for large Ren'Py projects while preserving duplicate-text, character-name, and AST matching semantics.
   - Fixed cache exports and fallback reinjection reading from the output directory; incremental and proofreading exports now restore the matching input path from the run manifest.
   - Strengthened write-back path safety checks and fixed first-time export of a single TL script.
+
+- 2026-10-07 v0.8.1:
+  - Fixed project-settings translation input folders being rewritten to `game/tl/<language>`; one-click translation now writes back to the folder you selected.
+  - Fixed opening the extraction-rules dialog immediately after saving a project being treated as a project change and clearing candidates.
 
 - 2026-10-02 v0.8.0:
   - Opening the model list no longer waits for every translation SDK to load, and switching projects and saving the translation cache are noticeably faster.
@@ -94,14 +142,14 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
 
-- In the desktop app, open Runtime Logs to export or locate log files. Python app logs remain in `./log`. Please attach relevant logs when reporting an issue.
-- Caches are stored in `output/cache`. After pausing a task, you can continue it directly or export the completed portion.
-- If an external interface times out or is rate-limited, adjust concurrency and rate limits in Interface Management.
+- Packaged desktop app config and shell logs default to `%APPDATA%\RenpyBox-newUI`. When reporting an issue, prefer **Runtime Logs** to export or open the relevant files. Python app logs remain under the app directory's `log` folder.
+- Translation caches live in the `cache` subdirectory of the **current output folder** (not a fixed app `output/cache`). After pausing a task, you can continue it directly or export the completed portion.
+- If an external API times out or is rate-limited, adjust concurrent-task and RPM limits in **Basic Settings**, not under **API**.
 
 ## Feedback and Support 💬
 
 - Issues and pull requests are welcome for bug reports, suggestions, and contributions.
-- Please include the relevant files from the `./log` directory when reporting a problem.
+- Please attach relevant logs: in the desktop app use **Runtime Logs** to export or open files; for the Python app, see the `log` folder under the app directory.
 - QQ group: 821152470
 
 ## Acknowledgements 🙏
