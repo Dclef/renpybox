@@ -12,6 +12,12 @@ export interface DesktopUpdateState {
   releaseNotes?: string;
   releaseUrl?: string;
   packaged: boolean;
+  // 下载阶段才出现：发布资产的名称/地址/大小/校验值，以及下载完成后的安装包路径。
+  assetName?: string;
+  assetUrl?: string;
+  assetSize?: number;
+  assetDigest?: string;
+  filePath?: string;
 }
 
 export interface DesktopAppInfo {

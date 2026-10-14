@@ -14,11 +14,13 @@ import {
   translationModeSummary,
   translationProgressView,
 } from '../toolboxTranslateView.mjs';
+import { useT } from '../i18n';
 import type { AppState } from '../useAppState';
 import { Banner, SettingsGroup } from '../ui';
 
 export function HookSupplementPage(props: { state: AppState }) {
   const { state } = props;
+  const t = useT();
   const values = state.settings?.values ?? {};
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const gameFolder = String(state.project?.renpy_game_folder ?? '');
@@ -103,7 +105,7 @@ export function HookSupplementPage(props: { state: AppState }) {
         setAssetsMissing(true);
       } else if (response.accepted) {
         setAssetsMissing(false);
-        state.pushToast('success', '已提交补全翻译');
+        state.pushToast('success', t('hook_supplement_submitted'));
       }
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
@@ -121,46 +123,46 @@ export function HookSupplementPage(props: { state: AppState }) {
   return (
     <div className="rb-page" data-rb-page="hook-supplement">
       <Banner tone="info">{translationModeSummary('supplement')}</Banner>
-      <Banner tone="info">本页只做 replace_text 补全，不是 EXE 运行时 HOOK。</Banner>
+      <Banner tone="info">{t('hook_supplement_note')}</Banner>
       {!gate.canStart ? <Banner tone="warning">{gate.hint}</Banner> : null}
-      {hintOut ? <Banner tone="info">{`补全输出：${hintOut}`}</Banner> : null}
+      {hintOut ? <Banner tone="info">{t('hook_supplement_output_hint').split('{path}').join(hintOut)}</Banner> : null}
 
-      <SettingsGroup title="项目与语言">
+      <SettingsGroup title={t('hook_supplement_group_title')}>
         <Form layout="horizontal">
-          <Form.Item label="项目目录" style={{ marginBottom: 8 }}>
+          <Form.Item label={t('hook_supplement_project_dir')} style={{ marginBottom: 8 }}>
             <Input
               value={gamePath}
               disabled={busy || engineBusy}
               onChange={(e) => setGamePath(e.target.value)}
-              placeholder="选择包含 game 目录的项目根目录"
+              placeholder={t('hook_supplement_project_dir_placeholder')}
             />
           </Form.Item>
           {window.renpy?.pickFolder ? (
             <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
-              <Button disabled={busy || engineBusy} onClick={() => void pickProject()}>选择项目</Button>
+              <Button disabled={busy || engineBusy} onClick={() => void pickProject()}>{t('hook_supplement_select_project')}</Button>
             </div>
           ) : null}
-          <Form.Item label="自定义 tl 父目录（可选）" style={{ marginBottom: 8 }}>
+          <Form.Item label={t('hook_supplement_tl_parent_label')} style={{ marginBottom: 8 }}>
             <Input
               value={tlParent}
               disabled={busy || engineBusy}
               onChange={(e) => setTlParent(e.target.value)}
-              placeholder="默认 game/tl；同项目自定义 TL 可保留"
+              placeholder={t('hook_supplement_tl_parent_placeholder')}
             />
           </Form.Item>
           {window.renpy?.pickFolder ? (
             <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
-              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>选择 tl 父目录</Button>
+              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>{t('hook_supplement_select_tl_parent')}</Button>
             </div>
           ) : null}
-          <Form.Item label="语言目录名" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('asset_language')} style={{ marginBottom: 12 }}>
             <Input
               value={tlName}
               disabled={busy || engineBusy}
               onChange={(e) => setTlName(e.target.value)}
             />
           </Form.Item>
-          <Form.Item label="源语言" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('hook_supplement_source_language')} style={{ marginBottom: 12 }}>
             <Select
               value={sourceChoice}
               disabled={busy || engineBusy}
@@ -172,7 +174,7 @@ export function HookSupplementPage(props: { state: AppState }) {
               style={{ width: '100%' }}
             />
           </Form.Item>
-          <Form.Item label="目标语言" style={{ marginBottom: 0 }}>
+          <Form.Item label={t('font_inject_language')} style={{ marginBottom: 0 }}>
             <Select
               value={targetChoice}
               disabled={busy || engineBusy}
@@ -187,27 +189,24 @@ export function HookSupplementPage(props: { state: AppState }) {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="开始补全翻译">
+      <SettingsGroup title={t('hook_supplement_group_start')}>
         <div className="rb-tool-actions">
           <Button type="primary" disabled={!gate.canStart || busy} loading={busy} onClick={() => void start(false)}>
-            开始补全翻译
-          </Button>
+            {t('hook_supplement_start')}</Button>
           <Button danger disabled={!translating || busy} onClick={() => void state.stopTranslation()}>
-            停止
-          </Button>
+            {t('hook_supplement_stop')}</Button>
         </div>
         {(translating || progress.label) ? (
           <>
             <Progress percent={progress.percent} style={{ marginTop: 12 }} />
-            <p className="card-description">{progress.label || '翻译中…'}</p>
+            <p className="card-description">{progress.label || t('hook_supplement_translating')}</p>
           </>
         ) : null}
       </SettingsGroup>
 
       {assetsMissing ? (
         <Banner tone="warning">
-          当前项目没有可注入的角色卡、世界观或术语资产。
-          <Button type="link" onClick={() => void start(true)}>仍然继续</Button>
+          {t('hook_supplement_assets_missing')}<Button type="link" onClick={() => void start(true)}>{t('hook_supplement_continue_anyway')}</Button>
         </Banner>
       ) : null}
     </div>

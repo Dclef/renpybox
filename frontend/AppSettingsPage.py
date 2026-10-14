@@ -2,6 +2,8 @@ import os
 import signal
 
 from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QHBoxLayout
@@ -312,10 +314,9 @@ class AppSettingsPage(QWidget, Base):
 
     @staticmethod
     def _known_update_available(latest: dict) -> bool:
-        return (
-            VersionManager.parse_version(Version.CURRENT)
-            < VersionManager.parse_version(str(latest.get("tag_name", "")))
-        )
+        current = VersionManager.parse_version(Version.CURRENT)
+        available = VersionManager.parse_version(str(latest.get("tag_name", "")))
+        return current < available or (latest.get("delivery") == "desktop" and current == available)
 
     def refresh_update_ui(self) -> None:
         strings = Localizer.get()
@@ -345,6 +346,15 @@ class AppSettingsPage(QWidget, Base):
                 FluentIcon.UPDATE.icon(color=get_theme_accent_color())
             )
             self.update_status_label.setText(strings.app_update_checking)
+        elif latest.get("delivery") == "desktop" and self._known_update_available(latest):
+            self.update_status_icon.setIcon(
+                FluentIcon.UPDATE.icon(color=get_theme_accent_color())
+            )
+            self.update_status_label.setText(
+                strings.app_desktop_update_title.replace("{VERSION}", version)
+            )
+            self.update_action_button.setText(strings.app_desktop_update_action)
+            self.update_action_button.show()
         elif status == VersionManager.Status.NEW_VERSION:
             self.update_status_icon.setIcon(
                 FluentIcon.UPDATE.icon(color=get_theme_accent_color())
@@ -423,7 +433,7 @@ class AppSettingsPage(QWidget, Base):
         status = state.get("status", VersionManager.Status.NONE)
         latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
         if (
-            status == VersionManager.Status.NEW_VERSION
+            status in (VersionManager.Status.NEW_VERSION, VersionManager.Status.DESKTOP_AVAILABLE)
             or (
                 status == VersionManager.Status.NONE
                 and self._known_update_available(latest)
@@ -454,8 +464,16 @@ class AppSettingsPage(QWidget, Base):
         if not latest:
             return
         if UpdateDetailsDialog(latest, self._window).exec():
-            self.emit(Base.Event.APP_UPDATE_DOWNLOAD_START, {})
-            QTimer.singleShot(0, self.refresh_update_ui)
+            if latest.get("delivery") == "desktop":
+                opened = QDesktopServices.openUrl(QUrl(VersionManager.desktop_release_url(latest)))
+                if not opened:
+                    self.emit(Base.Event.APP_TOAST_SHOW, {
+                        "type": Base.ToastType.ERROR,
+                        "message": Localizer.get().app_desktop_update_open_failed,
+                    })
+            else:
+                self.emit(Base.Event.APP_UPDATE_DOWNLOAD_START, {})
+                QTimer.singleShot(0, self.refresh_update_ui)
 
     def _show_changelog(self) -> None:
         state = self._update_state()

@@ -19,6 +19,7 @@ from base.EventManager import EventManager
 from base.PathHelper import get_resource_path
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+from module.Project.PlatformNaming import deduplicate_platform_name
 from module.Secret.SecretStore import CREDENTIAL_ID_FIELD, LEGACY_CREDENTIAL_ID_FIELD, SecretStore
 
 router = APIRouter(prefix = "/api/platforms", tags = ["接口管理"])
@@ -116,9 +117,15 @@ def _write(request: Request, body: PlatformWrite, platform_id: int | None = None
         if original is None:
             if not body.name or not body.name.strip():
                 raise HTTPException(status_code = 400, detail = "新增接口需要名称。")
+            # 同名接口会让用户无法区分两条记录；按 Qt5 PlatformPage.py:250-262
+            # 的规则追加递增数字后缀。去重后的名字写回请求体，避免 _apply
+            # 再用用户提交的原始名字覆盖。
+            name = deduplicate_platform_name(body.name.strip(), platforms)
+            body.name = name
             platform = {
                 "id": max((item.get("id", -1) for item in platforms), default = -1) + 1,
-                "name": body.name.strip(), "group": "custom", "api_format": "OpenAI",
+                "name": name,
+                "group": "custom", "api_format": "OpenAI",
                 "api_url": "", "model": "", "api_key": [], "thinking": {"level": "OFF"},
                 "top_p": 0.95, "temperature": 0.95, "presence_penalty": 0.0, "frequency_penalty": 0.0,
             }

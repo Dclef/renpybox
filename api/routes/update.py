@@ -12,6 +12,8 @@ from base.VersionManager import VersionManager
 
 router = APIRouter(prefix="/api/update", tags=["update"])
 
+_DESKTOP_AUTO_UPDATE_DETAIL = "桌面版需前往发布页单独下载安装，不能使用自动更新"
+
 
 class UpdateCheckRequest(BaseModel):
     manual: bool = True
@@ -43,25 +45,44 @@ def _manager(request: Request) -> VersionManager:
     return manager
 
 
+def _is_desktop_delivery(status: str, latest: dict) -> bool:
+    return status == VersionManager.Status.DESKTOP_AVAILABLE or latest.get("delivery") == "desktop"
+
+
+def _reject_desktop_auto_update(status: str, latest: dict) -> None:
+    if _is_desktop_delivery(status, latest):
+        raise HTTPException(status_code=400, detail=_DESKTOP_AUTO_UPDATE_DETAIL)
+
+
 def _payload(manager: VersionManager) -> UpdateActionResponse:
     state = manager.get_update_state()
     latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+    status = str(state.get("status") or VersionManager.Status.NONE)
     tag = str(latest.get("tag_name", "") or "")
-    new_version = bool(
-        tag
-        and VersionManager.parse_version(str(state.get("version") or manager.get_version()))
-        < VersionManager.parse_version(tag)
-    )
+    current = VersionManager.parse_version(str(state.get("version") or manager.get_version()))
+    available = VersionManager.parse_version(tag) if tag else (0, 0, 0, 0)
+    desktop = _is_desktop_delivery(status, latest)
+    # 同版本桌面迁移也要标 new_version，前端才能展示迁移入口而不是「已是最新」
+    new_version = bool(tag and (current < available or (desktop and current == available)))
+    release_url = VersionManager.RELEASE_URL
+    if desktop:
+        try:
+            release_url = VersionManager.desktop_release_url(latest)
+        except ValueError:
+            pass
     return UpdateActionResponse(
-        status=str(state.get("status") or VersionManager.Status.NONE),
+        status=status,
         version=str(state.get("version") or manager.get_version()),
         latest=latest,
         downloaded_size=int(state.get("downloaded_size") or 0),
         total_size=int(state.get("total_size") or 0),
         error=str(state.get("error") or ""),
         new_version=new_version,
-        release_url=VersionManager.RELEASE_URL,
-        can_install=str(state.get("status")) == VersionManager.Status.DOWNLOADED,
+        release_url=release_url,
+        can_install=(
+            status == VersionManager.Status.DOWNLOADED
+            and not desktop
+        ),
     )
 
 
@@ -83,11 +104,12 @@ def download_update(request: Request) -> UpdateActionResponse:
     manager = _manager(request)
     state = manager.get_update_state()
     status = str(state.get("status") or "")
+    latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+    _reject_desktop_auto_update(status, latest)
     if status == VersionManager.Status.UPDATING:
         raise HTTPException(status_code=409, detail="正在下载更新")
     if status == VersionManager.Status.DOWNLOADED:
         return _payload(manager)
-    latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
     if not latest:
         raise HTTPException(status_code=400, detail="请先检查更新")
     manager.emit(Base.Event.APP_UPDATE_DOWNLOAD_START, {})
@@ -107,7 +129,10 @@ def cancel_download(request: Request) -> UpdateActionResponse:
 def install_update(request: Request) -> UpdateActionResponse:
     manager = _manager(request)
     state = manager.get_update_state()
-    if str(state.get("status") or "") != VersionManager.Status.DOWNLOADED:
+    status = str(state.get("status") or "")
+    latest = state.get("latest") if isinstance(state.get("latest"), dict) else {}
+    _reject_desktop_auto_update(status, latest)
+    if status != VersionManager.Status.DOWNLOADED:
         raise HTTPException(status_code=409, detail="尚未下载完成，无法安装")
     try:
         from module.Engine.Engine import Engine

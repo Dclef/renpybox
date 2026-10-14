@@ -25,6 +25,9 @@ from frontend.Project.PlatformHeaderCard import PlatformHeaderCard
 from frontend.Project.PlatformItemCard import PlatformItemCard
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
+from module.Project.PlatformNaming import (
+    deduplicate_platform_name as _deduplicate_platform_name,
+)
 from module.Secret.SecretStore import (
     CREDENTIAL_ID_FIELD,
     LEGACY_CREDENTIAL_ID_FIELD,
@@ -63,15 +66,12 @@ def resolve_group(platform: dict) -> str:
 
 
 def deduplicate_platform_name(name: str, platforms: list[dict]) -> str:
-    """按精确名称匹配，为重复接口名追加递增数字后缀。"""
-    existing_names = {str(platform.get("name", "")) for platform in platforms}
-    if name not in existing_names:
-        return name
+    """按精确名称匹配，为重复接口名追加递增数字后缀。
 
-    suffix = 2
-    while f"{name} {suffix}" in existing_names:
-        suffix += 1
-    return f"{name} {suffix}"
+    实现在 ``module/Project/PlatformNaming.py``：Electron 端新增接口
+    （``POST /api/platforms``）必须用同一规则，避免两端行为漂移。
+    """
+    return _deduplicate_platform_name(name, platforms)
 
 
 class PlatformPage(QWidget, Base):

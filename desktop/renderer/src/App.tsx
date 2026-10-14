@@ -409,13 +409,13 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'toolbox':
         return <ToolBoxPage state={state} onNavigate={navigate} />;
       case 'basic-settings':
-        return <SettingsPage state={state} variant="basic" title={t('app_basic_settings_page')} description="调整翻译任务的并发、超时和重试阈值" />;
+        return <SettingsPage state={state} variant="basic" title={t('app_basic_settings_page')} description={t('basic_settings_page_header_description')} />;
       case 'expert-settings':
-        return <SettingsPage state={state} variant="expert" title={t('app_expert_settings_page')} description="控制提示词、资产分析和结果检查等高级行为" />;
+        return <SettingsPage state={state} variant="expert" title={t('app_expert_settings_page')} description={t('expert_settings_page_header_description')} />;
       case 'custom-prompt':
         return <CustomPromptPage state={state} onDirtyChange={setDirty} />;
       case 'app-settings':
-        return <SettingsPage state={state} variant="app" title="应用设置" description="管理语言、更新、声音和应用级显示选项" />;
+        return <SettingsPage state={state} variant="app" title={t('app_settings_page')} description={t('app_settings_page_header_description')} />;
       case 'workbench':
         return <WorkbenchPage state={state} onDirtyChange={setDirty} onNavigate={navigate} />;
       case 'agent':

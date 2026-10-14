@@ -10,7 +10,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
 from api.schemas import ProjectInfo, ProjectPathRequest, ProjectResolveRequest
-from module.Project.ProjectStore import ProjectStore
+from module.Project.ProjectStore import (
+    ProjectStore,
+    ensure_output_folder,
+    resolve_target_language,
+)
 from module.Renpy.ProjectPaths import RenpyProjectPaths, looks_like_renpy_path
 
 router = APIRouter(prefix = "/api/project", tags = ["project"])
@@ -62,6 +66,10 @@ def resolve_project(request: Request, body: ProjectResolveRequest) -> ProjectInf
     ``game/tl/<lang>``，项目设置反而变错。
 
     所以不含项目结构时返回 409，调用方应忽略并只保留 input_folder。
+
+    绑定成功时补齐两个 Qt5 副作用（``_auto_fill_by_renpy_config``）：
+    按真实 ``tl/<lang>`` 目录推断 ``target_language``（推断不出则保留原值），
+    以及按需创建输出目录（失败只忽略，不影响响应）。
     """
     config = request.app.state.config
     raw = str(body.path or "").strip()
@@ -78,6 +86,13 @@ def resolve_project(request: Request, body: ProjectResolveRequest) -> ProjectInf
     if paths is None:
         raise HTTPException(status_code = 409, detail = "无法从该目录推导 Ren'Py 项目结构")
 
-    # apply_resolved 内部会走 apply_to_config 规范五字段，再 persist 发 PROJECT_CHANGED
-    ProjectStore.get().apply_resolved(config, paths)
+    # apply_resolved 内部会走 apply_to_config 规范五字段，再 persist 发 PROJECT_CHANGED；
+    # mutate 在持久化前按真实 tl/<lang> 目录推断目标语言，与 Qt5 语义一致。
+    ProjectStore.get().apply_resolved(
+        config,
+        paths,
+        mutate = lambda current: resolve_target_language(current, paths),
+    )
+    # 输出目录必须存在，否则第一个任务会因为目录不存在直接失败。
+    ensure_output_folder(config)
     return _info(request)

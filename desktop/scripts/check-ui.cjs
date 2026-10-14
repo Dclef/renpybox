@@ -241,14 +241,30 @@ app.whenReady().then(async () => {
   await win.loadURL('about:blank'); win.webContents.debugger.attach('1.3');
   await win.webContents.debugger.sendCommand('Page.enable'); await win.webContents.debugger.sendCommand('Runtime.enable');
   await win.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: '(' + fixture.toString() + ')()' });
-  await win.loadURL(process.env.RENPYBOX_UI_URL || 'http://127.0.0.1:5173');
+  if (process.env.RENPYBOX_UI_URL) await win.loadURL(process.env.RENPYBOX_UI_URL);
+  else await win.loadFile(path.join(__dirname, '../dist/index.html'));
   const js = async code => { const result=await win.webContents.debugger.sendCommand('Runtime.evaluate',{expression:`(async()=>{const value=await (0,eval)(${JSON.stringify(code)});return typeof value==='function'||value instanceof Node?undefined:value;})()`,awaitPromise:true,returnByValue:true}); if(result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text); return result.result.value; };
   for (let i = 0; i < 50; i++) { if (await js("!!document.querySelector('.translation-layout')")) break; await pause(100); }
-  const assert = async (expression, name) => {
-    for(let attempt=0;attempt<6;attempt++) { if(await js(`Boolean(${expression})`)) {log('PASS '+name);return;} await pause(100); }
-    log('FAIL CONTEXT '+JSON.stringify(await js("({page:document.querySelector('.content')?.dataset.page,active:document.activeElement?.outerHTML?.slice(0,250),editors:[...document.querySelectorAll('.rb-sheet-cell-editor')].map(e=>[e.value,e.getAttribute('aria-label')]),writes:__uiFixture.writes.slice(-2).map(w=>({p:w.p,method:w.method})),dialogs:[...document.querySelectorAll('[role=dialog]')].map(e=>e.textContent),lastToasts:[...document.querySelectorAll('[data-rb-toast]')].map(e=>e.textContent)})")));
-    throw new Error('FAIL '+name);
+  const ASSERT_TIMEOUT_MS = Number(process.env.RENPYBOX_UI_ASSERT_TIMEOUT || 8000);
+  // 表达式里出现的 querySelector 字面量 —— 断言失败/空节点时用来指名道姓，而不是抛 TypeError 或只给一个名字。
+  const selectorsOf = expression => Array.from(new Set(String(expression).match(/querySelector(?:All)?\(\s*(['"`])(.*?)\1/g) || []))
+    .map(hit => hit.replace(/^querySelector(?:All)?\(\s*(['"`])(.*)\1$/, '$2')).filter(selector => !selector.includes('${'));
+  // 真正的等待：轮询到超时为止（默认 8s），失败时报出哪个选择器不存在 + 页面现场。
+  const waitFor = async (expression, name) => {
+    const selectors = selectorsOf(expression);
+    const deadline = Date.now() + ASSERT_TIMEOUT_MS;
+    let last; let thrown = '';
+    while (Date.now() < deadline) {
+      try { last = await js(`Boolean(${expression})`); } catch (failure) { last = false; thrown = String(failure?.message || failure); }
+      if (last === true) { log('PASS ' + name); return; }
+      await pause(100);
+    }
+    log('FAIL CONTEXT ' + JSON.stringify(await js(`({selectors:${JSON.stringify(selectors)}.map(s=>[s,!!document.querySelector(s)]),fixture:{workbenchJobStatus:(()=>{const j=__uiFixture.workbenchJob;return j&&{status:j.status,cancel:!!j.cancel_requested,worker_active:!!(j.result&&j.result.worker_active)}})(),items:__uiFixture.items&&__uiFixture.items[0]&&{dst:__uiFixture.items[0].dst,status:__uiFixture.items[0].status},writes:__uiFixture.writes.slice(-4).map(w=>({p:w.p,method:w.method})),engineStatus:__uiFixture.engineStatus},page:document.querySelector('.content')?.dataset.page,active:document.activeElement?.outerHTML?.slice(0,200),dialogs:[...document.querySelectorAll('[role=dialog]')].map(e=>e.textContent),editors:[...document.querySelectorAll('.rb-sheet-cell-editor')].map(e=>[e.value,e.getAttribute('aria-label')]),toasts:[...document.querySelectorAll('[data-rb-toast]')].map(e=>e.textContent)})`)));
+    const missing = (await js(`JSON.stringify(${JSON.stringify(selectors)}.filter(s=>!document.querySelector(s)))`)) || '[]';
+    throw new Error(`FAIL ${name}：等待 ${ASSERT_TIMEOUT_MS}ms 仍未满足条件（${expression}）${JSON.parse(missing).length ? '；不存在的选择器 ' + missing : ''}${thrown ? '；表达式抛错 ' + thrown : ''}`);
   };
+  const waitForSelector = (selector, name) => waitFor(`!!document.querySelector(${JSON.stringify(selector)})`, name || `元素就绪 ${selector}`);
+  const assert = async (expression, name) => waitFor(expression, name);
   const click = async text => {
     const position = await js(`(()=>{const dialogs=[...document.querySelectorAll('[role=dialog]')].filter(e=>e.getBoundingClientRect().height>0);const scope=dialogs.at(-1)||document;const e=[...scope.querySelectorAll('button,[role=tab],[role=menuitem]')].find(b=>b.textContent.split(' ').join('')===${JSON.stringify(text.replaceAll(' ',''))});if(!e)throw new Error('缺少操作 '+${JSON.stringify(text)});if(e.disabled)throw new Error('操作被禁用 '+${JSON.stringify(text)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',...position,button:'left',clickCount:1});
@@ -257,13 +273,15 @@ app.whenReady().then(async () => {
   };
   // 用真实鼠标事件点击任意选择器：antd Select 靠 mousedown 展开，合成 .click() 打不开下拉。
   const clickAt = async selector => {
-    const position = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw new Error('缺少元素 '+${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    const missing = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e?null:{exists:!!e,body:document.querySelector('.content')?.dataset.page}})()`);
+    if (missing) throw new Error(`缺少元素 ${selector}（页面 ${missing.body ?? '未知'}）`);
+    const position = await js(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',...position,button:'left',clickCount:1});
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',...position,button:'left',clickCount:1});
     await pause(260);
   };
   const page = async title => { await js(`Array.from(document.querySelectorAll('.nav-item')).find(b=>b.title===${JSON.stringify(title)})?.click()`); await pause(180); };
-  const input = async (selector, value) => { await js(`(()=>{const root=document.querySelector(${JSON.stringify(selector)});const e=root?.matches('input,textarea')?root:root?.querySelector('input,textarea');if(!e)throw new Error('缺少输入框 '+${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
+  const input = async (selector, value) => { await js(`(()=>{const root=document.querySelector(${JSON.stringify(selector)});if(!root)throw new Error('缺少输入框 '+${JSON.stringify(selector)});const e=root.matches('input,textarea')?root:root.querySelector('input,textarea');if(!e)throw new Error('缺少输入框 '+${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
   const openTool = async title => { await page("Ren'Py 工具箱"); await input('.toolbox-search', title); const info = await js("JSON.stringify({cards:document.querySelectorAll('.tool-card').length,page:document.querySelector('.content')?.dataset.page,search:document.querySelector('.toolbox-search')?.value})"); log('OPENTOOL '+title+' '+info); await js("document.querySelector('.tool-card')?.click()"); await pause(180); };
   const SAMPLE_PAGES = [['翻译任务','translation'],['基础设置','basic'],['项目设置','project'],['术语表','glossary']];
@@ -643,8 +661,10 @@ await assert("document.activeElement.classList.contains('rb-proofreading-row') &
 await js("__uiFixture.items=structuredClone(__uiFixture.lexProofItemsBase)"); await click('刷新译文'); await pause(250);
 await assert("document.querySelectorAll('.rb-proofreading-row').length===__uiFixture.lexProofItemsBase.length", '校对键盘场景明确刷新恢复原译文');
 await openTool('禁翻表');
-  log('DEBUG646 ' + await js("JSON.stringify({page:document.querySelector('.content')?.dataset.page,rows:document.querySelectorAll('.rb-proofreading-row').length,target:!!document.querySelector('.rb-proof-target'),surface:!!document.querySelector('.proofreading-surface'),loading:!!document.querySelector('.rb-proof-loading'),err:document.querySelector('.rb-error, [data-rb-error]')?.textContent?.slice(0,200),dialogs:[...document.querySelectorAll('[role=dialog]')].length,tools:!!document.querySelector('.tool-card')})"));
-  await openTool('检查与润色'); await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
+  await openTool('检查与润色');
+  // 工具页要等 /api/proofreading 首帧数据才渲染 .rb-proof-target；旧版这里直接 querySelector().dispatchEvent 会抛 TypeError。
+  await waitForSelector('.rb-proof-target', '校对页目标单元格就绪');
+  await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
   await js("__uiFixture.issueDelay=true; document.querySelector('input[type=checkbox][aria-label=only-issues]')?.click()");

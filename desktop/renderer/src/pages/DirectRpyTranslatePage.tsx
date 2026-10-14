@@ -16,6 +16,7 @@ import {
 import type { PageKey } from '../nav';
 import type { AppState } from '../useAppState';
 import { Banner, SettingsGroup, Switch } from '../ui';
+import { useT } from '../i18n';
 import * as api from '../api';
 
 export function DirectRpyTranslatePage(props: {
@@ -23,6 +24,7 @@ export function DirectRpyTranslatePage(props: {
   onNavigate?: (page: PageKey) => void;
 }) {
   const { state, onNavigate } = props;
+  const t = useT();
   const values = state.settings?.values ?? {};
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const boundTl = String(state.project?.renpy_tl_folder ?? values.renpy_tl_folder ?? '');
@@ -88,7 +90,7 @@ export function DirectRpyTranslatePage(props: {
   const start = async (preflightConfirmed = false) => {
     if (!gate.canStart || busy) return;
     if (explicitTlParent && !explicitTlName) {
-      state.pushToast('warning', '已填写 tl 父目录时须同时指定语言目录名');
+      state.pushToast('warning', t('direct_rpy_tl_parent_required_pair'));
       return;
     }
     const { code, traditional } = decodeLangChoice(langChoice);
@@ -116,7 +118,7 @@ export function DirectRpyTranslatePage(props: {
         setAssetsMissing(true);
       } else if (response.accepted) {
         setAssetsMissing(false);
-        state.pushToast('success', '已提交直接翻译');
+        state.pushToast('success', t('direct_rpy_submitted'));
       }
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
@@ -146,10 +148,10 @@ export function DirectRpyTranslatePage(props: {
           project_key: ownerKey || undefined,
         });
       } else {
-        state.pushToast('warning', '请先指定 tl 目录');
+        state.pushToast('warning', t('direct_rpy_need_tl'));
         return;
       }
-      state.pushToast('success', '已请求手动写回缓存译文');
+      state.pushToast('success', t('direct_rpy_cache_writeback_requested'));
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
@@ -159,54 +161,54 @@ export function DirectRpyTranslatePage(props: {
 
   return (
     <div className="rb-page" data-rb-page="direct-rpy-translate">
-      <Banner tone="info">翻译所选 TL 目录中的文本，译文可自动写回原文件。</Banner>
+      <Banner tone="info">{t('direct_rpy_note')}</Banner>
       {!gate.canStart ? <Banner tone="warning">{gate.hint}</Banner> : null}
       {explicitTlParent ? (
         <Banner tone="info">{`显式 TL 目录：${explicitTlDir}（tl 父目录 + 语言名，不再走 game/tl 自动查找）`}</Banner>
       ) : null}
 
-      <SettingsGroup title="路径与语言" description="选择游戏，或填写 TL 父目录与语言目录名。">
+      <SettingsGroup title={t('direct_rpy_paths_description')} description={t('direct_rpy_paths_description')}>
         <Form layout="horizontal" labelCol={{ flex: '160px' }} wrapperCol={{ flex: 1 }} labelAlign="left" colon={false}>
-          <Form.Item label="游戏 / 项目目录" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('direct_rpy_game_label')} style={{ marginBottom: 12 }}>
             <div className="rb-direct-path">
             <Input
-              aria-label="游戏 / 项目目录"
+              aria-label={t('direct_rpy_game_label')}
               value={gamePath}
               disabled={busy || engineBusy}
               onChange={(e) => setGamePath(e.target.value)}
-              placeholder="选择 .exe 或项目根目录"
+              placeholder={t('direct_rpy_game_placeholder')}
             />
             {window.renpy?.pickFolder || window.renpy?.pickFile ? (
-              <Button disabled={busy || engineBusy} onClick={() => void pickGame()}>选择游戏</Button>
+              <Button disabled={busy || engineBusy} onClick={() => void pickGame()}>{t('direct_rpy_pick_game')}</Button>
             ) : null}
             </div>
           </Form.Item>
-          <Form.Item label="TL 父目录（可选）" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('direct_rpy_tl_parent_optional')} style={{ marginBottom: 12 }}>
             <div className="rb-direct-path">
             <Input
-              aria-label="TL 父目录"
+              aria-label={t('direct_rpy_tl_parent_label')}
               value={tlParent}
               disabled={busy || engineBusy}
               onChange={(e) => setTlParent(e.target.value)}
-              placeholder="默认使用 game/tl"
+              placeholder={t('direct_rpy_tl_parent_placeholder')}
             />
             {window.renpy?.pickFolder ? (
-              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>选择目录</Button>
+              <Button disabled={busy || engineBusy} onClick={() => void pickTlParent()}>{t('archive_pick_folder')}</Button>
             ) : null}
             </div>
           </Form.Item>
-          <Form.Item label="语言目录名" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('asset_source_tl_label')} style={{ marginBottom: 12 }}>
             <Input
-              aria-label="语言目录名"
+              aria-label={t('asset_source_tl_label')}
               value={tlName}
               disabled={busy || engineBusy}
               onChange={(e) => setTlName(e.target.value)}
               placeholder="chinese"
             />
           </Form.Item>
-          <Form.Item label="目标语言" style={{ marginBottom: 0 }}>
+          <Form.Item label={t('font_inject_language')} style={{ marginBottom: 0 }}>
             <Select
-              aria-label="目标语言"
+              aria-label={t('font_inject_language')}
               value={langChoice}
               disabled={busy || engineBusy}
               options={TOOLBOX_LANG_OPTIONS.map((item) => ({
@@ -220,15 +222,15 @@ export function DirectRpyTranslatePage(props: {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="写入选项">
+      <SettingsGroup title={t('direct_rpy_write_options')}>
         <div className="rb-direct-options">
           <label>
-            <span>写入前备份 .bak</span>
-            <Switch label="写入前备份 .bak" checked={backup} disabled={busy || engineBusy} onChange={setBackup} />
+            <span>{t('direct_rpy_backup_label')}</span>
+            <Switch label={t('direct_rpy_backup_label')} checked={backup} disabled={busy || engineBusy} onChange={setBackup} />
           </label>
           <label>
-            <span>自动写回文件</span>
-            <Switch label="自动写回文件" checked={autoWrite} disabled={busy || engineBusy} onChange={setAutoWrite} />
+            <span>{t('direct_rpy_write_back')}</span>
+            <Switch label={t('direct_rpy_write_back')} checked={autoWrite} disabled={busy || engineBusy} onChange={setAutoWrite} />
           </label>
         </div>
       </SettingsGroup>
@@ -236,32 +238,27 @@ export function DirectRpyTranslatePage(props: {
       <div className="rb-direct-footer">
         <div className="rb-tool-actions">
           <Button type="primary" disabled={!gate.canStart || busy} loading={busy} onClick={() => void start(false)}>
-            开始翻译
-          </Button>
+            {t('direct_rpy_start')}</Button>
           <Button danger disabled={!translating || busy} onClick={() => void state.stopTranslation()}>
-            停止
-          </Button>
+            {t('direct_rpy_stop')}</Button>
           <Button disabled={busy || engineBusy} onClick={() => void reinject()}>
-            手动写回
-          </Button>
+            {t('direct_rpy_manual_write_back')}</Button>
           {onNavigate ? (
             <Button disabled={busy} onClick={() => onNavigate('rpy-extraction')}>
-              RPY 抽取设置
-            </Button>
+              {t('rpy_extraction_settings')}</Button>
           ) : null}
         </div>
         {(translating || progress.label) ? (
           <>
             <Progress percent={progress.percent} style={{ marginTop: 12 }} />
-            <p className="card-description">{progress.label || '翻译中…'}</p>
+            <p className="card-description">{progress.label || t('hook_supplement_translating')}</p>
           </>
         ) : null}
       </div>
 
       {assetsMissing ? (
         <Banner tone="warning">
-          当前项目没有可注入的角色卡、世界观或术语资产。
-          <Button type="link" onClick={() => void start(true)}>仍然继续</Button>
+          {t('hook_supplement_assets_missing')}<Button type="link" onClick={() => void start(true)}>{t('hook_supplement_continue_anyway')}</Button>
         </Banner>
       ) : null}
     </div>
