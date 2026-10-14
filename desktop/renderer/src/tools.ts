@@ -2,8 +2,8 @@
  * 工具箱注册表 —— 与 frontend/RenpyToolbox/ToolRegistry.py 的 TOOL_SPECS 对齐。
  *
  * 27 个工具、四组划分、标题与描述全部取自 module/Localizer/LocalizerZH.py
- * 的真实文案（LocalizerZH.py:2242-2299）。requires_project 对应 Python 侧的
- * 同名字段：这些工具在没有项目时入口是禁用的。
+ * 的真实文案。项目依赖以 TOOL_REQUIRES_PROJECT 为准；按桌面版的独立选目录流程，
+ * 部分入口与 Qt5 的 requires_project 有意不同。
  */
 
 import { TOOL_REQUIRES_PROJECT } from './toolRequiresProject.mjs';
@@ -75,7 +75,7 @@ export interface ToolSpec {
   title: string;
   description: string;
   group: ToolGroup;
-  /** 需要先选好项目（= 先选游戏目录），否则工具无从下手。新 UI 只有「推荐流程」整组 + 术语表 / 禁翻表为 true，见 tests/tools-registry.test.mjs */
+  /** 需要先选好项目（= 先选游戏目录），否则入口禁用。新 UI：推荐流程里除一键翻译外均为 true；一键翻译是选目录入口故为 false；术语表 / 禁翻表也门禁。翻译方式见 TOOL_REQUIRES_PROJECT。 */
   requiresProject: boolean;
   icon: ToolIconName;
   /** 推荐流程里的执行序号，0 表示不显示（对齐 ItemCard 的 step） */
@@ -95,7 +95,7 @@ export const TOOL_GROUP_TITLES: Record<ToolGroup, string> = {
 export const TOOL_GROUP_ORDER: ToolGroup[] = ['flow', 'translate', 'asset', 'engineer'];
 
 export const TOOL_SPECS: ToolSpec[] = [
-  // ---------- 推荐流程（唯一要求先选游戏目录的分组；术语表 / 禁翻表 也放这一组，与 Qt5 的 ASSET 分组有意不同） ----------
+  // ---------- 推荐流程（门禁工具集中在此组；一键翻译除外，作为选游戏目录入口；术语表 / 禁翻表也放这一组，与 Qt5 的 ASSET 分组有意不同） ----------
   {
     key: 'continue_translation',
     title: '继续翻译',
@@ -111,6 +111,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     title: '一键翻译',
     description: '选择游戏目录，自动完成抽取和翻译',
     group: 'flow',
+    // 选目录入口：无项目时也应可打开，由页面内选择游戏目录
     requiresProject: false,
     icon: 'ONE_KEY',
     step: 1,

@@ -16,11 +16,13 @@ import {
   translationModeSummary,
   translationProgressView,
 } from '../toolboxTranslateView.mjs';
+import { useT } from '../i18n';
 import type { AppState } from '../useAppState';
 import { Banner, SettingsGroup, Switch } from '../ui';
 
 export function HookTranslatePage(props: { state: AppState }) {
   const { state } = props;
+  const t = useT();
   const values = state.settings?.values ?? {};
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const tlFolder = String(state.project?.renpy_tl_folder ?? '');
@@ -159,18 +161,18 @@ export function HookTranslatePage(props: { state: AppState }) {
           setBusy(false);
           if (job.status === 'failed') {
             setOwnsTranslation(false);
-            state.pushToast('error', String(result.message || job.error || 'HOOK 抽取失败'));
+            state.pushToast('error', String(result.message || job.error || t('hook_translate_error')));
           } else if (job.status === 'cancelled') {
             setOwnsTranslation(false);
             const partial = Boolean(result.partial || (Array.isArray(result.written_files) && result.written_files.length));
-            state.pushToast('warning', partial ? '已取消 HOOK 抽取（已有部分产物）' : '已取消 HOOK 抽取');
+            state.pushToast('warning', partial ? t('hook_translate_cancelled_partial') : t('hook_translate_cancelled'));
           } else if (result.translation_started) {
             setOwnsTranslation(true);
             setTranslationRunId(Number(result.translation_run_id || 0));
-            state.pushToast('success', '抽取完成，翻译已启动');
+            state.pushToast('success', t('hook_translate_extract_done_started'));
           } else {
             setOwnsTranslation(false);
-            state.pushToast('warning', String(result.message || '抽取完成，但翻译未启动'));
+            state.pushToast('warning', String(result.message || t('hook_translate_extract_done_not_started')));
           }
         }
       } catch {
@@ -253,7 +255,7 @@ export function HookTranslatePage(props: { state: AppState }) {
         return;
       }
       if (!response.accepted) {
-        state.pushToast('warning', response.detail || '无法启动 HOOK 翻译');
+        state.pushToast('warning', response.detail || t('hook_translate_translate_start_failed'));
         setBusy(false);
         pendingLaunchRef.current = null;
         return;
@@ -270,7 +272,7 @@ export function HookTranslatePage(props: { state: AppState }) {
       setActiveRequestId(requestId);
       setOwnsTranslation(false);
       setExtracting(true);
-      setJobMessage('正在准备运行时 HOOK 抽取…');
+      setJobMessage(t('hook_translate_preparing'));
     } catch (error) {
       if (!launchContextStillValid()) {
         if (pendingLaunchRef.current === launch) pendingLaunchRef.current = null;
@@ -312,7 +314,7 @@ export function HookTranslatePage(props: { state: AppState }) {
         } catch {
           /* 重读失败仍以 409 文案为准 */
         }
-        state.pushToast('warning', error.message || '当前没有可停止的本页任务');
+        state.pushToast('warning', error.message || t('hook_translate_no_task_to_stop'));
         return;
       }
       if (!extracting) {
@@ -324,34 +326,33 @@ export function HookTranslatePage(props: { state: AppState }) {
   return (
     <div className="rb-page" data-rb-page="hook-translate">
       <Banner tone="info">{translationModeSummary('hook')}</Banner>
-      <Banner tone="info">这里是 EXE 运行时 HOOK，不是 replace_text 补全。补全请用「补全翻译」页。</Banner>
+      <Banner tone="info">{t('hook_translate_note')}</Banner>
       {!gate.canStart && !extracting ? <Banner tone="warning">{gate.hint}</Banner> : null}
 
-      <SettingsGroup title="目标与语言" description="注入临时 hook 启动 EXE 抽取，成功后才启动统一翻译引擎。">
+      <SettingsGroup title={t('hook_translate_group_target')} description={t('hook_translate_group_target_description')}>
         <Form layout="horizontal">
-          <Form.Item label="游戏 EXE / 项目目录" style={{ marginBottom: 8 }}>
+          <Form.Item label={t('hook_translate_game_label')} style={{ marginBottom: 8 }}>
             <Input
               value={gamePath}
               disabled={busy || extracting || pageTranslating}
               onChange={(e) => setGamePath(e.target.value)}
-              placeholder="优先 .exe，也可选项目根目录"
+              placeholder={t('hook_translate_game_placeholder')}
             />
           </Form.Item>
           {window.renpy?.pickFolder || window.renpy?.pickFile ? (
             <div className="rb-tool-actions" style={{ marginBottom: 12 }}>
               <Button disabled={busy || extracting || pageTranslating} onClick={() => void pickGame()}>
-                选择 EXE / 目录
-              </Button>
+                {t('hook_translate_pick_game')}</Button>
             </div>
           ) : null}
-          <Form.Item label="语言目录名" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('asset_language')} style={{ marginBottom: 12 }}>
             <Input
               value={tlName}
               disabled={busy || extracting || pageTranslating}
               onChange={(e) => setTlName(e.target.value)}
             />
           </Form.Item>
-          <Form.Item label="源语言" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('hook_translate_source_language')} style={{ marginBottom: 12 }}>
             <Select
               value={sourceChoice}
               disabled={busy || extracting || pageTranslating}
@@ -363,7 +364,7 @@ export function HookTranslatePage(props: { state: AppState }) {
               style={{ width: '100%' }}
             />
           </Form.Item>
-          <Form.Item label="目标语言" style={{ marginBottom: 0 }}>
+          <Form.Item label={t('font_inject_language')} style={{ marginBottom: 0 }}>
             <Select
               value={targetChoice}
               disabled={busy || extracting || pageTranslating}
@@ -378,22 +379,22 @@ export function HookTranslatePage(props: { state: AppState }) {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="抽取选项">
+      <SettingsGroup title={t('hook_translate_group_extract_options')}>
         <Form layout="horizontal">
-          <Form.Item label="写回前备份 .bak" style={{ marginBottom: 12 }}>
-            <Switch label="写回前备份 .bak" checked={backup} disabled={busy || extracting || pageTranslating} onChange={setBackup} />
+          <Form.Item label={t('hook_translate_backup_label')} style={{ marginBottom: 12 }}>
+            <Switch label={t('hook_translate_backup_label')} checked={backup} disabled={busy || extracting || pageTranslating} onChange={setBackup} />
           </Form.Item>
-          <Form.Item label="增量补全" style={{ marginBottom: 12 }}>
+          <Form.Item label={t('hook_translate_incremental_label')} style={{ marginBottom: 12 }}>
             <Switch
-              label="增量补全（仅追加缺失项）"
+              label={t('hook_translate_incremental_label')}
               checked={incremental}
               disabled={busy || extracting || pageTranslating}
               onChange={setIncremental}
             />
           </Form.Item>
-          <Form.Item label="生成空白译文" style={{ marginBottom: 0 }}>
+          <Form.Item label={t('hook_translate_generate_empty_label')} style={{ marginBottom: 0 }}>
             <Switch
-              label="抽取时生成空白译文"
+              label={t('hook_translate_generate_empty_label')}
               checked={generateEmpty}
               disabled={busy || extracting || pageTranslating}
               onChange={setGenerateEmpty}
@@ -402,7 +403,7 @@ export function HookTranslatePage(props: { state: AppState }) {
         </Form>
       </SettingsGroup>
 
-      <SettingsGroup title="开始 HOOK 翻译">
+      <SettingsGroup title={t('hook_translate_group_start')}>
         <div className="rb-tool-actions">
           <Button
             type="primary"
@@ -410,30 +411,27 @@ export function HookTranslatePage(props: { state: AppState }) {
             loading={busy || extracting}
             onClick={() => void start(false)}
           >
-            开始 HOOK 翻译
-          </Button>
+            {t('hook_translate_group_start')}</Button>
           <Button danger disabled={!extracting && !pageTranslating} onClick={() => void stop()}>
-            停止
-          </Button>
+            {t('hook_translate_stop')}</Button>
         </div>
         {extracting ? (
           <>
             <Progress percent={0} status="active" style={{ marginTop: 12 }} />
-            <p className="card-description">{jobMessage || '运行时抽取中…'}</p>
+            <p className="card-description">{jobMessage || t('hook_translate_extracting')}</p>
           </>
         ) : null}
         {pageTranslating || (ownsTranslation && progress.label) ? (
           <>
             <Progress percent={progress.percent} style={{ marginTop: 12 }} />
-            <p className="card-description">{progress.label || '翻译中…'}</p>
+            <p className="card-description">{progress.label || t('hook_supplement_translating')}</p>
           </>
         ) : null}
       </SettingsGroup>
 
       {assetsMissing ? (
         <Banner tone="warning">
-          当前项目没有可注入的角色卡、世界观或术语资产。
-          <Button type="link" onClick={() => void start(true)}>仍然继续</Button>
+          {t('hook_supplement_assets_missing')}<Button type="link" onClick={() => void start(true)}>{t('hook_supplement_continue_anyway')}</Button>
         </Banner>
       ) : null}
     </div>

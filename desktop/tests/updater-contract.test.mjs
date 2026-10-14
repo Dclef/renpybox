@@ -69,10 +69,11 @@ function fixture({
   return { updater, requests, downloads, launches, quits, states, signals: () => downloadSignals, release: () => releaseDownload() };
 }
 
-test('支持正式版与旧测试版，排除 Qt 发布标签及未知版本格式', () => {
+test('支持正式版与旧测试版；标签只提供版本号，是否桌面发布由安装包资产决定', () => {
   assert.equal(parseDesktopVersion('0.9.0').build, null);
-  assert.equal(parseDesktopVersion('RenpyBox_v0.9.0'), null);
+  assert.deepEqual(parseDesktopVersion('RenpyBox_v0.9.0'), parseDesktopVersion('v0.9.0'));
   assert.equal(parseDesktopVersion('0.9.0-beta.1'), null);
+  assert.equal(parseDesktopVersion('RenpyBox_NewUI_v0.9.0'), null);
   assert.equal(compareDesktopVersions('0.9.0', '0.9.0-newui.99'), 1);
   assert.equal(compareDesktopVersions('0.9.0-newui.99', '0.9.0'), -1);
   assert.equal(compareDesktopVersions('0.9.0', 'v0.9.0'), 0);
@@ -93,6 +94,14 @@ test('只认带桌面 Windows 安装包资产的发布', () => {
   const qt = { ...release('0.9.0', { prerelease: false, assets: [{ name: 'RenpyBox_v0.9.0.zip' }] }), tag_name: 'RenpyBox_v0.9.0' };
   assert.equal(pickLatestRelease([qt], '0.8.2-newui.1'), null, 'Qt 发布不能被当作桌面更新');
   assert.equal(pickLatestRelease([release('0.9.0', { assets: qt.assets })], '0.8.2-newui.1'), null);
+  // 同一标签只要带上与标签版本同名的安装包，就是桌面发布（0.9.0 起 Qt 与桌面共用 vX.Y.Z）。
+  const unified = { ...release('0.9.0', { prerelease: false }), tag_name: 'RenpyBox_v0.9.0' };
+  assert.equal(selectInstallerAsset(unified)?.name, 'RenpyBox-NewUI-0.9.0-x64.exe');
+  assert.equal(pickLatestRelease([unified], '0.8.2-newui.1'), unified);
+  // 安装包版本与标签不一致（旧包误传）时不得下载。
+  const mismatched = { ...release('0.9.1', { prerelease: false, assets: [installer('0.9.0')] }) };
+  assert.equal(selectInstallerAsset(mismatched), null);
+  assert.equal(pickLatestRelease([mismatched], '0.8.2-newui.1'), null);
 });
 
 test('测试版能升级到正式版，正式版跳过预发布和草稿', async () => {
@@ -132,7 +141,7 @@ test('并发检查共用一次请求', async () => {
 test('挑出比当前版本新的最新一条发布', async () => {
   const f = fixture({
     releases: [
-      { ...release('0.8.3', { prerelease: false }), tag_name: 'RenpyBox_v0.8.3' },
+      { ...release('0.8.3', { prerelease: false, assets: [{ name: 'RenpyBox_v0.8.3.zip', size: 227000000, browser_download_url: 'https://example.test/renpybox/RenpyBox_v0.8.3.zip' }] }), tag_name: 'RenpyBox_v0.8.3' },
       release('0.8.2-newui.1'),
       release('0.8.2-newui.2'),
       release('0.8.2-newui.9', { draft: true }),

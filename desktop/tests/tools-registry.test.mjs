@@ -8,8 +8,9 @@ import { TOOL_REQUIRES_PROJECT } from '../renderer/src/toolRequiresProject.mjs';
 
 /**
  * 2026-10-12 用户决策（只改新 UI）：
- * 只有「推荐流程」分组的卡片，以及「术语表」「禁翻表」两个工具要求先选择游戏目录。
- * Qt5 frontend/RenpyToolbox/ToolRegistry.py 仍保留 11 个 requires_project=True，这是有意的偏差。
+ * 门禁：推荐流程中的项目动作 + 术语表 / 禁翻表。
+ * 一键翻译是选游戏目录入口，须保持 requiresProject=false；翻译方式工具一律可无项目打开。
+ * Qt5 ToolRegistry 仍保留 11 个 requires_project=True，这是有意的偏差。
  */
 const GATED_KEYS = [
   'continue_translation',
@@ -66,7 +67,7 @@ test('registryEntries 读到全部 27 个工具', () => {
   assert.equal(registryEntries().size, 27);
 });
 
-test('只有推荐流程 + 术语表 / 禁翻表要求先选游戏目录', () => {
+test('门禁工具仅为推荐流程项目动作 + 术语表 / 禁翻表', () => {
   const gated = [...registryEntries().entries()]
     .filter(([, entry]) => entry.requiresProject)
     .map(([key]) => key)
@@ -94,9 +95,17 @@ test('带门禁的工具全部落在推荐流程分组', () => {
   ]);
 });
 
+test('一键翻译保持为选项目入口（无门禁）', () => {
+  const entry = registryEntries().get('one_key_translate');
+  assert.ok(entry, 'missing one_key_translate');
+  assert.equal(entry.group, 'flow');
+  assert.equal(entry.requiresProject, false);
+});
+
 test('翻译方式 requiresProject 一律为 false（新 UI 有意与 Qt5 不同）', () => {
   for (const key of TRANSLATE_KEYS) {
     assert.ok(key in TOOL_REQUIRES_PROJECT, `missing ${key}`);
     assert.equal(TOOL_REQUIRES_PROJECT[key], false, key);
+    assert.equal(registryEntries().get(key)?.requiresProject, false, key);
   }
 });

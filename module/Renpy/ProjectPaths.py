@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from base.BaseLanguage import BaseLanguage
+
 
 _PREFERRED_LANGUAGES = (
     "chinese",
@@ -58,6 +60,76 @@ def looks_like_renpy_path(raw_path: Any) -> bool:
         or path.parent.name.casefold() == "tl"
         or (path / "game").is_dir()
     )
+
+
+# ``tl/<lang>`` 目录名 → 目标语言：覆盖 BaseLanguage 全部枚举。
+# 只按整词别名匹配（短码如 en/fr 绝不当子串），schinese/tchinese 排在
+# chinese 同组内即可，因匹配是 token∈aliases 而非子串。
+# 匈牙利文别名用正确拼写 hungarian（BaseLanguage 展示文案有 Hungrarian 笔误）。
+LANGUAGE_FOLDER_CANDIDATES: tuple[tuple[BaseLanguage.Enum, tuple[str, ...]], ...] = (
+    (BaseLanguage.Enum.ZH, ("chinese", "schinese", "tchinese", "zh", "zhs", "zht", "cn")),
+    (BaseLanguage.Enum.EN, ("english", "en")),
+    (BaseLanguage.Enum.JA, ("japanese", "ja", "jp")),
+    (BaseLanguage.Enum.KO, ("korean", "ko", "kr")),
+    (BaseLanguage.Enum.RU, ("russian", "ru")),
+    (BaseLanguage.Enum.AR, ("arabic", "ar")),
+    (BaseLanguage.Enum.DE, ("german", "de", "deutsch")),
+    (BaseLanguage.Enum.FR, ("french", "fr")),
+    (BaseLanguage.Enum.PL, ("polish", "pl")),
+    (BaseLanguage.Enum.ES, ("spanish", "es", "espanol")),
+    (BaseLanguage.Enum.IT, ("italian", "it")),
+    (BaseLanguage.Enum.PT, ("portuguese", "pt")),
+    (BaseLanguage.Enum.HU, ("hungarian", "hu")),
+    (BaseLanguage.Enum.TR, ("turkish", "tr")),
+    (BaseLanguage.Enum.TH, ("thai", "th")),
+    (BaseLanguage.Enum.ID, ("indonesian", "indonesia", "id")),
+    (BaseLanguage.Enum.VI, ("vietnamese", "vi")),
+)
+
+
+def _language_folder_basename(value: Any) -> str:
+    """只取路径最后一段，兼容 ``/`` ``\\`` 与尾部分隔符，绝不看父目录。"""
+    text = _normalise(value).replace("\\", "/").rstrip("/")
+    if text == "":
+        return ""
+    return Path(text).name
+
+
+def _language_hint_tokens(value: Any) -> list[str]:
+    """把语言目录名切成分隔符分隔的小写单词，供按词精确匹配。"""
+    text = _normalise(value).casefold()
+    for separator in ("-", "_", " ", "."):
+        text = text.replace(separator, " ")
+    return [token for token in text.split() if token]
+
+
+def guess_language_from_folder_name(path: Any) -> BaseLanguage.Enum | None:
+    """按 ``tl/<lang>`` 目录名（仅 basename）推断目标语言。
+
+    只做整词别名匹配，不做子串回退（避免 ``french`` 因含 ``en`` 误判成英文）。
+    匹配不上返回 ``None``，调用方必须保留原值。
+    """
+    tokens = _language_hint_tokens(_language_folder_basename(path))
+    if not tokens:
+        return None
+    for language, candidates in LANGUAGE_FOLDER_CANDIDATES:
+        if any(token in candidates for token in tokens):
+            return language
+    return None
+
+
+def guess_language_from_tl_path(path: Any) -> BaseLanguage.Enum | None:
+    """从真实存在的 ``tl/<lang>`` 目录推断目标语言。
+
+    要求：路径是已存在的目录，且父目录名为 ``tl``。目录尚未创建、或不在
+    ``tl`` 下时返回 ``None``，调用方应保留原 ``target_language``。
+    """
+    candidate = normalise_path(path)
+    if candidate is None or not candidate.is_dir():
+        return None
+    if candidate.parent.name.casefold() != "tl":
+        return None
+    return guess_language_from_folder_name(candidate.name)
 
 
 def _key(path: Path) -> str:

@@ -32,6 +32,7 @@ class VersionManager(Base):
 
         NONE = "NONE"
         NEW_VERSION = "NEW_VERSION"
+        DESKTOP_AVAILABLE = "DESKTOP_AVAILABLE"
         UPDATING = "UPDATING"
         DOWNLOADED = "DOWNLOADED"
 
@@ -109,6 +110,8 @@ class VersionManager(Base):
 
     @classmethod
     def _normalize_release(cls, result: dict) -> dict:
+        if result.get("draft") is True or result.get("prerelease") is True:
+            raise RuntimeError("Expected a stable published release")
         assets: list[dict] = []
         raw_assets = result.get("assets", [])
         if isinstance(raw_assets, list):
@@ -128,9 +131,26 @@ class VersionManager(Base):
             "published_at": str(result.get("published_at") or ""),
             "assets": assets,
         }
-        if assets:
+        version = cls.VERSION_RE.fullmatch(latest["tag_name"])
+        desktop_name = f"RenpyBox-NewUI-{version.group(1)}-x64.exe" if version else ""
+        desktop = next((asset for asset in assets if (
+            asset["name"] == desktop_name
+            and asset["size"] > 0
+            and asset["browser_download_url"].startswith("https://github.com/")
+        )), None)
+        if desktop is not None:
+            latest["delivery"] = "desktop"
+            latest["asset"] = copy.deepcopy(desktop)
+        elif assets:
             latest["asset"] = cls._select_download_asset(latest)
         return latest
+
+    @classmethod
+    def desktop_release_url(cls, latest: dict) -> str:
+        tag = str(latest.get("tag_name", ""))
+        if latest.get("delivery") != "desktop" or cls.VERSION_RE.fullmatch(tag) is None:
+            raise ValueError("Not a desktop migration release")
+        return f"{cls.RELEASES_URL}/tag/{tag}"
 
     @classmethod
     def _installed_manifest_version(cls) -> str | None:
@@ -157,6 +177,8 @@ class VersionManager(Base):
 
     @classmethod
     def _select_download_asset(cls, latest: dict) -> dict:
+        if latest.get("delivery") == "desktop":
+            raise RuntimeError("Desktop updates require a separate installation from the release page")
         assets = latest.get("assets", [])
         if not isinstance(assets, list) or not assets:
             raise RuntimeError("No release assets found")
@@ -294,6 +316,8 @@ class VersionManager(Base):
     # 解压
     def app_update_extract(self, event: str, data: dict) -> None:
         with self.lock:
+            if self.latest.get("delivery") == "desktop":
+                return
             if self.extracting:
                 return
             self.extracting = True
@@ -318,6 +342,8 @@ class VersionManager(Base):
     # 下载
     def app_update_download_start(self, event: str, data: dict) -> None:
         with self.lock:
+            if self.latest.get("delivery") == "desktop":
+                return
             if self._download_active or self.status == __class__.Status.UPDATING:
                 return
             self._prepare_download_locked()
@@ -456,20 +482,20 @@ class VersionManager(Base):
                 raise RuntimeError("Invalid release response")
             latest = __class__._normalize_release(result)
             latest_version = latest["tag_name"]
-            new_version = (
-                __class__.parse_version(self.get_version())
-                < __class__.parse_version(latest_version)
-            )
+            current = __class__.parse_version(self.get_version())
+            available = __class__.parse_version(latest_version)
+            desktop = latest.get("delivery") == "desktop"
+            new_version = current < available or (desktop and current == available)
 
             with self.lock:
-                self.latest = latest
                 self.error = ""
                 if self.status not in (
                     __class__.Status.UPDATING,
                     __class__.Status.DOWNLOADED,
                 ):
+                    self.latest = latest
                     self.status = (
-                        __class__.Status.NEW_VERSION
+                        (__class__.Status.DESKTOP_AVAILABLE if desktop else __class__.Status.NEW_VERSION)
                         if new_version
                         else __class__.Status.NONE
                     )
@@ -481,9 +507,11 @@ class VersionManager(Base):
             })
 
             if new_version:
+                strings = Localizer.get()
+                message = strings.app_desktop_update_toast if desktop else strings.app_new_version_toast
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.SUCCESS,
-                    "message": Localizer.get().app_new_version_toast.replace(
+                    "message": message.replace(
                         "{VERSION}", __class__.display_version(latest_version)
                     ),
                     "duration": 10 * 1000,

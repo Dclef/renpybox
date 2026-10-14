@@ -1,7 +1,7 @@
 /**
- * 翻译方式工具的 requiresProject：新 UI 一律为 false。
- * 2026-10-12 用户决策（只改新 UI）：只有「推荐流程」分组 + 术语表 / 禁翻表 保留「需先选择游戏目录」门禁；
- * Qt5 frontend/RenpyToolbox/ToolRegistry.py 仍是 11 个 requires_project=True，这是有意的两侧偏差。
+ * 翻译方式工具的 requiresProject：新 UI 一律为 false（可独立选目录打开）。
+ * 2026-10-12 用户决策（只改新 UI）：门禁仅限推荐流程中除一键翻译外的动作，以及术语表 / 禁翻表；
+ * 一键翻译保持为选项目入口（requiresProject=false）。Qt5 ToolRegistry 仍是 11 个 True，有意偏差。
  * 供 node:test 使用（勿 import tools.ts，含 svg）。
  */
 export const TOOL_REQUIRES_PROJECT = Object.freeze({

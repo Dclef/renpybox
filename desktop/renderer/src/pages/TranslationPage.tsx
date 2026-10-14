@@ -266,11 +266,13 @@ export function TranslationPage(props: {
         if (!response.accepted && response.reason === 'ASSETS_MISSING') {
           setAssetsMissing(true);
         }
+      } catch (error) {
+        state.pushToast('error', `${t('translation_start_failed')}：${error instanceof Error ? error.message : String(error)}`);
       } finally {
         setBusy(false);
       }
     },
-    [state],
+    [state, t],
   );
 
   const onTimerConfirm = useCallback(() => {

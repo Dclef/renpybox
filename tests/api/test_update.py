@@ -125,6 +125,40 @@ def test_download_cancel_and_install(update_client):
     assert any(event == Base.Event.APP_UPDATE_EXTRACT for event, _ in manager.events)
 
 
+def test_same_version_desktop_available_signals_migration_without_auto_update(update_client):
+    client = update_client.client
+    manager = update_client.manager
+    manager.version = "0.9.0"
+    manager.status = VersionManager.Status.DESKTOP_AVAILABLE
+    manager.latest = {
+        "tag_name": "v0.9.0",
+        "delivery": "desktop",
+        "body": "Desktop notes",
+        "asset": {
+            "name": "RenpyBox-NewUI-0.9.0-x64.exe",
+            "size": 1024,
+            "browser_download_url": "https://github.com/dclef/RenpyBox/releases/download/v0.9.0/RenpyBox-NewUI-0.9.0-x64.exe",
+        },
+    }
+
+    payload = client.get("/api/update").json()
+    assert payload["status"] == "DESKTOP_AVAILABLE"
+    assert payload["new_version"] is True
+    assert payload["can_install"] is False
+    assert payload["release_url"] == VersionManager.desktop_release_url(manager.latest)
+    assert payload["release_url"].endswith("/releases/tag/v0.9.0")
+
+    download = client.post("/api/update/download")
+    assert download.status_code == 400
+    assert "桌面" in download.json()["detail"]
+    assert not any(event == Base.Event.APP_UPDATE_DOWNLOAD_START for event, _ in manager.events)
+
+    install = client.post("/api/update/install")
+    assert install.status_code == 400
+    assert "桌面" in install.json()["detail"]
+    assert not any(event == Base.Event.APP_UPDATE_EXTRACT for event, _ in manager.events)
+
+
 def test_changelog_endpoint(update_client):
     body = update_client.client.get("/api/update/changelog").json()
     assert "markdown" in body

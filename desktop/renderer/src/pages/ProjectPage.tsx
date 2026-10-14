@@ -22,15 +22,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button } from 'antd';
 
 import { resolveProject } from '../api';
+import { useT } from '../i18n';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
 import type { AppState } from '../useAppState';
 import { PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
 
 export function ProjectPage(props: { state: AppState }) {
   const { state } = props;
+  const t = useT();
   const [inputFolder, setInputFolder] = useState('');
   const [outputFolder, setOutputFolder] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // 语言下拉的选项文案在数据表里按 code 存，渲染时用 t() 换成当前界面语言。
+  const languageOptions = LANGUAGE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }));
 
   const values = state.settings?.values;
   const sourceLanguage = String(values?.source_language ?? 'EN');
@@ -59,12 +64,12 @@ export function ProjectPage(props: { state: AppState }) {
           try {
             await resolveProject(picked);
             await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
-            state.pushToast('success', '已识别 Ren\'Py 项目并绑定工程');
+            state.pushToast('success', t('project_page_project_bound_toast'));
           } catch (error) {
             const message = error instanceof Error ? error.message : '';
             state.pushToast(
               'info',
-              message || '该目录不含 Ren\'Py 项目结构，只作为翻译输入目录保留',
+              message || t('project_page_not_project_structure'),
             );
           }
         }
@@ -83,7 +88,7 @@ export function ProjectPage(props: { state: AppState }) {
     try {
       await resolveProject(picked);
       await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
-      state.pushToast('success', 'Ren\'Py 项目已绑定');
+      state.pushToast('success', t('project_page_project_bound_direct'));
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
@@ -104,25 +109,25 @@ export function ProjectPage(props: { state: AppState }) {
   return (
     <div className="rb-page rb-page-narrow rb-project-page">
       <div className="rb-page-scroll">
-        <PageHeader title="项目设置" description="先绑定带 game/ 的 Ren'Py 工程，再指定翻译读取和写出的目录" />
+        <PageHeader title={t('app_project_page')} description={t('project_page_header_description')} />
         {/* 已绑定的工程即“当前项目卡”，与接口管理的当前接口同样高亮 */}
         <section className="rb-panel rb-project-identity" data-active={Boolean(projectRoot)}>
           <div className="rb-identity-copy">
-            <div className="rb-identity-kicker">{projectRoot ? '已绑定工程' : '尚未绑定工程'}</div>
-            <div className="rb-identity-name">{projectLabel || '选择 Ren\'Py 项目文件夹'}</div>
+            <div className="rb-identity-kicker">{projectRoot ? t('project_page_bound_badge') : t('project_page_unbound_badge')}</div>
+            <div className="rb-identity-name">{projectLabel || t('project_page_unbound_name')}</div>
             <p>
               {projectRoot
-                ? '工程根、game 与 tl 目录来自项目结构。输入目录可以另选，不含 game/ 时不会改写工程身份。'
-                : '请选择包含 game/ 的项目根目录。只选译文文件夹不会绑定工程。'}
+                ? t('project_page_bound_hint')
+                : t('project_page_unbound_hint')}
             </p>
           </div>
           <Button disabled={busy} onClick={() => void pickProject()}>
-            {projectRoot ? '重新选择工程' : '选择工程'}
+            {projectRoot ? t('project_page_reselect') : t('project_page_select')}
           </Button>
           <dl className="rb-identity-paths">
             <div>
-              <dt>工程根</dt>
-              <dd title={projectRoot || undefined}>{projectRoot || '未绑定'}</dd>
+              <dt>{t('project_page_project_root')}</dt>
+              <dd title={projectRoot || undefined}>{projectRoot || t('project_page_unbound')}</dd>
             </div>
             <div>
               <dt>game</dt>
@@ -136,45 +141,45 @@ export function ProjectPage(props: { state: AppState }) {
         </section>
 
         <SettingsGroup>
-          <SettingCard title="原文语言" description="设置当前项目中输入文本的语言">
+          <SettingCard title={t('project_page_source_language_title')} description={t('project_page_source_language_content')}>
             <SelectInput
-              label="原文语言"
+              label={t('project_page_source_language_title')}
               value={sourceLanguage}
               disabled={state.saving}
-              options={LANGUAGE_OPTIONS}
+              options={languageOptions}
               onCommit={(next) => state.setSetting('source_language', next)}
             />
           </SettingCard>
-          <SettingCard title="译文语言" description="设置当前项目中输出文本的语言">
+          <SettingCard title={t('project_page_target_language_title')} description={t('project_page_target_language_content')}>
             <SelectInput
-              label="译文语言"
+              label={t('project_page_target_language_title')}
               value={targetLanguage}
               disabled={state.saving}
-              options={LANGUAGE_OPTIONS}
+              options={languageOptions}
               onCommit={(next) => state.setSetting('target_language', next)}
             />
           </SettingCard>
-          <SettingCard title="输入文件夹" description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || '未设置。翻译从这里读取待译文本'}</span>}>
-            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>选择</Button>
-            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>打开</Button>
+          <SettingCard title={t('project_page_input_folder_title')} description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || t('setting_input_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>{t('setting_open')}</Button>
           </SettingCard>
-          <SettingCard title="输出文件夹" description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || '未设置。不能与输入文件夹相同'}</span>}>
-            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>选择</Button>
-            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>打开</Button>
+          <SettingCard title={t('project_page_output_folder_title')} description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || t('setting_output_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>{t('setting_open')}</Button>
           </SettingCard>
-          <SettingCard title="任务完成时打开输出文件夹" description="启用此功能后，将在任务完成时自动打开输出文件夹">
+          <SettingCard title={t('project_page_output_folder_open_on_finish_title')} description={t('project_page_output_folder_open_on_finish_content')}>
             <Switch
               checked={values?.output_folder_open_on_finish === true}
               disabled={state.saving}
-              label="任务完成时打开输出文件夹"
+              label={t('project_page_output_folder_open_on_finish_title')}
               onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
             />
           </SettingCard>
-          <SettingCard title="使用繁体输出中文" description="启用此功能后，在译文语言设置为中文时，将使用繁体字形输出中文文本">
+          <SettingCard title={t('project_page_traditional_chinese_title')} description={t('project_page_traditional_chinese_content')}>
             <Switch
               checked={values?.traditional_chinese_enable === true}
               disabled={state.saving}
-              label="使用繁体输出中文"
+              label={t('project_page_traditional_chinese_title')}
               onChange={(next) => state.setSetting('traditional_chinese_enable', next)}
             />
           </SettingCard>

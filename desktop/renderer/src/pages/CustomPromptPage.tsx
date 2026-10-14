@@ -6,27 +6,29 @@ import { request } from '../api';
 
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, PageHeader, SelectInput, SettingsGroup } from '../ui';
+import { useT, type TextKey } from '../i18n';
 
-const PROMPT_MODE_OPTIONS = [
-  { value: 'COMMON', label: '通用（COMMON）' },
-  { value: 'COT', label: '逐步推理（COT）' },
-  { value: 'THINK', label: '深度思考（THINK）' },
-  { value: 'LOCAL', label: '本地模型（LOCAL）' },
-  { value: 'CUSTOM', label: '自定义（CUSTOM）' },
+// 文案取自 i18n，渲染时按当前界面语言解析，避免模块加载时就固定语言。
+const PROMPT_MODE_OPTIONS: { value: string; labelKey: TextKey }[] = [
+  { value: 'COMMON', labelKey: 'prompt_mode_common' },
+  { value: 'COT', labelKey: 'prompt_mode_cot' },
+  { value: 'THINK', labelKey: 'prompt_mode_think' },
+  { value: 'LOCAL', labelKey: 'prompt_mode_local' },
+  { value: 'CUSTOM', labelKey: 'prompt_mode_custom' },
 ];
 
-const WRITING_STYLE_OPTIONS = [
-  { value: 'NONE', label: '无（NONE）' },
-  { value: 'LITERARY', label: '文学化（LITERARY）' },
-  { value: 'CLASSICAL', label: '古典文风（CLASSICAL）' },
-  { value: 'R18', label: '成人内容（R18）' },
-  { value: 'CUSTOM', label: '自定义（CUSTOM）' },
+const WRITING_STYLE_OPTIONS: { value: string; labelKey: TextKey }[] = [
+  { value: 'NONE', labelKey: 'prompt_style_none' },
+  { value: 'LITERARY', labelKey: 'prompt_style_literary' },
+  { value: 'CLASSICAL', labelKey: 'prompt_style_classical' },
+  { value: 'R18', labelKey: 'prompt_style_r18' },
+  { value: 'CUSTOM', labelKey: 'prompt_mode_custom' },
 ];
 
-const PREVIEW_TABS = [
-  { value: 'base', label: '基础提示' },
-  { value: 'style', label: '写作风格' },
-  { value: 'fixed', label: '固定协议' },
+const PREVIEW_TABS: { value: string; labelKey: TextKey }[] = [
+  { value: 'base', labelKey: 'custom_prompt_preview_tab_base' },
+  { value: 'style', labelKey: 'writing_style' },
+  { value: 'fixed', labelKey: 'custom_prompt_preview_tab_fixed' },
 ];
 
 function readPrompts(raw: unknown): Record<string, string> {
@@ -49,6 +51,7 @@ interface PromptDraft {
 
 export function CustomPromptPage(props: { state: AppState; embedded?: boolean; onDirtyChange?: (dirty: boolean) => void }) {
   const { state, embedded = false, onDirtyChange } = props;
+  const t = useT();
   const [preview, setPreview] = useState<Record<string, string> | null>(null);
   const [previewTab, setPreviewTab] = useState('base');
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -86,7 +89,7 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean; o
       const raw = await request<{ base: string; style: string; language: string }>('/api/settings/prompt-preview?raw=true');
       if (identity !== projectRef.current) return;
       if (!['ZH', 'EN'].includes(raw.language) || typeof raw.base !== 'string' || typeof raw.style !== 'string') {
-        throw new Error('后端尚未加载提示词编辑功能，请完整重启应用后重试。');
+        throw new Error(t('custom_prompt_editor_error_unavailable'));
       }
       setEditor({ ...raw, initial: { base: raw.base, style: raw.style }, project: identity });
       setEditorTab(section);
@@ -104,7 +107,7 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean; o
     if (!editor || !dirty || saveInFlight.current || state.saving || editor.project !== projectRef.current) return;
     const patch: Record<string, unknown> = {};
     if (editor.base !== editor.initial.base) {
-      if (!editor.base.trim()) { state.pushToast('warning', '基础提示词不能为空'); return; }
+      if (!editor.base.trim()) { state.pushToast('warning', t('custom_prompt_empty_base_warning')); return; }
       patch.translation_prompt_mode = 'CUSTOM';
       patch.translation_custom_prompts = { ...prompts, [editor.language]: editor.base };
       const enabled = values?.translation_custom_prompt_enabled_languages;
@@ -121,7 +124,7 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean; o
     try {
       if (await state.saveSettings(patch)) {
         setEditor(null);
-        state.pushToast('success', '提示词已保存，将在下一轮翻译生效');
+        state.pushToast('success', t('custom_prompt_saved'));
       }
     } finally { saveInFlight.current = false; setSavingEditor(false); }
   };
@@ -129,103 +132,101 @@ export function CustomPromptPage(props: { state: AppState; embedded?: boolean; o
   return (
     <div className={embedded ? 'rb-embedded' : 'rb-page rb-page-narrow'}>
       <div className="rb-page-scroll">
-        {embedded ? null : <PageHeader title="翻译提示" description="配置翻译提示词模式、风格和预览内容" />}
+        {embedded ? null : <PageHeader title={t('app_custom_prompt_navigation_item')} description={t('custom_prompt_page_header_description')} />}
         <SettingsGroup
-          title="基础提示模式"
-          description="每次只使用一种基础模式；自定义模式仅替换基础提示词，固定工程协议仍会生效"
+          title={t('basic_prompt_mode')}
+          description={t('basic_prompt_mode_description')}
           actions={(
             <>
             <SelectInput
-              label="基础提示模式"
+              label={t('basic_prompt_mode')}
               value={mode}
-              options={PROMPT_MODE_OPTIONS}
+              options={PROMPT_MODE_OPTIONS.map((item) => ({ value: item.value, label: t(item.labelKey) }))}
               disabled={state.saving}
               onCommit={(next) => state.setSetting('translation_prompt_mode', next)}
             />
-            <Button disabled={state.saving || loadingEditor} onClick={() => void openEditor('base')}>编辑提示词</Button>
+            <Button disabled={state.saving || loadingEditor} onClick={() => void openEditor('base')}>{t('edit_prompt')}</Button>
             </>
           )}
         />
         <SettingsGroup
-          title="写作风格"
-          description="独立追加到基础提示词，可与任意基础模式组合"
+          title={t('custom_prompt_preview_tab_style')}
+          description={t('writing_style_description')}
           actions={(
             <>
             <SelectInput
-              label="写作风格"
+              label={t('custom_prompt_editor_style_tab')}
               value={styleId}
-              options={WRITING_STYLE_OPTIONS}
+              options={WRITING_STYLE_OPTIONS.map((item) => ({ value: item.value, label: t(item.labelKey) }))}
               disabled={state.saving}
               onCommit={(next) => state.setSetting('translation_style_id', next)}
             />
-            <Button disabled={state.saving || loadingEditor} onClick={() => void openEditor('style')}>编辑风格</Button>
+            <Button disabled={state.saving || loadingEditor} onClick={() => void openEditor('style')}>{t('edit_style')}</Button>
             </>
           )}
         />
         <SettingsGroup
-          title="当前提示词"
-          description="查看当前配置实际使用的静态提示词内容"
+          title={t('current_prompt')}
+          description={t('current_prompt_description')}
           actions={(
             <Button type="default" disabled={state.saving || loadingPreview} onClick={() => void loadPreview()}>
-              {loadingPreview ? '读取中…' : '查看当前提示词'}
+              {loadingPreview ? t('app_read_state_loading') : t('view_current_prompt')}
             </Button>
           )}
         />
         <Banner tone="info">
-          编辑后点击“保存并应用”，修改的部分会切换为自定义模式，在下一轮翻译生效。可随时切回内置模式。
-        </Banner>
+          {t('custom_prompt_banner')}</Banner>
       </div>
       {preview ? (
-        <Dialog title="当前提示词" cancelText="关闭" onCancel={() => setPreview(null)}>
+        <Dialog title={t('current_prompt')} cancelText={t('app_close')} onCancel={() => setPreview(null)}>
           <Tabs
             activeKey={previewTab}
             onChange={setPreviewTab}
-            items={PREVIEW_TABS.map((tab) => ({ key: tab.value, label: tab.label }))}
-            aria-label="提示词部分"
+            items={PREVIEW_TABS.map((tab) => ({ key: tab.value, label: t(tab.labelKey) }))}
+            aria-label={t('custom_prompt_preview_sections_label')}
           />
           <Input.TextArea
             className="prompt-preview-text"
-            aria-label="提示词预览内容"
+            aria-label={t('custom_prompt_preview_label')}
             readOnly
             autoSize={{ minRows: 8, maxRows: 14 }}
-            value={preview[previewTab] || '当前部分为空'}
+            value={preview[previewTab] || t('custom_prompt_preview_empty')}
           />
           <div className="rb-prompt-preview-actions">
           <Button
             type="default"
-            onClick={() => void navigator.clipboard.writeText(preview[previewTab] || '').then(() => state.pushToast('success', '已复制提示词')).catch(() => state.pushToast('warning', '复制失败，请选中文本后手动复制'))}
+            onClick={() => void navigator.clipboard.writeText(preview[previewTab] || '').then(() => state.pushToast('success', t('custom_prompt_preview_copied'))).catch(() => state.pushToast('warning', t('custom_prompt_preview_copy_failed')))}
           >
-            复制当前部分
-          </Button>
+            {t('custom_prompt_copy_section')}</Button>
           {previewTab !== 'fixed' ? (
-            <Button type="primary" disabled={state.saving || loadingEditor} onClick={() => void openEditor(previewTab as EditableSection)}>编辑当前部分</Button>
-          ) : <span className="card-description">固定协议负责格式与占位符保护，由程序统一管理。</span>}
+            <Button type="primary" disabled={state.saving || loadingEditor} onClick={() => void openEditor(previewTab as EditableSection)}>{t('custom_prompt_edit_section')}</Button>
+          ) : <span className="card-description">{t('custom_prompt_fixed_note')}</span>}
           </div>
         </Dialog>
       ) : null}
       {editor && (
-        <Modal open centered width={800} title="编辑翻译提示词" onCancel={closeEditor} mask={{ closable: false }}
+        <Modal open centered width={800} title={t('custom_prompt_editor_title')} onCancel={closeEditor} mask={{ closable: false }}
           closable={!savingEditor} keyboard={!savingEditor}
           footer={<>
-            <Button disabled={savingEditor} onClick={closeEditor}>取消</Button>
-            <Button type="primary" loading={savingEditor} disabled={!dirty || state.saving || editor.project !== project} onClick={() => void saveEditor()}>保存并应用</Button>
+            <Button disabled={savingEditor} onClick={closeEditor}>{t('exit_cancel')}</Button>
+            <Button type="primary" loading={savingEditor} disabled={!dirty || state.saving || editor.project !== project} onClick={() => void saveEditor()}>{t('custom_prompt_save_and_apply')}</Button>
           </>}
         >
-          {editor.project !== project && <Banner tone="warning">项目或目标语言已变化，请关闭后重新打开编辑。</Banner>}
+          {editor.project !== project && <Banner tone="warning">{t('custom_prompt_editor_project_changed')}</Banner>}
           <Tabs activeKey={editorTab} onChange={(key) => setEditorTab(key as EditableSection)} items={[
-            { key: 'base', label: `基础提示词（${editor.language === 'ZH' ? '中文' : '非中文'}）` },
-            { key: 'style', label: '写作风格' },
+            { key: 'base', label: t('custom_prompt_editor_tab_base').split('{language}').join(editor.language === 'ZH' ? t('language_zh') : t('custom_prompt_editor_tab_non_zh')) },
+            { key: 'style', label: t('custom_prompt_editor_style_tab') },
           ]} />
-          <Input.TextArea aria-label="提示词编辑内容" value={editor[editorTab]} disabled={savingEditor}
+          <Input.TextArea aria-label={t('custom_prompt_editor_label')} value={editor[editorTab]} disabled={savingEditor}
             autoSize={{ minRows: 10, maxRows: 18 }}
             onChange={(event) => setEditor({ ...editor, [editorTab]: event.target.value })}
           />
-          <p className="rb-prompt-editor-help">{'{source_language} 和 {target_language} 会自动替换为当前翻译语言。'}</p>
+          <p className="rb-prompt-editor-help">{t('custom_prompt_editor_help')}</p>
         </Modal>
       )}
-      {discardEditor && <Dialog title="放弃未保存的提示词？" cancelText="继续编辑" confirmText="放弃修改"
+      {discardEditor && <Dialog title={t('custom_prompt_discard_title')} cancelText={t('exit_continue_editing')} confirmText={t('custom_prompt_discard_confirm')}
         onCancel={() => setDiscardEditor(false)} onConfirm={() => { setDiscardEditor(false); setEditor(null); }}
-      >关闭后，本次编辑的内容将丢失。</Dialog>}
+      >{t('custom_prompt_discard_content')}</Dialog>}
     </div>
   );
 }
