@@ -18,28 +18,28 @@
 
 ## Overview 📢
 
-- RenpyBox combines text extraction, translation, proofreading, repair, and packaging in one Ren'Py localization toolbox. Version 0.9.0 introduces a new Windows desktop interface; the Python / Qt5 app and its source remain available.
+- RenpyBox combines text extraction, translation, proofreading, repair, and packaging in one Ren'Py localization toolbox. Version 0.9.0 introduced the new Windows desktop interface (current release 0.9.1); the Python / Qt5 app and its source remain available.
 - Intended users: visual novel developers, fan translation teams, and Ren'Py translators.
 - **[SiliconFlow](https://cloud.siliconflow.cn/i/Cvmvkm5d) is recommended for translation.**
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Translation Task page (dark)" src="./docs/screenshots/desktop-translation-en.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 desktop Translation Task page (dark)" src="./docs/screenshots/desktop-translation-en.png" />
 
-<p align="center">Desktop 0.9.0; project paths, translations, and progress are demo data</p>
+<p align="center">Desktop 0.9.1; project paths, translations, and progress are demo data</p>
 
 <details>
 <summary>More screenshots</summary>
 
 **Ren'Py Toolbox** (light; English UI)
 
-<img width="1600" height="1120" alt="RenpyBox 0.9.0 desktop Toolbox (light, English)" src="./docs/screenshots/desktop-toolbox-en.png" />
+<img width="1600" height="1120" alt="RenpyBox 0.9.1 desktop Toolbox (light, English)" src="./docs/screenshots/desktop-toolbox-en.png" />
 
 **Proofreading** (Chinese UI, optional)
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Proofreading (dark, Chinese UI)" src="./docs/screenshots/desktop-proofreading-zh.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 desktop Proofreading (dark, Chinese UI)" src="./docs/screenshots/desktop-proofreading-zh.png" />
 
 **Character / Worldbook Workbench** (Chinese UI, optional; includes prompt preview)
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 desktop Character and Worldbook Workbench (light, Chinese UI)" src="./docs/screenshots/desktop-workbench-zh.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 desktop Character and Worldbook Workbench (light, Chinese UI)" src="./docs/screenshots/desktop-workbench-zh.png" />
 
 </details>
 
@@ -83,9 +83,9 @@ Release assets:
 
 | File | Purpose |
 | --- | --- |
-| `RenpyBox-NewUI-0.9.0-x64.exe` | Windows installer (recommended) |
-| `RenpyBox-NewUI-0.9.0-x64.zip` | Portable ZIP; extract fully, then run the app inside |
-| `RenpyBox_v0.9.0.zip` | Python compatibility package that keeps the previous UI for existing updaters |
+| `RenpyBox-NewUI-0.9.1-x64.exe` | Windows installer (recommended) |
+| `RenpyBox-NewUI-0.9.1-x64.zip` | Portable ZIP; extract fully, then run the app inside |
+| `RenpyBox_v0.9.1.zip` | Python compatibility package that keeps the previous UI for existing updaters |
 
 Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). That differs from the older Python app's incremental update mechanism. The original Python app remains available. Existing clients can first update through their usual updater to the Python compatibility build, then follow its desktop migration notice. You can also download the desktop app directly. Migration does not automatically replace the Python app or copy its settings; confirm your project and API settings in the new interface. The desktop app keeps its config in `%APPDATA%\RenpyBox-newUI`, separate from the Python app. To reuse your existing platforms, open **Platforms** and choose **Add Platform → Import from older version**, then select the `config.json` in the Python app directory; keys live in Windows Credential Manager and are picked up automatically.
 
@@ -98,6 +98,10 @@ Desktop packaged builds download a full installer when checking for updates (wit
 5. If needed, use **Apply translations**, install fonts, add a language switch, or set the default language.
 
 ## Recent Updates 📅
+
+- 2026-10-15 v0.9.1:
+  - Fixed an empty platform list on the first desktop launch; built-in platform templates are now prepared automatically.
+  - Added **Import from older version** under **Platforms**: select the `config.json` in the Python app directory to bring your platforms back; keys live in Windows Credential Manager and are reused automatically.
 
 - 2026-10-14 v0.9.0:
   - New desktop interface (Windows installer and portable build) with Translation Task, Ren'Py Toolbox, Proofreading, and Character / Worldbook Workbench; prompts support preview and editing.

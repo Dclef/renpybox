@@ -1,10 +1,10 @@
 # RenpyBox 桌面版
 
-RenpyBox 0.9.0 提供新的 Windows x64 桌面界面，包含翻译任务、Ren'Py 工具箱（27 项）、平行校对台、角色 / 世界观工作台、Agent 助手，以及提示词预览与编辑。支持浅色 / 深色主题与中英文界面（部分文案仍可能显示中文）。
+RenpyBox 0.9.1 提供新的 Windows x64 桌面界面，包含翻译任务、Ren'Py 工具箱（27 项）、平行校对台、角色 / 世界观工作台、Agent 助手，以及提示词预览与编辑。支持浅色 / 深色主题与中英文界面（部分文案仍可能显示中文）。
 
 工具箱预览（浅色）：
 
-<img width="1600" height="1120" alt="RenpyBox 0.9.0 桌面版工具箱（浅色）" src="../docs/screenshots/desktop-toolbox-zh.png" />
+<img width="1600" height="1120" alt="RenpyBox 0.9.1 桌面版工具箱（浅色）" src="../docs/screenshots/desktop-toolbox-zh.png" />
 
 完整界面预览见[项目首页](../README.md)。
 
@@ -14,9 +14,9 @@ RenpyBox 0.9.0 提供新的 Windows x64 桌面界面，包含翻译任务、Ren'
 
 | 文件 | 用途 |
 | --- | --- |
-| `RenpyBox-NewUI-0.9.0-x64.exe` | Windows 安装程序，推荐使用 |
-| `RenpyBox-NewUI-0.9.0-x64.zip` | 免安装包，完整解压后运行其中的程序 |
-| `RenpyBox_v0.9.0.zip` | 保留原界面的 Python 兼容包，供旧版用户更新 |
+| `RenpyBox-NewUI-0.9.1-x64.exe` | Windows 安装程序，推荐使用 |
+| `RenpyBox-NewUI-0.9.1-x64.zip` | 免安装包，完整解压后运行其中的程序 |
+| `RenpyBox_v0.9.1.zip` | 保留原界面的 Python 兼容包，供旧版用户更新 |
 
 桌面版已附带运行环境，不需要额外安装 Python。正式包的应用配置与壳日志默认位于 `%APPDATA%\RenpyBox-newUI`；免安装包同样将应用配置保存在系统用户目录。
 
