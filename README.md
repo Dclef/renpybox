@@ -16,28 +16,28 @@
 - 请不要有中文路径
 
 ## 概述 📢
-- RenpyBox：集文本提取、翻译、校对、修复与打包于一体的 Ren'Py 本地化工具箱。0.9.0 提供全新 Windows 桌面界面，原 Python / Qt5 版及源码继续保留。
+- RenpyBox：集文本提取、翻译、校对、修复与打包于一体的 Ren'Py 本地化工具箱。0.9.0 起提供全新 Windows 桌面界面（当前版本 0.9.1），原 Python / Qt5 版及源码继续保留。
 - 目标用户：视觉小说开发者、同人翻译组、Ren'Py翻译者
 - **建议使用[硅基流动](https://cloud.siliconflow.cn/i/Cvmvkm5d) 进行翻译**
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 桌面版翻译任务页（深色）" src="./docs/screenshots/desktop-translation-zh.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 桌面版翻译任务页（深色）" src="./docs/screenshots/desktop-translation-zh.png" />
 
-<p align="center">0.9.0 桌面版；项目、译文与进度为演示数据</p>
+<p align="center">0.9.1 桌面版；项目、译文与进度为演示数据</p>
 
 <details>
 <summary>更多界面预览</summary>
 
 **Ren'Py 工具箱**（浅色；推荐流程 / 翻译方式 / 资源与词表 / 工程与修复）
 
-<img width="1600" height="1120" alt="RenpyBox 0.9.0 桌面版工具箱（浅色）" src="./docs/screenshots/desktop-toolbox-zh.png" />
+<img width="1600" height="1120" alt="RenpyBox 0.9.1 桌面版工具箱（浅色）" src="./docs/screenshots/desktop-toolbox-zh.png" />
 
 **平行校对台**（深色）
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 桌面版平行校对台（深色）" src="./docs/screenshots/desktop-proofreading-zh.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 桌面版平行校对台（深色）" src="./docs/screenshots/desktop-proofreading-zh.png" />
 
 **角色 / 世界观工作台**（浅色；含提示词预览）
 
-<img width="1600" height="1000" alt="RenpyBox 0.9.0 桌面版角色与世界观工作台（浅色）" src="./docs/screenshots/desktop-workbench-zh.png" />
+<img width="1600" height="1000" alt="RenpyBox 0.9.1 桌面版角色与世界观工作台（浅色）" src="./docs/screenshots/desktop-workbench-zh.png" />
 
 </details>
 
@@ -76,9 +76,9 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `RenpyBox-NewUI-0.9.0-x64.exe` | Windows 安装程序，推荐使用 |
-| `RenpyBox-NewUI-0.9.0-x64.zip` | 免安装包，完整解压后运行其中的程序 |
-| `RenpyBox_v0.9.0.zip` | 保留原界面的 Python 兼容包，供旧版用户更新 |
+| `RenpyBox-NewUI-0.9.1-x64.exe` | Windows 安装程序，推荐使用 |
+| `RenpyBox-NewUI-0.9.1-x64.zip` | 免安装包，完整解压后运行其中的程序 |
+| `RenpyBox_v0.9.1.zip` | 保留原界面的 Python 兼容包，供旧版用户更新 |
 
 桌面正式包通过应用内检查更新下载完整安装包（含大小与 SHA-256 校验），与旧 Python 版的增量更新机制不同。原 Python 版可继续使用：旧客户端可先通过原有更新入口获取 Python 兼容包，再由迁移提示前往下载桌面版；也可直接下载安装桌面版。迁移不会自动覆盖旧应用或复制其配置，请在新界面重新确认项目与接口设置。桌面版的应用配置位于 `%APPDATA%\RenpyBox-newUI`，与 Python 版各自独立；需要沿用旧接口时，在「接口管理」点击「新增接口 → 从旧版导入」选择 Python 版程序目录下的 `config.json` 即可，密钥保存在系统凭据管理器中，会自动沿用。
 
@@ -91,6 +91,10 @@
 5. 需要时再使用「应用翻译到游戏」、字体注入、添加语言入口或设置默认语言。
 
 ## 近期更新 📅
+
+- 2026-10-15 v0.9.1：
+  - 修复桌面版首次启动接口列表为空的问题，现在会自动准备内置接口模板
+  - 「接口管理」新增「从旧版导入」，可直接选择 Python 版程序目录下的 `config.json` 搬回原有接口；密钥保存在系统凭据管理器中会自动沿用
 
 - 2026-10-14 v0.9.0：
   - 推出全新桌面界面（Windows 安装包与免安装版），集成翻译任务、Ren'Py 工具箱、平行校对台、角色与世界观工作台；提示词支持预览与编辑
