@@ -195,6 +195,11 @@ class TranslationReusePage(Base, QWidget):
             summary += "\n" + Localizer.get().translation_reuse_unmatched_hint
         if result.backup_path is not None:
             summary += Localizer.localize("\n备份: {path}", "\nBackup: {path}").format(path=result.backup_path)
+        if getattr(result, "failed_files", None):
+            summary += Localizer.localize(
+                "\n{count} 个文件写入失败",
+                "\n{count} file(s) failed to write",
+            ).format(count=len(result.failed_files))
         return summary
 
     def _on_operation_done(self, mode: str, result: TranslationReuseResult) -> None:

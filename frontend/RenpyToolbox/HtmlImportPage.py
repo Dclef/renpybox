@@ -10,12 +10,10 @@
 旧的 HTML/TXT/Excel 互转高级功能折叠在底部，默认隐藏。
 """
 
-import json
 import os
 from pathlib import Path
 from typing import List
 
-from bs4 import BeautifulSoup
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QWidget,
@@ -43,6 +41,17 @@ from qfluentwidgets import (
 from base.Base import Base
 from base.LogManager import LogManager
 from module.Localizer.Localizer import Localizer
+from module.Tool.HtmlTextConverter import (
+    EXCEL_COLUMN_ORIGINAL,
+    EXCEL_COLUMN_TRANSLATION,
+    build_html_content,
+    excel_to_txt,
+    html_to_txt,
+    read_html_payload_texts,
+    read_html_strings,
+    read_html_translation_pairs,
+    txt_to_html,
+)
 from widget.ThemeHelper import mark_toolbox_widget, mark_toolbox_scroll_area, set_text_role
 
 
@@ -381,25 +390,23 @@ class HtmlImportPage(Base, QWidget):
             )
             return
 
-        output_dir = self.step3_output_edit.text().strip()
-        if not output_dir:
-            # 默认在原 TL 同级生成 <语言>_translated
-            # manifest 的 file 字段指向 tl/<lang>/...，从清单推原 TL 根
-            try:
-                import json as _json
-                manifest = _json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-                first_file = Path(manifest[0]["file"])
-                # 上溯到 tl/<lang>
-                tl_lang_dir = first_file.parent
-                while tl_lang_dir.parent.name.lower() != "tl" and tl_lang_dir != tl_lang_dir.parent:
-                    tl_lang_dir = tl_lang_dir.parent
-                output_dir = str(tl_lang_dir.parent / f"{tl_lang_dir.name}_translated")
-            except Exception:
-                output_dir = str(Path(manifest_path).parent / "translated_tl")
-
         try:
-            from module.Extract.TlTextExporter import apply_translations_to_tl
-            filled, out_dir = apply_translations_to_tl(manifest_path, translated_path, output_dir)
+            from module.Extract.TlTextExporter import (
+                apply_translations_to_tl,
+                resolve_apply_output_dir,
+            )
+
+            output_dir = resolve_apply_output_dir(
+                manifest_path,
+                self.step3_output_edit.text().strip() or None,
+            )
+            # Qt 历来直接覆盖已有输出；共享层需显式 confirm_overwrite
+            filled, out_dir = apply_translations_to_tl(
+                manifest_path,
+                translated_path,
+                output_dir,
+                confirm_overwrite=True,
+            )
             InfoBar.success(
                 Localizer.get().complete,
                 Localizer.localize(
@@ -520,10 +527,10 @@ class HtmlImportPage(Base, QWidget):
         row3.addWidget(QLabel(Localizer.localize("导出列:", "Export Column:")))
         self.excel_column_combo = ComboBox()
         self.excel_column_combo.addItem(
-            Localizer.localize("译文", "Translation"), userData="译文"
+            Localizer.localize("译文", "Translation"), userData=EXCEL_COLUMN_TRANSLATION
         )
         self.excel_column_combo.addItem(
-            Localizer.localize("原文", "Original"), userData="原文"
+            Localizer.localize("原文", "Original"), userData=EXCEL_COLUMN_ORIGINAL
         )
         row3.addWidget(self.excel_column_combo, 1)
         v_layout.addLayout(row3)
@@ -688,32 +695,13 @@ class HtmlImportPage(Base, QWidget):
 
         want_pairs = self.html_pairs_check.isChecked()
         try:
-            if want_pairs:
-                pairs = self._read_html_translation_pairs(html_path)
-                if not pairs:
-                    raise ValueError(
-                        Localizer.localize(
-                            "HTML 中未找到 data payload，无法输出对照格式。",
-                            "No data payload found in HTML; cannot export pairs.",
-                        )
-                    )
-                lines = [f"{orig}\t{cur}" for orig, cur in pairs]
-            else:
-                lines = self._read_html_strings(html_path)
-            if not lines:
-                raise ValueError(
-                    Localizer.localize(
-                        "未在 HTML 中找到 <h6> 节点，请确认文件格式。",
-                        "No <h6> elements were found in the HTML file. Check the file format.",
-                    )
-                )
-            with open(output_path, "w", encoding="utf-8") as writer:
-                writer.write("\n".join(lines))
+            count, written = html_to_txt(html_path, output_path, pairs=want_pairs)
             InfoBar.success(
                 Localizer.get().complete,
                 Localizer.localize(
-                    "已导出到 {output_path}", "Exported to {output_path}"
-                ).format(output_path=output_path),
+                    "已导出 {count} 行到 {output_path}",
+                    "Exported {count} row(s) to {output_path}",
+                ).format(count=count, output_path=written),
                 parent=self,
             )
         except Exception as e:
@@ -747,21 +735,16 @@ class HtmlImportPage(Base, QWidget):
             output_path = root + ".html"
 
         try:
-            with open(txt_path, "r", encoding="utf-8") as reader:
-                lines = [line.rstrip("\n") for line in reader]
-            if not lines:
-                raise ValueError(
-                    Localizer.localize("TXT 文件为空", "The TXT file is empty.")
-                )
-
-            html = self._build_html_content(lines, keep_data=self.wrap_data_check.isChecked())
-            with open(output_path, "w", encoding="utf-8") as writer:
-                writer.write(html)
+            _, written = txt_to_html(
+                txt_path,
+                output_path,
+                keep_data=self.wrap_data_check.isChecked(),
+            )
             InfoBar.success(
                 Localizer.get().complete,
                 Localizer.localize(
                     "已生成 HTML：{output_path}", "HTML generated: {output_path}"
-                ).format(output_path=output_path),
+                ).format(output_path=written),
                 parent=self,
             )
         except Exception as e:
@@ -773,19 +756,6 @@ class HtmlImportPage(Base, QWidget):
             )
 
     def _convert_excel_to_txt(self):
-        try:
-            from openpyxl import load_workbook
-        except Exception:
-            InfoBar.error(
-                Localizer.get().error,
-                Localizer.localize(
-                    "未安装 openpyxl，无法读取 Excel",
-                    "openpyxl is not installed, so Excel files cannot be read.",
-                ),
-                parent=self,
-            )
-            return
-
         excel_path = self.excel_input_edit.text().strip()
         if not excel_path:
             InfoBar.warning(
@@ -807,49 +777,27 @@ class HtmlImportPage(Base, QWidget):
             root, _ = os.path.splitext(excel_path)
             output_path = root + ".txt"
 
-        target_col_name = self.excel_column_combo.currentData()
+        target_col_name = self.excel_column_combo.currentData() or EXCEL_COLUMN_TRANSLATION
 
         try:
-            book = load_workbook(excel_path)
-            lines: list[str] = []
-            for sheet_name in book.sheetnames:
-                if sheet_name in ("元数据", "Metadata"):
-                    continue
-                sheet = book[sheet_name]
-                if sheet.max_row == 0 or sheet.max_column == 0:
-                    continue
-                headers = [str(c.value).strip() if c.value is not None else "" for c in sheet[1]]
-                # 兼容别名
-                alias_map = {
-                    "原文": {
-                        "原文",
-                        "original",
-                        "原文（勿修改此列）",
-                        "Source (Do Not Edit)",
-                    },
-                    "译文": {
-                        "译文",
-                        "translation",
-                        "译文（勿修改此列）",
-                        "Translation (Do Not Edit)",
-                    },
-                }
-                col_index = None
-                for idx, name in enumerate(headers):
-                    if name.lower() in {v.lower() for v in alias_map.get(target_col_name, {target_col_name})}:
-                        col_index = idx
-                        break
-                if col_index is None:
-                    continue
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    val = row[col_index] if col_index < len(row) else None
-                    if val is None:
-                        continue
-                    text = str(val).strip()
-                    if text:
-                        lines.append(text)
-
-            if not lines:
+            count, written = excel_to_txt(
+                excel_path,
+                output_path,
+                column=str(target_col_name),
+            )
+            InfoBar.success(
+                Localizer.get().complete,
+                Localizer.localize(
+                    "已导出 {count} 行到 {output_path}",
+                    "Exported {count} row(s) to {output_path}",
+                ).format(count=count, output_path=written),
+                parent=self,
+            )
+        except Exception as e:
+            LogManager.get().error(f"Excel → TXT 导出失败: {e}")
+            # 无内容时 Qt 原为 warning；共享层统一抛 ValueError，这里按文案区分
+            message = str(e)
+            if "未在 Excel 中找到可导出的内容" in message:
                 InfoBar.warning(
                     Localizer.get().notice,
                     Localizer.localize(
@@ -859,150 +807,25 @@ class HtmlImportPage(Base, QWidget):
                     parent=self,
                 )
                 return
-
-            with open(output_path, "w", encoding="utf-8") as writer:
-                writer.write("\n".join(lines))
-            InfoBar.success(
-                Localizer.get().complete,
-                Localizer.localize(
-                    "已导出 {count} 行到 {output_path}",
-                    "Exported {count} row(s) to {output_path}",
-                ).format(count=len(lines), output_path=output_path),
-                parent=self,
-            )
-        except Exception as e:
-            LogManager.get().error(f"Excel → TXT 导出失败: {e}")
             InfoBar.error(
                 Localizer.get().error,
                 Localizer.localize("导出失败: {e}", "Export failed: {e}").format(e=e),
                 parent=self,
             )
 
-    # --- 工具函数 ---
+    # --- 工具函数：委托共享 HtmlTextConverter，保持 Qt 旧调用点 ---
     @staticmethod
     def _read_html_strings(path: str) -> List[str]:
-        """读取 HTML 中的可见文本行。
-
-        优先解析 <div id="data"> 中的 payload（JSON，含 line/original/target/current），
-        用 original 作为行内容键，保证浏览器翻译后仍能按原文映射回原 rpy 行号。
-        无 payload 时退化为读取 <h6>/<p>/<div> 可见文本。
-        """
-        with open(path, "r", encoding="utf-8") as reader:
-            soup = BeautifulSoup(reader, "html.parser")
-
-        # 优先：带 payload 的结构化 HTML（本工具 TXT→HTML 生成）
-        payload = HtmlImportPage._read_html_payload(soup)
-        if payload is not None:
-            return payload
-
-        strings = [tag.get_text() for tag in soup.find_all("h6")]
-        if not strings:  # 兼容其它标签
-            strings = [tag.get_text() for tag in soup.find_all(["p", "div"])]
-        return [s.replace("\r", "").strip() for s in strings if s and s.strip()]
+        return read_html_strings(path)
 
     @staticmethod
-    def _read_html_payload(soup: BeautifulSoup) -> List[str] | None:
-        """从 <div id="data"> 解析 payload，返回按行号排序的译文列表；无则返回 None。"""
-        data_div = soup.find("div", id="data")
-        if data_div is None:
-            return None
-        raw = (data_div.string or data_div.get_text() or "").strip()
-        if not raw:
-            return None
-        try:
-            payload = json.loads(raw)
-        except (ValueError, TypeError):
-            # 兼容旧版 str(list_of_dict) 写入
-            try:
-                import ast
-                payload = ast.literal_eval(raw)
-            except (ValueError, SyntaxError):
-                return None
-        if not isinstance(payload, list):
-            return None
-
-        # 浏览器翻译后：original 保持不变，current 被改为译文。
-        # 用 original 作为行内容键回填，行号用 line 字段保证顺序。
-        entries = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            line_no = item.get("line")
-            current = item.get("current")
-            original = item.get("original")
-            # 优先 current（翻译后），其次 target，再次 original
-            text = current if (current and str(current).strip()) else (
-                original if (original and str(original).strip()) else ""
-            )
-            entries.append((line_no if isinstance(line_no, int) else 0, str(text)))
-        entries.sort(key=lambda pair: pair[0])
-        return [text for _line, text in entries]
+    def _read_html_payload(soup) -> List[str] | None:
+        return read_html_payload_texts(soup)
 
     @staticmethod
     def _read_html_translation_pairs(path: str) -> List[tuple]:
-        """读取 HTML 中的 (original, current) 对照，供回填 rpy 用。
-
-        返回 [(original, current), ...]，按行号排序；无 payload 时返回空列表。
-        """
-        with open(path, "r", encoding="utf-8") as reader:
-            soup = BeautifulSoup(reader, "html.parser")
-        data_div = soup.find("div", id="data")
-        if data_div is None:
-            return []
-        raw = (data_div.string or data_div.get_text() or "").strip()
-        if not raw:
-            return []
-        try:
-            payload = json.loads(raw)
-        except (ValueError, TypeError):
-            try:
-                import ast
-                payload = ast.literal_eval(raw)
-            except (ValueError, SyntaxError):
-                return []
-        if not isinstance(payload, list):
-            return []
-
-        pairs = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            line_no = item.get("line")
-            original = item.get("original") or ""
-            current = item.get("current") or item.get("target") or original
-            pairs.append((
-                line_no if isinstance(line_no, int) else 0,
-                str(original),
-                str(current),
-            ))
-        pairs.sort(key=lambda triple: triple[0])
-        return [(orig, cur) for _line, orig, cur in pairs]
+        return read_html_translation_pairs(path)
 
     @staticmethod
     def _build_html_content(lines: List[str], keep_data: bool) -> str:
-        soup = BeautifulSoup("<html><head><meta charset='utf-8'></head><body></body></html>", "html.parser")
-        body = soup.body
-
-        data_payload = []
-        for idx, text in enumerate(lines):
-            text = text or ""
-            h6 = soup.new_tag("h6")
-            h6.string = text
-            body.append(h6)
-            if keep_data:
-                data_payload.append(
-                    {
-                        "line": idx,
-                        "original": text,
-                        "target": text,
-                        "current": text,
-                    }
-                )
-
-        if keep_data and data_payload:
-            data_div = soup.new_tag("div", id="data", style="display: none;")
-            # 用 JSON 写入，保证读回时可被 json.loads 解析（str(list) 不可移植）。
-            data_div.string = json.dumps(data_payload, ensure_ascii=False)
-            body.append(data_div)
-
-        return str(soup)
+        return build_html_content(lines, keep_data=keep_data)

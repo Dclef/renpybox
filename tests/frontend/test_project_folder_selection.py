@@ -96,3 +96,43 @@ def test_standard_tl_folder_still_syncs_project_identity(project_page, tmp_path)
     assert config.renpy_tl_folder == str(paths.tl_language_dir)
     assert config.input_folder == str(tl_dir)
     assert config.target_language == BaseLanguage.Enum.JA
+
+
+def test_french_tl_folder_infers_fr_despite_english_parent(project_page, tmp_path):
+    """父路径含 english 时 Qt 页仍只按真实 tl/french 推断 FR。"""
+    page, config, _window = project_page
+    root = tmp_path / "english_pack" / "Game"
+    tl_dir = _build_project(root, "french")
+    config.target_language = BaseLanguage.Enum.ZH
+
+    _select(page, tl_dir)
+
+    assert config.target_language == BaseLanguage.Enum.FR
+    assert Path(config.renpy_tl_folder).name == "french"
+
+
+def test_unknown_tl_folder_keeps_existing_target_language(project_page, tmp_path):
+    """未知语言目录不改写用户当前目标语言。"""
+    page, config, _window = project_page
+    root = tmp_path / "OddGame"
+    tl_dir = _build_project(root, "weekend")
+    config.target_language = BaseLanguage.Enum.RU
+
+    _select(page, tl_dir)
+
+    assert config.target_language == BaseLanguage.Enum.RU
+    assert Path(config.renpy_tl_folder).name == "weekend"
+
+
+def test_missing_tl_language_dir_keeps_target_on_project_root_select(project_page, tmp_path):
+    """项目根可解析但语言目录尚未创建时，保留原 target_language。"""
+    page, config, _window = project_page
+    root = tmp_path / "NewGame"
+    (root / "game").mkdir(parents=True)
+    (root / "game" / "script.rpy").write_text("label start:\n", encoding="utf-8")
+    (root / "game" / "tl").mkdir()
+    config.target_language = BaseLanguage.Enum.ES
+
+    _select(page, root)
+
+    assert config.target_language == BaseLanguage.Enum.ES

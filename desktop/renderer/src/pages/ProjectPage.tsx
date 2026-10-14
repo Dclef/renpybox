@@ -1,0 +1,190 @@
+/**
+ * 项目设置页 —— 对齐 frontend/Project/ProjectPage.py 的实测几何。
+ *
+ * 实测（nav=256、页宽 1023）：
+ *   头部 975x36 @ (24,24)：TitleLabel 18px + CaptionLabel 12px（间距 2）
+ *   滚动区 975x669 @ (24,68)（头部底 60 之后 8px）
+ *   恰好 6 张卡、每张 975x66、纵向节距 74（卡高 66 + 间距 8）
+ *     卡内边距左 17、标题 fpx=14 @y=17、说明 fpx=12 @y=37、控件右侧垂直居中
+ *     ComboBox 72x27 / PushButton 78x27 / SwitchButton 56x22
+ *
+ * 顺序同 renpybox/frontend/Project/ProjectPage.py:81-86。
+ * 目录选择走主进程原生 dialog（`window.renpy.pickFolder`），对应原壳的
+ * `QFileDialog.getExistingDirectory`；「打开」对应 `webbrowser.open`。
+ *
+ * 注意：真实 ProjectPage **没有「工程路径」卡片** —— 项目身份是选输入目录时
+ * 由 `_sync_renpy_paths_from_selection()` 顺带绑定的，所以这里选完目录会调
+ * `POST /api/project/resolve`（后端只在目录确实含 Ren'Py 结构时才认）。
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+
+import { Button } from 'antd';
+
+import { resolveProject } from '../api';
+import { useT } from '../i18n';
+import { LANGUAGE_OPTIONS } from '../settingsSchema';
+import type { AppState } from '../useAppState';
+import { PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
+
+export function ProjectPage(props: { state: AppState }) {
+  const { state } = props;
+  const t = useT();
+  const [inputFolder, setInputFolder] = useState('');
+  const [outputFolder, setOutputFolder] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // 语言下拉的选项文案在数据表里按 code 存，渲染时用 t() 换成当前界面语言。
+  const languageOptions = LANGUAGE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }));
+
+  const values = state.settings?.values;
+  const sourceLanguage = String(values?.source_language ?? 'EN');
+  const targetLanguage = String(values?.target_language ?? 'ZH');
+
+  // 重新显示时刷新路径，避免沿用旧页面创建时的配置快照（对齐 showEvent）。
+  useEffect(() => {
+    if (!values) return;
+    setInputFolder(String(values.input_folder ?? ''));
+    setOutputFolder(String(values.output_folder ?? ''));
+  }, [values]);
+
+  /**
+   * 选目录。原壳的 `_sync_renpy_paths_from_selection` 语义：
+   * 只有目录本身带 Ren'Py 项目结构时才同步项目身份，否则仅保留为输入目录
+   * —— 用户自建的翻译目录被当成项目根，会让 renpy_tl_folder 指向不存在的路径。
+   */
+  const pickFolder = useCallback(
+    async (which: 'input' | 'output', current: string) => {
+      const picked = await window.renpy?.pickFolder(current || undefined);
+      if (!picked) return;
+      setBusy(true);
+      try {
+        if (!await state.setSetting(which === 'input' ? 'input_folder' : 'output_folder', picked)) return;
+        if (which === 'input') {
+          try {
+            await resolveProject(picked);
+            await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
+            state.pushToast('success', t('project_page_project_bound_toast'));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '';
+            state.pushToast(
+              'info',
+              message || t('project_page_not_project_structure'),
+            );
+          }
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [state],
+  );
+
+  const pickProject = useCallback(async () => {
+    const current = String(state.project?.renpy_project_path ?? inputFolder);
+    const picked = await window.renpy?.pickFolder(current || undefined);
+    if (!picked) return;
+    setBusy(true);
+    try {
+      await resolveProject(picked);
+      await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
+      state.pushToast('success', t('project_page_project_bound_direct'));
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [inputFolder, state]);
+
+  const openFolder = useCallback((target: string) => {
+    if (!target) return;
+    void window.renpy?.openPath(target);
+  }, []);
+
+  const projectRoot = String(state.project?.renpy_project_path ?? '');
+  const gameFolder = String(state.project?.renpy_game_folder ?? '');
+  const tlFolder = String(state.project?.renpy_tl_folder ?? '');
+  const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || '';
+
+  return (
+    <div className="rb-page rb-page-narrow rb-project-page">
+      <div className="rb-page-scroll">
+        <PageHeader title={t('app_project_page')} description={t('project_page_header_description')} />
+        {/* 已绑定的工程即“当前项目卡”，与接口管理的当前接口同样高亮 */}
+        <section className="rb-panel rb-project-identity" data-active={Boolean(projectRoot)}>
+          <div className="rb-identity-copy">
+            <div className="rb-identity-kicker">{projectRoot ? t('project_page_bound_badge') : t('project_page_unbound_badge')}</div>
+            <div className="rb-identity-name">{projectLabel || t('project_page_unbound_name')}</div>
+            <p>
+              {projectRoot
+                ? t('project_page_bound_hint')
+                : t('project_page_unbound_hint')}
+            </p>
+          </div>
+          <Button disabled={busy} onClick={() => void pickProject()}>
+            {projectRoot ? t('project_page_reselect') : t('project_page_select')}
+          </Button>
+          <dl className="rb-identity-paths">
+            <div>
+              <dt>{t('project_page_project_root')}</dt>
+              <dd title={projectRoot || undefined}>{projectRoot || t('project_page_unbound')}</dd>
+            </div>
+            <div>
+              <dt>game</dt>
+              <dd title={gameFolder || undefined}>{gameFolder || '—'}</dd>
+            </div>
+            <div>
+              <dt>tl</dt>
+              <dd title={tlFolder || undefined}>{tlFolder || '—'}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <SettingsGroup>
+          <SettingCard title={t('project_page_source_language_title')} description={t('project_page_source_language_content')}>
+            <SelectInput
+              label={t('project_page_source_language_title')}
+              value={sourceLanguage}
+              disabled={state.saving}
+              options={languageOptions}
+              onCommit={(next) => state.setSetting('source_language', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_target_language_title')} description={t('project_page_target_language_content')}>
+            <SelectInput
+              label={t('project_page_target_language_title')}
+              value={targetLanguage}
+              disabled={state.saving}
+              options={languageOptions}
+              onCommit={(next) => state.setSetting('target_language', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_input_folder_title')} description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || t('setting_input_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>{t('setting_open')}</Button>
+          </SettingCard>
+          <SettingCard title={t('project_page_output_folder_title')} description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || t('setting_output_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>{t('setting_open')}</Button>
+          </SettingCard>
+          <SettingCard title={t('project_page_output_folder_open_on_finish_title')} description={t('project_page_output_folder_open_on_finish_content')}>
+            <Switch
+              checked={values?.output_folder_open_on_finish === true}
+              disabled={state.saving}
+              label={t('project_page_output_folder_open_on_finish_title')}
+              onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_traditional_chinese_title')} description={t('project_page_traditional_chinese_content')}>
+            <Switch
+              checked={values?.traditional_chinese_enable === true}
+              disabled={state.saving}
+              label={t('project_page_traditional_chinese_title')}
+              onChange={(next) => state.setSetting('traditional_chinese_enable', next)}
+            />
+          </SettingCard>
+        </SettingsGroup>
+      </div>
+    </div>
+  );
+}

@@ -99,6 +99,10 @@ def test_translation_reuse_rejects_same_or_missing_directories(tmp_path):
         extractor.preview_translation_reuse(target, target)
     with pytest.raises(FileNotFoundError, match="旧译文目录不存在"):
         extractor.preview_translation_reuse(tmp_path / "missing", target)
+    nested = target / "child"
+    nested.mkdir()
+    with pytest.raises(ValueError, match="互相包含"):
+        extractor.preview_translation_reuse(target, nested)
 
 
 def test_translation_reuse_places_game_backup_outside_active_game_tree(tmp_path):

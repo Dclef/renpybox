@@ -10,6 +10,8 @@ _PACK_UNPACK_ERROR_EN = {
     "EXTRACTOR_FAILED": "The game's Ren'Py unpacker exited with an error.",
     "UNAVAILABLE": "No unpackable RPA files were found, or every unpacking method failed.",
     "UNREN_SKIPPED": "Direct and external unpacking both failed, and the UnRen fallback is disabled because the archives could not be validated safely.",
+    "NO_RPA": "The selected game folder contains no .rpa files; nothing to unpack.",
+    "SCRIPT_ONLY_UNSUPPORTED": "Scripts-only unpacking failed with both direct and external tools. The UnRen fallback extracts every resource, so it was skipped. Uncheck \"scripts only\" and try again.",
 }
 
 
@@ -291,6 +293,12 @@ class LocalizerEN(LocalizerZH):
     app_update_size_unknown: str = "Size unknown"
     app_update_date_unknown: str = "Date unknown"
     app_update_download: str = "Download Update"
+    app_desktop_update_title: str = "Desktop {VERSION} Is Available"
+    app_desktop_update_description: str = "The new desktop app needs a separate download and installation. Your Python app and its settings will be kept, without automatic replacement. You can migrate later."
+    app_desktop_update_action: str = "Download Desktop App"
+    app_desktop_update_toast: str = "Desktop {VERSION} is available. Open Application Settings to view details and download it."
+    app_desktop_update_indicator: str = "Desktop Available"
+    app_desktop_update_open_failed: str = "Could not open the download page. Please visit GitHub Releases manually."
     app_update_check_latest_toast: str = "You're using the latest version"
     app_update_check_failure: str = "Update check failed: "
     app_update_cancelled: str = "Download cancelled"
@@ -746,6 +754,7 @@ class LocalizerEN(LocalizerZH):
     agent_rpa_not_found: str = "No RPA files were found in the current project."
     agent_rpa_found: str = "Found {count} RPA file(s) in the current project: {files}"
     agent_scan_no_errors: str = "Script scan completed with no errors found."
+    agent_scan_incomplete: str = "Script scan incomplete (cancelled or budget limit reached). Results cover only the scanned portion and do not establish that the folder is error-free."
     agent_scan_errors: str = "Script scan completed with {total} issue(s); the first {returned} are included."
     agent_unpack_project_changed: str = "The project folder changed. Review the operation and confirm it again."
     agent_unpack_complete: str = "RPA unpacking completed for {count} archive(s). The original RPA files were kept."

@@ -385,9 +385,9 @@ def test_source_mode_extract_still_warns_and_opens_release_page(monkeypatch) -> 
     opened_urls = []
     monkeypatch.delattr(sys, "frozen", raising = False)
     monkeypatch.setattr(
-        version_manager_module.QDesktopServices,
-        "openUrl",
-        lambda url: opened_urls.append(url.toString()),
+        version_manager_module.webbrowser,
+        "open",
+        lambda url: opened_urls.append(url),
     )
 
     manager.app_update_extract_task("", {})

@@ -82,6 +82,7 @@ class RENPYHOOK(Base):
             tl_name,
             write_manifest=True,
             auto_update_glossary=True,
+            tl_dir=tl_dir,
         )
 
         items: List[CacheItem] = []

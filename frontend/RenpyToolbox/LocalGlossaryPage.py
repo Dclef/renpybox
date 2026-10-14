@@ -40,6 +40,7 @@ from module.Localizer.Localizer import Localizer
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Extract.GlossaryCandidateService import extract_glossary_candidates
 from module.Text.SkipRules import should_skip_text
+from module.Tool import LexiconOps
 from frontend.RenpyToolbox.RuleStatisticsWorker import RuleStatisticsWorker
 
 try:
@@ -346,13 +347,8 @@ class LocalGlossaryPage(Base, QWidget):
             Localizer.get().local_glossary_notes,
             Localizer.get().local_glossary_hits,
         )
-    # 过滤器关键字（参考 AiNiee NER 过滤规则），命中则跳过
-    FILTER_KEYWORDS = (
-        '-', '…', '一', '―', '？', '©', '章　', 'ー', 'http', '！', '=', '"', '＋', '：', '『', 'ぃ', '～',
-        '♦', '〇', '└', "'", "/", "｢", "）", "（", "♥", "●", "!", "】", "【", "<", ">", "*", "〜", "EV",
-        "♪", "^", "★", "※", ".", "|", "ｰ", "%", "if", "Lv", "(", "\\", "]", "[", "◆", ":", "_", "ｗｗｗ",
-        "、", "ぁぁ", "んえ", "んんん",
-    )
+    # 过滤器关键字（与 LexiconOps 同源）
+    FILTER_KEYWORDS = LexiconOps.FILTER_KEYWORDS
 
     def __init__(self, object_name: str, parent=None):
         Base.__init__(self)
@@ -786,48 +782,11 @@ class LocalGlossaryPage(Base, QWidget):
         is_target: bool,
         traditional_chinese_enable: bool,
     ) -> str:
-        key = (str(lang or "").strip() or "auto")
-        upper = key.upper()
-
-        if upper in {"AUTO", "自动", "NONE"}:
-            return "auto"
-
-        if upper in {"ZH", "CHINESE", "CN", "ZH-CN", "ZH_CN", "ZH-HANS", "ZH_HANS"}:
-            return "zh-TW" if is_target and traditional_chinese_enable else "zh-CN"
-        if upper in {"EN", "ENGLISH"}:
-            return "en"
-        if upper in {"JA", "JP", "JAPANESE"}:
-            return "ja"
-        if upper in {"KO", "KR", "KOREAN"}:
-            return "ko"
-        if upper in {"RU", "RUSSIAN"}:
-            return "ru"
-        if upper in {"AR", "ARABIC"}:
-            return "ar"
-        if upper in {"DE", "GERMAN"}:
-            return "de"
-        if upper in {"FR", "FRENCH"}:
-            return "fr"
-        if upper in {"PL", "POLISH"}:
-            return "pl"
-        if upper in {"ES", "SPANISH"}:
-            return "es"
-        if upper in {"IT", "ITALIAN"}:
-            return "it"
-        if upper in {"PT", "PORTUGUESE"}:
-            return "pt"
-        if upper in {"HU", "HUNGARIAN"}:
-            return "hu"
-        if upper in {"TR", "TURKISH"}:
-            return "tr"
-        if upper in {"TH", "THAI"}:
-            return "th"
-        if upper in {"ID", "INDONESIAN"}:
-            return "id"
-        if upper in {"VI", "VIETNAMESE"}:
-            return "vi"
-
-        return key
+        return LexiconOps.map_language_to_fasttranslator_code(
+            lang,
+            is_target=is_target,
+            traditional_chinese_enable=traditional_chinese_enable,
+        )
 
     def _collect_glossary_translate_tasks(self) -> List[tuple[int, str]]:
         tasks: List[tuple[int, str]] = []
@@ -1910,96 +1869,19 @@ class LocalGlossaryPage(Base, QWidget):
 
     @staticmethod
     def _normalize_src(text: str) -> str:
-        if not text:
-            return ""
-        normalized = re.sub(r"\s+", " ", text)
-        normalized = normalized.strip().strip("\"'“”‘’")
-        return normalized.lower()
+        return LexiconOps.normalize_glossary_src(text)
 
     @staticmethod
     def _merge_entries(base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
-        def _clean(value: str) -> str:
-            return value.strip() if isinstance(value, str) else ""
-
-        merged = {
-            "record_id": str(base.get("record_id", "") or ""),
-            "src": _clean(base.get("src")),
-            "dst": _clean(base.get("dst")),
-            "type": _clean(base.get("type")),
-            "comment": _clean(base.get("comment")),
-            "case_sensitive": bool(base.get("case_sensitive", False)),
-            "candidate": bool(base.get("candidate", False)),
-            "candidate_confirmed": bool(base.get("candidate_confirmed", False)),
-            "enabled": bool(base.get("enabled", True)),
-            "regex": bool(base.get("regex", False)),
-        }
-        incoming_cleaned = {
-            "record_id": str(incoming.get("record_id", "") or ""),
-            "src": _clean(incoming.get("src")),
-            "dst": _clean(incoming.get("dst")),
-            "type": _clean(incoming.get("type")),
-            "comment": _clean(incoming.get("comment")),
-            "case_sensitive": bool(incoming.get("case_sensitive", False)),
-            "candidate": bool(incoming.get("candidate", False)),
-            "candidate_confirmed": bool(incoming.get("candidate_confirmed", False)),
-            "enabled": bool(incoming.get("enabled", True)),
-            "regex": bool(incoming.get("regex", False)),
-        }
-
-        if not merged["record_id"] and incoming_cleaned["record_id"]:
-            merged["record_id"] = incoming_cleaned["record_id"]
-            merged["candidate"] = incoming_cleaned["candidate"]
-            merged["candidate_confirmed"] = incoming_cleaned["candidate_confirmed"]
-
-        if incoming_cleaned["dst"]:
-            if not merged["dst"] or (merged["src"] and merged["dst"].lower() == merged["src"].lower()):
-                merged["dst"] = incoming_cleaned["dst"]
-
-        if incoming_cleaned["type"] and not merged["type"]:
-            merged["type"] = incoming_cleaned["type"]
-
-        if incoming_cleaned["comment"]:
-            if not merged["comment"]:
-                merged["comment"] = incoming_cleaned["comment"]
-            elif incoming_cleaned["comment"] not in merged["comment"] and len(incoming_cleaned["comment"]) > len(merged["comment"]):
-                merged["comment"] = incoming_cleaned["comment"]
-
-        if incoming_cleaned["src"] and not merged["src"]:
-            merged["src"] = incoming_cleaned["src"]
-
-        if incoming_cleaned["case_sensitive"]:
-            merged["case_sensitive"] = True
-        if incoming_cleaned["regex"]:
-            merged["regex"] = True
-        if incoming_cleaned["candidate_confirmed"]:
-            merged["candidate_confirmed"] = True
-
-        return merged
+        return LexiconOps.merge_glossary_entries(base, incoming)
 
     @staticmethod
     def _build_header_map(headers: List[str]) -> Dict[str, int]:
-        alias = {
-            "src": {"原文", "原始文本", "source", "src"},
-            "dst": {"译文", "翻译", "target", "translation", "dst"},
-            "type": {"类别", "分类", "type", "category"},
-            "comment": {"备注", "说明", "comment", "note", "备注信息"},
-        }
-        mapping = {}
-        for index, name in enumerate(headers):
-            lower_name = name.lower()
-            for key, options in alias.items():
-                if lower_name in {opt.lower() for opt in options} and key not in mapping:
-                    mapping[key] = index
-        return mapping
+        return LexiconOps.build_glossary_header_map(headers)
 
     @staticmethod
     def _safe_cell(row, index: int) -> str:
-        if index is None:
-            return ""
-        if index >= len(row):
-            return ""
-        value = row[index]
-        return "" if value is None else str(value).strip()
+        return LexiconOps.safe_excel_cell(row, index)
 
     def _on_rescan_characters(self):
         """重新扫描游戏目录，提取角色名到术语表（清空旧的自动提取数据）"""
@@ -2205,34 +2087,7 @@ class LocalGlossaryPage(Base, QWidget):
     @staticmethod
     def _categorize_term(text: str, default: str = "") -> str:
         """基于关键词/形态的简易分类"""
-        if not text:
-            return default
-        t = text.strip()
-        lower = t.lower()
-        place_keywords = [
-            "city", "village", "town", "forest", "mountain", "hill", "park", "garden",
-            "school", "academy", "college", "campus", "church", "temple", "shrine",
-            "castle", "tower", "dungeon", "cave", "ruins", "harbor", "port", "station",
-            "beach", "island", "lake", "river", "bridge", "street", "road", "avenue",
-            "hotel", "inn", "bar", "cafe", "shop", "market", "library"
-        ]
-        item_keywords = [
-            "sword", "blade", "dagger", "bow", "gun", "rifle", "pistol", "armor", "shield",
-            "ring", "necklace", "amulet", "bracelet", "crown", "helmet", "boots", "gloves",
-            "potion", "elixir", "herb", "scroll", "book", "map", "key", "card", "ticket",
-            "coin", "gem", "crystal", "stone", "orb", "staff", "wand", "medal"
-        ]
-        # 地名关键词匹配
-        if any(k in lower for k in place_keywords):
-            return "地名"
-        # 物品关键词匹配
-        if any(k in lower for k in item_keywords):
-            return "物品"
-        # 大写单词串通常为专名（角色/组织/作品）
-        words = t.split()
-        if words and all(w[:1].isupper() for w in words if w):
-            return default or ""
-        return default
+        return LexiconOps.categorize_term(text, default=default)
 
     # ---- NER 分类（需本地模型） ----
     def _ner_categorize_entries(self, silent: bool = False) -> int:
@@ -2541,9 +2396,4 @@ class LocalGlossaryPage(Base, QWidget):
     @staticmethod
     def _clean_text_for_classify(text: str) -> str:
         """去除格式标签/空白，用于分类和过滤"""
-        if not text:
-            return ""
-        import re
-        cleaned = re.sub(r"\{/?[^}]+\}", "", text)
-        cleaned = cleaned.replace("\u3000", " ").strip()
-        return cleaned
+        return LexiconOps.clean_text_for_classify(text)

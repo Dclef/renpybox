@@ -167,13 +167,24 @@ class FormatterPage(Base, QWidget):
                 remove_trailing=self.remove_trailing_spaces_check.isChecked(),
                 encoding="utf-8"
             )
-            
+            failed = list(getattr(formatter, "last_failed_files", []) or [])
+
             LogManager.get().info(f"格式化完成，共处理 {count} 个文件")
-            InfoBar.success(
-                Localizer.get().complete,
-                Localizer.localize("已格式化 {count} 个 .rpy 文件", "Formatted {count} .rpy file(s).").format(count=count),
-                parent=self,
-            )
+            if failed:
+                InfoBar.warning(
+                    Localizer.get().notice,
+                    Localizer.localize(
+                        "成功处理 {count} 个 .rpy；{failed} 个失败",
+                        "Processed {count} .rpy file(s); {failed} failed",
+                    ).format(count=count, failed=len(failed)),
+                    parent=self,
+                )
+            else:
+                InfoBar.success(
+                    Localizer.get().complete,
+                    Localizer.localize("成功处理 {count} 个 .rpy 文件", "Successfully processed {count} .rpy file(s).").format(count=count),
+                    parent=self,
+                )
             
         except Exception as e:
             LogManager.get().error(f"格式化失败: {e}")

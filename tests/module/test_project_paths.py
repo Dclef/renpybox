@@ -6,8 +6,12 @@ import pytest
 
 from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheProject import CacheProject
+from base.BaseLanguage import BaseLanguage
 from module.Renpy.ProjectPaths import (
+    LANGUAGE_FOLDER_CANDIDATES,
     RenpyProjectPaths,
+    guess_language_from_folder_name,
+    guess_language_from_tl_path,
     read_run_manifest,
     resolve_translation_output,
     restore_resumable_translation_paths,
@@ -416,3 +420,79 @@ def test_source_script_counts_walks_game_once_and_prunes_translation_tree(
     assert len(calls) == 1
     assert calls[0][0][0] == str(paths.game_dir)
     assert calls[0][1]["topdown"] is True
+
+
+def _alias_cases():
+    cases = []
+    for language, aliases in LANGUAGE_FOLDER_CANDIDATES:
+        for alias in aliases:
+            cases.append(pytest.param(alias, language, id=f"{language.value}-{alias}"))
+    return cases
+
+
+@pytest.mark.parametrize("alias, expected", _alias_cases())
+def test_guess_language_from_folder_name_explicit_aliases(alias, expected):
+    assert guess_language_from_folder_name(alias) == expected
+    assert guess_language_from_folder_name(alias.upper()) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("french", BaseLanguage.Enum.FR),
+        ("french_new", BaseLanguage.Enum.FR),
+        ("French-New", BaseLanguage.Enum.FR),
+        ("fr", BaseLanguage.Enum.FR),
+        ("hungarian", BaseLanguage.Enum.HU),
+        ("hu", BaseLanguage.Enum.HU),
+        ("schinese", BaseLanguage.Enum.ZH),
+        ("en", BaseLanguage.Enum.EN),
+    ],
+)
+def test_guess_language_token_aliases_and_french_new(name, expected):
+    assert guess_language_from_folder_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["weekend", "englishish", "enfrench", "frenchy", ""],
+)
+def test_guess_language_unknown_or_substring_keeps_none(name):
+    """未知名与仅含子串的奇怪目录名不得命中（不做子串回退）。"""
+    assert guess_language_from_folder_name(name) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "game/tl/french",
+        "game/tl/french/",
+        r"game\tl\french",
+        r"game\tl\french\\",
+        "/tmp/english_studio/game/tl/french",
+        r"C:\english_pack\game\tl\french",
+    ],
+)
+def test_guess_language_uses_basename_only_ignoring_parents(raw):
+    """父路径含 english 时仍只取 basename；POSIX/Windows 分隔符均支持。"""
+    assert guess_language_from_folder_name(raw) == BaseLanguage.Enum.FR
+
+
+def test_guess_language_from_tl_path_requires_existing_tl_parent(tmp_path):
+    existing = tmp_path / "game" / "tl" / "french"
+    existing.mkdir(parents=True)
+    assert guess_language_from_tl_path(existing) == BaseLanguage.Enum.FR
+
+    missing = tmp_path / "game" / "tl" / "french_new"
+    assert not missing.exists()
+    assert guess_language_from_tl_path(missing) is None
+
+    # 目录存在但不在 tl 下 → 不推断
+    orphan = tmp_path / "orphan" / "french"
+    orphan.mkdir(parents=True)
+    assert guess_language_from_tl_path(orphan) is None
+
+    # 未知语言目录即使存在也不推断
+    unknown = tmp_path / "game" / "tl" / "weekend"
+    unknown.mkdir(parents=True)
+    assert guess_language_from_tl_path(unknown) is None

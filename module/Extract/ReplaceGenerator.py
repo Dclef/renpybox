@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
 
 from base.Base import Base
 from base.LogManager import LogManager
@@ -1101,11 +1101,27 @@ def _extract_all_strings_regex(game_dir: Path, *, cache_path: Optional[Path] = N
     return all_strings
 
 
-def _get_tl_covered_strings(target_path: str | Path, tl_name: str) -> Set[str]:
+def _effective_tl_dir(
+    target_path: str | Path,
+    tl_name: str,
+    tl_dir: Path | None = None,
+) -> Path:
+    """解析用于扫描/缓存的 tl 语言目录；显式 ``tl_dir`` 优先于 game/tl/<lang>。"""
+    if tl_dir is not None:
+        return Path(tl_dir)
+    game_dir = _get_game_dir(target_path)
+    return game_dir / "tl" / tl_name
+
+
+def _get_tl_covered_strings(
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    tl_dir: Path | None = None,
+) -> Set[str]:
     """读取 tl 目录中“已覆盖”的原文集合（自动排除 miss_ready_replace 等中间文件）。"""
     logger = LogManager.get()
-    game_dir = _get_game_dir(target_path)
-    tl_dir = game_dir / "tl" / tl_name
+    tl_dir = _effective_tl_dir(target_path, tl_name, tl_dir)
 
     if not tl_dir.exists():
         return set()
@@ -1278,8 +1294,15 @@ def _filter_valid_strings(strings: Set[str]) -> Set[str]:
     return result
 
 
-def _get_regex_cache_path(game_dir: Path, tl_name: str = "chinese") -> Path:
+def _get_regex_cache_path(
+    game_dir: Path,
+    tl_name: str = "chinese",
+    *,
+    tl_dir: Path | None = None,
+) -> Path:
     """返回正则候选文本缓存路径。"""
+    if tl_dir is not None:
+        return Path(tl_dir) / MISS_DIR / REGEX_CACHE
     normalized_tl_name = str(tl_name or "chinese").strip() or "chinese"
     try:
         path_name = Path(normalized_tl_name).name
@@ -1370,10 +1393,15 @@ def _collect_glossary_candidate_sets(
     *,
     tl_name: str = "chinese",
     include_compiled: bool = True,
+    tl_dir: Path | None = None,
 ) -> tuple[Set[str], Set[str], int]:
     """Collect source and bytecode candidates while retaining provenance."""
     game_dir = _get_game_dir(target_path)
-    cache_path = _get_regex_cache_path(game_dir, tl_name)
+    cache_path = _get_regex_cache_path(
+        game_dir,
+        tl_name,
+        tl_dir=_effective_tl_dir(target_path, tl_name, tl_dir),
+    )
     regex_all = _extract_all_strings_regex(game_dir, cache_path=cache_path)
     compiled_all = (
         _extract_compiled_python_strings(
@@ -1432,7 +1460,30 @@ def _decode_duplicate_literal(quote: str, value: str) -> str:
         return value.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
 
 
-def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
+def _record_postprocess_write(
+    path: Path,
+    written_files: list[str] | None,
+) -> None:
+    """记录后置处理实际写入的文件；同路径不重复追加。"""
+    path_str = str(path)
+    if written_files is not None:
+        seen = {os.path.normcase(os.path.normpath(item)) for item in written_files}
+        if os.path.normcase(os.path.normpath(path_str)) not in seen:
+            written_files.append(path_str)
+
+
+def _raise_if_postprocess_stopped(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise RuntimeError("运行时 HOOK 抽取已取消")
+
+
+def dedupe_string_translations(
+    tl_dir: Path,
+    tl_name: str = "chinese",
+    *,
+    should_stop: Callable[[], bool] | None = None,
+    written_files: list[str] | None = None,
+) -> int:
     """Ensure ``old`` is unique across every ``translate <lang> strings:`` block.
 
     Ren'Py registers string translations into one per-language dictionary, so a
@@ -1449,6 +1500,9 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
       (their entries were already removed by an earlier run) are orphaned;
       only the first orphaned comment in a file is kept as the position
       marker, the rest are removed.
+
+    可选 ``should_stop`` / ``written_files``：写前可取消，并记录实际改写的文件；
+    旧调用方不受影响。
 
     Returns the number of duplicate entries removed.
     """
@@ -1537,6 +1591,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
         remove_pairs.setdefault(rpy_file, []).append((old_index, new_index))
 
     for rpy_file, pairs in remove_pairs.items():
+        _raise_if_postprocess_stopped(should_stop)
         try:
             lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
@@ -1563,6 +1618,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             continue
         rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
         changed = True
+        _record_postprocess_write(rpy_file, written_files)
 
     # 清理孤儿位置注释：条目已被删除后残留的 ``# game/<path>:<line>``。
     # 判定：注释之后（跳过空行和其它注释）既不是 old/new 行、也不是
@@ -1572,6 +1628,7 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
     # 无条件删除。
     strings_header_re = re.compile(r"^\s*translate\s+\S+\s+strings\s*:\s*$")
     for rpy_file in scanned_files:
+        _raise_if_postprocess_stopped(should_stop)
         try:
             lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
@@ -1612,13 +1669,16 @@ def dedupe_string_translations(tl_dir: Path, tl_name: str = "chinese") -> int:
             continue
         rpy_file.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
         changed = True
+        _record_postprocess_write(rpy_file, written_files)
 
     # Duplicate removal can leave a strings header with no active entries.
     # Clean these blocks in the same pass, including official common/screens
     # files that are intentionally part of the scan.
     for rpy_file in scanned_files:
+        _raise_if_postprocess_stopped(should_stop)
         if _remove_empty_translate_strings_blocks(rpy_file, tl_name):
             changed = True
+            _record_postprocess_write(rpy_file, written_files)
 
     if not changed:
         return 0
@@ -1725,12 +1785,12 @@ def collect_hook_translation_entries(
     *,
     write_manifest: bool = True,
     auto_update_glossary: bool = True,
+    tl_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """扫描标准 TL 缺失文本，并转换为翻译引擎可处理的 HOOK 条目。"""
 
     logger = LogManager.get()
-    game_dir = _get_game_dir(target_path)
-    tl_dir = game_dir / "tl" / tl_name
+    tl_dir = _effective_tl_dir(target_path, tl_name, tl_dir)
     tl_dir.mkdir(parents=True, exist_ok=True)
     miss_dir = tl_dir / MISS_DIR
     miss_dir.mkdir(parents=True, exist_ok=True)
@@ -1741,12 +1801,13 @@ def collect_hook_translation_entries(
             target_path,
             tl_name=tl_name,
             include_compiled=False,
+            tl_dir=tl_dir,
         )
     )
     regex_filtered = rpy_candidates | compiled_candidates
 
     logger.info("正在读取 tl 已覆盖文本...")
-    tl_covered = _get_tl_covered_strings(target_path, tl_name)
+    tl_covered = _get_tl_covered_strings(target_path, tl_name, tl_dir=tl_dir)
     missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
     glossary_map = _load_glossary_map()
 
@@ -1823,7 +1884,12 @@ def collect_hook_translation_entries(
     return entries, stats
 
 
-def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path | None, int, int, int, Set[str]]:
+def generate_miss_rpy_auto(
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    tl_dir: Path | None = None,
+) -> Tuple[Path | None, int, int, int, Set[str]]:
     """【一键操作】自动生成缺失补丁。
     
     内部流程：
@@ -1835,8 +1901,7 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
         (miss 文件路径或 None, 缺失条目数, 正则扫描总数, tl覆盖数)
     """
     logger = LogManager.get()
-    game_dir = _get_game_dir(target_path)
-    tl_dir = game_dir / "tl" / tl_name
+    tl_dir = _effective_tl_dir(target_path, tl_name, tl_dir)
     tl_dir.mkdir(parents=True, exist_ok=True)
     miss_dir = tl_dir / MISS_DIR
     miss_dir.mkdir(parents=True, exist_ok=True)
@@ -1847,12 +1912,13 @@ def generate_miss_rpy_auto(target_path: str | Path, tl_name: str) -> Tuple[Path 
         target_path,
         tl_name=tl_name,
         include_compiled=False,
+        tl_dir=tl_dir,
     )
     regex_filtered = rpy_candidates | compiled_candidates
     
     # 2. tl 覆盖（已抽取的文本）
     logger.info("正在读取 tl 已覆盖文本...")
-    tl_covered = _get_tl_covered_strings(target_path, tl_name)
+    tl_covered = _get_tl_covered_strings(target_path, tl_name, tl_dir=tl_dir)
     
     # 3. 计算差集
     missing = _filter_uncovered_candidates(regex_filtered, tl_covered)
@@ -2298,13 +2364,17 @@ def build_replace_pairs_from_entries(
 
 
 def filter_replace_pairs_covered_by_tl(
-    pairs: Sequence[Pair], target_path: str | Path, tl_name: str
+    pairs: Sequence[Pair],
+    target_path: str | Path,
+    tl_name: str,
+    *,
+    tl_dir: Path | None = None,
 ) -> List[Pair]:
     """写回前移除已经由标准 TL 或源码翻译块覆盖的 hook 替换。"""
-    covered = _get_tl_covered_strings(target_path, tl_name)
+    tl_dir = _effective_tl_dir(target_path, tl_name, tl_dir)
+    covered = _get_tl_covered_strings(target_path, tl_name, tl_dir=tl_dir)
     game_dir = _get_game_dir(target_path)
     old_re = re.compile(r'^\s*old\s+["\'](?P<text>.*)["\']\s*$')
-    tl_dir = game_dir / "tl" / tl_name
     for tl_file in tl_dir.rglob("*.rpy") if tl_dir.is_dir() else ():
         name = tl_file.name.lower()
         if (

@@ -9,6 +9,8 @@ _PACK_UNPACK_ERROR_ZH = {
     "EXTRACTOR_FAILED": "游戏自带的 Ren'Py 解包器执行失败。",
     "UNAVAILABLE": "未找到可解包的 RPA 文件，或所有解包方式均失败。",
     "UNREN_SKIPPED": "前两种解包方式失败，UnRen 兜底因安全校验不可用而跳过。",
+    "NO_RPA": "所选 game 目录中没有 .rpa 文件，无需解包。",
+    "SCRIPT_ONLY_UNSUPPORTED": "仅脚本模式下直接解包和外部工具均未成功；UnRen 兜底会解出全部资源，已跳过。可取消“仅脚本”后重试。",
 }
 
 
@@ -289,6 +291,12 @@ class LocalizerZH():
     app_update_size_unknown: str = "大小未知"
     app_update_date_unknown: str = "日期未知"
     app_update_download: str = "下载更新"
+    app_desktop_update_title: str = "桌面版 {VERSION} 已可用"
+    app_desktop_update_description: str = "全新桌面版需要单独下载安装。当前 Python 版及其配置会保留，不会自动覆盖；你也可以稍后迁移。"
+    app_desktop_update_action: str = "前往下载桌面版"
+    app_desktop_update_toast: str = "桌面版 {VERSION} 已发布，可在应用设置查看并前往下载。"
+    app_desktop_update_indicator: str = "桌面版可用"
+    app_desktop_update_open_failed: str = "无法打开下载页面，请手动前往 GitHub Releases。"
     app_update_check_latest_toast: str = "当前已是最新版本"
     app_update_check_failure: str = "检查更新失败："
     app_update_cancelled: str = "已取消下载"
@@ -729,6 +737,7 @@ class LocalizerZH():
     agent_rpa_not_found: str = "当前项目没有找到 RPA 文件。"
     agent_rpa_found: str = "当前项目找到 {count} 个 RPA 文件：{files}"
     agent_scan_no_errors: str = "脚本扫描完成，未发现错误。"
+    agent_scan_incomplete: str = "脚本扫描未完成（已取消或达到预算上限），以下仅为已扫描部分的结果，不能据此判断目录无错误。"
     agent_scan_errors: str = "脚本扫描完成，发现 {total} 个问题，已返回前 {returned} 个。"
     agent_unpack_project_changed: str = "项目目录已变化，请重新确认后再试。"
     agent_unpack_complete: str = "RPA 解包完成，共处理 {count} 个归档；原 RPA 文件已保留。"

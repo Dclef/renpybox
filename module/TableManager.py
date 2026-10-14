@@ -1,43 +1,38 @@
+"""表格数据层（Qt 无关）。
+
+M1 解耦：原TableManager 把「数据」和「QTableWidget 渲染」揉在一起，导致 module/ 依赖 PyQt。
+这里只保留纯数据操作；Qt 绑定部分移到 frontend/LegacyTableBinding.py。
+"""
 import json
-from base.compat import StrEnum
-from functools import partial
 from typing import Any
 
 import openpyxl
 import openpyxl.styles
 import openpyxl.worksheet.worksheet
-from PyQt5.QtCore import QModelIndex
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QTableWidgetItem
-from qfluentwidgets import TableWidget
 
-from widget.RuleWidget import RuleWidget
+from base.compat import StrEnum
+
 
 class TableManager():
-
     class Type(StrEnum):
 
         GLOSSARY = "GLOSSARY"
         REPLACEMENT = "REPLACEMENT"
         TEXT_PRESERVE = "TEXT_PRESERVE"
 
-    def __init__(self, type: str, data: list[dict[str, str]], table: TableWidget) -> None:
+    def __init__(self, type: str, data: list[dict[str, str]] | None = None) -> None:
         super().__init__()
 
         self.type = type
-        self.data = data
-        self.table = table
+        self.data: list[dict[str, str]] = data if data is not None else []
 
         self.updating: bool = False
 
     def reset(self) -> None:
         self.data = []
-        self.table.clearContents()
-        self.table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
     def sync(self) -> None:
-        self.set_updating(True)
-
+        """按 src 去重：已有译文的优先保留空译文、空译文时优先保留带备注/正则的那条。"""
         dels: set[int] = set()
         for i in range(len(self.data)):
             for k in range(i + 1, len(self.data)):
@@ -53,58 +48,6 @@ class TableManager():
                     else:
                         dels.add(i)
         self.data = [v for i, v in enumerate(self.data) if i not in dels]
-
-        self.table.setRowCount(max(20, len(self.data) + 8))
-        for row in range(self.table.rowCount()):
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item is not None:
-                    item.setText("")
-                else:
-                    self.table.setItem(row, col, self.generate_item(col))
-
-        if self.type == __class__.Type.GLOSSARY:
-            for row, v in enumerate(self.data):
-                for col in range(self.table.columnCount()):
-                    if col == 0:
-                        self.table.item(row, col).setText(v.get("src", ""))
-                    elif col == 1:
-                        self.table.item(row, col).setText(v.get("dst", ""))
-                    elif col == 2:
-                        self.table.item(row, col).setText(v.get("info", ""))
-                    elif col == 3:
-                        rule_widget = RuleWidget(
-                            show_regex = False,
-                            show_case_sensitive = True,
-                            case_sensitive_enabled = v.get("case_sensitive", False),
-                            on_changed = partial(self._on_rule_changed, row, v),
-                        )
-                        self.table.setCellWidget(row, col, rule_widget)
-        elif self.type == __class__.Type.REPLACEMENT:
-            for row, v in enumerate(self.data):
-                for col in range(self.table.columnCount()):
-                    if col == 0:
-                        self.table.item(row, col).setText(v.get("src", ""))
-                    elif col == 1:
-                        self.table.item(row, col).setText(v.get("dst", ""))
-                    elif col == 2:
-                        rule_widget = RuleWidget(
-                            show_regex = True,
-                            show_case_sensitive = True,
-                            regex_enabled = v.get("regex", False),
-                            case_sensitive_enabled = v.get("case_sensitive", False),
-                            on_changed = partial(self._on_rule_changed, row, v),
-                        )
-                        self.table.setCellWidget(row, col, rule_widget)
-        elif self.type == __class__.Type.TEXT_PRESERVE:
-            for row, v in enumerate(self.data):
-                for col in range(self.table.columnCount()):
-                    if col == 0:
-                        self.table.item(row, col).setText(v.get("src", ""))
-                    elif col == 1:
-                        self.table.item(row, col).setText(v.get("info", ""))
-
-        self.set_updating(False)
 
     def export(self, path: str) -> None:
         book: openpyxl.Workbook = openpyxl.Workbook()
@@ -165,96 +108,6 @@ class TableManager():
 
     def set_updating(self, updating: bool) -> None:
         self.updating = updating
-
-    def _on_rule_changed(self, row: int, data_ref: dict[str, str | bool], regex: bool, case_sensitive: bool) -> None:
-        if self.type == __class__.Type.REPLACEMENT:
-            data_ref["regex"] = regex
-
-        data_ref["case_sensitive"] = case_sensitive
-
-        self.table.itemChanged.emit(self.table.item(row, 0))
-
-    def generate_item(self, col: int) -> QTableWidgetItem:
-        item = QTableWidgetItem("")
-        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        if self.type == __class__.Type.GLOSSARY:
-            if col == 3:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        elif self.type == __class__.Type.REPLACEMENT:
-            if col == 2:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        elif self.type == __class__.Type.TEXT_PRESERVE:
-            pass
-
-        return item
-
-    def delete_row(self) -> None:
-        selected_index = self.table.selectedIndexes()
-
-        if selected_index == None or len(selected_index) == 0:
-            return
-
-        for row in sorted({item.row() for item in selected_index}, reverse = True):
-            self.table.removeRow(row)
-
-        self.table.itemChanged.emit(QTableWidgetItem())
-
-    def switch_regex(self) -> None:
-        selected_index: list[QModelIndex] = self.table.selectedIndexes()
-
-        if selected_index == None or len(selected_index) == 0:
-            return
-
-        for row in {index.row() for index in selected_index}:
-            item = self.table.item(row, 2)
-            if item is None:
-                item = QTableWidgetItem()
-                self.table.setItem(row, 2, item)
-            if item.text().strip() != "✅":
-                item.setText("✅")
-            else:
-                item.setText("")
-
-    def get_entry_by_row(self, row: int) -> dict[str, str | bool]:
-        items: list[QTableWidgetItem] = [
-            self.table.item(row, col)
-            for col in range(self.table.columnCount())
-        ]
-
-        if self.type == __class__.Type.GLOSSARY:
-            rule_widget = self.table.cellWidget(row, 3)
-            case_sensitive = rule_widget.get_case_sensitive_enabled() if isinstance(rule_widget, RuleWidget) else False
-
-            return {
-                "src": items[0].text().strip() if isinstance(items[0], QTableWidgetItem) else "",
-                "dst": items[1].text().strip() if isinstance(items[1], QTableWidgetItem) else "",
-                "info": items[2].text().strip() if isinstance(items[2], QTableWidgetItem) else "",
-                "case_sensitive": case_sensitive,
-            }
-        elif self.type == __class__.Type.REPLACEMENT:
-            rule_widget = self.table.cellWidget(row, 2)
-            regex = rule_widget.get_regex_enabled() if isinstance(rule_widget, RuleWidget) else False
-            case_sensitive = rule_widget.get_case_sensitive_enabled() if isinstance(rule_widget, RuleWidget) else False
-
-            return {
-                "src": items[0].text().strip() if isinstance(items[0], QTableWidgetItem) else "",
-                "dst": items[1].text().strip() if isinstance(items[1], QTableWidgetItem) else "",
-                "info": "",
-                "regex": regex,
-                "case_sensitive": case_sensitive,
-            }
-        elif self.type == __class__.Type.TEXT_PRESERVE:
-            return {
-                "src": items[0].text().strip() if isinstance(items[0], QTableWidgetItem) else "",
-                "info": items[1].text().strip() if isinstance(items[1], QTableWidgetItem) else "",
-            }
-
-    def append_data_from_table(self) -> None:
-        for row in range(self.table.rowCount()):
-            entry: dict[str, str | bool] = self.get_entry_by_row(row)
-            if entry.get("src") != "":
-                self.data.append(entry)
 
     def append_data_from_file(self, path: str) -> None:
         result: list[dict[str, str]] = []
