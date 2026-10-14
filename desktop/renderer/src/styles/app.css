@@ -1,0 +1,3048 @@
+@layer app {
+  .rb-shell {
+    display: grid;
+    grid-template-columns: 256px minmax(0, 1fr);
+    grid-template-rows: 38px minmax(0, 1fr);
+    grid-template-areas:
+      'titlebar titlebar'
+      'sidebar content';
+    /* 壳层固定为视口高度，body 不滚；长页面由内容区内部滚动容器负责 */
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--rb-background);
+  }
+
+  .rb-titlebar {
+    grid-area: titlebar;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 38px;
+    padding-left: 12px;
+    background: var(--rb-chrome);
+    border-bottom: 1px solid var(--rb-divider);
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+
+  .rb-brand {
+    flex-shrink: 0;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--rb-text-primary);
+  }
+
+  .rb-version {
+    flex-shrink: 0;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--rb-text-secondary);
+  }
+
+  .rb-project {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 280px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--rb-text-primary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-project > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-project:hover:not(:disabled) {
+    background: var(--rb-sidebar-hover);
+  }
+
+  .rb-project:disabled {
+    cursor: default;
+    color: var(--rb-text-disabled);
+  }
+
+  .rb-titlebar-spacer {
+    flex: 1;
+    min-width: 8px;
+  }
+
+  .rb-link {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .rb-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--rb-text-disabled);
+  }
+
+  .rb-dot[data-state='open'] { background: var(--rb-success); }
+  .rb-dot[data-state='connecting'] { background: var(--rb-warning); }
+  .rb-dot[data-state='closed'] { background: var(--rb-error); }
+
+  .rb-window-controls {
+    display: flex;
+    align-self: stretch;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-titlebar-button {
+    width: 46px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--rb-text-primary);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-titlebar-button:hover { background: var(--rb-surface-hover); }
+  .rb-titlebar-button:active { background: var(--rb-surface-pressed); }
+
+  .rb-titlebar-button-close:hover {
+    background: var(--rb-error);
+    color: var(--rb-on-accent);
+  }
+
+  .rb-sidebar {
+    grid-area: sidebar;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 12px 8px;
+    background: var(--rb-chrome);
+    border-right: 1px solid var(--rb-divider);
+    overflow: hidden;
+  }
+
+  .rb-nav {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: auto;
+  }
+
+  .rb-nav-item,
+  .rb-icon-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rb-nav-item {
+    flex-shrink: 0;
+    width: 100%;
+    height: 32px;
+    padding: 0 8px;
+  }
+
+  .rb-nav-label {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rb-nav-item:hover,
+  .rb-icon-button:hover {
+    background: var(--rb-sidebar-hover);
+    color: var(--rb-text-primary);
+  }
+
+  .rb-nav-item[aria-current='page'] {
+    background: var(--rb-accent-surface);
+    color: var(--rb-text-primary);
+    font-weight: 600;
+  }
+
+  .rb-nav-item[aria-current='page'] svg,
+  .rb-icon-button[aria-current='page'] svg {
+    color: var(--rb-accent-text);
+  }
+
+  .rb-nav-item:focus-visible,
+  .rb-icon-button:focus-visible,
+  .rb-project:focus-visible,
+  .rb-titlebar-button:focus-visible {
+    outline: 2px solid var(--rb-accent);
+    outline-offset: -2px;
+  }
+
+  .rb-nav-section { display: flex; flex-direction: column; gap: 2px; }
+  .rb-nav-section + .rb-nav-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rb-divider); }
+
+  .rb-sidebar-footer {
+    display: flex;
+    flex-shrink: 0;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rb-divider);
+  }
+
+  .rb-icon-button {
+    width: 32px;
+    height: 32px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .rb-icon-button[aria-current='page'] {
+    background: var(--rb-accent-surface);
+    color: var(--rb-text-primary);
+  }
+
+  .rb-content {
+    grid-area: content;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--rb-background);
+  }
+
+  .rb-content > * {
+    animation: rb-page-in 150ms ease;
+  }
+
+  .rb-notice {
+    flex-shrink: 0;
+    margin: 0;
+    border: 0;
+    padding: 8px 24px;
+    background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* 提示文字不拦截下方表单操作，关闭按钮单独接收点击。 */
+  .rb-toasts .ant-alert-close-icon { pointer-events: auto; }
+
+  .rb-toasts {
+    position: fixed;
+    right: 16px;
+    top: 52px;
+    pointer-events: none;
+    /* 高于 Ant Modal（zIndexPopupBase 1000），弹窗内保存失败时提示仍可读、可关闭 */
+    z-index: 1100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(360px, calc(100vw - 32px));
+  }
+
+  .rb-page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .rb-page-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .rb-page-title {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .rb-page-desc {
+    margin: 4px 0 0;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .rb-page-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rb-setting-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    min-height: 56px;
+    padding: 12px 16px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+  }
+
+  /* 说明至少保留 220px，放不下时控件整体换到下一行右对齐，而不是把说明压成窄条 */
+  .rb-setting-text { flex: 1 1 220px; min-width: 0; }
+  .rb-setting-title { font-size: 14px; font-weight: 500; line-height: 1.4; }
+  .rb-setting-desc { margin-top: 2px; color: var(--rb-text-secondary); font-size: 12px; line-height: 1.45; }
+  .rb-setting-control { flex-shrink: 0; }
+
+  .rb-settings-group {
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+  }
+
+  .rb-settings-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rb-divider);
+  }
+
+  .rb-settings-head-copy { min-width: 0; flex: 1 1 auto; }
+  .rb-settings-actions { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .rb-settings-title { margin: 0; font-size: 16px; font-weight: 600; }
+  .rb-settings-desc { margin: 4px 0 0; color: var(--rb-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+
+  /* SettingsGroup body：默认 16px；表单/checkbox/操作 flex 换行，避免 checkbox 横向挤成一排 */
+  .rb-settings-body {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    align-content: flex-start;
+    gap: 8px 16px;
+    padding: 16px;
+    min-width: 0;
+  }
+
+  /* 组内已是 SettingCard 行时去掉 body 边距，避免与行内 padding 叠成双份 */
+  .rb-settings-body:has(> .rb-setting-row) {
+    gap: 0;
+    padding: 0;
+  }
+
+  /*
+   * body 是 flex-wrap：直接子级 SettingCard 若不拉满主轴，会缩成多列。
+   * flex:1 1 100% 保证每行全宽；行内仍靠 .rb-setting-row 的 flex-wrap 窄窗换行。
+   */
+  .rb-settings-body > .rb-setting-row {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  /*
+   * 直接子级 Form：align-items:flex-start 时默认不拉满交叉轴，
+   * 若不显式 width:100% 会缩到约内容宽（截图里约 220px）。
+   */
+  .rb-settings-body > form,
+  .rb-settings-body > .ant-form {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rb-settings-body > .ant-form-item {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    margin-bottom: 8px;
+    max-width: 100%;
+  }
+
+  .rb-settings-body > .ant-form-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .rb-settings-body .ant-form-item {
+    max-width: 100%;
+  }
+
+  .rb-settings-body .ant-form-item-row {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .rb-settings-body .ant-form-item-label,
+  .rb-settings-body .ant-form-item-control {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rb-settings-body .ant-form-item-control-input,
+  .rb-settings-body .ant-form-item-control-input-content {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Form 内输入类控件占满可用宽；Switch 等保持内容宽 */
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-affix-wrapper,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-textarea,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-select,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-input-number,
+  .rb-settings-body .ant-form .ant-form-item-control-input-content > .ant-radio-group {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* 每个 checkbox 占满一行，窄屏可换行但不被压成横向窄条 */
+  .rb-settings-body > .ant-checkbox-wrapper {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+    align-items: flex-start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .rb-settings-body > .ant-btn,
+  .rb-settings-body > .rb-tool-actions {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+
+  .rb-settings-group .rb-setting-row {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .rb-settings-group .rb-settings-body > .rb-setting-row + .rb-setting-row {
+    border-top: 1px solid var(--rb-divider);
+  }
+
+  .rb-banner {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .rb-banner-text { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+
+  .rb-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .rb-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .rb-page-narrow { max-width: 960px; }
+
+  .rb-setting-desc:empty { display: none; margin: 0; }
+  .rb-setting-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; margin-left: auto; }
+  .rb-setting-value { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rb-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .rb-project-identity {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px;
+    align-items: start;
+  }
+  .rb-identity-kicker { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-identity-name { margin-top: 4px; font-size: 16px; font-weight: 600; }
+  .rb-identity-copy p { margin: 4px 0 0; color: var(--rb-text-secondary); font-size: 13px; }
+  .rb-identity-paths {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+    margin: 8px 0 0;
+  }
+  .rb-identity-paths > div {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+  }
+  .rb-identity-paths dt { color: var(--rb-text-secondary); font-size: 12px; }
+  /* 项目设置沿用接口管理逻辑：默认白底中性边框，仅当前工程卡与聚焦中的设置项淡蓝底 + 蓝边 + 轻外圈 */
+  .rb-project-page .rb-project-identity,
+  .rb-project-page .rb-settings-body > .rb-setting-row {
+    background: var(--rb-surface);
+    transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .rb-project-page .rb-project-identity { border-color: var(--rb-border); }
+  .rb-project-page .rb-project-identity[data-active='true'] {
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  }
+  /* 组内设置项无独立边框，聚焦时用内描边代替蓝边，外圈抬到相邻行之上 */
+  .rb-project-page .rb-settings-body > .rb-setting-row:focus-within {
+    position: relative;
+    z-index: 1;
+    border-radius: 8px;
+    background: var(--rb-accent-surface);
+    box-shadow: inset 0 0 0 1px var(--rb-accent), 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent);
+  }
+  .rb-identity-paths dd {
+    margin: 0;
+    overflow: hidden;
+    font-family: var(--rb-font-mono, "Cascadia Mono", Consolas, monospace);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-update-status,
+  .rb-update-actions,
+  .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  /* 对齐 Qt UpdateDetailsDialog CaptionLabel：changelog 下方的包大小 / 发布日期 */
+  .rb-update-release-meta {
+    margin: 8px 0 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .rb-page-header { flex-wrap: wrap; }
+
+  .rb-page {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  /* 工具详情页：对齐 Qt5 工具箱层次——浅灰底 + 24px 外边距，卡片不贴窗边 */
+  .rb-tool-page {
+    --rb-qt-page: color-mix(in srgb, var(--rb-chrome) 75%, var(--rb-surface));
+    --rb-qt-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+    background: var(--rb-qt-page);
+  }
+
+  .rb-tool-page .rb-page-header {
+    flex-shrink: 0;
+    margin-bottom: 0;
+  }
+
+  /* panel 吃掉页头以下余高；真正滚动落在直接子级 scroll/page 上 */
+  .rb-tool-panel {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /*
+   * 滚动页统一外边距/间距：左右 4px 给卡片阴影，底 16px；页级 24px 由 .rb-tool-page 承担。
+   * Direct/Hook/Source 根节点是 .rb-page（不是 .rb-page-scroll），须同样打断 .rb-page 的
+   * grid + 首行 1fr，否则 Banner 行被压到 0 后内容溢出叠在首张卡片标题上。
+   */
+  .rb-tool-panel > .rb-page-scroll,
+  .rb-tool-panel > .rb-page {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 4px 16px;
+    overflow: hidden auto;
+    scrollbar-gutter: stable;
+    grid-template-rows: none;
+  }
+
+  .rb-tool-panel > .rb-page-scroll > *,
+  .rb-tool-panel > .rb-page > * {
+    flex-shrink: 0;
+  }
+
+  /* 详情页卡片层次对齐工具箱：白底 + 细边 + 轻阴影；占满滚动区宽度 */
+  .rb-tool-page .rb-settings-group {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+
+  /* 状态 Banner：正常文档流独立块；短文案按内容宽，长文案封顶；不占 flex 余高 */
+  .rb-tool-page > .banner,
+  .rb-tool-panel > .rb-page-scroll > .banner,
+  .rb-tool-panel > .rb-page > .banner {
+    position: relative;
+    flex: 0 0 auto;
+    align-self: flex-start;
+    width: fit-content !important;
+    max-width: 100%;
+    margin-bottom: 0;
+  }
+
+  .rb-tool-panel > .rb-page-scroll > .banner + .banner,
+  .rb-tool-panel > .rb-page > .banner + .banner {
+    margin-top: -4px;
+  }
+
+  /*
+   * 工具页表单行对齐 Qt5 工具页：frontend/RenpyToolbox/SourceTranslatePage.py:134-147
+   * 里 game 目录行就是「QLabel("game 目录:") + LineEdit(stretch=1) + 浏览按钮」同一水平行。
+   * SourceTranslate / DirectRpyTranslate / HookSupplement / HookTranslate / HtmlImport
+   * 这 5 个页面原来用 layout="vertical"（标签压在控件上方、行高翻倍，也和其余工具页
+   * 裸 Form.Item 走 antd 水平行不一致），现已改成 layout="horizontal"：
+   * 标签列 / 控件列全交给 antd 自己的水平表单规则（label 右对齐按内容占宽、
+   * control flex:1 1 0 撑满），这里只补一处 antd 默认没覆盖的细节。
+   */
+  /* 内容宽控件（Switch）靠行尾对齐，与设置页 SettingCard 的开关位置一致 */
+  .rb-tool-page .ant-form-horizontal .ant-form-item-control-input-content:has(> .ant-switch:only-child) {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /*
+   * 「输入框 + 浏览/选择」同一行：antd 未分层的 .ant-input { width: 100% } 会把按钮挤到下一行
+   * （安卓打包的 Ren'Py SDK / 项目目录 就是输入框一行、按钮另起一行），
+   * app.css 全在 @layer app 里，压不过未分层样式，只能用 !important（同文件既有做法）。
+   * Qt5 同一行是 LineEdit(stretch=1) + PushButton：输入框吃满剩余宽度，按钮留在行尾。
+   * 只作用于同层带按钮的行，纯开关 / 纯按钮的 .rb-tool-actions 不受影响。
+   */
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input-affix-wrapper,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-select,
+  .rb-tool-page .rb-tool-actions:has(> .ant-btn) > .ant-input-number {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0;
+  }
+
+  .rb-tool-blocked {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+  }
+
+  .rb-direct-path { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+  .rb-direct-path > .ant-btn { min-width: 88px; }
+  .rb-direct-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 32px; width: 100%; }
+  .rb-direct-options > label { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 32px; }
+  .rb-direct-footer { padding: 4px 0; }
+  .rb-direct-footer > .rb-tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  @media (max-width: 900px) {
+    .rb-direct-options { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  }
+
+  .rb-onekey-page, .rb-archive-page, .rb-asset-page { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-height: 0; }
+  /* 与默认 body 同值，仅锁定这些页仍走列布局；不叠第二份 padding */
+  :is(.rb-onekey-page, .rb-archive-page, .rb-asset-page) .rb-settings-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 16px;
+  }
+  .rb-tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 100%; }
+  .rb-onekey-page .card-description, .rb-archive-page .card-description, .rb-asset-page .card-description { overflow-wrap: anywhere; }
+  .rb-asset-page .rb-banner-text { white-space: pre-line; overflow-wrap: anywhere; }
+
+  .rb-font-overview { background: var(--rb-surface); border: 1px solid var(--rb-border); border-radius: 12px; padding: 16px; }
+  .rb-font-intro { margin: 0 0 12px; color: var(--rb-text-secondary); font-size: 13px; line-height: 1.65; }
+  .rb-font-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .rb-font-status > .rb-banner { flex: 1 1 240px; min-width: 0; }
+  .rb-font-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--rb-divider); }
+  .rb-font-metrics > div { min-width: 0; }
+  .rb-font-metrics dt { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .rb-font-metrics dd { margin: 4px 0 0; color: var(--rb-text-primary); font-size: 24px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; }
+  .rb-font-form { width: 100%; min-width: 0; }
+  .rb-font-form .ant-form-item-label { flex: 0 0 132px !important; text-align: left !important; }
+  .rb-font-form .ant-form-item-control { flex: 1 1 0 !important; min-width: 0 !important; }
+  .rb-font-form .rb-tool-actions > .ant-input { flex: 1 1 160px !important; min-width: 0 !important; width: auto !important; }
+  .rb-font-actions { margin-left: 132px; padding-top: 4px; }
+  @media (max-width: 760px) {
+    .rb-font-overview { padding: 12px; }
+    .rb-font-metrics { gap: 12px; }
+    .rb-font-metrics dd { font-size: 21px; }
+    .rb-font-form .ant-form-item-row { flex-flow: column nowrap !important; align-items: stretch !important; }
+    .rb-font-form .ant-form-item-label { flex: none !important; padding-bottom: 6px !important; }
+    .rb-font-form .ant-form-item-control { flex: none !important; width: 100%; }
+    .rb-font-actions { margin-left: 0; }
+  }
+
+
+  /* RPY extraction keeps the Qt5 settings rhythm: a quiet surface, compact fields,
+     and a separate work area for custom rules instead of one continuous form. */
+  .rb-asset-page[data-rb-page='rpy-extraction'] {
+    gap: 14px;
+    padding-bottom: 20px;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group {
+    border-color: color-mix(in srgb, var(--rb-accent) 28%, var(--rb-border));
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(220px, .65fr);
+    align-items: start;
+    gap: 10px 18px;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .ant-form-item,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .rb-tool-actions {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .ant-form-item:first-child,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description,
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .rb-tool-actions {
+    grid-column: 1 / -1;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body > .card-description {
+    padding: 9px 11px;
+    border: 1px solid var(--rb-divider);
+    border-left: 2px solid var(--rb-accent);
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    line-height: 1.55;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-form-item-label > label {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-input,
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-input-affix-wrapper,
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-select-selector {
+    border-color: var(--rb-border-strong);
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse {
+    border: 1px solid color-mix(in srgb, var(--rb-accent) 30%, var(--rb-border));
+    border-radius: 8px;
+    background: var(--rb-surface);
+    overflow: hidden;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse-header {
+    min-height: 44px;
+    align-items: center;
+    color: var(--rb-text-primary);
+    font-weight: 600;
+    background: color-mix(in srgb, var(--rb-accent-surface) 42%, var(--rb-surface));
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] .ant-collapse-content {
+    border-top-color: var(--rb-divider);
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] {
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid var(--rb-border-strong);
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-form-item {
+    margin-bottom: 10px !important;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-wrapper {
+    border: 1px solid var(--rb-border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--rb-surface);
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-cell {
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-thead > tr > th {
+    color: var(--rb-text-primary);
+    background: color-mix(in srgb, var(--rb-accent-surface) 35%, var(--rb-surface));
+  }
+  .rb-asset-page[data-rb-page='rpy-extraction'] [data-rb-rpy-editor] .ant-table-tbody > tr:hover > td {
+    background: var(--rb-surface-hover);
+  }
+  @media (max-width: 720px) {
+    .rb-asset-page[data-rb-page='rpy-extraction'] > .rb-settings-group:first-of-type .rb-settings-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  /* 姓名表：父级 settings-body 是 flex 列，表格根节点保持块级、不参与伸缩，宽度跟随容器以便内部横向滚动 */
+  .rb-asset-page .rb-asset-name-list { display: block; flex: none; width: 100%; min-width: 0; margin: 0; }
+  /* 内边距由页面内 Table token 收紧；antd 不设 vertical-align，这里让输入框首行与上下文首行顶部齐平 */
+  .rb-asset-page .rb-asset-name-list .ant-table-cell { vertical-align: top; }
+  .rb-asset-page .rb-asset-name-list .rb-asset-name-context { overflow-wrap: anywhere; }
+  .rb-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-head { border-bottom: 0; }
+  .rb-settings-group:not(:has(.rb-settings-body > *)) .rb-settings-body { display: none; }
+  .rb-settings-head { flex-wrap: wrap; }
+  .prompt-preview-text { width: 100%; min-height: 300px; font-size: 13px; line-height: 1.7; }
+  .rb-prompt-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  .rb-prompt-editor-help { color: var(--rb-text-secondary); font-size: 12px; margin: 12px 0 0; }
+
+  .proofreading-page { width: auto; align-self: stretch; padding: 0; gap: 0; overflow: hidden; }
+  .rb-proofreading-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .rb-quality-report { border: 1px solid var(--rb-border); border-radius: 8px; padding: 12px; font-size: 13px; }
+  .rb-quality-report summary { cursor: pointer; font-weight: 500; }
+  .rb-quality-report ul { max-height: 180px; overflow: auto; overflow-wrap: anywhere; }
+  /* 正常尺寸下表格先收缩、外层不滚；只有表格已到最低高度时外层才滚，分页永不被裁 */
+  .proofreading-page .rb-page-scroll { flex: 1; gap: 12px; padding: 0 2px 4px; overflow: hidden auto; }
+  .proofreading-page .rb-embedded-actions { gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+  .proofreading-filters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
+  .proofreading-filters .ant-input-affix-wrapper, .proofreading-filters .ant-input { flex: 2 1 180px; min-width: 0; }
+  .proofreading-filters .ant-select { flex: 1 1 120px; min-width: 0; }
+  .rb-proof-search-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .rb-proof-search-row .rb-proof-search { flex: 1 1 260px; min-width: 200px; }
+  .rb-proof-search-row > .ant-select { flex: 0 0 160px; }
+  .rb-proof-search-row > .ant-checkbox-wrapper { white-space: nowrap; }
+  .rb-proof-filter-details { border-bottom: 1px solid var(--rb-divider); padding-bottom: 10px; }
+  .rb-proof-filter-details > summary { cursor: pointer; width: fit-content; color: var(--rb-text-secondary); font-size: 13px; padding: 2px 0; }
+  .rb-proof-filter-details > summary:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: 4px; border-radius: 4px; }
+  .rb-proof-filter-count { display: inline-flex; align-items: center; margin-left: 8px; padding: 1px 8px; border-radius: 999px; color: var(--rb-accent); background: var(--rb-accent-surface); font-size: 12px; }
+  .rb-proof-filter-details[open] > summary { margin-bottom: 10px; }
+  .rb-proof-filter-details .proofreading-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .rb-proof-filter-details .ant-select { flex: 1 1 160px; max-width: none; }
+  .rb-proof-filter-scope { color: var(--rb-text-secondary); font-size: 12px; margin: 8px 0 0; }
+  .rb-proofreading-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; flex-shrink: 0; }
+  .rb-proofreading-selection .ant-select { width: 150px; }
+  .rb-proof-table-scroll { min-height: 96px; flex: 1 1 0; overflow: hidden; border: 1px solid var(--rb-border); border-radius: 4px; }
+  .rb-proof-table-scroll .ant-table-wrapper,
+  .rb-proof-table-scroll .ant-spin-nested-loading,
+  .rb-proof-table-scroll .ant-spin-container { height: 100%; }
+  .rb-proof-table .ant-table-cell { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; line-height: 1.65; }
+  .rb-proof-table { min-width: 0; font-size: 13px; }
+  .rb-proof-table thead { background: var(--rb-surface); }
+  .rb-proof-table th { font-size: 12px; height: 36px; white-space: nowrap; background: var(--rb-surface); }
+  .rb-proof-table td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: middle; line-height: 1.65; }
+  .rb-proofreading-row { cursor: default; }
+  .rb-proofreading-row[data-selected='true'] { background: var(--rb-accent-surface); }
+  .rb-proofreading-row:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: -2px; }
+  .rb-proof-index { color: var(--rb-text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
+  .rb-proof-table .rb-proof-target { display: inline; color: var(--rb-text-primary); white-space: pre-wrap; font-size: inherit; cursor: default; }
+  .rb-proof-warning { display: flex; align-items: center; gap: 3px; color: var(--rb-warning); font-size: 11px; }
+  .rb-proof-context { max-height: 420px; overflow: auto; font-size: 13px; line-height: 1.7; }
+  .rb-proof-context [data-target="true"] { background: var(--rb-accent-surface); color: var(--rb-accent-text); }
+  .rb-proofreading-task { flex-shrink: 0; font-size: 12px; color: var(--rb-text-secondary); }
+  .rb-proof-empty { display: grid; place-items: center; text-align: center; color: var(--rb-text-secondary); }
+  .rb-proofreading-location { display: flex; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; color: var(--rb-text-secondary); font-size: 11px; flex-shrink: 0; }
+  .rb-proofreading-location > span { margin-left: auto; }
+  .rb-proof-bilingual-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .rb-proof-bilingual-editor textarea { line-height: 1.7; }
+  @media (max-width: 760px) {
+    .rb-proof-bilingual-editor { grid-template-columns: 1fr; }
+    .rb-proof-bilingual-editor textarea { min-height: 100px; max-height: 160px; }
+    .rb-proofreading-selection .rb-metric-note { display: none; }
+  }
+  .proofreading-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--rb-text-secondary); font-size: 13px; }
+  .proofreading-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .rb-quality-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+  .rb-quality-summary strong { padding: 10px 12px; border: 1px solid var(--rb-divider); border-radius: 8px; background: var(--rb-surface-subtle); font-variant-numeric: tabular-nums; }
+  .rb-quality-items { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto; padding: 8px 0; }
+  .rb-quality-items .ant-checkbox + span, .rb-quality-items .ant-checkbox-label { overflow-wrap: anywhere; }
+  .rb-proof-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .rb-proof-status i { width: 8px; height: 8px; border-radius: 999px; background: var(--rb-text-disabled); }
+  .rb-proof-status[data-status='TRANSLATED'] i,
+  .rb-proof-status[data-status='POLISHED'] i,
+  .rb-proof-status[data-status='TRANSLATED_IN_PAST'] i { background: var(--rb-success); }
+  .rb-proof-status[data-status='UNTRANSLATED'] i { background: var(--rb-warning); }
+  .rb-proof-status[data-status='EXCLUDED'] i,
+  .rb-proof-status[data-status='DUPLICATED'] i { background: var(--rb-error); }
+  .rb-sheet-summary { display: flex; flex-direction: column; gap: 2px; }
+  .rb-sheet-summary strong { color: var(--rb-text-primary); font-size: 14px; font-weight: 500; }
+  .rb-honorific-list { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .rb-honorific-row {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-honorific-row span { color: var(--rb-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rb-embedded-actions { display: flex; justify-content: flex-end; }
+
+  .rb-page-scroll > *, .rb-workbench-scroll > *, .rb-platform-list > * { flex-shrink: 0; }
+  /* 可伸缩表格不按普通卡片处理：占用剩余高度并允许收缩，最低高度与 JS 中 scroll.y 下限一致 */
+  .rb-page-scroll > .rb-proof-table-scroll { flex: 1 1 0; min-height: 96px; }
+  .rb-page-scroll > .rb-sheet { flex: 1 1 0; min-height: 160px; }
+  .banner { flex-shrink: 0; min-width: 0; max-width: 100%; }
+  .rb-proof-loading { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--rb-text-secondary); font-size: 12px; min-height: 26px; }
+  .rb-page-scroll {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px 24px;
+  }
+
+  /* 三张词表：内容占满工具面板剩余高度且自身不滚，表格占余高；窗口过矮时由操作区自己滚动 */
+  .rb-glossary,
+  .rb-lexicon {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    container-type: inline-size;
+    container-name: lexicon;
+  }
+  .rb-lexicon { gap: 12px; padding-bottom: 16px; }
+  .rb-glossary > .rb-lexicon-controls,
+  .rb-lexicon > .rb-lexicon-controls {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 55%;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .rb-lexicon-controls > * { flex-shrink: 0; }
+  .rb-sheet-summary { color: var(--rb-text-secondary); font-size: 13px; }
+  .rb-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .rb-toolbar-spacer { flex: 1; min-width: 8px; }
+  .rb-next-step {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-next-step-hint { color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-next-step[data-dirty] .rb-next-step-hint { color: var(--rb-warning); }
+
+  .rb-sheet {
+    position: relative;
+    flex: 1 1 0;
+    min-height: 160px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+  }
+
+  .rb-sheet-table { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .rb-sheet-scroll { flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; }
+  .rb-sheet-scroll .ant-table-wrapper,
+  .rb-sheet-scroll .ant-spin-nested-loading,
+  .rb-sheet-scroll .ant-spin-container { height: 100%; }
+  .rb-sheet .ant-table-cell { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
+  .rb-term-row { cursor: pointer; }
+  .rb-term-row:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: -2px; }
+  .rb-sheet .rb-term-row[data-selected='true'],
+  .rb-sheet .rb-term-row[data-selected='true'] > td { background: var(--rb-accent-surface); }
+  .rb-term-marks { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .rb-sheet-cell-editable { cursor: text; }
+  .rb-sheet-cell-editor textarea {
+    width: 100%;
+    min-height: 28px;
+    font: inherit;
+    line-height: 1.4;
+    white-space: pre-wrap;
+  }
+  .rb-sheet-foot {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border-top: 1px solid var(--rb-divider);
+    background: var(--rb-surface);
+  }
+
+
+
+  .task-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .task-state[data-active='true']::before,
+  .task-state[data-warning='true']::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--rb-success);
+  }
+
+  .task-state[data-warning='true']::before { background: var(--rb-warning); }
+
+  .task-context {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .task-context svg { flex-shrink: 0; }
+
+  .task-context-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .task-context-button > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .task-input { flex: 1; }
+
+  .task-language-pair {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+  }
+
+  .task-context-button:hover { background: var(--rb-sidebar-hover); color: var(--rb-text-primary); }
+
+  .rb-panel {
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    padding: 16px;
+  }
+
+  .feed-card { padding: 0; }
+
+  .rb-progress-meta,
+  .rb-feed-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-feed-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+
+  .rb-progress-percent {
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rb-progress-lines,
+  .rb-progress-time,
+  .rb-metric-note,
+  .rb-feed-head > span {
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+  }
+
+  .rb-progress-meta { margin-top: 8px; font-size: 13px; }
+
+  .rb-translation-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .rb-translation-summary .rb-panel { min-width: 0; padding: 10px 16px; }
+  .rb-translation-dashboard { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 14px; }
+  .rb-translation-dashboard h2 { margin: 0; font-size: 14px; font-weight: 500; }
+  .rb-progress { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+  .rb-progress .ant-progress-text { text-align: center; }
+  .rb-progress-meta { flex-wrap: wrap; justify-content: center; text-align: center; }
+  .rb-progress-time { font-size: 12px; text-align: center; }
+  .translation-layout .rb-page-header { margin-bottom: 0; }
+  .rb-throughput { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .rb-throughput-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .rb-throughput-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border-top: 1px solid var(--rb-divider); padding-top: 12px; }
+  .rb-throughput-stats > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .rb-throughput-stats strong { font-size: 14px; font-weight: 500; }
+  @media (max-width: 800px) { .rb-translation-dashboard { grid-template-columns: minmax(0, 1fr); } }
+
+  .rb-metric-label { color: var(--rb-text-secondary); font-size: 12px; font-weight: 500; }
+  .rb-metric-value {
+    margin: 4px 0;
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .rb-metric-value span { margin-left: 6px; color: var(--rb-text-secondary); font-size: 13px; font-weight: 400; }
+
+  .rb-feed-head { padding: 12px 16px; }
+  .rb-feed-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .rb-feed-head > span { margin-left: auto; }
+
+  .rb-feed-table {
+    min-height: 0;
+    max-height: 320px;
+    overflow: hidden;
+    border-top: 1px solid var(--rb-divider);
+  }
+  .rb-feed-table .ant-table-thead > tr > th {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--rb-text-secondary);
+    background: var(--rb-surface-subtle);
+  }
+  .rb-feed-table .ant-table-tbody > tr:hover > td { background: var(--rb-surface-hover); }
+  .rb-feed-table .ant-table-cell {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+
+  .rb-table { width: 100%; border-collapse: collapse; }
+  .rb-table th {
+    padding: 8px 12px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+  }
+  .rb-table td {
+    padding: 8px 12px;
+    border-top: 1px solid var(--rb-divider);
+    font-size: 13px;
+  }
+  .rb-table tbody tr:hover td { background: var(--rb-surface-hover); }
+  .rb-lang { margin-left: 4px; color: var(--rb-text-secondary); font-weight: 400; }
+
+  .rb-empty-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--rb-text-secondary);
+  }
+  .rb-empty-stack strong { color: var(--rb-text-primary); font-weight: 600; }
+
+  .rb-command-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 56px;
+    padding: 10px 24px;
+    border-top: 1px solid var(--rb-divider);
+    background: var(--rb-surface);
+  }
+
+  .rb-command-spacer { flex: 1; }
+  .rb-command-pool { color: var(--rb-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .rb-stop:disabled,
+  .rb-stop[data-disabled] {
+    border-color: transparent;
+    background: transparent;
+    color: var(--rb-text-disabled);
+  }
+
+  @media (max-width: 719px) {
+    .rb-setting-row { flex-wrap: wrap; }
+    .rb-setting-control { width: 100%; }
+  }
+
+  @media (max-width: 999px) {
+    .rb-shell { grid-template-columns: 56px minmax(0, 1fr); }
+
+    .rb-nav-label { display: none; }
+
+    .rb-nav-item {
+      justify-content: center;
+      padding: 0;
+    }
+
+    .rb-sidebar-footer {
+      flex-direction: column;
+      align-items: center;
+    }
+  }
+
+  .rb-platform {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+    container-type: inline-size;
+  }
+
+  .platform-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .rb-platform-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .platform-status {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--rb-text-disabled);
+    box-shadow: none;
+  }
+
+  .platform-status[data-active='true'] { background: var(--rb-success); }
+
+  .platform-summary-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .platform-summary-copy strong {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .platform-summary-copy span {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 16px;
+  }
+
+  .rb-platform-list {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .rb-platform-group-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rb-platform-count {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-list .rb-settings-body { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+  .rb-platform-list .rb-settings-group { flex-shrink: 0; }
+  .rb-platform-card { width: 280px; max-width: 100%; min-height: 72px; padding: 10px 10px 10px 14px; cursor: default; border: 1px solid var(--rb-border); border-radius: 8px; background: var(--rb-surface); transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease; }
+  /* 当前接口：Ant 主色淡底 + 蓝边 + 极淡外圈，暗色下 --rb-accent* 由 darkAlgorithm 推导仍可读。 */
+  .rb-platform-card[data-active='true'] { background: var(--rb-accent-surface); border-color: var(--rb-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent); }
+  .rb-platform-card-head { display: flex; align-items: center; gap: 4px; }
+  .rb-platform-card-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+  .platform-row-actions { display: flex; flex-shrink: 0; gap: 0; }
+  .rb-platform-card-meta { display: flex; align-items: center; gap: 8px; color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-platform-card-meta > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-platform-card-meta i { width: 7px; height: 7px; background: var(--rb-accent); border-radius: 50%; }
+  .rb-platform-badge { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--rb-surface-subtle); }
+  .platform-editor { display: flex; flex-direction: column; gap: 12px; width: 100%; min-width: 0; margin: 0; padding: 0; }
+
+  .rb-platform-editor-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-platform-editor-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .rb-platform-editor-head span,
+  .rb-platform-help {
+    margin: 4px 0 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-platform-params {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .rb-platform-param {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-platform-editor-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  @container (max-width: 899px) {
+    .platform-editor {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(420px, 100%);
+      z-index: 4;
+      padding: 16px;
+      border-left: 1px solid var(--rb-divider);
+      background: var(--rb-surface);
+    }
+  }
+
+  .rb-toolbox {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+  }
+
+  .rb-toolbox-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* 恢复旧版分组卡片及两行说明；按可用宽度自动换列。 */
+  .rb-tool-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 280px), calc((100% - 24px) / 3)), 1fr));
+    gap: 12px;
+  }
+
+  .tool-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+    height: 132px;
+    min-width: 0;
+    padding: 12px 14px 10px 14px;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
+    background: var(--rb-surface);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    position: relative;
+    transition: border-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                box-shadow 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                transform 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                background-color 0.15s ease;
+  }
+
+  .tool-card-icon { display: flex; width: 20px; height: 20px; color: var(--rb-text-secondary); }
+  .tool-card-icon svg { width: 18px; height: 18px; }
+  .rb-tool-step { color: var(--rb-text-secondary); font-size: 12px; line-height: 20px; }
+  .rb-tool-title { font-size: 14px; font-weight: 600; }
+  .rb-tool-desc { color: var(--rb-text-secondary); font-size: 12px; line-height: 1.5; white-space: normal; }
+  .rb-tool-availability { color: var(--rb-text-secondary); font-size: 11px; }
+  .rb-workbench {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 24px 16px;
+    overflow: hidden;
+  }
+
+  .rb-workbench-statusbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-workbench-status-metrics { color: var(--rb-text-primary); }
+  .rb-workbench-status-hint { margin-left: auto; }
+
+  .rb-workbench-tabs { flex-shrink: 0; }
+
+  .rb-workbench-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .rb-workbench-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .rb-workbench-kicker {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-workbench-summary h2 {
+    margin: 8px 0;
+    font-size: 20px;
+    font-weight: 500;
+  }
+
+  .rb-workbench-summary p {
+    margin: 0 0 12px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  .rb-workbench-stats {
+    display: flex;
+    gap: 0;
+    align-self: center;
+  }
+
+  .rb-workbench-stats div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 20px;
+    border-left: 1px solid var(--rb-divider);
+  }
+
+  .rb-workbench-stats div:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .rb-workbench-stats strong {
+    font-size: 20px;
+    font-weight: 500;
+  }
+
+  .rb-workbench-stats span,
+  .rb-workbench-editor-head p,
+  .rb-workbench-preview-actions span {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .rb-workbench-switches {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 24px;
+  }
+
+  .rb-workbench-switch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 36px;
+    border-top: 1px solid var(--rb-divider);
+  }
+
+  .rb-workbench-switch span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .rb-workbench-switch small {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  @media (max-width: 800px) {
+    .rb-workbench-switches { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .rb-workbench-characters {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
+
+  .rb-workbench-roster-head,
+  .rb-workbench-editor-head,
+  .rb-workbench-preview-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .rb-workbench-roster-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  .rb-workbench-character {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rb-workbench-character[aria-pressed='true'] { background: var(--rb-accent-surface); }
+
+  .rb-workbench-character strong,
+  .rb-workbench-character small { display: block; }
+
+  .rb-workbench-character small { color: var(--rb-text-secondary); font-size: 12px; }
+
+  .rb-workbench-editor-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .rb-workbench-editor-head p { margin: 4px 0 0; }
+
+  .rb-workbench-preview {
+    margin: 0;
+    white-space: pre-wrap;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 800px) {
+    .rb-workbench-summary,
+    .rb-workbench-characters { grid-template-columns: minmax(0, 1fr); }
+  }
+
+
+  /* ---------- Agent 助手页 ---------- */
+
+  .agent-workspace {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: 100%;
+    max-width: 1120px;
+    align-self: center;
+    padding: 20px clamp(16px, 2.8vw, 28px) 18px;
+    overflow: hidden;
+  }
+
+  .agent-topbar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px 24px;
+    flex-wrap: wrap;
+    padding-bottom: 4px;
+  }
+
+  .agent-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .agent-avatar {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent);
+  }
+
+  .agent-heading {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .agent-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .agent-title {
+    margin: 0;
+    color: var(--rb-text-primary);
+    font-size: 20px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .agent-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    min-height: 22px;
+    padding: 0 9px;
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .agent-status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.85;
+  }
+
+  .agent-status[data-state='idle'] {
+    color: var(--rb-success);
+    background: color-mix(in srgb, var(--rb-success) 12%, var(--rb-surface));
+  }
+
+  .agent-status[data-state='busy'] {
+    color: var(--rb-accent);
+    background: var(--rb-accent-surface);
+  }
+
+  .agent-status[data-state='busy']::before {
+    animation: agent-status-blink 1.2s ease-in-out infinite;
+  }
+
+  .agent-status[data-state='stopping'] {
+    color: var(--rb-warning);
+    background: color-mix(in srgb, var(--rb-warning) 14%, var(--rb-surface));
+  }
+
+  .agent-status[data-state='offline'] {
+    color: var(--rb-text-disabled);
+  }
+
+  @keyframes agent-status-blink {
+    50% { opacity: 0.35; }
+  }
+
+  /* 项目状态胶囊：对齐 Qt5 agentProjectPill，圆点区分已设置 / 未设置项目。 */
+  .agent-project-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    max-width: 260px;
+    min-height: 22px;
+    padding: 0 9px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-project-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--rb-accent);
+  }
+
+  .agent-project-pill[data-state='unset'] .agent-project-dot {
+    background: var(--rb-warning);
+  }
+
+  .agent-project-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-settings-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 240px;
+  }
+
+  .agent-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--rb-surface) 78%, transparent);
+  }
+
+  .agent-select {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 0 4px 0 8px;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-select span {
+    flex-shrink: 0;
+  }
+
+  .agent-select select {
+    max-width: 168px;
+    min-width: 88px;
+    min-height: 30px;
+    padding: 0 8px;
+    border-radius: 8px;
+    border-color: transparent;
+    background: var(--rb-surface-subtle);
+  }
+
+  .agent-select select:hover:not(:disabled),
+  .agent-select select:focus {
+    border-color: var(--rb-border);
+    background: var(--rb-surface);
+  }
+
+  .agent-control-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-left: 2px;
+  }
+
+  .agent-control-actions .btn {
+    min-height: 30px;
+    padding: 0 11px;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .agent-control-actions .btn:hover:not(:disabled) {
+    background: var(--rb-surface-hover);
+    border-color: var(--rb-border);
+  }
+
+  /* 对话区外框只负责定位「回到最新消息」按钮，滚动仍由 .agent-chat 承担。 */
+  .agent-chat-frame {
+    position: relative;
+    flex: 1;
+    min-height: 140px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .agent-scroll-latest {
+    position: absolute;
+    right: 20px;
+    bottom: 16px;
+    z-index: 1;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+  }
+
+  .agent-chat {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    overflow-y: auto;
+    padding: 18px 16px 22px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 16px;
+    background: var(--rb-surface);
+    scrollbar-gutter: stable;
+  }
+
+  .agent-empty {
+    display: flex;
+    max-width: 420px;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 8px 8px;
+    text-align: center;
+    margin: auto;
+    animation: agent-fade-up 280ms ease both;
+  }
+
+  .agent-empty-icon {
+    width: 58px;
+    height: 58px;
+    display: grid;
+    place-items: center;
+    margin-bottom: 2px;
+    border-radius: 16px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent);
+  }
+
+  .agent-empty h2 {
+    margin: 0;
+    color: var(--rb-text-primary);
+    font-size: 18px;
+    line-height: 1.3;
+    font-weight: 680;
+    letter-spacing: -0.01em;
+  }
+
+  .agent-empty p {
+    margin: 0;
+    max-width: 34em;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .backend-notice {
+    flex-shrink: 0;
+    margin: 10px 20px 0;
+    padding: 10px 12px;
+    border-left: 3px solid var(--rb-warning);
+    background: var(--rb-surface);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .agent-suggestions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    margin-top: 14px;
+  }
+
+  .agent-suggestion {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--rb-surface) 88%, transparent);
+    color: var(--rb-text-primary);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: left;
+    cursor: pointer;
+    transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  }
+
+  .agent-suggestion:hover:not(:disabled) {
+    background: var(--rb-accent-surface);
+    border-color: color-mix(in srgb, var(--rb-accent) 28%, var(--rb-border));
+    color: var(--rb-accent);
+    transform: translateY(-1px);
+  }
+
+  .agent-suggestion:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .agent-suggestion-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .agent-suggestion-text {
+    min-width: 0;
+    font-weight: 600;
+  }
+
+  .agent-suggestion-desc {
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-empty .agent-empty-hint {
+    color: var(--rb-warning);
+    font-size: 12px;
+  }
+
+  .agent-suggestion-arrow {
+    flex-shrink: 0;
+    color: var(--rb-accent);
+    opacity: 0.75;
+  }
+
+  .agent-message {
+    flex-shrink: 0;
+    width: 100%;
+    max-width: 760px;
+    min-width: 0;
+    margin: 0 auto;
+    padding: 2px 0;
+    font-size: 14px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+    animation: agent-fade-up 220ms ease both;
+  }
+
+  .agent-message[data-role='user'] {
+    align-self: flex-end;
+    width: fit-content;
+    max-width: min(78%, 560px);
+    margin: 0 0 0 auto;
+    padding: 12px 14px;
+    border-radius: 16px 16px 4px 16px;
+    background: var(--rb-accent-surface);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rb-accent) 10%, transparent);
+  }
+
+  .agent-message[data-role='assistant'] {
+    padding: 0 2px;
+  }
+
+  .agent-message-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--rb-text-secondary);
+  }
+
+  .agent-message-meta strong {
+    color: var(--rb-text-primary);
+    font-weight: 650;
+  }
+
+  .agent-message-status {
+    display: inline-flex;
+    align-items: center;
+    min-height: 18px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+    font-size: 11px;
+    font-weight: 550;
+  }
+
+  .agent-message-status[data-status='running'] {
+    color: var(--rb-accent);
+    background: var(--rb-accent-surface);
+  }
+
+  .agent-message-status[data-status='failed'] {
+    color: var(--rb-error);
+    background: color-mix(in srgb, var(--rb-error) 12%, var(--rb-surface));
+  }
+
+  .agent-message-status[data-status='cancelled'] {
+    color: var(--rb-warning);
+    background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface));
+  }
+
+  .agent-plain-text,
+  .agent-message-body p {
+    white-space: pre-wrap;
+  }
+
+  .agent-message-body p {
+    margin: 0 0 10px;
+  }
+
+  .agent-message-body p:last-child {
+    margin-bottom: 0;
+  }
+
+  .agent-message-body h3 {
+    margin: 14px 0 6px;
+    font-size: 15px;
+    font-weight: 680;
+    letter-spacing: -0.01em;
+  }
+
+  .agent-message-body ul,
+  .agent-message-body ol {
+    padding-left: 22px;
+    margin: 8px 0;
+  }
+
+  .agent-message-body pre {
+    overflow-x: auto;
+    max-width: 100%;
+    margin: 10px 0;
+    padding: 12px 14px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 10px;
+    background: var(--rb-surface-subtle);
+    white-space: pre;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  .agent-message-body code {
+    padding: 1px 5px;
+    background: var(--rb-surface-subtle);
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+
+  .agent-message-body pre code {
+    padding: 0;
+    background: transparent;
+  }
+
+  .agent-detail {
+    margin: 8px 0;
+    padding: 0 10px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--rb-surface-subtle) 70%, transparent);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    overflow: hidden;
+  }
+
+  .agent-detail summary {
+    cursor: pointer;
+    padding: 8px 2px;
+    list-style: none;
+    font-weight: 550;
+    color: var(--rb-text-primary);
+  }
+
+  .agent-detail summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .agent-detail summary::before {
+    content: '▸';
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--rb-text-disabled);
+    transition: transform 140ms ease;
+  }
+
+  .agent-detail[open] summary::before {
+    transform: rotate(90deg);
+  }
+
+  .agent-detail .agent-plain-text {
+    max-height: 220px;
+    overflow-y: auto;
+    padding: 0 0 10px;
+  }
+
+  .agent-tool summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .agent-tool-name {
+    min-width: 0;
+  }
+
+  .agent-tool-status {
+    flex-shrink: 0;
+    min-height: 18px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--rb-surface);
+    font-size: 11px;
+    font-weight: 550;
+    color: var(--rb-text-secondary);
+  }
+
+  .agent-tool[data-status='running'] .agent-tool-status {
+    color: var(--rb-accent);
+    background: var(--rb-accent-surface);
+  }
+
+  .agent-tool[data-status='done'] .agent-tool-status {
+    color: var(--rb-success);
+    background: color-mix(in srgb, var(--rb-success) 12%, var(--rb-surface));
+  }
+
+  .agent-tool[data-status='failed'] summary,
+  .agent-tool[data-status='failed'] .agent-tool-status {
+    color: var(--rb-error);
+  }
+
+  .agent-tool[data-status='failed'] .agent-tool-status {
+    background: color-mix(in srgb, var(--rb-error) 12%, var(--rb-surface));
+  }
+
+  /* 拒绝、确认超时、项目变化：未执行但不是错误，用警告色区分。 */
+  .agent-tool[data-status='cancelled'] .agent-tool-status {
+    color: var(--rb-warning);
+    background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface));
+  }
+
+  .agent-tool-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-tool-message {
+    white-space: pre-wrap;
+    color: var(--rb-text-primary);
+  }
+
+  .agent-tool-label {
+    display: block;
+    margin: 0 0 4px;
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .agent-detail p {
+    margin: 0 0 8px;
+  }
+
+  .agent-detail pre,
+  .agent-confirmation pre {
+    max-height: 140px;
+    margin: 0 0 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--rb-surface);
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .agent-message-error {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--rb-error) 10%, var(--rb-surface));
+    color: var(--rb-error);
+    font-size: 13px;
+  }
+
+  .agent-message-error[data-tone='cancelled'] {
+    background: color-mix(in srgb, var(--rb-warning) 10%, var(--rb-surface));
+    color: var(--rb-text-secondary);
+  }
+
+  .agent-copy {
+    margin-top: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 140ms ease;
+  }
+
+  .agent-copy:hover {
+    color: var(--rb-accent);
+  }
+
+  .agent-processing {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--rb-text-secondary);
+    font-size: 13px;
+  }
+
+  .agent-processing-dots {
+    display: inline-flex;
+    gap: 3px;
+  }
+
+  .agent-processing-dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--rb-accent);
+    animation: agent-dot 1.2s ease-in-out infinite;
+  }
+
+  .agent-processing-dots i:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+
+  .agent-processing-dots i:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+
+  @keyframes agent-dot {
+    0%,
+    80%,
+    100% {
+      opacity: 0.3;
+      transform: translateY(0);
+    }
+    40% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+
+  @keyframes agent-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* 确认区限高并内部滚动：参数很长时也不把底部输入区挤出视口。 */
+  .agent-confirmation {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding: 14px 16px;
+    border: 1px solid color-mix(in srgb, var(--rb-accent) 28%, var(--rb-border));
+    border-radius: 14px;
+    background: var(--rb-accent-surface);
+    font-size: 13px;
+    animation: agent-fade-up 200ms ease both;
+  }
+
+  .agent-confirmation-copy strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--rb-text-primary);
+    font-size: 13px;
+    font-weight: 680;
+  }
+
+  .agent-confirmation p {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .agent-confirmation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .agent-confirmation-actions > span {
+    flex: 1;
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-confirmation-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 6px 16px;
+    margin: 0;
+  }
+
+  .agent-confirmation-facts > div {
+    display: flex;
+    min-width: 0;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .agent-confirmation-facts dt {
+    flex-shrink: 0;
+    color: var(--rb-text-secondary);
+  }
+
+  .agent-confirmation-facts dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--rb-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-confirmation .agent-detail {
+    margin: 0;
+  }
+
+  .agent-composer {
+    flex-shrink: 0;
+    border: 1px solid var(--rb-border);
+    border-radius: 16px;
+    background: var(--rb-surface);
+    overflow: hidden;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .agent-composer:focus-within {
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--rb-accent) 22%, transparent);
+  }
+
+  .agent-composer textarea {
+    display: block;
+    width: 100%;
+    min-height: 76px;
+    max-height: 160px;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    box-shadow: none;
+    background: transparent;
+    padding: 14px 16px 8px;
+    resize: none;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--rb-text-primary);
+  }
+
+  .agent-composer textarea::placeholder {
+    color: var(--rb-text-disabled);
+  }
+
+  .agent-composer-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 12px 12px;
+  }
+
+  .agent-composer-footer > span {
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .agent-composer-footer .btn-primary {
+    min-width: 76px;
+  }
+
+  @media (max-width: 760px) {
+    .agent-controls {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .agent-select {
+      flex: 1 1 140px;
+    }
+
+    .agent-control-actions {
+      width: 100%;
+    }
+
+    .agent-control-actions .btn {
+      flex: 1;
+    }
+
+    .agent-message[data-role='user'] {
+      max-width: 92%;
+    }
+  }
+
+
+  .agent-workspace { max-width: none; height: 100%; }
+  .agent-chat, .agent-composer, .agent-confirmation, .agent-topbar, .agent-workspace > .banner { width: 100%; min-width: 0; max-width: 100%; margin-inline: 0; }
+  .agent-workspace { align-self: stretch; width: auto; padding: 20px 24px 16px; gap: 12px; }
+  /* 多条横幅 + 确认区同时出现的矮窗口里，整页滚动而不是裁掉底部输入区。 */
+  .agent-workspace { overflow-x: hidden; overflow-y: auto; }
+  .agent-controls { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .agent-topbar { align-items: center; gap: 8px 16px; }
+  .agent-title { font-size: 18px; font-weight: 600; }
+  .agent-avatar { width: 32px; height: 32px; border-radius: 8px; }
+  .agent-chat { border-radius: 8px; }
+  .agent-composer { border-radius: 8px; }
+  .agent-composer textarea { min-height: 64px; }
+  .agent-empty { width: min(560px, 100%); max-width: 560px; flex-shrink: 0; }
+  .agent-empty h2 { font-size: 18px; }
+  .agent-empty p { max-width: 480px; }
+  .agent-empty-icon { width: 42px; height: 42px; border-radius: 10px; }
+  .agent-suggestions { width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .agent-suggestion { min-height: 38px; padding: 8px 12px; border-radius: 6px; }
+  .rb-workbench .rb-settings-body { padding: 12px 16px; }
+  .rb-workbench-switch { min-height: 40px; }
+  .rb-workbench-summary { border: 1px solid var(--rb-border); border-radius: 8px; padding: 16px; }
+  .rb-workbench-summary h2 { font-size: 17px; margin: 6px 0; }
+  .rb-workbench-roster { padding: 12px; border: 1px solid var(--rb-border); border-radius: 8px; min-width: 0; }
+  .rb-workbench-status, .rb-workbench-tabs { flex-shrink: 0; }
+  .agent-message[data-role='user'] { background: var(--rb-accent-surface); }
+  .agent-message[data-role='assistant'] { background: transparent; box-shadow: none; }
+  .agent-confirmation { background: color-mix(in srgb, var(--rb-warning) 14%, var(--rb-surface)); border-color: color-mix(in srgb, var(--rb-warning) 42%, var(--rb-border)); }
+  @media (prefers-reduced-motion: reduce) {
+    .rb-content > * { animation: none; }
+  }
+}
+
+@keyframes rb-page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 工作台分析操作与草稿审核保持可扫读，长文本按字段换行。 */
+@layer app {
+  .rb-workbench-analysis {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .rb-workbench-analysis > * { min-width: 0; }
+  /* 分析区按「标签 + 控件 + 动作」逐行排布，与工具箱页的行语言一致。 */
+  .rb-workbench-analysis-row {
+    display: grid;
+    grid-template-columns: 152px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .rb-workbench-analysis-label { color: var(--rb-text-secondary); font-size: 13px; }
+  .rb-workbench-analysis-hint { margin: 10px 0 0; color: var(--rb-text-secondary); font-size: 12px; line-height: 1.6; }
+  .rb-workbench-analysis-status {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--rb-accent);
+    background: var(--rb-accent-surface);
+    font-size: 12px;
+  }
+  .rb-workbench-analysis-status > div { min-width: 0; }
+  .rb-workbench-analysis-status strong { display: inline-flex; align-items: center; gap: 8px; margin-right: 12px; }
+  .rb-workbench-analysis-status span, .rb-workbench-analysis-status p { color: var(--rb-text-secondary); overflow-wrap: anywhere; }
+  .rb-workbench-analysis-status p { margin: 4px 0 0; }
+  .rb-workbench-analysis-status > button { flex-shrink: 0; }
+  .rb-workbench-draft-review { display: flex; flex-direction: column; gap: 16px; }
+  .rb-workbench-draft-review h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .rb-workbench-draft-fields { display: grid; gap: 10px; margin: 0; font-size: 13px; }
+  .rb-workbench-draft-fields > div { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
+  .rb-workbench-draft-fields dt { color: var(--rb-text-secondary); }
+  .rb-workbench-draft-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+  .rb-workbench-draft-character { padding: 10px 0; border-top: 1px solid var(--rb-divider); }
+  .rb-workbench-draft-character summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+  .rb-workbench-draft-character summary span { margin-left: 12px; color: var(--rb-text-secondary); }
+  .rb-workbench-draft-character[open] summary { margin-bottom: 12px; }
+  .rb-workbench-draft-review .rb-workbench-preview-actions { flex-wrap: wrap; }
+  @media (max-width: 800px) {
+    .rb-workbench-analysis-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .rb-workbench-analysis-label { grid-column: 1 / -1; }
+    .rb-workbench-draft-fields > div { grid-template-columns: 88px minmax(0, 1fr); }
+  }
+}
+
+/* ---------- Qt5 Fluent 视觉复刻：翻译任务 / 接口管理 / 工具箱 ---------- */
+/* 只作用于这三页：浅灰页面底 + 白色圆角面板 + 细边框轻阴影；颜色全部取 --rb-* 变量，暗色主题自动跟随。 */
+/* antd 运行时样式未分层，会压过 @layer app，只有改 Ant 内部结构的少数规则才加 !important。 */
+@layer app {
+  :is(.translation-layout, .rb-platform, .rb-toolbox) {
+    --rb-qt-page: color-mix(in srgb, var(--rb-chrome) 75%, var(--rb-surface));
+    --rb-qt-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+    --rb-qt-shadow-hover: 0 3px 10px rgb(0 0 0 / 8%);
+    background: var(--rb-qt-page);
+  }
+
+  /* ---- 翻译任务 ---- */
+  /* 整页只有这一个纵向滚动；右内边距 + 11px 滚动槽 = 24px，滚动条出现时内容不跳动 */
+  .translation-layout .rb-page-scroll {
+    gap: 14px;
+    padding: 20px 13px 20px 24px;
+    overflow: hidden auto;
+    scrollbar-gutter: stable;
+  }
+  .translation-layout .rb-page-header { align-items: center; }
+  .translation-layout .task-state {
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    background: var(--rb-surface);
+    font-size: 12px;
+  }
+  .translation-layout .task-state[data-active='true'] { border-color: color-mix(in srgb, var(--rb-success) 35%, var(--rb-border)); color: var(--rb-success); }
+  .translation-layout .task-state[data-warning='true'] { border-color: color-mix(in srgb, var(--rb-warning) 35%, var(--rb-border)); color: var(--rb-warning); }
+
+  /* 上下文条：白色面板，窄窗口时语言对与接口按钮换到第二行 */
+  .translation-layout .task-context {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    padding: 6px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .translation-layout .task-context-button { max-width: 100%; background: transparent; color: var(--rb-text-primary); }
+  .translation-layout .task-context-button:hover { background: var(--rb-surface-hover); }
+  .translation-layout .task-context-button svg { color: var(--rb-text-secondary); }
+  .translation-layout .task-input { flex: 1 1 280px; }
+  .translation-layout .task-language-pair {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent-text);
+    font-weight: 500;
+  }
+
+  .translation-layout .rb-panel { border-color: var(--rb-border); box-shadow: var(--rb-qt-shadow); }
+
+  /* 指标卡：标签在上、数值在下，三张等宽 */
+  .translation-layout .rb-translation-summary .rb-panel { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; }
+  .translation-layout .rb-translation-summary .rb-metric-value { margin: 0; font-size: 22px; line-height: 1.35; }
+
+  /* 双栏统计：两块等高，标题统一靠左 */
+  .translation-layout .rb-translation-dashboard { gap: 12px; }
+  .translation-layout .rb-translation-dashboard h2 { font-size: 14px; font-weight: 600; }
+  .translation-layout .rb-progress h2 { align-self: stretch; }
+  .translation-layout .rb-throughput .rb-metric-value { margin: 0; }
+
+  /* 流水：表格随内容展开，由页面统一滚动；表头吸顶 */
+  .translation-layout .feed-card { overflow: clip; }
+  .translation-layout .rb-feed-head { flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  .translation-layout .rb-feed-head h2 { font-size: 14px; }
+  .translation-layout .rb-feed-table { max-height: none; overflow: visible; }
+  .translation-layout .rb-feed-table .ant-table-thead > tr > th { position: sticky !important; top: 0; z-index: 2; }
+  /* 表格贴着卡片边框，去掉外圈重复的边线 */
+  .translation-layout .rb-feed-table .ant-table-container { border-inline-start: 0 !important; border-top: 0 !important; }
+  .translation-layout .rb-feed-table .ant-table-cell:last-child { border-inline-end: 0 !important; }
+  .translation-layout .rb-feed-table .ant-table-tbody > tr:last-child > td { border-bottom: 0 !important; }
+
+  /* 底部命令栏：固定在页面网格最后一行，白底细上边线，窄窗口自动换行 */
+  .translation-layout .translation-footer {
+    position: relative;
+    z-index: 3;
+    gap: 8px;
+    padding: 10px 24px;
+    border-top: 1px solid var(--rb-border);
+    background: var(--rb-surface);
+    box-shadow: 0 -1px 3px rgb(0 0 0 / 4%);
+  }
+
+  /* ---- 接口管理 ---- */
+  .rb-platform { gap: 14px; }
+  .rb-platform .rb-page-header { margin-bottom: 0; }
+  .rb-platform .platform-toolbar { flex-wrap: wrap; }
+  .rb-platform-summary {
+    flex-shrink: 0;
+    padding: 12px 16px;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .rb-platform-summary[data-active='true'] { border-left: 3px solid var(--rb-accent); }
+  .platform-summary-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 列表滚动条移到页面右侧留白里，不压在分组面板边缘；左侧留 2px 避免阴影被裁 */
+  .rb-platform-list {
+    gap: 14px;
+    margin: 0 -14px 0 -2px;
+    padding: 0 3px 4px 2px;
+    scrollbar-gutter: stable;
+  }
+  .rb-platform .rb-settings-group { border-color: var(--rb-border); box-shadow: var(--rb-qt-shadow); }
+  .rb-platform .rb-settings-head { align-items: center; }
+  .rb-platform .rb-settings-title { font-size: 14px; }
+  .rb-platform-count {
+    display: inline-grid;
+    place-items: center;
+    min-width: 22px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 卡片网格：最多三列，宽度不足时自动降到两列 / 一列，不产生横向溢出 */
+  .rb-platform-list .rb-settings-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 220px), calc((100% - 24px) / 3)), 1fr));
+    gap: 12px;
+    padding: 14px 16px 16px;
+  }
+  .rb-platform-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 6px;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    min-height: 76px;
+    padding: 10px 8px 12px 14px;
+    box-shadow: var(--rb-qt-shadow);
+  }
+  .rb-platform-card:hover { border-color: var(--rb-border-strong); box-shadow: var(--rb-qt-shadow-hover); }
+  /* 当前接口：淡蓝底 + 蓝边 + 淡蓝外圈，悬停时保持不变 */
+  .rb-platform-card[data-active='true'],
+  .rb-platform-card[data-active='true']:hover {
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  }
+  .rb-platform-card-meta { min-width: 0; }
+  .rb-platform-badge {
+    flex-shrink: 0;
+    border: 1px solid var(--rb-border);
+    background: var(--rb-surface-subtle);
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  .rb-platform-card[data-active='true'] .rb-platform-badge { background: var(--rb-surface); }
+  .rb-platform-card-meta i { flex-shrink: 0; }
+
+  /* ---- 工具箱 ---- */
+  .rb-toolbox { gap: 14px; }
+  .rb-toolbox .rb-page-header { align-items: center; margin-bottom: 0; }
+  /* 与接口列表同样把滚动条移到右侧留白；四周留 4px 给卡片阴影 */
+  .rb-toolbox-scroll {
+    gap: 20px;
+    margin: 0 -14px 0 -4px;
+    padding: 2px 3px 8px 4px;
+    scrollbar-gutter: stable;
+  }
+  .rb-toolbox .tool-group { gap: 10px; }
+  .rb-toolbox .tool-group-header { align-items: center; }
+  .rb-toolbox .tool-group-title { font-size: 14px; font-weight: 600; }
+  .rb-toolbox .tool-group-count {
+    padding: 0 8px;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    background: var(--rb-surface);
+    line-height: 20px;
+  }
+
+  /* 卡片网格：最多三列，放不下时自动降列 */
+  .rb-toolbox .rb-tool-list {
+    grid-template-columns: repeat(auto-fill, minmax(max(min(100%, 280px), calc((100% - 24px) / 3)), 1fr));
+    gap: 12px;
+  }
+  /* Ant Design 风格卡片：垂直流式分层，对齐 Qt5 ItemCard 结构（头/体/尾） */
+  .rb-toolbox .tool-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+    height: 132px;
+    min-width: 0;
+    padding: 12px 14px 10px 14px;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
+    background: var(--rb-surface);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    position: relative;
+    transition: border-color 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                box-shadow 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                transform 0.2s cubic-bezier(0.645, 0.045, 0.355, 1),
+                background-color 0.15s ease;
+  }
+
+  .rb-toolbox .tool-card:hover:not(:disabled) {
+    transform: translateY(-2px);
+    background: var(--rb-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 6px 16px -4px color-mix(in srgb, var(--rb-accent) 18%, rgba(0, 0, 0, 0.08)),
+                0 3px 6px -2px rgba(0, 0, 0, 0.04);
+  }
+
+  /* 与接口管理当前卡片一致：键盘聚焦、按下和当前打开说明的卡片淡蓝底 + 蓝边 + 轻外圈 */
+  .rb-toolbox .tool-card:focus-visible,
+  .rb-toolbox .tool-card:active:not(:disabled),
+  .rb-toolbox .tool-card[data-active='true'],
+  .rb-toolbox .tool-card[data-active='true']:hover {
+    outline: none;
+    transform: translateY(0);
+    background: var(--rb-accent-surface);
+    border-color: var(--rb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 16%, transparent);
+  }
+
+  .rb-toolbox .tool-card:disabled {
+    cursor: not-allowed;
+    background: var(--rb-surface-subtle);
+    border-color: var(--rb-border);
+    box-shadow: none;
+    transform: none;
+    opacity: 0.88;
+  }
+
+  /* 顶部行：序号 + 图标 + 标题 与 右侧动作箭头（对齐 Qt5 title_container） */
+  .rb-toolbox .tool-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 30px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .rb-toolbox .tool-card-head-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  /* 流程序号：Ant Design 风格胶囊徽标 */
+  .rb-toolbox .rb-tool-step {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--rb-accent-surface);
+    color: var(--rb-accent);
+    border: 1.5px solid var(--rb-accent);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    box-shadow: 0 1px 2px rgba(22, 119, 255, 0.12);
+  }
+
+  /* 图标容器：Ant Design 风格圆角底色块 + 强调色微交互 */
+  .rb-toolbox .tool-card-icon-container {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--rb-accent) 9%, var(--rb-surface-subtle));
+    color: var(--rb-accent);
+    transition: all 0.2s ease;
+  }
+
+  .rb-toolbox .tool-card-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
+  }
+
+  .rb-toolbox .tool-card-icon svg {
+    width: 17px;
+    height: 17px;
+    display: block;
+    stroke-width: 2;
+  }
+
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-icon-container {
+    background: color-mix(in srgb, var(--rb-accent) 18%, var(--rb-surface-subtle));
+    transform: scale(1.04);
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-icon-container {
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-disabled);
+    transform: none;
+  }
+
+  /* 标题：对齐 Qt5 SubtitleLabel 14px 粗体 */
+  .rb-toolbox .rb-tool-title {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--rb-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .rb-toolbox .tool-card:disabled .rb-tool-title {
+    color: var(--rb-text-secondary);
+  }
+
+  /* 右侧动作箭头：Ant Design 风格圆圈底微悬浮交互（对齐 Qt5 TransparentToolButton） */
+  .rb-toolbox .tool-card-action {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: var(--rb-text-disabled);
+    transition: all 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+  }
+
+  .rb-toolbox .tool-card:hover:not(:disabled) .tool-card-action {
+    color: var(--rb-accent);
+    transform: translateX(3px);
+    background: color-mix(in srgb, var(--rb-accent) 10%, transparent);
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-action {
+    color: var(--rb-text-disabled);
+    transform: none;
+    background: none;
+  }
+
+  /* 中间说明区域：对齐 Qt5 TwoLineElideLabel（两行截断） */
+  .rb-toolbox .tool-card-body {
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    margin-top: 6px;
+    min-height: 0;
+    width: 100%;
+  }
+
+  .rb-toolbox .rb-tool-desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--rb-text-secondary);
+    width: 100%;
+  }
+
+  .rb-toolbox .tool-card:disabled .tool-card-body .rb-tool-desc {
+    color: var(--rb-text-disabled);
+  }
+
+  /* 底部状态行：左侧接入状态，右侧工程依赖提示（对齐 Qt5 description_layout） */
+  .rb-toolbox .tool-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: 22px;
+    min-height: 22px;
+    margin-top: 4px;
+    width: 100%;
+  }
+
+  /* 未接入工具提示标签：Ant Design 标签风格 */
+  .rb-toolbox .rb-tool-availability {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    border: 1px solid var(--rb-border);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  /* 需先选择游戏目录：Ant Design Warning Tag 风格，右对齐（对齐 Qt5 project_requirement_label）
+     颜色走 --rb-warning 令牌：LIGHT/DARK 各自取值，不再写死琥珀 hex。 */
+  .rb-toolbox .rb-tool-requirement {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface));
+    color: var(--rb-warning);
+    border: 1px solid color-mix(in srgb, var(--rb-warning) 32%, transparent);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /* ---- 窄窗口（侧栏收起为图标栏） ---- */
+  @media (max-width: 999px) {
+    .rb-platform,
+    .rb-toolbox,
+    .rb-tool-page { padding: 16px 16px 12px; }
+    .translation-layout .rb-page-scroll { padding: 16px 5px 16px 16px; }
+    .translation-layout .translation-footer { gap: 6px; padding: 8px 16px; }
+  }
+  /* 头部搜索 / 新增改为整行，输入框吃满宽度；inline 宽度需 !important 才能覆盖 */
+  @media (max-width: 720px) {
+    :is(.rb-platform, .rb-toolbox) .rb-page-actions { flex: 1 1 100%; }
+    .rb-toolbox .rb-page-actions > .toolbox-search { width: 100% !important; }
+    .rb-platform .platform-toolbar { width: 100%; }
+    .rb-platform .platform-toolbar > .ant-input { flex: 1 1 160px; width: auto !important; }
+  }
+  @media (max-width: 600px) {
+    .translation-layout .rb-translation-summary { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* 页面渲染异常的兜底卡片（components/ErrorBoundary.tsx）：单页出错不再整窗白屏。 */
+  .rb-error-boundary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 20px 22px;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
+    background: var(--rb-surface);
+    box-shadow: var(--rb-shadow-overlay);
+  }
+  .rb-error-boundary h1 { margin: 0; font-size: 18px; color: var(--rb-text-primary); }
+  .rb-error-boundary p { margin: 0; color: var(--rb-text-secondary); }
+  /* 技术细节默认折叠：终端用户先看到可读的说明，报障时再展开复制。 */
+  .rb-error-boundary-more { width: 100%; font-size: 12px; color: var(--rb-text-placeholder); }
+  .rb-error-boundary-more summary { cursor: pointer; user-select: none; }
+  .rb-error-boundary-detail {
+    max-width: 100%;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}

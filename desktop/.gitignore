@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+*.log
+sidecar/.venv/
+sidecar/__pycache__/
+runtime/
+release/
+release-archive/

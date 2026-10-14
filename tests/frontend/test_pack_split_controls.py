@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication
 
 from base.BaseLanguage import BaseLanguage
 import frontend.RenpyToolbox.PackUnpackPage as pack_page_module
+import module.Tool.ArchiveOps as archive_ops
 from frontend.RenpyToolbox.PackUnpackPage import (
     PackUnpackPage,
     PackWorker,
@@ -110,7 +111,7 @@ def test_worker_reports_success_after_core_has_published(
             worker.should_stop = True
             return [output_path]
 
-    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
+    monkeypatch.setattr(archive_ops, "Packer", PackerStub)
     results = []
     worker.finished.connect(lambda success, message: results.append((success, message)))
 
@@ -148,7 +149,7 @@ def test_pack_worker_reports_english_success(tmp_path: Path, monkeypatch) -> Non
         def pack_from_dir(self, *_args, **_kwargs):
             return [output_path, output_path.with_name("archive.part002.rpa")]
 
-    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
+    monkeypatch.setattr(archive_ops, "Packer", PackerStub)
     results = []
     worker.finished.connect(lambda success, message: results.append((success, message)))
 
@@ -169,7 +170,7 @@ def test_pack_worker_hides_chinese_core_error_in_english(
         def pack_from_dir(self, *_args, **_kwargs):
             raise RuntimeError("源目录为空")
 
-    monkeypatch.setattr(pack_page_module, "Packer", PackerStub)
+    monkeypatch.setattr(archive_ops, "Packer", PackerStub)
     results = []
     worker.finished.connect(lambda success, message: results.append((success, message)))
 

@@ -48,6 +48,14 @@ class Engine():
         self.api_test = APITester()
 
         from module.Engine.Translator.Translator import Translator
+
+        # Translator 会 subscribe 到类级事件总线上（Base.EventManager），
+        # 不退订就会一直活着：重复 run() 会堆叠多个订阅者，一条
+        # TRANSLATION_START 就会被启动 N 次翻译线程。
+        previous = getattr(self, "translator", None)
+        if previous is not None and hasattr(previous, "unsubscribe_events"):
+            previous.unsubscribe_events()
+
         self.translator = Translator()
 
     def get_status(self) -> Status:
@@ -125,6 +133,15 @@ class Engine():
     def has_single_tasks(self) -> bool:
         with self.lock:
             return self.single_task_count > 0
+
+    def is_rules_locked(self) -> bool:
+        """原子判断：非空闲 / 收尾屏障 / 单条任务期间禁止改翻译规则。"""
+        with self.lock:
+            return (
+                self.status != __class__.Status.IDLE
+                or self.stop_barrier
+                or self.single_task_count > 0
+            )
 
     def _translate_single_item_task(self, item: CacheItem, config: Config) -> bool:
         """执行一条单条翻译并写回条目，返回是否成功。"""

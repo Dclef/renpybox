@@ -30,6 +30,10 @@ try:
     sanitized_cfg = dataclasses.asdict(Config())
     sanitized_cfg["platforms"] = None
     sanitized_cfg["activate_platform"] = 0
+    # 目录字段的默认值在 Config 里由 AppPaths 规范化成本机绝对路径，直接落盘
+    # 会把构建机的目录结构写进公开仓库和安装包，这里统一改回相对默认值。
+    sanitized_cfg["input_folder"] = "./input"
+    sanitized_cfg["output_folder"] = "./output"
     sanitized_cfg_path = project_root / "build_sanitized_config.json"
     with open(sanitized_cfg_path, "w", encoding="utf-8") as f:
         json.dump(sanitized_cfg, f, indent=4, ensure_ascii=False)

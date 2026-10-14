@@ -18,7 +18,7 @@
 
 ## Overview 📢
 
-- RenpyBox is a Ren'Py localization toolbox built with PyQt and Fluent UI. It combines text extraction, translation, repair, and packaging in one Ren'Py-focused solution.
+- RenpyBox combines text extraction, translation, proofreading, repair, and packaging in one Ren'Py localization toolbox. Version 0.9.0 introduces a new Windows desktop interface; the Python / Qt5 app and its source remain available.
 - Intended users: visual novel developers, fan translation teams, and Ren'Py translators.
 - **[SiliconFlow](https://cloud.siliconflow.cn/i/Cvmvkm5d) is recommended for translation.**
 
@@ -48,7 +48,18 @@
 - Local glossaries and replacement rules
 - More formats will be added over time. Feature requests are welcome in Issues.
 
+## Download and Migration
+
+Get the Windows x64 installer or ZIP from [GitHub Releases](https://github.com/dclef/RenpyBox/releases). The desktop app includes its runtime, so a separate Python installation is not required. See the [desktop guide](./desktop/README.md) for details.
+
+The original Python app remains available. Existing clients can first update through their usual updater to the Python compatibility build, then follow its desktop migration notice. You can also download the desktop app directly. Migration does not automatically replace the Python app or copy its settings; confirm your project and API settings in the new interface.
+
 ## Recent Updates 📅
+
+- 0.9.0 (release preparation):
+  - New desktop interface with translation, proofreading, 27 Ren'Py tools, and character/worldbuilding workspaces.
+  - Fixed the interface staying busy after font scanning; added window recovery and log export.
+  - Added a desktop migration notice in the Python app while keeping its source and compatibility package.
 
 - 2026-10-09 v0.8.2:
   - Fixed slow write-back validation for large Ren'Py projects while preserving duplicate-text, character-name, and AST matching semantics.
@@ -83,7 +94,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
 
-- Runtime logs are stored in `./log`. Please attach the relevant logs when reporting an issue.
+- In the desktop app, open Runtime Logs to export or locate log files. Python app logs remain in `./log`. Please attach relevant logs when reporting an issue.
 - Caches are stored in `output/cache`. After pausing a task, you can continue it directly or export the completed portion.
 - If an external interface times out or is rate-limited, adjust concurrency and rate limits in Interface Management.
 

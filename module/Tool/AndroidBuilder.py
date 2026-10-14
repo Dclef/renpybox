@@ -148,8 +148,15 @@ class AndroidBuilder:
 
         return json_path
 
+    def project_dist_dir(self) -> Path:
+        """本项目分发目录：project/android.dist（禁止任意路径）。"""
+        return self.project_dir / "android.dist"
+
     def clean_dist_dir(self, dist_dir: str) -> Path:
-        dist_path = Path(dist_dir).resolve()
+        """仅清理本项目 android.dist；拒绝任意目录 rmtree。"""
+        from module.Tool.AndroidProjectTools import ensure_project_dist_dir
+
+        dist_path = ensure_project_dist_dir(self.project_dir, dist_dir)
         if dist_path.exists():
             shutil.rmtree(dist_path, ignore_errors=True)
         dist_path.mkdir(parents=True, exist_ok=True)
@@ -158,10 +165,11 @@ class AndroidBuilder:
     def run_distribute(
         self,
         *,
-        dist_dir: str,
+        dist_dir: str | None = None,
         on_output: Callable[[str], None] | None = None,
     ) -> bool:
-        dist_path = self.clean_dist_dir(dist_dir)
+        target = dist_dir if dist_dir is not None else str(self.project_dist_dir())
+        dist_path = self.clean_dist_dir(target)
         args = [
             str(self.renpy_exe),
             str(self.sdk_root),
@@ -207,11 +215,15 @@ class AndroidBuilder:
     def build_android(
         self,
         *,
-        dist_dir: str,
+        dist_dir: str | None = None,
         install: bool = False,
         launch: bool = False,
         on_output: Callable[[str], None] | None = None,
     ) -> bool:
+        from module.Tool.AndroidProjectTools import ensure_project_dist_dir
+
+        target = dist_dir if dist_dir is not None else str(self.project_dist_dir())
+        dist_path = ensure_project_dist_dir(self.project_dir, target)
         args = [
             "build",
             "--sdk",
@@ -219,7 +231,7 @@ class AndroidBuilder:
             "--project",
             str(self.project_dir),
             "--dist",
-            str(Path(dist_dir).resolve()),
+            str(dist_path),
         ]
         if install:
             args.append("--install")

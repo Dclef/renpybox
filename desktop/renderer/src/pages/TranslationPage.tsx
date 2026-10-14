@@ -1,0 +1,554 @@
+/**
+ * 翻译任务页。
+ *
+ * 保留的决策：开始前引擎必须 IDLE 且无 stop_barrier、
+ * ASSETS_MISSING 时交给用户选择「打开工作台 / 仍然继续」、停止前确认、
+ * 进度读取应用级快照，切页和任务结束后仍保留统计、
+ * preparing 阶段显示不确定进度。
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Progress, Spin, Table, Tag } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import {
+  ArrowRight,
+  Calculator,
+  FileDown,
+  FileText,
+  Folder,
+  History,
+  Play,
+  Plug,
+  RefreshCw,
+  SpellCheck,
+  Square,
+  StepForward,
+} from 'lucide-react';
+
+import type { StartableProjectStatus, TranslationUpdateData } from '../types';
+import { Banner, Dialog, Empty, NumberInput, PageHeader } from '../ui';
+import type { AppState } from '../useAppState';
+import { Waveform } from '../Waveform';
+import { useT } from '../i18n';
+import { describeTokenEstimate, elapsedSeconds, translationCommands } from '../translationView.mjs';
+
+const STATUS_TEXT: Record<string, string> = {
+  IDLE: '无任务',
+  TESTING: '测试中',
+  TRANSLATING: '翻译中',
+  QUALITY: '质量处理中',
+  AGENT: 'Agent 操作中',
+  STOPPING: '停止中',
+};
+
+const PHASE_TEXT: Record<string, string> = {
+  preparing: '预处理中',
+  reading: '正在读取翻译输入目录',
+  writing: '正在写入翻译缓存',
+};
+
+/** 波形采样节拍：对齐 WaveformWidget 的 refresh_rate = 2（500ms） */
+const SAMPLE_INTERVAL_MS = 500;
+const WAVE_COLUMNS = 50;
+
+/** 页面切换会卸载组件；按运行代次暂存波形，切回来时同一轮任务的采样不丢。 */
+let waveCache: { runId: number; samples: number[] } = { runId: 0, samples: [] };
+
+/** 文案格式照 LocalizerZH：{H}时 {M}分 {S}秒 / {M}分 {S}秒 / {S}秒 */
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}时 ${m}分 ${s}秒`;
+  if (m > 0) return `${m}分 ${s}秒`;
+  return `${s}秒`;
+}
+
+/** 定时器按钮文字，照 Qt5 add_command_bar_action_timer.format_time */
+function formatClock(full: number): string {
+  const h = Math.floor(full / 3600);
+  const m = Math.floor((full % 3600) / 60);
+  const s = full % 60;
+  return [h, m, s].map((part) => String(part).padStart(2, '0')).join(':');
+}
+
+interface FeedRow {
+  key: number;
+  time: string;
+  source: string;
+  target: string;
+}
+
+export function TranslationPage(props: {
+  state: AppState;
+  onOpenWorkbench: () => void;
+  onOpenProofreading: () => void;
+  onOpenProject: () => void;
+  onOpenPlatform: () => void;
+}) {
+  const { state, onOpenWorkbench, onOpenProofreading, onOpenProject, onOpenPlatform } = props;
+  const t = useT();
+  const progress = state.translation.progress as TranslationUpdateData;
+  const runId = state.translation.run_id;
+  const [samples, setSamples] = useState<number[]>(() => (waveCache.runId === runId ? waveCache.samples : []));
+  const [now, setNow] = useState(() => Date.now());
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [assetsMissing, setAssetsMissing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [timerDialog, setTimerDialog] = useState(false);
+  const [confirmTimerReset, setConfirmTimerReset] = useState(false);
+  const [timerInput, setTimerInput] = useState({ h: 0, m: 0, s: 0 });
+  const [timerLeft, setTimerLeft] = useState(0);
+  const lastSampleAt = useRef(0);
+
+  const status = state.translation.engine_status;
+  // 后端一定带 running，但快照事件在非进度期间会整包替换状态；缺字段时退回 0，不能让整页崩掉。
+  const running = state.translation.running?.running ?? 0;
+  const max = state.translation.running?.max ?? 0;
+  const isTranslating = status === 'TRANSLATING';
+  const isStopping = status === 'STOPPING' || state.translation.stop_barrier;
+
+  const sourceLanguage = String(state.settings?.values.source_language ?? '');
+  const targetLanguage = String(state.settings?.values.target_language ?? '');
+  const inputFolder = String(state.settings?.values.input_folder ?? '');
+  const platforms = state.settings?.values.platforms;
+  const activePlatform = Array.isArray(platforms)
+    ? platforms.find((platform) => platform.id === Number(state.settings?.values.activate_platform ?? -1))
+    : undefined;
+  const platformName = String(activePlatform?.name || '选择翻译接口');
+
+  // 进度由应用级状态合并；这里只在下一轮开始时清除上一轮波形。
+  useEffect(() => {
+    return state.subscribe((message) => {
+      if (message.event === 'TRANSLATION_START' || message.event === 'PROJECT_CHANGED') {
+        setSamples([]);
+        lastSampleAt.current = 0;
+      }
+    });
+  }, [state.subscribe]);
+
+  useEffect(() => {
+    waveCache = { runId, samples };
+  }, [runId, samples]);
+
+  const projectKey = `${state.project?.renpy_project_path ?? ''}\n${inputFolder}`;
+  useEffect(() => {
+    if (state.translationTimerDeadline !== null && state.translationTimerProjectKey !== projectKey) {
+      state.setTranslationTimer(null);
+    }
+  }, [projectKey, state]);
+
+  const timerDeadline = state.translationTimerDeadline;
+
+  useEffect(() => {
+    if (timerDeadline === null) return;
+    const tick = () => setTimerLeft(Math.max(0, Math.ceil((timerDeadline - Date.now()) / 1000)));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [timerDeadline]);
+
+  // 轮询补一次 running 计数：running/max 不在事件流里，引擎在跑时定时对齐；
+  // 同一节拍刷新已用时间，批次之间也按 start_time 实时走秒。
+  useEffect(() => {
+    if (!isTranslating && !isStopping) return;
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      void state.reloadTranslation();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isTranslating, isStopping, state.reloadTranslation]);
+
+  const line = Number(progress.line ?? 0);
+  const totalLine = Number(progress.total_line ?? 0);
+  const percent = totalLine > 0 ? Math.min(1, line / totalLine) : 0;
+  const preparing = isTranslating && (progress.phase === 'preparing' || line === 0);
+  const message = progress.message ?? PHASE_TEXT[progress.phase ?? ''] ?? '';
+
+  const inputTokens = Number(progress.total_input_tokens ?? 0);
+  const outputTokens = Number(progress.total_output_tokens ?? 0);
+  const elapsed = elapsedSeconds(progress, status, now);
+  const remaining = totalLine > line && elapsed > 0 ? (elapsed / Math.max(line, 1)) * (totalLine - line) : 0;
+  const failed = Number(progress.failed_line_count ?? 0);
+  const batches = Number(progress.processed_batches ?? 0);
+  const requestCount = Number(progress.request_count ?? 0);
+  const totalLatency = Number(progress.total_latency_ms ?? 0);
+  const averageLatency = requestCount > 0 ? totalLatency / requestCount / 1000 : 0;
+  // 新版吞吐是 TranslationMetrics.snapshot() 字典，不能直接 Number()。
+  const rawThroughput = state.translation.progress.throughput;
+  const metrics = rawThroughput && typeof rawThroughput === 'object'
+    && 'schema_version' in rawThroughput && rawThroughput.schema_version === 1
+    ? rawThroughput as Record<string, unknown>
+    : null;
+  const metricsElapsed = Number(metrics?.elapsed_seconds ?? elapsed);
+  const throughput = metrics
+    ? (metricsElapsed > 0 ? Number(metrics.output_tokens ?? 0) / metricsElapsed : 0)
+    : (typeof rawThroughput === 'number' ? rawThroughput : (elapsed > 0 ? outputTokens / elapsed : 0));
+  const effectiveRate = Number(metrics?.effective_items_per_minute ?? (elapsed > 0 ? line * 60 / elapsed : 0));
+  const peak = samples.length > 0 ? Math.max(...samples) : 0;
+  const cacheRate = Number(progress.cache_hit_rate ?? 0);
+  const cachedLineCount = Number(progress.cached_line_count ?? 0);
+  const canStart = status === 'IDLE' && !isStopping && !state.translation.single_tasks;
+
+  // 波形按 500ms 从共享快照采样，避免把每一条进度消息都画成一根柱。
+  useEffect(() => {
+    if (!isTranslating) return;
+    if (!('throughput' in progress) && !('total_output_tokens' in progress)) return;
+    const now = Date.now();
+    if (now - lastSampleAt.current < SAMPLE_INTERVAL_MS) return;
+    lastSampleAt.current = now;
+    setSamples((prev) => [...prev, Number.isFinite(throughput) ? throughput : 0].slice(-WAVE_COLUMNS));
+  }, [progress, throughput, isTranslating]);
+
+  const linesDetail = `${line.toLocaleString()} / ${totalLine.toLocaleString()} 行`;
+  const headerDescription =
+    status === 'IDLE'
+      ? '实时查看翻译进度、吞吐和可恢复操作'
+      : `当前翻译任务 · 源语言 ${sourceLanguage} ➔ 目标语言 ${targetLanguage} · 线程池 ${running}/${max}`;
+
+  const recentItems = useMemo(() => {
+    const raw = progress.recent_items;
+    return Array.isArray(raw) ? (raw as Record<string, unknown>[]).slice(0, 40) : [];
+  }, [progress.recent_items]);
+
+  const feedRows = useMemo<FeedRow[]>(
+    () =>
+      recentItems.map((item, index) => ({
+        key: index,
+        time: String(item.time ?? item.timestamp ?? ''),
+        source: String(item.src ?? item.source ?? ''),
+        target: String(item.dst ?? item.target ?? ''),
+      })),
+    [recentItems],
+  );
+
+  const feedColumns = useMemo<ColumnsType<FeedRow>>(
+    () => [
+      {
+        title: '时间',
+        dataIndex: 'time',
+        key: 'time',
+        width: 110,
+        onCell: () => ({ style: { width: 110, whiteSpace: 'nowrap' } }),
+      },
+      {
+        title: (
+          <>
+            原文 <span className="rb-lang">{sourceLanguage}</span>
+          </>
+        ),
+        dataIndex: 'source',
+        key: 'source',
+        onCell: () => ({ style: { whiteSpace: 'normal', wordBreak: 'break-word' } }),
+      },
+      {
+        title: (
+          <>
+            译文 <span className="rb-lang">{targetLanguage}</span>
+          </>
+        ),
+        dataIndex: 'target',
+        key: 'target',
+        onCell: () => ({ style: { whiteSpace: 'normal', wordBreak: 'break-word' } }),
+      },
+    ],
+    [sourceLanguage, targetLanguage],
+  );
+
+  const start = useCallback(
+    async (projectStatus: StartableProjectStatus, preflightConfirmed = false) => {
+      setBusy(true);
+      try {
+        const response = await state.startTranslation(projectStatus, preflightConfirmed);
+        if (!response.accepted && response.reason === 'ASSETS_MISSING') {
+          setAssetsMissing(true);
+        }
+      } catch (error) {
+        state.pushToast('error', `${t('translation_start_failed')}：${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [state, t],
+  );
+
+  const onTimerConfirm = useCallback(() => {
+    setTimerDialog(false);
+    const total = timerInput.h * 3600 + timerInput.m * 60 + timerInput.s;
+    setTimerLeft(total);
+    state.setTranslationTimer(Date.now() + total * 1000, projectKey);
+  }, [projectKey, state, timerInput]);
+
+  const onStop = useCallback(async () => {
+    setConfirmStop(false);
+    setBusy(true);
+    try {
+      await state.stopTranslation();
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [state]);
+
+  const onRetryFailed = useCallback(async () => {
+    setBusy(true);
+    try {
+      await state.retryFailedTranslations();
+    } catch (error) {
+      state.pushToast('warning', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [state]);
+
+  const onEstimate = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await state.estimateTokens();
+      const { tone, text } = describeTokenEstimate(result);
+      state.pushToast(tone, text);
+    } catch (error) {
+      state.pushToast('warning', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [state]);
+
+  const commandDisabled = busy || !state.ready;
+  const commands = translationCommands(state.translation, { busy, ready: state.ready });
+  const statusLabel = isStopping ? '正在停止' : preparing ? '正在准备'
+    : status !== 'IDLE' ? STATUS_TEXT[status] ?? status
+    : state.translation.progress_error ? t('translation_cache_error')
+    : commands.confirmRestart ? '可继续'
+    : totalLine > 0 ? '已完成' : '待开始';
+
+  const continuePrimary = statusLabel === '可继续';
+  const latencyText = averageLatency > 0 ? `${averageLatency.toFixed(2)}s` : '—';
+  const requestP95 = metrics?.logical_request_ms_p95;
+  const latencyMetric = metrics ? (typeof requestP95 === 'number' ? (requestP95 / 1000).toFixed(2) + 's' : '—') : latencyText;
+  const cacheText = `${(cacheRate > 1 ? cacheRate : cacheRate * 100).toFixed(1)}%`;
+  const progressPercent = Number((percent * 100).toFixed(1));
+
+  return (
+    <div className="translation-layout rb-page">
+      <div className="rb-page-scroll">
+        <PageHeader
+          title="翻译任务"
+          titleExtra={<span className="task-state" data-active={isTranslating} data-warning={isStopping || failed > 0} role="status">{statusLabel}</span>}
+          description={headerDescription}
+          actions={(
+            <Button type="default" onClick={onOpenProofreading} icon={<SpellCheck size={16} strokeWidth={1.75} />}>
+              打开平行校对台
+            </Button>
+          )}
+        />
+
+        <div className="task-context">
+          <button type="button" className="task-context-button task-input" title={inputFolder || '选择翻译输入目录'} aria-label="配置翻译输入目录" onClick={onOpenProject}>
+            <Folder size={16} strokeWidth={1.75} />
+            <span>{inputFolder || '选择翻译输入目录'}</span>
+          </button>
+          <span className="task-language-pair" aria-label={`原文 ${sourceLanguage || '未设置'}，译文 ${targetLanguage || '未设置'}`}>
+            {sourceLanguage || '原文'}<ArrowRight size={14} strokeWidth={1.75} />{targetLanguage || '译文'}
+          </span>
+          <button type="button" className="task-context-button task-platform" title={activePlatform?.model && activePlatform.model !== 'no_model_required' ? `${platformName} · ${activePlatform.model}` : platformName} aria-label="配置翻译接口" onClick={onOpenPlatform}>
+            <Plug size={16} strokeWidth={1.75} />
+            <span>{platformName}</span>
+          </button>
+        </div>
+
+        {state.translation.progress_error ? <Banner tone="warning">{state.translation.progress_error}</Banner> : null}
+        {state.translation.progress_source === 'cache' ? <Banner tone="info">{t('translation_cache_restored')}</Banner> : null}
+        <section className="rb-translation-summary">
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_input_tokens')}</span><div className="rb-metric-value">{progress.total_input_tokens != null ? inputTokens.toLocaleString() : '—'}</div></div>
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_output_tokens')}</span><div className="rb-metric-value">{progress.total_output_tokens != null ? outputTokens.toLocaleString() : '—'}</div></div>
+          <div className="rb-panel"><span className="rb-metric-label">{t('translation_workers')}</span><div className="rb-metric-value">{running}<span>/ {max}</span></div></div>
+        </section>
+        <div className="rb-translation-dashboard">
+          <section className="rb-panel rb-progress">
+            <h2>{t('translation_progress')}</h2>
+            {preparing && <Spin size="small" aria-label={statusLabel} />}
+            <Progress
+              type="circle"
+              size={122}
+              strokeWidth={8}
+              percent={progressPercent}
+              format={() => <span className="rb-progress-percent">{progressPercent}%</span>}
+            />
+            <span className="rb-progress-lines">{linesDetail}</span>
+            <span className="rb-progress-time">已用: {formatDuration(elapsed)} · 剩余约: {remaining > 0 ? formatDuration(remaining) : '—'}</span>
+            <div className="rb-progress-meta">
+              <span>
+                已译 {line.toLocaleString()}
+                {' · '}
+                <span title="任务开始前已有译文的占比。0% 不影响译文和进度自动保存；暂停后可继续任务。">{cachedLineCount > 0 ? `已有 ${cachedLineCount}` : '已有 —'}</span>
+                {' · '}
+                待译 {Math.max(0, totalLine - line).toLocaleString()}
+              </span>
+              {failed > 0 ? <Tag color="error">{failed} 行失败</Tag> : null}
+            </div>
+          </section>
+
+          <section className="rb-panel rb-throughput">
+            <div className="rb-throughput-head"><h2>{t(isTranslating ? 'translation_live_rate' : 'translation_average_rate')}</h2><span className="rb-metric-note">{isTranslating ? '峰值 ' + peak.toFixed(2) + ' Token/s' : null}</span></div>
+            <div className="rb-metric-value">{throughput.toFixed(2)}<span>Token/s</span></div>
+            <Waveform points={samples} columns={50} height={72} />
+            <div className="rb-throughput-stats">
+              <div><span className="rb-metric-label">有效翻译速度</span><strong>{effectiveRate.toFixed(1)} 条/分</strong></div>
+              <div><span className="rb-metric-label">{t('translation_batches')}</span><strong>{progress.processed_batches != null ? batches.toLocaleString() : '—'}</strong></div>
+              <div><span className="rb-metric-label">{t(metrics ? 'translation_request_p95' : 'translation_average_latency')}</span><strong>{latencyMetric}</strong></div>
+              <div><span className="rb-metric-label">{t('translation_cache_rate')}</span><strong>{progress.cache_hit_rate != null ? cacheText : '—'}</strong></div>
+            </div>
+          </section>
+        </div>
+
+        <section className="rb-panel feed-card">
+          <header className="rb-feed-head">
+            <h2>{t(isTranslating ? 'translation_live_feed' : 'translation_recent_feed')}</h2>
+            <Tag>{recentItems.length} 条记录</Tag>
+            <span>{t(isTranslating ? 'translation_feed_live_hint' : 'translation_feed_saved_hint')}</span>
+          </header>
+          {recentItems.length > 0 ? (
+            <div className="rb-feed-table">
+              <Table<FeedRow>
+                size="medium"
+                bordered
+                pagination={false}
+                rowKey="key"
+                columns={feedColumns}
+                dataSource={feedRows}
+              />
+            </div>
+          ) : (
+            <Empty>
+              <span className="rb-empty-stack">
+                <FileText size={28} strokeWidth={1.75} />
+                <strong>{isTranslating ? '正在等待第一批译文' : '暂无翻译流水'}</strong>
+                <span>{message || '开始翻译后，原文与译文会显示在这里。'}</span>
+              </span>
+            </Empty>
+          )}
+        </section>
+      </div>
+
+      <footer className="translation-footer rb-command-bar">
+        <Button type={continuePrimary ? 'default' : 'primary'} disabled={!commands.start} onClick={() => (commands.confirmRestart ? setConfirmReset(true) : void start('UNTRANSLATED'))} icon={<Play size={16} strokeWidth={1.75} />}>开始翻译</Button>
+        <Button type={continuePrimary ? 'primary' : 'default'} disabled={!commands.continueTask} title={commands.continueTask ? undefined : '当前项目没有可继续的翻译缓存'} onClick={() => void start('TRANSLATING')} icon={<StepForward size={16} strokeWidth={1.75} />}>继续任务</Button>
+        <Button className="rb-stop" danger disabled={!commands.stop} onClick={() => setConfirmStop(true)} icon={<Square size={16} strokeWidth={1.75} />}>停止</Button>
+        <Button type="default" disabled={!commands.exportFile} onClick={() => void state.exportTranslation().catch((error: unknown) => { state.pushToast('warning', error instanceof Error ? error.message : String(error)); })} icon={<FileDown size={16} strokeWidth={1.75} />}>写入译文文件</Button>
+        <Button type="default" disabled={commandDisabled} onClick={() => void onEstimate()} icon={<Calculator size={16} strokeWidth={1.75} />}>估算 Token</Button>
+        <Button
+          type="default"
+          disabled={!commands.retryFailed}
+          title="将失败条目重置为待翻译，随后点击「继续任务」重新翻译"
+          onClick={() => void onRetryFailed()}
+          icon={<RefreshCw size={16} strokeWidth={1.75} />}
+        >
+          重翻失败项
+        </Button>
+        <Button
+          type="default"
+          disabled={timerDeadline === null && (commandDisabled || !canStart)}
+          onClick={() => (timerDeadline === null ? setTimerDialog(true) : setConfirmTimerReset(true))}
+          icon={<History size={16} strokeWidth={1.75} />}
+        >
+          {timerDeadline === null ? t('translation_timer') : formatClock(timerLeft)}
+        </Button>
+        <span className="rb-command-spacer" />
+        {preparing ? <Spin size="small" /> : null}
+        {isTranslating ? <span className="rb-command-pool">线程池 {running}/{max}</span> : null}
+      </footer>
+      {confirmStop ? (
+        <Dialog
+          title="提醒"
+          confirmText="确认"
+          cancelText="取消"
+          onConfirm={() => void onStop()}
+          onCancel={() => setConfirmStop(false)}
+        >
+          <p>停止的翻译任务可以随时继续翻译，是否确定停止任务 … ？</p>
+        </Dialog>
+      ) : null}
+
+      {confirmReset ? (
+        <Dialog
+          title="提醒"
+          confirmText="确认"
+          cancelText="取消"
+          onConfirm={() => {
+            setConfirmReset(false);
+            void start('UNTRANSLATED');
+          }}
+          onCancel={() => setConfirmReset(false)}
+        >
+          <p>将重置尚未完成的翻译任务，是否确认开始新的翻译任务 … ？</p>
+        </Dialog>
+      ) : null}
+
+      {assetsMissing ? (
+        <Dialog
+          title="当前项目没有可用资产"
+          confirmText="仍然继续"
+          cancelText="取消"
+          extraText="打开工作台"
+          onExtra={() => {
+            setAssetsMissing(false);
+            onOpenWorkbench();
+          }}
+          onConfirm={() => {
+            setAssetsMissing(false);
+            void start('UNTRANSLATED', true);
+          }}
+          onCancel={() => setAssetsMissing(false)}
+        >
+          <p>未找到已启用且有效的世界观、角色卡、术语或禁翻项。可以先打开工作台完善项目资产，也可以仍然继续本次翻译。</p>
+        </Dialog>
+      ) : null}
+
+      {timerDialog ? (
+        <Dialog
+          title={t('translation_timer')}
+          confirmText={t('translation_timer_confirm')}
+          cancelText={t('translation_timer_cancel')}
+          onConfirm={onTimerConfirm}
+          onCancel={() => setTimerDialog(false)}
+        >
+          <p>{t('translation_timer_prompt')}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {([['h', 23, 'translation_timer_hours'], ['m', 59, 'translation_timer_minutes'], ['s', 59, 'translation_timer_seconds']] as const).map(([field, max, label]) => (
+              <label key={field} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <NumberInput
+                  value={timerInput[field]}
+                  min={0}
+                  max={max}
+                  label={t(label)}
+                  onCommit={(next) => setTimerInput((prev) => ({ ...prev, [field]: Math.min(max, Math.max(0, Math.floor(next))) }))}
+                />
+                <span>{t(label)}</span>
+              </label>
+            ))}
+          </div>
+        </Dialog>
+      ) : null}
+
+      {confirmTimerReset ? (
+        <Dialog
+          title={t('translation_timer_alert')}
+          confirmText={t('translation_timer_confirm')}
+          cancelText={t('translation_timer_cancel')}
+          onConfirm={() => {
+            setConfirmTimerReset(false);
+            state.setTranslationTimer(null);
+          }}
+          onCancel={() => setConfirmTimerReset(false)}
+        >
+          <p>{t('translation_timer_reset')}</p>
+        </Dialog>
+      ) : null}
+    </div>
+  );
+}

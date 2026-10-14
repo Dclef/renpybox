@@ -393,7 +393,9 @@ class AppFluentWindow(FluentWindow, Base):
             VersionManager.parse_version(str(state.get("version", Version.CURRENT)))
             < VersionManager.parse_version(str(latest.get("tag_name", "")))
         )
-        if (
+        if status == VersionManager.Status.DESKTOP_AVAILABLE:
+            name = Localizer.get().app_desktop_update_indicator
+        elif (
             status == VersionManager.Status.NEW_VERSION
             or status == VersionManager.Status.NONE and known_update_available
         ):
@@ -423,6 +425,14 @@ class AppFluentWindow(FluentWindow, Base):
     # 更新 - 检查完成
     def app_update_check_done(self, event: str, data: dict) -> None:
         self._refresh_update_indicator()
+        if (
+            data.get("status") == VersionManager.Status.DESKTOP_AVAILABLE
+            and data.get("manual") is not True
+            and not data.get("error")
+            and not getattr(self, "_desktop_update_prompted", False)
+        ):
+            self._desktop_update_prompted = True
+            QTimer.singleShot(0, self.app_settings_page._show_update_details)
 
     # 更新 - 下载完成
     def app_update_download_done(self, event: str, data: dict) -> None:

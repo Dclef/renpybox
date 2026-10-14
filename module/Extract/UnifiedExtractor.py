@@ -20,7 +20,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Set, Callable, List, Tuple
+from typing import Any, Dict, Optional, Set, Callable, List, Tuple
 
 from base.PathHelper import get_resource_path
 from base.LogManager import LogManager
@@ -48,6 +48,7 @@ from module.Renpy import renpy_extract as rx
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Text.SkipRules import should_skip_text
 from module.File.AtomicWrite import atomic_write_text
+from module.Renpy.json_handler import plan_tl_write_targets
 from module.Response.ResponseChecker import ResponseChecker
 from module.Extract.ReplaceGenerator import (
     load_declined_candidates,
@@ -116,6 +117,7 @@ class ExtractionResult:
     game_rule_candidates: int = 0
     game_rule_added: int = 0
     cancelled: bool = False  # 用户主动取消，区别于抽取失败
+    written_files: List[str] = field(default_factory=list)  # 实际写入路径（取消/失败也保留）
 
 
 @dataclass
@@ -132,6 +134,8 @@ class TranslationReuseResult:
     unmatched_entries: int = 0
     hook_updated: bool = False
     backup_path: Optional[Path] = None
+    # 逐文件写入失败路径（相对 tl 根的 posix）；预览始终为空
+    failed_files: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1296,72 +1300,112 @@ class UnifiedExtractor:
             result.message = "恢复清单中没有勾选项（请把 restore 列改为 1）"
             return result
 
+        # 写前全量预检：任意非法目标整批失败，无 mkdir / 无首条写入
+        try:
+            resolved_targets = plan_tl_write_targets(
+                {
+                    rel: [{"original": "_", "translation": "_"}]
+                    for rel in selected_by_file
+                },
+                tl_dir,
+                backup=False,
+            )
+        except ValueError as exc:
+            result.success = False
+            result.message = f"恢复清单目标非法：{exc}"
+            return result
+
         restored = 0
         skipped_duplicates = 0
         invalid_entries = 0
         touched_files = 0
+        written_files: List[str] = []
 
-        for rel_path, entries in selected_by_file.items():
-            rel_obj = Path(rel_path)
-            if rel_obj.is_absolute() or ".." in rel_obj.parts:
-                invalid_entries += len(entries)
-                continue
+        try:
+            for rel_path, entries in selected_by_file.items():
+                self._check_cancel()
+                target_file = resolved_targets[str(rel_path)]
 
-            target_file = tl_dir / rel_obj
-            target_file.parent.mkdir(parents=True, exist_ok=True)
+                existing_olds = self._collect_existing_old_values(target_file)
+                pending: List[Tuple[str, str]] = []
+                seen_olds = set(existing_olds)
 
-            existing_olds = self._collect_existing_old_values(target_file)
-            pending: List[Tuple[str, str]] = []
-            seen_olds = set(existing_olds)
+                for old_text, new_text in entries:
+                    normalized_old = (old_text or "").strip()
+                    if not normalized_old:
+                        invalid_entries += 1
+                        continue
+                    if normalized_old in seen_olds:
+                        skipped_duplicates += 1
+                        continue
+                    seen_olds.add(normalized_old)
+                    pending.append((normalized_old, new_text or ""))
 
-            for old_text, new_text in entries:
-                normalized_old = (old_text or "").strip()
-                if not normalized_old:
-                    invalid_entries += 1
+                if not pending:
                     continue
-                if normalized_old in seen_olds:
-                    skipped_duplicates += 1
-                    continue
-                seen_olds.add(normalized_old)
-                pending.append((normalized_old, new_text or ""))
 
-            if not pending:
-                continue
+                # 现有文件必须先成功读出；读失败不得用空内容 atomic 替换丢数据
+                old_content = ""
+                if target_file.exists():
+                    try:
+                        old_content = target_file.read_text(encoding="utf-8", errors="replace")
+                    except OSError as exc:
+                        raise RuntimeError(f"读取恢复目标失败：{target_file}: {exc}") from exc
 
-            existed = target_file.exists()
-            old_content = ""
-            if existed:
+                restore_source = manifest.name
                 try:
-                    old_content = target_file.read_text(encoding="utf-8", errors="replace")
+                    restore_source = manifest.relative_to(tl_dir).as_posix()
                 except Exception:
-                    old_content = ""
+                    restore_source = str(manifest)
 
-            restore_source = manifest.name
-            try:
-                restore_source = manifest.relative_to(tl_dir).as_posix()
-            except Exception:
-                restore_source = str(manifest)
+                append_lines = [
+                    f"# restored from: {restore_source}",
+                    f"translate {tl_name} strings:",
+                    "",
+                ]
+                for old_text, new_text in pending:
+                    append_lines.append(f'    old "{self._escape_rpy_string(old_text)}"')
+                    append_lines.append(f'    new "{self._escape_rpy_string(new_text)}"')
+                    append_lines.append("")
 
-            append_lines = [
-                f"# restored from: {restore_source}",
-                f"translate {tl_name} strings:",
-                "",
-            ]
-            for old_text, new_text in pending:
-                append_lines.append(f'    old "{self._escape_rpy_string(old_text)}"')
-                append_lines.append(f'    new "{self._escape_rpy_string(new_text)}"')
-                append_lines.append("")
-
-            with target_file.open("a", encoding="utf-8", newline="\n") as writer:
-                if old_content and not old_content.endswith(("\n", "\r")):
-                    writer.write("\n")
+                pieces: List[str] = []
                 if old_content:
-                    writer.write("\n")
-                writer.write("\n".join(append_lines).rstrip() + "\n")
+                    pieces.append(old_content.rstrip("\n"))
+                    pieces.append("")
+                pieces.append("\n".join(append_lines).rstrip() + "\n")
+                atomic_write_text(
+                    target_file,
+                    "\n".join(pieces),
+                    encoding="utf-8",
+                    allowed_roots=[tl_dir],
+                )
 
-            restored += len(pending)
-            touched_files += 1
+                restored += len(pending)
+                touched_files += 1
+                written_files.append(str(target_file))
+        except rx.ExtractionCancelled:
+            result.cancelled = True
+            result.success = False
+            result.written_files = list(written_files)
+            result.message = (
+                f"恢复已取消；已写入 {len(written_files)} 个文件、{restored} 条"
+                if written_files
+                else "恢复已取消"
+            )
+            return result
+        except Exception as exc:
+            # 读/写失败：保留已成功 written_files，不抛丢元数据
+            result.cancelled = False
+            result.success = False
+            result.written_files = list(written_files)
+            result.message = (
+                f"恢复失败（已保留 {len(written_files)} 个已写文件）：{exc}"
+                if written_files
+                else f"恢复失败：{exc}"
+            )
+            return result
 
+        result.written_files = list(written_files)
         result.success = restored > 0
         if result.success:
             result.message = (
@@ -1517,7 +1561,8 @@ class UnifiedExtractor:
         game_dir: str | Path,
         tl_name: str,
         exe_path: str | Path = None,
-        use_official: bool = True
+        use_official: bool = True,
+        config_snapshot: Any = None,
     ) -> ExtractionResult:
         """
         常规抽取：官方抽取 + 自定义补充抽取
@@ -1534,7 +1579,7 @@ class UnifiedExtractor:
         backup_path: Optional[Path] = None
         
         try:
-            config = Config().load()
+            config = config_snapshot if config_snapshot is not None else Config().load()
             _, rule_mode, selected_profile = selection_for_path(game_dir, 'source')
             allow_rules = rule_mode != 'builtin'
             allow_official = bool(rule_mode != 'custom' and use_official and config.extract_use_official and exe_path)
@@ -1713,7 +1758,8 @@ class UnifiedExtractor:
         tl_name: str,
         exe_path: str | Path = None,
         use_official: bool = True,
-        output_to_separate_folder: bool = True  # 新增：是否输出到独立文件夹
+        output_to_separate_folder: bool = True,  # 新增：是否输出到独立文件夹
+        config_snapshot: Any = None,
     ) -> ExtractionResult:
         """
         增量抽取：保留已有翻译，只提取新增内容
@@ -1738,7 +1784,7 @@ class UnifiedExtractor:
         result.incremental_dir = incremental_dir
         
         try:
-            config = Config().load()
+            config = config_snapshot if config_snapshot is not None else Config().load()
             _, rule_mode, selected_profile = selection_for_path(game_dir, 'source')
             allow_rules = rule_mode != 'builtin'
             allow_official = bool(rule_mode != 'custom' and use_official and config.extract_use_official and exe_path)
@@ -2193,17 +2239,19 @@ class UnifiedExtractor:
         incremental_dir: str | Path | None = None,
         *,
         clean_duplicates: bool = True,
+        config_snapshot: Any = None,
     ) -> ExtractionResult:
         """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。"""
         result = ExtractionResult()
         game_dir = Path(game_dir)
         # 若上次增量抽取被中断，先恢复 tl 再合并。
         self._recover_stale_incremental_state(game_dir, tl_name)
-        # 目标 TL 目录优先沿用当前项目配置中的显式路径（例如项目根/tl），
+        # 目标 TL 目录优先沿用请求快照/当前项目配置中的显式路径（例如项目根/tl），
         # 只有配置无法证明属于当前项目时才回退到标准 game/tl 布局。
         tl_dir = None
         try:
-            configured_paths = RenpyProjectPaths.from_config(Config().load(), tl_name)
+            cfg = config_snapshot if config_snapshot is not None else Config().load()
+            configured_paths = RenpyProjectPaths.from_config(cfg, tl_name)
             if (
                 configured_paths is not None
                 and configured_paths.project_root == game_dir.resolve()
@@ -2536,14 +2584,18 @@ class UnifiedExtractor:
 
         if clean_duplicates:
             self._emit_progress("正在清理重复与空文件...", 80)
-            config = Config().load()
+            # 合并选项链全程用请求快照；无快照时 Qt/旧调用仍回退 Config.load
+            config = config_snapshot if config_snapshot is not None else Config().load()
             try:
-                rx.remove_repeat_extracted_from_tl(
+                self._call_with_optional_callbacks(
+                    rx.remove_repeat_extracted_from_tl,
                     str(tl_dir),
                     is_py2=False,
                     duplicate_action=getattr(config, "renpy_duplicate_string_action", "comment"),
+                    should_stop=self._is_cancelled,
                 )
             except Exception as exc:
+                self._check_cancel()
                 self.logger.warning(f"清理重复失败 {tl_dir}: {exc}")
             if getattr(config, "renpy_remove_string_duplicates", False):
                 removed = self._remove_string_duplicates_with_blocks(tl_dir)
@@ -2691,15 +2743,23 @@ class UnifiedExtractor:
         game_dir: Path,
         tl_dir: Path,
         rel_paths: Optional[Set[str]] = None,
+        *,
+        should_stop: Optional[Callable[[], bool]] = None,
+        written_files: Optional[List[str]] = None,
     ) -> int:
         """按编号块对应源行号升序整理 TL 文件，strings 块保持在文件最后。
 
         只信任翻译文件里已有的 ``# game/<path>:<line>`` 位置注释，不做源码
         溯源；没有行号注释的块保持原相对顺序排到可排序块之后。返回被重排
         的文件数。
+
+        可选 ``should_stop`` / ``written_files``：写前可取消，并记录实际改写
+        的文件；旧调用方不受影响。
         """
         reordered = 0
         for tl_file in self._iter_rpy_files(tl_dir):
+            if should_stop is not None and should_stop():
+                raise RuntimeError("运行时 HOOK 抽取已取消")
             rel = tl_file.relative_to(tl_dir).as_posix()
             if rel_paths is not None and rel not in rel_paths:
                 continue
@@ -2820,6 +2880,8 @@ class UnifiedExtractor:
             output.extend(postlude)
             if output and output[-1].strip() != "":
                 output.append("")
+            if should_stop is not None and should_stop():
+                raise RuntimeError("运行时 HOOK 抽取已取消")
             try:
                 # 重建时必须保留非 LABEL/STRINGS 块（例如 translate python），
                 # 否则排序会静默丢掉这些内容。
@@ -2830,6 +2892,16 @@ class UnifiedExtractor:
                     allowed_roots=[tl_dir],
                 )
                 reordered += 1
+                if written_files is not None:
+                    path_str = str(tl_file)
+                    seen = {
+                        os.path.normcase(os.path.normpath(item))
+                        for item in written_files
+                    }
+                    if os.path.normcase(os.path.normpath(path_str)) not in seen:
+                        written_files.append(path_str)
+            except RuntimeError:
+                raise
             except Exception as exc:
                 self.logger.warning(f"整理编号块顺序失败 {tl_file}: {exc}")
         return reordered
@@ -4902,11 +4974,29 @@ class UnifiedExtractor:
         return result
 
     def _iter_reuse_files(self, tl_dir: Path):
-        """复用包含独立补漏的译文来源，自动生成的钩子不作为普通 TL 解析。"""
+        """复用包含独立补漏的译文来源；lexical 遍历，不跟随 junction/symlink。"""
         from module.Extract.ReplaceGenerator import _resolve_miss_path
-        yield from self._iter_rpy_files(tl_dir)
+        from module.Tool.LexicalFs import is_link_or_reparse, iter_rpy_files_lexical
+
+        for rpy_file in iter_rpy_files_lexical(tl_dir):
+            self._check_cancel()
+            try:
+                rel_parts = [part.lower() for part in rpy_file.relative_to(tl_dir).parts[:-1]]
+                if any(part in self.INTERNAL_TL_DIRS for part in rel_parts):
+                    continue
+            except Exception as exc:
+                self.logger.warning(f"无法解析翻译文件相对路径 {rpy_file}: {exc}")
+            if rpy_file.name.startswith("miss_ready_replace"):
+                continue
+            if self._is_builtin_ui_file(rpy_file):
+                continue
+            yield rpy_file
         miss_path = _resolve_miss_path(tl_dir)
-        if miss_path is not None and miss_path.is_file():
+        if (
+            miss_path is not None
+            and miss_path.is_file()
+            and not is_link_or_reparse(miss_path)
+        ):
             yield miss_path
 
     def _load_reuse_translations(self, source: Path, target: Path) -> ExistingTranslations:
@@ -4941,32 +5031,37 @@ class UnifiedExtractor:
         source_tl_dir: str | Path,
         target_tl_dir: str | Path,
     ) -> tuple[Path, Path]:
-        source = Path(source_tl_dir).expanduser().resolve()
-        target = Path(target_tl_dir).expanduser().resolve()
-        if not source.is_dir():
-            raise FileNotFoundError(f"旧译文目录不存在: {source}")
-        if not target.is_dir():
-            raise FileNotFoundError(f"目标译文目录不存在: {target}")
+        from module.Tool.LexicalFs import lexical_abs, require_no_link_escape
+
+        # lexical 根：拒绝根本身是联接；子树含联接在 require 中一并拒绝
+        source = require_no_link_escape(source_tl_dir, label="旧译文目录")
+        target = require_no_link_escape(target_tl_dir, label="目标译文目录")
         if source == target:
             raise ValueError("旧译文目录和目标译文目录不能相同")
-        return source, target
+        # 拒绝祖孙重叠，避免备份/复用范围混淆或自包含污染
+        if source in target.parents or target in source.parents:
+            raise ValueError("旧译文与目标译文目录不能互相包含")
+        # 与历史 resolve 行为对齐：对外仍给出规范化路径
+        return lexical_abs(source), lexical_abs(target)
 
     def _copy_tl_backup(self, target_tl_dir: Path) -> Path:
+        from module.Tool.LexicalFs import copytree_lexical, lexical_abs
+
+        target = lexical_abs(target_tl_dir)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        backup_parent = target_tl_dir.parent
-        for ancestor in target_tl_dir.parents:
+        backup_parent = target.parent
+        for ancestor in target.parents:
             if ancestor.name.lower() == "game":
                 backup_parent = ancestor.parent
                 break
 
-        base = backup_parent / f"tl_backup_{target_tl_dir.name}_reuse_{timestamp}"
+        base = backup_parent / f"tl_backup_{target.name}_reuse_{timestamp}"
         backup = base
         suffix = 1
         while backup.exists():
             backup = Path(f"{base}_{suffix}")
             suffix += 1
-        shutil.copytree(target_tl_dir, backup)
-        return backup
+        return copytree_lexical(target, backup)
 
     def _apply_translation_reuse(
         self,
@@ -5030,13 +5125,23 @@ class UnifiedExtractor:
                         items_to_apply.sort(key=get_target_line)
                         applied, _ = writer.apply_items_to_lines(lines, items_to_apply)
                         if applied > 0:
-                            atomic_write_text(
-                                rpy_file,
-                                "\n".join(lines),
-                                validator=validate_tl_document,
-                                allowed_roots=[tl_dir],
-                            )
-                            result.applied_entries += applied
+                            try:
+                                atomic_write_text(
+                                    rpy_file,
+                                    "\n".join(lines),
+                                    validator=validate_tl_document,
+                                    allowed_roots=[tl_dir],
+                                )
+                                result.applied_entries += applied
+                            except Exception as write_exc:
+                                self.logger.warning(f"AST 回填写盘失败 {rpy_file}: {write_exc}")
+                                if not dry_run:
+                                    try:
+                                        rel = rpy_file.relative_to(tl_dir).as_posix()
+                                    except ValueError:
+                                        rel = str(rpy_file)
+                                    if rel not in result.failed_files:
+                                        result.failed_files.append(rel)
                     continue
             except Exception as e:
                 self.logger.warning(f"AST 回填翻译失败 {rpy_file}: {e}")
@@ -5105,6 +5210,13 @@ class UnifiedExtractor:
                     )
             except Exception as e:
                 self.logger.warning(f"回填翻译失败 {rpy_file}: {e}")
+                if not dry_run:
+                    try:
+                        rel = rpy_file.relative_to(tl_dir).as_posix()
+                    except ValueError:
+                        rel = str(rpy_file)
+                    if rel not in result.failed_files:
+                        result.failed_files.append(rel)
 
         return result
 

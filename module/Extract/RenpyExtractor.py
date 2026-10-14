@@ -217,8 +217,12 @@ class RenpyExtractor:
         timeout: int = 300,
         progress_callback: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        written_files: list[str] | None = None,
     ) -> Path:
-        """Inject runtime hook, launch game, and build tl files from JSON."""
+        """Inject runtime hook, launch game, and build tl files from JSON.
+
+        ``written_files`` 若传入，则追加本次实际写入的 TL 路径（取消/中途失败也保留已写项）。
+        """
         exe, project = self._resolve_game_exe(target_path)
         game_dir = project / "game"
         if not game_dir.exists():
@@ -252,16 +256,17 @@ class RenpyExtractor:
         launch_env["RENPYBOX_TL_NAME"] = normalized_tl_name
         # 避免 Ren'Py 把字符串更新写到“当前语言目录”而不是用户指定目录。
         launch_env.pop("RENPY_UPDATE_STRINGS", None)
-        process = subprocess.Popen(
-            [str(exe)],
-            cwd = str(project),
-            env = launch_env,
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-            creationflags = creationflags,
-        )
-
+        # Popen 必须在 try 内：启动失败也要清掉已注入的临时 hook。
+        process: subprocess.Popen | None = None
         try:
+            process = subprocess.Popen(
+                [str(exe)],
+                cwd = str(project),
+                env = launch_env,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                creationflags = creationflags,
+            )
             self._report_progress(progress_callback, f"正在运行 EXE：{exe.name}")
             self._wait_for_runtime_result(
                 result_path,
@@ -276,6 +281,9 @@ class RenpyExtractor:
                 pass
 
             runtime_data = self._load_runtime_mapping(result_path, project)
+            # 等待结果取消后、写 TL 前再检一次，避免取消后仍整树写入。
+            if should_stop and should_stop():
+                raise RuntimeError("运行时 HOOK 抽取已取消")
             self._report_progress(progress_callback, "运行时抽取完成，正在写入 tl 目录")
             tl_dir = self._write_runtime_tl(
                 project,
@@ -283,6 +291,8 @@ class RenpyExtractor:
                 runtime_data,
                 generate_empty,
                 incremental,
+                should_stop = should_stop,
+                written_files = written_files,
             )
             self._report_progress(progress_callback, f"已写入 tl 目录：{tl_dir}")
             return tl_dir
@@ -297,6 +307,8 @@ class RenpyExtractor:
         *,
         ensure_official: bool = False,
         force: bool = False,
+        should_stop: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> List[Dict]:
         """Return parsed translation entries from tl/<lang>.
 
@@ -305,7 +317,13 @@ class RenpyExtractor:
 
         exe, project = self._resolve_game_exe(target_path)
         if ensure_official:
-            self.official_extract(exe, tl_name, force=force)
+            self.official_extract(
+                exe,
+                tl_name,
+                force=force,
+                should_stop=should_stop,
+                progress_callback=progress_callback,
+            )
         return self._parse_tl_directory(project, tl_name)
 
     def export_to_json(
@@ -316,6 +334,8 @@ class RenpyExtractor:
         *,
         include_metadata: bool = True,
         force_extract: bool = False,
+        should_stop: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> bool:
         """Run official extract (if needed) and export to structured JSON."""
 
@@ -324,6 +344,8 @@ class RenpyExtractor:
             tl_name,
             ensure_official=True,
             force=force_extract,
+            should_stop=should_stop,
+            progress_callback=progress_callback,
         )
         data: Dict[str, List[Dict]] = {}
         for entry in entries:
@@ -927,6 +949,9 @@ class RenpyExtractor:
         runtime_data: Dict[str, Dict[str, List[List[Any]]]],
         generate_empty: bool,
         incremental: bool = True,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        written_files: list[str] | None = None,
     ) -> Path:
         tl_dir = project / "game" / "tl" / tl_name
         tl_dir.mkdir(parents=True, exist_ok=True)
@@ -953,7 +978,12 @@ class RenpyExtractor:
                     self._collect_existing_string_originals(existing_lines)
                 )
 
+        from module.File.AtomicWrite import atomic_write_text
+
         for filename in sorted(set(dialogues_by_file) | set(strings_by_file)):
+            if should_stop and should_stop():
+                raise RuntimeError("运行时 HOOK 抽取已取消")
+
             dialogue_entries = list(dialogues_by_file.get(filename, []) or [])
             string_entries = list(strings_by_file.get(filename, []) or [])
             dialogue_entries.sort(key=lambda item: item[3] if len(item) > 3 else 0)
@@ -1037,33 +1067,62 @@ class RenpyExtractor:
             if not append_lines:
                 continue
 
-            with target.open("a", encoding="utf-8", newline="\n") as writer:
-                if existing_lines:
-                    writer.write("\n")
-                    if existing_lines[-1].strip():
-                        writer.write("\n")
-                writer.write("\n".join(append_lines).rstrip() + "\n")
+            # 每个原子文件写前再检取消；已成功写入的路径保留在 written_files。
+            if should_stop and should_stop():
+                raise RuntimeError("运行时 HOOK 抽取已取消")
+
+            # 语义仍是 append，但整文件（既有文本+追加）原子提交：
+            # 中途失败不得留下半写原文件，成功后才记入 written_files。
+            append_body = "\n".join(append_lines).rstrip() + "\n"
+            if existing_lines:
+                base = "\n".join(existing_lines)
+                spacer = "\n\n" if existing_lines[-1].strip() else "\n"
+                new_text = base + spacer + append_body
+            else:
+                new_text = append_body
+            atomic_write_text(target, new_text, encoding="utf-8", newline="\n")
+            if written_files is not None:
+                written_files.append(str(target))
+
+        if should_stop and should_stop():
+            raise RuntimeError("运行时 HOOK 抽取已取消")
 
         # 写侧只追加缺失，但跨文件可能残留重复 old（例如旧版本遗留），
         # 运行后统一做唯一性校验，保证 Ren'Py 启动不会报重复翻译错误。
+        # 后置去重/排序也会改旧 TL，必须纳入同 written_files；取消不得被 warning 吞掉。
         try:
             from module.Extract.ReplaceGenerator import dedupe_string_translations
 
-            removed = dedupe_string_translations(tl_dir, tl_name)
+            removed = dedupe_string_translations(
+                tl_dir,
+                tl_name,
+                should_stop=should_stop,
+                written_files=written_files,
+            )
             if removed:
                 self.logger.info(f"运行时抽取后清理 {removed} 条重复 old")
+        except RuntimeError:
+            raise
         except Exception as exc:
             self.logger.warning(f"运行时抽取后唯一性校验失败: {exc}")
+
+        if should_stop and should_stop():
+            raise RuntimeError("运行时 HOOK 抽取已取消")
 
         # 追加写回可能打乱编号块顺序，统一按源行号整理，strings 块保持最后。
         try:
             from module.Extract.UnifiedExtractor import UnifiedExtractor
 
             organized = UnifiedExtractor()._sort_numbered_blocks_by_source_line(
-                project / "game", tl_dir
+                project / "game",
+                tl_dir,
+                should_stop=should_stop,
+                written_files=written_files,
             )
             if organized:
                 self.logger.info(f"已按源行号整理 {organized} 个文件的编号块顺序")
+        except RuntimeError:
+            raise
         except Exception as exc:
             self.logger.warning(f"运行时抽取后整理编号块顺序失败: {exc}")
 

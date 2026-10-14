@@ -195,7 +195,9 @@ def scan_script_errors(
         selected = list(items[:remaining])
         limited[file_path] = selected
         remaining -= len(selected)
-    if total == 0:
+    if scan.budget_exhausted:
+        message = Localizer.get().agent_scan_incomplete
+    elif total == 0:
         message = Localizer.get().agent_scan_no_errors
     else:
         returned = sum(len(v) for v in limited.values())
@@ -214,6 +216,8 @@ def scan_script_errors(
             "translation_dir": str(translation_dir),
             "scanned_files": scan.scanned_files,
             "total_files": scan.total_files,
+            "total_files_known": scan.total_files_known,
+            "scan_complete": scan.total_files_known and not scan.budget_exhausted,
             "budget_exhausted": scan.budget_exhausted,
         },
     )

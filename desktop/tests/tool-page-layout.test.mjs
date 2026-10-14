@@ -1,0 +1,102 @@
+/**
+ * 工具详情页共享布局静态检查（不启动 Electron / 不 build）。
+ *
+ * 运行（pwsh）：
+ *   cd desktop; node --test tests/tool-page-layout.test.mjs
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const css = fs.readFileSync(path.join(root, 'renderer/src/styles/app.css'), 'utf8');
+const frame = fs.readFileSync(path.join(root, 'renderer/src/components/ToolPageFrame.tsx'), 'utf8');
+const ui = fs.readFileSync(path.join(root, 'renderer/src/ui.tsx'), 'utf8');
+const layoutScript = fs.readFileSync(path.join(root, 'scripts/check-tool-layout.cjs'), 'utf8');
+
+test('ToolPageFrame 使用 rb-tool-page / rb-tool-panel 层次', () => {
+  assert.match(frame, /rb-tool-page/);
+  assert.match(frame, /rb-tool-panel/);
+  assert.match(frame, /data-rb-tool-frame/);
+});
+
+test('SettingsGroup 保留 rb-settings-body', () => {
+  assert.match(ui, /className="rb-settings-body"/);
+});
+
+test('SettingsGroup body 默认 16px + flex-wrap', () => {
+  assert.match(css, /\.rb-settings-body\s*\{[^}]*padding:\s*16px/s);
+  assert.match(css, /\.rb-settings-body\s*\{[^}]*flex-wrap:\s*wrap/s);
+  assert.match(css, /\.rb-settings-body\s*\{[^}]*gap:\s*8px 16px/s);
+});
+
+test('checkbox 占满一行，避免横向挤成一排', () => {
+  assert.match(css, /\.rb-settings-body\s*>\s*\.ant-checkbox-wrapper\s*\{[^}]*flex:\s*1 1 100%/s);
+});
+
+test('含 SettingCard 行时去掉 body 双份边距', () => {
+  assert.match(css, /\.rb-settings-body:has\(>\s*\.rb-setting-row\)\s*\{[^}]*padding:\s*0/s);
+});
+
+test('settings-body 直接子级 SettingCard 行拉满全宽，避免 flex-wrap 多列', () => {
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*flex:\s*1 1 100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*width:\s*100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*\.rb-setting-row\s*\{[^}]*min-width:\s*0/s);
+});
+
+test('Electron 布局脚本覆盖应用/专家设置行宽与更新确认流程', () => {
+  assert.match(layoutScript, /capture\('AppSettingsPage'\)/);
+  assert.match(layoutScript, /capture\('ExpertSettingsPage'\)/);
+  assert.match(layoutScript, /body\.manual===false/);
+  assert.match(layoutScript, /确认前无 \/download/);
+});
+
+test('tool-panel 滚动页统一 padding/gap（含 .rb-page 子页）', () => {
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*padding:\s*0 4px 16px/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*gap:\s*12px/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*overflow:\s*hidden auto/s);
+  assert.match(css, /\.rb-tool-panel\s*>\s*\.rb-page-scroll,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*\{[^}]*grid-template-rows:\s*none/s);
+});
+
+test('tool-panel 纵向 flex 链可收缩', () => {
+  assert.match(css, /\.rb-tool-panel\s*\{[^}]*flex:\s*1 1 auto/s);
+  assert.match(css, /\.rb-tool-panel\s*\{[^}]*min-height:\s*0/s);
+  assert.match(css, /\.rb-tool-page\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.rb-tool-page\s*\{[^}]*overflow:\s*hidden/s);
+});
+
+test('settings-body 直接子级 Form 拉满宽度', () => {
+  assert.match(css, /\.rb-settings-body\s*>\s*form,\s*\.rb-settings-body\s*>\s*\.ant-form\s*\{[^}]*width:\s*100%/s);
+  assert.match(css, /\.rb-settings-body\s*>\s*form,\s*\.rb-settings-body\s*>\s*\.ant-form\s*\{[^}]*min-width:\s*0/s);
+});
+
+test('详情页有 Qt 底色与卡片阴影层次', () => {
+  assert.match(css, /\.rb-tool-page\s*\{[^}]*background:\s*var\(--rb-qt-page\)/s);
+  assert.match(css, /\.rb-tool-page\s+\.rb-settings-group\s*\{[^}]*box-shadow:\s*var\(--rb-qt-shadow\)/s);
+  assert.match(css, /\.rb-tool-page\s+\.rb-settings-group\s*\{[^}]*width:\s*100%/s);
+});
+
+test('onekey/archive/asset body 规则保留且不叠双份', () => {
+  assert.match(
+    css,
+    /:is\(\.rb-onekey-page,\s*\.rb-archive-page,\s*\.rb-asset-page\)\s+\.rb-settings-body\s*\{[^}]*padding:\s*16px/s,
+  );
+});
+
+test('工具页短 Banner 不强制撑满，且为相对定位独立块', () => {
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*width:\s*fit-content/s,
+  );
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*position:\s*relative/s,
+  );
+  assert.match(
+    css,
+    /\.rb-tool-panel\s*>\s*\.rb-page-scroll\s*>\s*\.banner,\s*\.rb-tool-panel\s*>\s*\.rb-page\s*>\s*\.banner\s*\{[^}]*flex:\s*0 0 auto/s,
+  );
+});

@@ -8,12 +8,59 @@
 
 所有项目事实写入都先经过本类，再由调用方明确选择是否立即持久化。
 运行期临时目录可以使用 ``persist=False``，但不能绕过字段写入收口。
+
+模块级补全了两个 Qt5 已有的项目绑定副作用（Electron 端经 API 调用）：
+``resolve_target_language``（按真实 ``tl/<lang>`` 推断目标语言）与
+``ensure_output_folder``（按需创建输出目录，失败不抛出）。
 """
 
 from base.Base import Base
 from base.compat import Self
-from module.Renpy.ProjectPaths import RenpyProjectPaths, apply_to_config
+from module.Renpy.ProjectPaths import (
+    RenpyProjectPaths,
+    apply_to_config,
+    guess_language_from_tl_path,
+)
 from collections.abc import Callable
+from pathlib import Path
+
+
+def resolve_target_language(config, paths: RenpyProjectPaths) -> bool:
+    """项目绑定时按真实 ``tl/<lang>`` 目录推断目标语言。
+
+    等价于 Qt5 ``frontend/Project/ProjectPage.py:151-153`` 的 mutate：只在
+    检测到真实语言目录时改写 ``target_language``；推断不出时保留用户当前
+    选择（例如尚未创建该语言目录的新项目）。返回是否发生了改写。
+    """
+    guessed = guess_language_from_tl_path(paths.tl_language_dir)
+    if guessed is None:
+        return False
+    if getattr(config, "target_language", None) == guessed:
+        return False
+    config.target_language = guessed
+    return True
+
+
+def ensure_output_folder(config, field: str = "output_folder") -> bool:
+    """按需创建输出目录（parents + exist_ok），失败只记录不抛出。
+
+    等价于 Qt5 ``frontend/Project/ProjectPage.py:215``：项目绑定后翻译输出
+    目录必须存在，否则第一次任务会因为目录不存在直接失败。配置值本身保持
+    不变——目录以后仍可创建（例如换盘符或稍后挂载网络盘）。
+    """
+    raw = str(getattr(config, field, "") or "").strip()
+    if raw == "":
+        return False
+    try:
+        path = Path(raw).expanduser()
+    except (OSError, ValueError):
+        return False
+    try:
+        path.mkdir(parents = True, exist_ok = True)
+    except (OSError, ValueError) as exc:
+        Base().warning(f"输出目录创建失败，保留配置路径：{raw}", exc, console = False)
+        return False
+    return True
 
 
 class ProjectStore(Base):
