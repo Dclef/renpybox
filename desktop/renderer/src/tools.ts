@@ -346,12 +346,12 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     key: 'android_build',
     title: '安卓打包',
-    description: '安装 SDK、生成签名并构建 APK',
+    description: '安装 SDK、生成签名并构建 APK；支持壳资源打包与 X- 前缀去除 / 恢复。',
     group: 'engineer',
     requiresProject: false,
     icon: 'ANDROID',
     step: 0,
-    keywords: ['apk', 'sdk', '签名', 'rapt', 'android', 'gradle'],
+    keywords: ['apk', 'sdk', '签名', 'rapt', 'android', 'gradle', 'x-', '前缀', 'prefix', '解包', 'unpack'],
   },
   {
     key: 'html_import',

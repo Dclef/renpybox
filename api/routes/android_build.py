@@ -24,10 +24,12 @@ from module.Tool.AndroidBuilder import AndroidBuilder
 from module.Tool.AndroidProjectTools import (
     AndroidProjectToolsError,
     DEFAULT_DETECT_HINTS,
+    PREFIX_DEFAULT,
     detect_resource_dirs,
     make_shell_archive,
     merge_items,
     preflight_shell_archive,
+    rename_prefix as run_rename_prefix,
     sanitize_android_dist_assets,
     split_items,
 )
@@ -131,6 +133,14 @@ class OpenBinBody(BaseModel):
     project_key: str = ""
     project_path: str = ""
     sdk_path: str = ""
+
+
+class PrefixBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    directory: str = ""
+    prefix: str = PREFIX_DEFAULT
+    action: str = "strip"
+    apply: bool = False
 
 
 def _norm(value: str) -> str:
@@ -499,6 +509,24 @@ def open_bin_info(request: Request, body: OpenBinBody) -> dict:
             for path in builder.list_outputs()
         ],
     }
+
+
+@router.post("/prefix")
+def rename_prefix(request: Request, body: PrefixBody) -> dict:
+    """任意目录批量去/加 X- 前缀；不要求项目绑定、不取引擎锁、不写 config。"""
+    _ = request
+    directory = str(body.directory or "").strip()
+    if not directory:
+        raise HTTPException(status_code=400, detail="请先选择要处理的目录")
+    try:
+        return run_rename_prefix(
+            directory,
+            prefix=body.prefix,
+            action=body.action,
+            apply=bool(body.apply),
+        )
+    except AndroidProjectToolsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/check-env")

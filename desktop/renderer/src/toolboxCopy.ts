@@ -57,7 +57,7 @@ const ENGLISH_TOOLS: Record<string, [string, string]> = {
   error_repair: ['Check & repair scripts', 'Find script errors and repair supported issues'],
   translation_reuse: ['Reuse translations', 'Match and reuse translations from another project'],
   formatter: ['Format scripts', 'Normalize script formatting'],
-  android_build: ['Android build', 'Prepare and build an Android version of the game'],
+  android_build: ['Android build', 'Install the SDK, sign and build APKs; pack shell archives and strip / restore the X- prefix.'],
   html_import: ['Import HTML', 'Import HTML translation results into game scripts'],
   game_mod: ['Game mods', 'Apply supported game modifications and patches'],
 };

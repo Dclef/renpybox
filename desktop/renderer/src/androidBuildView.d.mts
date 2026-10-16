@@ -56,3 +56,36 @@ export function formatAndroidOutputs(
   outputs?: Array<string | { name?: string }>,
   limit?: number,
 ): string[];
+
+export function prefixRequestBody(
+  directory: unknown,
+  prefix: unknown,
+  action: unknown,
+  apply: unknown,
+): {
+  directory: string;
+  prefix: string;
+  action: unknown;
+  apply: boolean;
+};
+
+export function formatPrefixPlan(
+  payload: {
+    total?: number;
+    files?: number;
+    dirs?: number;
+    skipped?: number;
+  } | null | undefined,
+  lang?: string,
+): string;
+
+export function formatPrefixResult(
+  payload: {
+    renamed?: number;
+    files?: number;
+    dirs?: number;
+    skipped?: number;
+    new_root?: string | null;
+  } | null | undefined,
+  lang?: string,
+): string;

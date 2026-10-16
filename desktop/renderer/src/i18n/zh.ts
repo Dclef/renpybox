@@ -55,7 +55,7 @@ export const zh = {
   app_tool_desc_error_repair: '扫描并修复翻译目录中生成的 .rpy 错误；可导出 Excel 报告并运行深度 Lint。',
   app_tool_desc_translation_reuse: '按原文将旧译文安全填入新版本的空条目，冲突的人工译文保留。',
   app_tool_desc_formatter: '格式化 .rpy 文件：行首 Tab 转空格、清除行尾空白；始终保留注释。',
-  app_tool_desc_android_build: '安装 SDK、生成签名并构建 APK；支持壳资源打包与清理。',
+  app_tool_desc_android_build: '安装 SDK、生成签名并构建 APK；支持壳资源打包与 X- 前缀去除 / 恢复。',
   app_tool_desc_html_import: '把 TL 目录导出为 TXT，交给网页或 AI 翻译后再回填生成新 TL。',
   app_tool_desc_game_mod: '注入画廊解锁、URM、内置修改器等通用模组，并清理旧独木桥。',
   app_tool_desc_ma_suite: '导出 Excel 与结构化翻译脚本，并提供 Emoji/Tag 译前译后替换。',

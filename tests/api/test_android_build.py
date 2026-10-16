@@ -457,3 +457,82 @@ def test_self_persist_target_does_not_invalidate_owner(android_app, monkeypatch)
     assert Path(job["result"]["archive_path"]).is_file()
     # 全局已切到 B，但本任务仍完成
     assert Path(config.renpy_project_path) == other
+
+
+def test_prefix_works_without_project_binding(android_app, tmp_path):
+    """未绑定项目时 /prefix 仍可改名（不依赖项目、不取锁）。"""
+    client, config, engine, _, _, _, _, _ = android_app
+    config.renpy_project_path = ""
+    config.renpy_game_folder = ""
+    folder = tmp_path / "x-game"
+    folder.mkdir()
+    (folder / "x-a.txt").write_text("a", encoding="utf-8")
+    response = client.post(
+        "/api/android-build/prefix",
+        json={
+            "directory": str(folder),
+            "prefix": "x-",
+            "action": "strip",
+            "apply": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["applied"] is True
+    assert body["message"]
+    assert Path(body["new_root"]).name == "game"
+    assert (Path(body["new_root"]) / "a.txt").is_file()
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_prefix_validation_errors(android_app, tmp_path):
+    client, _, _, _, _, _, _, _ = android_app
+    assert client.post(
+        "/api/android-build/prefix",
+        json={"directory": "", "action": "strip"},
+    ).status_code == 400
+    assert client.post(
+        "/api/android-build/prefix",
+        json={"directory": str(tmp_path / "missing"), "action": "strip"},
+    ).status_code == 400
+    assert client.post(
+        "/api/android-build/prefix",
+        json={"directory": str(tmp_path), "action": "move"},
+    ).status_code == 400
+
+
+def test_prefix_dry_run_and_apply(android_app, tmp_path):
+    client, _, _, _, _, _, _, _ = android_app
+    folder = tmp_path / "x-game"
+    folder.mkdir()
+    (folder / "x-script.rpyc").write_bytes(b"s")
+    dry = client.post(
+        "/api/android-build/prefix",
+        json={
+            "directory": str(folder),
+            "prefix": "x-",
+            "action": "strip",
+            "apply": False,
+        },
+    )
+    assert dry.status_code == 200
+    dry_body = dry.json()
+    assert dry_body["total"] > 0
+    assert dry_body["applied"] is False
+    assert (folder / "x-script.rpyc").is_file()
+
+    applied = client.post(
+        "/api/android-build/prefix",
+        json={
+            "directory": str(folder),
+            "prefix": "x-",
+            "action": "strip",
+            "apply": True,
+        },
+    )
+    assert applied.status_code == 200
+    body = applied.json()
+    assert body["applied"] is True
+    assert body["message"]
+    assert (Path(body["new_root"]) / "script.rpyc").is_file()
