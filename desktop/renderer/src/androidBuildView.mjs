@@ -71,6 +71,24 @@ export const ANDROID_COPY = {
   outputs: { ZH: '输出 APK（含历史）', EN: 'Output APKs (includes history)' },
   newOutputs: { ZH: '本次新产物', EN: 'New outputs this run' },
   shellResult: { ZH: '壳包结果', EN: 'Shell result' },
+  xPrefix: { ZH: 'X- 前缀', EN: 'X- prefix' },
+  xPrefixHint: {
+    ZH: '部分安卓版把游戏目录与文件名统一加了 X- 前缀（例如 assets/x-game/x-script.rpyc）。建议直接选 assets/x-game 目录本身：先去除前缀做翻译，放回 APK 前再对改名后的 game 目录恢复前缀。',
+    EN: 'Some Android builds prefix every file and folder in the game directory with X- (for example assets/x-game/x-script.rpyc). Point this at the assets/x-game folder itself: strip the prefix before translating, then restore it on the renamed game folder before putting the files back into the APK.',
+  },
+  prefixDir: { ZH: '目录', EN: 'Folder' },
+  prefixDirPlaceholder: { ZH: '例如 ...\\assets\\x-game', EN: 'e.g. ...\\assets\\x-game' },
+  prefixLabel: { ZH: '前缀', EN: 'Prefix' },
+  stripPrefix: { ZH: '去除前缀', EN: 'Strip prefix' },
+  restorePrefix: { ZH: '恢复前缀', EN: 'Restore prefix' },
+  prefixNothing: {
+    ZH: '未发现需要处理的条目（没有需要去除或恢复前缀的文件与目录）。',
+    EN: 'Nothing to change: no file or folder needs the X- prefix stripped or restored.',
+  },
+  prefixNeedDir: { ZH: '请先选择要处理的目录。', EN: 'Choose a folder first.' },
+  confirmStrip: { ZH: '去除 X- 前缀', EN: 'Strip the X- prefix' },
+  confirmRestore: { ZH: '恢复 X- 前缀', EN: 'Restore the X- prefix' },
+  prefixSamples: { ZH: '将要处理的条目（示例）', EN: 'Entries to change (sample)' },
 };
 
 export function androidCopy(table, lang = 'ZH') {
@@ -164,4 +182,57 @@ export function appendArchiveSource(current, folder) {
 export function formatAndroidOutputs(outputs = [], limit = 3) {
   const list = Array.isArray(outputs) ? outputs : [];
   return list.slice(0, limit).map((item) => (typeof item === 'string' ? item : item?.name)).filter(Boolean);
+}
+
+/** 前缀处理请求体：空前缀回落 x-。 */
+export function prefixRequestBody(directory, prefix, action, apply) {
+  const trimmedPrefix = String(prefix ?? '').trim();
+  return {
+    directory: String(directory ?? '').trim(),
+    prefix: trimmedPrefix || 'x-',
+    action,
+    apply: Boolean(apply),
+  };
+}
+
+function _prefixRootName(newRoot) {
+  const text = String(newRoot || '').replace(/[\\/]+$/, '');
+  if (!text) return '';
+  const parts = text.split(/[/\\]/);
+  return parts[parts.length - 1] || '';
+}
+
+/** 干跑摘要（确认框正文）。 */
+export function formatPrefixPlan(payload, lang = 'ZH') {
+  const total = Number(payload?.total || 0);
+  const files = Number(payload?.files || 0);
+  const dirs = Number(payload?.dirs || 0);
+  const skipped = Number(payload?.skipped || 0);
+  if (lang === 'EN') {
+    let message = `Rename ${total} entries (${files} files / ${dirs} folders)`;
+    if (skipped > 0) message += `, skip ${skipped}`;
+    return message;
+  }
+  let message = `将重命名 ${total} 个条目（文件 ${files} / 目录 ${dirs}）`;
+  if (skipped > 0) message += `，跳过 ${skipped} 个`;
+  return message;
+}
+
+/** 落盘结果摘要。 */
+export function formatPrefixResult(payload, lang = 'ZH') {
+  const renamed = Number(payload?.renamed || 0);
+  const files = Number(payload?.files || 0);
+  const dirs = Number(payload?.dirs || 0);
+  const skipped = Number(payload?.skipped || 0);
+  const rootName = _prefixRootName(payload?.new_root);
+  if (lang === 'EN') {
+    let message = `Renamed ${renamed} entries (${files} files / ${dirs} folders)`;
+    if (skipped > 0) message += `, skip ${skipped}`;
+    if (rootName) message += `, root folder renamed to ${rootName}`;
+    return message;
+  }
+  let message = `已重命名 ${renamed} 个条目（文件 ${files} / 目录 ${dirs}）`;
+  if (skipped > 0) message += `，跳过 ${skipped} 个`;
+  if (rootName) message += `，根目录已改为 ${rootName}`;
+  return message;
 }

@@ -13,6 +13,9 @@ import {
   appendArchiveSource,
   defaultAndroidForm,
   formatAndroidOutputs,
+  formatPrefixPlan,
+  formatPrefixResult,
+  prefixRequestBody,
   sameAndroidPath,
 } from '../renderer/src/androidBuildView.mjs';
 
@@ -86,4 +89,52 @@ test('双语文案与产物格式化', () => {
     formatAndroidOutputs([{ name: 'a.apk' }, { name: 'b.apk' }, { name: 'c.apk' }, { name: 'd.apk' }], 3),
     ['a.apk', 'b.apk', 'c.apk'],
   );
+});
+
+test('prefixRequestBody 去空白与前缀回落', () => {
+  assert.deepEqual(
+    prefixRequestBody('  C:/assets/x-game  ', '  x-  ', 'strip', false),
+    { directory: 'C:/assets/x-game', prefix: 'x-', action: 'strip', apply: false },
+  );
+  assert.deepEqual(
+    prefixRequestBody('C:/game', '   ', 'restore', true),
+    { directory: 'C:/game', prefix: 'x-', action: 'restore', apply: true },
+  );
+});
+
+test('formatPrefixPlan / formatPrefixResult 中英文', () => {
+  const base = { total: 12, files: 10, dirs: 2, renamed: 12, skipped: 0 };
+  assert.equal(formatPrefixPlan(base, 'ZH'), '将重命名 12 个条目（文件 10 / 目录 2）');
+  assert.equal(formatPrefixPlan(base, 'EN'), 'Rename 12 entries (10 files / 2 folders)');
+  assert.equal(
+    formatPrefixPlan({ ...base, skipped: 1 }, 'ZH'),
+    '将重命名 12 个条目（文件 10 / 目录 2），跳过 1 个',
+  );
+  assert.equal(
+    formatPrefixPlan({ ...base, skipped: 1 }, 'EN'),
+    'Rename 12 entries (10 files / 2 folders), skip 1',
+  );
+  assert.equal(formatPrefixResult(base, 'ZH'), '已重命名 12 个条目（文件 10 / 目录 2）');
+  assert.equal(formatPrefixResult(base, 'EN'), 'Renamed 12 entries (10 files / 2 folders)');
+  assert.equal(
+    formatPrefixResult({ ...base, skipped: 1, new_root: 'C:/assets/game' }, 'ZH'),
+    '已重命名 12 个条目（文件 10 / 目录 2），跳过 1 个，根目录已改为 game',
+  );
+  assert.equal(
+    formatPrefixResult({ ...base, skipped: 1, new_root: 'C:/assets/game' }, 'EN'),
+    'Renamed 12 entries (10 files / 2 folders), skip 1, root folder renamed to game',
+  );
+});
+
+test('ANDROID_COPY 新增 X- 前缀键双语齐全', () => {
+  const keys = [
+    'xPrefix', 'xPrefixHint', 'prefixDir', 'prefixDirPlaceholder', 'prefixLabel',
+    'stripPrefix', 'restorePrefix', 'prefixNothing', 'prefixNeedDir',
+    'confirmStrip', 'confirmRestore', 'prefixSamples',
+  ];
+  for (const key of keys) {
+    assert.ok(ANDROID_COPY[key], key);
+    assert.ok(ANDROID_COPY[key].ZH, `${key}.ZH`);
+    assert.ok(ANDROID_COPY[key].EN, `${key}.EN`);
+  }
 });

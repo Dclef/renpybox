@@ -57,7 +57,7 @@ export const en: Record<keyof typeof zh, string> = {
   app_tool_desc_error_repair: 'Scan and repair generated .rpy errors in a translation folder; export Excel reports and run deep lint.',
   app_tool_desc_translation_reuse: 'Safely fill empty entries in a new TL from an older translation while keeping conflicting human edits.',
   app_tool_desc_formatter: 'Format .rpy files: leading tabs to spaces and trailing whitespace cleanup; comments are always kept.',
-  app_tool_desc_android_build: 'Install SDK, generate signing keys, and build APKs; includes shell archive packing and cleanup.',
+  app_tool_desc_android_build: 'Install the SDK, sign and build APKs; pack shell archives and strip / restore the X- prefix.',
   app_tool_desc_html_import: 'Export a TL folder to TXT for web/AI translation, then generate a new TL from the translated file.',
   app_tool_desc_game_mod: 'Install gallery unlock, URM, and built-in modifier mods; clean legacy dumuqiao scripts.',
   app_tool_desc_ma_suite: 'Export Excel and structured translation scripts, plus optional Emoji/Tag prepare and restore.',
