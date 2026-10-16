@@ -82,6 +82,11 @@ export class Sidecar {
     this.allowReuse = allowReuse;
     this.startPromise = null;
     this.stopPromise = null;
+    this.starting = false;
+    this.startEpoch = 0;
+    this.attemptChild = null;
+    this.teardownChild = null;
+    this.lastAttemptCrashed = false;
     this.restarts = 0;
     this.stopping = false;
     this.restartTimer = null;
@@ -105,14 +110,84 @@ export class Sidecar {
   }
 
   start() {
-    if (!this.startPromise) this.startPromise = this.startOnce().finally(() => { this.startPromise = null; });
+    if (!this.startPromise) {
+      // 启动期（含崩溃重试）的重启由 startWithRetry 自己负责，
+      // 退出处理器在 starting 期间不再排期，避免两个重试链互相抢 startPromise。
+      this.starting = true;
+      this.startPromise = this.startWithRetry().finally(() => {
+        this.startPromise = null;
+        this.starting = false;
+        // 本轮尝试已结束，这两个字段只用于描述「进行中的尝试」，
+        // 留着会让运行期崩溃被误判成启动期崩溃。
+        this.attemptChild = null;
+        this.lastAttemptCrashed = false;
+      });
+    }
     return this.startPromise;
+  }
+
+  /**
+   * 冷启动重试：首次启动就崩溃时，也要像运行期崩溃那样按 MAX_RESTARTS / 退避重试，
+   * 而不是把第一次失败直接抛给调用方（旧实现里退出处理器排的重启定时器会命中
+   * 正在进行的 startPromise，日志说“第 N 次重启”但实际什么都没重启）。
+   */
+  async startWithRetry() {
+    // 记录代次：stop()/restart() 会自增，用来让正在退避睡眠的旧尝试立即失效。
+    const epoch = this.startEpoch;
+    const superseded = () => this.stopping || this.startEpoch !== epoch;
+    for (;;) {
+      this.attemptChild = null;
+      this.teardownChild = null;
+      this.lastAttemptCrashed = false;
+      let failure = null;
+      let recovered = null;
+      try {
+        recovered = await this.startOnce();
+      } catch (error) {
+        failure = error;
+      }
+      if (!failure) {
+        // 探活通过后还要确认这一轮 spawn 的进程真的活着（探活刚返回它就退的情况）。
+        // 只有真正跑起来才清空预算，否则“探活通过后立刻倒下”会每轮把 restarts
+        // 归零，退化成死循环。
+        if (!this.attemptChild || !this.lastAttemptCrashed) {
+          this.restarts = 0;
+          return recovered;
+        }
+        failure = new Error('后端启动后立即退出，正在重试。');
+      }
+      if (superseded()) throw failure;
+      // 只有本进程 spawn 出来、且进程自己崩溃退出的才重试并消耗预算：复用 / EXTERNAL
+      // 模式、Python 路径不存在、端口被别的进程占用、健康检查超时（进程还活着，是我们
+      // 主动 kill 的）重试都没用，只会白起一堆后端。
+      if (!this.attemptChild || !this.owned || !this.lastAttemptCrashed) throw failure;
+      if (this.restarts >= MAX_RESTARTS) {
+        this.onLog('[sidecar] 超过重启上限，放弃');
+        throw failure;
+      }
+      const delay = 500 * 2 ** this.restarts;
+      this.restarts += 1;
+      this.onLog(`[sidecar] ${delay}ms 后第 ${this.restarts} 次重启`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (superseded()) throw failure;
+    }
+  }
+
+  scheduleRestart() {
+    if (this.stopping || !this.owned) return;
+    if (this.restarts >= MAX_RESTARTS) {
+      this.onLog('[sidecar] 超过重启上限，放弃');
+      return;
+    }
+    const delay = 500 * 2 ** this.restarts;
+    this.restarts += 1;
+    this.onLog(`[sidecar] ${delay}ms 后第 ${this.restarts} 次重启`);
+    this.restartTimer = setTimeout(() => this.start().catch((e) => { if (!this.stopping) this.onLog(`[sidecar] 重启失败 ${e}`); }), delay);
   }
 
   async startOnce() {
     if (this.stopping) throw new Error('sidecar 已停止');
     if (this.proc) return this.waitHealthy();
-    const restarting = this.restarts > 0;
 
     if (!this.proc && this.restarts === 0) {
       let info;
@@ -162,7 +237,10 @@ export class Sidecar {
     for (const [stream, prefix] of [[this.proc.stdout, '[backend]'], [this.proc.stderr, '[backend:stderr]']]) {
       createInterface({ input: stream, crlfDelay: Infinity }).on('line', line => this.onLog(`${prefix} ${line}`));
     }
-    this.proc.on('error', (error) => {
+    // 记住「这一轮 spawn 出来的子进程」：只有它自己退出才算本轮崩溃，
+    // 上一轮残留子进程的迟到 exit 不能算到本轮头上。
+    this.attemptChild = child;
+    child.on('error', (error) => {
       this.lastFailure = `无法启动 Python：${error.message}。请用 RENPYBOX_PYTHON 指定已安装项目依赖的解释器。`;
       this.onLog(`[sidecar:err] ${this.lastFailure}`);
     });
@@ -170,25 +248,24 @@ export class Sidecar {
       this.lastFailure = `Python 后端退出（${code ?? signal}），请检查上方日志和解释器依赖。`;
       this.onLog(`[sidecar] 退出 code=${code} signal=${signal}`);
       if (this.proc === child) this.proc = null;
+      // 只有「本轮 spawn 的那个进程自己退出了」才算崩溃，startWithRetry 据此决定是否重试。
+      // 排除两种假信号：上一轮残留子进程的迟到 exit，以及我们自己 taskkill 掉的进程
+      // （健康检查超时后的清理不该触发重试，否则每次超时都要再白等 30 秒）。
+      if (this.attemptChild === child && this.teardownChild !== child) this.lastAttemptCrashed = true;
       if (this.stopping || !this.owned) return;
-      if (this.restarts >= MAX_RESTARTS) {
-        this.onLog('[sidecar] 超过重启上限，放弃');
-        return;
-      }
-      const delay = 500 * 2 ** this.restarts;
-      this.restarts += 1;
-      this.onLog(`[sidecar] ${delay}ms 后第 ${this.restarts} 次重启`);
-      this.restartTimer = setTimeout(() => this.start().catch((e) => { if (!this.stopping) this.onLog(`[sidecar] 重启失败 ${e}`); }), delay);
+      // 启动期由 startWithRetry 负责重试；这里再排一次会和它抢 startPromise。
+      if (this.starting) return;
+      this.scheduleRestart();
     });
 
     try {
-      const info = await this.waitHealthy();
-      // Count only consecutive startup crashes. A backend that has recovered
-      // should not permanently lose its restart budget after later failures.
-      this.restarts = 0;
-      return info;
+      // 启动期退出处理器不排期，重试全由 startWithRetry 负责，这里只等健康检查。
+      return await this.waitHealthy();
     } catch (error) {
-      if (this.stopping || !restarting) await this.stop();
+      // Always tear down the dead child, but do not latch stopping / clear the
+      // exit handler's restart timer — that made logs claim a restart while
+      // permanently disabling start() until an explicit restart().
+      if (this.stopping) await this.stop();
       else await this.terminateOwnedProcess();
       throw error;
     }
@@ -202,6 +279,9 @@ export class Sidecar {
       try {
         const info = await this.probe();
         if (this.stopping) throw new Error('sidecar 已停止');
+        // Re-check after await: exit may have set lastFailure while probe was in flight
+        // (including a last HTTP 200 from the process that just died).
+        if (this.lastFailure) throw new Error(this.lastFailure);
         if (info) return info;
       } catch (error) {
         if (error.cause?.code !== 'ECONNREFUSED' && error.name !== 'TimeoutError') throw error;
@@ -218,6 +298,8 @@ export class Sidecar {
 
   stop() {
     this.stopping = true;
+    // 让进行中的启动尝试（可能正在退避睡眠）立即失效。
+    this.startEpoch += 1;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (!this.stopPromise) this.stopPromise = this.terminateOwnedProcess().finally(() => { this.owned = false; });
     return this.stopPromise;
@@ -228,7 +310,13 @@ export class Sidecar {
     this.stopPromise = null;
     this.lastFailure = null;
     this.restarts = 0;
-    return this.start();
+    // 让进行中的旧启动尝试（可能正在退避睡眠）立刻放弃，而不是继续重试到预算耗尽。
+    this.startEpoch += 1;
+    // 启动期崩溃重试会让 startPromise 存活数秒；必须先等它收尾再起新的，
+    // 否则这里会直接把那个注定失败的旧 promise 返回给调用方。
+    const pending = this.startPromise;
+    if (!pending) return this.start();
+    return pending.catch(() => {}).then(() => this.start());
   }
 
   async terminateOwnedProcess() {
@@ -240,6 +328,8 @@ export class Sidecar {
     const pid = child?.pid;
     if (!pid) return;
     this.onLog(`[sidecar] 清理本进程启动的后端 pid=${pid}`);
+    // 记下被我们主动杀掉的是谁：它的 exit 不算崩溃，不该触发重试。
+    this.teardownChild = child;
     await new Promise((resolve) => {
       const killer =
         process.platform === 'win32'
