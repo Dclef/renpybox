@@ -47,6 +47,9 @@ DEFAULT_DETECT_HINTS = (
     "images,image,audio,video,videos,movies,script"
 )
 
+PREFIX_DEFAULT = "x-"
+PREFIX_MAX_ENTRIES = 50000
+
 OnOutput = Callable[[str], None]
 
 
@@ -177,6 +180,202 @@ def to_long_path(path: Path) -> str:
     if path_str.startswith("\\\\"):
         return "\\\\?\\UNC\\" + path_str[2:]
     return "\\\\?\\" + path_str
+
+
+def _lexical_path(path) -> Path:
+    """规范化绝对路径；不 normcase，保留盘符/目录原始大小写。"""
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def normalize_prefix(prefix: str | None) -> str:
+    """去首尾空白；空串拒绝。"""
+    text = str(prefix if prefix is not None else "").strip()
+    if not text:
+        raise AndroidProjectToolsError("前缀不能为空。")
+    return text
+
+
+def rename_prefix(
+    root: str | Path,
+    *,
+    prefix: str = PREFIX_DEFAULT,
+    action: str = "strip",
+    apply: bool = False,
+    limit: int = PREFIX_MAX_ENTRIES,
+) -> dict:
+    """目录级批量去/加前缀；自底向上后序；dry-run 零副作用。"""
+    prefix = normalize_prefix(prefix)
+    action_key = str(action or "").strip().lower()
+    if action_key not in ("strip", "restore"):
+        raise AndroidProjectToolsError("操作类型必须是 strip 或 restore。")
+
+    root_path = _lexical_path(root)
+    if not root_path.exists():
+        raise AndroidProjectToolsError(f"目录不存在: {root_path}")
+    if not root_path.is_dir():
+        raise AndroidProjectToolsError(f"不是目录: {root_path}")
+    if _is_fs_root(root_path):
+        raise AndroidProjectToolsError(f"拒绝处理磁盘根目录: {root_path}")
+    if _is_link(root_path):
+        raise AndroidProjectToolsError(f"路径含链接/联接，已拒绝: {root_path}")
+
+    planned: list[tuple[Path, Path, bool]] = []
+    skipped_items: list[dict[str, str]] = []
+    skipped_count = 0
+    prefix_len = len(prefix)
+    prefix_lower = prefix.lower()
+
+    def _record_skip(path: Path, reason: str) -> None:
+        nonlocal skipped_count
+        skipped_count += 1
+        if len(skipped_items) < 20:
+            skipped_items.append({"path": str(path), "reason": reason})
+
+    def _walk(directory: Path) -> None:
+        try:
+            with os.scandir(directory) as iterator:
+                entries = list(iterator)
+        except OSError as exc:
+            raise AndroidProjectToolsError(f"无法读取目录: {directory}: {exc}") from exc
+
+        name_keys = {os.path.normcase(entry.name) for entry in entries}
+
+        for entry in entries:
+            entry_path = Path(entry.path)
+            if _is_link(entry_path):
+                _record_skip(entry_path, "链接/联接")
+                continue
+
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+
+            if is_dir:
+                _walk(entry_path)
+
+            name = entry.name
+            name_lower = name.lower()
+            if action_key == "strip":
+                if not name_lower.startswith(prefix_lower):
+                    continue
+                new_name = name[prefix_len:]
+                if not new_name:
+                    _record_skip(entry_path, "新名称为空")
+                    continue
+            else:
+                if name_lower.startswith(prefix_lower):
+                    continue
+                new_name = prefix + name
+
+            if os.path.normcase(new_name) in name_keys:
+                _record_skip(entry_path, "目标已存在")
+                continue
+
+            dest = entry_path.parent / new_name
+            planned.append((entry_path, dest, is_dir))
+            name_keys.add(os.path.normcase(new_name))
+
+    _walk(root_path)
+
+    if len(planned) > limit:
+        raise AndroidProjectToolsError(
+            f"条目过多（超过 {limit} 个），请选择更具体的目录。"
+        )
+
+    root_dest: Path | None = None
+    root_name = root_path.name
+    root_name_lower = root_name.lower()
+    if action_key == "strip":
+        expected = (prefix + "game").lower()
+        if root_name_lower == expected:
+            candidate_name = "game"
+            sibling = root_path.parent / candidate_name
+            if sibling.exists() and os.path.normcase(candidate_name) != os.path.normcase(
+                root_name
+            ):
+                _record_skip(root_path, "目标已存在")
+            else:
+                root_dest = root_path.parent / candidate_name
+    else:
+        if root_name_lower == "game":
+            candidate_name = prefix + "game"
+            sibling = root_path.parent / candidate_name
+            if sibling.exists() and os.path.normcase(candidate_name) != os.path.normcase(
+                root_name
+            ):
+                _record_skip(root_path, "目标已存在")
+            else:
+                root_dest = root_path.parent / candidate_name
+
+    files = sum(1 for _, _, is_dir in planned if not is_dir)
+    dirs = sum(1 for _, _, is_dir in planned if is_dir)
+    if root_dest is not None:
+        dirs += 1
+
+    total = len(planned) + (1 if root_dest is not None else 0)
+    skipped = skipped_count
+
+    samples: list[str] = []
+    for src, dst, _is_dir in planned:
+        if len(samples) >= 8:
+            break
+        samples.append(f"{src.name} → {dst.name}")
+    if root_dest is not None and len(samples) < 8:
+        samples.append(f"{root_path.name} → {root_dest.name}")
+
+    renamed = 0
+    new_root: str | None = None
+    if apply:
+
+        def _rename(src: Path, dst: Path) -> None:
+            """单个改名失败也要给出可读原因（半途失败已处理的条目会写进提示）。"""
+            try:
+                os.rename(to_long_path(src), to_long_path(dst))
+            except OSError as exc:
+                raise AndroidProjectToolsError(
+                    f"重命名失败（已处理 {renamed} 个）: {src.name} → {dst.name}: {exc}"
+                ) from exc
+
+        for src, dst, _is_dir in planned:
+            _rename(src, dst)
+            renamed += 1
+        if root_dest is not None:
+            _rename(root_path, root_dest)
+            renamed += 1
+            new_root = str(root_dest)
+    else:
+        renamed = total
+        if root_dest is not None:
+            new_root = str(root_dest)
+
+    if apply:
+        message = f"已重命名 {renamed} 个条目（文件 {files} / 目录 {dirs}）"
+        if skipped:
+            message += f"，跳过 {skipped} 个"
+        if new_root:
+            message += f"，根目录已改为 {Path(new_root).name}"
+    else:
+        message = f"将重命名 {total} 个条目（文件 {files} / 目录 {dirs}）"
+        if skipped:
+            message += f"，跳过 {skipped} 个"
+
+    return {
+        "success": True,
+        "applied": bool(apply),
+        "action": action_key,
+        "prefix": prefix,
+        "root": str(root_path),
+        "new_root": new_root,
+        "total": total,
+        "files": files,
+        "dirs": dirs,
+        "renamed": renamed,
+        "skipped": skipped,
+        "skipped_items": skipped_items,
+        "samples": samples,
+        "message": message,
+    }
 
 
 def resolve_project_game(project_dir: str | Path) -> tuple[Path, Path]:

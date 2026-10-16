@@ -15,6 +15,9 @@ import {
   appendArchiveSource,
   defaultAndroidForm,
   formatAndroidOutputs,
+  formatPrefixPlan,
+  formatPrefixResult,
+  prefixRequestBody,
   sameAndroidPath,
 } from '../androidBuildView.mjs';
 import { useT } from '../i18n';
@@ -80,7 +83,24 @@ interface AndroidStatus {
   cancellable?: boolean;
 }
 
-type ConfirmKind = 'build' | 'shell' | null;
+interface PrefixPayload {
+  success?: boolean;
+  applied?: boolean;
+  action?: string;
+  prefix?: string;
+  root?: string;
+  new_root?: string | null;
+  total?: number;
+  files?: number;
+  dirs?: number;
+  renamed?: number;
+  skipped?: number;
+  skipped_items?: { path?: string; reason?: string }[];
+  samples?: string[];
+  message?: string;
+}
+
+type ConfirmKind = 'build' | 'shell' | 'strip' | 'restore' | null;
 
 const KINDS = [
   'android_check_env',
@@ -100,6 +120,12 @@ export function AndroidBuildPage(props: { state: AppState }) {
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
   const [localError, setLocalError] = useState('');
   const [detectMsg, setDetectMsg] = useState('');
+  const [prefixDir, setPrefixDir] = useState('');
+  const [prefixText, setPrefixText] = useState('x-');
+  const [prefixMsg, setPrefixMsg] = useState('');
+  const [prefixTone, setPrefixTone] = useState<'info' | 'success' | 'warning'>('info');
+  const [prefixPlan, setPrefixPlan] = useState<PrefixPayload | null>(null);
+  const [prefixBusy, setPrefixBusy] = useState(false);
 
   // 手动目标 B 进入 statusPath，驱动 late 响应与 canonical 失效
   const statusPath = useMemo(() => androidStatusPath(projectPath), [projectPath]);
@@ -115,6 +141,7 @@ export function AndroidBuildPage(props: { state: AppState }) {
   const fieldsReady = androidAppFieldsReady(form);
   const sdkReady = androidSdkReady(form);
   const actionBlocked = writeBlocked || !sdkReady;
+  const prefixBlocked = prefixBusy || busy;
   const cancellable = androidJobCancellable(job);
 
   useEffect(() => {
@@ -297,6 +324,46 @@ export function AndroidBuildPage(props: { state: AppState }) {
     }
   }
 
+  async function pickPrefixDir() {
+    const next = await window.renpy?.pickFolder?.(prefixDir || undefined);
+    if (next) setPrefixDir(next);
+  }
+
+  async function runPrefix(action: 'strip' | 'restore', apply: boolean) {
+    if (!prefixDir.trim()) {
+      setPrefixTone('warning');
+      setPrefixMsg(copy('prefixNeedDir'));
+      return;
+    }
+    setPrefixBusy(true);
+    setLocalError('');
+    try {
+      const payload = await request<PrefixPayload>('/api/android-build/prefix', {
+        method: 'POST',
+        body: JSON.stringify(prefixRequestBody(prefixDir, prefixText, action, apply)),
+      });
+      if (!apply) {
+        if (!payload.total) {
+          // 全部被跳过（目标已存在 / 链接）时给出确切计数，别只说「没找到」
+          setPrefixTone(payload.skipped ? 'warning' : 'info');
+          setPrefixMsg(payload.skipped ? formatPrefixPlan(payload, uiLang) : copy('prefixNothing'));
+          return;
+        }
+        setPrefixPlan(payload);
+        setConfirm(action);
+        return;
+      }
+      setPrefixPlan(null);
+      if (payload.new_root) setPrefixDir(payload.new_root);
+      setPrefixTone(payload.skipped ? 'warning' : 'success');
+      setPrefixMsg(formatPrefixResult(payload, uiLang));
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPrefixBusy(false);
+    }
+  }
+
   const statusText = toolStatusText(t, suite, copy('idle'));
   const statusTone = active || suite.checking
     ? 'info'
@@ -454,6 +521,50 @@ export function AndroidBuildPage(props: { state: AppState }) {
         ) : null}
       </SettingsGroup>
 
+      <SettingsGroup title={copy('xPrefix')} description={copy('xPrefixHint')}>
+        <Form.Item label={copy('prefixDir')} style={{ marginBottom: 12 }}>
+          <div className="rb-tool-actions" style={{ display: 'flex', gap: 8 }}>
+            <Input
+              value={prefixDir}
+              onChange={(event) => setPrefixDir(event.target.value)}
+              placeholder={copy('prefixDirPlaceholder')}
+              disabled={prefixBusy}
+              data-rb-android-prefix-dir="1"
+            />
+            <Button onClick={() => void pickPrefixDir()} disabled={prefixBusy}>{copy('browse')}</Button>
+          </div>
+        </Form.Item>
+        <Form.Item label={copy('prefixLabel')} style={{ marginBottom: 12 }}>
+          <Input
+            value={prefixText}
+            onChange={(event) => setPrefixText(event.target.value)}
+            disabled={prefixBusy}
+            style={{ width: 160, maxWidth: '100%' }}
+            data-rb-android-prefix-text="1"
+          />
+        </Form.Item>
+        <div className="rb-tool-actions">
+          <Button
+            type="primary"
+            loading={prefixBusy}
+            disabled={prefixBlocked}
+            onClick={() => void runPrefix('strip', false)}
+            data-rb-android-strip-prefix="1"
+          >
+            {copy('stripPrefix')}
+          </Button>
+          <Button
+            loading={prefixBusy}
+            disabled={prefixBlocked}
+            onClick={() => void runPrefix('restore', false)}
+            data-rb-android-restore-prefix="1"
+          >
+            {copy('restorePrefix')}
+          </Button>
+        </div>
+        {prefixMsg ? <Banner tone={prefixTone}>{prefixMsg}</Banner> : null}
+      </SettingsGroup>
+
       <SettingsGroup title={copy('build')} description={copy('buildHint')}>
         <div className="rb-tool-actions">
           <Button
@@ -515,6 +626,31 @@ export function AndroidBuildPage(props: { state: AppState }) {
           onCancel={() => setConfirm(null)}
         >
           <p>{copy('confirmShell')}</p>
+        </Dialog>
+      ) : null}
+      {confirm === 'strip' || confirm === 'restore' ? (
+        <Dialog
+          title={confirm === 'strip' ? copy('confirmStrip') : copy('confirmRestore')}
+          confirmText={confirm === 'strip' ? copy('stripPrefix') : copy('restorePrefix')}
+          onConfirm={() => {
+            const action = confirm;
+            setConfirm(null);
+            void runPrefix(action, true);
+          }}
+          onCancel={() => {
+            setConfirm(null);
+            setPrefixPlan(null);
+          }}
+        >
+          <p>{formatPrefixPlan(prefixPlan, uiLang)}</p>
+          {prefixPlan?.samples?.length ? (
+            <div style={{ marginTop: 12 }}>
+              <p className="card-description" style={{ marginBottom: 6 }}>{copy('prefixSamples')}</p>
+              <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, margin: 0 }}>
+                {prefixPlan.samples.slice(0, 8).join('\n')}
+              </pre>
+            </div>
+          ) : null}
         </Dialog>
       ) : null}
     </div>
