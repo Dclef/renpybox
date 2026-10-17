@@ -79,7 +79,7 @@ def test_start_translation_accepts_and_forwards_arguments() -> None:
     assert calls == [{
         "status": "untranslated",
         "preflight_confirmed": True,
-        "platform_source": "configured",
+        "platform_source": "agent",
     }]
 
 
@@ -243,7 +243,7 @@ def test_dispatcher_injects_pipeline_callbacks_only_when_available() -> None:
     assert calls == [{
         "status": "translated",
         "preflight_confirmed": False,
-        "platform_source": "configured",
+        "platform_source": "agent",
     }]
     assert result.data["request_id"] == "req-9"
 
