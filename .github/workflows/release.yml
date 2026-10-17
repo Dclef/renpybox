@@ -50,8 +50,8 @@ jobs:
           if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Expected a stable desktop version' }
           if ((Get-Content version.txt -Raw).Trim() -ne "v$version") { throw 'version.txt and application versions differ' }
           $files = @(
-            "release-assets/RenpyBox-NewUI-$version-x64.exe",
-            "release-assets/RenpyBox-NewUI-$version-x64.zip"
+            "release-assets/RenpyBox-$version-x64.exe",
+            "release-assets/RenpyBox-$version-x64.zip"
           )
           foreach ($file in $files) {
             if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) { throw "Missing artifact: $file" }

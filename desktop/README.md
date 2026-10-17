@@ -14,11 +14,10 @@ RenpyBox 0.9.1 提供新的 Windows x64 桌面界面，包含翻译任务、Ren'
 
 | 文件 | 用途 |
 | --- | --- |
-| `RenpyBox-NewUI-0.9.1-x64.exe` | Windows 安装程序，推荐使用 |
-| `RenpyBox-NewUI-0.9.1-x64.zip` | 免安装包，完整解压后运行其中的程序 |
-| `RenpyBox_v0.9.1.zip` | 保留原界面的 Python 兼容包，供旧版用户更新 |
+| `RenpyBox-0.9.1-x64.exe` | Windows 安装程序，推荐使用 |
+| `RenpyBox-0.9.1-x64.zip` | 免安装包，完整解压后运行其中的程序 |
 
-桌面版已附带运行环境，不需要额外安装 Python。正式包的应用配置与壳日志默认位于 `%APPDATA%\RenpyBox-newUI`；免安装包同样将应用配置保存在系统用户目录。
+桌面版已附带运行环境，不需要额外安装 Python。正式包的应用配置与壳日志默认位于 `%APPDATA%\RenpyBox`（旧版 `RenpyBox-newUI` 会在首次启动时自动迁移）；免安装包同样将应用配置保存在系统用户目录。
 
 ## 开始翻译
 

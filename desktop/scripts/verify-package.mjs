@@ -12,7 +12,7 @@ const packaged = path.join(release, 'win-unpacked', 'resources');
 const hash = filename => createHash('sha256').update(readFileSync(filename)).digest('hex');
 assert(parseDesktopVersion(config.version), 'Expected a desktop release version');
 // 更新逻辑改为 desktop/main/updater.js 直接查 GitHub Releases API：不再需要 electron-builder
-// 的 publish 配置，也不再生成 app-update.yml / blockmap / newui.yml。
+// 的 publish 配置，也不再生成 app-update.yml / blockmap / latest.yml。
 assert.equal(config.build.publish, undefined, 'Desktop updates must not fall back to electron-builder publish metadata');
 const dependencies = { ...config.dependencies, ...config.devDependencies };
 assert(!('electron-updater' in dependencies), 'electron-updater must stay removed: the updater talks to the GitHub API directly');
@@ -43,7 +43,7 @@ assert.equal(config.build.nsis.differentialPackage, false,
   'NSIS differentialPackage must stay false: blockmap assets are no longer published');
 const releaseFiles = readdirSync(release, { withFileTypes: true })
   .filter(entry => entry.isFile()).map(entry => entry.name);
-for (const unwanted of releaseFiles.filter(name => name.endsWith('.blockmap') || name === 'newui.yml')) {
+for (const unwanted of releaseFiles.filter(name => name.endsWith('.blockmap') || name === 'app-update.yml' || name === 'latest.yml')) {
   assert.fail(`Remove stale update metadata from release/: ${unwanted}`);
 }
 console.log('[package] Bundled Python, original icon, private-file exclusions, direct GitHub update feed and portable zip verified.');
