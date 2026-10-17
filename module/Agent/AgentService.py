@@ -27,6 +27,9 @@ class AgentService:
 
     # 会话历史按字符数设置上限；这是近似 token 预算，避免多轮对话无限增长。
     DEFAULT_MAX_CONTEXT_CHARS = 128_000
+    # 长任务（逐批翻译）的额外轮次预算：普通对话仍受 max_iterations 限制，
+    # 只有工具声称「还在推进」的迭代才从这笔预算里扣。
+    DEFAULT_MAX_LONG_ITERATIONS = 240
 
     def __init__(
         self,
@@ -35,6 +38,7 @@ class AgentService:
         dispatcher: ToolDispatcher | None = None,
         pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
         max_iterations: int = 8,
+        max_long_iterations: int = DEFAULT_MAX_LONG_ITERATIONS,
         result_limit: int = 2000,
         confirmation_timeout: float = 120.0,
         max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
@@ -45,6 +49,7 @@ class AgentService:
             pipeline_callbacks = pipeline_callbacks,
         )
         self.max_iterations = max(1, int(max_iterations))
+        self.max_long_iterations = max(0, int(max_long_iterations))
         self.result_limit = max(256, int(result_limit))
         self.confirmation_timeout = max(0.01, float(confirmation_timeout))
         self.max_context_chars = max(4096, int(max_context_chars))
@@ -260,8 +265,31 @@ class AgentService:
                 if message.get("role") == "user"
             ]
             if len(user_indices) < 2:
-                return
+                # 只剩当前回合时（逐批翻译就是这样），按「助手轮次」为边界
+                # 丢掉较早的工具往返，保留系统提示与用户诉求。
+                if not self._trim_within_turn():
+                    return
+                continue
             del self.messages[user_indices[0]:user_indices[1]]
+
+    def _trim_within_turn(self) -> bool:
+        """单回合内裁剪：切到下一个助手消息边界，保证不会留下孤立工具消息。"""
+
+        if len(self.messages) < 4:
+            return False
+        if self.messages[0].get("role") != "system":
+            return False
+        if self.messages[1].get("role") != "user":
+            return False
+        boundary = None
+        for index in range(3, len(self.messages)):
+            if self.messages[index].get("role") == "assistant":
+                boundary = index
+                break
+        if boundary is None:
+            return False
+        del self.messages[2:boundary]
+        return True
 
     def _finalize(self, result: AgentRunResult) -> AgentRunResult:
         # 项目在本轮被切换后，下一条用户消息必须从新项目重新建立上下文。
@@ -377,7 +405,10 @@ class AgentService:
         self._project_changed_during_run = False
         details: list[dict[str, Any]] = []
 
-        for iteration in range(self.max_iterations):
+        iteration = 0
+        long_iterations = 0
+        while iteration < self.max_iterations:
+            iteration_results: list[ToolResult] = []
             # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
             self._trim_history()
             if self._is_cancelled(cancel_event):
@@ -515,13 +546,16 @@ class AgentService:
                     )
                 if call.name == "set_project" and tool_result.success:
                     self._project_changed_during_run = True
-                summary = tool_result.model_message(self.result_limit)
+                summary = tool_result.model_message(
+                    tool.result_limit if tool is not None and tool.result_limit else self.result_limit
+                )
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": call.call_id,
                     "name": call.name,
                     "content": summary,
                 })
+                iteration_results.append(tool_result)
                 detail = {
                     "name": call.name,
                     "success": tool_result.success,
@@ -542,6 +576,25 @@ class AgentService:
                         data={"events": details},
                         code=tool_result.code,
                     ))
+
+            # 长任务（例如逐批翻译）每个迭代都在推进时不占用普通轮次预算，
+            # 否则普通的 8 轮上限会让一盘游戏的翻译在半路被截断。
+            if any(item.continues for item in iteration_results):
+                long_iterations += 1
+                if long_iterations >= self.max_long_iterations:
+                    message = Localizer.get().agent_max_iterations
+                    self._emit(callback, "error", {
+                        "code": "MAX_ITERATIONS",
+                        "message": message,
+                    })
+                    return self._finalize(AgentRunResult(
+                        False,
+                        message,
+                        data={"events": details},
+                        code="MAX_ITERATIONS",
+                    ))
+            else:
+                iteration += 1
 
         message = Localizer.get().agent_max_iterations
         self._emit(callback, "error", {"code": "MAX_ITERATIONS", "message": message})

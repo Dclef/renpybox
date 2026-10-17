@@ -337,3 +337,69 @@ def set_stage(stage: str | None) -> ToolResult
 | M2 | 1b 合入，Agent 能「启动翻译 → 查进度 → 停止 → 回填」 |
 | M3 | 2 合入，一条龙全托管，失败项停下来问 |
 | M4 | 3 合入，桌面端为唯一前端，Qt 冻结 |
+
+---
+
+# 阶段 2-b（已实施）Agent 自己当翻译
+
+> 背景：用户 m00675 澄清「让 agent 自己翻译」，不是让 Agent 去点翻译引擎的按钮。
+> 1a/1b 的 `start_translation` 降级为「用户明确要用翻译引擎」时的可选路径，
+> 默认路径改为 Agent 逐批翻译。
+
+## 复用的既有实现（不另造流水线）
+
+| 能力 | 复用对象 |
+|---|---|
+| 条目与缓存 | `module/Cache/CacheManager.py`（`load_from_file` / `get_items` / `save_to_file`） |
+| 质量闸 | `module/Response/ResponseChecker.py` 的 `ResponseChecker.check(srcs, dsts, text_type, line_items)` |
+| 写回 .rpy | `module/File/FileManager.py` 的 `write_to_path` → `module/File/RENPY.py:95` 的行级更新 |
+| 进度 | 已有 `translation_status`（引擎空闲时走缓存口径） |
+
+注意：`module/ResultChecker.py` 只是**出报告**（往输出目录写「结果检查_*.json」），
+不会打回条目，所以不能当闸门用；真正的闸门是 `ResponseChecker`。
+
+## 新工具（`module/Agent/tools/agent_translation_tools.py`）
+
+- `read_translation_batch(batch_size=30, max_chars=6000)`
+  - 取 `status` 为未完成且非 `EXCLUDED`/`DUPLICATED`、原文非空的条目。
+  - 条目 id = `文件相对路径｜行号`。
+  - 返回 `{remaining, returned, items:[{id, src, name_src?, text_type?}]}`。
+  - 还有条目时 `ToolResult.continues=True`。
+- `write_translation_batch(translations=[{id, dst, name_dst?}])`
+  - 按 id 定位 → 写 dst → `TRANSLATED`。
+  - `ResponseChecker` 逐条校验；失败的条目打回 `UNTRANSLATED`、不写文件，
+    并在 `data.failed_items` 里带 `{id, code}` 让模型自己改。
+  - 通过校验的才 `FileManager.write_to_path`，最后整份缓存 `save_to_file`。
+  - 写同一份缓存的读与写用 `_WRITE_LOCK` 串行化。
+- 两个工具都 `requires_confirmation=False`、`requires_idle_engine=True`
+  （引擎正在翻译时缓存归引擎所有，Agent 不能碰）。
+
+## 轮次与上下文（`module/Agent/AgentService.py`）
+
+- `ToolResult` 新增 `continues` 字段：工具自报「长任务仍在推进」。
+- 新增 `max_long_iterations`（默认 240）：`continues=True` 的迭代不占
+  `max_iterations`（默认 8），长任务因此能跑完，普通对话仍受 8 轮约束。
+- `ToolDef` 新增 `result_limit`：`read_translation_batch` 放宽到 12000 字符，
+  否则默认 2000 会在 JSON 中间截断整批条目。
+- `_trim_history` 新增单回合内裁剪 `_trim_within_turn`：一盘游戏只有一个用户回合，
+  旧的「按用户回合裁剪」在长任务里不生效，上下文会线性增长。
+
+## 桌面端
+
+- `desktop/renderer/src/pages/AgentPage.tsx`：`TOOL_NAMES` 补两个工具，
+  建议卡首位改为「把当前项目翻译成中文」。
+- `desktop/renderer/src/i18n/zh.ts` / `en.ts` 补文案。
+
+## 验收
+
+- `python -m pytest tests/module/agent tests/module/test_localizer_coverage.py -q` → 126 passed
+- `python -m pytest tests/api -q` → 594 passed
+- `node node_modules/typescript/bin/tsc --noEmit -p renderer/tsconfig.json` → 0
+- `node --test tests/*.test.mjs` → 225 passed
+
+## 仍未做
+
+- 整条流水线的自动续跑：现在靠模型自己一轮轮调工具，
+  模型中途给出结束回复就停在那里，没有「译完自动 apply + 兜底」的钩子。
+- `set_stage` 阶段字段与桌面阶段徽标。
+- 失败条目阈值的策略化（现在逐条打回，缺少「同一批失败超过 N 条就停下来问」）。

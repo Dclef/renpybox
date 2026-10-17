@@ -301,6 +301,66 @@ class ToolDispatcher:
                 requires_confirmation=False,
                 requires_idle_engine=False,
             ),
+            "read_translation_batch": ToolDef(
+                name="read_translation_batch",
+                description=localizer.agent_tool_read_translation_batch_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "batch_size": {
+                            "type": "integer",
+                            "default": 30,
+                            "description": localizer.agent_translate_batch_param_description,
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "default": 6000,
+                            "description": localizer.agent_translate_max_chars_param_description,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "agent_translation_tools",
+                    "read_translation_batch",
+                    self.config_loader,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=True,
+                result_limit=12_000,
+            ),
+            "write_translation_batch": ToolDef(
+                name="write_translation_batch",
+                description=localizer.agent_tool_write_translation_batch_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "translations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "dst": {"type": "string"},
+                                    "name_dst": {"type": "string"},
+                                },
+                                "required": ["id", "dst"],
+                                "additionalProperties": False,
+                            },
+                            "description": localizer.agent_translate_translations_param_description,
+                        },
+                    },
+                    "required": ["translations"],
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "agent_translation_tools",
+                    "write_translation_batch",
+                    self.config_loader,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=True,
+            ),
         }
 
     @property
@@ -347,6 +407,12 @@ class ToolDispatcher:
                 return localizer.agent_tool_argument_must_be_object.format(name=name)
             if expected == "boolean" and not isinstance(value, bool):
                 return localizer.agent_tool_argument_must_be_boolean.format(name=name)
+            if expected == "integer" and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
+                return localizer.agent_tool_argument_must_be_integer.format(name=name)
+            if expected == "array" and not isinstance(value, list):
+                return localizer.agent_tool_argument_must_be_array.format(name=name)
         return None
 
     def execute(
