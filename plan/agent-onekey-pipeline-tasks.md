@@ -1,0 +1,339 @@
+# Agent 一条龙 施工单
+
+- 前置：`plan/agent-onekey-pipeline-suggestions.md`（已确认）
+- 已确认决策
+  - 范围：三期全做，方向是「桌面端为唯一前端，Qt 版本移除」
+  - 回填策略：自动回填；失败项 > 0 时停下来问用户
+- 分支：dev
+- 提交规范：`<type>: <中文描述>`
+
+---
+
+## 阶段划分
+
+| 阶段 | 目标 | 是否重构既有不变量 | 阻塞后续 |
+|---|---|---|---|
+| 1a | 补齐「不会碰并发安全」的 4 个工具 + 2 个 action 映射 | 否 | 否 |
+| 1b | 抽服务层，补 `start_translation` / `stop_translation` / `apply_translation` | 是（谨慎） | 是 |
+| 2 | 技能包 + `read_skill` + `set_stage` + 自动续跑 | 否 | 是 |
+| 3 | 桌面 Agent 页重做 + Qt 退场 | 否 | — |
+
+**1a 先落地**：它不触碰 `api/routes/translation.py` 的并发预占逻辑（上一个提交 `eba370d` 刚修好竞态与越权），风险最小，且立刻让「解包 → 反编译 → 提取 → 体检 → 补丁」这段可被 Agent 自主执行。
+
+---
+
+# 阶段 1a
+
+## 目标
+
+Agent 能自主完成：`set_project` → `unpack_rpa_files` → `decompile_rpyc_files` → `run_project_extraction` → `inspect_translation_project` → `refresh_replace_fallback`，全程不需要用户点按钮。
+
+翻译阶段（start/stop/apply）留给 1b。
+
+## 任务
+
+### T1a-1 新增 `module/Agent/tools/pipeline_tools.py`
+
+四个 handler，签名统一带 `config_loader`，写操作额外接收 `confirmed_*` 字段（由 `ToolDispatcher` 从可信上下文注入，禁止从模型参数拿）。
+
+```python
+def decompile_rpyc_files(
+    *, config_loader: Callable[[], Config] | None = None,
+    confirmed_game_dir: str | None = None,
+    __cancel_check__: Callable[[], bool] | None = None,
+) -> ToolResult
+```
+- 复用 `module/Tool/ArchiveOps.decompile_target`，参数照抄 `api/routes/onekey.py:417-423`（`overwrite=False`、`use_unren=True`、`fallback_unren_options="2x"`）。
+- 前置：`RenpyProjectPaths.from_config` 解析成功且 `game_dir.is_dir()`；`confirmed_game_dir` 与当前 `game_dir` 的 `os.path.normcase` 不一致时返回 `CONFIRMATION_STALE`（照抄 `module/Agent/tools/archive_tools.py:33-42`）。
+- 若项目里没有 `*.rpyc`，返回 `ToolResult(False, ..., code="RPYC_NOT_FOUND")`。
+- 成功返回 `data={"decompiled_count": int, "method": str}`。
+
+```python
+def run_project_extraction(
+    *, config_loader=None, incremental: bool | None = None,
+    confirmed_project_root: str | None = None,
+    __cancel_check__: Callable[[], bool] | None = None,
+) -> ToolResult
+```
+- 只做 detect → （必要时）提示需要先解包/反编译 → `flow.extract_project_text`。
+- **不要**在这里做 unpack/decompile 的自动串联：那两步是独立工具，各自有确认，串起来就绕过了确认。
+  - `detect_game_status` 返回 `need_unpack` / `need_decompile` 时，返回 `ToolResult(False, ..., code="NEED_UNPACK"/"NEED_DECOMPILE", data={"next_tool": "unpack_rpa_files"/"decompile_rpyc_files"})`。
+  - 这让模型自己决定下一步，符合现有「模型决定、工具受限」的约定。
+- 成功后返回 `data={"tl_dir": ..., "output_dir": ..., "incremental": bool, "entry_count": int}`。
+- 抽取前保存配置这一点**暂不做**（1b 的服务层负责），工具只返回路径，由后续 `start_translation` 依赖的配置校验兜底。
+
+```python
+def translation_status(*, config_loader=None) -> ToolResult
+```
+- 纯只读。照 `api/routes/translation.py:1091-1151` 的取数逻辑，但**不要** import `api.*`：把该逻辑复制成 `module/Agent/tools/pipeline_tools.py` 内的私有函数，取 `Engine.get().get_status()`、`Engine.get().get_running_task_count()`、`has_stop_barrier()`、`has_single_tasks()`，再从 `CacheManager(service=False)` 读 `get_progress()`。
+- `data` 里回：`engine_status`、`running/max`、`progress`（`line`/`total`/`percent`）、`untranslated_count`、`project_status`。
+- **必须**在 `ToolDispatcher` 里声明 `requires_idle_engine=False`（默认值即可，但要写测试锁死）。
+
+```python
+def refresh_replace_fallback(
+    *, config_loader=None, confirmed_context: dict | None = None,
+) -> ToolResult
+```
+- 结构照抄 `module/Agent/tools/translation_tools.py:93-166` 的 `optimize_old_new_translations`（同样的签名比对、备份、异常回滚）。
+- 差别：先按 `flow._replace_fallback` 的语义判断是否需要刷新，`needs_refresh` 为假时直接返回成功 + `data={"refreshed": False}`，不写文件。
+
+### T1a-2 注册工具
+
+`module/Agent/ToolDispatcher.py:59-152` 的 `_build_tools()` 追加四块，`requires_confirmation` / `requires_idle_engine` 取值：
+
+| 工具 | requires_confirmation | requires_idle_engine |
+|---|---|---|
+| `decompile_rpyc_files` | True | True |
+| `run_project_extraction` | True | True |
+| `translation_status` | False | False |
+| `refresh_replace_fallback` | True | True |
+
+`execute()`（同文件 `:227-246`）的 `trusted_context` 注入分支追加：
+- `decompile_rpyc_files` ← `confirmed_game_dir`
+- `run_project_extraction` ← `confirmed_project_root`
+- `refresh_replace_fallback` ← `confirmed_context`
+
+`module/Agent/tools/__init__.py:7-22` 的 `_EXPORTS` 追加四项。
+
+### T1a-3 确认上下文
+
+`module/Agent/AgentService.py:125` 的 `run_confirmed_tool` 与确认生成处需要为新工具产出可信上下文：
+
+- `decompile_rpyc_files`：`{"game_dir": <解析后的绝对路径>}`
+- `run_project_extraction`：`{"project_root": <绝对路径>, "language": <str>, "incremental": <bool>}`
+- `refresh_replace_fallback`：直接复用 `translation_tools.old_new_replace_confirmation_context()`
+
+参考现有 `unpack_rpa_files` 的做法（`AgentService.py:111` 附近）。
+
+### T1a-4 本地化
+
+`module/Localizer/LocalizerZH.py` 与 `module/Localizer/LocalizerEN.py` 各新增：
+
+- `agent_tool_decompile_rpyc_files_description`
+- `agent_tool_run_project_extraction_description`
+- `agent_tool_translation_status_description`
+- `agent_tool_refresh_replace_fallback_description`
+- 四个工具的成功/失败提示（命名 `agent_<tool>_...`）
+- 确认框标题/正文：`agent_page_decompile_confirmation`、`agent_page_extract_confirmation`、`agent_page_refresh_fallback_confirmation`
+
+文案口径：工具 description 写给模型看，必须说明「何时用、前置条件、副作用」，不要写实现细节。
+
+### T1a-5 补两个 action code 映射
+
+`frontend/Agent/AgentPage.py:2726-2772` 的 `primary` 映射表补：
+
+- `REFRESH_REPLACE_FALLBACK` → 新常量 `ACTION_REFRESH_FALLBACK`，点击后走 `_confirm_*_action()` → `_start_confirmed_tool("refresh_replace_fallback", ctx)`
+- `DECOMPILE_SCRIPTS` → 从「跳工具箱页」改为 `ACTION_DECOMPILE`，直接调已确认工具
+
+新增常量放 `frontend/Agent/AgentPage.py:105-111`。
+新增按钮文案：`agent_page_action_decompile`、`agent_page_action_refresh_fallback`（zh/en）。
+
+> Qt 侧只改这两处映射，其余冻结。后续整体移除。
+
+### T1a-6 桌面渲染端文案
+
+`desktop/renderer/src/i18n/zh.ts` / `en.ts` 追加对应 `agent_page_tool_*` 键；`desktop/renderer/src/pages/AgentPage.tsx:13-17` 的 `TOOL_NAMES` 追加四项映射。
+
+## 测试
+
+新增 `tests/module/agent/test_agent_pipeline_tools.py`，每个工具覆盖：
+
+1. 未设置项目 → `PROJECT_NOT_SET`
+2. 路径已被改动 → `CONFIRMATION_STALE`
+3. 引擎忙 → `ENGINE_BUSY`（通过 monkeypatch `Engine.get()`）
+4. 正常路径 → 成功且 `data` 字段齐全
+5. `translation_status` 在 `Engine.Status.TRANSLATING` 下仍能返回（回归锁：不能要求空闲引擎）
+
+`tests/module/agent/test_agent_tools.py` 追加：四个新工具都在 `ToolDispatcher.tools` 里，且 confirmation/idle 标志与上表一致。
+
+## 验收命令
+
+```powershell
+python -m pytest tests/module/agent tests/api -q
+python -m pytest tests -q
+```
+
+---
+
+# 阶段 1b
+
+## 目标
+
+Agent 能启动、停止、回填翻译。**这是唯一需要动并发不变量的阶段，必须最保守。**
+
+## 关键约束（违反即打回）
+
+`api/routes/translation.py:871-975` 的启动路径包含：状态检查 → `reserve_translation()` 预占 → owner 校验 → 候选构建 → 载荷准备 → 事件投递 → `finally` 归还票据。上一个提交 `eba370d` 刚修好这里的竞态与越权。
+
+**禁止**：在 `module/Agent` 里重新实现这段逻辑或直接 `_emit(Base.Event.TRANSLATION_START, ...)`。
+
+## 任务
+
+### T1b-1 抽服务层
+
+新建 `module/Engine/TranslationStartService.py`：
+
+```python
+async def start_translation_core(app_state: AppStateLike, body: TranslationStartRequestLike)
+    -> TranslationStartResponseLike
+```
+
+- 把 `api/routes/translation.py:884-975` 的函数体整体搬进来，`request` 只保留 `request.app.state` 的用法，改为参数传入。
+- `_prepare_payload` / `_start_source_with_prebackup`（同文件 `:615` / `:871` 区域）同步搬迁，改为接收 `app_state`。
+- 路由函数退化成三行：调用 core、把异常翻译成 `HTTPException`。
+- `AppStateLike` 用 `Protocol` 定义，只声明 `config` 与 `jobs`。
+- **验收锁**：搬迁前后 `tests/api/test_onekey_safety.py`、`tests/api/test_translation*.py` 必须全绿且断言不变。
+
+### T1b-2 同步桥接
+
+`module/Agent/tools/pipeline_tools.py` 追加：
+
+```python
+def start_translation(*, config_loader=None, confirmed_project_key: str | None = None) -> ToolResult
+def stop_translation(*, config_loader=None) -> ToolResult
+```
+
+- Agent 工具跑在独立线程（`AgentService` 的后台线程），用 `asyncio.run(start_translation_core(app_state, body))` 桥接。
+- `app_state` 由 `ToolDispatcher` 构造时注入（新增 `app_state_provider` 可选参数，默认 `None`；`None` 时工具返回 `code="AGENT_APP_CONTEXT_MISSING"`，Qt5 侧就是这个分支）。
+- `stop_translation` 是同步函数（`api/routes/translation.py:977`），直接调用即可。
+
+### T1b-3 回填工具
+
+```python
+def apply_translation(
+    *, config_loader=None, mode: str = "full", confirmed_context: dict | None = None,
+) -> ToolResult
+```
+- 复用 `flow.apply_full_translation` / `flow.apply_incremental_translation` / `flow.resolve_translation_apply_paths`。
+- 回填前计算 `confirmed_context`（`tl_dir` 签名、输出路径、待写条数），签名不符返回 `CONFIRMATION_STALE`。
+- 返回 `data` 含 `applied_count`、`failed_count`、`failed_samples`（最多 5 条）。
+
+### T1b-4 抽提取服务
+
+新建 `module/OneKey/pipeline.py`，把 `api/routes/onekey.py:388-505` 的 detect → unpack → decompile → extract → `prepare_extraction_paths` 搬成：
+
+```python
+def run_preprocess(
+    *, config: Config, project_root: str, language: str, incremental: bool,
+    exe_path: str | None, progress: Callable[[str, int, str], None],
+    cancel_check: Callable[[], bool],
+) -> dict
+```
+
+路由 `prepare()` 与 `run_project_extraction` 都调用它。配置落盘留在调用方。
+
+> 注意：这条会改变 1a 里 `run_project_extraction` 的实现（从「只抽取」升级为「可串联解包/反编译」）。1b 完成后，1a 的 `NEED_UNPACK` 返回值可以保留（仍是正确行为），但改由 `run_preprocess` 统一判断。
+
+## 测试
+
+- `tests/api/test_onekey_safety.py` 断言不变（回归锁）
+- 新增 `tests/module/agent/test_agent_translation_tools.py`：引擎忙 / owner 不符 / 正常受理 / 停止 / 回填签名陈旧
+- 并发回归：并发两个 `start_translation` 只允许一个 `accepted=True`（照 `tests/api/` 里现有竞态测试的写法）
+
+---
+
+# 阶段 2
+
+## T2-1 技能包
+
+新建：
+
+```
+module/Agent/skills/__init__.py
+module/Agent/skills/renpy-pipeline/SKILL.md
+module/Agent/skills/glossary/SKILL.md
+module/Agent/skills/text-preserve/SKILL.md
+module/Agent/skills/proofreading/SKILL.md
+module/Agent/skills/rpy-syntax/SKILL.md
+```
+
+`SKILL.md` 首部 Front Matter：
+
+```markdown
+---
+name: renpy-pipeline
+description: 一句话说明何时使用（这句话进系统提示的技能目录）
+---
+```
+
+正文用中文写领域知识，**不写工具名清单**（工具清单在 schema 里）。
+
+`renpy-pipeline` 至少覆盖：解包 → 反编译 → 提取 → 翻译 → 回填 → 补丁 的判据与顺序、每种 `detect_game_status` 返回值对应的下一步、失败时的回退。
+
+## T2-2 `read_skill` 工具
+
+`module/Agent/tools/skill_tools.py`：
+
+```python
+def list_skills() -> ToolResult          # 返回 name + description（不含正文）
+def read_skill(name: str) -> ToolResult  # 返回正文，超长截断到 12000 字并提示分段
+```
+
+- 路径只允许 `module/Agent/skills/<name>/SKILL.md`，`name` 必须匹配 `^[a-z0-9-]+$`，禁止 `..`。
+- 系统提示（`module/Agent/AgentPromptBuilder.py`）追加 `<available_skills>` 段，只列名字与描述。
+
+## T2-3 `set_stage` 工具
+
+```python
+def set_stage(stage: str | None) -> ToolResult
+```
+- 写入 `AgentService` 会话的阶段字段（新增 `self._stage`），随事件推给前端。
+- `stage` 为 `None` 时清空。
+- `AgentService.snapshot()` 暴露 `stage`；`api/routes/agent.py` 的返回值自动带上。
+- 不许写入对话历史（它不是一个消息）。
+
+## T2-4 自动续跑
+
+`module/Agent/AgentService.py` 新增 `_auto_continue`：
+
+- `start_translation` 成功后注册一次性回调。
+- 翻译终态事件到达时：
+  - `DONE` 且失败项 == 0 → 自动 `apply_translation` → 自动 `refresh_replace_fallback` → 推 `system` 事件说明结果
+  - `DONE` 且失败项 > 0 → 推 `system` 事件列出失败项，**停下来等用户**（已确认的决策）
+  - `CANCELLED`/`FAILED` → 清掉回调，不自动回填
+- 用户主动 `stop_translation` 后，同一轮内的自动调用一律跳过（照 LinguaGacha 的停止语义）。
+
+## T2-5 轮次预算
+
+`module/Agent/AgentService.py:36` 的 `max_iterations = 8` 改为：
+
+- 新增参数 `polling_tools = {"translation_status"}`，调用这些工具的轮次不占预算。
+- 其余轮次上限提到 24。
+
+## 测试
+
+`tests/module/agent/test_agent_skills.py`、`test_agent_auto_continue.py`、`test_agent_iterations.py`。
+
+---
+
+# 阶段 3
+
+## T3-1 桌面 Agent 页
+
+`desktop/renderer/src/pages/AgentPage.tsx`：
+
+- 建议卡（`:19-23`）改成「流水线预设」：一键全流程 / 只解包 / 只提取 / 续跑翻译 / 只回填。
+- 新增阶段徽标：读 `session.stage`（T2-3）。
+- 工具卡片增加进度条：读 WS 的 `{"type":"job"}` 事件（`api/jobs.py:190`）。
+- `TOOL_NAMES`（`:13-17`）补齐全部工具。
+
+## T3-2 Qt 退场
+
+前置：1a/1b/2 全部合入并通过测试。
+
+1. `frontend/` 标记冻结（本轮只做：不再新增功能）。
+2. 逐页比对桌面端覆盖情况，列缺失清单。
+3. 缺失清零后，删除 `frontend/`、`tests/frontend/`，清理 `pyproject.toml` / `requirements.txt` 里的 PySide6/qfluentwidgets 依赖。
+
+**本轮不执行第 3 步**，只产出缺失清单。
+
+---
+
+## 里程碑
+
+| 里程碑 | 完成标志 |
+|---|---|
+| M1 | 1a 合入，Agent 能自主走到「提取完成」 |
+| M2 | 1b 合入，Agent 能「启动翻译 → 查进度 → 停止 → 回填」 |
+| M3 | 2 合入，一条龙全托管，失败项停下来问 |
+| M4 | 3 合入，桌面端为唯一前端，Qt 冻结 |
