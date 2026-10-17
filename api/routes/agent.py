@@ -22,11 +22,15 @@ def send_message(request: Request, body: AgentMessageRequest) -> dict:
     if str(platform.get("api_format", "")).casefold() not in {"openai", "anthropic", "google"}:
         raise HTTPException(status_code=400, detail="Agent 需要支持工具调用的 OpenAI、Anthropic 或 Google 接口，不能使用机器翻译或 SakuraLLM 接口")
     try:
-        return _sanitise(request.app.state.agent.start(body.message, body.thinking_level))
+        snapshot = request.app.state.agent.start(body.message, body.thinking_level)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # 记住本轮 Agent 的思考等级：一条龙里的批量翻译会复用它（见 api/pipeline_bridge.py），
+    # 否则平台里给人工翻译配的 MAX 思考会把每条批次的输出 token 拉高数倍。
+    config.agent_thinking_level = body.thinking_level
+    return _sanitise(snapshot)
 
 
 @router.post("/stop")

@@ -14,7 +14,7 @@ from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 from module.OneKey.flow import (
     detect_game_status,
-    existing_translation_summary,
+    read_translation_cache_progress,
     resolve_extraction_incremental,
     resolve_translation_apply_paths,
 )
@@ -161,6 +161,18 @@ def _output_has_rpy(config) -> bool:
     return any(path.is_file() and path.suffix.lower() == ".rpy" for path in folder.rglob("*.rpy"))
 
 
+def _has_completed_translation(config) -> bool:
+    """主缓存存在且没有待译条目，才算上一次翻译真的完成。"""
+
+    output, _input = resolve_translation_apply_paths(config)
+    if output is None:
+        return False
+    _progress, _status, untranslated, cache_ready = read_translation_cache_progress(
+        str(output)
+    )
+    return bool(cache_ready) and untranslated == 0
+
+
 def _percent(progress: dict) -> int:
     if not isinstance(progress, dict):
         return -1
@@ -296,9 +308,13 @@ def run_pipeline(
     if status != "ready":
         return finish(False, "EXTRACT_FAILED", detect_message)
 
-    has_existing = bool(existing_translation_summary(paths).get("exists"))
+    # auto 只在「上次翻译确实完成」时才走增量：主缓存里只要还有待译条目，
+    # 说明上一次运行被中断，主 TL 目录里仍是源文，必须全量抽取再回填。
+    has_completed = _has_completed_translation(config)
     try:
-        incremental_extract = resolve_extraction_incremental(str(incremental or "auto"), has_existing)
+        incremental_extract = resolve_extraction_incremental(
+            str(incremental or "auto"), has_completed
+        )
     except ValueError:
         return finish(False, "EXTRACT_FAILED", str(incremental))
     need_extract = str(incremental) == "full" or not _output_has_rpy(config)
