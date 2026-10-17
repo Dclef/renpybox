@@ -6,6 +6,7 @@ import json
 import threading
 from typing import TYPE_CHECKING, Any, Callable
 
+from base.Base import Base
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
@@ -32,6 +33,8 @@ class AgentService:
     # 长任务（逐批翻译）的额外轮次预算：普通对话仍受 max_iterations 限制，
     # 只有工具声称「还在推进」的迭代才从这笔预算里扣。
     DEFAULT_MAX_LONG_ITERATIONS = 600
+    # 单纯轮询（translation_status）不占推演预算，但要有上限，防止模型空转。
+    POLLING_ITERATIONS_CEILING = 240
 
     def __init__(
         self,
@@ -39,8 +42,9 @@ class AgentService:
         config_loader: Callable[[], Config] | None = None,
         dispatcher: ToolDispatcher | None = None,
         pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
-        max_iterations: int = 8,
+        max_iterations: int | None = None,
         max_long_iterations: int = DEFAULT_MAX_LONG_ITERATIONS,
+        polling_tools: frozenset[str] = frozenset({"translation_status"}),
         result_limit: int = 2000,
         confirmation_timeout: float = 120.0,
         max_context_chars: int | None = None,
@@ -51,8 +55,14 @@ class AgentService:
             config_loader = self.config_loader,
             pipeline_callbacks = pipeline_callbacks,
         )
-        self.max_iterations = max(1, int(max_iterations))
+        # None 表示按模型容量推导；显式传入的值优先，且至少为 1。
+        self._max_iterations_override = (
+            None if max_iterations is None else max(1, int(max_iterations))
+        )
+        self.max_iterations = self._max_iterations_override or 8
         self.max_long_iterations = max(0, int(max_long_iterations))
+        self.polling_tools = frozenset(polling_tools)
+        self._stage = ""
         self.result_limit = max(256, int(result_limit))
         self.confirmation_timeout = max(0.01, float(confirmation_timeout))
         # None 表示「按模型容量自动推导」，在每次 _run 拿到平台配置后决定。
@@ -140,6 +150,10 @@ class AgentService:
             from .tools.pipeline_tools import translation_apply_confirmation_context
 
             return translation_apply_confirmation_context(config_loader=self.config_loader)
+        if name == "run_onekey_pipeline":
+            from .tools.pipeline_tools import pipeline_identity
+
+            return pipeline_identity(self.config_loader())
         if name == "run_project_extraction":
             from module.OneKey.flow import (
                 existing_translation_summary,
@@ -230,6 +244,7 @@ class AgentService:
                     confirmed=True,
                     trusted_context=dict(trusted_context),
                     cancel_check=self._cancel_check,
+                    progress_callback=self._progress_callback(callback),
                 )
 
         detail = {
@@ -250,6 +265,35 @@ class AgentService:
     def _emit(self, callback: EventCallback | None, event: str, payload: dict[str, Any]) -> None:
         if callback is not None:
             callback(event, payload)
+
+    def snapshot(self) -> dict[str, Any]:
+        """供 API 读取会话阶段；完整消息快照仍由 api.agent.AgentSession 维护。"""
+        return {"stage": self._stage}
+
+    def budget_summary(self) -> dict[str, Any]:
+        """本轮按模型推导出的预算，供界面展示「这个模型能用多少上下文」。"""
+
+        budget = dict(getattr(self, "context_budget", {}) or {})
+        budget.update({
+            "max_iterations": self.max_iterations,
+            "max_context_chars": self.max_context_chars,
+            "max_messages": self.max_messages,
+        })
+        return budget
+
+    def _progress_callback(self, callback: EventCallback | None):
+        """工具内进度不写入对话历史，只更新阶段并推事件。"""
+
+        def emit(stage: str, percent: int, detail: str) -> None:
+            payload = {
+                "stage": str(stage or ""),
+                "percent": percent,
+                "detail": str(detail or ""),
+            }
+            self._stage = payload["stage"]
+            self._emit(callback, "tool_progress", payload)
+
+        return emit
 
     def _current_project_key(self, config: Config) -> str:
         paths = RenpyProjectPaths.from_config(config)
@@ -289,6 +333,15 @@ class AgentService:
         self.max_messages = self._max_messages_override or int(
             budget.get("max_messages") or 0
         )
+        if self._max_iterations_override is None:
+            usable = budget.get("usable_tokens") or 0
+            try:
+                usable_tokens = int(usable)
+            except (TypeError, ValueError):
+                usable_tokens = 0
+            if usable_tokens < 0:
+                usable_tokens = 0
+            self.max_iterations = max(8, min(32, usable_tokens // 16000))
 
     def _trim_history(self) -> None:
         """裁剪历史：字符与消息条数两条边界都要守。"""
@@ -355,6 +408,11 @@ class AgentService:
         platform = config.get_platform(platform_id)
         if not isinstance(platform, dict):
             return None, Localizer.get().agent_api_missing
+        # 机器翻译格式（GoogleFree / Bing）不提供工具调用能力，选中它们只会在
+        # 真正发请求时失败；这里提前拒绝，让界面直接给出可操作的提示。
+        api_format = str(platform.get("api_format") or "").strip()
+        if api_format in {str(item) for item in Base.MACHINE_API_FORMATS}:
+            return None, Localizer.get().agent_request_unsupported_platform
         return platform, None
 
     @staticmethod
@@ -431,6 +489,9 @@ class AgentService:
 
         # 按本轮实际使用的模型推导预算：同一份会话在不同模型间切换时自动收紧或放宽。
         self._apply_model_budget(platform)
+        # 阶段每次任务重新开始，不要把上一轮的 translate 带进新任务。
+        self._stage = ""
+        self._emit(callback, "budget", self.budget_summary())
 
         if not self.messages:
             self.messages.append({
@@ -453,6 +514,7 @@ class AgentService:
 
         iteration = 0
         long_iterations = 0
+        polling_iterations = 0
         while iteration < self.max_iterations:
             iteration_results: list[ToolResult] = []
             # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
@@ -579,6 +641,8 @@ class AgentService:
                                     call.arguments,
                                     confirmed=True,
                                     trusted_context=confirmation["data"],
+                                    cancel_check=self._cancel_check,
+                                    progress_callback=self._progress_callback(callback),
                                 )
                 else:
                     self._emit(callback, "tool_start", {
@@ -589,9 +653,13 @@ class AgentService:
                         call.name,
                         call.arguments,
                         cancel_check=self._cancel_check,
+                        progress_callback=self._progress_callback(callback),
                     )
                 if call.name == "set_project" and tool_result.success:
                     self._project_changed_during_run = True
+                if call.name == "set_stage" and tool_result.success:
+                    self._stage = str((tool_result.data or {}).get("stage") or "")
+                    self._emit(callback, "stage", {"stage": self._stage})
                 summary = tool_result.model_message(
                     tool.result_limit if tool is not None and tool.result_limit else self.result_limit
                 )
@@ -623,9 +691,29 @@ class AgentService:
                         code=tool_result.code,
                     ))
 
+            # 轮询进度不是推演，不占普通预算，也不占长任务预算。
             # 长任务（例如逐批翻译）每个迭代都在推进时不占用普通轮次预算，
-            # 否则普通的 8 轮上限会让一盘游戏的翻译在半路被截断。
-            if any(item.continues for item in iteration_results):
+            # 否则普通的轮次上限会让一盘游戏的翻译在半路被截断。
+            call_names = [call.name for call in result.tool_calls]
+            polling_only = bool(call_names) and all(
+                name in self.polling_tools for name in call_names
+            )
+            if polling_only:
+                # 轮询本身是零推进的重复动作，不占推演预算，但也不能无限轮下去。
+                polling_iterations += 1
+                if polling_iterations >= self.POLLING_ITERATIONS_CEILING:
+                    message = Localizer.get().agent_max_iterations
+                    self._emit(callback, "error", {
+                        "code": "MAX_ITERATIONS",
+                        "message": message,
+                    })
+                    return self._finalize(AgentRunResult(
+                        False,
+                        message,
+                        data={"events": details},
+                        code="MAX_ITERATIONS",
+                    ))
+            elif any(item.continues for item in iteration_results):
                 long_iterations += 1
                 if long_iterations >= self.max_long_iterations:
                     message = Localizer.get().agent_max_iterations

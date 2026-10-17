@@ -740,6 +740,26 @@ class LocalizerZH():
         "可选。full 表示把完整译文写回主 TL（默认）；incremental 表示合并增量抽取的译文、"
         "迁移缓存后再写回。"
     )
+    agent_tool_run_project_extraction_exe_description: str = (
+        "可选。官方抽取用的游戏 exe，必须位于项目根目录。省略时自动查找。"
+    )
+    agent_tool_run_project_extraction_supplement_description: str = (
+        "可选。补充抽取模式：off、precise 或 aggressive；省略时沿用抽取设置里的当前值。"
+    )
+    agent_tool_run_onekey_pipeline_description: str = (
+        "用户要求一条龙、整盘解包并翻译、或把游戏翻完时使用。一次确认覆盖解包、反编译、"
+        "抽取、翻译、回填和 replace_text 兜底；会写入 game 与 tl 目录，耗时可能很长。"
+        "不要拆成多个工具逐个确认。失败项或未译条目大于 0 时不回填。"
+        "用户取消后会停止翻译并等到终态，不会自动回填，也不要在同一轮重新启动。"
+    )
+    agent_tool_run_onekey_pipeline_incremental_description: str = (
+        "可选。auto（默认）按是否已有译文决定增量；full 强制全量抽取；incremental 尽量增量抽取。"
+    )
+    agent_tool_set_stage_description: str = (
+        "向界面播报当前阶段（detect、unpack、decompile、extract、translate、apply、fallback、done）。"
+        "不修改文件，不需要确认。阶段进度由界面显示，不要在回复里重复播报。"
+    )
+    agent_tool_set_stage_stage_description: str = "阶段标识。空字符串表示清除当前阶段。"
     agent_project_inspection_complete: str = (
         "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
         "缓存条目 {item_count}，待翻译 {untranslated_count}。建议下一步：{next_action}。"
@@ -792,7 +812,11 @@ class LocalizerZH():
         "状态和操作图标由界面统一显示。"
         "只有用户要求修复运行时补充抽取文本未生效，或体检返回 REFRESH_REPLACE_FALLBACK 且用户要求执行建议时，"
         "才调用 refresh_replace_fallback 或 optimize_old_new_translations，且必须确认。"
-        "工具结果中的完整详情由界面展示，你的回复只总结关键结果。"
+        "工具结果中的完整详情由界面展示，你的回复只总结关键结果。\n"
+        "整盘一条龙（用户要求一条龙、整盘解包并翻译、把游戏翻完）用 run_onekey_pipeline，"
+        "只确认一次，不要拆成多个工具逐个确认。工具运行中会推送阶段与进度，不要重复调用。"
+        "返回 TRANSLATION_INCOMPLETE 时，先向用户报告未译数量、统计和失败样例，再决定下一步，"
+        "不要自动回填。用户点停止后不要在同一轮重启翻译。"
     )
 
     # Agent 运行时
@@ -865,6 +889,30 @@ class LocalizerZH():
     agent_apply_target_invalid: str = "翻译输出或游戏目标目录无效，请先设定项目路径。"
     agent_apply_no_output_files: str = "翻译输出目录中没有可写回的 .rpy 译文。"
     agent_app_context_missing: str = "当前运行环境不支持启动/停止翻译，请在翻译页手动操作。"
+    agent_pipeline_complete: str = (
+        "一条龙已完成，共 {steps} 个阶段，写回 {applied_files} 个文件，兜底 {fallback_count} 条。"
+    )
+    agent_pipeline_cancelled: str = "一条龙已取消，未自动回填。"
+    agent_pipeline_engine_busy: str = "引擎正忙，一条龙没有开始。"
+    agent_pipeline_translation_incomplete: str = (
+        "翻译未完成，还有 {untranslated_count} 条未译，已停止且没有回填。"
+    )
+    agent_pipeline_translation_not_started: str = (
+        "翻译请求已受理，但引擎没有真正开始；一条龙已停止，未回填。请检查接口配置后重试。"
+    )
+    agent_pipeline_project_changed: str = "项目已变化，一条龙已停止。"
+    agent_pipeline_stage_failed: str = "一条龙在{stage}失败：{detail}"
+    agent_pipeline_stage_invalid: str = "未知阶段：{stage}。"
+    agent_pipeline_stage_set: str = "当前阶段：{stage}"
+    agent_pipeline_translate_progress: str = "已翻译 {line}/{total_line}"
+    agent_stage_detect: str = "检测"
+    agent_stage_unpack: str = "解包"
+    agent_stage_decompile: str = "反编译"
+    agent_stage_extract: str = "抽取"
+    agent_stage_translate: str = "翻译"
+    agent_stage_apply: str = "回填"
+    agent_stage_fallback: str = "兜底"
+    agent_stage_done: str = "完成"
 
     # Agent 技能包
     agent_tool_list_skills_description: str = (

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { languageFromTlPath, toolStatusInfo } from '../renderer/src/agentView.mjs';
+import { budgetParts, formatTokenCount, languageFromTlPath, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../renderer/src/agentView.mjs';
 
 test('工具卡片按状态与错误码区分取消、超时和失败', () => {
   assert.deepEqual(toolStatusInfo({ status: 'running' }), { label: '执行中', tone: 'running' });
@@ -18,4 +18,45 @@ test('项目胶囊语言取 tl/<语言> 目录名', () => {
   assert.equal(languageFromTlPath('C:/Games/Demo/game/TL/schinese/sub'), 'schinese');
   assert.equal(languageFromTlPath('C:/Games/Demo/game/tl'), '');
   assert.equal(languageFromTlPath(''), '');
+});
+
+test('Agent 接口下拉排除不能调用工具的机翻格式', () => {
+  const platforms = [
+    { id: 1, api_format: 'OpenAI' },
+    { id: 2, api_format: 'anthropic' },
+    { id: 3, api_format: 'GoogleFree' },
+    { id: 4, api_format: 'Bing' },
+    { id: 5, api_format: 'SakuraLLM' },
+    { id: 6 },
+  ];
+  assert.deepEqual(selectableAgentPlatforms(platforms).map((item) => item.id), [1, 2]);
+  assert.deepEqual(selectableAgentPlatforms(null), []);
+  assert.deepEqual(selectableAgentPlatforms(undefined), []);
+});
+
+test('阶段名映射到 i18n key，未知和空阶段不展示', () => {
+  assert.equal(stageKey('detect'), 'agent_page_stage_detect');
+  assert.equal(stageKey('translate'), 'agent_page_stage_translate');
+  assert.equal(stageKey('done'), 'agent_page_stage_done');
+  assert.equal(stageKey(''), '');
+  assert.equal(stageKey(undefined), '');
+  assert.equal(stageKey('mystery'), '');
+});
+
+test('token 数量按 K/M 压缩，0 和非法值为空', () => {
+  assert.equal(formatTokenCount(200000), '200K');
+  assert.equal(formatTokenCount(1000000), '1M');
+  assert.equal(formatTokenCount(1500), '1.5K');
+  assert.equal(formatTokenCount(0), '');
+  assert.equal(formatTokenCount(undefined), '');
+  assert.equal(formatTokenCount(Number.NaN), '');
+  assert.equal(formatTokenCount(-1), '');
+});
+
+test('预算行只取上下文窗口和最大轮数', () => {
+  assert.deepEqual(budgetParts({ context_window: 200000, max_iterations: 32 }), { context: '200K', iterations: '32' });
+  assert.deepEqual(budgetParts({ context_window: 1500 }), { context: '1.5K', iterations: '' });
+  assert.deepEqual(budgetParts({}), { context: '', iterations: '' });
+  assert.deepEqual(budgetParts(undefined), { context: '', iterations: '' });
+  assert.deepEqual(budgetParts({ context_window: 0, max_iterations: 0 }), { context: '', iterations: '' });
 });

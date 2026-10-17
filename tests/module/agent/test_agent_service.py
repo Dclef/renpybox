@@ -19,7 +19,7 @@ class _Dispatcher:
             )
         }
 
-    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None):
+    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None, progress_callback=None):
         self.calls.append((name, arguments))
         return ToolResult(True, "项目正常", {"project_root": "E:/game"})
 
@@ -45,6 +45,7 @@ class _ConfirmDispatcher(_Dispatcher):
         confirmed=False,
         trusted_context=None,
         cancel_check=None,
+        progress_callback=None,
     ):
         self.calls.append((name, arguments, confirmed, trusted_context))
         return ToolResult(True, "完成")

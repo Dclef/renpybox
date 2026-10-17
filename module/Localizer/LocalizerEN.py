@@ -772,6 +772,32 @@ class LocalizerEN(LocalizerZH):
         "incremental merges incremental extraction translations, migrates the cache, then writes "
         "them back."
     )
+    agent_tool_run_project_extraction_exe_description: str = (
+        "Optional. Game executable for official extraction. It must sit in the project root. "
+        "When omitted, the server looks it up."
+    )
+    agent_tool_run_project_extraction_supplement_description: str = (
+        "Optional. Supplemental extraction: off, precise, or aggressive. When omitted, the "
+        "current extraction setting is kept."
+    )
+    agent_tool_run_onekey_pipeline_description: str = (
+        "Use when the user asks for the full pipeline, to unpack and translate the whole game, "
+        "or to finish translating the game. One confirmation covers unpack, decompile, extract, "
+        "translate, apply, and the replace_text fallback. It writes the game and tl folders and "
+        "can take a long time. Do not split it into separate confirmed tools. If any entries fail "
+        "or remain untranslated, it does not apply. After the user cancels, it stops translation, "
+        "waits for the final state, does not apply, and must not be started again in the same turn."
+    )
+    agent_tool_run_onekey_pipeline_incremental_description: str = (
+        "Optional. auto (default) picks incremental when translations already exist; full forces a "
+        "full extract; incremental prefers an incremental extract."
+    )
+    agent_tool_set_stage_description: str = (
+        "Report the current stage to the UI (detect, unpack, decompile, extract, translate, apply, "
+        "fallback, done). Does not modify files and does not need confirmation. The UI shows stage "
+        "and progress; do not repeat them in the reply."
+    )
+    agent_tool_set_stage_stage_description: str = "Stage id. An empty string clears the current stage."
     agent_project_inspection_complete: str = (
         "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
         "{item_count} cached entries with {untranslated_count} untranslated. "
@@ -832,7 +858,13 @@ class LocalizerEN(LocalizerZH):
         "optimize_old_new_translations when the user asks to fix supplemental extraction text that "
         "never took effect, or when inspection returns REFRESH_REPLACE_FALLBACK and the user asks to "
         "apply that recommendation. Require confirmation. Summarize key results; full details are "
-        "shown in the UI."
+        "shown in the UI.\n"
+        "For a full run (the user asks for the whole pipeline, to unpack and translate the game, "
+        "or to finish the game) call run_onekey_pipeline once and confirm only once; do not split "
+        "it into separate tools. The tool pushes stage and progress while it runs; do not call it "
+        "again to poll. When it returns TRANSLATION_INCOMPLETE, report the untranslated count, "
+        "the statistics, and failed samples to the user before deciding what to do next, and do not "
+        "apply automatically. After the user presses stop, do not restart translation in the same turn."
     )
 
     # Agent runtime
@@ -905,6 +937,31 @@ class LocalizerEN(LocalizerZH):
     agent_apply_target_invalid: str = "The translation output or game target folder is invalid. Set the project paths first."
     agent_apply_no_output_files: str = "No translated .rpy files were found in the translation output folder."
     agent_app_context_missing: str = "This environment cannot start or stop translation. Use the translation page instead."
+    agent_pipeline_complete: str = (
+        "Pipeline finished: {steps} stages, {applied_files} files applied, {fallback_count} fallback entries."
+    )
+    agent_pipeline_cancelled: str = "Pipeline cancelled. Translations were not applied."
+    agent_pipeline_engine_busy: str = "The engine is busy, so the pipeline did not start."
+    agent_pipeline_translation_incomplete: str = (
+        "Translation is incomplete: {untranslated_count} entries remain. Nothing was applied."
+    )
+    agent_pipeline_translation_not_started: str = (
+        "The translation request was accepted but the engine never started; the pipeline "
+        "stopped without applying. Check the API settings and retry."
+    )
+    agent_pipeline_project_changed: str = "The project changed, so the pipeline stopped."
+    agent_pipeline_stage_failed: str = "Pipeline failed during {stage}: {detail}"
+    agent_pipeline_stage_invalid: str = "Unknown stage: {stage}."
+    agent_pipeline_stage_set: str = "Current stage: {stage}"
+    agent_pipeline_translate_progress: str = "Translated {line}/{total_line}"
+    agent_stage_detect: str = "Detect"
+    agent_stage_unpack: str = "Unpack"
+    agent_stage_decompile: str = "Decompile"
+    agent_stage_extract: str = "Extract"
+    agent_stage_translate: str = "Translate"
+    agent_stage_apply: str = "Apply"
+    agent_stage_fallback: str = "Fallback"
+    agent_stage_done: str = "Done"
 
     # Agent skills
     agent_tool_list_skills_description: str = (
