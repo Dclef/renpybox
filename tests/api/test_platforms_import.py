@@ -1,6 +1,6 @@
 """``POST /api/platforms/import``：把旧版配置的接口搬进桌面版。
 
-桌面版把配置放在 ``%APPDATA%\\RenpyBox-newUI``，旧 Python 版放在程序目录，
+桌面版把配置放在 ``%APPDATA%\\RenpyBox``（旧版为 ``RenpyBox-newUI``），旧 Python 版放在程序目录，
 两者互不可见。导入只搬运接口字段与稳定凭据身份：密钥本体在 Windows 凭据
 管理器里且是全局的，凭身份即可自动认领。
 """

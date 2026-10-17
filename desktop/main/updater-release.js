@@ -34,7 +34,10 @@ export function compareDesktopVersions(left, right) {
 export function selectInstallerAsset(release) {
   const version = desktopVersionString(release?.tag_name);
   if (!version) return null;
-  const expectedName = `RenpyBox-NewUI-${version}-x64.exe`.toLowerCase();
+  // 0.9.x 起统一为 RenpyBox-<version>；更早的 -newui.N 测试版保留旧资产名兼容。
+  const expectedName = version.includes('-newui.')
+    ? `RenpyBox-NewUI-${version}-x64.exe`.toLowerCase()
+    : `RenpyBox-${version}-x64.exe`.toLowerCase();
   const assets = Array.isArray(release?.assets) ? release.assets : [];
   return assets.find(asset => (
     String(asset?.name ?? '').toLowerCase() === expectedName

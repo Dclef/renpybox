@@ -259,7 +259,7 @@ function fixture() {
   };
 
   window.renpy = {
-    appInfo: async () => ({ appVersion: 'v0.8.1-newui.1', packaged: false }),
+    appInfo: async () => ({ appVersion: 'v0.8.1', packaged: false }),
     pickFolder: async () => 'C:/ui-check/manual-tl',
     pickFile: async () => 'C:/ui-check/game.exe',
     saveFile: async () => 'C:/ui-check/error_report.xlsx',

@@ -22,6 +22,7 @@ import { readLogTail } from './log-reader.js';
 import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
 import { createDesktopUpdater } from './updater.js';
 import { createWindowCloseGuard } from './window-close-guard.js';
+import { APP_DATA_DIR_NAME, migrateLegacyProfile } from './profile-migration.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
@@ -34,10 +35,13 @@ const SHELL_DIR = path.join(DESKTOP_ROOT, 'shell');
 
 const isDev = !app.isPackaged;
 app.setName('RenpyBox');
-if (process.platform === 'win32') app.setAppUserModelId('com.dclef.renpybox.newui');
+if (process.platform === 'win32') app.setAppUserModelId('com.dclef.renpybox');
 if (!isDev) {
   const profile = app.commandLine.getSwitchValue('user-data-dir');
-  app.setPath('userData', profile ? path.resolve(profile) : path.join(app.getPath('appData'), 'RenpyBox-newUI'));
+  const appDataDir = app.getPath('appData');
+  const userDataPath = profile ? path.resolve(profile) : path.join(appDataDir, APP_DATA_DIR_NAME);
+  if (!profile) migrateLegacyProfile({ appDataDir, logger: message => console.log(message) });
+  app.setPath('userData', userDataPath);
 }
 if (!app.requestSingleInstanceLock()) app.exit(0);
 // dev 端口必须与 vite.config.ts 的 WEB_PORT 一致（默认 5173）。
@@ -109,7 +113,7 @@ function applyWindowBranding(win) {
   // Explorer's taskbar menu uses relaunch metadata, not BrowserWindow.title/icon.
   // Development runs through electron.exe, so include the project path when reopening.
   win.setAppDetails({
-    appId: 'com.dclef.renpybox.newui',
+    appId: 'com.dclef.renpybox',
     appIconPath: appIcon,
     appIconIndex: 0,
     relaunchDisplayName: 'RenpyBox',
