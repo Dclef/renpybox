@@ -53,6 +53,8 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
         "apply_translation",
         "list_skills",
         "read_skill",
+        "read_translation_batch",
+        "write_translation_batch",
     ]
     assert "path" in dispatcher.tools["set_project"].parameters_schema["properties"]
     for name in (

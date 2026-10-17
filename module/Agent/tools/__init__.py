@@ -25,6 +25,14 @@ _EXPORTS = {
     "refresh_replace_fallback": ("pipeline_tools", "refresh_replace_fallback"),
     "list_skills": ("skill_tools", "list_skills"),
     "read_skill": ("skill_tools", "read_skill"),
+    "read_translation_batch": (
+        "agent_translation_tools",
+        "read_translation_batch",
+    ),
+    "write_translation_batch": (
+        "agent_translation_tools",
+        "write_translation_batch",
+    ),
 }
 
 __all__ = list(_EXPORTS)
