@@ -777,6 +777,9 @@ class LocalizerZH():
         "你直接产出与之一一对应的译文，再用 write_translation_batch 按同一批 id 写回，"
         "然后继续下一批。译一批写一批，不要在回复里罗列整批译文；"
         "写回失败的条目按返回的 code 修正后重写。\n"
+        "用户说「翻译这个项目」这类整盘任务时，一路译到底：不要译几十条就停下来总结，"
+        "也不要每批都问用户，直到待译条目为 0 再收尾。只有用户要求停止、"
+        "或出现你自己解决不了的错误时才停。\n"
         "动手翻译前先 read_skill 加载相关技能（text-preserve、glossary、proofreading），"
         "标签、变量、转义占位必须原样保留。"
         "用户要求停止时调用 stop_translation，停止后不要在同一轮里自动重启翻译。"
@@ -901,8 +904,8 @@ class LocalizerZH():
         "质量检查不通过的条目会被打回未翻译并计入 failed，不会写入文件。"
         "写回的是翻译工作目录，不是游戏目录；要让译文进游戏仍需 apply_translation。"
     )
-    agent_translate_batch_param_description: str = "本批最多返回多少条待译条目，默认 30，上限 80。"
-    agent_translate_max_chars_param_description: str = "本批原文总字符预算，默认 6000，上限 20000。"
+    agent_translate_batch_param_description: str = "本批最多返回多少条待译条目，默认 80，上限 400。"
+    agent_translate_max_chars_param_description: str = "本批原文总字符预算，默认 40000，上限 200000。"
     agent_translate_translations_param_description: str = (
         "译文数组：每个元素包含来自 read_translation_batch 的 id、字段 dst（译文），"
         "以及可选的 name_dst（角色姓名译文）。"

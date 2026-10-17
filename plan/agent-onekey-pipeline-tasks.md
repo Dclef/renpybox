@@ -456,3 +456,41 @@ RenpyBox 已经有成熟的翻译引擎（prompt 组装、分块、并发、重�
   现在靠提示词约束，没有服务端强制。
 - `stop_source` 语义：RenpyBox 只有 STOPPING，没有区分 user / parent / shutdown。
 - 工具结果落盘 + 补读（`policy.ts:8-13` 的 64KiB 内联额度思路）。
+
+---
+
+# 阶段 2-d（已实施）放大容量：让 Agent 一口气译完整盘
+
+## 背景
+
+用户要求「让 Agent 直接翻译，一步到位」，并指出现代模型已经有 1M 上下文。
+原实现的三处硬限额会让整盘翻译被强行切碎：
+
+| 位置 | 原值 | 现值 | 理由 |
+|---|---|---|---|
+| `AgentService.DEFAULT_MAX_CONTEXT_CHARS` | 128_000 | 300_000 | 128k 字符≈60k～90k token，200k 窗口的模型只用到一半；300k 字符≈100k～150k token，既喂得满 200k 窗口，也不会把 128k 窗口的模型一次撑爆 |
+| `AgentService.DEFAULT_MAX_LONG_ITERATIONS` | 240 | 600 | 一轮一批的模型也能跑完万级条目 |
+| `agent_translation_tools.DEFAULT_BATCH_SIZE` | 30 | 80 | 单轮吞吐 ×2.7 |
+| `MAX_BATCH_SIZE` | 80 | 400 | 大窗口模型可以一次吞几百条 |
+| `DEFAULT_BATCH_CHARS` | 6_000 | 40_000 | 原文预算同比放大 |
+| `MAX_BATCH_CHARS` | 20_000 | 200_000 | 同上 |
+| `ToolDispatcher` 的 `read_translation_batch.result_limit` | 12_000 | 140_000 | 否则 140k 字符的批次仍会在 12k 处被截断 |
+
+## 提示词
+
+两条路径之外补一句硬约束（ZH/EN）：
+> 用户说「翻译这个项目」这类整盘任务时，一路译到底：不要译几十条就停下来总结，
+> 也不要每批都问用户，直到待译条目为 0 再收尾。
+
+## 验收
+
+- `tests/module/agent` + 本地化覆盖 → 127 passed
+- 新增用例 `test_read_translation_batch_supports_large_one_shot_batches`：
+  300 条一次读满，`continues=True`
+
+## 仍未做
+
+- 上下文预算没有跟随模型真实窗口自适应（配置里没有 `context_window` 字段），
+  现在是固定常量 + 注释，换小窗口模型需要手工调。
+- 输出侧没有按 `max_output_tokens` 反推批次上限：一批 400 条约需 25k 输出 token，
+  超过部分模型的单次输出上限，模型会自己截断，工具只能事后报 failed。

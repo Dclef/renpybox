@@ -10,6 +10,7 @@ from module.Agent.ToolDispatcher import ToolDispatcher
 from module.Agent.types import AgentRequestResult, AgentToolCall, ToolDef, ToolResult
 from module.Engine.TaskRequester import TaskRequester
 from module.Agent.tools.agent_translation_tools import (
+    MAX_BATCH_CHARS,
     MAX_BATCH_SIZE,
     read_translation_batch,
     write_translation_batch,
@@ -122,6 +123,26 @@ def test_read_translation_batch_respects_batch_size_and_char_budget(tmp_path: Pa
     )
     # 单条 100 字符，预算 500 至少返回 5 条，且不会超出预算太多
     assert 5 <= len(budget.data["items"]) <= 6
+
+
+def test_read_translation_batch_supports_large_one_shot_batches(tmp_path: Path) -> None:
+    """大窗口模型要能一次吞下几百条，否则整盘翻译要跑几百轮。"""
+
+    config = _config_for(tmp_path)
+    _seed_cache(config, [
+        _make_item(row, "原" * 40, status = Base.TranslationStatus.UNTRANSLATED)
+        for row in range(1, 301)
+    ])
+
+    result = read_translation_batch(
+        config_loader = lambda: config,
+        batch_size = MAX_BATCH_SIZE,
+        max_chars = MAX_BATCH_CHARS,
+    )
+
+    assert len(result.data["items"]) == 300
+    assert result.data["remaining"] == 300
+    assert result.continues is True
 
 
 def test_read_translation_batch_reports_missing_output_folder(tmp_path: Path) -> None:

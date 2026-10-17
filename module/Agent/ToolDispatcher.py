@@ -314,12 +314,12 @@ class ToolDispatcher:
                     "properties": {
                         "batch_size": {
                             "type": "integer",
-                            "default": 30,
+                            "default": 80,
                             "description": localizer.agent_translate_batch_param_description,
                         },
                         "max_chars": {
                             "type": "integer",
-                            "default": 6000,
+                            "default": 40000,
                             "description": localizer.agent_translate_max_chars_param_description,
                         },
                     },
@@ -332,7 +332,7 @@ class ToolDispatcher:
                 ),
                 requires_confirmation=False,
                 requires_idle_engine=True,
-                result_limit=12_000,
+                result_limit=140_000,
             ),
             "write_translation_batch": ToolDef(
                 name="write_translation_batch",
