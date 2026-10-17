@@ -1645,12 +1645,20 @@ class UnifiedExtractor:
                 tl_dir.mkdir(parents=True, exist_ok=True)
                 # ExtractAllFilesInDir(dirName, is_open_filter, filter_length, is_gen_empty, is_skip_underline)
                 # 放宽长度过滤，减少 UI 短词漏提取
-                _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                # 精准模式只补官方抽取覆盖不到的 UI/菜单文本。官方抽取没有真正跑起来时
+                # （没有 exe / 用户关闭官方抽取），精准模式会把对话也过滤掉，纯脚本项目
+                # 会抽出 0 条；这种情况退回全量扫描。
+                _official_covered = self.official_extraction_status == "succeeded"
+                _precise = (
+                    str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower()
+                    != "aggressive"
+                    and _official_covered
+                )
                 self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
                     str(tl_dir), True, 4, False, True,
                     should_stop=self._is_cancelled,
                     progress_callback=lambda message: self._emit_progress(str(message), 50),
-                    official_coverage=self.official_extraction_status == "succeeded",
+                    official_coverage=_official_covered,
                     precise=_precise,
                 )
             else:
@@ -1659,7 +1667,11 @@ class UnifiedExtractor:
             # 4. 静态补充抽取：把官方/自定义流程仍可能漏掉的源码文本写入标准 TL。
             # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
             if allow_custom:
-                _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                _precise_static = (
+                    str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower()
+                    != "aggressive"
+                    and _official_covered
+                )
                 _static_candidates = self._call_with_optional_callbacks(
                     rx.collect_static_source_strings, game_dir,
                     should_stop=self._is_cancelled, precise=_precise_static,
@@ -1927,7 +1939,12 @@ class UnifiedExtractor:
                     if allow_custom:
                         self._emit_progress("正在执行补充抽取...", 50)
                         try:
-                            _precise = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                            # 与常规抽取一致：精准模式依赖官方抽取覆盖对话；官方没跑起来时全量扫描。
+                            _precise = (
+                                str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower()
+                                != "aggressive"
+                                and official_succeeded
+                            )
                             self._call_with_optional_callbacks(rx.ExtractAllFilesInDir,
                                 str(tl_dir), True, 4, False, True,
                                 should_stop=self._is_cancelled,
@@ -1959,7 +1976,11 @@ class UnifiedExtractor:
                 # 静态源码文本必须写入标准 TL，不交给 replace_text。
                 # 仅在启用补充抽取（allow_custom）时运行；off 模式（仅官方）跳过。
                 if allow_custom:
-                    _precise_static = str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower() != "aggressive"
+                    _precise_static = (
+                        str(getattr(config, "extract_supplement_mode", "precise") or "precise").lower()
+                        != "aggressive"
+                        and official_succeeded
+                    )
                     static_candidates = self._call_with_optional_callbacks(
                         rx.collect_static_source_strings, game_dir,
                         should_stop=self._is_cancelled, precise=_precise_static,
