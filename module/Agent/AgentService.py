@@ -111,6 +111,34 @@ class AgentService:
             from .tools.translation_tools import old_new_replace_confirmation_context
 
             return old_new_replace_confirmation_context(config_loader=self.config_loader)
+        if name == "refresh_replace_fallback":
+            from .tools.translation_tools import old_new_replace_confirmation_context
+
+            return old_new_replace_confirmation_context(config_loader=self.config_loader)
+        if name == "run_project_extraction":
+            from module.OneKey.flow import (
+                existing_translation_summary,
+                resolve_extraction_incremental,
+            )
+
+            paths = RenpyProjectPaths.from_config(self.config_loader())
+            if paths is None or not paths.game_dir.is_dir():
+                return {}
+            existing = existing_translation_summary(paths)
+            incremental = resolve_extraction_incremental(
+                "auto",
+                bool(existing["exists"]),
+            )
+            return {
+                "project_root": str(paths.project_root.resolve()),
+                "language": paths.language,
+                "incremental": incremental,
+            }
+        if name == "decompile_rpyc_files":
+            paths = RenpyProjectPaths.from_config(self.config_loader())
+            if paths is None or not paths.game_dir.is_dir():
+                return {}
+            return {"game_dir": str(paths.game_dir.resolve())}
         if name != "unpack_rpa_files":
             return {}
         paths = RenpyProjectPaths.from_config(self.config_loader())
