@@ -173,6 +173,16 @@ class TranslationReinjectRequest(BaseModel):
     request_id: str | None = None
 
 
+class TranslationOwnerRequest(BaseModel):
+    """只带 owner 标识的写操作请求（停止 / 导出 / 重试失败项）。
+
+    缺省体视为未携带 key：当前没有绑定项目时放行，有绑定项目时被 409 拒绝，
+    防止切项目后仍开着的旧页面驱动新项目的缓存写入与译文导出。
+    """
+
+    project_key: str | None = None
+
+
 class TranslationStartResponse(BaseModel):
     """受理结果。
 
@@ -194,6 +204,8 @@ class TranslationStateResponse(BaseModel):
     engine_status: str = "IDLE"
     stop_barrier: bool = False
     single_tasks: bool = False
+    # 当前绑定项目的 owner key；渲染端据此给写操作带上 project_key。
+    owner_project_key: str = ""
     request_id: str = ""
     run_id: int = 0
     running: dict[str, int] = Field(default_factory=dict)

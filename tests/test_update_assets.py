@@ -111,7 +111,9 @@ def test_build_workflow_keeps_verified_compatibility_package_and_draft_gate() ->
     ):
         assert artifact in draft_run
     assert "version.txt" in draft_run
-    assert "Refusing to replace an already published release" in draft_run
+    # 已发布的 release 不得被覆盖：草稿任务必须先查 isDraft，再决定替换还是跳过。
+    assert "if (!$existing.isDraft)" in draft_run
+    assert "is already published; skipping replacement" in draft_run
     release_commands = [line.strip() for line in draft_run.splitlines() if line.strip().startswith(("gh release create", "gh release edit"))]
     assert len(release_commands) == 2
     assert all("--draft" in command and "--notes-file" in command for command in release_commands)

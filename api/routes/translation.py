@@ -38,6 +38,7 @@ from api.schemas import (
     TRANSLATION_TOOLBOX_MODES,
     TokenEstimateRequest,
     TokenEstimateResult,
+    TranslationOwnerRequest,
     TranslationReinjectRequest,
     TranslationStartRequest,
     TranslationStartResponse,
@@ -106,18 +107,43 @@ def _project_identity(config: Any) -> tuple[str, ...]:
     )
 
 
+OWNER_MISMATCH_DETAIL = "项目已切换，请重新加载后再操作"
+
+
+def _bound_owner_key(live: Any) -> str:
+    """当前绑定项目的 owner key；未绑定时为空串。"""
+    bound = RenpyProjectPaths.from_config(live)
+    return bound.project_key if bound is not None else ""
+
+
+def _require_owner(live: Any, body_project_key: str | None) -> str:
+    """要求调用方持有当前绑定项目的 key，返回该 key（未绑定时为空串）。
+
+    与 error_repair / formatter / translation_reuse 的 owner 约定一致：有绑定
+    时必须精确匹配，没有绑定时不得携带 key。不校验就会让切项目后仍开着的旧
+    页面去驱动新绑定项目的缓存写入与译文导出。
+    """
+    bound = RenpyProjectPaths.from_config(live)
+    body_key = str(body_project_key or "").strip()
+    if bound is None:
+        if body_key:
+            raise HTTPException(status_code = 409, detail = OWNER_MISMATCH_DETAIL)
+        return ""
+
+    owner_key = bound.project_key
+    if not body_key or body_key != owner_key:
+        raise HTTPException(status_code = 409, detail = OWNER_MISMATCH_DETAIL)
+    return owner_key
+
+
 def _check_owner_key(live: Any, body_project_key: str | None) -> tuple[str, tuple[str, ...]]:
     """校验 body.project_key 对应绑定 owner，不锁死手动 target。
 
-    返回 (owner_project_key, owner_identity)。无绑定时 key 为空，允许未绑定工具继续。
+    返回 (owner_project_key, owner_identity)。没有绑定时 key 为空，此时必须
+    不带 key；有绑定时必须带且相等。
     """
-    bound = RenpyProjectPaths.from_config(live)
     identity = _project_identity(live)
-    body_key = str(body_project_key or "").strip()
-    owner_key = bound.project_key if bound is not None else ""
-    if bound is not None and body_key and body_key != owner_key:
-        raise HTTPException(status_code = 409, detail = "项目已切换，请重新加载后再操作")
-    return owner_key, identity
+    return _require_owner(live, body_project_key), identity
 
 
 def _acquire_testing() -> Engine:
@@ -654,10 +680,12 @@ async def _start_source_with_prebackup(
     request_id: str,
     owner_key: str,
     owner_identity: tuple[str, ...],
+    reservation: str = "",
 ) -> TranslationStartResponse:
     """源码前置备份：先原子占 TESTING，后台 job 可取消/有进度，再启动翻译。"""
     jobs = getattr(request.app.state, "jobs", None)
     if jobs is None:
+        Engine.get().release_translation_reservation(reservation)
         raise HTTPException(status_code = 500, detail = "任务管理器未初始化")
 
     engine = _acquire_testing()
@@ -665,6 +693,7 @@ async def _start_source_with_prebackup(
         job = jobs.create(SOURCE_PREBACKUP_KIND, total = 100, cooperative_cancel = True)
     except Exception:
         engine.release_status(Engine.Status.TESTING)
+        Engine.get().release_translation_reservation(reservation)
         raise
 
     backup_root = _source_backup_root(body)
@@ -816,6 +845,9 @@ async def _start_source_with_prebackup(
             if isinstance(job.result, dict):
                 job.result["worker_active"] = False
             release_testing()
+            # 票据由翻译线程一次性消费；取消/异常/等待超时都必须归还，
+            # 否则引擎会被堵在「预占中」直到票据过期。
+            Engine.get().release_translation_reservation(reservation)
 
     try:
         await jobs.run(job.id, worker)
@@ -823,6 +855,7 @@ async def _start_source_with_prebackup(
         if isinstance(job.result, dict):
             job.result["worker_active"] = False
         release_testing()
+        Engine.get().release_translation_reservation(reservation)
         raise
 
     return TranslationStartResponse(
@@ -862,61 +895,87 @@ async def start_translation(
             detail = "有单条重译任务正在运行，请稍候再开始。",
         )
 
-    try:
-        status = Base.TranslationStatus(body.status)
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = f"未知翻译状态：{body.status}") from None
-
-    live = request.app.state.config
-    # 工具箱 mode：先校验 owner，再建候选；失败不写盘。
-    owner_key = ""
-    owner_identity: tuple[str, ...] = ()
-    if body.mode is not None:
-        owner_key, owner_identity = _check_owner_key(live, body.project_key)
-
-    candidate: Any | None = None
-    if body.mode is not None:
-        candidate = _build_toolbox_candidate(live, body)
-
-    request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
-
-    payload, rejection = _prepare_payload(
-        request,
-        status,
-        request_id,
-        preflight_confirmed = bool(body.preflight_confirmed),
-        config_snapshot = candidate,
-    )
-    if rejection is not None:
-        return rejection
-
-    if candidate is not None and str(body.mode or "") == "source" and _source_needs_prebackup(body, candidate):
-        return await _start_source_with_prebackup(
-            request,
-            body,
-            live = live,
-            candidate = candidate,
-            payload = payload or {},
-            request_id = request_id,
-            owner_key = owner_key,
-            owner_identity = owner_identity,
+    # 原子预占：把「检查状态」与「投递事件」之间的空档合并成一次 CAS 语义。
+    # 并发的第二个 /start 在这里就拿到空票被拒，而不是两个请求都走到翻译线程
+    # 去抢同一个状态位（那会让两边都先返回 accepted=True）。
+    reservation = engine.reserve_translation()
+    if not reservation:
+        return TranslationStartResponse(
+            accepted = False,
+            reason = "ENGINE_BUSY",
+            detail = "已有翻译启动正在处理，请稍候再试。",
         )
 
-    if candidate is not None:
-        changed = _collect_changed_fields(live, candidate, _TOOLBOX_FIELD_NAMES)
-        _persist_changed_fields(live, changed)
+    handed_off = False
+    try:
+        try:
+            status = Base.TranslationStatus(body.status)
+        except ValueError:
+            raise HTTPException(status_code = 400, detail = f"未知翻译状态：{body.status}") from None
 
-    _emit(Base.Event.TRANSLATION_START, payload or {})
-    return TranslationStartResponse(
-        accepted = True,
-        request_id = request_id,
-        reason = "STARTED",
-        detail = "已受理，翻译线程正在启动。",
-        stage = "translating",
-    )
+        live = request.app.state.config
+        # 工具箱 mode：先校验 owner，再建候选；失败不写盘。
+        owner_key = ""
+        owner_identity: tuple[str, ...] = ()
+        if body.mode is not None:
+            owner_key, owner_identity = _check_owner_key(live, body.project_key)
+
+        candidate: Any | None = None
+        if body.mode is not None:
+            candidate = _build_toolbox_candidate(live, body)
+
+        request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
+
+        payload, rejection = _prepare_payload(
+            request,
+            status,
+            request_id,
+            preflight_confirmed = bool(body.preflight_confirmed),
+            config_snapshot = candidate,
+        )
+        if rejection is not None:
+            return rejection
+
+        # 票据必须在这里写进载荷：source 前置备份会 deepcopy 出一份冻结载荷，
+        # 之后再补就带不进翻译线程了。
+        if payload is not None:
+            payload["start_reservation"] = reservation
+
+        if candidate is not None and str(body.mode or "") == "source" and _source_needs_prebackup(body, candidate):
+            handed_off = True
+            return await _start_source_with_prebackup(
+                request,
+                body,
+                live = live,
+                candidate = candidate,
+                payload = payload or {},
+                request_id = request_id,
+                owner_key = owner_key,
+                owner_identity = owner_identity,
+                reservation = reservation,
+            )
+
+        if candidate is not None:
+            changed = _collect_changed_fields(live, candidate, _TOOLBOX_FIELD_NAMES)
+            _persist_changed_fields(live, changed)
+
+        handed_off = True
+        _emit(Base.Event.TRANSLATION_START, payload or {})
+        return TranslationStartResponse(
+            accepted = True,
+            request_id = request_id,
+            reason = "STARTED",
+            detail = "已受理，翻译线程正在启动。",
+            stage = "translating",
+        )
+    finally:
+        # 只有「事件已投递」或「备份 job 已接管」才算交票，其余路径一律归还，
+        # 否则拒绝/异常会把引擎堵在预占中直到票据超时。
+        if not handed_off:
+            engine.release_translation_reservation(reservation)
 
 @router.post("/stop")
-def stop_translation(request: Request) -> dict:
+def stop_translation(request: Request, body: TranslationOwnerRequest | None = None) -> dict:
     """请求停止翻译。真正的终态走 WS 的 TRANSLATION_DONE。"""
     engine = Engine.get()
     status = engine.get_status()
@@ -927,12 +986,14 @@ def stop_translation(request: Request) -> dict:
     if engine.has_stop_barrier():
         raise HTTPException(status_code = 409, detail = "翻译正在停止收尾中")
 
+    _require_owner(request.app.state.config, body.project_key if body is not None else None)
+
     _emit(Base.Event.TRANSLATION_STOP, {})
     return {"ok": True, "status": "STOPPING"}
 
 
 @router.post("/export")
-def export_translation(request: Request) -> dict:
+def export_translation(request: Request, body: TranslationOwnerRequest | None = None) -> dict:
     """把当前译文写回输出目录。
 
     非运行态走缓存重注入，TRANSLATING 且已初始化走在线导出；
@@ -948,6 +1009,8 @@ def export_translation(request: Request) -> dict:
     status = engine.get_status()
     if engine.has_stop_barrier() or status not in (Engine.Status.IDLE, Engine.Status.TRANSLATING):
         raise HTTPException(status_code = 409, detail = "当前状态不能写入译文文件，请等待任务结束或停止收尾完成")
+
+    _require_owner(config, body.project_key if body is not None else None)
 
     output_folder = str(config.output_folder)
     if status == Engine.Status.IDLE:
@@ -1077,6 +1140,7 @@ def read_state(request: Request) -> TranslationStateResponse:
         engine_status = str(getattr(status, "value", status)),
         stop_barrier = bool(engine.has_stop_barrier()),
         single_tasks = bool(engine.has_single_tasks()),
+        owner_project_key = _bound_owner_key(request.app.state.config),
         request_id = str(getattr(translator, "_active_request_id", "") or ""),
         run_id = int(getattr(translator, "_translation_run_id", 0) or 0),
         running = running,
@@ -1121,12 +1185,13 @@ def _refresh_progress_after_failed_reset(manager: CacheManager) -> dict[str, Any
 
 
 @router.post("/retry-failed")
-def retry_failed(request: Request) -> dict:
+def retry_failed(request: Request, body: TranslationOwnerRequest | None = None) -> dict:
     """重置翻译失败条目为未翻译，之后由用户点「继续任务」重翻；本请求不启动翻译。"""
     engine = Engine.get()
     _ensure_engine_idle_for_cache_write(engine)
 
     config = request.app.state.config
+    _require_owner(config, body.project_key if body is not None else None)
     output_path = resolve_translation_output(config)
     if output_path is None:
         raise HTTPException(status_code = 404, detail = "未找到当前项目缓存")
