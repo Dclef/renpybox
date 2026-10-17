@@ -76,6 +76,11 @@ def mode_app(tmp_path, monkeypatch):
         # 模拟 Translator 同步 START_RESULT，供 source 备份 job 等待真值。
         if event == Base.Event.TRANSLATION_START:
             payload = data if isinstance(data, dict) else {}
+            # 真实 Translator 会一次性消费启动票据；这里没有真线程，等价地把票清掉，
+            # 否则下一次 /start 会被误判成「已有启动在处理」。
+            Engine.get().release_translation_reservation(
+                str(payload.get("start_reservation") or ""),
+            )
             EventManager.get().process_event(
                 Base.Event.TRANSLATION_START_RESULT,
                 {
@@ -132,6 +137,12 @@ def _start(client, **extra):
         "request_id": "mode-test",
         **extra,
     }
+    # 带 mode 的请求要求 owner 精确匹配；默认按当前绑定项目补上 key，
+    # 需要测「切项目」的用例仍可显式覆盖。
+    if body.get("mode") is not None and "project_key" not in extra:
+        bound = RenpyProjectPaths.from_config(client.app.state.config)
+        if bound is not None:
+            body["project_key"] = bound.project_key
     return client.post("/api/translation/start", json=body)
 
 
@@ -832,7 +843,7 @@ def test_reinject_rejects_without_cache_and_no_emit(mode_app):
     tl = mode_app["tl"]
     response = client.post(
         "/api/translation/reinject",
-        json={"output_folder": str(tl)},
+        json={"output_folder": str(tl), "project_key": mode_app["paths"].project_key},
     )
     assert response.status_code == 404, response.text
     assert mode_app["emitted"] == []
@@ -984,3 +995,50 @@ def test_busy_reject_does_not_emit_project_changed(mode_app):
     assert mode_app["emitted"] == []
     assert config.renpy_project_path == before_root
     engine.set_status(Engine.Status.IDLE)
+
+
+# ---------- 写操作的 owner 校验：切项目后旧页面不得驱动新项目 ----------
+
+def test_export_rejects_stale_owner_without_emit(mode_app):
+    """切项目后旧页面点导出：409 且不投递事件。"""
+    client = mode_app["client"]
+    response = client.post("/api/translation/export", json={"project_key": "other|chinese"})
+    assert response.status_code == 409, response.text
+    assert mode_app["emitted"] == []
+
+
+def test_export_requires_owner_when_project_bound(mode_app):
+    """有绑定项目时不带 key 视为旧页面，必须 409。"""
+    client = mode_app["client"]
+    response = client.post("/api/translation/export")
+    assert response.status_code == 409, response.text
+    assert mode_app["emitted"] == []
+
+
+def test_export_accepts_matching_owner(mode_app):
+    client = mode_app["client"]
+    response = client.post(
+        "/api/translation/export",
+        json={"project_key": mode_app["paths"].project_key},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert [event for event, _ in mode_app["emitted"]] == [Base.Event.TRANSLATION_MANUAL_EXPORT]
+
+
+def test_stop_rejects_stale_owner_without_emit(mode_app):
+    """旧 owner 不能停掉当前项目正在跑的翻译。"""
+    client = mode_app["client"]
+    engine = mode_app["engine"]
+    engine.set_status(Engine.Status.TRANSLATING)
+
+    stale = client.post("/api/translation/stop", json={"project_key": "other|chinese"})
+    assert stale.status_code == 409, stale.text
+    assert mode_app["emitted"] == []
+
+    ok = client.post(
+        "/api/translation/stop",
+        json={"project_key": mode_app["paths"].project_key},
+    )
+    assert ok.status_code == 200, ok.text
+    assert [event for event, _ in mode_app["emitted"]] == [Base.Event.TRANSLATION_STOP]

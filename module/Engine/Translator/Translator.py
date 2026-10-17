@@ -423,6 +423,10 @@ class Translator(Base):
     def translation_start(self, event: str, data: dict) -> None:
         data = data if isinstance(data, dict) else {}
         request_id = str(data.get("request_id", "") or "")
+        # HTTP /start 会先原子预占一次启动并附上票据；凭票才能把 IDLE 推到
+        # TRANSLATING，这样并发的第二个 /start 在 HTTP 层就被挡住，而不是
+        # 两个请求都走到这里抢同一个状态位。
+        reservation = str(data.get("start_reservation", "") or "")
         with self._stop_watcher_lock:
             stop_watcher = self._stop_watcher
             cancel_cleanup = getattr(self, "_cancel_cleanup_thread", None)
@@ -431,6 +435,7 @@ class Translator(Base):
         ) or (
             cancel_cleanup is not None and cancel_cleanup.is_alive()
         ):
+            Engine.get().release_translation_reservation(reservation)
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
                 "message": "上一次翻译仍在停止收尾，请稍候再开始。",
@@ -448,7 +453,7 @@ class Translator(Base):
             active_thread = self._translation_thread
             if active_thread is not None and active_thread.is_alive():
                 start_failed = True
-            elif Engine.get().try_set_status(Engine.Status.IDLE, Engine.Status.TRANSLATING):
+            elif self._claim_engine_for_translation(reservation):
                 # 状态占用、运行登记和线程启动必须处于同一个临界区。停止事件
                 # 一旦看到 TRANSLATING，就一定能取得已登记且已启动的 MAIN。
                 self._translation_run_id = self._translation_run_id + 1
@@ -495,6 +500,7 @@ class Translator(Base):
                 start_failed = True
 
         if start_failed:
+            Engine.get().release_translation_reservation(reservation)
             self.emit(Base.Event.APP_TOAST_SHOW, {
                 "type": Base.ToastType.WARNING,
                 "message": Localizer.get().translator_running,
@@ -505,6 +511,14 @@ class Translator(Base):
                     "request_id": request_id,
                     "reason": "ENGINE_BUSY",
                 })
+
+    @staticmethod
+    def _claim_engine_for_translation(reservation: str) -> bool:
+        """凭票据占用引擎；无票据时退回旧的 IDLE→TRANSLATING 判断。"""
+        engine = Engine.get()
+        if reservation:
+            return engine.claim_translation_reservation(reservation)
+        return engine.try_set_status(Engine.Status.IDLE, Engine.Status.TRANSLATING)
 
     # 翻译结果手动导出事件
     def translation_manual_export(self, event: str, data: dict) -> None:

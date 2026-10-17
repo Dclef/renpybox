@@ -293,12 +293,24 @@ export function startTranslation(
   });
 }
 
-export function stopTranslation(): Promise<{ ok: boolean; status: string }> {
-  return request('/api/translation/stop', { method: 'POST' });
+/**
+ * 停止翻译。
+ *
+ * `projectKey` 是渲染端持有的当前 owner（来自 `/api/translation/state`）；
+ * 后端有绑定项目时要求它精确匹配，用于拦住切项目后仍开着的旧页面。
+ */
+export function stopTranslation(projectKey?: string): Promise<{ ok: boolean; status: string }> {
+  return request('/api/translation/stop', {
+    method: 'POST',
+    body: JSON.stringify({ project_key: projectKey ?? '' }),
+  });
 }
 
-export function exportTranslation(): Promise<{ ok: boolean }> {
-  return request('/api/translation/export', { method: 'POST' });
+export function exportTranslation(projectKey?: string): Promise<{ ok: boolean }> {
+  return request('/api/translation/export', {
+    method: 'POST',
+    body: JSON.stringify({ project_key: projectKey ?? '' }),
+  });
 }
 
 export function reinjectTranslation(
@@ -350,8 +362,13 @@ export function stopHookTranslate(options?: {
 }
 
 /** 只重置失败条目，不启动翻译；detail 兼容旧后端可能缺省。 */
-export function retryFailedTranslations(): Promise<{ ok: boolean; count: number; detail?: string }> {
-  return request('/api/translation/retry-failed', { method: 'POST' });
+export function retryFailedTranslations(
+  projectKey?: string,
+): Promise<{ ok: boolean; count: number; detail?: string }> {
+  return request('/api/translation/retry-failed', {
+    method: 'POST',
+    body: JSON.stringify({ project_key: projectKey ?? '' }),
+  });
 }
 
 export interface QualityReport {

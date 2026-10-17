@@ -21,9 +21,25 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from fastapi.testclient import TestClient  # noqa: E402
+import pytest  # noqa: E402
 
 from api.app import create_app  # noqa: E402
 from api.jobs import JobManager, JobStatus  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def _reset_start_reservation():
+    """逐例复位翻译启动票据。
+
+    本文件有些用例摘掉了真实 translator 订阅，没人消费 /start 发出的票据，
+    不清掉会让后续用例被误判成「已有启动在处理」。
+    """
+    from module.Engine.Engine import Engine
+
+    engine = Engine.get()
+    engine.release_translation_reservation(engine.start_reservation)
+    yield
+    engine.release_translation_reservation(engine.start_reservation)
 
 
 def _client() -> TestClient:
