@@ -269,11 +269,18 @@ class AgentService:
             return sum(len(str(message)) for message in self.messages)
 
     def _apply_model_budget(self, platform: dict[str, Any]) -> None:
-        """按本轮模型的容量推导上下文与消息预算。"""
+        """按本轮模型的容量推导上下文与消息预算。
+
+        容量优先取**运行时模型目录**（供应商 /models 接口，见 ModelCatalog），
+        取不到才退回内置离线兜底表；目录过期时顺手起后台刷新，不阻塞本轮。
+        """
 
         from module.Agent.ModelBudget import agent_context_budget
+        from module.Agent.ModelCatalog import ensure_async, get as get_catalog
 
-        budget = agent_context_budget(platform)
+        catalog = get_catalog(platform)
+        ensure_async(platform)
+        budget = agent_context_budget(platform, catalog)
         self.context_budget = dict(budget)
         self.max_context_chars = (
             self._max_context_chars_override

@@ -549,3 +549,65 @@ max_context_chars / max_messages / keep_recent_tokens`。其中
 - 压缩仍是「按用户回合 / 助手边界删除」，没有实现 LinguaGacha 的
   「模型摘要替换历史 + 摘要落盘成功才生效」。
 - 单批条目数与输出的咬合只做了静态反推，没有「上批被截断 → 下批减半」的自适应。
+
+---
+
+# 阶段 2-f（已实施）容量改为运行时目录，不再靠静态模型表
+
+## 用户的质问
+
+「你就没发现目前的模型类型太老了吗，其次就是必须要这种才知道模型的上下文长度和最大回复数吗」
+
+对：静态表必然过期，而且 LinguaGacha 本来就不这么干——它从依赖包的运行时目录取容量。
+RenpyBox 也有现成的 `/models` 查询链路（`api/routes/platforms.py` 的 `read_models`），
+只是以前只取了 `id`，把目录里的容量字段全丢了。
+
+## 本次落地
+
+### 1. `module/Engine/API/ModelList.py`
+
+新增 `list_model_capabilities(api_url, api_key, api_format) -> dict[str, (上下文, 最大输出)]`：
+
+- Google：`Model.input_token_limit` / `output_token_limit`；
+- OpenAI 兼容（OpenRouter 等）：直接 GET `{api_url}/models`，取
+  `context_length | context_window | max_context_length | max_input_tokens` 与
+  `max_completion_tokens | max_output_tokens | max_tokens`，以及
+  `top_provider.max_completion_tokens`；
+- Anthropic 与 MACHINE 格式：目录不带容量，返回空，交给兜底；
+- 任何网络/解析失败返回空字典，**绝不影响主流程**。
+
+### 2. `module/Agent/ModelCatalog.py`（新）
+
+进程级缓存，key = `api_format|api_url`，TTL 3600s：
+
+- `get(platform)`：只读缓存，不联网；
+- `ensure_async(platform)`：缺失/过期时起后台线程刷新，**不阻塞本轮**；
+- `put_for(platform, catalog)`：供接口页回填。
+
+`api/routes/platforms.py:read_models` 在读取模型列表时顺带 `put_for(...)`，
+用户打开一次模型列表就把容量信息带回来了。
+
+### 3. `ModelBudget` 四级优先级
+
+```
+平台显式 context_window / max_output_tokens（0 = 自动）
+  > 运行时目录（精确匹配，大小写不敏感）
+  > 内置离线兜底表（仅断网/目录缺字段时用，已更新到 gpt-5.4/5.5、claude-*-4-6、
+    gemini-2.5、grok-4.5~4.7、deepseek-v4、kimi-k3、glm-5.2/5.3 等）
+  > 256k / 32k
+```
+
+`AgentService._apply_model_budget` 用 `ModelCatalog.get` + `ensure_async`；
+`read_translation_batch` 的批次容量同样走目录。
+
+## 验收
+
+- `tests/module/agent` + `test_model_list_capabilities.py` + 本地化覆盖 → 150 passed
+- 新增用例：目录优先于内置表、显式配置优先于目录、目录匹配大小写不敏感、
+  OpenRouter 风格目录解析、纯 list payload、网络失败返回空、Anthropic/机器翻译格式跳过
+
+## 仍未做
+
+- 显式 `context_window` / `max_output_tokens` 仍没有界面入口（只能手改 config.json）。
+- 请求被截断或溢出时没有「下批自动减半 / 收预算」的自适应。
+- 压缩仍是删除式，没做摘要式。

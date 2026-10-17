@@ -110,3 +110,30 @@ def test_batch_capacity_respects_ceiling() -> None:
 
     assert huge["max_entries"] == 400
     assert huge["max_chars"] <= 200_000
+
+
+def test_runtime_catalog_beats_builtin_table() -> None:
+    """目录是现取的，新模型不必等我加表。"""
+
+    catalog = {"brand-new-model-2027": (500_000, 128_000)}
+
+    assert resolve_capability({"model": "brand-new-model-2027"}, catalog) == (500_000, 64_000)
+    # 目录里没有这个模型时，退回内置离线表
+    assert resolve_capability({"model": "gpt-4o"}, catalog) == (128_000, 16_384)
+
+
+def test_explicit_config_beats_runtime_catalog() -> None:
+    catalog = {"some-model": (1_000_000, 128_000)}
+
+    capability = resolve_capability(
+        {"model": "some-model", "context_window": 64_000, "max_output_tokens": 8_000},
+        catalog,
+    )
+
+    assert capability == (64_000, 8_000)
+
+
+def test_catalog_lookup_is_case_insensitive() -> None:
+    catalog = {"MiniMax-M2-New": (200_000, 64_000)}
+
+    assert resolve_capability({"model": "minimax-m2-new"}, catalog) == (200_000, 32_000)
