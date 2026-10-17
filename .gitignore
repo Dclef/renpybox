@@ -1,33 +1,44 @@
-# IDE
+# IDE / 工具缓存
 /.vscode
-/__pycache__/
-*.pyc
-# Runtime directories
-/log
-/input
-/output
-/storage
-# Test files
-*.rpa
-# 随包分发的模组本体需要入库
-!resource/mods/**/*.rpa
+/.claude
+/.ruff_cache/
+/.playwright-mcp/
+.agents/skills/
+/.agents
 
 # Python
-*.egg-info/
-dist/
-build/
+/__pycache__/
+__pycache__/
 *.pyc
-resource/config.json
-config.json
-
-# Local test sandbox
-/.test
-/docs/internal
-/.claude
+*.egg-info/
+/.venv/
 .pytest_cache/
 .coverage
 coverage.xml
 htmlcov/
+
+# 构建产物
+dist/
+build/
+_update_staging/
+
+# 运行时目录（不入库）
+/log
+/input
+/output
+/storage
+/config/
+config.json
+resource/config.json
+
+# 测试沙箱与竞品源码副本
+/.test
 /test
-.agents/skills/
-/.agents
+/_probe_project/
+
+# 游戏资源：随包分发的模组本体需要入库
+*.rpa
+!resource/mods/**/*.rpa
+
+# 内部文档：不入库（docs/internal/README.md 有约定）
+/docs/internal

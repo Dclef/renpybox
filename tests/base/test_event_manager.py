@@ -1,25 +1,22 @@
-import os
+"""事件总线：合并窗口、订阅时刻过滤与跨线程入队。
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PyQt5.QtWidgets import QApplication
+Qt5 前端移除后，EventManager 只剩纯 Python 队列：后台线程 emit 入队，
+事件循环线程调用 drain / drain_all 投递。这里不再构造 QApplication。
+"""
 
 from base.Base import Base
 from base.EventManager import EventManager
-from frontend.QtEventBridge import install as install_event_bridge
 
-
-APP = QApplication.instance() or QApplication([])
-
-# EventManager 已解除 Qt 依赖，emit 只入队；跨线程投递由 drain 驱动。
-# 这里装上与 app.py 相同的桥接，测试里 APP.processEvents() 才等价于原来的信号投递。
-EVENT_BRIDGE = install_event_bridge()
 
 
 def _fresh_manager() -> EventManager:
     manager = EventManager()
     assert manager._coalescing == {}
     return manager
+
+
+def _drain_all() -> int:
+    return EventManager.drain_all()
 
 
 def test_coalescing_event_defers_and_keeps_latest_value() -> None:
@@ -89,7 +86,7 @@ def test_flush_allows_recoalescing_afterwards() -> None:
         manager.process_event(Base.Event.TRANSLATION_UPDATE, {"round": 1})
         manager._flush_coalesced()
 
-        # 冲刷后可再次暂存（timer 复用场景）
+        # 冲刷后可再次暂存（定时器复用场景）
         manager.process_event(Base.Event.TRANSLATION_UPDATE, {"round": 2})
         manager.process_event(Base.Event.TRANSLATION_UPDATE, {"round": 3})
         manager._flush_coalesced()
@@ -105,35 +102,37 @@ def test_flush_without_pending_is_noop() -> None:
     assert manager._coalescing == {}
 
 
-def test_event_emitted_before_subscription_is_not_delivered() -> None:
-    """QueuedConnection 下事件延迟投递，订阅前发出的事件不应打扰后订阅者。
+def test_emitted_event_is_delivered_on_drain() -> None:
+    """emit 只入队，drain 才投递（跨线程语义）。"""
+    manager = _fresh_manager()
+    received: list[dict] = []
+    handler = lambda event, data: received.append(data)
+    manager.subscribe(Base.Event.PROJECT_STATUS, handler)
+    try:
+        manager.emit(Base.Event.PROJECT_STATUS, {"status": "running"})
+        assert received == []
+        assert _drain_all() >= 1
+        assert received == [{"status": "running"}]
+    finally:
+        manager.unsubscribe(Base.Event.PROJECT_STATUS, handler)
 
-    信号用 QueuedConnection 连接，emit 只是把事件排进 Qt 队列，要到下一次
-    process_events 才投递。若投递时才查订阅列表，事件与构造之间才订阅的
-    订阅者会收到这条「历史事件」（页面刚打开就被上一条排队事件打断）。
-    """
+
+def test_event_emitted_before_subscription_is_not_delivered() -> None:
+    """排队投递时才查订阅列表会打扰后订阅者，这里按发射序号过滤。"""
     manager = _fresh_manager()
     received: list[dict] = []
     handler = lambda event, data: received.append(data)
 
     # 先发出事件（序号 +1），handler 之后才订阅
-    EventManager._emit_sequence += 1
-    stale_sequence = EventManager._emit_sequence
+    manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "old"})
     manager.subscribe(Base.Event.PROJECT_CHANGED, handler)
     try:
-        # 模拟「先发出、后订阅、再投递」的时序
-        manager.process_event(
-            Base.Event.PROJECT_CHANGED, {"project_root": "old"}, stale_sequence
-        )
+        _drain_all()
         assert received == []
 
         # 订阅之后发出的事件照常投递
-        EventManager._emit_sequence += 1
-        manager.process_event(
-            Base.Event.PROJECT_CHANGED,
-            {"project_root": "new"},
-            EventManager._emit_sequence,
-        )
+        manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "new"})
+        _drain_all()
         assert received == [{"project_root": "new"}]
     finally:
         manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
@@ -146,10 +145,9 @@ def test_unsubscribed_handler_skips_still_queued_event() -> None:
     handler = lambda event, data: received.append(data)
     manager.subscribe(Base.Event.PROJECT_CHANGED, handler)
 
-    EventManager._emit_sequence += 1
-    sequence = EventManager._emit_sequence
+    manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "old"})
     manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
-    manager.process_event(Base.Event.PROJECT_CHANGED, {"project_root": "old"}, sequence)
+    _drain_all()
     assert received == []
 
 
@@ -162,41 +160,38 @@ def test_queued_event_only_reaches_handlers_subscribed_when_it_was_emitted() -> 
 
     manager.subscribe(Base.Event.PROJECT_CHANGED, early)
 
-    # 先发出事件（此时 late 还没订阅），再让 Qt 投递
+    # 先发出事件（此时 late 还没订阅），再排空队列
     manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "old"})
     manager.subscribe(Base.Event.PROJECT_CHANGED, late)
-    APP.processEvents()
+    _drain_all()
 
     assert events == ["early"]
 
     # 订阅之后发出的事件两个订阅者都收得到
     manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "new"})
-    APP.processEvents()
+    _drain_all()
     assert events == ["early", "early", "late"]
+
+    manager.unsubscribe(Base.Event.PROJECT_CHANGED, early)
+    manager.unsubscribe(Base.Event.PROJECT_CHANGED, late)
 
 
 def test_queued_event_from_another_instance_is_not_delivered() -> None:
-    """旧实例排队的事件不应被新实例刚订阅的处理器收到。
-
-    事件在排队期间跨越实例投递（应用只有单例，测试会另建实例）。
-    发射序号若按实例各自计数，新实例的订阅时刻会被当成「早于发射」，
-    过滤失效，上一条排队事件就会打到刚订阅的订阅者上。
-    """
+    """旧实例排队的事件不应被新实例刚订阅的处理器收到。"""
     emitter = _fresh_manager()
     manager = _fresh_manager()
     received: list[dict] = []
     handler = lambda event, data: received.append(data)
 
-    # emitter 发出事件后不再有订阅者，事件停在 Qt 队列里
     emitter.emit(Base.Event.PROJECT_CHANGED, {"project_root": "old"})
     manager.subscribe(Base.Event.PROJECT_CHANGED, handler)
     try:
-        APP.processEvents()
+        _drain_all()
         assert received == []
 
         # 新实例自己发出的事件照常投递
         manager.emit(Base.Event.PROJECT_CHANGED, {"project_root": "new"})
-        APP.processEvents()
+        _drain_all()
         assert received == [{"project_root": "new"}]
     finally:
         manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
@@ -252,7 +247,6 @@ def test_repeated_unsubscribe_does_not_raise() -> None:
     manager.subscribe(Base.Event.PROJECT_CHANGED, handler)
     manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
     manager.unsubscribe(Base.Event.PROJECT_CHANGED, handler)
-
 
 
 def test_coalescing_updates_and_flush_share_lock_but_dispatch_outside() -> None:

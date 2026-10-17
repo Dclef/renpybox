@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 from base.Base import Base
-from frontend.Proofreading.ProofreadingPage import ProofreadingPage
 from module.Cache.CacheItem import CacheItem
 from module.File.TRANS.TRANS import TRANS
 
@@ -60,17 +59,6 @@ def test_reset_translation_clears_quality_metadata_only() -> None:
     assert item.get_quality_origin() is None
     assert item.get_metadata() == {"trace_id": "kept"}
 
-
-def test_manual_edit_does_not_downgrade_polished_item() -> None:
-    item = CacheItem(dst="translated", status=Base.TranslationStatus.TRANSLATED)
-    item.set_quality_result("polished", CacheItem.QualityOrigin.POLISHER)
-    page = SimpleNamespace(is_readonly=False, _recheck_item=lambda _: None)
-
-    ProofreadingPage._on_cell_edited(page, item, "manually edited")
-
-    assert item.get_dst() == "manually edited"
-    assert item.get_status() == Base.TranslationStatus.POLISHED
-    assert item.get_quality_origin() is None
 
 
 def test_translation_copy_commits_only_when_original_state_is_unchanged() -> None:
