@@ -13,7 +13,9 @@ from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Extract.ReplaceGenerator import write_replace_script
+from module.Extract.UnifiedExtractor import UnifiedExtractor
 from module.Localizer.Localizer import Localizer
+from module.OneKey import flow
 from module.OneKey.flow import (
     detect_game_status,
     existing_translation_summary,
@@ -408,9 +410,268 @@ def refresh_replace_fallback(
     return ToolResult(True, message, data=data)
 
 
+def translation_apply_confirmation_context(
+    *,
+    config_loader: ConfigLoader | None = None,
+    config: Config | None = None,
+    paths: RenpyProjectPaths | None = None,
+) -> dict[str, Any]:
+    """返回 apply_translation 的确认上下文。
+
+    tl 目录签名与路径一起参与比对：用户确认后若又抽取/改动了 TL 文件，
+    或切换了项目，执行前会判为过期，避免把译文写进错误的目录。
+    """
+    if config is None:
+        config = config_loader() if config_loader is not None else Config().load()
+    if paths is None:
+        paths = RenpyProjectPaths.from_config(config)
+    if paths is None:
+        return {}
+
+    output_dir, input_dir = flow.resolve_translation_apply_paths(config)
+    return {
+        "tl_dir": str(paths.tl_language_dir.resolve()),
+        "output_dir": str(output_dir.resolve()) if output_dir is not None else "",
+        "input_dir": str(input_dir.resolve()) if input_dir is not None else "",
+        "signature": hashlib.sha256(
+            repr(tl_dir_signature(paths.tl_language_dir)).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def start_translation(
+    *,
+    config_loader: ConfigLoader | None = None,
+    pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
+    status: str = "untranslated",
+    preflight_confirmed: bool = False,
+) -> ToolResult:
+    """经主事件循环启动翻译；Qt5 侧没有桥，会明确要求手动操作。"""
+
+    localizer = Localizer.get()
+    callback = (pipeline_callbacks or {}).get("start_translation")
+    if callback is None:
+        return ToolResult(
+            False,
+            localizer.agent_app_context_missing,
+            code="AGENT_APP_CONTEXT_MISSING",
+        )
+
+    result = callback({
+        "status": status,
+        "preflight_confirmed": bool(preflight_confirmed),
+    })
+    if not isinstance(result, dict):
+        return ToolResult(
+            False,
+            localizer.agent_tool_invalid_result,
+            code="INVALID_TOOL_RESULT",
+        )
+
+    if bool(result.get("accepted")):
+        data = {
+            "request_id": str(result.get("request_id") or ""),
+            "reason": str(result.get("reason") or ""),
+            "stage": str(result.get("stage") or ""),
+        }
+        return ToolResult(True, localizer.agent_start_translation_accepted, data=data)
+
+    reason = str(result.get("reason") or "ERROR")
+    detail = str(result.get("detail") or "")
+    data = {"reason": reason, "detail": detail}
+    status_code = result.get("status_code")
+    if isinstance(status_code, int):
+        data["status_code"] = status_code
+    return ToolResult(
+        False,
+        localizer.agent_start_translation_rejected.format(reason=reason, detail=detail),
+        data=data,
+        code=reason,
+    )
+
+
+def stop_translation(
+    *,
+    config_loader: ConfigLoader | None = None,
+    pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
+) -> ToolResult:
+    """经主事件循环请求停止翻译；真正的终态由翻译进度事件返回。"""
+
+    localizer = Localizer.get()
+    callback = (pipeline_callbacks or {}).get("stop_translation")
+    if callback is None:
+        return ToolResult(
+            False,
+            localizer.agent_app_context_missing,
+            code="AGENT_APP_CONTEXT_MISSING",
+        )
+
+    result = callback({})
+    if not isinstance(result, dict):
+        return ToolResult(
+            False,
+            localizer.agent_tool_invalid_result,
+            code="INVALID_TOOL_RESULT",
+        )
+
+    status = str(result.get("status") or "")
+    if bool(result.get("ok")) or status == "STOPPING":
+        return ToolResult(
+            True,
+            localizer.agent_translation_stopped,
+            data={"status": status},
+        )
+
+    reason = str(result.get("reason") or "ERROR")
+    detail = str(result.get("detail") or "")
+    message = localizer.agent_translation_stop_failed
+    if detail:
+        message = f"{message} {detail}"
+    return ToolResult(
+        False,
+        message,
+        data={"reason": reason, "detail": detail},
+        code=reason,
+    )
+
+
+def apply_translation(
+    *,
+    config_loader: ConfigLoader | None = None,
+    mode: str = "full",
+    confirmed_context: dict[str, Any] | None = None,
+) -> ToolResult:
+    """把翻译输出目录中的译文写回游戏 TL 目录（full / incremental）。"""
+
+    localizer = Localizer.get()
+    config = config_loader() if config_loader is not None else Config().load()
+    paths = RenpyProjectPaths.from_config(config)
+    if paths is None:
+        return ToolResult(
+            False,
+            localizer.agent_project_not_set,
+            code="PROJECT_NOT_SET",
+        )
+
+    current_context = translation_apply_confirmation_context(config=config, paths=paths)
+    if not confirmed_context or current_context != dict(confirmed_context):
+        return ToolResult(
+            False,
+            localizer.agent_tool_confirmation_stale,
+            code="CONFIRMATION_STALE",
+        )
+
+    output_dir, input_dir = flow.resolve_translation_apply_paths(config)
+    if (
+        output_dir is None
+        or input_dir is None
+        or not str(getattr(config, "output_folder", "") or "").strip()
+        or not str(getattr(config, "input_folder", "") or "").strip()
+    ):
+        return ToolResult(
+            False,
+            localizer.agent_apply_target_invalid,
+            code="APPLY_TARGET_INVALID",
+        )
+
+    normalized = str(mode or "full").strip().lower()
+    if normalized not in ("full", "incremental"):
+        return ToolResult(
+            False,
+            localizer.agent_apply_translation_failed,
+            code="APPLY_FAILED",
+        )
+
+    file_count = 0
+    if normalized == "incremental":
+        ok, message, payload = flow.apply_incremental_translation(
+            extractor = UnifiedExtractor(),
+            config = config,
+            game_dir = str(paths.project_root),
+            tl_name = paths.language,
+            output_dir = Path(output_dir),
+            main_output = paths.translation_output_dir,
+            incremental_dir = paths.tl_root / f"{paths.language}_new",
+            progress_callback = None,
+            clean_duplicates = bool(
+                getattr(config, "renpy_incremental_auto_merge_cleanup", True)
+            ),
+        )
+    else:
+        files = [path for path in Path(output_dir).rglob("*.rpy") if path.is_file()]
+        file_count = len(files)
+        if not files:
+            return ToolResult(
+                False,
+                localizer.agent_apply_no_output_files,
+                data={"output_dir": str(output_dir)},
+                code="NO_OUTPUT_FILES",
+            )
+        ok, message, payload = flow.apply_full_translation(
+            config = config,
+            output_files = files,
+            output_dir = Path(output_dir),
+            input_dir = Path(input_dir),
+            project_root = str(paths.project_root),
+            project_language = paths.language,
+        )
+
+    if not ok:
+        return ToolResult(
+            False,
+            message or localizer.agent_apply_translation_failed,
+            data={
+                "mode": normalized,
+                "output_dir": str(output_dir),
+                "target_dir": str(input_dir),
+            },
+            code="APPLY_FAILED",
+        )
+
+    applied_count = 0
+    if isinstance(payload, dict):
+        for key in ("count", "applied_count", "success_count", "files"):
+            value = payload.get(key)
+            if isinstance(value, int) and value >= 0:
+                applied_count = value
+                break
+        else:
+            applied_count = file_count
+    else:
+        applied_count = file_count
+
+    failed_count = 0
+    if isinstance(payload, dict):
+        for key in ("failed_count", "failed"):
+            value = payload.get(key)
+            if isinstance(value, int) and value >= 0:
+                failed_count = value
+                break
+
+    data = {
+        "mode": normalized,
+        "applied_count": applied_count,
+        "failed_count": failed_count,
+        "output_dir": str(output_dir),
+        "target_dir": str(input_dir),
+    }
+    return ToolResult(
+        True,
+        localizer.agent_apply_translation_complete.format(
+            count=applied_count,
+            output_dir=Path(input_dir),
+        ),
+        data=data,
+    )
+
+
 __all__ = [
+    "apply_translation",
     "decompile_rpyc_files",
-    "run_project_extraction",
-    "translation_status",
     "refresh_replace_fallback",
+    "run_project_extraction",
+    "start_translation",
+    "stop_translation",
+    "translation_apply_confirmation_context",
+    "translation_status",
 ]

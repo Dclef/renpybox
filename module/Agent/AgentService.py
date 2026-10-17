@@ -33,13 +33,17 @@ class AgentService:
         *,
         config_loader: Callable[[], Config] | None = None,
         dispatcher: ToolDispatcher | None = None,
+        pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
         max_iterations: int = 8,
         result_limit: int = 2000,
         confirmation_timeout: float = 120.0,
         max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
-        self.dispatcher = dispatcher or ToolDispatcher(config_loader=self.config_loader)
+        self.dispatcher = dispatcher or ToolDispatcher(
+            config_loader = self.config_loader,
+            pipeline_callbacks = pipeline_callbacks,
+        )
         self.max_iterations = max(1, int(max_iterations))
         self.result_limit = max(256, int(result_limit))
         self.confirmation_timeout = max(0.01, float(confirmation_timeout))
@@ -115,6 +119,10 @@ class AgentService:
             from .tools.translation_tools import old_new_replace_confirmation_context
 
             return old_new_replace_confirmation_context(config_loader=self.config_loader)
+        if name == "apply_translation":
+            from .tools.pipeline_tools import translation_apply_confirmation_context
+
+            return translation_apply_confirmation_context(config_loader=self.config_loader)
         if name == "run_project_extraction":
             from module.OneKey.flow import (
                 existing_translation_summary,

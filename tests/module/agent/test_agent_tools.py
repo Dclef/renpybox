@@ -48,6 +48,9 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
         "run_project_extraction",
         "translation_status",
         "refresh_replace_fallback",
+        "start_translation",
+        "stop_translation",
+        "apply_translation",
     ]
     assert "path" in dispatcher.tools["set_project"].parameters_schema["properties"]
     for name in (
@@ -61,6 +64,9 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
         "run_project_extraction",
         "translation_status",
         "refresh_replace_fallback",
+        "start_translation",
+        "stop_translation",
+        "apply_translation",
     ):
         schema = dispatcher.tools[name].parameters_schema
         assert "game_dir" not in schema.get("properties", {})
@@ -85,6 +91,22 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
     refresh = dispatcher.tools["refresh_replace_fallback"]
     assert refresh.requires_confirmation is True
     assert refresh.requires_idle_engine is True
+    start = dispatcher.tools["start_translation"]
+    assert start.requires_confirmation is True
+    assert start.requires_idle_engine is False
+    assert set(start.parameters_schema["properties"]) == {"status", "preflight_confirmed"}
+    assert start.parameters_schema["properties"]["status"]["default"] == "untranslated"
+    assert start.parameters_schema["properties"]["preflight_confirmed"]["default"] is False
+    assert "mode" not in start.parameters_schema["properties"]
+    stop = dispatcher.tools["stop_translation"]
+    assert stop.requires_confirmation is False
+    assert stop.requires_idle_engine is False
+    assert stop.parameters_schema["properties"] == {}
+    apply = dispatcher.tools["apply_translation"]
+    assert apply.requires_confirmation is True
+    assert apply.requires_idle_engine is True
+    assert apply.parameters_schema["properties"]["mode"]["enum"] == ["full", "incremental"]
+    assert apply.parameters_schema["properties"]["mode"]["default"] == "full"
     inspect = dispatcher.tools["inspect_translation_project"]
     assert inspect.requires_confirmation is False
     assert inspect.requires_idle_engine is False
