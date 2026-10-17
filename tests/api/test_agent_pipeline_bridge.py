@@ -136,6 +136,39 @@ def test_start_success_returns_model_dump(monkeypatch, running_loop) -> None:
     }
 
 
+def test_start_with_agent_platform_source_overrides_platform(monkeypatch, running_loop) -> None:
+    captured: dict = {}
+
+    async def fake_start(_app, body):
+        captured["platform_id"] = body.platform_id
+        return TranslationStartResponse(
+            accepted = True,
+            request_id = "req-2",
+            reason = "STARTED",
+            detail = "已受理",
+            stage = "translating",
+        )
+
+    monkeypatch.setattr(pipeline_bridge, "request_translation_start", fake_start)
+    callbacks = build_pipeline_callbacks(_app(running_loop, SimpleNamespace(agent_platform = 3)))
+
+    result = callbacks["start_translation"]({"platform_source": "agent"})
+
+    assert result["accepted"] is True
+    # 只改写本轮快照的平台，不触碰翻译页设置
+    assert captured["platform_id"] == 3
+
+
+def test_start_with_agent_platform_source_requires_agent_platform(running_loop) -> None:
+    callbacks = build_pipeline_callbacks(_app(running_loop, SimpleNamespace(agent_platform = -1)))
+
+    result = callbacks["start_translation"]({"platform_source": "agent"})
+
+    assert result["accepted"] is False
+    assert result["reason"] == "ERROR"
+    assert "Agent" in result["detail"]
+
+
 def test_stop_success_returns_stop_dict(monkeypatch, running_loop) -> None:
     async def fake_stop(_app, _body):
         return {"ok": True, "status": "STOPPING"}
