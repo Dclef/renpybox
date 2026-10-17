@@ -948,8 +948,8 @@ class LocalizerEN(LocalizerZH):
         "writes the translation workspace, not the game folder; apply_translation is still required "
         "to put translations into the game."
     )
-    agent_translate_batch_param_description: str = "Maximum entries to return, default 80, cap 400."
-    agent_translate_max_chars_param_description: str = "Source character budget for the batch, default 40000, cap 200000."
+    agent_translate_batch_param_description: str = "Maximum entries to return; omit it to let the current model's output capacity decide."
+    agent_translate_max_chars_param_description: str = "Source character budget for the batch; omit it to let the current model's context capacity decide."
     agent_translate_translations_param_description: str = (
         "Array of objects. Each object holds the id from read_translation_batch, a dst field "
         "(the translation), and an optional name_dst field (character name translation)."

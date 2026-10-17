@@ -494,3 +494,58 @@ RenpyBox 已经有成熟的翻译引擎（prompt 组装、分块、并发、重�
   现在是固定常量 + 注释，换小窗口模型需要手工调。
 - 输出侧没有按 `max_output_tokens` 反推批次上限：一批 400 条约需 25k 输出 token，
   超过部分模型的单次输出上限，模型会自己截断，工具只能事后报 failed。
+
+---
+
+# 阶段 2-e（已实施）按模型容量推导预算
+
+## 先纠正我的误读
+
+我最初按「模型名 → 窗口」写了一张硬编码表，并把它当成主路径。让 cursor 直接核对
+LinguaGacha 源码后确认这**不是它的做法**：
+
+- `src/backend/llm/model-capability.ts:28` 明确不按模型名猜，容量来自依赖
+  `@earendil-works/pi-ai` 的运行时目录；缺失时走 `FALLBACK_AGENT_LIMITS = 256000 / 32000`。
+- 自动输出 = `min(目录 maxTokens, 档位)`，档位是窗口 `< 500000 → 32000`、否则 `64000`
+  （`:34-36`、`:353-365`）。
+- 用户显式非 0 值优先，但仍被 `窗口 - 32000` 压住（`:375-396`）；
+  窗口小到留不出预留时整组退回自动值，不硬凑负数。
+- **它没有字符预算、没有消息条数上限**：历史靠 token 级压缩，
+  `AGENT_KEEP_RECENT_TOKENS = 32000` 且要除以 `usage / 估算` 的 ratio
+  （`agent-chat-context.ts:9,47-48`）。token 估算单位是 `ceil(字符 / 3.5)`。
+
+## 本次落地（`module/Agent/ModelBudget.py`）
+
+三级解析，语义对齐上面四条：
+
+1. 平台配置里的 `context_window` / `max_output_tokens`（**0 = 自动**，非 0 优先）；
+2. 内置知名模型表（本地「目录替身」，数字取自 pi-ai@1.3.0 原厂目录，
+   最长片段命中优先，避免 `gpt-4` 抢走 `gpt-4.1`）；
+3. 兜底 256k / 32k，未知模型**不猜**。
+
+`agent_context_budget()` 输出 `context_window / max_output_tokens / usable_tokens /
+max_context_chars / max_messages / keep_recent_tokens`。其中
+**字符预算与消息条数是 RenpyBox 独有的本地策略**（LinguaGacha 没有这两个量），
+因为我们的历史是简单 list，需要一个可裁剪的边界；换算用 `1 token ≈ 1.5 字符`（保守）。
+
+`batch_capacity()` 由**输出**预算反推批次条目数（一批 N 条就得在一次回复里吐 N 条译文），
+字符预算取输入余量的四分之一。
+
+## 断批规则
+
+`read_translation_batch` 新增：**同一批只喂一个文件的条目**，跨文件即断批
+（照 `planning/translation-planner.ts:95-100` 的 `file_path` 变化断块）。
+理由：跨文件条目语境无关，混批既稀释语境，也让失败重试牵连整批。
+
+## 验收
+
+- `tests/module/agent` → 136 passed（新增 `test_agent_model_budget.py` 15 例 +
+  文件边界断批 1 例）
+
+## 仍未做
+
+- 平台配置还没有 `context_window` / `max_output_tokens` 的**界面入口**，
+  目前只能手改 config.json；桌面端设置页要补两个输入框。
+- 压缩仍是「按用户回合 / 助手边界删除」，没有实现 LinguaGacha 的
+  「模型摘要替换历史 + 摘要落盘成功才生效」。
+- 单批条目数与输出的咬合只做了静态反推，没有「上批被截断 → 下批减半」的自适应。
