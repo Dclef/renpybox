@@ -26,10 +26,13 @@ class AgentService:
     """运行有限轮数、串行工具调用的 Agent 会话。"""
 
     # 会话历史按字符数设置上限；这是近似 token 预算，避免多轮对话无限增长。
-    DEFAULT_MAX_CONTEXT_CHARS = 128_000
+    # 128k 字符（约 60k～90k token）会把「一口气译完整盘游戏」直接掐断，所以放宽到
+    # 300k 字符（约 100k～150k token）：既能喂满 200k 窗口的模型，也不会在
+    # 128k 窗口的模型上一次把请求撑爆。模型窗口更小或更大时按需调整这里。
+    DEFAULT_MAX_CONTEXT_CHARS = 300_000
     # 长任务（逐批翻译）的额外轮次预算：普通对话仍受 max_iterations 限制，
     # 只有工具声称「还在推进」的迭代才从这笔预算里扣。
-    DEFAULT_MAX_LONG_ITERATIONS = 240
+    DEFAULT_MAX_LONG_ITERATIONS = 600
 
     def __init__(
         self,

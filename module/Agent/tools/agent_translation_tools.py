@@ -22,10 +22,12 @@ from ..types import ToolResult
 
 
 ID_SEPARATOR = "｜"
-DEFAULT_BATCH_SIZE = 30
-MAX_BATCH_SIZE = 80
-DEFAULT_BATCH_CHARS = 6_000
-MAX_BATCH_CHARS = 20_000
+# 现代大窗口模型（200k～1M token）可以一次吞下更多条目，批次给足能显著减少轮数；
+# 同时给输出侧留余量：一批 200 条约需 12k～16k 输出 token，仍在常见上限内。
+DEFAULT_BATCH_SIZE = 80
+MAX_BATCH_SIZE = 400
+DEFAULT_BATCH_CHARS = 40_000
+MAX_BATCH_CHARS = 200_000
 
 # 同一进程里读批与写批不能交错，否则两份 CacheManager 会互相覆盖缓存文件。
 _WRITE_LOCK = threading.Lock()

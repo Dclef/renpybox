@@ -819,6 +819,9 @@ class LocalizerEN(LocalizerZH):
         "read_skill for the relevant skills (text-preserve, glossary, proofreading); tags, "
         "variables, and escape placeholders must be preserved exactly. Confirm that no entries "
         "remain untranslated before applying.\n"
+        "When the user asks you to translate the whole project, keep going until nothing is left: do "
+        "not stop after a few dozen entries to summarize, and do not ask the user between batches. "
+        "Stop only when the user asks you to, or when you hit an error you cannot resolve.\n"
         "unpack_rpa_files writes into the current game folder and apply_translation overwrites the "
         "game tl folder; both may run only after the user confirms in the UI. Do not claim that you "
         "can delete RPA files, choose an output path, or stop an external unpack process after it "
@@ -945,8 +948,8 @@ class LocalizerEN(LocalizerZH):
         "writes the translation workspace, not the game folder; apply_translation is still required "
         "to put translations into the game."
     )
-    agent_translate_batch_param_description: str = "Maximum entries to return, default 30, cap 80."
-    agent_translate_max_chars_param_description: str = "Source character budget for the batch, default 6000, cap 20000."
+    agent_translate_batch_param_description: str = "Maximum entries to return, default 80, cap 400."
+    agent_translate_max_chars_param_description: str = "Source character budget for the batch, default 40000, cap 200000."
     agent_translate_translations_param_description: str = (
         "Array of objects. Each object holds the id from read_translation_batch, a dst field "
         "(the translation), and an optional name_dst field (character name translation)."
