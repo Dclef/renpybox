@@ -58,8 +58,8 @@
     "vite": "^6.0.11"
   },
   "build": {
-    "appId": "com.dclef.renpybox.newui",
-    "productName": "RenpyBox New UI",
+    "appId": "com.dclef.renpybox",
+    "productName": "RenpyBox",
     "asar": true,
     "directories": {
       "output": "release",
@@ -99,7 +99,7 @@
           ]
         }
       ],
-      "artifactName": "RenpyBox-NewUI-${version}-${arch}.${ext}"
+      "artifactName": "RenpyBox-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
