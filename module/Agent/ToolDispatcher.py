@@ -314,12 +314,10 @@ class ToolDispatcher:
                     "properties": {
                         "batch_size": {
                             "type": "integer",
-                            "default": 80,
                             "description": localizer.agent_translate_batch_param_description,
                         },
                         "max_chars": {
                             "type": "integer",
-                            "default": 40000,
                             "description": localizer.agent_translate_max_chars_param_description,
                         },
                     },

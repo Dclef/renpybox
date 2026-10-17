@@ -82,18 +82,40 @@ def _render_item(item: Any) -> dict[str, Any]:
     return payload
 
 
+def _platform_of(config: Any) -> Any:
+    """取当前 Agent 平台配置，用于按模型容量推导批次大小。"""
+
+    try:
+        platform_id = int(getattr(config, "agent_platform", -1))
+    except (TypeError, ValueError):
+        return None
+    if platform_id < 0:
+        return None
+    try:
+        platform = config.get_platform(platform_id)
+    except Exception:  # noqa: BLE001 - 平台配置脏时退回兜底容量
+        return None
+    return platform if isinstance(platform, dict) else None
+
+
 def read_translation_batch(
     *,
     config_loader: Any = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    max_chars: int = DEFAULT_BATCH_CHARS,
+    batch_size: int | None = None,
+    max_chars: int | None = None,
 ) -> ToolResult:
-    """返回一批待译条目，供 Agent 自行翻译。"""
+    """返回一批待译条目，供 Agent 自行翻译。
+
+    两个参数都省略时，按当前模型容量自动决定：条目数由单次**输出**预算反推
+    （输出小的时候给太多条只会在半路截断），字符数由**输入**预算的四分之一。
+    """
 
     localizer = Localizer.get()
+    from module.Agent.ModelBudget import batch_capacity
     from module.Config import Config
 
     config = config_loader() if config_loader is not None else Config().load()
+    capacity = batch_capacity(_platform_of(config))
     try:
         manager = _load_cache(config)
     except RuntimeError:
@@ -120,17 +142,24 @@ def read_translation_batch(
             data = {"remaining": 0, "items": []},
         )
 
-    size = max(1, min(int(batch_size or DEFAULT_BATCH_SIZE), MAX_BATCH_SIZE))
-    budget = max(500, min(int(max_chars or DEFAULT_BATCH_CHARS), MAX_BATCH_CHARS))
+    size = max(1, min(int(batch_size or capacity["max_entries"]), MAX_BATCH_SIZE))
+    budget = max(500, min(int(max_chars or capacity["max_chars"]), MAX_BATCH_CHARS))
 
     batch: list[dict[str, Any]] = []
     used = 0
+    current_file = ""
     for item in items[:size]:
+        file_path = str(item.get_file_path() or "")
+        # 同一批只喂一个文件的条目：跨文件的上下文彼此无关，混在一批里
+        # 既稀释语境，也让失败重试牵连整批（照 LinguaGacha 的断批规则）。
+        if batch and file_path != current_file:
+            break
         entry = _render_item(item)
         cost = len(str(entry.get("src") or "")) + len(str(entry.get("name_src") or ""))
         if batch and used + cost > budget:
             break
         batch.append(entry)
+        current_file = file_path
         used += cost
 
     return ToolResult(

@@ -145,6 +145,22 @@ def test_read_translation_batch_supports_large_one_shot_batches(tmp_path: Path) 
     assert result.continues is True
 
 
+def test_read_translation_batch_breaks_at_file_boundary(tmp_path: Path) -> None:
+    """一块内容跨文件时要在文件边界断批，避免整批重试牵连无关条目。"""
+
+    config = _config_for(tmp_path)
+    first = _make_item(1, "A1", status = Base.TranslationStatus.UNTRANSLATED)
+    second = _make_item(2, "B1", status = Base.TranslationStatus.UNTRANSLATED)
+    second.set_file_path("game/tl/chinese/chapter2.rpy")
+    _seed_cache(config, [first, second])
+
+    result = read_translation_batch(config_loader = lambda: config, batch_size = 50)
+
+    assert len(result.data["items"]) == 1
+    assert result.data["items"][0]["src"] == "A1"
+    assert result.data["remaining"] == 2
+
+
 def test_read_translation_batch_reports_missing_output_folder(tmp_path: Path) -> None:
     config = _config_for(tmp_path)
     config.output_folder = ""
