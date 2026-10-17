@@ -582,6 +582,8 @@ class LocalizerZH():
     agent_page_suggestion_rpa: str = "列出项目中的 RPA 文件"
     agent_page_suggestion_errors: str = "扫描译文脚本错误"
     agent_page_suggestion_old_new: str = "优化未生效的 old/new 译文"
+    agent_page_suggestion_decompile: str = "反编译当前项目的 RPYC 脚本"
+    agent_page_suggestion_refresh_fallback: str = "刷新 replace_text 运行时兜底补丁"
     agent_page_suggestion_project_desc: str = "汇总解包、翻译、资产与质量状态"
     agent_page_suggestion_rpa_desc: str = "列出 game 目录中的 RPA 归档文件"
     agent_page_suggestion_errors_desc: str = "扫描当前语言翻译目录中的生成 .rpy，不修改任何文件"
@@ -599,6 +601,10 @@ class LocalizerZH():
     agent_page_tool_scan_script_errors: str = "扫描译文脚本错误"
     agent_page_tool_unpack_rpa_files: str = "解包 RPA 文件"
     agent_page_tool_optimize_old_new_translations: str = "生成补充兜底补丁"
+    agent_page_tool_decompile_rpyc_files: str = "反编译 RPYC 脚本"
+    agent_page_tool_run_project_extraction: str = "抽取项目文本"
+    agent_page_tool_translation_status: str = "查询翻译进度"
+    agent_page_tool_refresh_replace_fallback: str = "刷新运行时兜底"
     agent_page_action_open_translation: str = "进入翻译页面"
     agent_page_action_one_key_translate: str = "一键开始翻译"
     agent_page_action_continue_translation: str = "继续翻译"
@@ -614,6 +620,18 @@ class LocalizerZH():
         "解包结果会直接写入 game 目录，并可能覆盖同名文件；原 RPA 文件会保留。是否继续？"
     )
     agent_page_old_new_confirmation_title: str = "确认生成补充翻译兜底"
+    agent_page_decompile_confirmation: str = (
+        "即将反编译当前项目 game 目录中的 RPYC 脚本：\n{game_dir}\n\n"
+        "反编译会生成或更新同名 .rpy 文件，可能覆盖已有源码。是否继续？"
+    )
+    agent_page_extract_confirmation: str = (
+        "即将抽取当前项目文本：\n项目根：{project_root}\n语言：{language}\n\n"
+        "抽取会写入翻译目录，可能覆盖已有译文文件。是否继续？"
+    )
+    agent_page_refresh_fallback_confirmation: str = (
+        "即将刷新 replace_text 运行时兜底补丁，共 {count} 条替换。\n\n"
+        "会备份现有补丁并写入新内容。是否继续？"
+    )
     agent_page_old_new_confirmation: str = (
         "当前语言目录：\n{tl_dir}\n\n"
         "补充抽取译文：{old_new_count} 条\n"
@@ -666,6 +684,28 @@ class LocalizerZH():
         "翻译完成后，读取当前语言目录中带补充抽取标记的译文，按原文从长到短生成 "
         "replace_text 运行时兜底；官方抽取的 old/new 不参与。"
     )
+    agent_tool_decompile_rpyc_files_description: str = (
+        "反编译当前项目 game 目录中的 RPYC 脚本为 .rpy。前置：项目已设定、脚本已解包、"
+        "存在待反编译的 RPYC；用户必须在界面确认后执行；会写入 game 目录并可能覆盖同名 .rpy。"
+        "若体检返回 NEED_DECOMPILE 或 next_action 建议反编译时使用。"
+    )
+    agent_tool_run_project_extraction_description: str = (
+        "检测脚本就绪状态并抽取当前项目文本到翻译目录。前置：项目已设定、RPA 已解包且 RPYC "
+        "已反编译（或已有可用 .rpy）；不会自动解包或反编译，若检测未通过会提示先调用 "
+        "unpack_rpa_files 或 decompile_rpyc_files。用户确认后执行，会写入 TL 目录。"
+    )
+    agent_tool_run_project_extraction_incremental_description: str = (
+        "可选。true 表示增量抽取（仅当已有译文时有效），false 表示全量抽取；省略时由服务端按是否已有译文自动决定。"
+    )
+    agent_tool_translation_status_description: str = (
+        "只读查询当前翻译引擎状态、运行任务数、缓存进度与待翻译条目数。"
+        "翻译进行中也可调用；不修改任何文件，不要求引擎空闲。"
+    )
+    agent_tool_refresh_replace_fallback_description: str = (
+        "刷新 replace_text 运行时兜底补丁，使补充抽取译文生效。前置：项目已设定且体检显示 "
+        "needs_refresh；用户确认后执行，会备份并写入 replace_text_auto.rpy。"
+        "若补丁已是最新则跳过写入。"
+    )
     agent_project_inspection_complete: str = (
         "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
         "缓存条目 {item_count}，待翻译 {untranslated_count}。建议下一步：{next_action}。"
@@ -712,6 +752,7 @@ class LocalizerZH():
     agent_tool_missing_arguments: str = "缺少必填参数：{names}。"
     agent_tool_argument_must_be_string: str = "参数 {name} 必须是字符串。"
     agent_tool_argument_must_be_object: str = "参数 {name} 必须是对象。"
+    agent_tool_argument_must_be_boolean: str = "参数 {name} 必须是布尔值。"
     agent_tool_unknown: str = "未知工具：{name}"
     agent_tool_confirmation_required: str = "该操作需要用户确认。"
     agent_tool_confirmation_stale: str = "确认上下文已失效，请重新确认后再试。"
@@ -745,6 +786,18 @@ class LocalizerZH():
     agent_old_new_translation_not_found: str = "当前语言目录没有找到已翻译的补充抽取条目。"
     agent_old_new_optimization_complete: str = "补充翻译运行时兜底已生成，共 {count} 条：{output_path}"
     agent_old_new_stale_hook_removed: str = "已清理没有补充译文支撑的旧 replace_text 补丁：{output_path}"
+    agent_rpyc_not_found: str = "当前项目 game 目录中没有找到 RPYC 文件。"
+    agent_decompile_complete: str = "RPYC 反编译完成，共处理 {count} 个文件。"
+    agent_decompile_failed: str = "RPYC 反编译失败，请查看日志了解详情。"
+    agent_extract_complete: str = "文本抽取完成，共 {entry_count} 条，输出目录：{tl_dir}。"
+    agent_extract_failed: str = "文本抽取失败，请查看日志了解详情。"
+    agent_translation_status_ready: str = (
+        "翻译状态：引擎 {engine_status}，待翻译 {untranslated_count} 条。"
+    )
+    agent_refresh_fallback_complete: str = (
+        "replace_text 兜底补丁已刷新，共 {count} 条：{output_path}"
+    )
+    agent_refresh_fallback_up_to_date: str = "replace_text 兜底补丁已是最新，无需刷新。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"

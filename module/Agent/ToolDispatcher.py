@@ -149,6 +149,61 @@ class ToolDispatcher:
                 requires_confirmation=True,
                 requires_idle_engine=True,
             ),
+            "decompile_rpyc_files": ToolDef(
+                name="decompile_rpyc_files",
+                description=localizer.agent_tool_decompile_rpyc_files_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "decompile_rpyc_files",
+                    self.config_loader,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=True,
+            ),
+            "run_project_extraction": ToolDef(
+                name="run_project_extraction",
+                description=localizer.agent_tool_run_project_extraction_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "incremental": {
+                            "type": "boolean",
+                            "description": localizer.agent_tool_run_project_extraction_incremental_description,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "run_project_extraction",
+                    self.config_loader,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=True,
+            ),
+            "translation_status": ToolDef(
+                name="translation_status",
+                description=localizer.agent_tool_translation_status_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "translation_status",
+                    self.config_loader,
+                ),
+            ),
+            "refresh_replace_fallback": ToolDef(
+                name="refresh_replace_fallback",
+                description=localizer.agent_tool_refresh_replace_fallback_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "refresh_replace_fallback",
+                    self.config_loader,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=True,
+            ),
         }
 
     @property
@@ -193,6 +248,8 @@ class ToolDispatcher:
                 return localizer.agent_tool_argument_must_be_string.format(name=name)
             if expected == "object" and not isinstance(value, dict):
                 return localizer.agent_tool_argument_must_be_object.format(name=name)
+            if expected == "boolean" and not isinstance(value, bool):
+                return localizer.agent_tool_argument_must_be_boolean.format(name=name)
         return None
 
     def execute(
@@ -237,6 +294,34 @@ class ToolDispatcher:
                 )
             handler_arguments["confirmed_game_dir"] = confirmed_game_dir
         elif tool.name == "optimize_old_new_translations":
+            if not trusted_context:
+                return ToolResult(
+                    False,
+                    localizer.agent_tool_confirmation_stale,
+                    code="CONFIRMATION_STALE",
+                )
+            handler_arguments["confirmed_context"] = dict(trusted_context)
+        elif tool.name == "decompile_rpyc_files":
+            confirmed_game_dir = str((trusted_context or {}).get("game_dir", "")).strip()
+            if not confirmed_game_dir:
+                return ToolResult(
+                    False,
+                    localizer.agent_tool_confirmation_stale,
+                    code="CONFIRMATION_STALE",
+                )
+            handler_arguments["confirmed_game_dir"] = confirmed_game_dir
+        elif tool.name == "run_project_extraction":
+            confirmed_project_root = str(
+                (trusted_context or {}).get("project_root", "")
+            ).strip()
+            if not confirmed_project_root:
+                return ToolResult(
+                    False,
+                    localizer.agent_tool_confirmation_stale,
+                    code="CONFIRMATION_STALE",
+                )
+            handler_arguments["confirmed_project_root"] = confirmed_project_root
+        elif tool.name == "refresh_replace_fallback":
             if not trusted_context:
                 return ToolResult(
                     False,

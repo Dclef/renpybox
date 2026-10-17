@@ -44,6 +44,10 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
         "scan_script_errors",
         "unpack_rpa_files",
         "optimize_old_new_translations",
+        "decompile_rpyc_files",
+        "run_project_extraction",
+        "translation_status",
+        "refresh_replace_fallback",
     ]
     assert "path" in dispatcher.tools["set_project"].parameters_schema["properties"]
     for name in (
@@ -53,6 +57,10 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
         "scan_script_errors",
         "unpack_rpa_files",
         "optimize_old_new_translations",
+        "decompile_rpyc_files",
+        "run_project_extraction",
+        "translation_status",
+        "refresh_replace_fallback",
     ):
         schema = dispatcher.tools[name].parameters_schema
         assert "game_dir" not in schema.get("properties", {})
@@ -64,6 +72,19 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
     optimize = dispatcher.tools["optimize_old_new_translations"]
     assert optimize.requires_confirmation is True
     assert optimize.requires_idle_engine is True
+    decompile = dispatcher.tools["decompile_rpyc_files"]
+    assert decompile.requires_confirmation is True
+    assert decompile.requires_idle_engine is True
+    extract = dispatcher.tools["run_project_extraction"]
+    assert extract.requires_confirmation is True
+    assert extract.requires_idle_engine is True
+    assert extract.parameters_schema["properties"]["incremental"]["type"] == "boolean"
+    status = dispatcher.tools["translation_status"]
+    assert status.requires_confirmation is False
+    assert status.requires_idle_engine is False
+    refresh = dispatcher.tools["refresh_replace_fallback"]
+    assert refresh.requires_confirmation is True
+    assert refresh.requires_idle_engine is True
     inspect = dispatcher.tools["inspect_translation_project"]
     assert inspect.requires_confirmation is False
     assert inspect.requires_idle_engine is False

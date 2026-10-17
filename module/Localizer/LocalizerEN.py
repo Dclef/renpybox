@@ -583,6 +583,8 @@ class LocalizerEN(LocalizerZH):
     agent_page_suggestion_rpa: str = "List RPA files in the project"
     agent_page_suggestion_errors: str = "Scan translation script errors"
     agent_page_suggestion_old_new: str = "Fix old/new translations not taking effect"
+    agent_page_suggestion_decompile: str = "Decompile the current project's RPYC scripts"
+    agent_page_suggestion_refresh_fallback: str = "Refresh the replace_text runtime fallback patch"
     agent_page_suggestion_project_desc: str = "Summarize unpacking, translation, assets, and quality"
     agent_page_suggestion_rpa_desc: str = "List RPA archives in the game folder"
     agent_page_suggestion_errors_desc: str = "Scan generated .rpy files in the current language folder without modifying files"
@@ -600,6 +602,10 @@ class LocalizerEN(LocalizerZH):
     agent_page_tool_scan_script_errors: str = "Scan translation script errors"
     agent_page_tool_unpack_rpa_files: str = "Unpack RPA files"
     agent_page_tool_optimize_old_new_translations: str = "Build supplement fallback"
+    agent_page_tool_decompile_rpyc_files: str = "Decompile RPYC scripts"
+    agent_page_tool_run_project_extraction: str = "Extract project text"
+    agent_page_tool_translation_status: str = "Query translation progress"
+    agent_page_tool_refresh_replace_fallback: str = "Refresh runtime fallback"
     agent_page_action_open_translation: str = "Open Translation"
     agent_page_action_one_key_translate: str = "Start One-click Translation"
     agent_page_action_continue_translation: str = "Continue Translation"
@@ -616,6 +622,22 @@ class LocalizerEN(LocalizerZH):
         "The original RPA files will be kept. Continue?"
     )
     agent_page_old_new_confirmation_title: str = "Confirm supplement fallback"
+    agent_page_decompile_confirmation: str = (
+        "The Agent is about to decompile RPYC scripts in the current game folder:\n"
+        "{game_dir}\n\n"
+        "Decompilation generates or updates matching .rpy files and may overwrite existing "
+        "source files. Continue?"
+    )
+    agent_page_extract_confirmation: str = (
+        "The Agent is about to extract text from the current project:\n"
+        "Project root: {project_root}\nLanguage: {language}\n\n"
+        "Extraction writes into the translation folder and may overwrite existing files. "
+        "Continue?"
+    )
+    agent_page_refresh_fallback_confirmation: str = (
+        "The Agent is about to refresh the replace_text runtime fallback with {count} "
+        "replacement(s).\n\nExisting patches will be backed up before writing. Continue?"
+    )
     agent_page_old_new_confirmation: str = (
         "Current language folder:\n{tl_dir}\n\n"
         "Supplemental extraction entries: {old_new_count}\n"
@@ -680,6 +702,33 @@ class LocalizerEN(LocalizerZH):
         "language folder and generate a longest-first replace_text runtime fallback. Officially "
         "extracted old/new entries are excluded."
     )
+    agent_tool_decompile_rpyc_files_description: str = (
+        "Decompile RPYC scripts in the current game folder into .rpy files. Requires a configured "
+        "project, unpacked archives, and pending RPYC files. The user must confirm in the UI before "
+        "execution; writes into the game folder and may overwrite matching .rpy files. Use when "
+        "inspection returns NEED_DECOMPILE or recommends decompilation."
+    )
+    agent_tool_run_project_extraction_description: str = (
+        "Detect script readiness and extract project text into the translation folder. Requires a "
+        "configured project with unpacked RPA files and decompiled or available .rpy scripts. Does "
+        "not unpack or decompile automatically; returns NEED_UNPACK or NEED_DECOMPILE with the "
+        "next tool when prerequisites are missing. Requires user confirmation and writes TL files."
+    )
+    agent_tool_run_project_extraction_incremental_description: str = (
+        "Optional. true for incremental extraction when prior translations exist; false for a full "
+        "extraction. When omitted, the server chooses automatically from existing translations."
+    )
+    agent_tool_translation_status_description: str = (
+        "Read-only query of engine status, running task counts, cache progress, and untranslated "
+        "entry counts. Safe to call while translation is running; does not modify files or require "
+        "an idle engine."
+    )
+    agent_tool_refresh_replace_fallback_description: str = (
+        "Refresh the replace_text runtime fallback so supplemental extraction translations take "
+        "effect. Requires a configured project and inspection showing needs_refresh. Requires user "
+        "confirmation, backs up existing patches, and writes replace_text_auto.rpy. Skips writing "
+        "when the patch is already up to date."
+    )
     agent_project_inspection_complete: str = (
         "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
         "{item_count} cached entries with {untranslated_count} untranslated. "
@@ -729,6 +778,7 @@ class LocalizerEN(LocalizerZH):
     agent_tool_missing_arguments: str = "Missing required arguments: {names}."
     agent_tool_argument_must_be_string: str = "Argument {name} must be a string."
     agent_tool_argument_must_be_object: str = "Argument {name} must be an object."
+    agent_tool_argument_must_be_boolean: str = "Argument {name} must be a boolean."
     agent_tool_unknown: str = "Unknown tool: {name}"
     agent_tool_confirmation_required: str = "This operation requires user confirmation."
     agent_tool_confirmation_stale: str = "The confirmation context expired. Review the operation and confirm it again."
@@ -762,6 +812,18 @@ class LocalizerEN(LocalizerZH):
     agent_old_new_translation_not_found: str = "No translated supplemental extraction entries were found in the current language folder."
     agent_old_new_optimization_complete: str = "Generated the supplemental runtime fallback with {count} entries: {output_path}"
     agent_old_new_stale_hook_removed: str = "Removed the stale replace_text patch because no supplemental translations remain: {output_path}"
+    agent_rpyc_not_found: str = "No RPYC files were found in the current game folder."
+    agent_decompile_complete: str = "RPYC decompilation completed for {count} file(s)."
+    agent_decompile_failed: str = "RPYC decompilation failed. Check the log for details."
+    agent_extract_complete: str = "Text extraction completed with {entry_count} entries. Output: {tl_dir}."
+    agent_extract_failed: str = "Text extraction failed. Check the log for details."
+    agent_translation_status_ready: str = (
+        "Translation status: engine {engine_status}, {untranslated_count} untranslated entries."
+    )
+    agent_refresh_fallback_complete: str = (
+        "Refreshed the replace_text fallback with {count} entries: {output_path}"
+    )
+    agent_refresh_fallback_up_to_date: str = "The replace_text fallback is already up to date."
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
