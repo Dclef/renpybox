@@ -6,7 +6,10 @@ import hashlib
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
+
+from base.LogManager import LogManager
 
 from base.Base import Base
 from module.Cache.CacheManager import CacheManager
@@ -22,6 +25,7 @@ from module.OneKey.flow import (
     extract_project_text,
     resolve_extraction_incremental,
 )
+from module.OneKey.pipeline import pipeline_identity, run_pipeline
 from module.Renpy.ProjectPaths import RenpyProjectPaths, resolve_translation_output
 from module.Renpy.renpy_tl_core import tl_dir_signature
 from module.Tool.ArchiveOps import decompile_target
@@ -54,8 +58,15 @@ def _entry_count(result: Any) -> int:
     return 0
 
 
-def _read_cache_progress(output_folder: str) -> tuple[dict[str, Any], str, int]:
-    """从翻译输出目录只读加载进度与待翻译计数。"""
+def _read_cache_progress(
+    output_folder: str,
+) -> tuple[dict[str, Any], str, int, bool]:
+    """从翻译输出目录只读加载进度与待翻译计数。
+
+    第四个返回值表示缓存是否真实存在：只有它为真时，「待译 0 条」才是可信
+    的结论，否则只是「还没有缓存」。
+    """
+
     progress: dict[str, Any] = {}
     project_status = ""
     untranslated_count = 0
@@ -63,7 +74,7 @@ def _read_cache_progress(output_folder: str) -> tuple[dict[str, Any], str, int]:
     if not any(
         (cache_dir / name).is_file() for name in ("cache.db", "project.json")
     ):
-        return progress, project_status, untranslated_count
+        return progress, project_status, untranslated_count, False
     try:
         with CacheManager.LOCK:
             manager = CacheManager(service=False)
@@ -78,8 +89,8 @@ def _read_cache_progress(output_folder: str) -> tuple[dict[str, Any], str, int]:
                 if item.get_status() == Base.TranslationStatus.UNTRANSLATED
             )
     except Exception:
-        return {}, "", 0
-    return progress, project_status, untranslated_count
+        return {}, "", 0, False
+    return progress, project_status, untranslated_count, True
 
 
 def _translation_state_snapshot(config: Config) -> dict[str, Any]:
@@ -92,6 +103,7 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
     progress: dict[str, Any] = {}
     project_status = ""
     untranslated_count = 0
+    cache_ready = False
     active = (
         status in (Engine.Status.TRANSLATING, Engine.Status.STOPPING)
         or engine.has_stop_barrier()
@@ -105,8 +117,8 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
     elif not active:
         output = resolve_translation_output(config)
         if output is not None:
-            progress, project_status, untranslated_count = _read_cache_progress(
-                str(output),
+            progress, project_status, untranslated_count, cache_ready = (
+                _read_cache_progress(str(output))
             )
 
     line = progress.get("line")
@@ -127,6 +139,7 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
         "running": {"running": running_count, "max": max_workers},
         "progress": progress,
         "untranslated_count": untranslated_count,
+        "cache_ready": bool(cache_ready and not active),
         "project_status": project_status,
         "stop_barrier": bool(engine.has_stop_barrier()),
         "single_tasks": bool(engine.has_single_tasks()),
@@ -196,14 +209,53 @@ def decompile_rpyc_files(
     )
 
 
+def _official_exe(project_root: Path, exe_path: str | None) -> tuple[str | None, bool]:
+    """对齐一键页：未指定时自动找项目根目录下的游戏 exe。返回 (路径, 是否非法)。"""
+    from module.Tool.RenpyDecompiler import RenpyDecompiler
+
+    selected = str(exe_path or "").strip()
+    if not selected:
+        found = RenpyDecompiler()._find_game_exe(project_root)
+        return (str(found), False) if found else (None, False)
+    executable = Path(selected).resolve()
+    root = project_root.resolve()
+    invalid = (
+        not executable.is_file()
+        or executable.suffix.lower() != ".exe"
+        or executable.parent != root
+    )
+    if invalid:
+        return None, True
+    return str(executable), False
+
+
+def _persist_config(config: Config) -> bool:
+    save = getattr(config, "save", None)
+    if not callable(save):
+        return False
+    try:
+        save()
+    except Exception as exc:
+        LogManager.get().error(f"抽取路径落盘失败: {exc}")
+        return False
+    return True
+
+
 def run_project_extraction(
     *,
     config_loader: ConfigLoader | None = None,
     incremental: bool | None = None,
+    exe_path: str | None = None,
+    supplement_mode: str | None = None,
     confirmed_project_root: str | None = None,
+    progress_callback: Callable[[str, int, str], None] | None = None,
     __cancel_check__: Callable[[], bool] | None = None,
 ) -> ToolResult:
-    """检测脚本就绪状态并抽取当前项目文本，不自动解包或反编译。"""
+    """检测脚本就绪状态并抽取当前项目文本，不自动解包或反编译。
+
+    ``supplement_mode`` 省略时沿用磁盘上的现有设置，避免 Agent 一次抽取把
+    用户在设置页选的补充模式悄悄改掉。
+    """
 
     localizer = Localizer.get()
     config = config_loader() if config_loader is not None else Config().load()
@@ -261,28 +313,70 @@ def run_project_extraction(
     else:
         use_incremental = bool(incremental)
 
-    def progress_callback(_msg: str, _pct: int) -> None:
-        return None
+    supplement = (
+        None if supplement_mode is None else str(supplement_mode).strip().lower()
+    )
+    if supplement is not None and supplement not in ("off", "precise", "aggressive"):
+        return ToolResult(False, localizer.agent_extract_failed, code="EXTRACTION_FAILED")
+    official_exe, exe_invalid = _official_exe(project_root, exe_path)
+    if exe_invalid:
+        return ToolResult(False, localizer.agent_extract_failed, code="EXTRACTION_FAILED")
+
+    # 抽取器从磁盘配置读补充模式；只有调用方显式指定时才改，并先落盘再抽取。
+    if supplement is not None:
+        config.extract_supplement_mode = supplement
+        config.extract_use_custom = supplement != "off"
+    if not _persist_config(config):
+        return ToolResult(False, localizer.agent_extract_failed, code="EXTRACTION_FAILED")
+
+    previous_input = str(getattr(config, "input_folder", "") or "")
+    previous_output = str(getattr(config, "output_folder", "") or "")
+    try:
+        flow.prepare_extraction_paths(
+            config,
+            str(project_root),
+            language,
+            incremental=use_incremental,
+        )
+    except Exception as exc:
+        LogManager.get().error(f"抽取前配置翻译路径失败: {exc}")
+        return ToolResult(False, localizer.agent_extract_failed, code="EXTRACTION_FAILED")
+
+    def report_progress(message: str, percent: int) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback("extract", int(percent), str(message or ""))
+        except Exception as exc:
+            LogManager.get().error(f"抽取进度回调失败: {exc}")
 
     success, extract_message, result = extract_project_text(
         str(project_root),
         language,
         incremental=use_incremental,
-        exe_path=None,
+        exe_path=official_exe,
         output_to_separate_folder=True,
-        progress_callback=progress_callback,
+        progress_callback=report_progress,
         cancel_check=cancel_check,
     )
     if getattr(result, "cancelled", False) or (
         cancel_check is not None and cancel_check()
     ):
+        config.input_folder = previous_input
+        config.output_folder = previous_output
+        _persist_config(config)
         return ToolResult(False, localizer.agent_tool_cancelled, code="CANCELLED")
     if not success:
+        config.input_folder = previous_input
+        config.output_folder = previous_output
+        _persist_config(config)
         return ToolResult(
             False,
             extract_message or localizer.agent_extract_failed,
             code="EXTRACTION_FAILED",
         )
+    if not _persist_config(config):
+        return ToolResult(False, localizer.agent_extract_failed, code="EXTRACTION_FAILED")
 
     tl_dir = result.tl_dir or paths.tl_language_dir
     if use_incremental:
@@ -445,7 +539,7 @@ def start_translation(
     pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
     status: str = "untranslated",
     preflight_confirmed: bool = False,
-    use_agent_model: bool = False,
+    use_agent_model: bool = True,
 ) -> ToolResult:
     """经主事件循环启动翻译；Qt5 侧没有桥，会明确要求手动操作。"""
 
@@ -669,10 +763,180 @@ def apply_translation(
     )
 
 
+def _pipeline_stage_label(stage: str) -> str:
+    localizer = Localizer.get()
+    labels = {
+        "detect": localizer.agent_stage_detect,
+        "unpack": localizer.agent_stage_unpack,
+        "decompile": localizer.agent_stage_decompile,
+        "extract": localizer.agent_stage_extract,
+        "translate": localizer.agent_stage_translate,
+        "apply": localizer.agent_stage_apply,
+        "fallback": localizer.agent_stage_fallback,
+        "done": localizer.agent_stage_done,
+    }
+    return labels.get(stage, stage)
+
+
+def _pipeline_message(outcome) -> str:
+    localizer = Localizer.get()
+    data = outcome.data or {}
+    code = outcome.code
+    if code == "OK":
+        return localizer.agent_pipeline_complete.format(
+            steps=len(data.get("steps") or []),
+            applied_files=data.get("applied_files", 0),
+            fallback_count=data.get("fallback_count", 0),
+        )
+    if code == "CANCELLED":
+        return localizer.agent_pipeline_cancelled
+    if code == "ENGINE_BUSY":
+        return localizer.agent_pipeline_engine_busy
+    if code == "TRANSLATION_INCOMPLETE":
+        return localizer.agent_pipeline_translation_incomplete.format(
+            untranslated_count=data.get("untranslated_count", 0),
+        )
+    if code == "PROJECT_CHANGED":
+        return localizer.agent_pipeline_project_changed
+    if code == "PROJECT_NOT_SET":
+        return localizer.agent_project_not_set
+    if code == "TRANSLATION_NOT_STARTED":
+        return localizer.agent_pipeline_translation_not_started
+    steps = data.get("steps") or []
+    stage = str(steps[-1].get("stage") or "") if steps else ""
+    return localizer.agent_pipeline_stage_failed.format(
+        stage=_pipeline_stage_label(stage),
+        detail=outcome.message or code,
+    )
+
+
+def run_onekey_pipeline(
+    *,
+    config_loader: ConfigLoader | None = None,
+    pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
+    incremental: str = "auto",
+    auto_apply: bool = True,
+    auto_fallback: bool = True,
+    preflight_confirmed: bool = False,
+    use_agent_model: bool = True,
+    progress_callback: Callable[..., Any] | None = None,
+    __cancel_check__: Callable[[], bool] | None = None,
+    confirmed_context: dict | None = None,
+) -> ToolResult:
+    """一次确认跑完整盘：解包、反编译、抽取、翻译、回填、兜底。"""
+    localizer = Localizer.get()
+    config = config_loader() if config_loader is not None else Config().load()
+    current = pipeline_identity(config)
+    if not confirmed_context or dict(confirmed_context) != current:
+        return ToolResult(
+            False,
+            localizer.agent_tool_confirmation_stale,
+            code="CONFIRMATION_STALE",
+        )
+
+    bridge = pipeline_callbacks or {}
+
+    def unpack(cancel_check):
+        from .archive_tools import unpack_rpa_files
+
+        paths = _resolve_paths(config_loader)
+        return unpack_rpa_files(
+            config_loader=config_loader,
+            confirmed_game_dir=str(paths.game_dir.resolve()) if paths is not None else "",
+        )
+
+    def decompile(cancel_check):
+        paths = _resolve_paths(config_loader)
+        return decompile_rpyc_files(
+            config_loader=config_loader,
+            confirmed_game_dir=str(paths.game_dir.resolve()) if paths is not None else "",
+            __cancel_check__=cancel_check,
+        )
+
+    def extract(use_incremental: bool, cancel_check, progress):
+        paths = _resolve_paths(config_loader)
+        return run_project_extraction(
+            config_loader=config_loader,
+            incremental=use_incremental,
+            confirmed_project_root=str(paths.project_root.resolve()) if paths is not None else "",
+            progress_callback=progress,
+            __cancel_check__=cancel_check,
+        )
+
+    def start_translation_callback(params: dict) -> dict:
+        callback = bridge.get("start_translation")
+        if callback is None:
+            return {
+                "accepted": False,
+                "reason": "AGENT_APP_CONTEXT_MISSING",
+                "detail": localizer.agent_app_context_missing,
+            }
+        result = callback(params)
+        return result if isinstance(result, dict) else {"accepted": False, "reason": "ERROR", "detail": ""}
+
+    def stop_translation_callback() -> dict:
+        callback = bridge.get("stop_translation")
+        if callback is None:
+            return {"ok": False, "reason": "AGENT_APP_CONTEXT_MISSING"}
+        result = callback({})
+        return result if isinstance(result, dict) else {"ok": False}
+
+    def translation_state() -> dict:
+        live = config_loader() if config_loader is not None else Config().load()
+        return _translation_state_snapshot(live)
+
+    def apply(mode: str):
+        context = translation_apply_confirmation_context(config_loader=config_loader)
+        return apply_translation(
+            config_loader=config_loader,
+            mode=mode,
+            confirmed_context=context,
+        )
+
+    def fallback():
+        paths, plan = _load_plan(config_loader)
+        if paths is None or plan is None:
+            return ToolResult(False, localizer.agent_project_not_set, code="PROJECT_NOT_SET")
+        return refresh_replace_fallback(
+            config_loader=config_loader,
+            confirmed_context=_confirmation_context(paths, plan),
+        )
+
+    outcome = run_pipeline(
+        config,
+        callbacks=SimpleNamespace(
+            unpack=unpack,
+            decompile=decompile,
+            extract=extract,
+            start_translation=start_translation_callback,
+            stop_translation=stop_translation_callback,
+            translation_state=translation_state,
+            apply=apply,
+            fallback=fallback,
+        ),
+        progress=progress_callback,
+        cancel_check=__cancel_check__,
+        incremental=incremental,
+        auto_apply=auto_apply,
+        auto_fallback=auto_fallback,
+        preflight_confirmed=preflight_confirmed,
+        use_agent_model=use_agent_model,
+    )
+    return ToolResult(
+        outcome.success,
+        _pipeline_message(outcome),
+        data=dict(outcome.data or {}),
+        code=outcome.code if outcome.success or outcome.code else "OK",
+        continues=False,
+    )
+
+
 __all__ = [
     "apply_translation",
     "decompile_rpyc_files",
+    "pipeline_identity",
     "refresh_replace_fallback",
+    "run_onekey_pipeline",
     "run_project_extraction",
     "start_translation",
     "stop_translation",

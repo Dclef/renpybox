@@ -30,14 +30,20 @@ def _lazy_tool_handler(
     def handler(**arguments: Any) -> ToolResult:
         module = importlib.import_module(f"module.Agent.tools.{module_name}")
         function = getattr(module, function_name)
-        # 只有声明了 ``should_cancel`` 的工具才拿到停止回调，这样长耗时扫描
-        # 能在文件之间中断，而不是必须跑完整轮。
-        cancel_check = arguments.pop("__cancel_check__", None)
-        if cancel_check is not None and "should_cancel" in inspect.signature(function).parameters:
-            arguments["should_cancel"] = cancel_check
+        # 局部变量不能叫 cancel_check，否则会遮蔽闭包参数，导致声明了
+        # ``__cancel_check__`` 的工具永远拿到 None。
+        injected_cancel = arguments.pop("__cancel_check__", None)
+        injected_progress = arguments.pop("__progress__", None)
+        parameters = inspect.signature(function).parameters
+        if injected_cancel is not None and "should_cancel" in parameters:
+            arguments["should_cancel"] = injected_cancel
+        if injected_cancel is not None and "__cancel_check__" in parameters:
+            arguments["__cancel_check__"] = injected_cancel
+        if injected_progress is not None and "progress_callback" in parameters:
+            arguments["progress_callback"] = injected_progress
         # 只有声明了 ``pipeline_callbacks`` 的工具才拿到启停桥；Qt5 侧不传，
         # 工具会明确返回 AGENT_APP_CONTEXT_MISSING。
-        if pipeline_callbacks is not None and "pipeline_callbacks" in inspect.signature(function).parameters:
+        if pipeline_callbacks is not None and "pipeline_callbacks" in parameters:
             arguments["pipeline_callbacks"] = pipeline_callbacks
         return function(config_loader=config_loader, **arguments)
 
@@ -178,6 +184,15 @@ class ToolDispatcher:
                             "type": "boolean",
                             "description": localizer.agent_tool_run_project_extraction_incremental_description,
                         },
+                        "exe_path": {
+                            "type": "string",
+                            "description": localizer.agent_tool_run_project_extraction_exe_description,
+                        },
+                        "supplement_mode": {
+                            "type": "string",
+                            "enum": ["off", "precise", "aggressive"],
+                            "description": localizer.agent_tool_run_project_extraction_supplement_description,
+                        },
                     },
                     "additionalProperties": False,
                 },
@@ -188,6 +203,62 @@ class ToolDispatcher:
                 ),
                 requires_confirmation=True,
                 requires_idle_engine=True,
+            ),
+            "run_onekey_pipeline": ToolDef(
+                name="run_onekey_pipeline",
+                description=localizer.agent_tool_run_onekey_pipeline_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "incremental": {
+                            "type": "string",
+                            "enum": ["auto", "full", "incremental"],
+                            "default": "auto",
+                            "description": localizer.agent_tool_run_onekey_pipeline_incremental_description,
+                        },
+                        "auto_apply": {"type": "boolean", "default": True},
+                        "auto_fallback": {"type": "boolean", "default": True},
+                        "preflight_confirmed": {"type": "boolean", "default": False},
+                        "use_agent_model": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": localizer.agent_tool_start_translation_use_agent_model_description,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "run_onekey_pipeline",
+                    self.config_loader,
+                    pipeline_callbacks=self.pipeline_callbacks,
+                ),
+                # 流水线自己检查引擎空闲。若这里占住 AGENT，内部 start_translation
+                # 会被判成 ENGINE_BUSY。
+                requires_confirmation=True,
+                requires_idle_engine=False,
+            ),
+            "set_stage": ToolDef(
+                name="set_stage",
+                description=localizer.agent_tool_set_stage_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "stage": {
+                            "type": "string",
+                            "description": localizer.agent_tool_set_stage_stage_description,
+                        },
+                    },
+                    "required": ["stage"],
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "stage_tools",
+                    "set_stage",
+                    self.config_loader,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=False,
             ),
             "translation_status": ToolDef(
                 name="translation_status",
@@ -418,6 +489,20 @@ class ToolDispatcher:
                 return localizer.agent_tool_argument_must_be_array.format(name=name)
         return None
 
+    @staticmethod
+    def _apply_schema_defaults(tool: ToolDef, arguments: dict[str, Any]) -> None:
+        """补齐模型没传、但 schema 声明了 default 的可选参数。
+
+        只填缺省，不覆盖显式传值，避免函数默认值和 schema 默认值各说各话。
+        """
+        properties = tool.parameters_schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return
+        for name, spec in properties.items():
+            if name in arguments or not isinstance(spec, dict) or "default" not in spec:
+                continue
+            arguments[name] = deepcopy(spec["default"])
+
     def execute(
         self,
         name: str,
@@ -426,6 +511,7 @@ class ToolDispatcher:
         confirmed: bool = False,
         trusted_context: dict[str, Any] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        progress_callback: Callable[..., Any] | None = None,
     ) -> ToolResult:
         localizer = Localizer.get()
         tool = self._tools.get(str(name or ""))
@@ -448,8 +534,11 @@ class ToolDispatcher:
             )
 
         handler_arguments = dict(payload)
+        self._apply_schema_defaults(tool, handler_arguments)
         if cancel_check is not None:
             handler_arguments["__cancel_check__"] = cancel_check
+        if progress_callback is not None:
+            handler_arguments["__progress__"] = progress_callback
         if tool.name == "unpack_rpa_files":
             confirmed_game_dir = str((trusted_context or {}).get("game_dir", "")).strip()
             if not confirmed_game_dir:
@@ -503,6 +592,8 @@ class ToolDispatcher:
                     code="CONFIRMATION_STALE",
                 )
             handler_arguments["confirmed_context"] = dict(trusted_context)
+        elif tool.name == "run_onekey_pipeline":
+            handler_arguments["confirmed_context"] = dict(trusted_context or {})
 
         acquired = False
         if tool.requires_idle_engine:

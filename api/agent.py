@@ -28,6 +28,8 @@ class AgentSession:
         self._confirmation_event = threading.Event()
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._stage = ""
+        self._budget: dict[str, Any] = {}
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -38,6 +40,8 @@ class AgentSession:
                 "status": self._status,
                 "messages": self._messages,
                 "confirmation": self._confirmation,
+                "stage": self._stage,
+                "budget": self._budget,
             })
 
     def _publish(self) -> None:
@@ -105,6 +109,19 @@ class AgentSession:
                     tool = {}
                     message["tools"].append(tool)
                 tool.update({**payload, "status": "done" if payload.get("success") else "failed"})
+            elif event == "stage":
+                self._stage = str(payload.get("stage") or "")
+            elif event == "budget":
+                self._budget = dict(payload or {})
+            elif event == "tool_progress":
+                self._stage = str(payload.get("stage") or "")
+                tools = message.get("tools") or []
+                if tools and tools[-1].get("status") == "running":
+                    tools[-1]["progress"] = {
+                        "stage": payload.get("stage", ""),
+                        "percent": payload.get("percent", -1),
+                        "detail": payload.get("detail", ""),
+                    }
             self._revision += 1
         self._publish()
 

@@ -1805,7 +1805,14 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    width: 240px;
+    width: 260px;
+  }
+
+  .agent-budget {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .agent-controls {
@@ -1833,6 +1840,14 @@
 
   .agent-select span {
     flex-shrink: 0;
+  }
+
+  /* 已保存的 Agent 接口是不能调工具的机翻格式时的就地提示。 */
+  .agent-select .agent-select-hint {
+    flex-basis: 100%;
+    color: var(--rb-warning, #d48806);
+    font-size: 11px;
+    line-height: 1.4;
   }
 
   .agent-select select {
@@ -2011,6 +2026,120 @@
   .agent-empty .agent-empty-hint {
     color: var(--rb-warning);
     font-size: 12px;
+  }
+
+  .agent-onekey {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    margin-top: 8px;
+    padding: 14px 16px;
+    border: 1px solid color-mix(in srgb, var(--rb-accent) 42%, var(--rb-border));
+    border-radius: 14px;
+    background: var(--rb-accent-surface);
+    text-align: left;
+  }
+
+  .agent-onekey h3 {
+    margin: 0;
+    color: var(--rb-text-primary);
+    font-size: 15px;
+    font-weight: 680;
+    line-height: 1.35;
+  }
+
+  .agent-onekey p {
+    margin: 0;
+    max-width: none;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: left;
+  }
+
+  .agent-stage-strip {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    min-height: 32px;
+    padding: 6px 12px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 10px;
+    background: var(--rb-surface);
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-stage-strip strong {
+    flex-shrink: 0;
+    color: var(--rb-text-primary);
+    font-weight: 650;
+  }
+
+  .agent-stage-percent {
+    flex-shrink: 0;
+    color: var(--rb-accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-stage-detail {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-progress-track {
+    flex: 1;
+    height: 4px;
+    min-width: 48px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--rb-surface-subtle);
+  }
+
+  .agent-progress-track > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--rb-accent);
+  }
+
+  .agent-tool-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 8px;
+  }
+
+  .agent-tool-progress-meta {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+  }
+
+  .agent-tool-progress-meta > span:first-child {
+    flex-shrink: 0;
+    color: var(--rb-accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-tool-progress-meta > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-tool-progress .agent-progress-track {
+    flex: none;
+    width: 100%;
   }
 
   .agent-suggestion-arrow {
@@ -2502,7 +2631,7 @@
 
 
   .agent-workspace { max-width: none; height: 100%; }
-  .agent-chat, .agent-composer, .agent-confirmation, .agent-topbar, .agent-workspace > .banner { width: 100%; min-width: 0; max-width: 100%; margin-inline: 0; }
+  .agent-chat, .agent-composer, .agent-confirmation, .agent-stage-strip, .agent-topbar, .agent-workspace > .banner { width: 100%; min-width: 0; max-width: 100%; margin-inline: 0; }
   .agent-workspace { align-self: stretch; width: auto; padding: 20px 24px 16px; gap: 12px; }
   /* 多条横幅 + 确认区同时出现的矮窗口里，整页滚动而不是裁掉底部输入区。 */
   .agent-workspace { overflow-x: hidden; overflow-y: auto; }
