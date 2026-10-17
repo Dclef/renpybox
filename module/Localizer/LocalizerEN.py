@@ -881,6 +881,33 @@ class LocalizerEN(LocalizerZH):
     agent_apply_no_output_files: str = "No translated .rpy files were found in the translation output folder."
     agent_app_context_missing: str = "This environment cannot start or stop translation. Use the translation page instead."
 
+    # Agent skills
+    agent_tool_list_skills_description: str = (
+        "List the domain skill packs that can be loaded, returning only names and descriptions, "
+        "never their body. Call this first when unsure which domain rules apply (pipeline criteria, "
+        "terminology, markup preservation, script syntax, quality review)."
+    )
+    agent_tool_read_skill_description: str = (
+        "Load the body rules of one skill pack. The name must come from list_skills. Long bodies "
+        "are truncated with a notice; load only the one or two skills the current task needs."
+    )
+    agent_skill_list_empty: str = "No skill packs are available."
+    agent_skill_list_ready: str = "{count} skill pack(s) available."
+    agent_skill_loaded: str = "Loaded skill {name}."
+    agent_tool_read_skill_name_description: str = "Skill pack name; must come from list_skills."
+    agent_skill_truncated_hint: str = "Skill {name} is too long and was truncated to {count} characters. Use only the parts relevant to the current task."
+    agent_skill_not_found: str = "Skill {name} does not exist. Call list_skills to see the available skills."
+    agent_skill_name_invalid: str = "Skill name {name} is invalid; only lowercase letters, digits, and hyphens are allowed."
+    agent_skill_read_failed: str = "Failed to read skill {name}. Check the log for details."
+    agent_stage_cleared: str = "Cleared the current stage marker."
+    agent_stage_updated: str = "Current stage: {stage}"
+    agent_skills_catalog_header: str = "Available skill packs (load the body with read_skill before relying on it):"
+    agent_skills_catalog_truncated: str = "- {count} more skill pack(s) not listed; call list_skills to see all."
+    agent_skills_catalog_hint: str = (
+        "Load a skill only when it is relevant to the current task; never load all of them at once. "
+        "Skills are domain knowledge only and grant no extra file or command capability."
+    )
+
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
     basic_settings_page_max_workers_content: str = (

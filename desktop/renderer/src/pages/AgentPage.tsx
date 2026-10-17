@@ -16,6 +16,8 @@ const TOOL_NAMES: Record<string, TextKey> = {
   unpack_rpa_files: 'agent_page_tool_unpack_rpa_files', optimize_old_new_translations: 'agent_page_tool_optimize_old_new_translations',
   decompile_rpyc_files: 'agent_page_tool_decompile_rpyc_files', run_project_extraction: 'agent_page_tool_run_project_extraction',
   translation_status: 'agent_page_tool_translation_status', refresh_replace_fallback: 'agent_page_tool_refresh_replace_fallback',
+  start_translation: 'agent_page_tool_start_translation', stop_translation: 'agent_page_tool_stop_translation',
+  apply_translation: 'agent_page_tool_apply_translation', list_skills: 'agent_page_tool_list_skills', read_skill: 'agent_page_tool_read_skill',
 };
 // 空会话快捷任务，与 Qt5 AgentEmptyState 的四张建议卡一致；点击只填入草稿，不直接发送。
 const SUGGESTIONS: { text: TextKey; description: TextKey }[] = [
