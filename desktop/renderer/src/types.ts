@@ -11,6 +11,11 @@ export interface AgentToolEntry {
   message?: string;
   code?: string;
   data?: Record<string, unknown>;
+  progress?: {
+    stage: string;
+    percent: number;
+    detail: string;
+  };
 }
 
 export interface AgentMessage {
@@ -36,6 +41,15 @@ export interface AgentSnapshot {
     data: Record<string, unknown>;
     expires_at: number;
   } | null;
+  stage?: string;
+  budget?: {
+    context_window?: number;
+    max_output_tokens?: number;
+    usable_tokens?: number;
+    max_context_chars?: number;
+    max_messages?: number;
+    max_iterations?: number;
+  };
 }
 
 /** 项目翻译状态：Base.TranslationStatus 的项目级取值 */

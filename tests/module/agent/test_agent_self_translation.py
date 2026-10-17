@@ -327,7 +327,7 @@ class _LoopDispatcher:
             )
         }
 
-    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None):
+    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None, progress_callback=None):
         self.calls.append(name)
         return self.tools[name].handler()
 
@@ -396,7 +396,7 @@ class _HeavyDispatcher:
             )
         }
 
-    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None):
+    def execute(self, name, arguments, *, confirmed=False, trusted_context=None, cancel_check=None, progress_callback=None):
         self.calls += 1
         return self.tools[name].handler()
 

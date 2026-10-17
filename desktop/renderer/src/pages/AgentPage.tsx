@@ -3,7 +3,7 @@ import { Button, Checkbox, Popover, Select } from 'antd';
 import { ArrowDown, Bot, Plus, RefreshCw, Settings, Square } from 'lucide-react';
 import * as api from '../api';
 import { AgentMessageBody } from '../AgentMessageBody';
-import { languageFromTlPath, toolStatusInfo } from '../agentView.mjs';
+import { budgetParts, isMachineApiFormat, languageFromTlPath, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../agentView.mjs';
 import type { AgentSnapshot, AgentThinkingLevel } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog } from '../ui';
@@ -19,6 +19,7 @@ const TOOL_NAMES: Record<string, TextKey> = {
   start_translation: 'agent_page_tool_start_translation', stop_translation: 'agent_page_tool_stop_translation',
   apply_translation: 'agent_page_tool_apply_translation', list_skills: 'agent_page_tool_list_skills', read_skill: 'agent_page_tool_read_skill',
   read_translation_batch: 'agent_page_tool_read_translation_batch', write_translation_batch: 'agent_page_tool_write_translation_batch',
+  run_onekey_pipeline: 'agent_page_tool_run_onekey_pipeline', set_stage: 'agent_page_tool_set_stage',
 };
 // 空会话快捷任务；点击只填入草稿，不直接发送。首条是「由 Agent 自己翻译」的主路径。
 const SUGGESTIONS: { text: TextKey; description: TextKey }[] = [
@@ -34,11 +35,126 @@ const FOLLOW_THRESHOLD = 80;
 
 type AgentConfirmation = NonNullable<AgentSnapshot['confirmation']>;
 
+function textValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return String(value);
+}
+
+function boolText(t: (key: TextKey) => string, value: unknown): string {
+  if (value === true) return t('agent_page_yes');
+  if (value === false) return t('agent_page_no');
+  return '';
+}
+
+function incrementalText(t: (key: TextKey) => string, value: unknown): string {
+  if (value === 'auto') return t('agent_page_incremental_auto');
+  if (value === 'off') return t('agent_page_incremental_off');
+  if (value === 'force') return t('agent_page_incremental_force');
+  return textValue(value);
+}
+
+function fieldText(t: (key: TextKey) => string, value: unknown): string {
+  if (typeof value === 'boolean') return boolText(t, value);
+  return textValue(value);
+}
+
+function lastRunningProgress(session: AgentSnapshot | null) {
+  const messages = session?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const tools = messages[index].tools ?? [];
+    for (let toolIndex = tools.length - 1; toolIndex >= 0; toolIndex -= 1) {
+      const tool = tools[toolIndex];
+      if (tool.status === 'running' && tool.progress) return tool.progress;
+    }
+  }
+  return undefined;
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function ProgressTrack(props: { percent: number; label: string }) {
+  const shown = clampPercent(props.percent);
+  return (
+    <div className="agent-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(shown)} aria-label={props.label}>
+      <span style={{ width: `${shown}%` }} />
+    </div>
+  );
+}
+
 /** 把服务端可信上下文整理成可读的确认摘要；未知工具只给通用提示，原始参数另行折叠展示。 */
 function confirmationSummary(t: (key: TextKey) => string, confirmation: AgentConfirmation): { title: string; facts: [string, string][]; note: string } {
   const data = confirmation.data ?? {};
+  const args = confirmation.arguments ?? {};
   const text = (key: string) => String(data[key] ?? '');
   const count = (key: string) => String(Number(data[key] ?? 0) || 0);
+  if (confirmation.name === 'run_onekey_pipeline') {
+    return {
+      title: t('agent_page_onekey_confirmation_title'),
+      facts: [
+        [t('agent_page_project_root'), text('project_root')],
+        [t('agent_page_game_dir'), text('game_dir')],
+        [t('agent_page_tl_dir'), text('tl_dir')],
+        [t('agent_page_language'), text('language')],
+        [t('agent_page_incremental'), incrementalText(t, args.incremental)],
+        [t('agent_page_auto_apply'), boolText(t, args.auto_apply)],
+        [t('agent_page_auto_fallback'), boolText(t, args.auto_fallback)],
+        [t('agent_page_use_agent_model'), boolText(t, args.use_agent_model)],
+      ],
+      note: t('agent_page_onekey_note'),
+    };
+  }
+  if (confirmation.name === 'decompile_rpyc_files') {
+    return {
+      title: t('agent_page_decompile_confirmation_title'),
+      facts: [[t('agent_page_game_dir'), text('game_dir') || textValue(args.game_dir)]],
+      note: t('agent_page_decompile_note'),
+    };
+  }
+  if (confirmation.name === 'run_project_extraction') {
+    return {
+      title: t('agent_page_extract_confirmation_title'),
+      facts: [
+        [t('agent_page_incremental'), incrementalText(t, args.incremental)],
+        [t('agent_page_supplement_mode'), fieldText(t, args.supplement_mode)],
+        [t('agent_page_extract_official'), fieldText(t, args.extract_use_official)],
+        [t('agent_page_exe_path'), textValue(args.exe_path)],
+      ],
+      note: t('agent_page_extract_note'),
+    };
+  }
+  if (confirmation.name === 'apply_translation') {
+    return {
+      title: t('agent_page_apply_confirmation_title'),
+      facts: [
+        [t('agent_page_tl_dir'), text('tl_dir')],
+        [t('agent_page_output_dir'), text('output_dir')],
+        [t('agent_page_input_dir'), text('input_dir')],
+        [t('agent_page_signature'), text('signature')],
+      ],
+      note: t('agent_page_apply_note'),
+    };
+  }
+  if (confirmation.name === 'refresh_replace_fallback') {
+    return {
+      title: t('agent_page_fallback_confirmation_title'),
+      facts: [[t('agent_page_tl_dir'), text('tl_dir')]],
+      note: t('agent_page_fallback_note'),
+    };
+  }
+  if (confirmation.name === 'start_translation') {
+    return {
+      title: t('agent_page_start_confirmation_title'),
+      facts: [
+        [t('agent_page_translation_status'), textValue(args.status)],
+        [t('agent_page_preflight_confirmed'), boolText(t, args.preflight_confirmed)],
+        [t('agent_page_use_agent_model'), boolText(t, args.use_agent_model)],
+      ],
+      note: t('agent_page_start_note'),
+    };
+  }
   if (confirmation.name === 'unpack_rpa_files') {
     return {
       title: t('agent_page_confirmation_unpack_title'),
@@ -186,17 +302,23 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
   const connected = state.link === 'open';
   const busy = session !== null && session.status !== 'idle';
   const values = state.settings?.values ?? {};
-  const platforms = (Array.isArray(values.platforms) ? values.platforms as { id: number; name?: string; model?: string; api_format?: string }[] : [])
-    .filter(entry => ['openai', 'anthropic', 'google'].includes(String(entry.api_format ?? '').toLowerCase()));
+  // 只列支持工具调用的格式；传统机翻（GoogleFree / Bing）在 agentView 里显式排除。
+  const platforms = selectableAgentPlatforms(values.platforms) as { id: number; name?: string; model?: string; api_format?: string }[];
+  const selectedPlatform = (Array.isArray(values.platforms) ? values.platforms as { id: number; api_format?: string }[] : [])
+    .find(entry => entry.id === Number(values.agent_platform ?? -1));
+  // 历史配置可能指向机翻接口，明确提示而不是静默显示「未设置」。
+  const platformUnsupported = !!selectedPlatform && isMachineApiFormat(selectedPlatform.api_format);
   const thinkingValue = String(values.agent_thinking_level ?? 'OFF').toUpperCase();
   const thinking = (['OFF', 'LOW', 'MEDIUM', 'HIGH', 'MAX'].includes(thinkingValue) ? thinkingValue : 'OFF') as AgentThinkingLevel;
   const platformId = Number(values.agent_platform ?? -1);
   const platform = platforms.find(entry => entry.id === platformId);
   const canSend = connected && session !== null && !loadError && !!platform && !busy && !pending && !state.saving && !!draft.trim();
-  const send = async () => {
-    if (!canSend) return;
+  const canOnekey = connected && session !== null && !loadError && !!platform && !busy && !pending && !state.saving;
+  const send = async (text?: string) => {
+    const content = (typeof text === 'string' ? text : draft).trim();
+    if (!connected || session === null || loadError || !platform || busy || pending || state.saving || !content) return;
     followRef.current = true;
-    const sent = await perform(() => api.sendAgentMessage(draft.trim(), thinking));
+    const sent = await perform(() => api.sendAgentMessage(content, thinking));
     if (sent && mountedRef.current) { setDraft(''); inputRef.current?.focus(); }
   };
   useEffect(() => {
@@ -261,8 +383,22 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
     }
   };
 
+  const budget = budgetParts(session?.budget);
+  const budgetText = budget.context
+    ? (budget.iterations
+      ? t('agent_page_budget').replace('{context}', budget.context).replace('{iterations}', budget.iterations)
+      : t('agent_page_budget_context').replace('{context}', budget.context))
+    : '';
+  const runningProgress = session && session.status !== 'idle' ? lastRunningProgress(session) : undefined;
+  const stageLabelKey = stageKey(session?.stage || runningProgress?.stage || '');
+  const stagePercent = typeof runningProgress?.percent === 'number' && Number.isFinite(runningProgress.percent)
+    ? clampPercent(runningProgress.percent)
+    : null;
+  const stageDetail = runningProgress?.detail ?? '';
+  const showStageStrip = Boolean(session && session.status !== 'idle' && (stageLabelKey || stagePercent !== null || stageDetail));
   const settingsPanel = (
     <div className="agent-settings-panel">
+      {budgetText ? <p className="agent-budget">{budgetText}</p> : null}
       <Button block icon={<RefreshCw size={14} strokeWidth={1.75} />} loading={refreshing} disabled={!connected} onClick={() => void refreshPlatforms()}>
         {t('agent_page_settings_refresh')}</Button>
       <Button block onClick={() => { setSettingsOpen(false); onOpenPlatforms(); }}>{t('agent_page_manage_platforms')}</Button>
@@ -317,6 +453,11 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
                 });
               }}
             />
+            {platformUnsupported ? (
+              <span className="agent-select-hint" role="status">
+                {t('agent_page_platform_machine_unsupported')}
+              </span>
+            ) : null}
           </label>
           <label className="agent-select">
             <span>{t('agent_page_thinking')}</span>
@@ -375,6 +516,20 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
               <h2>{t('agent_page_empty_title')}</h2>
               <p>{t('agent_page_empty_description')}</p>
               {!projectPath ? <p className="agent-empty-hint">{t('agent_page_empty_hint')}</p> : null}
+              <section className="agent-onekey">
+                <h3>{t('agent_page_onekey_title')}</h3>
+                <p>{t('agent_page_onekey_desc')}</p>
+                <Button
+                  type="primary"
+                  disabled={!canOnekey}
+                  onClick={() => {
+                    const prompt = t('agent_page_onekey_prompt');
+                    setDraft(prompt);
+                    void send(prompt);
+                  }}
+                >
+                  {t('agent_page_onekey_action')}</Button>
+              </section>
               <div className="agent-suggestions">
                 {SUGGESTIONS.map(item => (
                   <button
@@ -422,7 +577,16 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
                         <span className="agent-tool-status">{info.label}</span>
                       </summary>
                       {tool.message ? <p className="agent-tool-message">{tool.message}</p> : null}
-                      {!tool.message && tool.status === 'running' ? <p className="agent-tool-message">{t('agent_page_tool_running_detail')}</p> : null}
+                      {tool.status === 'running' && tool.progress ? (
+                        <div className="agent-tool-progress">
+                          <div className="agent-tool-progress-meta">
+                            <span>{Math.round(clampPercent(tool.progress.percent))}%</span>
+                            {tool.progress.detail ? <span>{tool.progress.detail}</span> : null}
+                          </div>
+                          <ProgressTrack percent={tool.progress.percent} label={t('agent_page_tool_progress')} />
+                        </div>
+                      ) : null}
+                      {!tool.message && tool.status === 'running' && !tool.progress ? <p className="agent-tool-message">{t('agent_page_tool_running_detail')}</p> : null}
                       {hasKeys(tool.arguments) ? (
                         <>
                           <span className="agent-tool-label">{t('agent_page_tool_arguments')}</span>
@@ -474,6 +638,15 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           />
         ) : null}
       </div>
+
+      {showStageStrip ? (
+        <div className="agent-stage-strip" role="status">
+          {stageLabelKey ? <strong>{t(stageLabelKey as TextKey)}</strong> : null}
+          {stagePercent !== null ? <span className="agent-stage-percent">{Math.round(stagePercent)}%</span> : null}
+          {stagePercent !== null ? <ProgressTrack percent={stagePercent} label={t('agent_page_stage_strip')} /> : null}
+          {stageDetail ? <span className="agent-stage-detail" title={stageDetail}>{stageDetail}</span> : null}
+        </div>
+      ) : null}
 
       {confirmation ? (() => {
         const summary = confirmationSummary(t, confirmation);
