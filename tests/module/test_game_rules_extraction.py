@@ -128,7 +128,7 @@ def test_declined_and_global_coverage_skip_rules(tmp_path, monkeypatch):
 def test_official_failure_stays_visible_with_successful_rules(tmp_path, monkeypatch):
     from base.BaseLanguage import BaseLanguage
     from module.Localizer.Localizer import Localizer
-    from frontend.RenpyToolbox.OneKeyWorkers import _localize_extraction_result
+    from module.OneKey.flow import _localize_extraction_result
     root, store, extractor, config = setup_game(tmp_path, monkeypatch)
     config.extract_use_official = True
     def fail(*args):
