@@ -494,21 +494,34 @@ def test_collect_block_originals_accepts_legacy_enum_string_form(tmp_path, monke
     assert extractor._collect_block_originals(tmp_path) == {"Already translated dialogue."}
 
 
-def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_path):
-    from frontend.RenpyToolbox.OneKeyTranslatePage import (
+def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(
+    tmp_path, monkeypatch
+):
+    from module.Config import Config
+    from module.OneKey import flow
+    from module.OneKey.flow import (
         configure_incremental_translation_paths,
         configure_main_translation_paths,
         resolve_translation_apply_paths,
     )
 
+    monkeypatch.setattr(flow, "_remember_translation_run", lambda *args, **kwargs: None)
+
     project = tmp_path / "project"
-    delta = project / "game" / "tl" / "chinese_new"
-    config = types.SimpleNamespace(
-        input_folder="old-input",
-        output_folder="old-output",
-        renpy_source_translate=True,
-        renpy_hook_translate=True,
+    (project / "game" / "tl" / "chinese").mkdir(parents=True)
+    (project / "game" / "script.rpy").write_text(
+        'label start:\n    "hello"\n', encoding="utf-8"
     )
+    delta = project / "game" / "tl" / "chinese_new"
+    delta.mkdir(parents=True)
+    config = Config()
+    config.renpy_project_path = str(project)
+    config.renpy_game_folder = str(project / "game")
+    config.renpy_tl_folder = str(project / "game" / "tl" / "chinese")
+    config.input_folder = "old-input"
+    config.output_folder = "old-output"
+    config.renpy_source_translate = True
+    config.renpy_hook_translate = True
 
     apply_target, output = configure_incremental_translation_paths(
         config, project, "chinese", delta
@@ -529,7 +542,9 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
 
     config.renpy_source_translate = True
     config.renpy_hook_translate = True
-    main_input, main_output = configure_main_translation_paths(config, project, "chinese")
+    main_input, main_output = configure_main_translation_paths(
+        config, project, "chinese", remember_run=False
+    )
     assert Path(config.input_folder) == main_input == apply_target
     assert Path(config.output_folder) == main_output
     assert main_output == project / "RenpyBox_Translation" / "chinese"
@@ -538,9 +553,7 @@ def test_onekey_incremental_translation_uses_delta_but_applies_to_main_tl(tmp_pa
 
 
 def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
-    from frontend.RenpyToolbox.OneKeyTranslatePage import (
-        resolve_translation_apply_paths,
-    )
+    from module.OneKey.flow import resolve_translation_apply_paths
 
     current_output = tmp_path / "current-output"
     current_target = tmp_path / "current-input"
@@ -555,109 +568,6 @@ def test_onekey_full_apply_ignores_stale_incremental_target(tmp_path):
 
     assert output == current_output
     assert target == current_target
-
-
-def test_onekey_character_scan_persists_project_candidates(tmp_path, monkeypatch):
-    from frontend.RenpyToolbox.OneKeyTranslatePage import YiJianFanyiPage
-    from module.Config import Config
-    from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
-
-    project = tmp_path / "project"
-    game_dir = project / "game"
-    game_dir.mkdir(parents=True)
-    (game_dir / "script.rpy").write_text(
-        'define alice = Character("Alice")\n'
-        'alice "Hello there."\n',
-        encoding="utf-8",
-    )
-    output_dir = project / "RenpyBox_Translation" / "chinese"
-    config = types.SimpleNamespace(
-        input_folder = str(game_dir / "tl" / "chinese"),
-        output_folder = str(output_dir),
-        cache_use_sqlite = False,
-        renpy_project_path = str(project),
-        renpy_game_folder = str(game_dir),
-        renpy_tl_folder = str(game_dir / "tl" / "chinese"),
-        glossary_data = [],
-        glossary_enable = False,
-        text_preserve_data = [],
-        text_preserve_enable = False,
-        glossary_auto_scan_cache = {},
-    )
-    config.save = lambda: None
-    monkeypatch.setattr(Config, "load", lambda self: config)
-
-    page = YiJianFanyiPage.__new__(YiJianFanyiPage)
-    page.game_dir = str(project)
-    page.tl_folder_edit = types.SimpleNamespace(text = lambda: "chinese")
-
-    page._extract_character_names(force = True)
-
-    assert config.glossary_data == []
-    state = ProjectAssetsRepository(
-        str(output_dir),
-        cache_use_sqlite = False,
-    ).load(config)
-    assert any(
-        item.get("source") == "Alice"
-        for item in state.analysis_candidates.get("items", [])
-    )
-    assert any(
-        item.get("name") == "Alice"
-        for item in state.analysis_candidates.get("character_drafts", [])
-    )
-
-
-def test_onekey_defers_auto_hook_while_incremental_output_is_unmerged(
-    tmp_path, monkeypatch
-):
-    from frontend.RenpyToolbox import OneKeyTranslatePage as page_module
-
-    scheduled = []
-    monkeypatch.setattr(
-        page_module.QTimer,
-        "singleShot",
-        lambda delay, callback: scheduled.append((delay, callback)),
-    )
-    page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
-    page._auto_hook_running = False
-    page._onekey_translation_started = True
-    page._onekey_request_id = ""
-    page._onekey_run_id = None
-    page._auto_hook_pending = True
-    page._incremental_output_dir = tmp_path / "translated-delta"
-    page._start_auto_hook_supplement = lambda: None
-
-    page._on_translation_done(None, None)
-
-    assert page._auto_hook_pending is True
-    assert scheduled == []
-
-
-def test_onekey_defers_auto_hook_until_full_output_is_applied(
-    tmp_path, monkeypatch
-):
-    from frontend.RenpyToolbox import OneKeyTranslatePage as page_module
-
-    scheduled = []
-    monkeypatch.setattr(
-        page_module.QTimer,
-        "singleShot",
-        lambda delay, callback: scheduled.append((delay, callback)),
-    )
-    page = page_module.YiJianFanyiPage.__new__(page_module.YiJianFanyiPage)
-    page._auto_hook_running = False
-    page._onekey_translation_started = True
-    page._onekey_request_id = ""
-    page._onekey_run_id = None
-    page._auto_hook_pending = True
-    page._incremental_output_dir = None
-    page._start_auto_hook_supplement = lambda: None
-
-    page._on_translation_done(None, {"success": True})
-
-    assert page._auto_hook_pending is True
-    assert scheduled == []
 
 
 def test_replace_text_rebuilds_outdated_regex_cache(tmp_path):

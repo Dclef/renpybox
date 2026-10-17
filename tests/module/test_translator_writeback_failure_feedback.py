@@ -246,7 +246,7 @@ def test_cache_export_preserves_configured_source_directory(tmp_path, monkeypatc
     assert config.input_folder == str(input_dir)
 
 
-@pytest.mark.parametrize("export_kind", ["manual", "proofreading"])
+@pytest.mark.parametrize("export_kind", ["manual"])
 def test_cache_export_restores_incremental_input_from_manifest(tmp_path, monkeypatch, export_kind):
     main_input = tmp_path / "game" / "tl" / "chinese"
     delta_input = main_input.parent / "chinese_new"
@@ -309,30 +309,6 @@ def test_cache_export_restores_incremental_input_from_manifest(tmp_path, monkeyp
         translator.translation_cache_reinject("export", {"output_folder": str(delta_output)})
 
         assert [toast["type"] for toast in toasts] == [Base.ToastType.SUCCESS]
-    else:
-        from frontend.Proofreading.ProofreadingPage import ProofreadingPage
-
-        loaded = []
-        results = []
-        page = types.SimpleNamespace(
-            _load_in_progress=False,
-            _cache_project_key="",
-            _cache_output_folder="",
-            _warning_check_id=0,
-            items_loaded=types.SimpleNamespace(emit=loaded.extend),
-            export_done=types.SimpleNamespace(emit=lambda *result: results.append(result)),
-            _start_warning_check=lambda *_args: None,
-            _cache_load_error_message=ProofreadingPage._cache_load_error_message,
-            emit=lambda *_args: None,
-            error=lambda *_args, **_kwargs: None,
-        )
-
-        ProofreadingPage.load_data(page)
-        assert len(loaded) == 1
-        ProofreadingPage.export_data(page)
-
-        assert results == [(True, "")]
-
     assert config.input_folder == str(delta_input)
     assert config.output_folder == str(delta_output)
     assert "虚构的新信号。" in (delta_output / delta_source.name).read_text(encoding="utf-8")

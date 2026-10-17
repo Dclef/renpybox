@@ -1,12 +1,7 @@
-from types import SimpleNamespace
-
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
-from frontend.TranslationPage import TranslationPage
 from module.Cache.CacheItem import CacheItem
-from module.Cache.CacheManager import CacheManager
 from module.Config import Config
-from module.Engine.Engine import Engine
 from module.TokenEstimator import TokenEstimator
 
 
@@ -19,34 +14,6 @@ def _config(input_folder, output_folder) -> Config:
         target_language = BaseLanguage.Enum.ZH,
         token_threshold = 4,
     )
-
-
-def test_translation_page_estimate_reads_input_before_cache_exists(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    input_folder = tmp_path / "input"
-    input_folder.mkdir()
-    (input_folder / "story.txt").write_text("Hello world", encoding = "utf-8")
-    config = _config(input_folder, tmp_path / "output")
-
-    runtime_manager = CacheManager(service = False)
-    runtime_manager.set_items([CacheItem(src = "stale project item")])
-    monkeypatch.setattr(
-        Engine.get(),
-        "translator",
-        SimpleNamespace(
-            cache_manager = runtime_manager,
-            _active_cache_output_folder = "",
-            _last_runtime_output_folder = str(tmp_path / "other-output"),
-        ),
-        raising = False,
-    )
-    page = TranslationPage.__new__(TranslationPage)
-
-    items = page._load_items_for_token_estimate(config)
-
-    assert [item.get_src() for item in items] == ["Hello world"]
 
 
 def test_estimator_includes_project_worldbook_prompt(tmp_path) -> None:

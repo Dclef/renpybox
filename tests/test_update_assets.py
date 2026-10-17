@@ -77,39 +77,27 @@ def _build_patch_for(tmp_path: Path, v1: Path, v2: Path) -> Path:
     return patch_zip
 
 
-def test_build_workflow_keeps_verified_compatibility_package_and_draft_gate() -> None:
+def test_release_workflow_ships_desktop_artifacts_only() -> None:
+    """Qt/Python 客户端退役后，发布草稿只等桌面产物，不再打包 Python 兼容包。"""
     import yaml
 
     workflow_dir = Path(__file__).resolve().parents[1] / ".github" / "workflows"
-    build_text = (workflow_dir / "build.yml").read_text(encoding="utf-8")
-    build = yaml.load(build_text, Loader=yaml.BaseLoader)
-    assert "workflow_call" in build["on"]
-    steps = build["jobs"]["build"]["steps"]
-    assert any("--self-test" in step.get("run", "") for step in steps)
-    assert any("update_assets.py manifest --dist dist/RenpyBox" in step.get("run", "") for step in steps)
-    compress = next(step["run"] for step in steps if "7za.exe" in step.get("run", ""))
-    assert " -mcu=on " in compress or compress.rstrip().endswith("-mcu=on")
-    assert " a -y -bt -mx5 -mcu=on " in compress
-    manifest_idx = compress.index("update_assets.py manifest --dist dist/RenpyBox")
-    test_idx = compress.index("7za.exe t ", manifest_idx)
-    assert test_idx > manifest_idx
-    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in compress[test_idx:]
-    upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
-    assert upload["with"]["name"] == "renpybox-python-windows"
-    assert upload["with"]["path"] == "RenpyBox_${{ steps.check_version.outputs.version }}.zip"
-    assert upload["with"]["if-no-files-found"] == "error"
+    assert not (workflow_dir / "build.yml").exists()
 
-    release = yaml.load((workflow_dir / "release.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    assert set(release["jobs"]["draft"]["needs"]) == {"desktop", "python"}
-    assert release["jobs"]["python"]["uses"] == "./.github/workflows/build.yml"
+    release = yaml.load(
+        (workflow_dir / "release.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert set(release["jobs"]) == {"desktop", "draft"}
+    assert set(release["jobs"]["draft"]["needs"]) == {"desktop"}
     assert release["jobs"]["desktop"]["uses"] == "./.github/workflows/desktop.yml"
     draft_run = next(step["run"] for step in release["jobs"]["draft"]["steps"] if "run" in step)
     for artifact in (
         "RenpyBox-NewUI-$version-x64.exe",
         "RenpyBox-NewUI-$version-x64.zip",
-        "RenpyBox_v$version.zip",
     ):
         assert artifact in draft_run
+    assert "RenpyBox_v$version.zip" not in draft_run
     assert "version.txt" in draft_run
     # 已发布的 release 不得被覆盖：草稿任务必须先查 isDraft，再决定替换还是跳过。
     assert "if (!$existing.isDraft)" in draft_run
