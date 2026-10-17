@@ -1,4 +1,6 @@
 import threading
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
@@ -21,12 +23,23 @@ class Engine():
 
     TASK_PREFIX: str = "ENGINE_"
 
+    # 启动票据有效期：覆盖「HTTP 受理 → 事件排队 → 翻译线程抢占」这段延迟即可。
+    # 到期自动作废，防止异常路径把引擎永久堵在「预占中」。
+    RESERVATION_TTL: float = 15.0
+
     def __init__(self) -> None:
         super().__init__()
 
         # 初始化
         self.status: __class__.Status = __class__.Status.IDLE
         self.single_task_count: int = 0
+
+        # 翻译启动预占票据：/start 先原子取票，翻译线程凭票转 TRANSLATING。
+        # 票据只在「检查状态」与「事件投递」之间让并发启动失败，不改变引擎
+        # 状态；超时票据视为作废，避免异常路径长期堵住启动。不带票据的启动
+        # （Qt 前端直接在事件总线上 emit）继续走原来的 IDLE→TRANSLATING。
+        self.start_reservation: str = ""
+        self.reservation_expire_at: float = 0.0
 
         # 线程锁
         self.lock = threading.Lock()
@@ -142,6 +155,62 @@ class Engine():
                 or self.stop_barrier
                 or self.single_task_count > 0
             )
+
+    def reserve_translation(self) -> str:
+        """原子预占一次翻译启动，返回票据；不可启动或已有有效票据时返回空串。
+
+        只挡并发启动，不改变引擎状态：真正的状态占用仍由翻译线程在启动临界区
+        内完成，避免出现「状态已 TRANSLATING 但线程未登记」的窗口。
+        """
+        with self.lock:
+            if (
+                self.status != __class__.Status.IDLE
+                or self.stop_barrier
+                or self.single_task_count > 0
+            ):
+                return ""
+            now = time.monotonic()
+            if self.start_reservation and now < self.reservation_expire_at:
+                return ""
+            self.start_reservation = uuid.uuid4().hex
+            self.reservation_expire_at = now + __class__.RESERVATION_TTL
+            return self.start_reservation
+
+    def claim_translation_reservation(self, reservation: str) -> bool:
+        """翻译线程凭票把 IDLE 切到 TRANSLATING；票据不符或状态不符返回 False。"""
+        if not reservation:
+            return False
+
+        with self.lock:
+            if self.start_reservation != reservation:
+                return False
+
+            # 票据一次性使用：无论能否占位都先销票，避免失败后被反复重试。
+            self.start_reservation = ""
+            self.reservation_expire_at = 0.0
+            if self.status != __class__.Status.IDLE:
+                return False
+            if self.stop_barrier or self.single_task_count > 0:
+                return False
+            self.status = __class__.Status.TRANSLATING
+            return True
+
+    def release_translation_reservation(self, reservation: str) -> bool:
+        """归还票据；只认自己那张票，不会误删后来的预占。"""
+        if not reservation:
+            return False
+
+        with self.lock:
+            if self.start_reservation != reservation:
+                return False
+            self.start_reservation = ""
+            self.reservation_expire_at = 0.0
+            return True
+
+    def has_translation_reservation(self) -> bool:
+        """是否已有未过期的启动预占。"""
+        with self.lock:
+            return bool(self.start_reservation) and time.monotonic() < self.reservation_expire_at
 
     def _translate_single_item_task(self, item: CacheItem, config: Config) -> bool:
         """执行一条单条翻译并写回条目，返回是否成功。"""
