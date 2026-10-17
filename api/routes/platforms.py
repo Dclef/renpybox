@@ -366,7 +366,8 @@ def test_platform(request: Request, platform_id: int) -> dict:
 @router.get("/{platform_id}/models")
 def read_models(request: Request, platform_id: int) -> dict:
     """读取已保存接口的模型列表；凭据留在后端，不回传 SDK 异常内容。"""
-    from module.Engine.API.ModelList import list_models
+    from module.Agent.ModelCatalog import put_for
+    from module.Engine.API.ModelList import list_model_capabilities, list_models
 
     with _WRITE_LOCK:
         _idle()
@@ -376,4 +377,17 @@ def read_models(request: Request, platform_id: int) -> dict:
         models = list_models(platform.get("api_url", ""), keys[0] if keys else "", platform.get("api_format", "OpenAI"))
     except Exception:
         raise HTTPException(status_code=502, detail="读取模型列表失败，请检查已保存的接口地址、密钥和网络连接。") from None
+    # 顺手把运行时模型目录（上下文窗口 / 最大输出）灌进 Agent 的缓存：
+    # 用户打开模型列表就把容量信息带回来了，Agent 不必再自己猜。
+    try:
+        put_for(
+            platform,
+            list_model_capabilities(
+                platform.get("api_url", ""),
+                keys[0] if keys else "",
+                platform.get("api_format", "OpenAI"),
+            ),
+        )
+    except Exception:
+        pass
     return {"models": models}

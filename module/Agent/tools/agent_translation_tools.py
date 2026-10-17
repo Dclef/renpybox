@@ -115,7 +115,14 @@ def read_translation_batch(
     from module.Config import Config
 
     config = config_loader() if config_loader is not None else Config().load()
-    capacity = batch_capacity(_platform_of(config))
+    platform = _platform_of(config)
+    try:
+        from module.Agent.ModelCatalog import get as get_catalog
+
+        catalog = get_catalog(platform)
+    except Exception:  # noqa: BLE001 - 目录缺失时用离线兜底
+        catalog = None
+    capacity = batch_capacity(platform, catalog)
     try:
         manager = _load_cache(config)
     except RuntimeError:

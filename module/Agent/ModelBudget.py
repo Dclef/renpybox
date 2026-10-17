@@ -119,11 +119,37 @@ def _lookup_model(model: Any) -> tuple[int, int]:
     return (best[1], best[2]) if best is not None else (0, 0)
 
 
-def resolve_capability(platform: Mapping[str, Any] | None) -> tuple[int, int]:
-    """返回本轮实际生效的 (context_window, max_output_tokens)。"""
+def _lookup_catalog(model: Any, catalog: Mapping[str, Any] | None) -> tuple[int, int]:
+    """在运行时目录里按模型 id 精确匹配（大小写不敏感）。"""
+
+    name = str(model or "").strip().casefold()
+    if not name or not isinstance(catalog, Mapping):
+        return 0, 0
+    for key, value in catalog.items():
+        if str(key).strip().casefold() != name:
+            continue
+        try:
+            context_window, max_output = value
+        except (TypeError, ValueError):
+            return 0, 0
+        return int(context_window or 0), int(max_output or 0)
+    return 0, 0
+
+
+def resolve_capability(
+    platform: Mapping[str, Any] | None,
+    catalog: Mapping[str, Any] | None = None,
+) -> tuple[int, int]:
+    """返回本轮实际生效的 (context_window, max_output_tokens)。
+
+    优先级：平台显式配置 > 运行时模型目录 > 内置离线兜底表 > 固定兜底。
+    目录是现取的，模型换代不必改代码。
+    """
 
     config = platform if isinstance(platform, Mapping) else {}
-    spec_context, spec_output = _lookup_model(config.get("model"))
+    spec_context, spec_output = _lookup_catalog(config.get("model"), catalog)
+    if not spec_context and not spec_output:
+        spec_context, spec_output = _lookup_model(config.get("model"))
 
     auto_context = spec_context or FALLBACK_CONTEXT_WINDOW
     auto_output = spec_output or FALLBACK_MAX_OUTPUT_TOKENS
@@ -145,10 +171,13 @@ def resolve_capability(platform: Mapping[str, Any] | None) -> tuple[int, int]:
     return context_window, min(max_output, available)
 
 
-def agent_context_budget(platform: Mapping[str, Any] | None) -> dict[str, int]:
+def agent_context_budget(
+    platform: Mapping[str, Any] | None,
+    catalog: Mapping[str, Any] | None = None,
+) -> dict[str, int]:
     """按模型容量给出本地裁剪参数。"""
 
-    context_window, max_output = resolve_capability(platform)
+    context_window, max_output = resolve_capability(platform, catalog)
     usable = context_window - max_output - COMPACTION_RESERVE_TOKENS
     if usable <= 0:
         usable = max(4_096, context_window // 2)
@@ -169,7 +198,10 @@ def agent_context_budget(platform: Mapping[str, Any] | None) -> dict[str, int]:
     }
 
 
-def batch_capacity(platform: Mapping[str, Any] | None) -> dict[str, int]:
+def batch_capacity(
+    platform: Mapping[str, Any] | None,
+    catalog: Mapping[str, Any] | None = None,
+) -> dict[str, int]:
     """单批条目数与字符预算。
 
     条目数由**输出**预算反推：一批 N 条就要在一次回复里吐 N 条译文，
@@ -177,7 +209,7 @@ def batch_capacity(platform: Mapping[str, Any] | None) -> dict[str, int]:
     给历史消息和模型自己的推理留空间。
     """
 
-    budget = agent_context_budget(platform)
+    budget = agent_context_budget(platform, catalog)
     usable = int(budget["usable_tokens"])
     max_output = int(budget["max_output_tokens"])
 
