@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from module.Localizer.Localizer import Localizer
     from module.Agent.AgentService import AgentService
     from api.agent import AgentSession
+    from api.pipeline_bridge import build_pipeline_callbacks
 
     config = Config().load()
     Localizer.set_app_language(config.app_language)
@@ -54,8 +55,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.bridge = bridge
     app.state.app_version = Version.CURRENT
     app.state.bridge_event_names = (*bridge._events, "AGENT_UPDATE")
+    # Agent 工具跑在后台线程，启停翻译要投递回这个主事件循环。
+    app.state.loop = asyncio.get_running_loop()
     app.state.agent = AgentSession(
-        AgentService(config_loader=lambda: app.state.config),
+        AgentService(
+            config_loader = lambda: app.state.config,
+            pipeline_callbacks = build_pipeline_callbacks(app),
+        ),
         hub.broadcast_threadsafe,
     )
 

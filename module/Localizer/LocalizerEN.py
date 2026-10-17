@@ -648,6 +648,14 @@ class LocalizerEN(LocalizerZH):
         "{output_path}\n\n"
         "If an automatic supplement hook already exists, it will be backed up before replacement. Continue?"
     )
+    agent_page_start_translation_confirmation: str = (
+        "Start translation? Target status: {status}.\n\n"
+        "The translator will keep calling the API and write the translation cache. Continue?"
+    )
+    agent_page_apply_translation_confirmation: str = (
+        "Apply {count} translated file(s) to the game folder:\n{output_dir}\n\n"
+        "This overwrites the game's existing translation files. Continue?"
+    )
     agent_page_new_task: str = "New task"
     agent_page_round: str = "Round {round}"
     agent_page_topbar_api: str = "API"
@@ -729,6 +737,33 @@ class LocalizerEN(LocalizerZH):
         "confirmation, backs up existing patches, and writes replace_text_auto.rpy. Skips writing "
         "when the patch is already up to date."
     )
+    agent_tool_start_translation_description: str = (
+        "Start a translation run. Requires a configured project, ready scripts, and extracted TL "
+        "text. Do not call this tool repeatedly: first call translation_status to confirm the "
+        "current state. Requires user confirmation and runs the asset preflight with the current "
+        "config (set preflight_confirmed when the user chose to continue without assets), then "
+        "hands a frozen config snapshot to the translation thread and starts calling the API. "
+        "status defaults to untranslated."
+    )
+    agent_tool_stop_translation_description: str = (
+        "Stop the running translation task. Requires the engine to be translating. The engine "
+        "enters the STOPPING wind-down and completed translations are kept. No user confirmation is "
+        "needed; stopping is not instantaneous and the real final state arrives with translation "
+        "progress events."
+    )
+    agent_tool_apply_translation_description: str = (
+        "Write translated .rpy files from the translation output folder back into the game TL "
+        "folder. Requires finished translation and at least one writable .rpy in the output folder. "
+        "Requires user confirmation. full (default) overwrites the main TL; incremental merges "
+        "supplemental extraction translations and migrates the cache first. Applying overwrites "
+        "the game's translation files (transactional rollback) and re-checks the TL folder "
+        "signature captured at confirmation time."
+    )
+    agent_tool_apply_translation_mode_description: str = (
+        "Optional. full writes the complete translation back to the main TL (default); "
+        "incremental merges incremental extraction translations, migrates the cache, then writes "
+        "them back."
+    )
     agent_project_inspection_complete: str = (
         "Project inspection complete: {rpy_count} RPY, {rpyc_count} RPYC, {rpa_count} RPA; "
         "{item_count} cached entries with {untranslated_count} untranslated. "
@@ -753,16 +788,28 @@ class LocalizerEN(LocalizerZH):
         "When the user asks about project state, translation progress, or what to do next, call "
         "inspect_translation_project first. It is read-only; explain its next_action_code without "
         "claiming that the recommended action has already run.\n"
-        "unpack_rpa_files writes into the current game folder and may run only after the user confirms the "
-        "overwrite risk in the UI. Do not claim that you can delete RPA files, choose an output path, or stop "
-        "an external unpack process after it starts. A clear request sent by a UI action button should call the "
-        "corresponding tool directly; confirmation is handled by the UI Confirm and Cancel buttons, so do not "
-        "ask for it again in text. Do not use Emoji or colored Unicode status icons in replies; the UI renders "
-        "status and action icons. Translation itself belongs to the translation page; do not "
-        "retranslate through the Agent. Only call optimize_old_new_translations after translations are applied "
-        "and the user asks to fix supplemental extraction text, or when inspection "
-        "returns REFRESH_REPLACE_FALLBACK and the user asks to apply that recommendation. Require confirmation. "
-        "Summarize key results; full details are shown in the UI."
+        "You have the full localization pipeline: unpack RPA, decompile RPYC, extract text, "
+        "start translation, query progress, stop translation, apply translations, and refresh the "
+        "runtime fallback. The order is unpack -> decompile -> extract -> translate -> apply -> "
+        "fallback; each step feeds the next, so never skip one. Do only the segment the user asked "
+        "for; run the whole pipeline only when the user asks for it, and report after each step. "
+        "When a tool returns NEED_UNPACK or NEED_DECOMPILE, run that tool first and retry extraction.\n"
+        "Check translation_status before starting a translation; never call start_translation again "
+        "while the engine is busy. accepted=true only means the request was accepted; real progress "
+        "comes from translation_status. Call stop_translation when the user asks to stop, and never "
+        "restart translation automatically in the same turn. Confirm the translation finished with "
+        "translation_status before applying it.\n"
+        "unpack_rpa_files writes into the current game folder and apply_translation overwrites the "
+        "game tl folder; both may run only after the user confirms in the UI. Do not claim that you "
+        "can delete RPA files, choose an output path, or stop an external unpack process after it "
+        "starts. A clear request sent by a UI action button should call the corresponding tool "
+        "directly; confirmation is handled by the UI Confirm and Cancel buttons, so do not ask for "
+        "it again in text. Do not use Emoji or colored Unicode status icons in replies; the UI "
+        "renders status and action icons. Only call refresh_replace_fallback or "
+        "optimize_old_new_translations when the user asks to fix supplemental extraction text that "
+        "never took effect, or when inspection returns REFRESH_REPLACE_FALLBACK and the user asks to "
+        "apply that recommendation. Require confirmation. Summarize key results; full details are "
+        "shown in the UI."
     )
 
     # Agent runtime
@@ -824,6 +871,15 @@ class LocalizerEN(LocalizerZH):
         "Refreshed the replace_text fallback with {count} entries: {output_path}"
     )
     agent_refresh_fallback_up_to_date: str = "The replace_text fallback is already up to date."
+    agent_start_translation_accepted: str = "The translation start request was accepted."
+    agent_start_translation_rejected: str = "Translation did not start: {reason} ({detail})"
+    agent_translation_stopped: str = "Stop requested. The translator is winding down."
+    agent_translation_stop_failed: str = "Failed to stop translation."
+    agent_apply_translation_complete: str = "Applied {count} translated file(s) to the game folder: {output_dir}"
+    agent_apply_translation_failed: str = "Applying translations failed. Check the log for details."
+    agent_apply_target_invalid: str = "The translation output or game target folder is invalid. Set the project paths first."
+    agent_apply_no_output_files: str = "No translated .rpy files were found in the translation output folder."
+    agent_app_context_missing: str = "This environment cannot start or stop translation. Use the translation page instead."
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"

@@ -641,6 +641,14 @@ class LocalizerZH():
         "将按原文从长到短生成运行时替换代码：\n{output_path}\n\n"
         "若已有自动补全 Hook，会先备份再覆盖。是否继续？"
     )
+    agent_page_start_translation_confirmation: str = (
+        "确认启动翻译？目标状态：{status}。\n\n"
+        "启动后会持续调用接口并写入翻译缓存。是否继续？"
+    )
+    agent_page_apply_translation_confirmation: str = (
+        "即将把 {count} 个译文文件写回游戏目录：\n{output_dir}\n\n"
+        "这会覆盖游戏内已有的翻译文件。是否继续？"
+    )
     agent_page_new_task: str = "新任务"
     agent_page_round: str = "第 {round} 轮"
     agent_page_topbar_api: str = "接口"
@@ -706,6 +714,26 @@ class LocalizerZH():
         "needs_refresh；用户确认后执行，会备份并写入 replace_text_auto.rpy。"
         "若补丁已是最新则跳过写入。"
     )
+    agent_tool_start_translation_description: str = (
+        "启动一轮翻译。前置：项目已设定、脚本就绪且已抽取 TL 文本。不要重复调用，"
+        "先调用 translation_status 确认状态。执行需要用户确认，会按当前配置走一遍资产预检"
+        "（可用 preflight_confirmed 表示用户已确认跳过无资产警告），然后把配置快照投递给"
+        "翻译线程并开始调用接口。status 默认 untranslated。"
+    )
+    agent_tool_stop_translation_description: str = (
+        "停止当前正在运行的翻译任务。前置：引擎处于翻译中；执行后进入停止收尾（STOPPING），"
+        "已完成的译文会保留。无需用户确认；停止不是立即结束，真正的终态由翻译进度事件返回。"
+    )
+    agent_tool_apply_translation_description: str = (
+        "把翻译输出目录中的 .rpy 译文写回游戏 TL 目录。前置：翻译已完成，且输出目录中存在"
+        "可写回的 .rpy 文件；用户确认后执行。full（默认）覆盖写回主 TL；incremental 会合并"
+        "补充抽取的增量译文并迁移缓存。写回会覆盖游戏内翻译文件（事务式回滚），执行前会复核"
+        "确认时的 TL 目录签名。"
+    )
+    agent_tool_apply_translation_mode_description: str = (
+        "可选。full 表示把完整译文写回主 TL（默认）；incremental 表示合并增量抽取的译文、"
+        "迁移缓存后再写回。"
+    )
     agent_project_inspection_complete: str = (
         "项目体检完成：RPY {rpy_count}、RPYC {rpyc_count}、RPA {rpa_count}；"
         "缓存条目 {item_count}，待翻译 {untranslated_count}。建议下一步：{next_action}。"
@@ -728,14 +756,23 @@ class LocalizerZH():
         "用户提供路径后调用 set_project，再继续原任务。\n"
         "当用户询问项目现状、翻译进度或下一步时，优先调用 inspect_translation_project；"
         "该工具只读，按返回的 next_action_code 解释建议，不要声称已经执行建议操作。\n"
-        "unpack_rpa_files 会写入当前 game 目录，只有用户在界面确认覆盖风险后才能执行；"
+        "你具备完整的汉化流水线能力：解包 RPA、反编译 RPYC、抽取文本、启动翻译、查询进度、"
+        "停止翻译、回填译文、刷新运行时兜底。顺序是解包 → 反编译 → 抽取 → 翻译 → 回填 → 兜底，"
+        "每一步的输出是下一步的输入，不要跳过。用户只要求其中一段时就只做那一段；"
+        "用户要求整条流水线时才连续执行，并每完成一步向用户报告结果。"
+        "工具返回 NEED_UNPACK 或 NEED_DECOMPILE 时，先执行对应工具再重试抽取。\n"
+        "启动翻译前先调用 translation_status 确认引擎空闲；引擎非空闲时不要重复调用 "
+        "start_translation。start_translation 返回 accepted=true 只代表请求已受理，"
+        "真实进度以 translation_status 为准。用户要求停止时调用 stop_translation，"
+        "停止后不要在同一轮里自动重启翻译。回填前先用 translation_status 确认翻译已完成。\n"
+        "unpack_rpa_files 会写入当前 game 目录，apply_translation 会覆盖游戏 tl 目录，"
+        "两者都只有用户在界面确认后才能执行；"
         "不要声称可以删除 RPA、指定输出目录或中止已经启动的外部解包进程。"
         "界面操作按钮发出的明确请求应直接调用对应工具；确认由界面的确认/取消按钮处理，"
         "不要在回复中重复用文字询问。回复不要使用 Emoji 或彩色 Unicode 状态图标，"
         "状态和操作图标由界面统一显示。"
-        "翻译本身由翻译页面完成，不要使用 Agent 重新翻译；翻译已应用后，只有用户要求修复运行时"
-        "补充抽取文本未生效，或体检返回 REFRESH_REPLACE_FALLBACK 且用户要求执行建议时，"
-        "才调用 optimize_old_new_translations，且必须确认。"
+        "只有用户要求修复运行时补充抽取文本未生效，或体检返回 REFRESH_REPLACE_FALLBACK 且用户要求执行建议时，"
+        "才调用 refresh_replace_fallback 或 optimize_old_new_translations，且必须确认。"
         "工具结果中的完整详情由界面展示，你的回复只总结关键结果。"
     )
 
@@ -798,6 +835,15 @@ class LocalizerZH():
         "replace_text 兜底补丁已刷新，共 {count} 条：{output_path}"
     )
     agent_refresh_fallback_up_to_date: str = "replace_text 兜底补丁已是最新，无需刷新。"
+    agent_start_translation_accepted: str = "翻译启动请求已受理。"
+    agent_start_translation_rejected: str = "翻译未能启动：{reason}（{detail}）"
+    agent_translation_stopped: str = "已请求停止翻译，正在收尾。"
+    agent_translation_stop_failed: str = "停止翻译失败。"
+    agent_apply_translation_complete: str = "译文已写回游戏目录，共 {count} 个文件：{output_dir}"
+    agent_apply_translation_failed: str = "应用译文失败，请查看日志了解详情。"
+    agent_apply_target_invalid: str = "翻译输出或游戏目标目录无效，请先设定项目路径。"
+    agent_apply_no_output_files: str = "翻译输出目录中没有可写回的 .rpy 译文。"
+    agent_app_context_missing: str = "当前运行环境不支持启动/停止翻译，请在翻译页手动操作。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
