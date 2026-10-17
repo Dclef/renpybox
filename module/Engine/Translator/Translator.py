@@ -16,6 +16,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.Engine.BatchSizing import adaptive_batch_lines
 from module.Engine.TaskLimiter import TaskLimiter
 from module.Engine.TaskRequester import TaskRequester, httpx
 from module.Engine.TranslationMetrics import TranslationMetrics
@@ -1527,6 +1528,20 @@ class Translator(Base):
 
             # 自适应批大小是本次运行的局部状态，不写回任务快照或 Config。
             initial_token_threshold = max(1, int(self.config.token_threshold))
+            # 按模型输出预算放大首批行数：每批都有固定的提示词与格式开销，
+            # 接口给得越大越应该摊薄；上限保守，避免一次格式错整批作废。
+            output_token_limit = TaskRequester.resolve_output_token_limit(
+                self.config, self.platform
+            )
+            adaptive_lines = adaptive_batch_lines(
+                initial_token_threshold, output_token_limit
+            )
+            if adaptive_lines > initial_token_threshold:
+                self.info(
+                    f"[BATCH] 输出预算 {output_token_limit} token，每批行数从 "
+                    f"{initial_token_threshold} 放大到 {adaptive_lines}"
+                )
+            initial_token_threshold = adaptive_lines
             initial_source_token_limit = max(
                 0, int(getattr(self.config, "max_batch_source_tokens", 0))
             )
