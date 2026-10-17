@@ -904,8 +904,8 @@ class LocalizerZH():
         "质量检查不通过的条目会被打回未翻译并计入 failed，不会写入文件。"
         "写回的是翻译工作目录，不是游戏目录；要让译文进游戏仍需 apply_translation。"
     )
-    agent_translate_batch_param_description: str = "本批最多返回多少条待译条目，默认 80，上限 400。"
-    agent_translate_max_chars_param_description: str = "本批原文总字符预算，默认 40000，上限 200000。"
+    agent_translate_batch_param_description: str = "本批最多返回多少条待译条目；省略时按当前模型的输出容量自动决定。"
+    agent_translate_max_chars_param_description: str = "本批原文总字符预算；省略时按当前模型的上下文容量自动决定。"
     agent_translate_translations_param_description: str = (
         "译文数组：每个元素包含来自 read_translation_batch 的 id、字段 dst（译文），"
         "以及可选的 name_dst（角色姓名译文）。"
