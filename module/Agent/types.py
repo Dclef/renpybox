@@ -19,6 +19,9 @@ class ToolResult:
     message: str
     data: dict[str, Any] = field(default_factory=dict)
     code: str = "OK"
+    # 该结果是否说明「长任务仍在推进」。为真时本回合不计入普通轮次上限，
+    # 让逐批翻译这类天然多轮的任务跑完，同时普通对话仍受 max_iterations 约束。
+    continues: bool = False
 
     def model_message(self, limit: int = 2000) -> str:
         """返回限制长度的模型摘要，避免把完整扫描结果塞进上下文。"""
@@ -48,6 +51,8 @@ class ToolDef:
     handler: ToolHandler
     requires_confirmation: bool = False
     requires_idle_engine: bool = False
+    # 该工具的结果可能较长（例如一次返回一整批待译条目），单独放大截断上限。
+    result_limit: int | None = None
 
     def openai_schema(self) -> dict[str, Any]:
         return {

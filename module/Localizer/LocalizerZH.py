@@ -756,15 +756,24 @@ class LocalizerZH():
         "用户提供路径后调用 set_project，再继续原任务。\n"
         "当用户询问项目现状、翻译进度或下一步时，优先调用 inspect_translation_project；"
         "该工具只读，按返回的 next_action_code 解释建议，不要声称已经执行建议操作。\n"
-        "你具备完整的汉化流水线能力：解包 RPA、反编译 RPYC、抽取文本、启动翻译、查询进度、"
-        "停止翻译、回填译文、刷新运行时兜底。顺序是解包 → 反编译 → 抽取 → 翻译 → 回填 → 兜底，"
+        "你具备完整的汉化流水线能力：解包 RPA、反编译 RPYC、抽取文本、翻译、回填译文、"
+        "刷新运行时兜底。顺序是解包 → 反编译 → 抽取 → 翻译 → 回填 → 兜底，"
         "每一步的输出是下一步的输入，不要跳过。用户只要求其中一段时就只做那一段；"
         "用户要求整条流水线时才连续执行，并每完成一步向用户报告结果。"
         "工具返回 NEED_UNPACK 或 NEED_DECOMPILE 时，先执行对应工具再重试抽取。\n"
-        "启动翻译前先调用 translation_status 确认引擎空闲；引擎非空闲时不要重复调用 "
-        "start_translation。start_translation 返回 accepted=true 只代表请求已受理，"
-        "真实进度以 translation_status 为准。用户要求停止时调用 stop_translation，"
-        "停止后不要在同一轮里自动重启翻译。回填前先用 translation_status 确认翻译已完成。\n"
+        "翻译默认由你自己完成，不需要用户在翻译页面配置任何接口："
+        "先调用 read_translation_batch 取一批条目，你直接产出与之一一对应的译文，"
+        "再用 write_translation_batch 按同一批 id 写回，然后继续下一批，"
+        "直到 read_translation_batch 报告剩余 0 条。"
+        "译一批写一批，不要在回复里罗列整批译文，也不要攒到最后一起写；"
+        "写回失败的条目按返回原因修正后重写。"
+        "动手翻译前先 read_skill 加载相关技能（text-preserve、glossary、proofreading），"
+        "标签、变量、转义占位必须原样保留。\n"
+        "start_translation 是另一条路径，只有用户明确要求用翻译引擎（翻译页面里配置的接口）"
+        "跑翻译时才使用。启动前先用 translation_status 确认引擎空闲；"
+        "start_translation 返回 accepted=true 只代表请求已受理，真实进度以 translation_status 为准。"
+        "用户要求停止时调用 stop_translation，停止后不要在同一轮里自动重启翻译。"
+        "回填前确认已经没有待译条目。\n"
         "unpack_rpa_files 会写入当前 game 目录，apply_translation 会覆盖游戏 tl 目录，"
         "两者都只有用户在界面确认后才能执行；"
         "不要声称可以删除 RPA、指定输出目录或中止已经启动的外部解包进程。"
@@ -790,6 +799,8 @@ class LocalizerZH():
     agent_tool_argument_must_be_string: str = "参数 {name} 必须是字符串。"
     agent_tool_argument_must_be_object: str = "参数 {name} 必须是对象。"
     agent_tool_argument_must_be_boolean: str = "参数 {name} 必须是布尔值。"
+    agent_tool_argument_must_be_integer: str = "参数 {name} 必须是整数。"
+    agent_tool_argument_must_be_array: str = "参数 {name} 必须是数组。"
     agent_tool_unknown: str = "未知工具：{name}"
     agent_tool_confirmation_required: str = "该操作需要用户确认。"
     agent_tool_confirmation_stale: str = "确认上下文已失效，请重新确认后再试。"
@@ -870,6 +881,33 @@ class LocalizerZH():
         "只在与当前任务相关时加载技能，不要一次加载全部；"
         "技能只是领域知识，不提供任何新增的文件或命令能力。"
     )
+
+    # Agent 自带翻译
+    agent_tool_read_translation_batch_description: str = (
+        "读取一批待翻译条目。返回每条的 id、原文 src、可选的 name_src（角色姓名）与 text_type。"
+        "这些条目来自当前项目的翻译缓存，与翻译引擎共用同一份数据。"
+        "拿不到条目说明已经译完或尚未抽取文本。"
+    )
+    agent_tool_write_translation_batch_description: str = (
+        "把译文写回项目：写入缓存、通过项目的质量检查（标记保留、术语、相似度），"
+        "并更新翻译输出目录中的 .rpy。id 必须来自 read_translation_batch。"
+        "质量检查不通过的条目会被打回未翻译并计入 failed，不会写入文件。"
+        "写回的是翻译工作目录，不是游戏目录；要让译文进游戏仍需 apply_translation。"
+    )
+    agent_translate_batch_param_description: str = "本批最多返回多少条待译条目，默认 30，上限 80。"
+    agent_translate_max_chars_param_description: str = "本批原文总字符预算，默认 6000，上限 20000。"
+    agent_translate_translations_param_description: str = (
+        "译文数组：每个元素包含来自 read_translation_batch 的 id、字段 dst（译文），"
+        "以及可选的 name_dst（角色姓名译文）。"
+    )
+    agent_translate_output_missing: str = "尚未设置翻译输出目录，请先设定项目并抽取文本。"
+    agent_translate_cache_failed: str = "读取翻译缓存失败：{detail}"
+    agent_translate_batch_empty: str = "没有待翻译条目，当前项目可能已译完或尚未抽取文本。"
+    agent_translate_batch_ready: str = "本批 {count} 条，剩余 {remaining} 条待译。"
+    agent_translate_translations_required: str = "没有可写入的译文，请先调用 read_translation_batch 取条目。"
+    agent_translate_nothing_written: str = "没有任何译文被接受（{count} 条被拒绝），请检查 id 是否来自 read_translation_batch。"
+    agent_translate_writeback_failed: str = "译文已进入缓存，但写回输出目录失败：{detail}"
+    agent_translate_batch_written: str = "已写入 {written} 条译文，{failed} 条未通过质量检查。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
