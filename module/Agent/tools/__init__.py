@@ -19,6 +19,10 @@ _EXPORTS = {
         "translation_tools",
         "optimize_old_new_translations",
     ),
+    "decompile_rpyc_files": ("pipeline_tools", "decompile_rpyc_files"),
+    "run_project_extraction": ("pipeline_tools", "run_project_extraction"),
+    "translation_status": ("pipeline_tools", "translation_status"),
+    "refresh_replace_fallback": ("pipeline_tools", "refresh_replace_fallback"),
 }
 
 __all__ = list(_EXPORTS)

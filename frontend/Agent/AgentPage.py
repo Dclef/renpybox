@@ -109,6 +109,8 @@ ACTION_OPEN_TOOLBOX = "open_toolbox"
 ACTION_LIST_RPA = "list_rpa"
 ACTION_UNPACK_RPA = "unpack_rpa"
 ACTION_SCAN_ERRORS = "scan_errors"
+ACTION_DECOMPILE = "decompile_rpyc"
+ACTION_REFRESH_FALLBACK = "refresh_fallback"
 
 # 彩色 Emoji 无法跟随 Fluent 主题，模型回复只保留文字语义。
 DECORATIVE_STATUS_SYMBOLS = (
@@ -2582,6 +2584,22 @@ class AgentPage(Base, QWidget):
                 tl_dir=data.get("tl_dir", ""),
                 output_path=data.get("output_path", ""),
             )
+        elif name == "decompile_rpyc_files":
+            title = localizer.agent_page_confirmation_title
+            message = localizer.agent_page_decompile_confirmation.format(
+                game_dir=data.get("game_dir", ""),
+            )
+        elif name == "run_project_extraction":
+            title = localizer.agent_page_confirmation_title
+            message = localizer.agent_page_extract_confirmation.format(
+                project_root=data.get("project_root", ""),
+                language=data.get("language", ""),
+            )
+        elif name == "refresh_replace_fallback":
+            title = localizer.agent_page_confirmation_title
+            message = localizer.agent_page_refresh_fallback_confirmation.format(
+                count=data.get("total_count", 0),
+            )
         else:
             title = localizer.agent_page_confirmation_title
             message = localizer.agent_page_confirmation_generic.format(tool=name)
@@ -2755,9 +2773,14 @@ class AgentPage(Base, QWidget):
                 FluentIcon.FOLDER_ADD,
             ),
             "DECOMPILE_SCRIPTS": (
-                ACTION_OPEN_TOOLBOX,
-                localizer.agent_page_action_open_toolbox,
-                FluentIcon.GAME,
+                ACTION_DECOMPILE,
+                localizer.agent_page_tool_decompile_rpyc_files,
+                FluentIcon.CODE,
+            ),
+            "REFRESH_REPLACE_FALLBACK": (
+                ACTION_REFRESH_FALLBACK,
+                localizer.agent_page_tool_refresh_replace_fallback,
+                FluentIcon.SYNC,
             ),
             "REPAIR_CACHE": (
                 ACTION_OPEN_TRANSLATION,
@@ -3008,6 +3031,10 @@ class AgentPage(Base, QWidget):
         prompts = {
             ACTION_LIST_RPA: Localizer.get().agent_page_suggestion_rpa,
             ACTION_SCAN_ERRORS: Localizer.get().agent_page_suggestion_errors,
+            ACTION_DECOMPILE: Localizer.get().agent_page_suggestion_decompile,
+            ACTION_REFRESH_FALLBACK: (
+                Localizer.get().agent_page_suggestion_refresh_fallback
+            ),
         }
         prompt = prompts.get(action)
         if prompt is None or (self._worker is not None and self._worker.isRunning()):
