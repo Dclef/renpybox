@@ -25,10 +25,9 @@ ConfirmationCallback = Callable[[str, dict[str, Any]], bool | None]
 class AgentService:
     """运行有限轮数、串行工具调用的 Agent 会话。"""
 
-    # 会话历史按字符数设置上限；这是近似 token 预算，避免多轮对话无限增长。
-    # 128k 字符（约 60k～90k token）会把「一口气译完整盘游戏」直接掐断，所以放宽到
-    # 300k 字符（约 100k～150k token）：既能喂满 200k 窗口的模型，也不会在
-    # 128k 窗口的模型上一次把请求撑爆。模型窗口更小或更大时按需调整这里。
+    # 会话预算：默认按模型容量自动推导（见 module/Agent/ModelBudget.py），
+    # 只有显式传入时才用固定值。固定 128k 字符会把「一口气译完整盘」掐断，
+    # 而固定 600k 又会让 128k 窗口的模型直接溢出，所以交给模型规格决定。
     DEFAULT_MAX_CONTEXT_CHARS = 300_000
     # 长任务（逐批翻译）的额外轮次预算：普通对话仍受 max_iterations 限制，
     # 只有工具声称「还在推进」的迭代才从这笔预算里扣。
@@ -44,7 +43,8 @@ class AgentService:
         max_long_iterations: int = DEFAULT_MAX_LONG_ITERATIONS,
         result_limit: int = 2000,
         confirmation_timeout: float = 120.0,
-        max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+        max_context_chars: int | None = None,
+        max_messages: int | None = None,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
         self.dispatcher = dispatcher or ToolDispatcher(
@@ -55,7 +55,16 @@ class AgentService:
         self.max_long_iterations = max(0, int(max_long_iterations))
         self.result_limit = max(256, int(result_limit))
         self.confirmation_timeout = max(0.01, float(confirmation_timeout))
-        self.max_context_chars = max(4096, int(max_context_chars))
+        # None 表示「按模型容量自动推导」，在每次 _run 拿到平台配置后决定。
+        self._max_context_chars_override = (
+            max(4096, int(max_context_chars)) if max_context_chars is not None else None
+        )
+        self._max_messages_override = (
+            max(8, int(max_messages)) if max_messages is not None else None
+        )
+        self.max_context_chars = self._max_context_chars_override or self.DEFAULT_MAX_CONTEXT_CHARS
+        self.max_messages = self._max_messages_override or 0
+        self.context_budget: dict[str, int] = {}
         self.messages: list[dict[str, Any]] = []
         self._project_key = ""
         self._requester: "TaskRequester | None" = None
@@ -259,9 +268,24 @@ class AgentService:
         except (TypeError, ValueError):
             return sum(len(str(message)) for message in self.messages)
 
+    def _apply_model_budget(self, platform: dict[str, Any]) -> None:
+        """按本轮模型的容量推导上下文与消息预算。"""
+
+        from module.Agent.ModelBudget import agent_context_budget
+
+        budget = agent_context_budget(platform)
+        self.context_budget = dict(budget)
+        self.max_context_chars = (
+            self._max_context_chars_override
+            or int(budget.get("max_context_chars") or self.DEFAULT_MAX_CONTEXT_CHARS)
+        )
+        self.max_messages = self._max_messages_override or int(
+            budget.get("max_messages") or 0
+        )
+
     def _trim_history(self) -> None:
-        """按完整用户回合裁掉最旧历史，避免留下孤立的工具调用消息。"""
-        while self._context_size() > self.max_context_chars:
+        """裁剪历史：字符与消息条数两条边界都要守。"""
+        while self._over_budget():
             user_indices = [
                 index
                 for index, message in enumerate(self.messages)
@@ -274,6 +298,15 @@ class AgentService:
                     return
                 continue
             del self.messages[user_indices[0]:user_indices[1]]
+
+    def _over_budget(self) -> bool:
+        """字符超标或消息条数超标都算超预算。"""
+
+        if self._context_size() > self.max_context_chars:
+            return True
+        if self.max_messages and len(self.messages) > self.max_messages:
+            return True
+        return False
 
     def _trim_within_turn(self) -> bool:
         """单回合内裁剪：切到下一个助手消息边界，保证不会留下孤立工具消息。"""
@@ -388,6 +421,9 @@ class AgentService:
                 error or Localizer.get().agent_api_not_set,
                 code="AGENT_PLATFORM_NOT_SET",
             )
+
+        # 按本轮实际使用的模型推导预算：同一份会话在不同模型间切换时自动收紧或放宽。
+        self._apply_model_budget(platform)
 
         if not self.messages:
             self.messages.append({
