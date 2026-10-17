@@ -787,6 +787,41 @@ def resolve_extraction_incremental(mode: str, has_existing: bool) -> bool:
     return mode != "full"
 
 
+def read_translation_cache_progress(
+    output_folder: str,
+) -> tuple[dict, str, int, bool]:
+    """只读统计某个翻译输出目录的进度、状态与待译条数。
+
+    第四个返回值表示缓存是否真实存在；只有它为真时，「待译 0 条」才可信。
+    """
+
+    from base.Base import Base
+
+    progress: dict = {}
+    project_status = ""
+    untranslated_count = 0
+    cache_dir = Path(output_folder) / "cache"
+    if not any((cache_dir / name).is_file() for name in ("cache.db", "project.json")):
+        return progress, project_status, untranslated_count, False
+    try:
+        with CacheManager.LOCK:
+            manager = CacheManager(service=False)
+            manager.load_project_from_file(output_folder, strict=True)
+            project = manager.get_project()
+            progress = {**project.get_progress(), "status": project.get_status()}
+            project_status = str(
+                getattr(project.get_status(), "value", project.get_status())
+            )
+            untranslated_count = sum(
+                1
+                for item in manager.get_items()
+                if item.get_status() == Base.TranslationStatus.UNTRANSLATED
+            )
+    except Exception:
+        return {}, "", 0, False
+    return progress, project_status, untranslated_count, True
+
+
 def prepare_extraction_paths(config, game_dir: str, tl_name: str, *, incremental: bool):
     """抽取前配置路径；增量模式会备份已有增量输出缓存。"""
     paths = RenpyProjectPaths.from_path(game_dir, tl_name)
