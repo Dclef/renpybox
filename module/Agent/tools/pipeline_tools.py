@@ -445,6 +445,7 @@ def start_translation(
     pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
     status: str = "untranslated",
     preflight_confirmed: bool = False,
+    use_agent_model: bool = False,
 ) -> ToolResult:
     """经主事件循环启动翻译；Qt5 侧没有桥，会明确要求手动操作。"""
 
@@ -460,6 +461,9 @@ def start_translation(
     result = callback({
         "status": status,
         "preflight_confirmed": bool(preflight_confirmed),
+        # 批量翻译默认沿用 Agent 自己配置的模型：只改写本轮冻结快照的激活平台，
+        # 不落盘，也不改动翻译页的设置。
+        "platform_source": "agent" if bool(use_agent_model) else "configured",
     })
     if not isinstance(result, dict):
         return ToolResult(

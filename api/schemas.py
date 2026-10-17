@@ -159,6 +159,9 @@ class TranslationStartRequest(BaseModel):
     external_backup_dir: str | None = None
     renpy_hook_incremental: bool | None = None
     generate_empty: bool | None = None
+    # 请求级平台覆盖：只改写本轮冻结快照里的 activate_platform，不落盘、
+    # 不影响翻译页设置。Agent 的「用 Agent 自己的模型跑批量翻译」走这条。
+    platform_id: int | None = None
 
 
 class TranslationReinjectRequest(BaseModel):

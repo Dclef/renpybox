@@ -219,6 +219,11 @@ class ToolDispatcher:
                     "properties": {
                         "status": {"type": "string", "default": "untranslated"},
                         "preflight_confirmed": {"type": "boolean", "default": False},
+                        "use_agent_model": {
+                            "type": "boolean",
+                            "default": True,
+                            "description": localizer.agent_tool_start_translation_use_agent_model_description,
+                        },
                     },
                     "additionalProperties": False,
                 },
