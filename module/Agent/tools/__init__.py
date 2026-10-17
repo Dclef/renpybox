@@ -23,6 +23,8 @@ _EXPORTS = {
     "run_project_extraction": ("pipeline_tools", "run_project_extraction"),
     "translation_status": ("pipeline_tools", "translation_status"),
     "refresh_replace_fallback": ("pipeline_tools", "refresh_replace_fallback"),
+    "list_skills": ("skill_tools", "list_skills"),
+    "read_skill": ("skill_tools", "read_skill"),
 }
 
 __all__ = list(_EXPORTS)

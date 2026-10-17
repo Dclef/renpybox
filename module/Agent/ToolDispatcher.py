@@ -267,6 +267,40 @@ class ToolDispatcher:
                 requires_confirmation=True,
                 requires_idle_engine=True,
             ),
+            "list_skills": ToolDef(
+                name="list_skills",
+                description=localizer.agent_tool_list_skills_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=_lazy_tool_handler(
+                    "skill_tools",
+                    "list_skills",
+                    self.config_loader,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=False,
+            ),
+            "read_skill": ToolDef(
+                name="read_skill",
+                description=localizer.agent_tool_read_skill_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": localizer.agent_tool_read_skill_name_description,
+                        },
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "skill_tools",
+                    "read_skill",
+                    self.config_loader,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=False,
+            ),
         }
 
     @property

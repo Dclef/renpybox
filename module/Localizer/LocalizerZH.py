@@ -845,6 +845,32 @@ class LocalizerZH():
     agent_apply_no_output_files: str = "翻译输出目录中没有可写回的 .rpy 译文。"
     agent_app_context_missing: str = "当前运行环境不支持启动/停止翻译，请在翻译页手动操作。"
 
+    # Agent 技能包
+    agent_tool_list_skills_description: str = (
+        "列出可加载的领域技能包及其用途，只返回名字与描述，不返回正文。"
+        "在不确定该用哪套领域规则（流水线判据、术语、标记保留、脚本语法、质检）时先调用本工具。"
+    )
+    agent_tool_read_skill_description: str = (
+        "加载指定技能包的正文规则。名字必须来自 list_skills 的返回值。"
+        "正文较长时会被截断并提示，只加载当前任务真正需要的一到两个技能。"
+    )
+    agent_skill_list_empty: str = "当前没有可加载的技能包。"
+    agent_skill_list_ready: str = "共有 {count} 个技能包可加载。"
+    agent_skill_loaded: str = "已加载技能 {name}。"
+    agent_tool_read_skill_name_description: str = "技能包名字，必须来自 list_skills 的返回值。"
+    agent_skill_truncated_hint: str = "技能 {name} 正文过长，已截断到 {count} 字符，请只依据与当前任务相关的部分。"
+    agent_skill_not_found: str = "技能 {name} 不存在，请先用 list_skills 查看可用技能。"
+    agent_skill_name_invalid: str = "技能名 {name} 不合法，只允许小写字母、数字和连字符。"
+    agent_skill_read_failed: str = "读取技能 {name} 失败，请查看日志了解详情。"
+    agent_stage_cleared: str = "已清除当前阶段标记。"
+    agent_stage_updated: str = "当前阶段：{stage}"
+    agent_skills_catalog_header: str = "可用技能包（先用 read_skill 加载正文再据此作答）："
+    agent_skills_catalog_truncated: str = "- 另有 {count} 个技能包未列出，可用 list_skills 查看全部。"
+    agent_skills_catalog_hint: str = (
+        "只在与当前任务相关时加载技能，不要一次加载全部；"
+        "技能只是领域知识，不提供任何新增的文件或命令能力。"
+    )
+
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
     basic_settings_page_max_workers_content: str = (
