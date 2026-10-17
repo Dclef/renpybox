@@ -98,7 +98,11 @@ def test_dispatcher_exposes_tools_without_model_paths() -> None:
     start = dispatcher.tools["start_translation"]
     assert start.requires_confirmation is True
     assert start.requires_idle_engine is False
-    assert set(start.parameters_schema["properties"]) == {"status", "preflight_confirmed"}
+    assert set(start.parameters_schema["properties"]) == {
+        "status",
+        "preflight_confirmed",
+        "use_agent_model",
+    }
     assert start.parameters_schema["properties"]["status"]["default"] == "untranslated"
     assert start.parameters_schema["properties"]["preflight_confirmed"]["default"] is False
     assert "mode" not in start.parameters_schema["properties"]

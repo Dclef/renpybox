@@ -931,6 +931,11 @@ async def request_translation_start(
         candidate: Any | None = None
         if body.mode is not None:
             candidate = _build_toolbox_candidate(live, body)
+        elif getattr(body, "platform_id", None) is not None:
+            # 请求级平台覆盖：只改这一轮的冻结快照，落盘字段由
+            # _collect_changed_fields 限定在 _TOOLBOX_FIELD_NAMES，不会污染翻译页设置。
+            candidate = copy.deepcopy(live)
+            candidate.activate_platform = int(body.platform_id)
 
         request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
 

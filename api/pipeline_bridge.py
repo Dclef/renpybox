@@ -31,17 +31,25 @@ def _failure(reason: str, detail: str, **extra: Any) -> dict:
     return result
 
 
-def _build_start_request(payload: dict) -> TranslationStartRequest:
+def _build_start_request(app: Any, payload: dict) -> TranslationStartRequest:
     """只取 TranslationStartRequest 已声明的字段，丢弃模型的多余参数。
 
     Agent 侧 status 默认是小写 ``untranslated``，而引擎状态枚举是大写；
     在桥接层做一次规范化，避免默认值直接变成 400。
+    ``platform_source="agent"`` 表示本轮沿用 Agent 自己配置的模型：桥接层把
+    它解析成请求级 platform_id，由受理逻辑只改写冻结快照，不落盘。
     """
     declared = TranslationStartRequest.model_fields
     values = {key: value for key, value in payload.items() if key in declared}
     status = values.get("status")
     if isinstance(status, str) and status.strip():
         values["status"] = status.strip().upper()
+    if str(payload.get("platform_source") or "").strip().casefold() == "agent":
+        config = getattr(getattr(app, "state", None), "config", None)
+        agent_platform = getattr(config, "agent_platform", None)
+        if not isinstance(agent_platform, int) or agent_platform < 0:
+            raise ValueError("尚未设置 Agent 接口，无法用 Agent 的模型翻译")
+        values["platform_id"] = agent_platform
     return TranslationStartRequest(**values)
 
 
@@ -106,7 +114,7 @@ def build_pipeline_callbacks(app: Any) -> dict[str, Callable[..., dict]]:
                 "源码备份路径耗时较长，请在翻译页手动启动",
             )
         try:
-            body = _build_start_request(data)
+            body = _build_start_request(app, data)
         except Exception as exc:  # noqa: BLE001 - 模型参数不合法时给结构化失败
             return _failure("ERROR", str(exc))
         return _invoke(

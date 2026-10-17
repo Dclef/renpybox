@@ -403,3 +403,56 @@ def set_stage(stage: str | None) -> ToolResult
   模型中途给出结束回复就停在那里，没有「译完自动 apply + 兜底」的钩子。
 - `set_stage` 阶段字段与桌面阶段徽标。
 - 失败条目阈值的策略化（现在逐条打回，缺少「同一批失败超过 N 条就停下来问」）。
+
+---
+
+# 阶段 2-c（已实施）批量路径：引擎翻译 + Agent 自己的模型
+
+## 为什么加这一条
+
+对照 `neavo/LinguaGacha` 的 `batch_item_translation`
+（`src/backend/agent/tools/batch-item-translation.ts:31-58`）：它**不让 Agent 逐条产出译文**，
+而是把范围交给内部批量引擎，工具只回统计：
+
+```
+items: { total, succeeded, failed, unfinished }
+usage: { elapsed_seconds, input_tokens, reasoning_tokens, output_tokens, total_tokens }
+status, stop_source    // stop_source: user / parent / shutdown
+```
+
+它的技能正文 `builtin/skills/translation/references/item-translate.md:17-21` 明确分档：
+小批量由 Agent 亲手译，超过业务单元规模就走批量工具。
+
+RenpyBox 已经有成熟的翻译引擎（prompt 组装、分块、并发、重试、术语表、缓存），
+缺的只是「这一轮用 Agent 自己配置的模型」和「回执只有数字」。补上这两点即可对齐。
+
+## 实现
+
+- `api/schemas.py`：`TranslationStartRequest` 增加 **请求级** `platform_id: int | None`。
+- `api/routes/translation.py`：`request_translation_start` 在 `mode is None` 且带 `platform_id` 时，
+  构造 `candidate = deepcopy(live)` 并改写 `candidate.activate_platform`，
+  作为 `config_snapshot` 传给 `_prepare_payload`。
+  - 只进本轮冻结快照；`_collect_changed_fields` 的字段白名单不含 `activate_platform`，
+    所以**不落盘、不改翻译页设置**。
+- `api/pipeline_bridge.py`：`platform_source="agent"` → 解析成 `config.agent_platform`；
+  Agent 接口未配置时直接给结构化失败，不投递协程。
+- `module/Agent/tools/pipeline_tools.py`：`start_translation` 增加 `use_agent_model`（默认 True），
+  转成 `platform_source`。
+- `module/Agent/ToolDispatcher.py`：schema 增加同名布尔参数（默认 True）。
+- 系统提示词（ZH/EN）改成**两条路径**：
+  - 大批量（整盘游戏、上千条）→ `start_translation`（默认 `use_agent_model=true`），
+    只看 `translation_status` 的数字，结束后 `apply_translation`；
+  - 小批量（几十条、试跑一条、修失败条目）→ `read_translation_batch` / `write_translation_batch`。
+
+## 验收
+
+- `tests/module/agent` + 本地化覆盖 → 126 passed
+- `tests/api/test_agent_pipeline_bridge.py` → 9 passed（新增 agent 平台覆盖与未配置两条）
+- 全量 `tests/api` → 594 passed
+
+## 仍未做（本阶段）
+
+- 批量工具的「单条试跑闸门」：LinguaGacha 要求首次调用前先用一条目标试跑通过，
+  现在靠提示词约束，没有服务端强制。
+- `stop_source` 语义：RenpyBox 只有 STOPPING，没有区分 user / parent / shutdown。
+- 工具结果落盘 + 补读（`policy.ts:8-13` 的 64KiB 内联额度思路）。

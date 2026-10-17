@@ -76,7 +76,11 @@ def test_start_translation_accepts_and_forwards_arguments() -> None:
         "reason": "STARTED",
         "stage": "translating",
     }
-    assert calls == [{"status": "untranslated", "preflight_confirmed": True}]
+    assert calls == [{
+        "status": "untranslated",
+        "preflight_confirmed": True,
+        "platform_source": "configured",
+    }]
 
 
 def test_start_translation_reports_rejection_reason() -> None:
@@ -236,7 +240,11 @@ def test_dispatcher_injects_pipeline_callbacks_only_when_available() -> None:
     result = dispatcher.execute("start_translation", {"status": "translated"}, confirmed = True)
 
     assert result.success is True
-    assert calls == [{"status": "translated", "preflight_confirmed": False}]
+    assert calls == [{
+        "status": "translated",
+        "preflight_confirmed": False,
+        "platform_source": "configured",
+    }]
     assert result.data["request_id"] == "req-9"
 
     qt5 = ToolDispatcher()
