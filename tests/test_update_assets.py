@@ -93,8 +93,8 @@ def test_release_workflow_ships_desktop_artifacts_only() -> None:
     assert release["jobs"]["desktop"]["uses"] == "./.github/workflows/desktop.yml"
     draft_run = next(step["run"] for step in release["jobs"]["draft"]["steps"] if "run" in step)
     for artifact in (
-        "RenpyBox-NewUI-$version-x64.exe",
-        "RenpyBox-NewUI-$version-x64.zip",
+        "RenpyBox-$version-x64.exe",
+        "RenpyBox-$version-x64.zip",
     ):
         assert artifact in draft_run
     assert "RenpyBox_v$version.zip" not in draft_run

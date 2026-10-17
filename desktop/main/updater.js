@@ -13,8 +13,8 @@ import {
 /**
  * 桌面更新：直接查 GitHub Releases 的桌面发布，只用安装包资产。
  *
- * 有意不使用 electron-updater：那条链路要求每次发布同时上传 blockmap 与 newui.yml，
- * 这两个文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
+ * 有意不使用 electron-updater：那条链路要求每次发布同时上传 blockmap 与 app-update.yml，
+ * 这些文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
  * 自己拉起安装包，所以 release 只需要放 exe 与 zip。
  * 代价：没有差分（block-level）下载，每次更新都是全量安装包。
  *
@@ -25,7 +25,7 @@ import {
 export const DEFAULT_UPDATE_REPO = 'dclef/renpybox';
 export { DESKTOP_TAG_PATTERN, compareDesktopVersions, parseDesktopVersion, pickLatestRelease, selectInstallerAsset };
 const API_ROOT = 'https://api.github.com';
-const USER_AGENT = 'RenpyBox-NewUI';
+const USER_AGENT = 'RenpyBox';
 const REQUEST_HEADERS = Object.freeze({
   accept: 'application/vnd.github+json',
   'user-agent': USER_AGENT,
@@ -151,7 +151,7 @@ export function createDesktopUpdater({
       if (state.status !== 'available') return Promise.reject(new Error('请先检查更新，确认存在可下载的新版本。'));
       const assetUrl = state.assetUrl;
       if (!assetUrl) return Promise.reject(new Error('发布版本缺少 Windows 安装包资产。'));
-      const assetName = state.assetName || `RenpyBox-NewUI-${state.version}-x64.exe`;
+      const assetName = state.assetName || `RenpyBox-${state.version}-x64.exe`;
       const destination = path.join(tempDir || '.', assetName);
       cancelling = false;
       controller = new AbortController();

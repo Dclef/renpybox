@@ -83,10 +83,10 @@ Release assets:
 
 | File | Purpose |
 | --- | --- |
-| `RenpyBox-NewUI-0.9.1-x64.exe` | Windows installer (recommended) |
-| `RenpyBox-NewUI-0.9.1-x64.zip` | Portable ZIP; extract fully, then run the app inside |
+| `RenpyBox-0.9.1-x64.exe` | Windows installer (recommended) |
+| `RenpyBox-0.9.1-x64.zip` | Portable ZIP; extract fully, then run the app inside |
 
-Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). The app keeps its config in `%APPDATA%\RenpyBox-newUI`. To migrate from the older Python app, open **Platforms** and choose **Add Platform → Import from older version**, then select the old app's `config.json`; keys live in Windows Credential Manager and are picked up automatically.
+Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). The app keeps its config in `%APPDATA%\RenpyBox` (the legacy `RenpyBox-newUI` folder is migrated automatically on first launch). To migrate from the older Python app, open **Platforms** and choose **Add Platform → Import from older version**, then select the old app's `config.json`; keys live in Windows Credential Manager and are picked up automatically.
 
 ## Quick Start
 
@@ -145,7 +145,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
 
-- Packaged desktop app config and shell logs default to `%APPDATA%\RenpyBox-newUI`. When reporting an issue, prefer **Runtime Logs** to export or open the relevant files.
+- Packaged desktop app config and shell logs default to `%APPDATA%\RenpyBox` (legacy `%APPDATA%\RenpyBox-newUI` is migrated automatically). When reporting an issue, prefer **Runtime Logs** to export or open the relevant files.
 - Translation caches live in the `cache` subdirectory of the **current output folder** (not a fixed app `output/cache`). After pausing a task, you can continue it directly or export the completed portion.
 - If an external API times out or is rate-limited, adjust concurrent-task and RPM limits in **Basic Settings**, not under **API**.
 

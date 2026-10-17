@@ -132,9 +132,12 @@ class VersionManager(Base):
             "assets": assets,
         }
         version = cls.VERSION_RE.fullmatch(latest["tag_name"])
-        desktop_name = f"RenpyBox-NewUI-{version.group(1)}-x64.exe" if version else ""
+        desktop_names = {
+            f"RenpyBox-{version.group(1)}-x64.exe",
+            f"RenpyBox-NewUI-{version.group(1)}-x64.exe",
+        } if version else set()
         desktop = next((asset for asset in assets if (
-            asset["name"] == desktop_name
+            asset["name"] in desktop_names
             and asset["size"] > 0
             and asset["browser_download_url"].startswith("https://github.com/")
         )), None)

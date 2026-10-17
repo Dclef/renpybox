@@ -1,7 +1,7 @@
 /**
  * 接口管理「从旧版导入」入口的静态契约（不启动 Electron / 不 build）。
  *
- * 背景：桌面版把配置放在 %APPDATA%\RenpyBox-newUI，Python / Qt5 版放在程序目录，
+ * 背景：桌面版把配置放在 %APPDATA%\RenpyBox（旧版为 RenpyBox-newUI），Python / Qt5 版放在程序目录，
  * 升级后接口列表是空的，看起来像数据丢了。空状态必须给出「新增接口 / 从旧版导入」
  * 两个入口，且导入只能走后端 /api/platforms/import。
  *

@@ -22,7 +22,7 @@ export async function downloadInstaller(url, destination, {
   let received = 0;
   const hash = createHash('sha256');
   try {
-    response = await fetchImpl(url, { headers: { 'user-agent': 'RenpyBox-NewUI' }, signal });
+    response = await fetchImpl(url, { headers: { 'user-agent': 'RenpyBox' }, signal });
     if (!response.ok) throw failure(`GitHub 返回 ${response.status}`);
     if (!response.body) throw failure('服务器未返回安装包内容。');
     const length = response.headers.get('content-length');
