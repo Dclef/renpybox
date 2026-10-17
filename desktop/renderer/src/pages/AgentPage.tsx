@@ -18,9 +18,11 @@ const TOOL_NAMES: Record<string, TextKey> = {
   translation_status: 'agent_page_tool_translation_status', refresh_replace_fallback: 'agent_page_tool_refresh_replace_fallback',
   start_translation: 'agent_page_tool_start_translation', stop_translation: 'agent_page_tool_stop_translation',
   apply_translation: 'agent_page_tool_apply_translation', list_skills: 'agent_page_tool_list_skills', read_skill: 'agent_page_tool_read_skill',
+  read_translation_batch: 'agent_page_tool_read_translation_batch', write_translation_batch: 'agent_page_tool_write_translation_batch',
 };
-// 空会话快捷任务，与 Qt5 AgentEmptyState 的四张建议卡一致；点击只填入草稿，不直接发送。
+// 空会话快捷任务；点击只填入草稿，不直接发送。首条是「由 Agent 自己翻译」的主路径。
 const SUGGESTIONS: { text: TextKey; description: TextKey }[] = [
+  { text: 'agent_page_suggestion_translate', description: 'agent_page_suggestion_translate_desc' },
   { text: 'agent_page_suggestion_project', description: 'agent_page_suggestion_project_desc' },
   { text: 'agent_page_suggestion_rpa', description: 'agent_page_suggestion_rpa_desc' },
   { text: 'agent_page_suggestion_errors', description: 'agent_page_suggestion_errors_desc' },
