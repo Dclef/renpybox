@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from frontend.RenpyToolbox.OneKeyWorkers import detect_game_status
+from module.OneKey.flow import detect_game_status
 from module.Agent.tools.inspection_tools import _file_summary, inspect_translation_project
 from module.Config import Config
 from module.Renpy import ProjectPaths as paths_module

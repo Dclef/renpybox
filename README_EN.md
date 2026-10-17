@@ -18,7 +18,7 @@
 
 ## Overview 📢
 
-- RenpyBox combines text extraction, translation, proofreading, repair, and packaging in one Ren'Py localization toolbox. Version 0.9.0 introduced the new Windows desktop interface (current release 0.9.1); the Python / Qt5 app and its source remain available.
+- RenpyBox combines text extraction, translation, proofreading, repair, and packaging in one Ren'Py localization toolbox. The desktop app (Electron + web UI) is the only frontend; the old Python / Qt5 interface and packaging pipeline were removed, leaving a headless Python backend and the desktop shell.
 - Intended users: visual novel developers, fan translation teams, and Ren'Py translators.
 - **[SiliconFlow](https://cloud.siliconflow.cn/i/Cvmvkm5d) is recommended for translation.**
 
@@ -85,9 +85,8 @@ Release assets:
 | --- | --- |
 | `RenpyBox-NewUI-0.9.1-x64.exe` | Windows installer (recommended) |
 | `RenpyBox-NewUI-0.9.1-x64.zip` | Portable ZIP; extract fully, then run the app inside |
-| `RenpyBox_v0.9.1.zip` | Python compatibility package that keeps the previous UI for existing updaters |
 
-Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). That differs from the older Python app's incremental update mechanism. The original Python app remains available. Existing clients can first update through their usual updater to the Python compatibility build, then follow its desktop migration notice. You can also download the desktop app directly. Migration does not automatically replace the Python app or copy its settings; confirm your project and API settings in the new interface. The desktop app keeps its config in `%APPDATA%\RenpyBox-newUI`, separate from the Python app. To reuse your existing platforms, open **Platforms** and choose **Add Platform → Import from older version**, then select the `config.json` in the Python app directory; keys live in Windows Credential Manager and are picked up automatically.
+Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). The app keeps its config in `%APPDATA%\RenpyBox-newUI`. To migrate from the older Python app, open **Platforms** and choose **Add Platform → Import from older version**, then select the old app's `config.json`; keys live in Windows Credential Manager and are picked up automatically.
 
 ## Quick Start
 
@@ -146,14 +145,14 @@ See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
 
-- Packaged desktop app config and shell logs default to `%APPDATA%\RenpyBox-newUI`. When reporting an issue, prefer **Runtime Logs** to export or open the relevant files. Python app logs remain under the app directory's `log` folder.
+- Packaged desktop app config and shell logs default to `%APPDATA%\RenpyBox-newUI`. When reporting an issue, prefer **Runtime Logs** to export or open the relevant files.
 - Translation caches live in the `cache` subdirectory of the **current output folder** (not a fixed app `output/cache`). After pausing a task, you can continue it directly or export the completed portion.
 - If an external API times out or is rate-limited, adjust concurrent-task and RPM limits in **Basic Settings**, not under **API**.
 
 ## Feedback and Support 💬
 
 - Issues and pull requests are welcome for bug reports, suggestions, and contributions.
-- Please attach relevant logs: in the desktop app use **Runtime Logs** to export or open files; for the Python app, see the `log` folder under the app directory.
+- Please attach relevant logs: use **Runtime Logs** to export or open files.
 - QQ group: 821152470
 
 ## Acknowledgements 🙏

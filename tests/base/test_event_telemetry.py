@@ -12,6 +12,21 @@ import base.EventTelemetry as event_telemetry_module
 
 
 @pytest.fixture(autouse = True)
+def _pause_ambient_drain(request):
+    """独占事件总线：conftest 的 drain 线程会顺手排空别的实例，
+
+    既会提前把 emit 的事件投递掉（延迟测成 0），也会把无关事件的延迟
+    写进共享的 EventTelemetry 单例，让 snapshot 断言无法隔离。
+    """
+    bridge = getattr(request.session.config, "_event_bridge", None)
+    if bridge is not None:
+        bridge.pause()
+    yield
+    if bridge is not None:
+        bridge.resume()
+
+
+@pytest.fixture(autouse = True)
 def _fresh_telemetry():
     EventTelemetry.reset()
     yield
