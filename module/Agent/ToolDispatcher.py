@@ -23,6 +23,7 @@ def _lazy_tool_handler(
     function_name: str,
     config_loader: ConfigLoader,
     cancel_check: Callable[[], bool] | None = None,
+    pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
 ) -> Callable[..., ToolResult]:
     """延迟加载工具实现，避免打开 Agent 页面时初始化整套翻译依赖。"""
 
@@ -34,6 +35,10 @@ def _lazy_tool_handler(
         cancel_check = arguments.pop("__cancel_check__", None)
         if cancel_check is not None and "should_cancel" in inspect.signature(function).parameters:
             arguments["should_cancel"] = cancel_check
+        # 只有声明了 ``pipeline_callbacks`` 的工具才拿到启停桥；Qt5 侧不传，
+        # 工具会明确返回 AGENT_APP_CONTEXT_MISSING。
+        if pipeline_callbacks is not None and "pipeline_callbacks" in inspect.signature(function).parameters:
+            arguments["pipeline_callbacks"] = pipeline_callbacks
         return function(config_loader=config_loader, **arguments)
 
     return handler
@@ -50,10 +55,12 @@ class ToolDispatcher:
         config_loader: ConfigLoader | None = None,
         engine: Engine | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
         self.engine = engine or Engine.get()
         self._cancel_check = cancel_check
+        self.pipeline_callbacks = pipeline_callbacks
         self._tools = self._build_tools()
 
     def _build_tools(self) -> dict[str, ToolDef]:
@@ -204,6 +211,62 @@ class ToolDispatcher:
                 requires_confirmation=True,
                 requires_idle_engine=True,
             ),
+            "start_translation": ToolDef(
+                name="start_translation",
+                description=localizer.agent_tool_start_translation_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "default": "untranslated"},
+                        "preflight_confirmed": {"type": "boolean", "default": False},
+                    },
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "start_translation",
+                    self.config_loader,
+                    pipeline_callbacks=self.pipeline_callbacks,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=False,
+            ),
+            "stop_translation": ToolDef(
+                name="stop_translation",
+                description=localizer.agent_tool_stop_translation_description,
+                parameters_schema=deepcopy(empty_schema),
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "stop_translation",
+                    self.config_loader,
+                    pipeline_callbacks=self.pipeline_callbacks,
+                ),
+                requires_confirmation=False,
+                requires_idle_engine=False,
+            ),
+            "apply_translation": ToolDef(
+                name="apply_translation",
+                description=localizer.agent_tool_apply_translation_description,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["full", "incremental"],
+                            "default": "full",
+                            "description": localizer.agent_tool_apply_translation_mode_description,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                handler=_lazy_tool_handler(
+                    "pipeline_tools",
+                    "apply_translation",
+                    self.config_loader,
+                ),
+                requires_confirmation=True,
+                requires_idle_engine=True,
+            ),
         }
 
     @property
@@ -322,6 +385,14 @@ class ToolDispatcher:
                 )
             handler_arguments["confirmed_project_root"] = confirmed_project_root
         elif tool.name == "refresh_replace_fallback":
+            if not trusted_context:
+                return ToolResult(
+                    False,
+                    localizer.agent_tool_confirmation_stale,
+                    code="CONFIRMATION_STALE",
+                )
+            handler_arguments["confirmed_context"] = dict(trusted_context)
+        elif tool.name == "apply_translation":
             if not trusted_context:
                 return ToolResult(
                     False,
