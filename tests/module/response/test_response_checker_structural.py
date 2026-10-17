@@ -61,3 +61,19 @@ def test_src_equal_dst_natural_language_is_rejected():
         checker = ResponseChecker(config, [item])
         errors = checker.check([text], [text], CacheItem.TextType.RENPY, [item])
         assert errors == [ResponseChecker.Error.LINE_ERROR_SIMILARITY], text
+
+
+def test_ui_key_labels_and_symbols_stay_structural():
+    """游戏里的按键提示与纯符号没有可翻译内容，原样保留不应被判成照抄。"""
+    for text in ("H", "S", "V", "Shift+A", "Ctrl+Alt+Delete", "F5", "123", "...", "!!!"):
+        assert ResponseChecker.is_structural_text(text) is True, text
+        item = _item(text)
+        checker = ResponseChecker(Config(), [item])
+        errors = checker.check([text], [text], CacheItem.TextType.RENPY, [item])
+        assert errors == [ResponseChecker.Error.NONE], (text, errors)
+
+
+def test_single_letter_words_are_not_structural():
+    for text in ("I", "a", "A"):
+        assert ResponseChecker.is_structural_text(text) is False, text
+

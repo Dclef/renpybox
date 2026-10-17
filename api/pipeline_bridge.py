@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from api.routes.translation import request_translation_start, request_translation_stop
 from api.schemas import TranslationOwnerRequest, TranslationStartRequest
+from module.Project.PlatformDefaults import THINKING_LEVELS
 from module.Renpy.ProjectPaths import RenpyProjectPaths
 
 # start 的前置校验（资产预检、载荷冻结）可能触发磁盘扫描，给足等待时间。
@@ -50,6 +51,11 @@ def _build_start_request(app: Any, payload: dict) -> TranslationStartRequest:
         if not isinstance(agent_platform, int) or agent_platform < 0:
             raise ValueError("尚未设置 Agent 接口，无法用 Agent 的模型翻译")
         values["platform_id"] = agent_platform
+        # 批量翻译沿用 Agent 的思考等级：Agent 页选 LOW/OFF 时不应被平台里
+        # 为人工翻译配置的 MAX 覆盖，否则每条都要生成上千 token 的思考内容。
+        level = str(getattr(config, "agent_thinking_level", "") or "").strip().upper()
+        if level in THINKING_LEVELS:
+            values["thinking_level"] = level
     return TranslationStartRequest(**values)
 
 

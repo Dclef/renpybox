@@ -52,6 +52,7 @@ from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Extract.SimpleRpyExtractor import SimpleRpyExtractor
 from module.File.SourceBackup import backup_source_rpy
+from module.Project.PlatformDefaults import THINKING_LEVELS
 from module.Project.ProjectStore import ProjectStore
 from module.Renpy.ProjectPaths import RenpyProjectPaths, normalise_path, resolve_translation_output
 
@@ -936,6 +937,13 @@ async def request_translation_start(
             # _collect_changed_fields 限定在 _TOOLBOX_FIELD_NAMES，不会污染翻译页设置。
             candidate = copy.deepcopy(live)
             candidate.activate_platform = int(body.platform_id)
+            # Agent 一条龙按 Agent 的思考等级跑，避免平台里给人工翻译配的
+            # MAX 思考把每条批次的输出 token 拉高数倍。
+            thinking_level = str(getattr(body, "thinking_level", "") or "").strip().upper()
+            if thinking_level in THINKING_LEVELS:
+                platform = candidate.get_platform(candidate.activate_platform)
+                if isinstance(platform, dict):
+                    platform["thinking"] = {"level": thinking_level}
 
         request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
 

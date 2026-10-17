@@ -11,8 +11,6 @@ from typing import Any, Callable
 
 from base.LogManager import LogManager
 
-from base.Base import Base
-from module.Cache.CacheManager import CacheManager
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Extract.ReplaceGenerator import write_replace_script
@@ -63,34 +61,11 @@ def _read_cache_progress(
 ) -> tuple[dict[str, Any], str, int, bool]:
     """从翻译输出目录只读加载进度与待翻译计数。
 
-    第四个返回值表示缓存是否真实存在：只有它为真时，「待译 0 条」才是可信
-    的结论，否则只是「还没有缓存」。
+    实现放在 module.OneKey.flow，一条龙编排也要用同一口径判断「上次是否真的
+    翻译完」，避免两边各写一份缓存读取逻辑。
     """
 
-    progress: dict[str, Any] = {}
-    project_status = ""
-    untranslated_count = 0
-    cache_dir = Path(output_folder) / "cache"
-    if not any(
-        (cache_dir / name).is_file() for name in ("cache.db", "project.json")
-    ):
-        return progress, project_status, untranslated_count, False
-    try:
-        with CacheManager.LOCK:
-            manager = CacheManager(service=False)
-            manager.load_project_from_file(output_folder, strict=True)
-            project = manager.get_project()
-            progress = {**project.get_progress(), "status": project.get_status()}
-            project_status = str(getattr(project.get_status(), "value", project.get_status()))
-            items = manager.get_items()
-            untranslated_count = sum(
-                1
-                for item in items
-                if item.get_status() == Base.TranslationStatus.UNTRANSLATED
-            )
-    except Exception:
-        return {}, "", 0, False
-    return progress, project_status, untranslated_count, True
+    return flow.read_translation_cache_progress(output_folder)
 
 
 def _translation_state_snapshot(config: Config) -> dict[str, Any]:

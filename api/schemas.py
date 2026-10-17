@@ -162,6 +162,9 @@ class TranslationStartRequest(BaseModel):
     # 请求级平台覆盖：只改写本轮冻结快照里的 activate_platform，不落盘、
     # 不影响翻译页设置。Agent 的「用 Agent 自己的模型跑批量翻译」走这条。
     platform_id: int | None = None
+    # Agent 一条龙时沿用 Agent 的思考等级（OFF/LOW/MEDIUM/HIGH/MAX），
+    # 只作用于本轮冻结快照，避免平台里为人工翻译配的 MAX 拖慢流水线。
+    thinking_level: str | None = None
 
 
 class TranslationReinjectRequest(BaseModel):
