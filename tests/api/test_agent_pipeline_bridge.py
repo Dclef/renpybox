@@ -141,6 +141,7 @@ def test_start_with_agent_platform_source_overrides_platform(monkeypatch, runnin
 
     async def fake_start(_app, body):
         captured["platform_id"] = body.platform_id
+        captured["thinking_level"] = body.thinking_level
         return TranslationStartResponse(
             accepted = True,
             request_id = "req-2",
@@ -150,13 +151,40 @@ def test_start_with_agent_platform_source_overrides_platform(monkeypatch, runnin
         )
 
     monkeypatch.setattr(pipeline_bridge, "request_translation_start", fake_start)
-    callbacks = build_pipeline_callbacks(_app(running_loop, SimpleNamespace(agent_platform = 3)))
+    callbacks = build_pipeline_callbacks(
+        _app(running_loop, SimpleNamespace(agent_platform = 3, agent_thinking_level = "low"))
+    )
 
     result = callbacks["start_translation"]({"platform_source": "agent"})
 
     assert result["accepted"] is True
     # 只改写本轮快照的平台，不触碰翻译页设置
     assert captured["platform_id"] == 3
+    # 批量翻译沿用 Agent 页的思考等级，而不是平台里给人工翻译配的 MAX
+    assert captured["thinking_level"] == "LOW"
+
+
+def test_start_with_agent_platform_source_ignores_unknown_thinking_level(monkeypatch, running_loop) -> None:
+    captured: dict = {}
+
+    async def fake_start(_app, body):
+        captured["thinking_level"] = body.thinking_level
+        return TranslationStartResponse(
+            accepted = True,
+            request_id = "req-3",
+            reason = "STARTED",
+            detail = "已受理",
+            stage = "translating",
+        )
+
+    monkeypatch.setattr(pipeline_bridge, "request_translation_start", fake_start)
+    callbacks = build_pipeline_callbacks(
+        _app(running_loop, SimpleNamespace(agent_platform = 3, agent_thinking_level = "turbo"))
+    )
+
+    callbacks["start_translation"]({"platform_source": "agent"})
+
+    assert captured["thinking_level"] is None
 
 
 def test_start_with_agent_platform_source_requires_agent_platform(running_loop) -> None:

@@ -100,6 +100,8 @@ def test_streaming_busy_barrier_history_and_reset(agent_app, monkeypatch):
     assert completed["messages"][-1]["content"] == "最终回复"
     assert platforms[0]["thinking"]["level"] == "HIGH"
     assert agent_app.config.platforms[0]["thinking"]["level"] == "OFF"
+    # 一条龙的批量翻译要沿用本轮 Agent 的思考等级，而不是平台里的固定值。
+    assert agent_app.config.agent_thinking_level == "HIGH"
     assert agent_app.config.activate_platform == 1
     assert client.post("/api/agent/message", json={"message": "第二条"}).status_code == 200
     wait_snapshot(client, lambda snapshot: snapshot["status"] == "idle")

@@ -59,9 +59,12 @@ class ResponseChecker(Base):
         r"^[A-Za-z_][A-Za-z0-9_.:-]*[0-9_][A-Za-z0-9_.:-]*$",
         flags = re.IGNORECASE,
     )
-    # 常见按键名
+    # 常见按键名与组合键（Shift+A / Ctrl+Alt+Delete / F5）
     RE_KEY_NAME = re.compile(
-        r"^(Ctrl|Alt|Shift|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2})$",
+        r"^(?:"
+        r"(?:Ctrl|Alt|Shift|Win|Cmd|Meta)(?:\+(?:Ctrl|Alt|Shift|Win|Cmd|Meta))*(?:\+[A-Za-z0-9]+)?"
+        r"|Esc|Enter|Tab|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F\d{1,2}"
+        r")$",
         flags = re.IGNORECASE,
     )
     # 模型按提示词输出的翻译失败标记。这不是“相似度高”，应优先归类为异常回复。
@@ -501,6 +504,14 @@ class ResponseChecker(Base):
         """代码、按键、标识符等结构性文本允许原样保留。"""
         s = text.strip()
         if s == "":
+            return True
+
+        # 纯数字/标点/符号没有可翻译内容（如 “123”“...”“!!!”）。
+        if not any(ch.isalpha() for ch in s):
+            return True
+
+        # 单个大写字母是游戏里的按键提示（如 H / S / V）；I、A 可能是自然语言，排除。
+        if len(s) == 1 and s.isascii() and s.isalpha() and s.isupper() and s not in {"I", "A"}:
             return True
 
         # 逻辑表达式（含变量、比较符、布尔运算）

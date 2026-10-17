@@ -121,6 +121,62 @@ def test_pipeline_runs_extract_translate_apply_fallback_in_order(tmp_path, monke
     assert progress_log[-1][0] == "done"
 
 
+def test_pipeline_auto_uses_full_after_interrupted_translation(tmp_path, monkeypatch) -> None:
+    """主 TL 目录非空但主缓存还有待译条目：上次是被中断的，auto 必须走全量。
+
+    否则增量只会把新抽到的几条合并回主 TL，之前缓存的译文永远写不回去。
+    """
+
+    config = _config(tmp_path / "Game")
+    tl_file = Path(config.renpy_tl_folder) / "script.rpy"
+    tl_file.write_text("translate chinese x:\n    e \"hi\"\n", encoding="utf-8")
+    engine = _Engine()
+    _install_engine(monkeypatch, engine)
+    order: list[str] = []
+    reads = {"n": 0}
+
+    def translation_state():
+        reads["n"] += 1
+        if reads["n"] == 1:
+            return {"untranslated_count": 2, "cache_ready": True, "progress": {}}
+        engine.status = Engine.Status.IDLE
+        return {"untranslated_count": 0, "cache_ready": True, "progress": {"line": 2, "total_line": 2}}
+
+    callbacks = type("Callbacks", (), {})()
+    callbacks.unpack = lambda cancel: order.append("unpack")
+    callbacks.decompile = lambda cancel: order.append("decompile")
+    callbacks.extract = lambda incremental, cancel, progress: (
+        order.append(f"extract:{incremental}") or ToolResult(True, "extracted")
+    )
+
+    def start(params):
+        order.append("start")
+        engine.status = Engine.Status.TRANSLATING
+        return {"accepted": True}
+
+    callbacks.start_translation = start
+    callbacks.stop_translation = lambda: {"ok": True}
+    callbacks.translation_state = translation_state
+    callbacks.apply = lambda mode: order.append(f"apply:{mode}") or ToolResult(True, "applied", {"applied_count": 3})
+    callbacks.fallback = lambda: ToolResult(True, "fallback", {"pair_count": 0})
+    # 主缓存存在且有 2 条待译：模拟上次翻译被中断。
+    monkeypatch.setattr(
+        "module.OneKey.pipeline.read_translation_cache_progress",
+        lambda _output: ({}, "", 2, True),
+    )
+
+    outcome = run_pipeline(
+        config,
+        callbacks=callbacks,
+        auto_apply=True,
+        auto_fallback=True,
+        use_agent_model=True,
+    )
+
+    assert outcome.success is True
+    assert order == ["extract:False", "start", "apply:full"]
+
+
 def test_pipeline_cancel_stops_translation_and_skips_apply(tmp_path, monkeypatch) -> None:
     config = _config(tmp_path / "Game")
     engine = _Engine()
