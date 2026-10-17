@@ -190,6 +190,8 @@ export interface TranslationState {
   engine_status: EngineStatus;
   stop_barrier: boolean;
   single_tasks: boolean;
+  /** 当前绑定项目的 owner key；写操作（停止 / 导出 / 重试失败项）要带上它。 */
+  owner_project_key?: string;
   request_id: string;
   run_id: number;
   running: { running: number; max: number };

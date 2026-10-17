@@ -225,7 +225,8 @@ export function useAppState(): AppState {
 
   const stopTranslation = useCallback(async () => {
     setTranslationTimer(null);
-    await api.stopTranslation();
+    // 带上后端下发的 owner key：切项目后旧页面的停止请求会被 409 拦住。
+    await api.stopTranslation(latest.current.translation.owner_project_key ?? '');
     await reloadTranslation();
   }, [reloadTranslation, setTranslationTimer]);
 
@@ -261,11 +262,13 @@ export function useAppState(): AppState {
   }, [pushToast, setTranslationTimer, startTranslation, translationTimerDeadline]);
 
   const exportTranslation = useCallback(async () => {
-    await api.exportTranslation();
+    await api.exportTranslation(latest.current.translation.owner_project_key ?? '');
   }, []);
 
   const retryFailedTranslations = useCallback(async () => {
-    const result = await api.retryFailedTranslations();
+    const result = await api.retryFailedTranslations(
+      latest.current.translation.owner_project_key ?? '',
+    );
     const count = Number(result.count ?? 0);
     // 后端已按缓存重算进度，刷新快照让「可继续」与已译/待译/失败统计立即生效。
     await reloadTranslation();
