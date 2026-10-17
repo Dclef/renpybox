@@ -613,7 +613,7 @@ def _bind_resumable_output(config: Config, status: Base.TranslationStatus) -> Co
 
 
 def _prepare_payload(
-    request: Request,
+    app: Any,
     status: Base.TranslationStatus,
     request_id: str,
     preflight_confirmed: bool = False,
@@ -671,7 +671,7 @@ def _prepare_payload(
 
 
 async def _start_source_with_prebackup(
-    request: Request,
+    app: Any,
     body: TranslationStartRequest,
     *,
     live: Any,
@@ -683,7 +683,7 @@ async def _start_source_with_prebackup(
     reservation: str = "",
 ) -> TranslationStartResponse:
     """源码前置备份：先原子占 TESTING，后台 job 可取消/有进度，再启动翻译。"""
-    jobs = getattr(request.app.state, "jobs", None)
+    jobs = getattr(app.state, "jobs", None)
     if jobs is None:
         Engine.get().release_translation_reservation(reservation)
         raise HTTPException(status_code = 500, detail = "任务管理器未初始化")
@@ -790,7 +790,7 @@ async def _start_source_with_prebackup(
                 raise asyncio.CancelledError()
 
             with CacheManager.LOCK:
-                live_config = request.app.state.config
+                live_config = app.state.config
                 if frozen_owner and _project_identity(live_config) != frozen_owner:
                     raise RuntimeError("项目已切换，本次备份结果未用于翻译")
                 changed = _collect_changed_fields(
@@ -873,6 +873,14 @@ async def start_translation(
     request: Request,
     body: TranslationStartRequest,
 ) -> TranslationStartResponse:
+    """受理翻译启动请求；实现见 :func:`request_translation_start`。"""
+    return await request_translation_start(request.app, body)
+
+
+async def request_translation_start(
+    app: Any,
+    body: TranslationStartRequest,
+) -> TranslationStartResponse:
     """受理翻译启动请求。
 
     无备份时 ``accepted=True`` 表示事件已投递；线程是否真的起来以
@@ -913,7 +921,7 @@ async def start_translation(
         except ValueError:
             raise HTTPException(status_code = 400, detail = f"未知翻译状态：{body.status}") from None
 
-        live = request.app.state.config
+        live = app.state.config
         # 工具箱 mode：先校验 owner，再建候选；失败不写盘。
         owner_key = ""
         owner_identity: tuple[str, ...] = ()
@@ -927,7 +935,7 @@ async def start_translation(
         request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
 
         payload, rejection = _prepare_payload(
-            request,
+            app,
             status,
             request_id,
             preflight_confirmed = bool(body.preflight_confirmed),
@@ -944,7 +952,7 @@ async def start_translation(
         if candidate is not None and str(body.mode or "") == "source" and _source_needs_prebackup(body, candidate):
             handed_off = True
             return await _start_source_with_prebackup(
-                request,
+                app,
                 body,
                 live = live,
                 candidate = candidate,
@@ -974,8 +982,10 @@ async def start_translation(
         if not handed_off:
             engine.release_translation_reservation(reservation)
 
-@router.post("/stop")
-def stop_translation(request: Request, body: TranslationOwnerRequest | None = None) -> dict:
+async def request_translation_stop(
+    app: Any,
+    body: TranslationOwnerRequest | None = None,
+) -> dict:
     """请求停止翻译。真正的终态走 WS 的 TRANSLATION_DONE。"""
     engine = Engine.get()
     status = engine.get_status()
@@ -986,10 +996,16 @@ def stop_translation(request: Request, body: TranslationOwnerRequest | None = No
     if engine.has_stop_barrier():
         raise HTTPException(status_code = 409, detail = "翻译正在停止收尾中")
 
-    _require_owner(request.app.state.config, body.project_key if body is not None else None)
+    _require_owner(app.state.config, body.project_key if body is not None else None)
 
     _emit(Base.Event.TRANSLATION_STOP, {})
     return {"ok": True, "status": "STOPPING"}
+
+
+@router.post("/stop")
+async def stop_translation(request: Request, body: TranslationOwnerRequest | None = None) -> dict:
+    """请求停止翻译；实现见 :func:`request_translation_stop`。"""
+    return await request_translation_stop(request.app, body)
 
 
 @router.post("/export")
