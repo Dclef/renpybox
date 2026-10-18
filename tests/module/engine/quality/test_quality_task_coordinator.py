@@ -193,9 +193,10 @@ def test_coordinator_restores_snapshot_batches_and_saves_progress(tmp_path) -> N
     assert engine.get_status() == Engine.Status.IDLE
     assert all(name == f"{Engine.TASK_PREFIX}QUALITY" for name in callback_threads)
 
+    # 质量任务与「继续任务」一致：接口跟随当前激活平台，不再回退快照里的旧模型。
     provider = created_tasks[0].context.runtime_provider.to_dict()
-    assert provider["model"] == "snapshot-model"
-    assert provider["api_url"] == "https://snapshot.invalid/v1"
+    assert provider["model"] == "current-model"
+    assert provider["api_url"] == "https://current.invalid/v2"
     assert provider["api_key"] == ["current-secret"]
 
     reloaded = CacheManager(service = False)
@@ -481,7 +482,8 @@ def test_public_quality_error_message_is_safe(error, expected) -> None:
     assert "密钥" not in message
 
 
-def test_quality_resume_provider_uses_stable_identity_not_numeric_id() -> None:
+def test_quality_runtime_provider_follows_active_platform_model() -> None:
+    """用户切换模型后，校对/润色必须用新模型而不是快照里的旧模型。"""
     snapshot = {
         "request_policy": {
             "provider": {
@@ -491,7 +493,38 @@ def test_quality_resume_provider_uses_stable_identity_not_numeric_id() -> None:
             },
         },
     }
-    config = Config(platforms=[{
+    config = Config(activate_platform=7, platforms=[
+        {
+            "id": 2,
+            "credential_id": "a" * 32,
+            "model": "snapshot-model",
+            "api_key": ["old-key"],
+        },
+        {
+            "id": 7,
+            "credential_id": "b" * 32,
+            "model": "current-model",
+            "api_key": ["new-key"],
+        },
+    ])
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["model"] == "current-model"
+    assert provider["api_key"] == ["new-key"]
+
+
+def test_quality_resume_provider_uses_stable_identity_without_active_platform() -> None:
+    snapshot = {
+        "request_policy": {
+            "provider": {
+                "id": 2,
+                "credential_id": "a" * 32,
+                "model": "snapshot-model",
+            },
+        },
+    }
+    config = Config(activate_platform=-1, platforms=[{
         "id": 7,
         "credential_id": "a" * 32,
         "api_key": ["current-key"],
@@ -514,7 +547,7 @@ def test_quality_resume_provider_rejects_reused_numeric_id() -> None:
             },
         },
     }
-    config = Config(platforms=[{
+    config = Config(activate_platform=-1, platforms=[{
         "id": 2,
         "credential_id": "b" * 32,
         "api_key": ["other-key"],

@@ -564,13 +564,17 @@ class QualityTaskCoordinator(Base):
         )
         persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
 
+        # 与「继续任务」口径一致：质量任务也用当前激活平台。用户改过模型或地址后，
+        # 校对与润色必须立刻跟随，否则会拿历史快照里的旧模型静默跑一整轮。
+        active = config.get_platform(config.activate_platform)
+        if isinstance(active, dict) and active:
+            return copy.deepcopy(active)
+
+        # 没有激活平台时（例如配置里恰好没选中任何一项），才退回按稳定身份匹配，
+        # 此时仍只借用当前凭据、语义沿用快照，避免误用别的接口额度。
         current = find_provider_by_identity(persisted, config.platforms)
         if persisted and not current:
             raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再进行校对")
-        if not current:
-            active = config.get_platform(config.activate_platform)
-            if isinstance(active, dict):
-                current = copy.deepcopy(active)
         if not current:
             raise ValueError("当前没有可用于质量任务的接口配置")
         if not persisted:

@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from base.Base import Base
+from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
 from module.Engine.Engine import Engine
@@ -112,24 +113,44 @@ def _readonly() -> bool:
     return engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier() or engine.has_single_tasks()
 
 
+def _items_revision(output: str, config) -> str:
+    """缓存条目代次：只认条目内容，不认 extras/进度这类旁路写入。
+
+    润色、校对、批量编辑都会重写 project 里的 extras，导致 cache.db 的 mtime
+    与大小变化；但条目内容没变时逐行检查结果依然有效。SQLite 缓存直接读
+    写入时算好的 items_digest（一次 meta 查询），JSON 缓存退回文件签名。
+    """
+    cache_path = os.path.join(str(output), "cache")
+    db_path = os.path.join(cache_path, CacheManager.CACHE_DB_NAME)
+    try:
+        if os.path.isfile(db_path):
+            digest = CacheDB(db_path).get_items_digest()
+            if digest:
+                return digest
+    except Exception:
+        # 读不到摘要时退回文件签名，宁可重建快照也不要复用过期检查结果。
+        pass
+    files = []
+    for name in ("items.json", "project.json", CacheManager.RESET_JOURNAL_NAME):
+        path = os.path.join(cache_path, name)
+        try:
+            stat = os.stat(path)
+            files.append((path, stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            files.append((path, None))
+    return repr(files)
+
+
 def _read_snapshot(request: Request, config) -> dict:
-    # 只保留当前项目的只读快照；写入、文件代次或设置变化后重新载入。
+    # 只保留当前项目的只读快照；条目内容或设置变化后重新载入。
     paths = translation_output_candidates(config)
-    def signature():
-        files = []
-        for output in paths:
-            for name in ("items.json", "project.json", "cache.db", "cache.db-wal", CacheManager.RESET_JOURNAL_NAME):
-                path = os.path.join(str(output), "cache", name)
-                try:
-                    stat = os.stat(path)
-                    files.append((path, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino))
-                except FileNotFoundError:
-                    files.append((path, None))
-        return tuple(files)
+    revisions = tuple((str(output), _items_revision(output, config)) for output in paths)
     config_key = hashlib.sha256(json.dumps(dataclasses.asdict(config), sort_keys=True, default=str).encode()).hexdigest()
-    key = (config_key, signature())
+    key = (config_key, revisions)
     snapshot = getattr(request.app.state, "proofreading_snapshot", None)
     if snapshot is not None and snapshot["key"] == key:
+        # 条目没变，但 extras 可能刚被质量任务更新，单独刷一次项目记录。
+        _refresh_snapshot_project(snapshot)
         return snapshot
     output, manager = _load_cache(config)
     visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
@@ -140,6 +161,19 @@ def _read_snapshot(request: Request, config) -> dict:
     }
     request.app.state.proofreading_snapshot = snapshot
     return snapshot
+
+
+def _refresh_snapshot_project(snapshot: dict) -> None:
+    """把最新的 project 记录贴到复用的快照上，让质量任务进度立刻可见。"""
+    path = os.path.join(str(snapshot["output"]), "cache", CacheManager.CACHE_DB_NAME)
+    if not os.path.isfile(path):
+        return
+    try:
+        project = CacheDB(path).get_project()
+    except Exception:
+        return
+    if project is not None:
+        snapshot["manager"].set_project(project)
 
 
 @router.get("")
