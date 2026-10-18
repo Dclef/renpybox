@@ -267,3 +267,46 @@ def test_truncated_stream_arguments_are_reported(monkeypatch) -> None:
 
     assert result.success is False
     assert result.error_code == "TOOL_ARGUMENTS_TRUNCATED"
+
+
+def test_bad_request_on_max_tokens_shrinks_budget_and_retries(monkeypatch) -> None:
+    """端点嫌输出上限太大时应当自动减半重试，而不是直接报请求失败。"""
+    import httpx
+
+    requester = _requester()
+    observed = []
+
+    def bad_request() -> Exception:
+        request = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+        return AgentRequesterModule.openai.BadRequestError(
+            "max_tokens is too large",
+            response=httpx.Response(400, request=request),
+            body=None,
+        )
+
+    def create(**kwargs):
+        observed.append(kwargs)
+        if len(observed) == 1:
+            raise bad_request()
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=[]))],
+            usage=None,
+        )
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    monkeypatch.setattr(requester, "_get_client", lambda: client)
+    original = requester._output_token_limit()
+
+    result = requester.request_tools(
+        [{"role": "user", "content": "hi"}],
+        list(ToolDispatcher().tools.values()),
+    )
+
+    assert result.success is True
+    assert len(observed) == 2
+    assert observed[1]["max_tokens"] < observed[0]["max_tokens"]
+    assert requester._output_token_limit() == max(
+        AgentRequesterModule.AGENT_MIN_OUTPUT_TOKENS, original // 2
+    )

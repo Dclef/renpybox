@@ -37,11 +37,43 @@ def test_unknown_model_uses_safe_fallback() -> None:
         ("gpt-4.1-mini", (1_047_576, 32_768)),
         ("gpt-4o-mini", (128_000, 16_384)),
         ("Qwen2.5-72B-Instruct", (128_000, 8_192)),
+        # 国产生效值取自 WorkBuddy 运行时模型表。注意这里是两级裁切后的结果：
+        # 目录 maxTokens 再被产品档位封顶（窗口 <500k → 32k，否则 → 64k）。
+        # kimi-k3 标称窗口 1M 但输出只给 32k；若目录填成 1M 会按 64k 发出去被 400。
+        ("kimi-k3-2", (1_000_000, 32_000)),
+        ("kimi-k2.7", (256_000, 32_000)),
         ("deepseek-v4-pro", (1_000_000, 64_000)),
+        ("deepseek-v4.1-flash", (1_000_000, 64_000)),
+        ("deepseek-v3-1", (96_000, 32_000)),
+        ("glm-5.2", (1_000_000, 64_000)),
+        ("glm-5.3-flash", (1_000_000, 64_000)),
+        ("hy4-preview", (1_000_000, 64_000)),
+        ("minimax-m2.5", (200_000, 32_000)),
     ],
 )
 def test_known_models_are_recognised(model: str, expected: tuple[int, int]) -> None:
     assert resolve_capability({"model": model}) == expected
+
+
+@pytest.mark.parametrize(
+    "model,ceiling",
+    [
+        # 供应商实际接受的输出上限，目录值绝不能高于它。
+        ("kimi-k3-2", 32_000),
+        ("deepseek-v4-pro", 128_000),
+        ("glm-5.2", 64_000),
+        ("minimax-m2.5", 48_000),
+        ("hy4-preview", 64_000),
+    ],
+)
+def test_catalog_never_exceeds_vendor_output_limit(
+    model: str, ceiling: int
+) -> None:
+    """目录值一旦高估，产品档位仍会把它送出去，端点直接 400。"""
+    from module.Agent.ModelBudget import _lookup_model
+
+    _context, declared = _lookup_model(model)
+    assert 0 < declared <= ceiling
 
 
 def test_longest_model_fragment_wins() -> None:
