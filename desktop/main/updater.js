@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { downloadInstaller } from './updater-download.js';
@@ -109,6 +110,35 @@ async function defaultLaunchInstaller(filePath, { installDir = '' } = {}) {
 }
 
 /**
+ * 读取并清除增量应用器留下的失败记录。
+ *
+ * 增量包在主进程退出之后才被应用，失败发生在没有 UI 的时刻：应用器只能把
+ * 原因写进安装目录的 `_update_error.json`。不读它的话，用户看到的现象是
+ * 「点了更新、重启后还是旧版本」，界面上没有任何解释。
+ */
+export async function readApplyError(installDir) {
+  if (!installDir) return null;
+  const file = path.join(installDir, '_update_error.json');
+  let text;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+  // 无论解析成功与否都删掉：同一条失败只提示一次。
+  await rm(file, { force: true }).catch(() => {});
+  try {
+    const payload = JSON.parse(text);
+    return {
+      version: String(payload?.patchVersion ?? ''),
+      error: String(payload?.error ?? ''),
+    };
+  } catch {
+    return { version: '', error: '' };
+  }
+}
+
+/**
  * 显式维护桌面更新状态，状态字段与旧实现保持一致，
  * 渲染端（应用设置）与壳窗口（update-dialog）都直接读这套字段。
  */
@@ -131,6 +161,8 @@ export function createDesktopUpdater({
   electronExe = process.execPath,
   /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
   installDir = '',
+  /** 上一次增量应用留在安装目录里的失败记录；测试可注入。 */
+  readApplyError: readApplyErrorImpl = () => readApplyError(installDir),
 }) {
   let state = {
     status: packaged ? 'idle' : 'dev',
@@ -153,6 +185,8 @@ export function createDesktopUpdater({
   let installerPath = '';
   let installing = false;
   let cancelling = false;
+  /** 上一次增量应用失败的版本与原因：只提示一次，之后强制走全量。 */
+  let applyFailure = null;
 
   const snapshot = () => ({ ...state });
   const update = next => { state = { ...state, ...next }; broadcast(snapshot()); return snapshot(); };
@@ -169,7 +203,14 @@ export function createDesktopUpdater({
       if (checkPromise) return checkPromise;
       update({ status: 'checking', error: '', progress: 0 });
       checkPromise = Promise.resolve()
-        .then(() => requestJson(`${API_ROOT}/repos/${repo}/releases?per_page=50`))
+        // 上次增量应用失败过的话，先把它捞出来：同一版本不再给增量包，
+        // 否则用户会一直重复「下载增量 → 重启 → 还是旧版」。
+        .then(() => readApplyErrorImpl())
+        .catch(() => null)
+        .then(past => {
+          applyFailure = past && past.version ? past : null;
+          return requestJson(`${API_ROOT}/repos/${repo}/releases?per_page=50`);
+        })
         .then(releases => {
           const release = pickLatestRelease(releases, version);
           if (!release) return update({
@@ -178,11 +219,14 @@ export function createDesktopUpdater({
             mode: '', deltaAssetName: '', deltaAssetUrl: '', deltaAssetSize: 0, deltaAssetDigest: '',
           });
           const asset = selectInstallerAsset(release);
-          const delta = selectDeltaAsset(release, { currentVersion: version });
+          const nextVersion = String(release.tag_name ?? '').replace(/^v/, '');
+          // 同一版本刚失败过增量应用：这次只提示原因，并走全量安装包。
+          const skipDelta = Boolean(applyFailure && applyFailure.version === nextVersion);
+          const delta = skipDelta ? null : selectDeltaAsset(release, { currentVersion: version });
           return update({
             status: 'available',
-            version: String(release.tag_name ?? '').replace(/^v/, ''),
-            error: '',
+            version: nextVersion,
+            error: skipDelta ? `上次增量更新失败（${applyFailure.error || '未知原因'}），本次将使用完整安装包` : '',
             progress: 0,
             mode: '',
             releaseNotes: typeof release.body === 'string' ? release.body : '',
