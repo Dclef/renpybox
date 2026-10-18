@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveWebUpdateUi } from '../renderer/src/webUpdateStatus.mjs';
+import { describeUpdateDelivery, resolveWebUpdateUi } from '../renderer/src/webUpdateStatus.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const settingsPage = fs.readFileSync(path.join(root, 'renderer/src/pages/SettingsPage.tsx'), 'utf8');
@@ -107,6 +107,27 @@ test('错误与已是最新', () => {
     resolveWebUpdateUi(state({ latest: { tag_name: 'v0.8.1' }, new_version: false })).statusText,
     '已是最新版本',
   );
+});
+
+test('增量/全量交付方式与省下的下载量', () => {
+  // 增量：只下变化文件，省下 = 全量 - 增量
+  const delta = describeUpdateDelivery({ mode: 'delta', deltaAssetSize: 150 * 1024 * 1024, assetSize: 342 * 1024 * 1024 });
+  assert.equal(delta.kind, 'delta');
+  assert.equal(delta.modeSize, 150 * 1024 * 1024);
+  assert.equal(delta.savedBytes, 192 * 1024 * 1024);
+  // 全量：没有节省
+  const full = describeUpdateDelivery({ mode: 'full', deltaAssetSize: 150 * 1024 * 1024, assetSize: 342 * 1024 * 1024 });
+  assert.equal(full.kind, 'full');
+  assert.equal(full.modeSize, 342 * 1024 * 1024);
+  assert.equal(full.savedBytes, 0);
+  // 尚未下载：没有 mode 时不能宣称省流量
+  assert.equal(describeUpdateDelivery({ assetSize: 342 * 1024 * 1024 }).kind, '');
+  assert.equal(describeUpdateDelivery(undefined).savedBytes, 0);
+  // 增量比全量还大（不该发生，但不能算出负数）
+  assert.equal(describeUpdateDelivery({ mode: 'delta', deltaAssetSize: 400, assetSize: 300 }).savedBytes, 0);
+  // 设置页确实渲染了这条说明
+  assert.match(settingsPage, /describeUpdateDelivery\(update\)/);
+  assert.match(settingsPage, /rb-update-status-note/);
 });
 
 test('WebAboutCard offer/确认：legacy 确认后 downloadUpdate；migration 打开 release_url', () => {

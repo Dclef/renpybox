@@ -17,6 +17,32 @@ export function formatMegabytes(size) {
 }
 
 /**
+ * 说明本次更新是增量还是全量，以及省了多少下载量。
+ *
+ * 增量包只对生成它的那一版有效：跨版本（如 0.9.0 → 0.9.2）会自动走全量包，
+ * 这里如实说明，避免用户以为「增量没生效」是 bug。
+ *
+ * @param {{
+ *   mode?: string,
+ *   deltaAssetSize?: number,
+ *   assetSize?: number,
+ * }} update
+ * @returns {{ kind: 'delta' | 'full' | '', savedBytes: number, modeSize: number, fullSize: number }}
+ */
+export function describeUpdateDelivery(update) {
+  const mode = update?.mode === 'delta' ? 'delta' : update?.mode === 'full' ? 'full' : '';
+  const deltaSize = Number(update?.deltaAssetSize) || 0;
+  const fullSize = Number(update?.assetSize) || 0;
+  const savedBytes = mode === 'delta' && deltaSize > 0 && fullSize > deltaSize ? fullSize - deltaSize : 0;
+  return {
+    kind: /** @type {'delta' | 'full' | ''} */ (mode),
+    savedBytes,
+    modeSize: mode === 'delta' ? deltaSize : fullSize,
+    fullSize,
+  };
+}
+
+/**
  * @param {{
  *   status?: string,
  *   latest?: { tag_name?: string, delivery?: string },

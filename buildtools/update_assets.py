@@ -121,15 +121,23 @@ def validate_patch_zip(zip_path: Path, expected_version: str | None = None) -> d
 
 
 def find_payload_dir(extract_root: Path) -> Path:
-    """与 updater._find_payload_dir 同规则：定位包含 RenpyBox.exe 的目录。"""
-    exe_names = {"RenpyBox.exe"}
-    for candidate in (extract_root, *sorted(extract_root.rglob("RenpyBox.exe"))):
-        if candidate.is_file():
+    """定位安装根目录：含主程序的那一层。
+
+    主程序名在 0.9.1 之前是 "RenpyBox New UI.exe"，0.9.2 起统一成 RenpyBox.exe；
+    生成增量包时可能以旧版为基线，两种名字都要认。
+    """
+    def has_app(directory: Path) -> bool:
+        return any(
+            item.is_file() and item.name.casefold().startswith("renpybox") and item.suffix.casefold() == ".exe"
+            for item in directory.iterdir()
+        ) if directory.is_dir() else False
+
+    if has_app(extract_root):
+        return extract_root
+    for candidate in sorted(extract_root.rglob("*.exe")):
+        name = candidate.name.casefold()
+        if candidate.is_file() and name.startswith("renpybox") and name.endswith(".exe"):
             return candidate.parent
-        if candidate.is_dir() and any(
-            (candidate / name).is_file() for name in exe_names
-        ):
-            return candidate
     raise RuntimeError(f"Payload dir not found under {extract_root}")
 
 
@@ -263,6 +271,14 @@ def cmd_patch(args: argparse.Namespace) -> int:
         from update_integrity import validate_installed_files
 
         target_manifest = build_manifest(dist_dir, args.version)
+        # 0.9.x 的全量包没有内嵌清单（生成清单的步骤还没接进流水线），
+        # 这里按解压出的旧版内容补一份，才能让 updater 的基线校验跑起来。
+        prev_manifest_path = prev_payload / MANIFEST_NAME
+        if not prev_manifest_path.is_file():
+            prev_manifest_path.write_text(
+                json.dumps(build_manifest(prev_payload, args.prev_version), ensure_ascii=False),
+                encoding="utf-8",
+            )
         verification_zip = extract_root / "verification.patch.zip"
         import shutil
 
