@@ -106,6 +106,28 @@ def test_release_workflow_ships_desktop_artifacts_only() -> None:
     assert len(release_commands) == 2
     assert all("--draft" in command and "--notes-file" in command for command in release_commands)
 
+    # 发布草稿按 pattern 下载产物：pattern 必须真的匹配 desktop.yml 上传的 artifact 名，
+    # 否则 download-artifact 会静默下载 0 个产物，直到 draft 校验才报 Missing artifact。
+    import fnmatch
+
+    desktop = yaml.load(
+        (workflow_dir / "desktop.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    upload_name = next(
+        step["with"]["name"]
+        for step in desktop["jobs"]["package"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    )
+    download_pattern = next(
+        step["with"]["pattern"]
+        for step in release["jobs"]["draft"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/download-artifact")
+    )
+    assert fnmatch.fnmatch(upload_name, download_pattern), (
+        f"release.yml 下载 pattern {download_pattern!r} 匹配不到 desktop.yml 上传的 {upload_name!r}"
+    )
+
 
 def _run_7za(*args: str) -> subprocess.CompletedProcess[str]:
     assert _BUNDLED_7ZA.is_file(), f"missing bundled 7za: {_BUNDLED_7ZA}"
