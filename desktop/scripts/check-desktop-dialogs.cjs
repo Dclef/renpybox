@@ -110,6 +110,12 @@ app.whenReady().then(async () => {
   await waitFor("document.querySelector('.ant-select').textContent.includes('英文') && window.__dialogFixture.values.app_language === 'EN'");
   assert.deepEqual(await js("window.__dialogFixture.patches.at(-1)"), { app_language: 'EN' });
   console.log('PASS: language dropdown opens beside its control and selection updates');
+  // 改了需要重启的设置会弹重启确认；先点「稍后重启」关掉，否则会遮挡后面的用例。
+  await waitFor("Boolean([...document.querySelectorAll('.ant-modal button')].find(b => b.textContent === '稍后重启'))");
+  assert.match(await js("document.querySelector('.ant-modal').textContent"), /需要重启应用/);
+  await js("[...document.querySelectorAll('.ant-modal button')].find(b => b.textContent === '稍后重启').click()");
+  await waitFor("!document.querySelector('.ant-modal')");
+  console.log('PASS: restart-required setting asks before restart and can be postponed');
   console.log('Opening changelog');
   await js("[...document.querySelectorAll('button')].find(b => b.textContent === '查看更新日志').click()");
   await waitFor("Boolean(document.querySelector('.update-changelog'))");
