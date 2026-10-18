@@ -138,6 +138,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [scrollY, setScrollY] = useState(200);
   const [scrollX, setScrollX] = useState(900);
   const requestId = useRef(0);
+  const filterSignature = useRef('');
   const projectRef = useRef('');
   const matchIndexRef = useRef(-1);
   const dirtyRef = useRef(false);
@@ -165,6 +166,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
 
   useEffect(() => {
     setData(null);
+    filterSignature.current = '';
     setSelected(new Set());
     if (!dirtyRef.current) setEdit(null);
     setReplaceOpen(false);
@@ -221,9 +223,11 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     const controller = new AbortController();
     const params = new URLSearchParams({ page: String(page), limit: String(limit), query: search, status, file_path: file, only_issues: String(onlyIssues), warning });
     params.set('incremental', 'true');
+    const signature = params.toString();
     let timer: number | undefined;
     setLoading(true);
-    setData(null);
+    // 不清空已有表格：润色/校对运行期间每 2 秒都会刷新一次，清空会让
+    // 「已检查 N 条」闪回「正在载入翻译缓存」，也会把用户的选择清掉。
     setError('');
     setReplacePlan(null);
     setReplaceBusy('');
@@ -232,7 +236,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         const result = await request<ProofreadingData>('/api/proofreading?' + params, { signal: controller.signal });
         if (id !== requestId.current) return;
         setData(result);
-        setSelected(new Set()); setActive(null); selectionAnchor.current = null;
+        // 只有筛选条件变化才重置选择；润色/校对期间的后台轮询不能把用户
+        // 正在勾选的行清掉。
+        if (filterSignature.current !== signature) {
+          filterSignature.current = signature;
+          setSelected(new Set()); setActive(null); selectionAnchor.current = null;
+        }
         if (result.scan_complete === false) {
           timer = window.setTimeout(() => void load(), 80);
         } else {
