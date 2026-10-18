@@ -338,3 +338,45 @@ def test_service_invalid_agent_platform_is_treated_as_unset() -> None:
 
     assert result.success is False
     assert result.code == "AGENT_PLATFORM_NOT_SET"
+
+
+def test_service_recovers_from_truncated_tool_arguments(monkeypatch) -> None:
+    """截断是可自愈错误：把原因回灌给模型后，下一轮正常写回应当成功。"""
+    observed_messages = []
+    responses = iter([
+        AgentRequestResult.failure("TOOL_ARGUMENTS_TRUNCATED", "参数被截断，请降低单次条目数。"),
+        AgentRequestResult(
+            True,
+            tool_calls=[AgentToolCall("call-1", "get_project_info", {})],
+        ),
+        AgentRequestResult(True, text="已经读取项目。"),
+    ])
+
+    def request_tools(_self, messages, _tools):
+        observed_messages.append(list(messages))
+        return next(responses)
+
+    monkeypatch.setattr(TaskRequester, "request_tools", request_tools)
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    result = service.run("继续写回")
+
+    assert result.success is True
+    assert result.message == "已经读取项目。"
+    # 第二次请求必须能看到「截断原因」，否则模型无从修正。
+    assert observed_messages[1][-1]["role"] == "user"
+    assert "参数被截断" in observed_messages[1][-1]["content"]
+
+
+def test_service_gives_up_after_repeated_truncation(monkeypatch) -> None:
+    responses = iter([
+        AgentRequestResult.failure("TOOL_ARGUMENTS_TRUNCATED", "参数被截断。")
+        for _ in range(AgentService.MAX_TRUNCATION_RETRIES + 1)
+    ])
+    monkeypatch.setattr(TaskRequester, "request_tools", lambda *_args, **_kwargs: next(responses))
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    result = service.run("继续写回")
+
+    assert result.success is False
+    assert result.code == "TOOL_ARGUMENTS_TRUNCATED"
