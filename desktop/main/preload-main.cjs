@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('renpy', {
   appInfo: () => ipcRenderer.invoke('app:info'),
   changelog: () => ipcRenderer.invoke('app:changelog'),
   openLogs: () => ipcRenderer.invoke('app:open-logs'),
+  /** 重启应用（语言 / 代理 / 字体等重启后生效的设置需要用）。 */
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
   updater: {
     state: () => ipcRenderer.invoke('app:update-state'),
     check: () => ipcRenderer.invoke('app:check-update'),

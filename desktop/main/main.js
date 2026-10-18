@@ -14,19 +14,20 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
 import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
 import { createDesktopUpdater } from './updater.js';
+import { createElectronFetch, readProxySettings } from './updater-net.js';
 import { createWindowCloseGuard } from './window-close-guard.js';
 import { APP_DATA_DIR_NAME, migrateLegacyProfile } from './profile-migration.js';
 
 // electron 是主进程内建模块，ESM 下用 createRequire 取最稳
 const require = createRequire(import.meta.url);
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, nativeTheme, net, session } = require('electron');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_ROOT = path.resolve(__dirname, '..');
@@ -76,8 +77,18 @@ let backendHealth = null;
 let quitting = false;
 let cleanupDone = false;
 let rendererLocale = null;
+// 更新请求走「网络代理」设置：主进程以前完全无视这个开关，用户开了代理
+// 仍然 fetch failed。这里每次请求前重读 config.json，改完设置无需重启。
+const updateFetch = createElectronFetch({
+  electron: { session, net },
+  proxyFor: () => readProxySettings(path.join(dataPath, 'config.json'), readFileSync),
+  log,
+});
 const updater = createDesktopUpdater({
   packaged: !isDev, version: app.getVersion(), log,
+  fetchImpl: updateFetch,
+  // 安装版把当前 exe 所在目录交给 NSIS，更新时默认装回原目录（便携解压目录同理）。
+  installDir: isDev ? '' : path.dirname(app.getPath('exe')),
   tempDir: path.join(dataPath, 'update'),
   broadcast: state => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -222,6 +233,13 @@ ipcMain.handle('app:info', async () => {
 });
 ipcMain.handle('app:changelog', () => readFile(isDev ? path.join(DESKTOP_ROOT, '..', 'CHANGELOG.md') : path.join(process.resourcesPath, 'renpybox', 'CHANGELOG.md'), 'utf8'));
 ipcMain.handle('app:open-logs', () => { openShellWindow('logs'); });
+// 重启应用：语言、代理、字体这些「重启后生效」的设置需要一个直接的重启入口，
+// 以前只有「重启并安装」才带重启，改完语言就卡在「提示了但没按钮」。
+ipcMain.handle('app:relaunch', () => {
+  quitting = true;
+  app.relaunch();
+  app.exit(0);
+});
 ipcMain.handle('app:read-logs', (_event, source = 'app') => readLogTail(resolveLogFile(logDirectory, source)));
 ipcMain.handle('app:copy-logs', (_event, text) => {
   if (typeof text !== 'string' || text.length > 512 * 1024) throw new Error('日志内容无效');
