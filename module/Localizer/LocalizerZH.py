@@ -835,6 +835,10 @@ class LocalizerZH():
     agent_tool_arguments_must_be_object: str = "工具参数必须是 JSON 对象。"
     agent_tool_undeclared_arguments: str = "包含未声明参数：{names}。"
     agent_tool_missing_arguments: str = "缺少必填参数：{names}。"
+    agent_tool_arguments_truncated: str = (
+        "工具参数在 {limit} token 的输出上限处被截断，无法解析。原样重试仍会失败："
+        "请把单次条目数降到 10～20 条再试，分批把整批写完即可。"
+    )
     agent_tool_argument_must_be_string: str = "参数 {name} 必须是字符串。"
     agent_tool_argument_must_be_object: str = "参数 {name} 必须是对象。"
     agent_tool_argument_must_be_boolean: str = "参数 {name} 必须是布尔值。"

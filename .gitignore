@@ -21,6 +21,10 @@ htmlcov/
 dist/
 build/
 _update_staging/
+# 桌面端打包产物（本地打 dist 验证用，不入库）
+/desktop/release/
+/desktop/release-test/
+/desktop/release-archive/
 
 # 运行时目录（不入库）
 /log
