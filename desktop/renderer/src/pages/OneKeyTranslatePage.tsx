@@ -122,6 +122,7 @@ export function OneKeyTranslatePage(props: {
   // 抽取选项在页面上可临时修改，开始准备时随请求落盘；未修改时沿用已保存配置
   const [supplementOverride, setSupplementOverride] = useState<SupplementMode | null>(null);
   const [injectOverride, setInjectOverride] = useState<boolean | null>(null);
+  const [prepareLexiconOverride, setPrepareLexiconOverride] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
   const completed = useRef('');
@@ -152,6 +153,7 @@ export function OneKeyTranslatePage(props: {
     : values.extract_supplement_mode === 'aggressive' ? 'aggressive' : 'precise';
   const supplementMode = supplementOverride ?? savedSupplement;
   const injectUiPack = injectOverride ?? values.onekey_inject_base_box === true;
+  const prepareLexicon = prepareLexiconOverride ?? values.onekey_prepare_lexicon !== false;
   const verifyUppercase = values.renpy_verify_uppercase_candidates !== false;
   const autoMergeCleanup = values.renpy_incremental_auto_merge_cleanup !== false;
   const extractConflict = !officialExtract && supplementMode === 'off';
@@ -287,6 +289,7 @@ export function OneKeyTranslatePage(props: {
           exe_path: officialExtract ? (exePath.trim() || detect?.auto_exe || null) : null,
           supplement_mode: supplementMode,
           inject_ui_pack: injectUiPack,
+          prepare_lexicon: prepareLexicon,
           project_key: detect?.project_key || '',
         }),
       });
@@ -619,6 +622,11 @@ export function OneKeyTranslatePage(props: {
           <Form.Item extra={t('onekey_inject_ui_pack_hint')} style={{ marginBottom: 0 }}>
             <Checkbox checked={injectUiPack} onChange={(event) => setInjectOverride(event.target.checked)} disabled={busy}>
               {t('onekey_inject_ui_pack')}
+            </Checkbox>
+          </Form.Item>
+          <Form.Item extra={t('onekey_prepare_lexicon_hint')} style={{ marginBottom: 0 }}>
+            <Checkbox checked={prepareLexicon} onChange={(event) => setPrepareLexiconOverride(event.target.checked)} disabled={busy}>
+              {t('onekey_prepare_lexicon')}
             </Checkbox>
           </Form.Item>
           <Form.Item extra={t('onekey_verify_uppercase_hint')} style={{ marginBottom: 0 }}>

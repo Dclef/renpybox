@@ -42,3 +42,6 @@ resource/config.json
 
 # 内部文档：不入库（docs/internal/README.md 有约定）
 /docs/internal
+
+# 本地 Agent 记忆目录（不入库）
+/.workbuddy
