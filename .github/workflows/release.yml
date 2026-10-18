@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: renpybox-*-windows
+          pattern: renpybox-windows
           merge-multiple: true
           path: release-assets
       - name: Verify complete release and prepare draft
