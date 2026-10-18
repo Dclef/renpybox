@@ -25,6 +25,11 @@ TextDeltaCallback = Callable[[str], None]
 
 THINKING_LEVELS = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"}
 
+# Agent 的输出预算与翻译任务的行数上限无关：一次 write_translation_batch 要吐
+# 一整批 JSON，被 token_threshold（默认 20 行）压到 1024 会直接截断参数，
+# 表现成「缺少必填参数：translations」并且模型反复重试也修不好。
+AGENT_MIN_OUTPUT_TOKENS = 8192
+
 
 class _LazyModule:
     """首次访问属性时再加载供应商 SDK，避免打开 Agent 页面时阻塞启动。"""
@@ -124,6 +129,22 @@ class AgentRequester:
             return max(1, int(getattr(self.config, "request_timeout", 60)))
         except (TypeError, ValueError):
             return 60
+
+    def _output_token_limit(self) -> int:
+        """Agent 的输出上限，按模型容量推导，与翻译任务的行数无关。
+
+        这里必须用 ModelBudget，而不是 ``config.token_threshold``：后者是每次翻译
+        的行数（默认 20），当输出上限会算成 1024，整批工具参数的 JSON 直接被截断，
+        模型只能看到「缺少必填参数」，怎么重试都修不好。
+        """
+        from module.Agent.ModelBudget import resolve_capability
+
+        try:
+            _context, output = resolve_capability(self.platform)
+            budget = int(output)
+        except (TypeError, ValueError):
+            budget = 0
+        return max(AGENT_MIN_OUTPUT_TOKENS, budget)
 
     def _client_key(self) -> tuple[str, str, str, int, int]:
         return (
@@ -252,6 +273,46 @@ class AgentRequester:
         except (TypeError, ValueError):
             return {}
         return decoded if isinstance(decoded, dict) else {}
+
+    @staticmethod
+    def _is_complete_json(value: str) -> bool:
+        """判断流式拼起来的参数是不是一个完整的 JSON 对象。"""
+        try:
+            return isinstance(json.loads(value), dict)
+        except (TypeError, ValueError):
+            return False
+
+    def _truncation_failure(self) -> AgentRequestResult:
+        """输出被 max_tokens 截断时的统一失败结果。
+
+        不算「模型不会用工具」：告诉它降低单次条目数就能继续，避免原地重试。
+        """
+        return AgentRequestResult.failure(
+            "TOOL_ARGUMENTS_TRUNCATED",
+            Localizer.get().agent_tool_arguments_truncated.format(
+                limit=self._output_token_limit()
+            ),
+        )
+
+    @staticmethod
+    def _openai_hit_length(response: Any) -> bool:
+        choices = AgentRequester._value(response, "choices", []) or []
+        if not choices:
+            return False
+        return str(AgentRequester._value(choices[0], "finish_reason", "") or "") == "length"
+
+    @staticmethod
+    def _anthropic_hit_limit(response: Any) -> bool:
+        return str(AgentRequester._value(response, "stop_reason", "") or "") == "max_tokens"
+
+    @staticmethod
+    def _google_hit_limit(response: Any) -> bool:
+        candidates = AgentRequester._value(response, "candidates", []) or []
+        if not candidates:
+            return False
+        reason = AgentRequester._value(candidates[0], "finish_reason", "")
+        name = str(getattr(reason, "name", reason) or "")
+        return name.upper() == "MAX_TOKENS" or name == "2"
 
     @staticmethod
     def _usage(value: Any, input_names: tuple[str, ...], output_names: tuple[str, ...]) -> dict[str, int]:
@@ -439,7 +500,7 @@ class AgentRequester:
             "tools": [tool.openai_schema() for tool in tools],
             "tool_choice": "auto",
         }
-        max_tokens = max(1024, int(getattr(self.config, "token_threshold", 0) or 0))
+        max_tokens = self._output_token_limit()
         model = str(self.platform.get("model") or "")
         api_url = str(self.platform.get("api_url") or "")
         if api_url.startswith("https://api.openai.com") or self.RE_O_SERIES.search(model):
@@ -476,6 +537,9 @@ class AgentRequester:
             ("prompt_tokens", "input_tokens"),
             ("completion_tokens", "output_tokens"),
         )
+        # finish_reason=length 说明输出被 max_tokens 砍断，参数一定不完整。
+        if self._openai_hit_length(response):
+            return self._truncation_failure()
         return AgentRequestResult(
             success=True,
             text=str(self._value(message, "content", "") or ""),
@@ -545,6 +609,20 @@ class AgentRequester:
             )
             for _, item in sorted(calls.items())
         ]
+        # 参数被 max_tokens 截断时 JSON 不完整，_decode_arguments 只能退回空对象。
+        # 如实告诉模型是「截断」而不是「漏传」，否则它会一次次原样重试。
+        if any(
+            isinstance(item["arguments"], str)
+            and item["arguments"].strip()
+            and not self._is_complete_json(item["arguments"])
+            for _, item in sorted(calls.items())
+        ):
+            return AgentRequestResult.failure(
+                "TOOL_ARGUMENTS_TRUNCATED",
+                Localizer.get().agent_tool_arguments_truncated.format(
+                    limit=self._output_token_limit()
+                ),
+            )
         return AgentRequestResult(
             success=True,
             text="".join(texts),
@@ -607,11 +685,8 @@ class AgentRequester:
             "model": self.platform.get("model"),
             "messages": converted,
             "tools": [tool.anthropic_schema() for tool in tools],
-            "max_tokens": max(
-                1024,
-                int(getattr(self.config, "token_threshold", 0) or 0),
-                thinking_budget + 512,
-            ),
+            # thinking 预算要额外算进输出上限，否则开启思考后会顶掉工具参数的空间。
+            "max_tokens": max(self._output_token_limit(), thinking_budget + 512),
         }
         if system:
             payload["system"] = system
@@ -666,6 +741,8 @@ class AgentRequester:
             ("input_tokens", "prompt_tokens"),
             ("output_tokens", "completion_tokens"),
         )
+        if self._anthropic_hit_limit(response):
+            return self._truncation_failure()
         return AgentRequestResult(
             success=True,
             text="".join(texts),
@@ -760,7 +837,7 @@ class AgentRequester:
             google_tool = {"function_declarations": declarations}
         config_kwargs: dict[str, Any] = {
             "tools": [google_tool],
-            "max_output_tokens": max(1024, int(getattr(self.config, "token_threshold", 0) or 0)),
+            "max_output_tokens": self._output_token_limit(),
         }
         thinking_config = self._google_thinking_config(
             str(self.platform.get("model") or ""),
@@ -812,6 +889,8 @@ class AgentRequester:
             ("prompt_token_count", "input_tokens"),
             ("candidates_token_count", "output_token_count", "output_tokens"),
         )
+        if self._google_hit_limit(response):
+            return self._truncation_failure()
         return AgentRequestResult(
             success=True,
             text="".join(texts),

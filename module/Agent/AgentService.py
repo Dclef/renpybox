@@ -7,10 +7,10 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 from base.Base import Base
+from base.LogManager import LogManager
 from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Renpy.ProjectPaths import RenpyProjectPaths
-
 from .AgentPromptBuilder import AgentPromptBuilder
 from .ToolDispatcher import ToolDispatcher
 from .types import AgentRunResult, ToolResult
@@ -35,6 +35,8 @@ class AgentService:
     DEFAULT_MAX_LONG_ITERATIONS = 600
     # 单纯轮询（translation_status）不占推演预算，但要有上限，防止模型空转。
     POLLING_ITERATIONS_CEILING = 240
+    # 工具参数被输出上限截断后允许模型自我纠正的次数；超过仍不收敛才判失败。
+    MAX_TRUNCATION_RETRIES = 3
 
     def __init__(
         self,
@@ -515,6 +517,7 @@ class AgentService:
         iteration = 0
         long_iterations = 0
         polling_iterations = 0
+        truncated = 0
         while iteration < self.max_iterations:
             iteration_results: list[ToolResult] = []
             # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
@@ -556,6 +559,30 @@ class AgentService:
                 if result.success and result.reasoning and not reasoning_seen:
                     emit_reasoning(result.reasoning)
             if not result.success:
+                # 输出被 max_tokens 截断属于可自愈错误：模型只要降低单次条目数就能
+                # 继续。以前这里直接终止，模型连「为什么失败」都看不到，只能一直报
+                # 同一句「缺少必填参数」。把原因作为工具结果喂回去让它自己收敛。
+                if result.error_code == "TOOL_ARGUMENTS_TRUNCATED":
+                    truncated += 1
+                    # 不向外发事件：这一轮没有产生工具调用，界面不该多出一张「失败」卡。
+                    # 截断是模型下一次就能改好的局部问题，写日志便于事后取证即可。
+                    LogManager.get().warning(
+                        f"Agent 工具参数被输出上限截断，第 {truncated} 次：{result.error_message}"
+                    )
+                    # 用 user 角色回灌：Anthropic/Gemini 都不接受结尾是 assistant 的消息。
+                    self.messages.append({"role": "user", "content": result.error_message})
+                    if truncated > self.MAX_TRUNCATION_RETRIES:
+                        self._emit(callback, "error", {
+                            "code": result.error_code,
+                            "message": result.error_message,
+                        })
+                        return self._finalize(AgentRunResult(
+                            False,
+                            result.error_message,
+                            data={"events": details},
+                            code=result.error_code,
+                        ))
+                    continue
                 self._emit(callback, "error", {
                     "code": result.error_code,
                     "message": result.error_message,
