@@ -884,6 +884,11 @@ class LocalizerEN(LocalizerZH):
     agent_tool_arguments_must_be_object: str = "Tool arguments must be a JSON object."
     agent_tool_undeclared_arguments: str = "Undeclared arguments: {names}."
     agent_tool_missing_arguments: str = "Missing required arguments: {names}."
+    agent_tool_arguments_truncated: str = (
+        "The tool arguments were cut off at the {limit}-token output limit, so they could not be "
+        "parsed. Retrying the same call will fail again: send fewer items per call (for example "
+        "10-20 entries) and keep going until the batch is done."
+    )
     agent_tool_argument_must_be_string: str = "Argument {name} must be a string."
     agent_tool_argument_must_be_object: str = "Argument {name} must be an object."
     agent_tool_argument_must_be_boolean: str = "Argument {name} must be a boolean."
