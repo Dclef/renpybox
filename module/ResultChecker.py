@@ -295,6 +295,12 @@ class ResultChecker(Base):
         if self._has_retry_threshold_error(item):
             warnings.append(WarningType.RETRY_THRESHOLD)
 
+        # 人工确认过的告警不再上报；译文一改，确认记录按摘要自动失效。
+        confirmed = item.get_manual_confirm()
+        if confirmed is not None:
+            accepted = {str(value) for value in confirmed.get("warnings", ())}
+            warnings = [warning for warning in warnings if str(warning) not in accepted]
+
         return warnings
 
     # 检查

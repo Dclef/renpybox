@@ -324,17 +324,29 @@ def reset_rows(request: Request, body: SelectionRequest) -> dict:
 
 @router.post("/confirm")
 def confirm_rows(request: Request, body: SelectionRequest) -> dict:
-    """人工确认已有译文，仅清除达到重试阈值的警告与重试原因。"""
+    """人工确认已有译文，抹掉当前查出的告警（含文本保护、相似度等类型）。
+
+    重试计数与失败元数据一并清掉；确认记录绑定译文摘要，译文再改自动失效。
+    """
     with _write_access(request, body.cache_token) as (output, manager):
         targets = _targets(manager, body.rows)
         checker = ResultChecker(request.app.state.config, [item for _, item in targets])
         changed = 0
         for _, item in targets:
-            if item.get_dst().strip() and WarningType.RETRY_THRESHOLD in checker.check_single_item(item):
-                item.set_retry_count(0)
-                metadata = item.get_metadata()
-                metadata.pop(CacheItem.TRANSLATION_RETRY_KEY, None)
+            if not item.get_dst().strip():
+                continue
+            warnings = checker.check_single_item(item)
+            # 先落重试元数据的清理，再写确认记录，避免 set_metadata 把刚写的确认覆盖掉。
+            metadata = item.get_metadata()
+            had_retry = metadata.pop(CacheItem.TRANSLATION_RETRY_KEY, None) is not None
+            touched = had_retry or item.get_retry_count() > 0 or bool(warnings)
+            if had_retry:
                 item.set_metadata(metadata)
+            if item.get_retry_count() > 0:
+                item.set_retry_count(0)
+            if warnings:
+                item.set_manual_confirm([str(warning) for warning in warnings])
+            if touched:
                 changed += 1
         if changed:
             _save(request, output, manager, body.cache_token)

@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import hashlib
 import re
 import threading
 from functools import lru_cache
@@ -102,6 +103,7 @@ class CacheItem():
 
     QUALITY_ORIGIN_KEY: ClassVar[str] = "quality_origin"
     TRANSLATION_RETRY_KEY: ClassVar[str] = "translation_retry"
+    MANUAL_CONFIRM_KEY: ClassVar[str] = "manual_confirm"
 
     @classmethod
     def _from_dict_fields(cls) -> frozenset[str]:
@@ -169,6 +171,7 @@ class CacheItem():
             # TODO:可能需要更好的处理方式
             if value != self.dst:
                 self.metadata.pop(__class__.QUALITY_ORIGIN_KEY, None)
+                self.metadata.pop(__class__.MANUAL_CONFIRM_KEY, None)
             self.dst = value
 
     # 获取角色姓名原文
@@ -303,6 +306,32 @@ class CacheItem():
     def clear_quality_metadata(self) -> None:
         self.set_quality_origin(None)
 
+    @classmethod
+    def _dst_digest(cls, dst: str) -> str:
+        return hashlib.sha256((dst if isinstance(dst, str) else str(dst)).encode("utf-8")).hexdigest()
+
+    def get_manual_confirm(self) -> dict[str, Any] | None:
+        """人工「确认无误」记录；译文改过就视为过期。"""
+        with self.lock:
+            value = self.metadata.get(__class__.MANUAL_CONFIRM_KEY)
+            if not isinstance(value, dict):
+                return None
+            if value.get("dst_sha256") != __class__._dst_digest(self.dst):
+                return None
+            return copy.deepcopy(value)
+
+    def set_manual_confirm(self, warnings: list[str] | tuple[str, ...] | None = None) -> None:
+        """记下人工确认，并把译文摘要一并写进元数据用于失效判断。"""
+        with self.lock:
+            self.metadata[__class__.MANUAL_CONFIRM_KEY] = {
+                "dst_sha256": __class__._dst_digest(self.dst),
+                "warnings": [str(value) for value in (warnings or ())],
+            }
+
+    def clear_manual_confirm(self) -> None:
+        with self.lock:
+            self.metadata.pop(__class__.MANUAL_CONFIRM_KEY, None)
+
     def set_quality_result(self, dst: str, origin: QualityOrigin | str) -> None:
         value = __class__.QualityOrigin(origin).value
         with self.lock:
@@ -353,6 +382,7 @@ class CacheItem():
             self.retry_count = 0
             self.metadata.pop(__class__.QUALITY_ORIGIN_KEY, None)
             self.metadata.pop(__class__.TRANSLATION_RETRY_KEY, None)
+            self.metadata.pop(__class__.MANUAL_CONFIRM_KEY, None)
 
     def asdict(self) -> dict[str, Any]:
         with self.lock:
