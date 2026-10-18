@@ -115,6 +115,9 @@ app.whenReady().then(async () => {
   assert.match(await js("document.querySelector('.ant-modal').textContent"), /需要重启应用/);
   await js("[...document.querySelectorAll('.ant-modal button')].find(b => b.textContent === '稍后重启').click()");
   await waitFor("!document.querySelector('.ant-modal')");
+  // 「稍后重启」= 放弃本次修改：下拉框和配置都要退回中文，否则用户看不出到底生效没有。
+  await waitFor("document.querySelector('.ant-select').textContent.includes('中文') && window.__dialogFixture.values.app_language === 'ZH'");
+  assert.deepEqual(await js("window.__dialogFixture.patches.at(-1)"), { app_language: 'ZH' });
   console.log('PASS: restart-required setting asks before restart and can be postponed');
   console.log('Opening changelog');
   await js("[...document.querySelectorAll('button')].find(b => b.textContent === '查看更新日志').click()");

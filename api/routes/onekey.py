@@ -12,6 +12,8 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
+from collections.abc import Mapping
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +38,7 @@ from module.OneKey.flow import (
     resolve_extraction_incremental,
 )
 from module.Renpy.ProjectPaths import RenpyProjectPaths
+from module.Tool import LexiconOps
 from module.Tool.ArchiveOps import decompile_target, unpack_game
 from module.Tool.RenpyDecompiler import RenpyDecompiler
 
@@ -68,6 +71,9 @@ class PrepareBody(OneKeyBase):
     # None 表示沿用已保存配置；UnifiedExtractor 从磁盘配置读取，因此显式值会先落盘。
     supplement_mode: Literal["off", "precise", "aggressive"] | None = None
     inject_ui_pack: bool | None = None
+    # 抽取完成后顺手准备词库：扫描角色名做术语候选（去重 + 过滤非术语），
+    # 并把 [variable] 写进禁翻表。None 表示沿用配置里的 onekey_prepare_lexicon。
+    prepare_lexicon: bool | None = None
 
 
 class ApplyBody(OneKeyBase):
@@ -192,6 +198,129 @@ def _latest_job(request: Request, kind: str | None = None, project_key: str | No
     )
 
 
+def _prepare_lexicon_after_extract(request: Request, check_cancel, progress, config: Any) -> dict:
+    """抽取完成后准备术语库与禁翻库，返回可展示的摘要。
+
+    只补「自动」部分：人工词条原样不动；已有条目不会被删除，只有自动候选
+    会被重新生成、去重、过滤。任何一步失败都只影响本段结果，不影响抽取。
+    """
+    from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
+    from module.OneKey.lexicon_prep import prepare_glossary, prepare_preserve
+
+    progress("正在准备术语库与禁翻库", 94, stage="lexicon")
+    check_cancel()
+
+    report: dict[str, Any] = {"success": True}
+
+    source = None
+    tl_root = None
+    try:
+        source, tl_root = LexiconOps.resolve_renpy_scan_paths(config)
+    except Exception:
+        source = None
+
+    with CacheManager.LOCK:
+        live_config = request.app.state.config
+        # 词库挂在快照项目上；项目已切换时不要写进别人的库。
+        if _project_identity(live_config) != _project_identity(config):
+            return {"success": False, "message": "项目已切换，跳过词库准备"}
+
+        repository = ProjectAssetsRepository.from_config(live_config)
+        if not getattr(repository, "has_storage", False):
+            return {"success": False, "message": "当前项目没有词库存储，跳过词库准备"}
+
+        state = repository.load(live_config)
+        metadata = state.analysis_candidates.get("glossary_metadata", {}) if hasattr(state, "analysis_candidates") else {}
+        rows: list[dict[str, Any]] = []
+        for candidate, items in ((False, state.assets.glossary), (True, state.analysis_candidates.get("items", []))):
+            for item in items:
+                data = item.to_dict() if hasattr(item, "to_dict") else item
+                record_id = str(data.get("record_id", "") or "")
+                meta = metadata.get(record_id, {}) if isinstance(metadata, Mapping) else {}
+                rows.append({
+                    "record_id": record_id,
+                    "src": str(data.get("source", data.get("src", "")) or ""),
+                    "dst": str(data.get("target", data.get("dst", "")) or ""),
+                    "info": str(data.get("note", data.get("comment", "")) or ""),
+                    "comment": str(data.get("note", data.get("comment", "")) or ""),
+                    "type": str(meta.get("type", "") or ""),
+                    "case_sensitive": bool(meta.get("case_sensitive", False)),
+                    "enabled": bool(data.get("enabled", True)),
+                    "regex": bool(data.get("regex", False)),
+                    "candidate": candidate,
+                    "candidate_confirmed": False if candidate else bool(meta.get("candidate_confirmed", False)),
+                })
+
+        names: set[str] = set()
+        if source is not None:
+            def scan_names() -> set[str]:
+                check_cancel()
+                found = LexiconOps.extract_names_from_source(source, check_cancel)
+                found |= LexiconOps.extract_names_from_miss_files(
+                    source,
+                    LexiconOps.effective_tl_name(config, tl_root),
+                    check_cancel,
+                )
+                return found
+
+            try:
+                names = scan_names()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                names = set()
+
+        glossary = prepare_glossary(config, rows, scan_names=(lambda: names) if names else None)
+        if names:
+            # 用扫描结果整体替换自动候选：旧的手工保留，旧的自动候选重建。
+            removed_ids = {
+                row.get("record_id", "")
+                for row in rows
+                if row.get("candidate") and LexiconOps._is_auto_character_entry(row)
+            }
+            try:
+                repository.replace_analysis_terms(
+                    [{**item, "dst": item.get("dst", ""), "info": item.get("info", "")} for item in glossary.entries],
+                    removed_record_ids=removed_ids,
+                )
+            except Exception as exc:
+                report["glossary_error"] = str(exc)
+
+        report["glossary"] = {
+            "scanned": glossary.scanned,
+            "added": glossary.added,
+            "removed_duplicate": glossary.removed_duplicate,
+            "removed_not_term": glossary.removed_not_term,
+            "message": glossary.summary() if names else "未扫描到角色名，术语库未变动",
+        }
+
+        check_cancel()
+
+        existing_preserve = [
+            {"src": str(item.get("src", "") or ""), "comment": str(item.get("comment", item.get("info", "")) or "")}
+            for item in (getattr(live_config, "text_preserve_data", None) or [])
+            if isinstance(item, Mapping)
+        ]
+        preserve = prepare_preserve(config, existing_preserve, cancel_check=check_cancel)
+        if preserve.added:
+            try:
+                _persist_fields(live_config, {
+                    "text_preserve_data": preserve.entries,
+                    "text_preserve_enable": bool(preserve.enabled),
+                })
+            except Exception as exc:
+                report["preserve_error"] = str(exc)
+        report["preserve"] = {
+            "scanned": preserve.scanned,
+            "added": preserve.added,
+            "message": preserve.summary() if preserve.scanned else "未扫描到变量引用，禁翻库未变动",
+        }
+
+    parts = [report["glossary"]["message"], report["preserve"]["message"]]
+    report["message"] = "；".join(part for part in parts if part)
+    return report
+
+
 @router.get("")
 def read_onekey(request: Request) -> dict:
     """返回当前项目最近一次一键准备或应用任务。"""
@@ -292,6 +421,8 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
             option_values["extract_use_custom"] = body.supplement_mode != "off"
         if body.inject_ui_pack is not None:
             option_values["onekey_inject_base_box"] = bool(body.inject_ui_pack)
+        if body.prepare_lexicon is not None:
+            option_values["onekey_prepare_lexicon"] = bool(body.prepare_lexicon)
         if exe_path and not getattr(live, "extract_use_official", True):
             # 抽取器还会检查该开关；用户已明确选择并确认 EXE，不能被旧配置静默跳过。
             option_values["extract_use_official"] = True
@@ -324,6 +455,7 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         "supplement_mode": str(getattr(live, "extract_supplement_mode", "precise") or "precise")
         if getattr(live, "extract_use_custom", True) else "off",
         "inject_ui_pack": bool(getattr(live, "onekey_inject_base_box", False)),
+        "prepare_lexicon": bool(getattr(live, "onekey_prepare_lexicon", True)),
         "message": "正在配置翻译路径" if body.skip_extraction else "准备检测项目",
         "worker_active": True,
         "stage": "paths" if body.skip_extraction else "detect",
@@ -502,6 +634,24 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         if result is not None:
             payload["incremental_dir"] = str(getattr(result, "incremental_dir", None) or prepared["incremental_dir"] or "")
             payload["tl_dir"] = str(getattr(result, "tl_dir", None) or prepared["main_tl_dir"])
+
+        # 抽取完成后顺手准备词库（用户 m04513：一条龙应该也把自动扫描术语库的
+        # 自动去重和移除可能不是术语的词语，然后禁翻库也要一起弄）。
+        # 整段包在 try 里：词库准备失败绝不能把已成功的抽取判成失败。
+        want_lexicon = (
+            body.prepare_lexicon
+            if body.prepare_lexicon is not None
+            else bool(getattr(request.app.state.config, "onekey_prepare_lexicon", True))
+        )
+        if want_lexicon:
+            try:
+                payload["lexicon"] = _prepare_lexicon_after_extract(
+                    request, check_cancel, progress, config,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                payload["lexicon"] = {"success": False, "message": f"词库准备失败：{exc}"}
         return payload
 
     async def worker(_: Job) -> dict:

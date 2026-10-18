@@ -279,6 +279,9 @@ class Config():
     onekey_inject_base_box: bool = False
     # 一键翻译完成后，是否自动执行 replace_text 补全漏翻
     onekey_auto_hook_supplement: bool = False
+    # 抽取后顺手准备词库：扫描角色名生成术语候选（去重 + 过滤非术语），
+    # 并扫描 [variable] 写入禁翻表。默认开着——用户不想每次手点两个按钮。
+    onekey_prepare_lexicon: bool = True
 
     # 角色 / 世界观工作台
     renpy_workbench_worldbook_enable: bool = False
