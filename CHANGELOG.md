@@ -2,7 +2,7 @@
 
 <!-- 发版时，请同步更新 base/Version.py、version.txt、desktop/package.json 与锁文件，并在本文件顶部添加对应版本。 -->
 
-## 未发布
+## v0.9.2 - 2026-10-18（桌面版）
 
 ### 新增
 
