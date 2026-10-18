@@ -56,6 +56,9 @@ jobs:
           foreach ($file in $files) {
             if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) { throw "Missing artifact: $file" }
           }
+          foreach ($delta in @(Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-from-*-x64.delta.zip" -File -ErrorAction SilentlyContinue)) {
+            if ($delta.Length -gt 0) { $files += $delta.FullName }
+          }
           $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
           $section = [regex]::Match($changelog, ('(?ms)^## v' + [regex]::Escape($version) + '[^\r\n]*\r?\n(.*?)(?=^## |\z)'))
           if (!$section.Success) { throw "Missing changelog for v$version" }

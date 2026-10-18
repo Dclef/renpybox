@@ -661,6 +661,90 @@ def test_patch_command_verifies_reconstructed_installation(tmp_path: Path) -> No
     assert validate_patch_zip(patch, "v2.0.0")["base_version"] == "v1.0.0"
 
 
+def test_find_payload_dir_accepts_pre_rename_executable(tmp_path: Path) -> None:
+    """0.9.1 的主程序叫 "RenpyBox New UI.exe"，用它当基线时也要能定位安装根。"""
+    from buildtools.update_assets import find_payload_dir
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "RenpyBox New UI.exe").write_bytes(b"EXE")
+    (legacy / "resources").mkdir()
+    (legacy / "resources" / "app.asar").write_bytes(b"asar")
+    assert find_payload_dir(legacy) == legacy
+
+    nested = tmp_path / "nested"
+    inner = nested / "RenpyBox-0.9.1"
+    inner.mkdir(parents=True)
+    (inner / "RenpyBox New UI.exe").write_bytes(b"EXE")
+    assert find_payload_dir(nested) == inner
+
+    with pytest.raises(RuntimeError, match="Payload dir not found"):
+        find_payload_dir(tmp_path / "empty")
+
+
+def test_patch_command_accepts_baseline_without_embedded_manifest(tmp_path: Path) -> None:
+    """0.9.x 的全量包没有内嵌清单；生成增量包时要自己补一份基线清单才能验证。"""
+    from buildtools.update_assets import main
+
+    v1 = _make_version_tree(tmp_path, "v1.0.0")
+    v2 = _make_version_tree(tmp_path, "v2.0.0")
+    legacy_zip = tmp_path / "v1-no-manifest.zip"
+    with zipfile.ZipFile(legacy_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
+        for item in sorted(v1.rglob("*")):
+            if item.is_file():
+                zf.write(item, item.relative_to(v1).as_posix())
+    with zipfile.ZipFile(legacy_zip) as zf:
+        assert MANIFEST_NAME not in zf.namelist()
+
+    patch = tmp_path / "v2.patch.zip"
+    assert main([
+        "patch", "--dist", str(v2), "--version", "v2.0.0",
+        "--prev-zip", str(legacy_zip), "--prev-version", "v1.0.0", "--out", str(patch),
+    ]) == 0
+    assert validate_patch_zip(patch, "v2.0.0")["base_version"] == "v1.0.0"
+
+
+def test_delta_asset_name_carries_base_version() -> None:
+    """增量包只对生成它的那一版有效，文件名必须带基线版本，否则跨版本会盖出混合安装。"""
+    import yaml
+
+    workflow_dir = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    desktop = yaml.load(
+        (workflow_dir / "desktop.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    steps = desktop["jobs"]["package"]["steps"]
+    # 全量包必须内嵌清单，否则下一版生成增量包时无法校验基线
+    manifest_step = next(step for step in steps if step.get("name") == "Embed update manifest into the portable zip")
+    assert "buildtools/update_assets.py manifest" in manifest_step["run"]
+    assert manifest_step["continue-on-error"] == "true"
+    patch_step = next(step for step in steps if step.get("name") == "Build incremental patch from previous release")
+    # 首发没有上一版：这一步失败不能让安装包构建失败
+    assert patch_step["continue-on-error"] == "true"
+    run = patch_step["run"]
+    assert 'RenpyBox-$version-from-$($best.Version)-x64.delta.zip' in run
+    assert "buildtools/update_assets.py patch" in run
+
+    upload = next(
+        step for step in steps
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    )
+    assert "desktop/release/RenpyBox-*-x64.delta.zip" in upload["with"]["path"]
+    # 增量包可能不存在（首发/上一版缺失），不能让上传整步失败
+    assert upload["with"]["if-no-files-found"] == "warn"
+
+    release = yaml.load(
+        (workflow_dir / "release.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    draft_run = next(step["run"] for step in release["jobs"]["draft"]["steps"] if "run" in step)
+    # 发布侧按 $version 匹配的不是写死名字，筛出来的是 from-<base> 形式
+    assert 'Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-from-*-x64.delta.zip"' in draft_run
+    assert "RenpyBox-$version-x64.delta.zip\"" not in draft_run
+    # exe 与 zip 仍必须存在，增量包缺失只是少传一个资产
+    assert 'if (!(Test-Path -LiteralPath $file)' in draft_run
+
+
 def test_patch_command_discards_failed_reconstruction(tmp_path: Path, monkeypatch) -> None:
     from buildtools.update_assets import main
 

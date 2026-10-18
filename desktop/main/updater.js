@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { downloadInstaller } from './updater-download.js';
 import { downloadCandidates } from './updater-mirror.js';
+import { deltaAssetName, selectDeltaAsset, spawnDeltaApplier as defaultSpawnDeltaApplier } from './updater-delta.js';
 import {
   DESKTOP_TAG_PATTERN,
   compareDesktopVersions,
@@ -17,7 +18,7 @@ import {
  * 有意不使用 electron-updater：那条链路要求每次发布同时上传 blockmap 与 app-update.yml，
  * 这些文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
  * 自己拉起安装包，所以 release 只需要放 exe 与 zip。
- * 代价：没有差分（block-level）下载，每次更新都是全量安装包。
+ * 有增量包（RenpyBox-<ver>-x64.delta.zip）时优先文件级更新；下载或拉起失败则回退全量安装包。
  *
  * 发布解析在 updater-release.js（安装包必须与标签版本同名），
  * 下载校验在 updater-download.js（大小 + 逐字节 SHA-256）。
@@ -125,6 +126,9 @@ export function createDesktopUpdater({
   requestJson = url => defaultRequestJson(url, fetchImpl),
   downloadFile = defaultDownloadFile,
   launchInstaller = defaultLaunchInstaller,
+  spawnDeltaApplier = defaultSpawnDeltaApplier,
+  deltaScriptPath = '',
+  electronExe = process.execPath,
   /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
   installDir = '',
 }) {
@@ -137,6 +141,11 @@ export function createDesktopUpdater({
     progress: 0,
     releaseNotes: '',
     releaseUrl: `https://github.com/${repo}/releases`,
+    mode: '',
+    deltaAssetName: '',
+    deltaAssetUrl: '',
+    deltaAssetSize: 0,
+    deltaAssetDigest: '',
   };
   let checkPromise;
   let downloadPromise;
@@ -163,19 +172,29 @@ export function createDesktopUpdater({
         .then(() => requestJson(`${API_ROOT}/repos/${repo}/releases?per_page=50`))
         .then(releases => {
           const release = pickLatestRelease(releases, version);
-          if (!release) return update({ status: 'latest', version: '', progress: 0, error: '', releaseNotes: '', releaseUrl: `https://github.com/${repo}/releases` });
+          if (!release) return update({
+            status: 'latest', version: '', progress: 0, error: '', releaseNotes: '',
+            releaseUrl: `https://github.com/${repo}/releases`,
+            mode: '', deltaAssetName: '', deltaAssetUrl: '', deltaAssetSize: 0, deltaAssetDigest: '',
+          });
           const asset = selectInstallerAsset(release);
+          const delta = selectDeltaAsset(release, { currentVersion: version });
           return update({
             status: 'available',
             version: String(release.tag_name ?? '').replace(/^v/, ''),
             error: '',
             progress: 0,
+            mode: '',
             releaseNotes: typeof release.body === 'string' ? release.body : '',
             releaseUrl: typeof release.html_url === 'string' && release.html_url ? release.html_url : `https://github.com/${repo}/releases`,
             assetName: String(asset.name ?? ''),
             assetUrl: String(asset.browser_download_url ?? ''),
             assetSize: Number(asset.size) || 0,
             assetDigest: String(asset.digest ?? ''),
+            deltaAssetName: delta ? String(delta.name ?? '') : '',
+            deltaAssetUrl: delta ? String(delta.browser_download_url ?? '') : '',
+            deltaAssetSize: delta ? (Number(delta.size) || 0) : 0,
+            deltaAssetDigest: delta ? String(delta.digest ?? '') : '',
           });
         })
         .catch(failed)
@@ -187,26 +206,56 @@ export function createDesktopUpdater({
       if (!packaged) return Promise.reject(new Error('开发模式不下载应用更新，请使用安装版测试。'));
       if (state.status !== 'available') return Promise.reject(new Error('请先检查更新，确认存在可下载的新版本。'));
       const assetUrl = state.assetUrl;
-      if (!assetUrl) return Promise.reject(new Error('发布版本缺少 Windows 安装包资产。'));
-      const assetName = state.assetName || `RenpyBox-${state.version}-x64.exe`;
-      const destination = path.join(tempDir || '.', assetName);
+      if (!assetUrl && !state.deltaAssetUrl) return Promise.reject(new Error('发布版本缺少 Windows 安装包资产。'));
+      // 增量包文件名带基线版本；只有基线等于当前版本时 selectDeltaAsset 才会选中它，
+      // 跨版本（如 0.9.0 → 0.9.2）一律走全量安装包。
+      const deltaFileName = state.deltaAssetUrl
+        ? (state.deltaAssetName || deltaAssetName(state.version, state.currentVersion))
+        : '';
       cancelling = false;
       controller = new AbortController();
-      update({ status: 'downloading', progress: 0, error: '' });
-      downloadPromise = Promise.resolve()
-        .then(() => downloadFile(assetUrl, destination, {
+      update({ status: 'downloading', progress: 0, error: '', mode: state.deltaAssetUrl ? 'delta' : 'full' });
+      const fetchAsset = (url, name, size, digest, mode) => {
+        const destination = path.join(tempDir || '.', name);
+        update({ status: 'downloading', progress: 0, error: '', mode });
+        return downloadFile(url, destination, {
           fetchImpl,
           signal: controller.signal,
-          expectedSize: state.assetSize,
-          expectedDigest: state.assetDigest,
+          expectedSize: size,
+          expectedDigest: digest,
           onProgress: ({ received, total }) => {
             if (cancelling) return;
-            update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0 });
+            update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0, mode });
           },
-        }))
-        .then(result => {
+        }).then(result => {
           installerPath = result?.path || destination;
-          return update({ status: 'downloaded', progress: 100, error: '', filePath: installerPath });
+          return update({ status: 'downloaded', progress: 100, error: '', filePath: installerPath, mode });
+        });
+      };
+      downloadPromise = Promise.resolve()
+        .then(async () => {
+          if (state.deltaAssetUrl) {
+            try {
+              return await fetchAsset(
+                state.deltaAssetUrl,
+                deltaFileName,
+                state.deltaAssetSize,
+                state.deltaAssetDigest,
+                'delta',
+              );
+            } catch (error) {
+              if (cancelling || error?.name === 'AbortError') throw error;
+              log.error('[update] 增量包下载失败，改下完整安装包', error);
+            }
+          }
+          if (!assetUrl) throw Object.assign(new Error('发布版本缺少 Windows 安装包资产。'), { kind: 'download' });
+          return fetchAsset(
+            assetUrl,
+            state.assetName || `RenpyBox-${state.version}-x64.exe`,
+            state.assetSize,
+            state.assetDigest,
+            'full',
+          );
         })
         .catch(error => (cancelling || error?.name === 'AbortError'
           ? update({ status: 'available', progress: 0, error: '' })
@@ -228,12 +277,42 @@ export function createDesktopUpdater({
       installing = true;
       try {
         await beforeInstall();
-        await launchInstaller(installerPath, { installDir });
-        // The installer was launched successfully; the main process can now
-        // continue through its normal shutdown cleanup.
+        if (state.mode === 'delta') {
+          await spawnDeltaApplier({
+            electronExe,
+            scriptPath: deltaScriptPath,
+            patchPath: installerPath,
+            installDir,
+            appExe: electronExe,
+            pid: process.pid,
+            baseVersion: state.currentVersion,
+            relaunch: true,
+            tempDir: tempDir || installDir,
+          });
+        } else {
+          await launchInstaller(installerPath, { installDir });
+        }
+        // 安装器或增量应用器已拉起，主进程可以走正常退出清理。
         quit();
         return snapshot();
       } catch (error) {
+        if (state.mode === 'delta') {
+          installing = false;
+          installerPath = '';
+          try { await afterInstallFailure(); } catch (restartError) { log.error('[update] backend recovery failed', restartError); }
+          log.error('[update]', error);
+          return update({
+            status: 'available',
+            mode: '',
+            error: '增量更新失败，将回退到完整安装包',
+            progress: 0,
+            filePath: '',
+            deltaAssetName: '',
+            deltaAssetUrl: '',
+            deltaAssetSize: 0,
+            deltaAssetDigest: '',
+          });
+        }
         installing = false;
         try { await afterInstallFailure(); } catch (restartError) { log.error('[update] backend recovery failed', restartError); }
         return failed(error?.kind ? error : Object.assign(error ?? new Error('未知原因'), { kind: 'install' }));

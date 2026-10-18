@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -39,23 +39,22 @@
     "pack:win": "npm run build:backend && npm run build:renderer && electron-builder --win nsis zip --x64 --publish never && npm run verify:package",
     "dist": "npm run pack:win"
   },
-  "dependencies": {
-    "@esbuild/win32-x64": "^0.25.12",
-    "antd": "6.6.5",
-    "lucide-react": "^1.54.0",
-    "ws": "^8.18.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@esbuild/win32-x64": "^0.25.12",
     "@rollup/rollup-win32-x64-msvc": "^4.64.1",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "antd": "6.6.5",
     "electron": "^44.0.0",
     "electron-builder": "^26.15.3",
+    "lucide-react": "^1.54.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.3",
-    "vite": "^6.0.11"
+    "vite": "^6.0.11",
+    "ws": "^8.18.0"
   },
   "build": {
     "appId": "com.dclef.renpybox",
@@ -88,6 +87,11 @@
         "from": "../LICENSE",
         "to": "renpybox/LICENSE"
       }
+    ],
+    "electronLanguages": [
+      "en-US",
+      "zh-CN",
+      "zh-TW"
     ],
     "win": {
       "icon": "icon.ico",
