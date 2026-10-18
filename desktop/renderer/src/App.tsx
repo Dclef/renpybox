@@ -17,6 +17,7 @@ import {
   NAV_ICONS,
 } from './icons';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { UpdateNotice } from './components/UpdateNotice';
 import { ToolPageFrame } from './components/ToolPageFrame';
 import { APP_SETTINGS_NAV, findNavItem, isNavCurrent, NAV_SECTIONS, type PageKey } from './nav';
 import { TOOL_SPECS } from './tools';
@@ -591,6 +592,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         >离开当前页面会丢弃编辑内容，请先保存或导出。</Dialog>
       ) : null}
       <Toasts toasts={state.toasts} onDismiss={state.dismissToast} />
+      {/* 桌面端：检查到新版本 / 刚完成更新时主动弹窗，不再只写进设置页。 */}
+      <UpdateNotice />
     </div>
     </I18nContext.Provider>
   );
