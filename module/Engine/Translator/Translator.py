@@ -1271,6 +1271,29 @@ class Translator(Base):
         self.extras["line"] = completed
         self.extras["total_line"] = completed + remaining
 
+    def _resync_failed_line_count(self) -> None:
+        """把失败行数对齐到「当前仍带重试元数据的条目数」。
+
+        ``failed_line_count`` 在 ``_merge_task_result_into_progress`` 里只增不减，
+        重试成功或人工确认后也不会回落，界面因此会长期显示一个历史峰值
+        （用户实测 2006 行失败，但「发现问题」查不到任何条目）。这里用与质量
+        报告相同的派生口径覆盖它，两者从此给出同一个数字。
+        """
+        items = self.cache_manager.get_items()
+        if not items:
+            return
+        try:
+            from module.Engine.Quality.TranslationQualityReport import (
+                build_translation_quality_report,
+            )
+
+            report = build_translation_quality_report(items)
+        except Exception:
+            return
+        with self.data_lock:
+            self.extras["failed_line_count"] = int(report.failed_count)
+            self.extras["line_count_mismatch_count"] = int(report.line_mismatch_count)
+
     def _finish_no_items_run(self, run_id: int | None) -> None:
         """以明确的空数据结果结束任务，避免误走“用户停止”流程。"""
         request_id = self._request_id_for_run(run_id)
@@ -1565,6 +1588,10 @@ class Translator(Base):
                         remaining,
                         fresh_run=(normalized_status == Base.TranslationStatus.UNTRANSLATED),
                     )
+                    # 失败行数是运行期累加器，重试成功后不会减少，界面上的
+                    # 「N 行失败」会一直停在历史峰值。每轮开始按当前条目状态
+                    # 重算一次，让它等于「此刻仍失败的条目数」。
+                    self._resync_failed_line_count()
 
                 # 第二轮开始切分（基于初始值计算，避免累积除法）
                 # 采用 2 倍率衰减而非 3 倍率，避免重试时批次过快坍缩到单行，
@@ -1805,6 +1832,11 @@ class Translator(Base):
 
             if self._should_stop_requested():
                 return None
+
+            # 落盘前把失败行数对齐到当前仍失败的条目，否则缓存里的
+            # progress.failed_line_count 会永远保留历史峰值。
+            self._resync_failed_line_count()
+            self.cache_manager.get_project().set_progress(self.extras)
 
             # 写入缓存
             self.cache_manager.save_to_file(
