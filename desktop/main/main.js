@@ -88,7 +88,10 @@ const updater = createDesktopUpdater({
   packaged: !isDev, version: app.getVersion(), log,
   fetchImpl: updateFetch,
   // 安装版把当前 exe 所在目录交给 NSIS，更新时默认装回原目录（便携解压目录同理）。
+  // 增量脚本在 asar 内也能按这个路径读到，拉起前会复制到临时目录。
   installDir: isDev ? '' : path.dirname(app.getPath('exe')),
+  electronExe: process.execPath,
+  deltaScriptPath: path.join(__dirname, 'update-apply.mjs'),
   tempDir: path.join(dataPath, 'update'),
   broadcast: state => {
     for (const win of BrowserWindow.getAllWindows()) {

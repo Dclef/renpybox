@@ -17,6 +17,10 @@ assert.equal(config.build.publish, undefined, 'Desktop updates must not fall bac
 const dependencies = { ...config.dependencies, ...config.devDependencies };
 assert(!('electron-updater' in dependencies), 'electron-updater must stay removed: the updater talks to the GitHub API directly');
 assert(!('builder-util-runtime' in dependencies), 'builder-util-runtime was only used by electron-updater');
+// renderer 依赖由 Vite 打进 dist，主进程不需要 node_modules：
+// 声明成生产依赖会让 electron-builder 把 antd/lucide 整份塞进 app.asar（约 84MB）。
+assert.deepEqual(Object.keys(config.dependencies), [],
+  'Desktop main/shell import no third-party runtime package; keep dependencies empty and let Vite bundle the renderer');
 assert(!existsSync(path.join(packaged, 'app-update.yml')), 'Stale app-update.yml found inside the packaged resources');
 // 安装包与免安装 zip 一次构建，两个产物共用同一个 win-unpacked。
 assert.match(config.scripts['pack:win'], /--win nsis zip/, 'pack:win must build both nsis and the portable zip');
