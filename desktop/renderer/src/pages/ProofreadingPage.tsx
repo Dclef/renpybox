@@ -664,6 +664,8 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     catch (failure) { state.pushToast('error', failure instanceof Error ? failure.message : String(failure)); }
   };
   const mutationDisabled = !state.ready || Boolean(readonly) || retranslateRunning || loading || saving || dirty;
+  // 只对「选中行里当前还有问题标记」的批次点亮确认入口，避免整页误点。
+  const confirmableSelected = items.some((row) => selected.has(row.id) && Boolean(row.warnings?.length));
 
   const contextMenuItems = (row: ProofreadingRow): MenuProps['items'] => {
     const multi = selected.has(row.id) && selected.size > 1;
@@ -700,12 +702,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         onClick: () => copyPairs(targetRows),
       },
       { type: 'divider' },
-      ...(row.warnings?.includes('RETRY_THRESHOLD') ? [{
+      {
         key: 'confirm',
         label: '确认译文无误',
         disabled: mutationDisabled,
         onClick: () => confirmSelection('confirm', targetRows),
-      }] : []),
+      },
       {
         key: 'reset',
         danger: true,
@@ -794,6 +796,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('retranslate')}>重译选中行</Button>
       {retranslateRunning && <Button size="small" danger disabled={retranslate.state === 'CANCELLING'} onClick={() => void cancelRetranslate()}>取消重译</Button>}
       <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('reset')}>重置选中译文</Button>
+      <Button size="small" disabled={mutationDisabled || !confirmableSelected} onClick={() => confirmSelection('confirm')}>确认选中无误</Button>
       <Button size="small" disabled={loading || !data} onClick={() => void showReport()}>质量报告</Button>
       {(['proofread', 'polish'] as const).map((task) => (
         <Button size="small" key={task} disabled={mutationDisabled || !selected.size}
@@ -1112,7 +1115,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         </Dialog>
       ) : null}
       {selectionConfirm && <Dialog title={selectionConfirm.action === 'retranslate' ? '重新翻译' : selectionConfirm.action === 'reset' ? '重置选中译文' : '确认译文无误'} confirmText={selectionConfirm.action === 'retranslate' ? '开始重译' : '确认并保存'} onCancel={() => { if (!saving) setSelectionConfirm(null); }} onConfirm={mutationDisabled || selectionConfirm.project !== projectIdentity ? undefined : () => void applySelection()}>
-        <p>{selectionConfirm.action === 'retranslate' ? '使用当前翻译接口重新处理选中行，会消耗额度；失败行保留原译文。' : selectionConfirm.action === 'reset' ? '将清空选中行的译文、重试记录，并设为待翻译。' : '保留已有译文，清除重试次数和对应失败记录。'}共 {selectionConfirm.rows.length} 条，成功后保存到缓存。</p>
+        <p>{selectionConfirm.action === 'retranslate' ? '使用当前翻译接口重新处理选中行，会消耗额度；失败行保留原译文。' : selectionConfirm.action === 'reset' ? '将清空选中行的译文、重试记录，并设为待翻译。' : '保留已有译文，清除重试次数与当前查出的问题标记；译文若再修改，确认会自动失效。'}共 {selectionConfirm.rows.length} 条，成功后保存到缓存。</p>
       </Dialog>}
       {exportConfirm && <Dialog title="导出译文" confirmText="写入译文文件" onCancel={() => { if (!saving) setExportConfirm(null); }} onConfirm={mutationDisabled || exportConfirm.project !== projectIdentity ? undefined : () => void exportRows()}>
         <p>将当前缓存中的全部译文按原文件格式写入输出目录，可能覆盖已有译文文件。当前筛选不会限制导出范围。</p>
