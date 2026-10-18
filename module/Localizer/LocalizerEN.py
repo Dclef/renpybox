@@ -321,7 +321,7 @@ class LocalizerEN(LocalizerZH):
     app_settings_page_scale_factor_content: str = "Enabling this feature will scale the app interface according to the selected ratio (takes effect after app restart)"
     app_settings_page_proxy_url: str = "Example - http://127.0.0.1:7890"
     app_settings_page_proxy_url_title: str = "Network Proxy"
-    app_settings_page_proxy_url_content: str = "Enabling this feature will use the set proxy address to send network requests  (takes effect after app restart)"
+    app_settings_page_proxy_url_content: str = "When enabled, network requests use the configured proxy address; leave the address empty to follow the system proxy (takes effect after app restart)"
     app_settings_page_close: str = "The application will close, please confirm …"
 
     # 接口管理

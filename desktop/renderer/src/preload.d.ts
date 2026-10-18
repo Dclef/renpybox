@@ -36,6 +36,8 @@ interface RenpyBridge {
   changelog: () => Promise<string>;
   /** 在应用内打开运行日志窗口。 */
   openLogs: () => Promise<void>;
+  /** 重启应用；语言 / 代理 / 字体等「重启后生效」的设置需要它。 */
+  relaunch: () => Promise<void>;
   updater: {
     state: () => Promise<DesktopUpdateState>;
     check: () => Promise<DesktopUpdateState>;

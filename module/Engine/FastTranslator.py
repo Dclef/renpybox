@@ -96,23 +96,23 @@ class FastTranslator:
             self.logger.warning(f"translators 库不可用，{self.engine} 引擎可能无法工作")
     
     def _load_proxy_from_config(self) -> Optional[Dict]:
-        """从配置文件读取代理设置"""
+        """从配置文件读取代理设置。
+
+        开关关闭 → 直连；开关打开且地址为空 → 跟随系统代理（返回 None，
+        由 trust_env 读取系统设置）；填了地址 → 使用该地址。
+        """
         try:
             from module.Config import Config
+            from module.ProxySettings import resolve_proxies, uses_system_proxy
+
             config = Config().load()
-            
-            # 检查代理是否启用
-            proxy_enable = getattr(config, 'proxy_enable', False)
-            if not proxy_enable:
-                return None
-            
-            proxy_url = getattr(config, 'proxy_url', None) or getattr(config, 'proxy', None)
-            if proxy_url and proxy_url.strip():
-                self.logger.info(f"使用代理: {proxy_url}")
-                return {
-                    'http': proxy_url,
-                    'https': proxy_url,
-                }
+            proxies = resolve_proxies(config)
+            if proxies:
+                self.logger.info(f"使用代理: {proxies.get('https')}")
+                return proxies
+            if uses_system_proxy(config):
+                self.logger.info("网络代理地址为空，跟随系统代理")
+            return None
         except Exception as e:
             self.logger.warning(f"读取代理配置失败: {e}")
         return None
