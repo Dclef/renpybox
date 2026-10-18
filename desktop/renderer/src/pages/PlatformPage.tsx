@@ -119,6 +119,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   const active = platforms.find((platform) => platform.id === activeId);
   const t = useT();
   const [models, setModels] = useState<string[]>([]);
+  const [modelOpen, setModelOpen] = useState(false);
   const [loadingModels, setLoadingModels] = useState(false);
   const modelRequest = useRef(0);
   const [presets, setPresets] = useState<PlatformPreset[]>([]);
@@ -129,6 +130,11 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<PlatformEntry | null>(null);
+  const [discard, setDiscard] = useState<
+    | { type: 'open'; platform?: PlatformEntry; openSampling: boolean }
+    | { type: 'close' }
+    | null
+  >(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [collapseKeys, setCollapseKeys] = useState<string[]>([]);
   const [importOpen, setImportOpen] = useState(false);
@@ -189,16 +195,23 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
     return () => window.clearInterval(timer);
   }, [testing]);
 
-  function openEditor(platform?: PlatformEntry, openSampling = false) {
-    if (dirty && !window.confirm('有尚未保存的接口修改，是否放弃？')) return;
+  function applyOpen(platform?: PlatformEntry, openSampling = false) {
     modelRequest.current += 1;
     setModels([]);
+    setModelOpen(false);
     setLoadingModels(false);
     const next = makeEditor(platform);
     setEditor(next);
     setOriginal(next);
     setCollapseKeys(openSampling ? ['sampling'] : []);
     window.requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+  function openEditor(platform?: PlatformEntry, openSampling = false) {
+    if (dirty) {
+      setDiscard({ type: 'open', platform, openSampling });
+      return;
+    }
+    applyOpen(platform, openSampling);
   }
   /** 从预设打开编辑器：只预填名称/协议/地址/模型/分组，密钥留空由用户填写。 */
   function openPresetEditor(preset: PlatformPreset) {
@@ -221,14 +234,20 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       setPresetsLoaded(true);
     }
   }
+  function applyClose() {
+    modelRequest.current += 1;
+    setModelOpen(false);
+    setLoadingModels(false);
+    setEditor(null);
+    setOriginal(null);
+    setCollapseKeys([]);
+  }
   function closeEditor() {
-    if (!dirty || window.confirm('放弃尚未保存的接口修改？')) {
-      modelRequest.current += 1;
-      setLoadingModels(false);
-      setEditor(null);
-      setOriginal(null);
-      setCollapseKeys([]);
+    if (dirty) {
+      setDiscard({ type: 'close' });
+      return;
     }
+    applyClose();
   }
   async function mutate(path: string, method: string, body?: Record<string, unknown>): Promise<boolean> {
     setBusy(true);
@@ -284,7 +303,8 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
       const result = await request<{ models: string[] }>('/api/platforms/' + editor.id + '/models');
       if (id !== modelRequest.current) return;
       setModels(result.models);
-      if (!result.models.length) state.pushToast('info', t('platform_models_empty'));
+      if (result.models.length) setModelOpen(true);
+      else state.pushToast('info', t('platform_models_empty'));
     } catch (error) {
       if (id === modelRequest.current) state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
@@ -588,7 +608,11 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                   <AutoComplete
                     options={models.map((model) => ({ value: model }))}
                     value={editor.model}
+                    open={modelOpen}
+                    onOpenChange={setModelOpen}
+                    filterOption={(input, option) => String(option?.value ?? '').toLowerCase().includes(String(input ?? '').trim().toLowerCase())}
                     onChange={(model) => setEditor({ ...editor, model })}
+                    onSelect={() => setModelOpen(false)}
                   >
                     <Input id="rb-platform-model" aria-label="模型名称" aria-required placeholder="服务商提供的模型 ID" maxLength={256} />
                   </AutoComplete>
@@ -703,6 +727,20 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
         ) : null}
       </div>
 
+      {discard ? (
+        <Dialog
+          title={t('platform_discard_title')}
+          onCancel={() => setDiscard(null)}
+          onConfirm={() => {
+            const action = discard;
+            setDiscard(null);
+            if (action.type === 'close') applyClose();
+            else applyOpen(action.platform, action.openSampling);
+          }}
+        >
+          {discard.type === 'close' ? t('platform_discard_close') : t('platform_discard_open')}
+        </Dialog>
+      ) : null}
       {importOpen ? (
         <Dialog
           title={t('platform_import_title')}

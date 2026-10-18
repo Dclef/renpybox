@@ -845,6 +845,12 @@ class LocalizerEN(LocalizerZH):
         "read_skill for the relevant skills (text-preserve, glossary, proofreading); tags, "
         "variables, and escape placeholders must be preserved exactly. Confirm that no entries "
         "remain untranslated before applying.\n"
+        "When the user asks you to polish, refine, or improve existing translations against the "
+        "source, pass mode=\"polish\" to both batch tools: read_translation_batch then returns "
+        "already-translated entries together with their current text in dst, you refine them against "
+        "the source, and write_translation_batch(mode=\"polish\") writes them back marked as polished "
+        "so they are distinguishable from freshly translated ones. Polished entries are not returned "
+        "again, so keep going until the reported remaining count reaches 0.\n"
         "When the user asks you to translate the whole project, keep going until nothing is left: do "
         "not stop after a few dozen entries to summarize, and do not ask the user between batches. "
         "Stop only when the user asks you to, or when you hit an error you cannot resolve.\n"
@@ -992,15 +998,18 @@ class LocalizerEN(LocalizerZH):
 
     # Agent-owned translation
     agent_tool_read_translation_batch_description: str = (
-        "Read a batch of untranslated entries. Each item has an id, the source text src, an optional "
-        "name_src (character name), and text_type. Entries come from the project's translation cache "
-        "and are the same data the translation engine uses. An empty batch means everything is "
-        "translated or text has not been extracted yet."
+        "Read a batch of entries. mode=translate (default) returns untranslated entries. Each item has "
+        "an id, the source text src, an optional name_src (character name), and text_type. mode=polish "
+        "returns already-translated entries and adds the existing translation dst and name_dst, so you "
+        "can polish existing work against the source. Entries come from the project's translation cache "
+        "and are the same data the translation engine uses. An empty batch means everything is done "
+        "for that mode, or text has not been extracted yet."
     )
     agent_tool_write_translation_batch_description: str = (
         "Write translations back to the project: into the cache, through the project's quality "
         "checks (markup preservation, glossary, similarity), and into the .rpy files under the "
-        "translation output folder. Ids must come from read_translation_batch. Entries that fail "
+        "translation output folder. Ids must come from read_translation_batch, and mode must match the "
+        "read call: translate marks entries translated, polish marks them polished. Entries that fail "
         "quality checks are reset to untranslated and counted as failed; they are not written. This "
         "writes the translation workspace, not the game folder; apply_translation is still required "
         "to put translations into the game."
@@ -1019,6 +1028,13 @@ class LocalizerEN(LocalizerZH):
     agent_translate_nothing_written: str = "No translation was accepted ({count} rejected). Check that the ids come from read_translation_batch."
     agent_translate_writeback_failed: str = "Translations reached the cache but writing the output folder failed: {detail}"
     agent_translate_batch_written: str = "Wrote {written} translations; {failed} failed the quality checks."
+    agent_translate_mode_param_description: str = (
+        "Which entries to take: translate (default, untranslated ones) or polish (already translated "
+        "ones; the response also carries the current translation in dst, for polishing against the source)."
+    )
+    agent_polish_batch_ready: str = "{count} translated entries in this batch, {remaining} left to polish."
+    agent_polish_batch_empty: str = "Nothing to polish; this project may not have any translations yet."
+    agent_polish_batch_written: str = "Wrote {written} polished entries; {failed} failed the quality checks."
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
