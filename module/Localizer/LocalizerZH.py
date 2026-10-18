@@ -797,6 +797,11 @@ class LocalizerZH():
         "你直接产出与之一一对应的译文，再用 write_translation_batch 按同一批 id 写回，"
         "然后继续下一批。译一批写一批，不要在回复里罗列整批译文；"
         "写回失败的条目按返回的 code 修正后重写。\n"
+        "用户要求润色、优化、按原文改已有翻译时，两批工具都传 mode=\"polish\"："
+        "read_translation_batch 会返回已译条目并附上现有译文 dst，"
+        "你按原文打磨这些译文，再用 write_translation_batch(mode=\"polish\") 写回，"
+        "条目会被标记为已润色并与「新翻译」区分开。已经润色过的条目不会再次返回，"
+        "所以同样一路润到底，直到返回的 remaining 为 0 再收尾。\n"
         "用户说「翻译这个项目」这类整盘任务时，一路译到底：不要译几十条就停下来总结，"
         "也不要每批都问用户，直到待译条目为 0 再收尾。只有用户要求停止、"
         "或出现你自己解决不了的错误时才停。\n"
@@ -942,13 +947,16 @@ class LocalizerZH():
 
     # Agent 自带翻译
     agent_tool_read_translation_batch_description: str = (
-        "读取一批待翻译条目。返回每条的 id、原文 src、可选的 name_src（角色姓名）与 text_type。"
+        "读取一批条目。mode=translate（默认）取待翻译条目，返回每条的 id、原文 src、"
+        "可选的 name_src（角色姓名）与 text_type；mode=polish 取已经译好的条目，"
+        "额外返回现有译文 dst 与 name_dst，用于按原文润色已有翻译。"
         "这些条目来自当前项目的翻译缓存，与翻译引擎共用同一份数据。"
-        "拿不到条目说明已经译完或尚未抽取文本。"
+        "拿不到条目说明已经译完（或还没开始译）或尚未抽取文本。"
     )
     agent_tool_write_translation_batch_description: str = (
         "把译文写回项目：写入缓存、通过项目的质量检查（标记保留、术语、相似度），"
         "并更新翻译输出目录中的 .rpy。id 必须来自 read_translation_batch。"
+        "mode 要与读批时一致：translate 写入后标记为已翻译，polish 写入后标记为已润色。"
         "质量检查不通过的条目会被打回未翻译并计入 failed，不会写入文件。"
         "写回的是翻译工作目录，不是游戏目录；要让译文进游戏仍需 apply_translation。"
     )
@@ -966,6 +974,13 @@ class LocalizerZH():
     agent_translate_nothing_written: str = "没有任何译文被接受（{count} 条被拒绝），请检查 id 是否来自 read_translation_batch。"
     agent_translate_writeback_failed: str = "译文已进入缓存，但写回输出目录失败：{detail}"
     agent_translate_batch_written: str = "已写入 {written} 条译文，{failed} 条未通过质量检查。"
+    agent_translate_mode_param_description: str = (
+        "取数口径：translate（默认，取还没翻译的条目）或 polish"
+        "（取已经译好的条目，返回值里带现有译文 dst，用于按原文润色）。"
+    )
+    agent_polish_batch_ready: str = "本批 {count} 条已译条目，剩余 {remaining} 条可润色。"
+    agent_polish_batch_empty: str = "没有可润色的条目，当前项目可能还没开始翻译。"
+    agent_polish_batch_written: str = "已写回 {written} 条润色译文，{failed} 条未通过质量检查。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"

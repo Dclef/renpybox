@@ -123,6 +123,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [edit, setEdit] = useState<(ProofreadingRow & { cache_token: string; project_identity: string }) | null>(null);
+  const [discardEdit, setDiscardEdit] = useState<null | { action: 'close' } | { action: 'open'; row: ProofreadingRow }>(null);
   const [draft, setDraft] = useState('');
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceSnapshot, setReplaceSnapshot] = useState<{ cache_token: string; rows: ProofreadingRow[] } | null>(null);
@@ -303,7 +304,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const reload = () => setRefresh((value) => value + 1);
   const closeEdit = () => {
     if (saving) return;
-    if (dirty && !window.confirm('译文尚未保存，确定放弃这次编辑？')) return;
+    if (dirty) { setDiscardEdit({ action: 'close' }); return; }
     setEdit(null);
   };
 
@@ -557,7 +558,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const openEdit = (row: ProofreadingRow) => {
     if (readonly || loading || saving) return;
     if (edit?.id === row.id) return;
-    if (dirty && !window.confirm('译文尚未保存，确定放弃这次编辑？')) return;
+    if (dirty) { setDiscardEdit({ action: 'open', row }); return; }
     setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
     setDraft(row.dst);
   };
@@ -1096,6 +1097,20 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           </div>
         </Modal>
       )}
+      {discardEdit ? (
+        <Dialog title={t('proofreading_discard_title')} onCancel={() => setDiscardEdit(null)} onConfirm={() => {
+          const pending = discardEdit;
+          setDiscardEdit(null);
+          if (pending.action === 'close') {
+            setEdit(null);
+            return;
+          }
+          setEdit({ ...pending.row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+          setDraft(pending.row.dst);
+        }}>
+          {t('proofreading_discard_body')}
+        </Dialog>
+      ) : null}
       {selectionConfirm && <Dialog title={selectionConfirm.action === 'retranslate' ? '重新翻译' : selectionConfirm.action === 'reset' ? '重置选中译文' : '确认译文无误'} confirmText={selectionConfirm.action === 'retranslate' ? '开始重译' : '确认并保存'} onCancel={() => { if (!saving) setSelectionConfirm(null); }} onConfirm={mutationDisabled || selectionConfirm.project !== projectIdentity ? undefined : () => void applySelection()}>
         <p>{selectionConfirm.action === 'retranslate' ? '使用当前翻译接口重新处理选中行，会消耗额度；失败行保留原译文。' : selectionConfirm.action === 'reset' ? '将清空选中行的译文、重试记录，并设为待翻译。' : '保留已有译文，清除重试次数和对应失败记录。'}共 {selectionConfirm.rows.length} 条，成功后保存到缓存。</p>
       </Dialog>}
