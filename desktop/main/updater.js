@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import { downloadInstaller } from './updater-download.js';
+import { downloadCandidates } from './updater-mirror.js';
 import {
   DESKTOP_TAG_PATTERN,
   compareDesktopVersions,
@@ -44,10 +45,10 @@ export function friendlyUpdateError(error) {
   }
 }
 
-async function defaultRequestJson(url) {
+async function defaultRequestJson(url, fetchImpl = fetch) {
   let response;
   try {
-    response = await fetch(url, { headers: REQUEST_HEADERS });
+    response = await fetchImpl(url, { headers: REQUEST_HEADERS });
   } catch (error) {
     throw Object.assign(new Error(error?.message || '网络不可用'), { kind: 'network', cause: error });
   }
@@ -60,14 +61,47 @@ async function defaultRequestJson(url) {
 /**
  * 默认下载实现：交给 updater-download.js，只有发布资产的大小与 SHA-256
  * 都对得上时才会把文件交给安装流程；注入 downloadFile 的测试可自行决定行为。
+ *
+ * 直连 GitHub 资产常被墙（objects.githubusercontent.com），这里按候选顺序
+ * 依次尝试：直连 → 公共镜像。第一个完整通过校验的即成功。
  */
-function defaultDownloadFile(url, destination, { onProgress, signal, expectedSize, expectedDigest } = {}) {
-  return downloadInstaller(url, destination, { onProgress, signal, expectedSize, expectedDigest });
+async function defaultDownloadFile(url, destination, options = {}) {
+  const { fetchImpl = fetch, onProgress, signal, expectedSize, expectedDigest } = options;
+  const candidates = downloadCandidates(url);
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      return await downloadInstaller(candidate, destination, { fetchImpl, onProgress, signal, expectedSize, expectedDigest });
+    } catch (error) {
+      lastError = error;
+      if (error?.name === 'AbortError') throw error;
+    }
+  }
+  throw lastError ?? Object.assign(new Error('没有可用的下载地址'), { kind: 'download' });
 }
 
-async function defaultLaunchInstaller(filePath) {
+/**
+ * NSIS 安装参数：把当前安装目录作为默认值传进去。
+ *
+ * 不传的话安装器永远默认到 `%LOCALAPPDATA%\Programs\RenpyBox`，用户把应用
+ * 装在 D 盘更新时会被「搬」到 C 盘，还会留下两份。
+ * NSIS 的 /D 必须是最后一个参数，且路径不能带引号（含空格也一样），
+ * 所以调用方要用 windowsVerbatimArguments 原样传参。
+ */
+export function installerArgs(installDir) {
+  const dir = typeof installDir === 'string' ? installDir.trim() : '';
+  return dir ? [`/D=${dir}`] : [];
+}
+
+async function defaultLaunchInstaller(filePath, { installDir = '' } = {}) {
   await new Promise((resolve, reject) => {
-    const child = spawn(filePath, [], { detached: true, stdio: 'ignore' });
+    const args = installerArgs(installDir);
+    const child = spawn(filePath, args, {
+      detached: true,
+      stdio: 'ignore',
+      // 必须原样传参：Node 默认会给含空格的参数加引号，NSIS 解析不了 /D="C:\a b"。
+      windowsVerbatimArguments: args.length > 0,
+    });
     child.once('error', error => reject(Object.assign(error, { kind: 'install' })));
     child.once('spawn', () => { child.unref(); resolve(); });
   });
@@ -87,9 +121,12 @@ export function createDesktopUpdater({
   quit = () => {},
   tempDir = '',
   repo = DEFAULT_UPDATE_REPO,
-  requestJson = defaultRequestJson,
+  fetchImpl = fetch,
+  requestJson = url => defaultRequestJson(url, fetchImpl),
   downloadFile = defaultDownloadFile,
   launchInstaller = defaultLaunchInstaller,
+  /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
+  installDir = '',
 }) {
   let state = {
     status: packaged ? 'idle' : 'dev',
@@ -158,6 +195,7 @@ export function createDesktopUpdater({
       update({ status: 'downloading', progress: 0, error: '' });
       downloadPromise = Promise.resolve()
         .then(() => downloadFile(assetUrl, destination, {
+          fetchImpl,
           signal: controller.signal,
           expectedSize: state.assetSize,
           expectedDigest: state.assetDigest,
@@ -190,7 +228,7 @@ export function createDesktopUpdater({
       installing = true;
       try {
         await beforeInstall();
-        await launchInstaller(installerPath);
+        await launchInstaller(installerPath, { installDir });
         // The installer was launched successfully; the main process can now
         // continue through its normal shutdown cleanup.
         quit();

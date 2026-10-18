@@ -7,7 +7,7 @@
  * CaptionLabel 组合。内部使用真实 Ant Design API。
  */
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, Button, Input, InputNumber as AntInputNumber, Modal, Select, Switch as AntSwitch } from 'antd';
 import { ArrowRight } from 'lucide-react';
 
@@ -150,6 +150,13 @@ export function NumberInput(props: {
   );
 }
 
+/**
+ * 文本输入：本地草稿 + 失焦/回车提交。
+ *
+ * 不能每敲一个字符就 commit —— 提交会触发异步落盘并让外层把输入框
+ * disabled，浏览器随即丢焦点，表现为「一次只能输入一个字」。
+ * 外部值变化（例如切换页面后重新读设置）时用 useEffect 同步回草稿。
+ */
 export function TextInput(props: {
   value: string;
   label: string;
@@ -159,17 +166,32 @@ export function TextInput(props: {
   onCommit: (next: string) => void;
 }) {
   const { value, label, disabled, placeholder, allowEmpty, onCommit } = props;
+  const [draft, setDraft] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => {
+    // 正在输入时不要用外部值覆盖草稿，否则会把用户刚敲的字符顶掉。
+    if (!focused.current) setDraft(value);
+  }, [value]);
+  const commit = () => {
+    const next = draft;
+    if (next === value) return;
+    if (!allowEmpty && next === '') {
+      setDraft(value);
+      return;
+    }
+    onCommit(next);
+  };
   return (
     <Input
       style={{ width: 240, maxWidth: '100%' }}
       aria-label={label}
-      value={value}
+      value={draft}
       disabled={disabled}
       placeholder={placeholder}
-      onChange={(event) => {
-        const next = event.target.value;
-        if (allowEmpty || next !== '') onCommit(next);
-      }}
+      onFocus={() => { focused.current = true; }}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => { focused.current = false; commit(); }}
+      onPressEnter={commit}
     />
   );
 }

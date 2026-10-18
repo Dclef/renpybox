@@ -14,6 +14,7 @@ from module.Config import Config
 from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
+from module.ProxySettings import create_httpx_client, default_http_timeout, proxies_for_url, resolve_proxy_url
 
 
 class ThinkingLevel(StrEnum):
@@ -124,6 +125,8 @@ class TaskRequester(Base):
     CLIENT_GENERATIONS: dict[tuple[str, str, Base.APIFormat, int], int] = {}
     CLIENT_GENERATION: int = 0
     CLIENT_GENERATION_LOCK: threading.Lock = threading.Lock()
+    # 上一次建连时使用的代理地址；变化时立刻废弃整池连接。
+    _last_proxy_url: str = ""
 
     # 当前翻译运行的取消标记。停止任务时先设置标记，再异步关闭客户端，
     # 这样重试等待和流式请求可以立即返回，不必等待网络超时。
@@ -528,7 +531,7 @@ class TaskRequester(Base):
 
     # 获取客户端
     @classmethod
-    def get_client(cls, url: str, key: str, format: Base.APIFormat, timeout: int):
+    def get_client(cls, url: str, key: str, format: Base.APIFormat, timeout: int, proxy_url: str | None = None):
         # connect (连接超时):
         #   建议值: 5.0 到 10.0 秒。
         #   解释: 建立到 LLM API 服务器的 TCP 连接。通常这个过程很快，但网络波动时可能需要更长时间。设置过短可能导致在网络轻微抖动时连接失败。
@@ -546,6 +549,13 @@ class TaskRequester(Base):
         #   解释: 如果你使用 httpx.Client 并且并发发起大量请求，可能会耗尽连接池中的连接。此参数定义了等待可用连接的最长时间。
         cache_key = (url, key, format, timeout)
 
+        # 代理变了就作废旧连接池：旧客户端是按上一个代理（或直连）建立的，
+        # 继续复用会让「改了代理设置却不生效」。不把代理塞进 cache_key，
+        # 否则 _discard_client 那几处 4 元组查找会全部落空。
+        if cls._last_proxy_url != (proxy_url or ""):
+            cls._last_proxy_url = proxy_url or ""
+            cls.close_all_clients()
+
         with cls.LOCK:
             cached = cls.CLIENT_REGISTRY.get(cache_key)
         if cached is not None:
@@ -556,6 +566,10 @@ class TaskRequester(Base):
                         cls.CLIENT_GENERATIONS.pop(cache_key, None)
             else:
                 return cached
+
+        # 显式代理（以及「跟随系统代理」的 trust_env）必须落到 SDK 自己的 httpx
+        # 客户端上，否则「网络代理」设置对 OpenAI / Anthropic / Google 全都不生效。
+        http_client = create_httpx_client(proxy_url, default_http_timeout(timeout))
 
         if format == Base.APIFormat.SAKURALLM:
             client = openai.OpenAI(
@@ -568,6 +582,7 @@ class TaskRequester(Base):
                     connect = 8.00,
                 ),
                 max_retries = 1,
+                http_client = http_client,
             )
         elif format == Base.APIFormat.GOOGLE:
             # https://github.com/googleapis/python-genai
@@ -579,6 +594,7 @@ class TaskRequester(Base):
                     headers = {
                         "User-Agent": f"RenpyBox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox",
                     },
+                    httpx_client = http_client,
                 ),
             )
         elif format == Base.APIFormat.ANTHROPIC:
@@ -592,12 +608,14 @@ class TaskRequester(Base):
                     connect = 8.00,
                 ),
                 max_retries = 1,
+                http_client = http_client,
             )
         elif format == Base.APIFormat.GOOGLEFREE:
             client = pygtrans.Translate(
                 fmt = "text",
                 timeout = timeout,
                 trust_env = True,
+                proxies = proxies_for_url(proxy_url),
                 # ponytail: pygtrans 1.6.2 默认 UA 的 f-string 漏写 f 前缀，
                 # 带花括号的非法 UA 会被新版 urllib3 拒绝，这里固定为文档推荐的稳定 UA。
                 user_agent = "GoogleTranslate/6.18.0.06.376053713 (Linux; U; Android 11; GM1900)",
@@ -615,6 +633,7 @@ class TaskRequester(Base):
                     connect = 8.00,
                 ),
                 max_retries = 1,
+                http_client = http_client,
             )
 
         duplicate: Any = None
@@ -865,6 +884,7 @@ class TaskRequester(Base):
                     key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
+                    proxy_url = resolve_proxy_url(self.config),
                 )
 
             sakura_args = self.generate_sakura_args(messages, thinking_level, args)
@@ -1035,6 +1055,7 @@ class TaskRequester(Base):
                     key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
+                    proxy_url = resolve_proxy_url(self.config),
                 )
 
             openai_args = self.generate_openai_args(
@@ -1274,6 +1295,7 @@ class TaskRequester(Base):
                     key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
+                    proxy_url = resolve_proxy_url(self.config),
                 )
 
             google_args = self.generate_google_args(
@@ -1437,6 +1459,7 @@ class TaskRequester(Base):
                     key = client_key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
+                    proxy_url = resolve_proxy_url(self.config),
                 )
 
             anthropic_args = self.generate_anthropic_args(messages, thinking_level, args)
@@ -1655,6 +1678,7 @@ class TaskRequester(Base):
                     key = key,
                     format = self.platform.get('api_format'),
                     timeout = self.config.request_timeout,
+                    proxy_url = resolve_proxy_url(self.config),
                 )
 
             source_lang, target_lang = self._get_google_language_codes()
