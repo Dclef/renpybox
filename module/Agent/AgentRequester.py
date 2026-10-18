@@ -13,6 +13,7 @@ import threading
 from typing import Any, Callable
 
 from base.Base import Base
+from base.LogManager import LogManager
 from module.Secret.SecretStore import SecretStore
 from base.VersionManager import VersionManager
 from module.Agent.types import AgentRequestResult, AgentToolCall, ToolDef, ToolResult
@@ -89,6 +90,8 @@ class AgentRequester:
         self.platform = platform
         self.cancel_event = threading.Event()
         self.last_error_message = ""
+        # 被端点以「上限过高」拒绝后动态下调；0 表示仍用按模型推导的值。
+        self._output_limit_override = 0
         self.thinking_level = self._normalize_thinking_level(
             platform.get("thinking") if thinking_level is None else thinking_level
         )
@@ -136,7 +139,14 @@ class AgentRequester:
         这里必须用 ModelBudget，而不是 ``config.token_threshold``：后者是每次翻译
         的行数（默认 20），当输出上限会算成 1024，整批工具参数的 JSON 直接被截断，
         模型只能看到「缺少必填参数」，怎么重试都修不好。
+
+        优先级：本次运行内被端点拒绝后的降档 > 本进程记住的模型实测值 > 模型容量。
         """
+        if self._output_limit_override > 0:
+            return self._output_limit_override
+        remembered = self._remembered_output_limit()
+        if remembered > 0:
+            return remembered
         from module.Agent.ModelBudget import resolve_capability
 
         try:
@@ -145,6 +155,43 @@ class AgentRequester:
         except (TypeError, ValueError):
             budget = 0
         return max(AGENT_MIN_OUTPUT_TOKENS, budget)
+
+    def _model_key(self) -> str:
+        return str(self.platform.get("model") or "").strip().casefold()
+
+    def _remembered_output_limit(self) -> int:
+        """读取「这个模型实际能接受多大输出」的历史结论。"""
+        table = self.config.__dict__.setdefault("_agent_output_limits", {})
+        if not isinstance(table, dict) or not self._model_key():
+            return 0
+        try:
+            value = int(table.get(self._model_key()) or 0)
+        except (TypeError, ValueError):
+            return 0
+        return value if value >= AGENT_MIN_OUTPUT_TOKENS else 0
+
+    def _remember_output_limit(self, value: int) -> None:
+        """把降档结果记住，下次开新会话不必再先撞一次 400。
+
+        只放在当前进程内存里，不写 config.json：这是端点行为的实测缓存，
+        不该变成一个用户可见、需要同步的手工配置项。
+        """
+        key = self._model_key()
+        if not key:
+            return
+        table = self.config.__dict__.setdefault("_agent_output_limits", {})
+        if not isinstance(table, dict):
+            table = {}
+            self.config.__dict__["_agent_output_limits"] = table
+        # 只记「比当前生效值更小」的结论；同名模型换了接口也不该放大预算。
+        previous = 0
+        try:
+            previous = int(table.get(key) or 0)
+        except (TypeError, ValueError):
+            previous = 0
+        if previous and previous <= value:
+            return
+        table[key] = int(value)
 
     def _client_key(self) -> tuple[str, str, str, int, int]:
         return (
@@ -402,6 +449,11 @@ class AgentRequester:
                 )
             except openai.BadRequestError as exc:
                 self.last_error_message = str(exc)
+                # 不少兼容端点不接受「比它自己支持值更大」的 max_tokens，会在
+                # 参数校验阶段直接 400。此时把输出预算减半再试一次，而不是让用户
+                # 看到「请求失败」却不知道是预算过高。
+                if self._shrink_output_budget(str(exc)) and attempt + 1 < self.MAX_RETRY:
+                    continue
                 return AgentRequestResult.failure(
                     "BAD_REQUEST",
                     Localizer.get().agent_request_bad_request,
@@ -419,6 +471,25 @@ class AgentRequester:
             "REQUEST_FAILED",
             Localizer.get().agent_request_failed,
         )
+
+    def _shrink_output_budget(self, message: str) -> bool:
+        """识别「输出上限过高」类报错并下调预算，返回是否已下调。"""
+        text = str(message or "").casefold()
+        if not any(
+            token in text
+            for token in ("max_tokens", "max_output_tokens", "max_completion_tokens")
+        ):
+            return False
+        current = self._output_token_limit()
+        if current <= AGENT_MIN_OUTPUT_TOKENS:
+            return False
+        self._output_limit_override = max(AGENT_MIN_OUTPUT_TOKENS, current // 2)
+        # 记住这次降档：同一模型下次直接按记住的值发，不必再撞一次 400。
+        self._remember_output_limit(self._output_limit_override)
+        LogManager.get().warning(
+            f"Agent 输出上限 {current} 被拒绝，下调到 {self._output_limit_override} 重试"
+        )
+        return True
 
     def _apply_openai_thinking(self, payload: dict[str, Any], messages: list[dict[str, Any]]) -> None:
         """按 OpenAI 兼容模型的约定写入思考控制参数。"""
