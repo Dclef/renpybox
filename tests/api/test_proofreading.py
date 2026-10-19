@@ -428,6 +428,47 @@ def test_issue_filter_returns_incremental_results_and_reuses_checks(tmp_path, mo
         assert len(counts) == 9
 
 
+def test_confirm_reuses_warning_scan_without_rescanning(tmp_path, monkeypatch):
+    """确认无误后再次打开「仅看问题」，不应把整份缓存从头检查一遍。"""
+    config = Config().load()
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    engine = Engine()
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
+    manager = CacheManager(service=False)
+    manager.set_project(CacheProject(id="confirm-reuse"))
+    manager.set_items([CacheItem(src=str(index), dst="译文", status=Base.TranslationStatus.TRANSLATED) for index in range(6)])
+    assert manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder, strict=True)
+    app = FastAPI()
+    app.state.config = config
+    app.include_router(proofreading.router)
+    counts = []
+    def check(self, item):
+        counts.append(item.get_src())
+        return [proofreading.WarningType.SIMILARITY] if int(item.get_src()) % 2 else []
+    monkeypatch.setattr(proofreading.ResultChecker, "check_single_item", check)
+    with TestClient(app) as client:
+        params = {"only_issues": True}
+        before = client.get("/api/proofreading", params=params).json()
+        assert before["scan_complete"] is True
+        assert [row["id"] for row in before["items"]] == [1, 3, 5]
+        assert len(counts) == 6
+        target = before["items"][0]
+        payload = {
+            "cache_token": before["cache_token"],
+            "rows": [{"id": target["id"], "version": target["version"]}],
+        }
+        result = client.post("/api/proofreading/confirm", json=payload)
+        assert result.status_code == 200 and result.json()["changed"] == 1
+        # 确认操作本身会检查选中的这一行；之后刷新页面不能再新增检查。
+        checks_after_confirm = len(counts)
+        assert checks_after_confirm == 7
+        after = client.get("/api/proofreading", params=params).json()
+        assert after["scan_complete"] is True
+        assert after["checked"] == after["check_total"] == 6
+        assert [row["id"] for row in after["items"]] == [3, 5]
+        assert len(counts) == checks_after_confirm
+
+
 def test_server_side_multiselect_filters_cover_whole_cache(tmp_path, monkeypatch):
     """多选筛选由服务端对整份缓存求值，分页、legacy 参数与术语命中保持兼容。"""
     config = Config()
