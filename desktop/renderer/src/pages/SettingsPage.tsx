@@ -117,6 +117,9 @@ function SpecCard(props: {
 /**
  * 改完这些设置必须重启才生效。以前只在说明文字里写「重启后生效」，
  * 改完什么都不弹，用户以为没生效。现在保存成功后直接弹重启确认。
+ *
+ * 「稍后重启」= 放弃本次修改，把配置退回修改前的值。否则下拉框已经显示
+ * 「英文」、界面却还是中文，用户无法判断到底生效了没有（2026-10-18 反馈）。
  */
 const RESTART_SETTING_KEYS = new Set(['app_language', 'expert_mode', 'font_hinting', 'scale_factor']);
 
@@ -131,7 +134,7 @@ export function SettingsPage(props: {
   const t = useT();
   const values = state.settings?.values;
   const fields = fieldsFor(variant);
-  const [restartFor, setRestartFor] = useState<{ key: string; label: string } | null>(null);
+  const [restartFor, setRestartFor] = useState<{ key: string; label: string; previous: unknown } | null>(null);
 
   const applyBalanced = useCallback(async () => {
     // 一次改三个字段：串行应用并在失败处停下，避免留下半套配置。
@@ -141,12 +144,14 @@ export function SettingsPage(props: {
   }, [state]);
 
   const applySetting = useCallback(async (key: string, value: unknown) => {
+    // 先记下修改前的值：点「稍后重启」要把配置退回这里。
+    const previous = values?.[key];
     const ok = await state.setSetting(key, value);
     if (ok && RESTART_SETTING_KEYS.has(key)) {
       const spec = [...BASIC_FIELDS, ...EXPERT_FIELDS, ...APP_FIELDS].find(item => item.key === key);
-      setRestartFor({ key, label: spec ? (spec.titleKey ? t(spec.titleKey) : spec.title) : key });
+      setRestartFor({ key, label: spec ? (spec.titleKey ? t(spec.titleKey) : spec.title) : key, previous });
     }
-  }, [state, t]);
+  }, [state, t, values]);
 
   const cards = (specs: FieldSpec[]) =>
     specs.map((spec) => (
@@ -188,7 +193,13 @@ export function SettingsPage(props: {
           title={t('app_settings_restart_title')}
           confirmText={t('app_settings_restart_confirm')}
           cancelText={t('app_settings_restart_later')}
-          onCancel={() => setRestartFor(null)}
+          onCancel={() => {
+            // 「稍后重启」= 放弃本次修改。不退回的话下拉框显示「英文」、
+            // 界面还是中文，用户根本判断不出到底生效没有（2026-10-18 反馈）。
+            const pending = restartFor;
+            setRestartFor(null);
+            void state.setSetting(pending.key, pending.previous);
+          }}
           onConfirm={() => {
             setRestartFor(null);
             void window.renpy?.relaunch();

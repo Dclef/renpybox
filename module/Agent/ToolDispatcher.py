@@ -45,7 +45,12 @@ def _lazy_tool_handler(
         # 工具会明确返回 AGENT_APP_CONTEXT_MISSING。
         if pipeline_callbacks is not None and "pipeline_callbacks" in parameters:
             arguments["pipeline_callbacks"] = pipeline_callbacks
-        return function(config_loader=config_loader, **arguments)
+        # 不是每个工具都要配置：list_skills 这类纯静态工具既不声明参数也不
+        # 收 **kwargs，无条件传 config_loader 会抛 TypeError（2026-10-18 反馈
+        # 「Agent 工具 list_skills 执行失败」）。按签名决定是否注入。
+        if "config_loader" in parameters:
+            arguments["config_loader"] = config_loader
+        return function(**arguments)
 
     return handler
 
@@ -383,6 +388,11 @@ class ToolDispatcher:
                 parameters_schema={
                     "type": "object",
                     "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["translate", "polish"],
+                            "description": localizer.agent_translate_mode_param_description,
+                        },
                         "batch_size": {
                             "type": "integer",
                             "description": localizer.agent_translate_batch_param_description,
@@ -409,6 +419,11 @@ class ToolDispatcher:
                 parameters_schema={
                     "type": "object",
                     "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["translate", "polish"],
+                            "description": localizer.agent_translate_mode_param_description,
+                        },
                         "translations": {
                             "type": "array",
                             "items": {

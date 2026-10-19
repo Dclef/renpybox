@@ -15,19 +15,15 @@ import {
   reusePathsConflict,
   translationReuseStatusPath,
 } from '../renderer/src/translationReuseView.mjs';
-import {
-  FORMATTER_DEFAULTS,
-  formatFormatterSummary,
-  formatterOwnerProjectKey,
-  formatterStatusPath,
-} from '../renderer/src/formatterView.mjs';
 
-test('error repair defaults match Qt', () => {
+test('error repair defaults match product contract', () => {
   assert.equal(ERROR_REPAIR_DEFAULTS.fixIndent, true);
+  assert.equal(ERROR_REPAIR_DEFAULTS.fixTrailingSpaces, true);
+  assert.equal(ERROR_REPAIR_DEFAULTS.fixEmptyBlocks, true);
+  assert.equal(ERROR_REPAIR_DEFAULTS.fixDuplicates, true);
+  assert.equal(ERROR_REPAIR_DEFAULTS.fixDialogueQuotes, true);
   assert.equal(ERROR_REPAIR_DEFAULTS.fixIndentLevel, false);
   assert.equal(ERROR_REPAIR_DEFAULTS.fixQuotes, false);
-  assert.equal(ERROR_REPAIR_DEFAULTS.fixDialogueQuotes, false);
-  assert.equal(ERROR_REPAIR_DEFAULTS.fixEmptyBlocks, false);
 });
 
 test('error repair status path encodes folder', () => {
@@ -50,18 +46,9 @@ test('reuse path conflict detects nest and same', () => {
   assert.match(formatReuseSummary({ reusable_entries: 1, conflicts: 0, already_reused: 0, unmatched_entries: 0 }, 'ZH'), /可复用/);
 });
 
-test('formatter defaults and success wording', () => {
-  assert.equal(FORMATTER_DEFAULTS.preserveComments, true);
-  assert.equal(FORMATTER_DEFAULTS.fixIndent, true);
-  assert.equal(FORMATTER_DEFAULTS.removeTrailing, true);
-  assert.match(formatFormatterSummary({ success_count: 3, failed_files: [] }, 'ZH'), /成功处理 3/);
-  assert.equal(formatterStatusPath('D:/x').includes('folder='), true);
-});
-
 test('owner snapshot helpers prefer status.owner_project_key', () => {
   assert.equal(errorRepairOwnerProjectKey({ owner_project_key: 'a|zh' }), 'a|zh');
   assert.equal(errorRepairOwnerProjectKey({ owner_project_key: '' }), '');
-  assert.equal(formatterOwnerProjectKey({ owner_project_key: 'b|zh' }), 'b|zh');
   assert.equal(reuseOwnerProjectKey(null), '');
   assert.equal(reuseOwnerProjectKey({ owner_project_key: 'c|zh' }), 'c|zh');
 });

@@ -21,6 +21,10 @@ htmlcov/
 dist/
 build/
 _update_staging/
+# 桌面端打包产物（本地打 dist 验证用，不入库）
+/desktop/release/
+/desktop/release-test/
+/desktop/release-archive/
 
 # 运行时目录（不入库）
 /log
@@ -29,6 +33,9 @@ _update_staging/
 /storage
 /config/
 config.json
+# 恢复/测试过程留下的 config.json.bak、.bak.pytest-pollution、.tmp 等
+# 都是开发机本地产物，一律不入库。
+config.json.*
 resource/config.json
 
 # 测试沙箱与竞品源码副本
@@ -42,3 +49,6 @@ resource/config.json
 
 # 内部文档：不入库（docs/internal/README.md 有约定）
 /docs/internal
+
+# 本地 Agent 记忆目录（不入库）
+/.workbuddy

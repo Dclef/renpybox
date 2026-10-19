@@ -50,6 +50,22 @@ export interface AgentSnapshot {
     max_messages?: number;
     max_iterations?: number;
   };
+  /** 本轮用量统计：状态栏的轮次、步数、吞吐与上下文占比。 */
+  metrics?: {
+    iterations?: number;
+    steps?: number;
+    requests?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cached_tokens?: number;
+    total_tokens?: number;
+    elapsed_seconds?: number;
+    tokens_per_second?: number;
+    cache_hit_rate?: number | null;
+    context_chars?: number;
+    context_limit_chars?: number;
+    context_percent?: number;
+  };
 }
 
 /** 项目翻译状态：Base.TranslationStatus 的项目级取值 */
@@ -183,6 +199,74 @@ export interface ProjectInfo {
   renpy_tl_folder: string;
   theme: string;
   app_language: string;
+}
+
+export interface ProjectFileInfo {
+  path: string;
+  schema_version: number;
+  app_version: string;
+  created_at: string;
+  updated_at: string;
+  project_root: string;
+  item_count: number;
+  items_digest: string;
+}
+
+export interface ProjectFileResponse {
+  info: ProjectFileInfo;
+  output_folder: string;
+  current_project_root: string;
+  project_root_matches: boolean;
+  settings?: string[];
+  backup_folder?: string;
+  assets_output_folder?: string;
+  assets_backup_folder?: string;
+  item_count?: number;
+  applied_settings?: string[];
+  ignored_settings?: string[];
+}
+
+/** POST /api/project/file/inspect */
+export interface ProjectFileDescription {
+  info: ProjectFileInfo;
+  /** 当前配置解析出的翻译输出目录；没有时为空串 */
+  output_folder: string;
+  current_project_root: string;
+  project_root_matches: boolean;
+}
+
+/** POST /api/project/file/export */
+export interface ProjectFileExportResult extends ProjectFileDescription {
+  settings: string[];
+}
+
+/** POST /api/project/file/legacy/inspect */
+export interface LegacyProjectCacheDescription {
+  output_folder: string;
+  cache_folder: string;
+  cache_format: 'sqlite' | 'json';
+  item_count: number;
+  current_project_root: string;
+  /** 仅携带当前应用中的项目翻译设置，未读取旧版程序配置 */
+  settings: string[];
+}
+
+/** POST /api/project/file/legacy/export */
+export interface LegacyProjectFileExportResult extends ProjectFileExportResult {
+  source_output_folder: string;
+}
+
+/** POST /api/project/file/import */
+export interface ProjectFileImportResult extends ProjectFileDescription {
+  /** 导入前缓存的回滚备份目录；导入前没有缓存时为空串 */
+  backup_folder: string;
+  /** 工作台资料所在的规范输出目录；与当前输出目录相同（无需单独同步）时为空串 */
+  assets_output_folder: string;
+  /** 规范输出目录导入前缓存的回滚备份；未同步或导入前没有缓存时为空串 */
+  assets_backup_folder: string;
+  item_count: number;
+  applied_settings: string[];
+  ignored_settings: string[];
 }
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';

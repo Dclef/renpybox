@@ -58,7 +58,7 @@ app.whenReady().then(async () => {
     };
     await waitFor("Boolean([...document.querySelectorAll('.rb-nav-item')].find(el=>/工具箱|Toolbox/.test(el.textContent)))");
     await js("[...document.querySelectorAll('.rb-nav-item')].find(el=>/工具箱|Toolbox/.test(el.textContent)).click()");
-    await waitFor("document.querySelectorAll('.tool-card').length === 27");
+    await waitFor("document.querySelectorAll('.tool-card').length === 26");
     assert.equal(await js("document.querySelectorAll('.tool-card:disabled').length"), scenario.bound ? 0 : 8, 'Project requirements must remain unchanged');
     assert.equal(await js("document.documentElement.dataset.theme"), scenario.theme);
     assert(await js("getComputedStyle(document.documentElement).getPropertyValue('--rb-text-tertiary').trim().length > 0"), 'Auxiliary text color must resolve');
@@ -67,12 +67,12 @@ app.whenReady().then(async () => {
     assert.deepEqual(overflow, [], 'Toolbox must fit the window');
     await pause(120);
     fs.writeFileSync(path.join(output, scenario.name + '.png'), (await win.webContents.capturePage()).toPNG());
-    for (const [group, count] of [['flow', 9], ['translate', 7], ['asset', 4], ['engineer', 7]]) {
+    for (const [group, count] of [['flow', 9], ['translate', 7], ['asset', 4], ['engineer', 6]]) {
       await js(`document.querySelector('[data-tool-group="${group}"]').click()`);
       await waitFor(`document.querySelectorAll('.tool-card').length === ${count}`);
     }
     await js("document.querySelector('.rb-toolbox-categories > button').click()");
-    await waitFor("document.querySelectorAll('.tool-card').length === 27");
+    await waitFor("document.querySelectorAll('.tool-card').length === 26");
     const search = async value => {
       await js(`(()=>{const input=document.querySelector('.toolbox-search input, input.toolbox-search');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     };
@@ -82,7 +82,7 @@ app.whenReady().then(async () => {
     await search('no-tool-matches-this-query');
     await waitFor("Boolean(document.querySelector('.rb-toolbox-empty button'))");
     await js("document.querySelector('.rb-toolbox-empty button').click()");
-    await waitFor("document.querySelectorAll('.tool-card').length === 27");
+    await waitFor("document.querySelectorAll('.tool-card').length === 26");
     await js("document.querySelector('.rb-toolbox-categories > button').focus()");
     await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
     await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
       await waitFor("!document.querySelector('.rb-toolbox') && document.querySelector('.rb-page-title')?.textContent.includes('项目设置')");
     }
     assert.deepEqual(errors, [], 'No renderer errors');
-    console.log(`PASS ${scenario.name}: 27 tools, project gates, categories, search, reset, keyboard and layout`);
+    console.log(`PASS ${scenario.name}: 26 tools, project gates, categories, search, reset, keyboard and layout`);
     win.destroy();
   }
   clearTimeout(watchdog);

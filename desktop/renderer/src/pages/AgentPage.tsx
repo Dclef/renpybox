@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Popover, Select } from 'antd';
-import { ArrowDown, Bot, Plus, RefreshCw, Settings, Square } from 'lucide-react';
+import { ArrowDown, Bot, History, Plus, RefreshCw, Settings, Square } from 'lucide-react';
 import * as api from '../api';
 import { AgentMessageBody } from '../AgentMessageBody';
-import { budgetParts, isMachineApiFormat, languageFromTlPath, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../agentView.mjs';
+import { budgetParts, isMachineApiFormat, languageFromTlPath, metricsParts, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../agentView.mjs';
 import type { AgentSnapshot, AgentThinkingLevel } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog } from '../ui';
@@ -210,6 +210,11 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
   const [retry, setRetry] = useState(0);
   const [resetDialog, setResetDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<api.AgentSessionSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [historyDelete, setHistoryDelete] = useState<api.AgentSessionSummary | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [showLatest, setShowLatest] = useState(false);
   const [dontAskUnpack, setDontAskUnpack] = useState(false);
@@ -371,6 +376,77 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
     }
   };
 
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const { sessions } = await api.listAgentSessions();
+      if (mountedRef.current) setHistory(sessions);
+    } catch (error) {
+      if (mountedRef.current) setHistoryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (mountedRef.current) setHistoryLoading(false);
+    }
+  }, []);
+
+  const openHistory = async (target: api.AgentSessionSummary) => {
+    // 运行中切换会话会让当前任务无处落盘，先阻止而不是静默丢弃。
+    if (busy) return;
+    const opened = await perform(() => api.openAgentSession(target.id));
+    if (opened) { setHistoryOpen(false); followRef.current = true; }
+  };
+
+  const removeHistory = async (target: api.AgentSessionSummary) => {
+    setHistoryDelete(null);
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      await api.deleteAgentSession(target.id);
+      if (mountedRef.current) setHistory(current => current.filter(entry => entry.id !== target.id));
+    } catch (error) {
+      if (mountedRef.current) setHistoryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (mountedRef.current) setHistoryLoading(false);
+    }
+  };
+
+  const historyPanel = (
+    <div className="agent-history-panel">
+      {historyLoading ? <p className="agent-history-hint">{t('tool_job_checking')}</p> : null}
+      {historyError ? <p className="agent-history-hint" data-tone="error">{historyError}</p> : null}
+      {!historyLoading && !historyError && !history.length ? (
+        <p className="agent-history-hint">{t('agent_page_history_empty')}</p>
+      ) : null}
+      {history.map(entry => (
+        <div className="agent-history-row" key={entry.id}>
+          <button
+            type="button"
+            className="agent-history-open"
+            disabled={busy || pending}
+            title={t('agent_page_history_open')}
+            onClick={() => void openHistory(entry)}
+          >
+            <span className="agent-history-title">{entry.title || t('agent_page_history_untitled')}</span>
+            <span className="agent-history-meta">
+              {t('agent_page_history_messages').replace('{count}', String(entry.message_count))}
+            </span>
+          </button>
+          <Button
+            type="text"
+            danger
+            size="small"
+            disabled={busy || pending}
+            aria-label={t('agent_page_history_delete')}
+            title={t('agent_page_history_delete')}
+            onClick={() => setHistoryDelete(entry)}
+          >
+            {t('agent_page_history_delete')}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+
   const refreshPlatforms = async () => {
     setRefreshing(true);
     try {
@@ -396,6 +472,9 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
     : null;
   const stageDetail = runningProgress?.detail ?? '';
   const showStageStrip = Boolean(session && session.status !== 'idle' && (stageLabelKey || stagePercent !== null || stageDetail));
+  const metrics = metricsParts(session?.metrics);
+  // 状态栏只在有数据时出现：还没跑过任务就不该显示「0 轮 0 步」。
+  const showMetricsStrip = metrics.hasData;
   const settingsPanel = (
     <div className="agent-settings-panel">
       {budgetText ? <p className="agent-budget">{budgetText}</p> : null}
@@ -481,6 +560,24 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
               onOpenChange={setSettingsOpen}
             >
               <Button type="text" aria-label={t('agent_page_settings_title')} title={t('agent_page_settings_title')} icon={<Settings size={16} strokeWidth={1.75} />} />
+            </Popover>
+            <Popover
+              trigger="click"
+              placement="bottomRight"
+              title={t('agent_page_history_title')}
+              content={historyPanel}
+              open={historyOpen}
+              onOpenChange={next => {
+                setHistoryOpen(next);
+                if (next) void loadHistory();
+              }}
+            >
+              <Button
+                type="text"
+                aria-label={t('agent_page_history_title')}
+                title={t('agent_page_history_title')}
+                icon={<History size={16} strokeWidth={1.75} />}
+              />
             </Popover>
             <Button
               type="primary"
@@ -648,6 +745,39 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
         </div>
       ) : null}
 
+      {showMetricsStrip ? (
+        <div className="agent-metrics-strip" role="status">
+          <span className="agent-metrics-rounds">
+            {metrics.steps > 0
+              ? t('agent_page_metrics_rounds_steps')
+                .replace('{rounds}', String(metrics.rounds))
+                .replace('{steps}', String(metrics.steps))
+              : t('agent_page_metrics_rounds').replace('{rounds}', String(metrics.rounds))}
+          </span>
+          {metrics.tokensPerSecond > 0 ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_throughput').replace('{speed}', String(Math.round(metrics.tokensPerSecond)))}
+            </span>
+          ) : null}
+          {metrics.totalTokens ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_total').replace('{total}', metrics.totalTokens)}
+            </span>
+          ) : null}
+          {metrics.cacheHitPercent !== null ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_cache').replace('{percent}', String(metrics.cacheHitPercent))}
+            </span>
+          ) : null}
+          {metrics.contextPercent > 0 ? (
+            <span className="agent-metrics-item agent-metrics-context" title={t('agent_page_metrics_context_title')}>
+              <ProgressTrack percent={metrics.contextPercent} label={t('agent_page_metrics_context_title')} />
+              <span>{metrics.contextPercent}%</span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       {confirmation ? (() => {
         const summary = confirmationSummary(t, confirmation);
         const locked = !connected || pending;
@@ -735,6 +865,16 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           onConfirm={startNewTask}
         >
           {busy ? t('agent_page_new_task_running') : t('agent_page_new_task_idle')}{t('agent_page_new_task_keep_files')}</Dialog>
+      ) : null}
+
+      {historyDelete ? (
+        <Dialog
+          title={t('agent_page_history_delete_title')}
+          confirmText={t('agent_page_history_delete_confirm')}
+          onCancel={() => setHistoryDelete(null)}
+          onConfirm={() => { void removeHistory(historyDelete); }}
+        >
+          {t('agent_page_history_delete_body')}</Dialog>
       ) : null}
     </div>
   );

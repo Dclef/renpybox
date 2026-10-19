@@ -2639,67 +2639,90 @@ def render_replace_script(
     wrap_existing: bool = True,
     external_data: bool = False,
 ) -> str:
-    """Render an indexed, single-pass hook with versioned rule data."""
+    """Render an indexed, single-pass hook with versioned rule data.
+
+    The whole block body is wrapped in one installer function that is called
+    and then deleted inside the same ``python`` statement.  Ren'Py records the
+    store names assigned while a ``translate <language> python:`` block runs
+    and puts the ones that survive into the save roots; keeping a function
+    there makes saving fail with ``PicklingError``.  The installer's helpers
+    stay local and the installer itself is deleted, so the block leaves zero
+    net new store names.  The hook stays reachable only through
+    ``config.replace_text``; the config module is not part of the pickled
+    store, so it cannot drag a function into a save.
+    """
     from module.Extract.ReplaceRuntime import RUNTIME_SOURCE
     records = _replace_records(pairs)
     payloads = _replace_payloads(records)
     sharded = len(payloads) > 1
     header = f"translate {language} python:" if use_translate_python and language else "init python:"
-    lines = ["# Auto-generated replace_text hook", "# -*- coding: utf-8 -*-",
-             f"# renpybox-replace-schema: {REPLACE_SCHEMA_VERSION}", "", header, ""]
-    lines.extend("    " + line if line else "" for line in RUNTIME_SOURCE.strip().splitlines())
-    lines.extend(["", "    import json as _renpybox_json"])
+    body = RUNTIME_SOURCE.strip().splitlines()
+    body.extend(["", "import json as _renpybox_json"])
     if sharded and external_data:
-        lines.append(f"    _renpybox_data_files = {[name for name, _ in payloads]!r}")
-        lines.append("    _renpybox_records = []")
-        lines.append("    import hashlib as _renpybox_hashlib")
-        lines.append("    for _renpybox_data_file in _renpybox_data_files:")
-        lines.append(f"        _renpybox_resource = getattr(config, 'tl_directory', 'tl') + '/' + {language or 'chinese'!r} + '/{REPLACE_DATA_DIR}/' + _renpybox_data_file")
-        lines.append("        with renpy.file(_renpybox_resource) as _renpybox_stream:")
-        lines.append("            _renpybox_payload_text = _renpybox_stream.read().decode('ascii')")
-        lines.append("        if _renpybox_hashlib.sha256(_renpybox_payload_text.encode('ascii')).hexdigest() != _renpybox_data_file[:-5]:")
-        lines.append("            raise ValueError('RenpyBox replace data checksum mismatch: ' + _renpybox_data_file)")
-        lines.append("        _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_text))")
+        body.append(f"_renpybox_data_files = {[name for name, _ in payloads]!r}")
+        body.append("_renpybox_records = []")
+        body.append("import hashlib as _renpybox_hashlib")
+        body.append("for _renpybox_data_file in _renpybox_data_files:")
+        body.append(f"    _renpybox_resource = getattr(config, 'tl_directory', 'tl') + '/' + {language or 'chinese'!r} + '/{REPLACE_DATA_DIR}/' + _renpybox_data_file")
+        body.append("    with renpy.file(_renpybox_resource) as _renpybox_stream:")
+        body.append("        _renpybox_payload_text = _renpybox_stream.read().decode('ascii')")
+        body.append("    if _renpybox_hashlib.sha256(_renpybox_payload_text.encode('ascii')).hexdigest() != _renpybox_data_file[:-5]:")
+        body.append("        raise ValueError('RenpyBox replace data checksum mismatch: ' + _renpybox_data_file)")
+        body.append("    _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_text))")
     elif sharded:
         payload_values = [payload for _, payload in payloads]
-        lines.append(f"    _renpybox_payloads = {payload_values!r}")
-        lines.append("    _renpybox_records = []")
-        lines.append("    for _renpybox_payload_part in _renpybox_payloads:")
-        lines.append("        _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_part))")
+        body.append(f"_renpybox_payloads = {payload_values!r}")
+        body.append("_renpybox_records = []")
+        body.append("for _renpybox_payload_part in _renpybox_payloads:")
+        body.append("    _renpybox_records.extend(_renpybox_json.loads(_renpybox_payload_part))")
     else:
         payload = payloads[0][1] if payloads else "[]"
-        lines.append(f"    _renpybox_payload = {payload!r}")
-        lines.append("    _renpybox_records = _renpybox_json.loads(_renpybox_payload)")
-    lines.extend(["    _renpybox_transform = _renpybox_build_transform(_renpybox_records)",
-                  "    del _renpybox_records"])
-    lines.append(f"    {previous_name} = getattr(config, 'replace_text', None)" if wrap_existing else f"    {previous_name} = None")
+        body.append(f"_renpybox_payload = {payload!r}")
+        body.append("_renpybox_records = _renpybox_json.loads(_renpybox_payload)")
+    body.extend([
+        "_renpybox_transform = _renpybox_build_transform(_renpybox_records)",
+        "del _renpybox_records",
+        f"{previous_name} = getattr(config, 'replace_text', None)" if wrap_existing else f"{previous_name} = None",
+    ])
     if wrap_existing:
-        lines.extend([
-            "    _renpybox_seen_hooks = set()",
-            f'    while getattr({previous_name}, "_renpybox_auto_hook", False):',
-            f"        if id({previous_name}) in _renpybox_seen_hooks:",
-            f"            {previous_name} = None",
-            "            break",
-            f"        _renpybox_seen_hooks.add(id({previous_name}))",
-            f'        _renpybox_next_hook = getattr({previous_name}, "_renpybox_previous", None)',
-            f"        if _renpybox_next_hook is {previous_name}:",
-            f"            {previous_name} = None",
-            "            break",
-            f"        {previous_name} = _renpybox_next_hook",
+        body.extend([
+            "_renpybox_seen_hooks = set()",
+            f'while getattr({previous_name}, "_renpybox_auto_hook", False):',
+            f"    if id({previous_name}) in _renpybox_seen_hooks:",
+            f"        {previous_name} = None",
+            "        break",
+            f"    _renpybox_seen_hooks.add(id({previous_name}))",
+            f'    _renpybox_next_hook = getattr({previous_name}, "_renpybox_previous", None)',
+            f"    if _renpybox_next_hook is {previous_name}:",
+            f"        {previous_name} = None",
+            "        break",
+            f"    {previous_name} = _renpybox_next_hook",
         ])
-    lines.extend([
+    body.extend([
         "",
-        f"    def {function_name}({target_name}, _renpybox_previous={previous_name}, _transform=_renpybox_transform):",
-        "        if callable(_renpybox_previous):",
-        f"            {target_name} = _renpybox_previous({target_name})",
-        f"        return _transform({target_name})",
-        f"    {function_name}._renpybox_transform = _renpybox_transform",
+        f"def {function_name}({target_name}, _renpybox_previous={previous_name}, _transform=_renpybox_transform):",
+        "    if callable(_renpybox_previous):",
+        f"        {target_name} = _renpybox_previous({target_name})",
+        f"    return _transform({target_name})",
+        f"{function_name}._renpybox_transform = _renpybox_transform",
     ])
     if assign_to_config:
-        lines.extend([f"    {function_name}._renpybox_auto_hook = True",
-                      f"    {function_name}._renpybox_previous = {previous_name}",
-                      f"    config.replace_text = {function_name}"])
+        body.extend([f"{function_name}._renpybox_auto_hook = True",
+                     f"{function_name}._renpybox_previous = {previous_name}",
+                     f"config.replace_text = {function_name}"])
+    lines = [
+        "# Auto-generated replace_text hook",
+        "# -*- coding: utf-8 -*-",
+        f"# renpybox-replace-schema: {REPLACE_SCHEMA_VERSION}",
+        "",
+        header,
+        "",
+        "    def _renpybox_install():",
+    ]
+    lines.extend("        " + line if line else "" for line in body)
+    lines.extend(["", "    _renpybox_install()", "    del _renpybox_install"])
     return "\n".join(lines) + "\n"
+
 
 def read_generated_replace_pairs(path: Path, originals: Set[str]) -> List[Pair]:
     """从自动钩子恢复指定补漏条目；只解析字面量，不执行游戏脚本。"""

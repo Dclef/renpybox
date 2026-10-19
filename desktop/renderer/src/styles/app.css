@@ -546,6 +546,40 @@
     white-space: nowrap;
   }
 
+  .rb-project-page .rb-project-file .rb-settings-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rb-project-page .rb-project-file .rb-settings-body > * {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .rb-project-page .rb-project-file-guide {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .rb-project-page .rb-project-file-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 100%;
+  }
+
+  .rb-project-page .rb-project-file-actions .ant-btn {
+    max-width: 100%;
+    height: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .rb-update-status,
   .rb-update-actions,
   .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
@@ -1816,6 +1850,71 @@
     width: 260px;
   }
 
+  .agent-history-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 320px;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+
+  .agent-history-hint {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .agent-history-hint[data-tone="error"] {
+    color: var(--rb-danger, #cf1322);
+  }
+
+  .agent-history-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 8px;
+  }
+
+  .agent-history-row:hover {
+    background: var(--rb-surface-hover);
+  }
+
+  .agent-history-open {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .agent-history-open:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  .agent-history-title {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-history-meta {
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+  }
+
   .agent-budget {
     margin: 0;
     color: var(--rb-text-secondary);
@@ -2099,6 +2198,42 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* 底部用量状态栏：轮次/步数、吞吐、累计 token、缓存命中、上下文占比。 */
+  .agent-metrics-strip {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 14px;
+    min-width: 0;
+    padding: 2px 4px 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-metrics-rounds {
+    flex-shrink: 0;
+    color: var(--rb-text-primary);
+    font-weight: 600;
+  }
+
+  .agent-metrics-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .agent-metrics-context {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .agent-metrics-context .agent-progress-track {
+    flex: 0 0 40px;
+    min-width: 40px;
   }
 
   .agent-progress-track {
@@ -2707,6 +2842,7 @@
   .rb-workbench-analysis-status strong { display: inline-flex; align-items: center; gap: 8px; margin-right: 12px; }
   .rb-workbench-analysis-status span, .rb-workbench-analysis-status p { color: var(--rb-text-secondary); overflow-wrap: anywhere; }
   .rb-workbench-analysis-status p { margin: 4px 0 0; }
+  .rb-workbench-analysis-progress { margin-top: 6px; max-width: 420px; }
   .rb-workbench-analysis-status > button { flex-shrink: 0; }
   .rb-workbench-draft-review { display: flex; flex-direction: column; gap: 16px; }
   .rb-workbench-draft-review h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }

@@ -73,6 +73,11 @@ def self_test() -> None:
     import module.Agent.tools as tools
     for name in tools.__all__:
         getattr(tools, name)
+    # 技能包是纯文本数据，import 扫描发现不了；漏打包时 list_skills 会静默返回空，
+    # 模型只能反复猜技能名。这里显式断言，让构建在自检阶段就失败。
+    from module.Agent.tools.skill_tools import _iter_skill_metas
+    if not _iter_skill_metas():
+        raise RuntimeError("Bundled Agent skills are missing")
     # Render through the real log manager: Rich dynamically imports Unicode width
     # tables only on non-ASCII output, which plain import checks never exercise.
     import io

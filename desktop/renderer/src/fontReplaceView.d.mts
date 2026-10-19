@@ -36,11 +36,6 @@ export function formatFontRestoreHint(
   lang?: string,
 ): string;
 
-export function fontWriteNeedsRescan(
-  job: { status?: string } | null | undefined,
-  result: { written?: boolean; action?: string } | null | undefined,
-): boolean;
-
 export function resolveOriginalFonts(input: {
   replaceAll: boolean;
   selectedFont?: unknown;
