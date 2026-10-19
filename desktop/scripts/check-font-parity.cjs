@@ -459,12 +459,15 @@ app.whenReady().then(async () => {
     await js('__uiFixture.writes.length=0');
   };
 
-  // —— 打开页面：自动扫描 + 检测数量 ——
+  // —— 基础注入不自动扫描；显式扫描仍持有引擎并正常收尾 ——
   await assert("document.querySelector('.workspace-project').title==='C:/ui-check'", 'fixture 已绑定项目');
   await js('__uiFixture.holdEngineScan = true');
   await openFontPage();
   await assert("document.querySelector('[data-rb-font-game-dir]')", '游戏目录可编辑输入');
-  await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '自动扫描已触发');
+  await assert("!__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan') && __uiFixture.engineStatus==='IDLE'", '打开基础注入页不触发扫描或占用引擎');
+  await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '基础注入无需等待字体扫描');
+  await click('重新扫描字体');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '手动扫描已触发');
   await assert("__uiFixture.engineStatus==='TESTING' && [...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && b.disabled)", '扫描占用引擎时禁止写入');
   await js('__uiFixture.translationFailuresRemaining = 1; __uiFixture.finishEngineScan("done", false)');
   await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '只读扫描完成后恢复可操作状态');
@@ -671,6 +674,7 @@ app.whenReady().then(async () => {
     await page('翻译任务');
     await js('__uiFixture.holdEngineScan = true');
     await openFontPage();
+    await click('重新扫描字体');
     await assert("__uiFixture.engineStatus==='TESTING' && __uiFixture.fontJob?.status==='running'", `${outcome}：扫描正在运行`);
     await page('翻译任务');
     await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='开始翻译' && b.disabled)", `${outcome}：运行期间全局禁用`);
@@ -679,6 +683,24 @@ app.whenReady().then(async () => {
   }
   await openFontPage();
   await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '返回字体页仍可注入');
+  // 基础注入后首次展开高级区：首次扫描与写后重扫必须合并成一个请求。
+  await js('__uiFixture.holdEngineScan = false');
+  await clearWrites();
+  await click('一键注入字体');
+  await assert(
+    `[...document.querySelectorAll('[role=dialog]')].some(d=>d.getBoundingClientRect().height>0)`,
+    '基础注入确认框已打开',
+  );
+  await click('一键注入字体');
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/inject')", '基础注入已提交');
+  await pause(1700);
+  await assert("!__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '基础注入完成后不自动扫描');
+  await clearWrites();
+  await js(`document.querySelector('.ant-collapse-header')?.click()`);
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '注入后首次展开高级区触发扫描');
+  await pause(1700);
+  await assert("__uiFixture.writes.filter(w=>w.p==='/api/font-tools/scan').length===1", '首次扫描与写后重扫合并为一次请求');
+  await assert("document.querySelector('[data-rb-font-write-report]')", '合并扫描后注入报告仍保留');
   await capture('font-parity-desktop');
 
   // 窄屏

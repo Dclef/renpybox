@@ -1816,6 +1816,71 @@
     width: 260px;
   }
 
+  .agent-history-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 320px;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+
+  .agent-history-hint {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .agent-history-hint[data-tone="error"] {
+    color: var(--rb-danger, #cf1322);
+  }
+
+  .agent-history-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 8px;
+  }
+
+  .agent-history-row:hover {
+    background: var(--rb-surface-hover);
+  }
+
+  .agent-history-open {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .agent-history-open:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+
+  .agent-history-title {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .agent-history-meta {
+    color: var(--rb-text-secondary);
+    font-size: 11px;
+  }
+
   .agent-budget {
     margin: 0;
     color: var(--rb-text-secondary);

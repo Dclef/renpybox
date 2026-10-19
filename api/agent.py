@@ -6,18 +6,28 @@ import copy
 import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from module.Agent.AgentService import AgentService
 from module.Agent.types import AgentRunResult
 from base.LogManager import LogManager
 
+if TYPE_CHECKING:
+    from module.Agent.AgentSessionStore import AgentSessionStore
+
 
 class AgentSession:
-    def __init__(self, service: AgentService, notify: Callable[[dict], None]) -> None:
+    def __init__(
+        self,
+        service: AgentService,
+        notify: Callable[[dict], None],
+        store: "AgentSessionStore | None" = None,
+    ) -> None:
         self.service = service
         self.notify = notify
+        self.store = store
         self.session_id = uuid.uuid4().hex
+        self._created_at = time.time()
         self._lock = threading.Lock()
         self._revision = 0
         self._run_id = 0
@@ -163,6 +173,22 @@ class AgentSession:
         self._publish()
         return self.snapshot()
 
+    def _persist(self) -> None:
+        """把当前会话写进历史；没有消息或没有配置存储时静默跳过。"""
+        if self.store is None:
+            return
+        try:
+            self.store.save(
+                session_id=self.session_id,
+                messages=self._messages,
+                context=self.service.messages,
+                created_at=self._created_at,
+                metrics=self.service.metrics_summary(),
+            )
+        except Exception as exc:
+            # 历史落盘失败不该影响正在进行的对话。
+            LogManager.get().warning(f"Agent 会话保存失败：{exc}")
+
     def _run(self, text: str, thinking_level: str, message: dict[str, Any], cancel_event: threading.Event) -> None:
         try:
             result = self.service.run(
@@ -187,6 +213,7 @@ class AgentSession:
             self._confirmation = None
             self._status = "idle"
             self._revision += 1
+        self._persist()
         self._publish()
 
     def cancel(self) -> dict[str, Any]:
@@ -208,12 +235,79 @@ class AgentSession:
         with self._lock:
             if self._status != "idle":
                 raise RuntimeError("请先停止当前任务，再新建会话")
+            # 先把旧会话写进历史，否则「新建任务」会把上一轮对话直接吞掉。
+            self._persist()
             self.service.reset()
+            self.session_id = uuid.uuid4().hex
+            self._created_at = time.time()
             self._messages = []
             self._confirmation = None
             self._revision += 1
         self._publish()
         return self.snapshot()
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """历史会话摘要，供界面左栏列表使用。"""
+        if self.store is None:
+            return []
+        return self.store.list_sessions()
+
+    def open_session(self, session_id: str) -> dict[str, Any]:
+        """载入一个历史会话；当前会话先存盘。"""
+        if self.store is None:
+            raise RuntimeError("当前没有可用的会话存储")
+        with self._lock:
+            if self._status != "idle":
+                raise RuntimeError("请先停止当前任务，再切换会话")
+        payload = self.store.load(session_id)
+        if payload is None:
+            raise LookupError("会话不存在或已损坏")
+        with self._lock:
+            self._persist()
+            self.service.reset()
+            self.session_id = str(payload.get("id") or session_id)
+            self._created_at = float(payload.get("created_at") or time.time())
+            messages = payload.get("messages")
+            self._messages = copy.deepcopy(messages) if isinstance(messages, list) else []
+            context = payload.get("context")
+            self.service.messages = copy.deepcopy(context) if isinstance(context, list) else []
+            self._run_id = max(
+                [int(self._run_id)] + [
+                    int(str(item.get("id", "")).split("-", 1)[0])
+                    for item in self._messages
+                    if isinstance(item, dict) and str(item.get("id", "")).split("-", 1)[0].isdigit()
+                ]
+            )
+            self._confirmation = None
+            self._stage = ""
+            self._revision += 1
+        self._publish()
+        return self.snapshot()
+
+    def delete_session(self, session_id: str) -> bool:
+        if self.store is None:
+            return False
+        value = str(session_id or "")
+        with self._lock:
+            deleting_current = value == self.session_id
+            if deleting_current and self._status != "idle":
+                raise RuntimeError("请先停止当前任务，再删除会话")
+        removed = self.store.delete(value)
+        if not removed:
+            return False
+        if deleting_current:
+            # 删的正好是当前会话：切成一个干净的新会话，避免界面还挂着它的内容。
+            # 这里不能复用 reset()：它开头的 _persist() 会把刚删掉的会话按原 id
+            # 又写回磁盘，用户看到的就是「删一次没删掉，要再删一次」。
+            with self._lock:
+                self.service.reset()
+                self.session_id = uuid.uuid4().hex
+                self._created_at = time.time()
+                self._messages = []
+                self._confirmation = None
+                self._revision += 1
+            self._publish()
+        return removed
 
     def close(self) -> None:
         self.cancel()
