@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from module.Engine.Engine import Engine
     from module.Localizer.Localizer import Localizer
     from module.Agent.AgentService import AgentService
+    from module.Agent.AgentSessionStore import AgentSessionStore
     from api.agent import AgentSession
     from api.pipeline_bridge import build_pipeline_callbacks
 
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pipeline_callbacks = build_pipeline_callbacks(app),
         ),
         hub.broadcast_threadsafe,
+        store=AgentSessionStore(),
     )
 
     # 事件总线单例要先于桥接创建，否则桥接订阅不到

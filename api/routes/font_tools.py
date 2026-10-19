@@ -569,9 +569,9 @@ def _run_scan(project_root: str, check_cancel: Callable[[], None]) -> dict:
     game = contained_game(paths)
     check_cancel()
     replacer = FontReplacer()
-    font_refs = list(replacer.scan_fonts(str(game)))
+    font_refs = list(replacer.scan_fonts(str(game), check_cancel=check_cancel))
     check_cancel()
-    font_files = [rel for rel, _ in replacer.discover_font_files(str(game))]
+    font_files = [rel for rel, _ in replacer.discover_font_files(str(game), check_cancel=check_cancel)]
     check_cancel()
     languages = list_tl_languages(game)
     if "chinese" not in languages:
@@ -697,7 +697,7 @@ def _run_replace(
     _ensure_replace_targets(game)
     check_cancel()
     replacer = FontReplacer()
-    detected = list(replacer.scan_fonts(str(game)))
+    detected = list(replacer.scan_fonts(str(game), check_cancel=check_cancel))
     originals = resolve_original_fonts(
         replace_all=replace_all,
         selected_font=selected_font,
