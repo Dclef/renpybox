@@ -30,6 +30,9 @@ from module.ResultChecker import ResultChecker, WarningType
 
 router = APIRouter(prefix="/api/proofreading", tags=["proofreading"])
 
+# 前端多选筛选里代表「无告警」的伪类型；只用于筛选，不会出现在逐行检查结果里。
+NO_WARNING = "NO_WARNING"
+
 
 class RowReference(BaseModel):
     id: int = Field(ge=0)
@@ -102,12 +105,21 @@ def _load_cache(config) -> tuple[str, CacheManager]:
     raise HTTPException(status_code=404, detail="没有可读取的完整翻译缓存，请先完成一次翻译。")
 
 
-def _row(index: int, item: CacheItem, warnings: list[WarningType] | None = None) -> dict:
-    return {
+def _row(
+    index: int,
+    item: CacheItem,
+    warnings: list[WarningType] | None = None,
+    terms: tuple[tuple[str, str], ...] = (),
+) -> dict:
+    row = {
         "id": index, "version": _version(item), "src": item.get_src(), "dst": item.get_dst(),
         "status": str(item.get_status()), "file_path": item.get_file_path(), "row": item.get_row(),
         "warnings": [str(warning) for warning in (warnings or [])],
     }
+    # 术语未生效的行把命中的词条带给渲染端，多选筛选的选项就来自这里。
+    if terms:
+        row["glossary_terms"] = [{"src": src, "dst": dst} for src, dst in terms]
+    return row
 
 
 def _readonly() -> bool:
@@ -159,7 +171,7 @@ def _read_snapshot(request: Request, config) -> dict:
     snapshot = {
         "key": key, "output": output, "manager": manager,
         "visible": visible, "files": sorted({item.get_file_path() for _, item in visible}),
-        "warnings": {}, "checked": 0, "filter_key": None, "matches": [],
+        "warnings": {}, "terms": {}, "checked": 0, "filter_key": None, "matches": [],
     }
     request.app.state.proofreading_snapshot = snapshot
     return snapshot
@@ -189,23 +201,49 @@ def read_rows(
     only_issues: bool = False,
     incremental: bool = False,
     warning: str = Query(default="", max_length=32),
+    statuses: list[str] = Query(default=[]),
+    files: list[str] = Query(default=[]),
+    warnings: list[str] = Query(default=[]),
+    terms: list[str] = Query(default=[]),
 ) -> dict:
-    """分页返回原译对照。搜索同时匹配原文、译文及相对文件路径。"""
+    """分页返回原译对照。搜索与多选筛选都由服务端对整份缓存求值。"""
+    # 空值只可能来自调用方拼出的空参数；files 例外，空路径代表「未分类」。
+    statuses = [value for value in statuses if value]
+    warnings = [value for value in warnings if value]
+    terms = [value for value in terms if value]
     if status and status not in Base.ITEM_VALID_STATUSES:
         raise HTTPException(status_code=400, detail="未知条目状态")
-    if warning and warning not in {str(value) for value in WarningType}:
+    for value in statuses:
+        if value not in Base.ITEM_VALID_STATUSES:
+            raise HTTPException(status_code=400, detail="未知条目状态")
+    warning_types = {str(value) for value in WarningType}
+    if warning and warning not in warning_types:
         raise HTTPException(status_code=400, detail="未知问题类型")
+    for value in warnings:
+        if value not in warning_types and value != NO_WARNING:
+            raise HTTPException(status_code=400, detail="未知问题类型")
     config = copy.deepcopy(request.app.state.config)
     with CacheManager.LOCK:
         snapshot = _read_snapshot(request, config)
         output, manager = snapshot["output"], snapshot["manager"]
-        visible, warnings = snapshot["visible"], snapshot["warnings"]
+        visible, warning_cache = snapshot["visible"], snapshot["warnings"]
         checker = ResultChecker(config, [])
         def check(index, item):
-            if index not in warnings:
-                warnings[index] = checker.check_single_item(item)
-            return warnings[index]
-        checking = only_issues or bool(warning)
+            if index not in warning_cache:
+                warning_cache[index] = checker.check_single_item(item)
+            return warning_cache[index]
+        def failed_terms(index, item):
+            # 只有「术语未生效」的行才可能带词条；按行缓存，筛选时不必重复扫描术语表。
+            cached = snapshot["terms"].get(index)
+            if cached is None:
+                if "GLOSSARY" not in {str(value) for value in check(index, item)}:
+                    cached = ()
+                else:
+                    cached = tuple(checker.get_failed_glossary_terms(item))
+                snapshot["terms"][index] = cached
+            return cached
+        # 问题类型、术语表都要逐行检查结果，沿用旧版的分块扫描；状态/文件/搜索只筛缓存条目。
+        checking = only_issues or bool(warning) or bool(warnings) or bool(terms)
         if checking:
             # 分块检查让第一页及时返回；切换筛选时复用同一份逐行检查结果。
             deadline = time.monotonic() + 0.12 if incremental else float("inf")
@@ -218,16 +256,45 @@ def read_rows(
         scan_complete = not checking or snapshot["checked"] == len(visible)
         candidates = visible[:snapshot["checked"]] if checking else visible
         needle = query.casefold().strip()
-        filter_key = (needle, status, file_path, only_issues, warning, snapshot["checked"] if checking else 0)
+        status_set = set(statuses)
+        file_set = set(files)
+        warning_set = set(warnings)
+        term_set = set(terms)
+        filter_key = (
+            needle, status, tuple(statuses), file_path, tuple(files), only_issues,
+            warning, tuple(warnings), tuple(terms), snapshot["checked"] if checking else 0,
+        )
         if snapshot["filter_key"] != filter_key:
-            snapshot["matches"] = [
-                (index, item) for index, item in candidates
-                if (not status or item.get_status() == status)
-                and (not file_path or item.get_file_path() == file_path)
-                and (not needle or needle in "\n".join((item.get_src(), item.get_dst(), item.get_file_path())).casefold())
-                and (not only_issues or bool(check(index, item)))
-                and (not warning or warning in check(index, item))
-            ]
+            def selected(index, item):
+                if status and str(item.get_status()) != status:
+                    return False
+                if status_set and str(item.get_status()) not in status_set:
+                    return False
+                if file_path and item.get_file_path() != file_path:
+                    return False
+                if file_set and item.get_file_path() not in file_set:
+                    return False
+                if needle and needle not in "\n".join((item.get_src(), item.get_dst(), item.get_file_path())).casefold():
+                    return False
+                if only_issues or warning or warning_set:
+                    found = {str(value) for value in check(index, item)}
+                    if only_issues and not found:
+                        return False
+                    if warning and warning not in found:
+                        return False
+                    if warning_set:
+                        # 与旧版客户端筛选一致：有告警的行按类型命中，无告警的行只在勾选「无警告」时命中。
+                        if found:
+                            if not found & warning_set:
+                                return False
+                        elif NO_WARNING not in warning_set:
+                            return False
+                if term_set:
+                    keys = {src + "\u0000" + dst for src, dst in failed_terms(index, item)}
+                    if not keys & term_set:
+                        return False
+                return True
+            snapshot["matches"] = [(index, item) for index, item in candidates if selected(index, item)]
             snapshot["filter_key"] = filter_key
         matches = snapshot["matches"]
         page = min(page, max(1, (len(matches) + limit - 1) // limit))
@@ -240,7 +307,10 @@ def read_rows(
                 report for key in ("polishing_progress", "proofreading_progress")
                 if isinstance(report := manager.get_project().get_extras().get(key), dict)
             ],
-            "items": [_row(index, item, check(index, item)) for index, item in matches[(page - 1) * limit:page * limit]],
+            "items": [
+                _row(index, item, check(index, item), failed_terms(index, item))
+                for index, item in matches[(page - 1) * limit:page * limit]
+            ],
         }
 
 

@@ -426,3 +426,76 @@ def test_issue_filter_returns_incremental_results_and_reuses_checks(tmp_path, mo
         assert len(counts) == 9
         assert client.get("/api/proofreading").json()["matched"] == 9
         assert len(counts) == 9
+
+
+def test_server_side_multiselect_filters_cover_whole_cache(tmp_path, monkeypatch):
+    """多选筛选由服务端对整份缓存求值，分页、legacy 参数与术语命中保持兼容。"""
+    config = Config()
+    config.renpy_project_path = config.renpy_game_folder = config.renpy_tl_folder = config.input_folder = ""
+    config.output_folder = str(tmp_path / "filters")
+    config.cache_use_sqlite = False
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    engine = Engine()
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
+    manager = CacheManager(service=False)
+    manager.set_project(CacheProject(id="filters"))
+    manager.set_items([
+        CacheItem(src="alpha", dst="一", file_path="a.rpy", status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="beta", dst="二", file_path="b.rpy", status=Base.TranslationStatus.POLISHED),
+        CacheItem(src="gamma", dst="三", file_path="a.rpy", status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="delta", dst="", file_path="", status=Base.TranslationStatus.UNTRANSLATED),
+        CacheItem(src="epsilon", dst="五", file_path="b.rpy", status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="zeta", dst="六", file_path="a.rpy", status=Base.TranslationStatus.EXCLUDED),
+    ])
+    assert manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder, strict=True)
+    warnings_by_src = {"alpha": ["KANA"], "gamma": ["KANA"], "delta": ["SIMILARITY", "GLOSSARY"], "zeta": ["GLOSSARY"]}
+    terms_by_src = {"delta": [("狗", "dog")], "zeta": [("猫", "cat")]}
+
+    def check(self, item):
+        return [getattr(proofreading.WarningType, name) for name in warnings_by_src.get(item.get_src(), [])]
+
+    monkeypatch.setattr(proofreading.ResultChecker, "check_single_item", check)
+    monkeypatch.setattr(proofreading.ResultChecker, "get_failed_glossary_terms",
+                        lambda self, item: list(terms_by_src.get(item.get_src(), [])))
+    app = FastAPI()
+    app.state.config = config
+    app.include_router(proofreading.router)
+    client = TestClient(app)
+
+    def ids(params):
+        response = client.get("/api/proofreading", params=params)
+        assert response.status_code == 200, response.text
+        return [row["id"] for row in response.json()["items"]]
+
+    # 状态多选按整份缓存匹配，再对匹配结果分页；翻页不回到全量。
+    params = [("statuses", "TRANSLATED"), ("statuses", "POLISHED"), ("limit", 2)]
+    data = client.get("/api/proofreading", params=params).json()
+    assert data["total"] == 6 and data["matched"] == 4
+    assert [row["id"] for row in data["items"]] == [0, 1]
+    page2 = client.get("/api/proofreading", params=[*params, ("page", 2)]).json()
+    assert page2["matched"] == 4
+    assert [row["id"] for row in page2["items"]] == [2, 4]
+    # legacy 单值参数继续生效，并与多选/搜索做 AND。
+    assert ids({"status": "TRANSLATED"}) == [0, 2, 4]
+    assert ids({"file_path": "a.rpy"}) == [0, 2, 5]
+    assert ids([("files", "a.rpy"), ("files", "b.rpy")]) == [0, 1, 2, 4, 5]
+    assert ids({"files": ""}) == [3]  # 空路径代表「未分类」
+    assert ids({"query": "EPS"}) == [4]
+    assert ids([("statuses", "TRANSLATED"), ("only_issues", "true")]) == [0, 2]
+    assert ids([("statuses", "TRANSLATED"), ("files", "b.rpy")]) == [4]
+    # 问题类型多选：有告警行按类型命中；NO_WARNING 只命中完全没有告警的行。
+    assert ids([("warnings", "KANA")]) == [0, 2]
+    assert ids([("warnings", "NO_WARNING")]) == [1, 4]
+    assert ids([("warnings", "KANA"), ("warnings", "NO_WARNING")]) == [0, 1, 2, 4]
+    assert ids([("warnings", "GLOSSARY")]) == [3, 5]
+    assert ids({"warning": "SIMILARITY"}) == [3]
+    assert ids([("only_issues", "true")]) == [0, 2, 3, 5]
+    # 术语表未生效的行带上词条，术语筛选按词条精确匹配。
+    glossary = client.get("/api/proofreading", params=[("warnings", "GLOSSARY")]).json()
+    assert [(row["id"], row["glossary_terms"]) for row in glossary["items"]] == [
+        (3, [{"src": "狗", "dst": "dog"}]), (5, [{"src": "猫", "dst": "cat"}])]
+    assert ids([("terms", "猫\u0000cat")]) == [5]
+    assert ids([("terms", "猫\u0000cat"), ("terms", "狗\u0000dog")]) == [3, 5]
+    # 不合法值仍按 400 拒绝。
+    assert client.get("/api/proofreading", params=[("statuses", "UNKNOWN")]).status_code == 400
+    assert client.get("/api/proofreading", params=[("warnings", "UNKNOWN")]).status_code == 400
