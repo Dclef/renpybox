@@ -29,6 +29,10 @@ MAX_BATCH_SIZE = 400
 DEFAULT_BATCH_CHARS = 40_000
 MAX_BATCH_CHARS = 200_000
 
+# 读批的两种取数口径：待译 vs 已译待润色。
+MODE_TRANSLATE = "translate"
+MODE_POLISH = "polish"
+
 # 同一进程里读批与写批不能交错，否则两份 CacheManager 会互相覆盖缓存文件。
 _WRITE_LOCK = threading.Lock()
 
@@ -82,6 +86,19 @@ def _render_item(item: Any) -> dict[str, Any]:
     return payload
 
 
+def _render_polish_item(item: Any) -> dict[str, Any]:
+    """润色批次额外带上现有译文：没有 dst 就只能重译，看不了「要改哪里」。"""
+
+    payload = _render_item(item)
+    payload["dst"] = str(item.get_dst() or "")
+    name_dst = item.get_name_dst()
+    if isinstance(name_dst, str) and name_dst.strip():
+        payload["name_dst"] = name_dst
+    elif isinstance(name_dst, list) and name_dst:
+        payload["name_dst"] = name_dst
+    return payload
+
+
 def _platform_of(config: Any) -> Any:
     """取当前 Agent 平台配置，用于按模型容量推导批次大小。"""
 
@@ -98,22 +115,42 @@ def _platform_of(config: Any) -> Any:
     return platform if isinstance(platform, dict) else None
 
 
+def _is_polish_candidate(item: Any) -> bool:
+    """润色候选：状态是 TRANSLATED 且已有译文。
+
+    刻意用 ``is_item_polishable`` 而不是 ``is_item_completed``：已经 POLISHED
+    的条目必须退出候选集，否则 Agent 的长任务每轮都会读到同一批内容，永远
+    在原地打转。这也是引擎润色任务的口径（``PolisherTask`` 只消费 TRANSLATED）。
+    """
+
+    if not Base.is_item_polishable(item.get_status()):
+        return False
+    return bool(str(item.get_dst() or "").strip())
+
+
 def read_translation_batch(
     *,
     config_loader: Any = None,
     batch_size: int | None = None,
     max_chars: int | None = None,
+    mode: str = MODE_TRANSLATE,
 ) -> ToolResult:
-    """返回一批待译条目，供 Agent 自行翻译。
+    """返回一批条目供 Agent 自行翻译或润色。
 
-    两个参数都省略时，按当前模型容量自动决定：条目数由单次**输出**预算反推
+    两个容量参数都省略时，按当前模型容量自动决定：条目数由单次**输出**预算反推
     （输出小的时候给太多条只会在半路截断），字符数由**输入**预算的四分之一。
+
+    ``mode="polish"`` 改取「已经译好」的条目并附带现有译文：用户完全可能先让
+    引擎译完，再让 Agent 按原文润色（2026-10-18 反馈「我汉化完了，你能不能直接
+    按照原文和译文优化和润色我的翻译」）。以前这里只筛待译条目，Agent 于是没有
+    任何入口碰得到已译内容。
     """
 
     localizer = Localizer.get()
     from module.Agent.ModelBudget import batch_capacity
     from module.Config import Config
 
+    polishing = str(mode or "").strip().lower() == MODE_POLISH
     config = config_loader() if config_loader is not None else Config().load()
     platform = _platform_of(config)
     try:
@@ -138,15 +175,18 @@ def read_translation_batch(
             code = "CACHE_LOAD_FAILED",
         )
 
-    items = [
-        item for item in manager.get_items()
-        if _is_pending(item) and str(item.get_src() or "").strip()
-    ]
+    picker = _is_polish_candidate if polishing else _is_pending
+    items = [item for item in manager.get_items() if picker(item) and str(item.get_src() or "").strip()]
     if not items:
         return ToolResult(
             True,
-            localizer.agent_translate_batch_empty,
-            data = {"remaining": 0, "items": []},
+            localizer.agent_polish_batch_empty if polishing else localizer.agent_translate_batch_empty,
+            data = {
+                "remaining": 0,
+                "returned": 0,
+                "mode": MODE_POLISH if polishing else MODE_TRANSLATE,
+                "items": [],
+            },
         )
 
     size = max(1, min(int(batch_size or capacity["max_entries"]), MAX_BATCH_SIZE))
@@ -161,26 +201,31 @@ def read_translation_batch(
         # 既稀释语境，也让失败重试牵连整批（照 LinguaGacha 的断批规则）。
         if batch and file_path != current_file:
             break
-        entry = _render_item(item)
+        entry = _render_polish_item(item) if polishing else _render_item(item)
         cost = len(str(entry.get("src") or "")) + len(str(entry.get("name_src") or ""))
+        if polishing:
+            cost += len(str(entry.get("dst") or ""))
         if batch and used + cost > budget:
             break
         batch.append(entry)
         current_file = file_path
         used += cost
 
+    message = (
+        localizer.agent_polish_batch_ready.format(count = len(batch), remaining = len(items))
+        if polishing
+        else localizer.agent_translate_batch_ready.format(count = len(batch), remaining = len(items))
+    )
     return ToolResult(
         True,
-        localizer.agent_translate_batch_ready.format(
-            count = len(batch),
-            remaining = len(items),
-        ),
+        message,
         data = {
             "remaining": len(items),
             "returned": len(batch),
+            "mode": MODE_POLISH if polishing else MODE_TRANSLATE,
             "items": batch,
         },
-        # 还有条目可译，本回合视为长任务在推进。
+        # 还有条目可处理，本回合视为长任务在推进。
         continues = bool(batch),
     )
 
@@ -188,9 +233,16 @@ def read_translation_batch(
 def _apply_translations(
     manager: Any,
     translations: list[dict[str, Any]],
+    *,
+    mode: str = MODE_TRANSLATE,
 ) -> tuple[list[Any], list[str]]:
-    """把译文写进缓存条目；返回成功条目与被拒原因。"""
+    """把译文写进缓存条目；返回成功条目与被拒原因。
 
+    润色模式下条目本来就有译文，写回后的状态是 ``POLISHED``（与引擎的润色
+    任务一致），这样才能和「新翻译」区分开。
+    """
+
+    polishing = str(mode or "").strip().lower() == MODE_POLISH
     by_id = {_item_id(item): item for item in manager.get_items()}
     written: list[Any] = []
     rejected: list[str] = []
@@ -225,7 +277,9 @@ def _apply_translations(
                 )
             else:
                 item.set_name_dst(name_dst)
-        item.set_status(Base.TranslationStatus.TRANSLATED)
+        item.set_status(
+            Base.TranslationStatus.POLISHED if polishing else Base.TranslationStatus.TRANSLATED
+        )
         written.append(item)
 
     return written, rejected
@@ -268,12 +322,17 @@ def write_translation_batch(
     *,
     config_loader: Any = None,
     translations: list[dict[str, Any]] | None = None,
+    mode: str = MODE_TRANSLATE,
 ) -> ToolResult:
-    """把 Agent 给出的译文写回缓存与输出文件。"""
+    """把 Agent 给出的译文写回缓存与输出文件。
+
+    ``mode="polish"`` 时条目本来是已译内容，写回后标记为 ``POLISHED``。
+    """
 
     localizer = Localizer.get()
     from module.Config import Config
 
+    polishing = str(mode or "").strip().lower() == MODE_POLISH
     config = config_loader() if config_loader is not None else Config().load()
     payload = translations if isinstance(translations, list) else []
     if not payload:
@@ -299,7 +358,7 @@ def write_translation_batch(
                 code = "CACHE_LOAD_FAILED",
             )
 
-        written, rejected = _apply_translations(manager, payload)
+        written, rejected = _apply_translations(manager, payload, mode = mode)
         if not written:
             return ToolResult(
                 False,
@@ -341,6 +400,11 @@ def write_translation_batch(
         {"id": item_id, "code": code}
         for item_id, code in list(failures.items())[:10]
     ]
+    written_message = (
+        localizer.agent_polish_batch_written.format(written = len(checked), failed = failed)
+        if polishing
+        else localizer.agent_translate_batch_written.format(written = len(checked), failed = failed)
+    )
     if writeback_error:
         return ToolResult(
             False,
@@ -356,10 +420,7 @@ def write_translation_batch(
 
     return ToolResult(
         True,
-        localizer.agent_translate_batch_written.format(
-            written = len(checked),
-            failed = failed,
-        ),
+        written_message,
         data = {
             "written": len(checked),
             "failed": failed,
@@ -374,6 +435,8 @@ def write_translation_batch(
 __all__ = [
     "read_translation_batch",
     "write_translation_batch",
+    "MODE_POLISH",
+    "MODE_TRANSLATE",
     "DEFAULT_BATCH_SIZE",
     "MAX_BATCH_SIZE",
 ]

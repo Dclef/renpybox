@@ -11,8 +11,8 @@ import type { MouseEvent, KeyboardEvent } from 'react';
 import { Banner, Dialog, PageHeader } from '../ui';
 import { useT } from '../i18n';
 import {
-  NO_WARNING, collectGlossaryTerms, collectWarnings, compilePattern, exportFilename, exportText,
-  filterRows, matchRowIndices, pageSlice, replaceImpact, stepMatch,
+  NO_WARNING, collectGlossaryTerms, compilePattern, exportFilename, exportText,
+  matchRowIndices, replaceImpact, stepMatch,
 } from '../proofreadingView.mjs';
 
 interface GlossaryTerm {
@@ -123,6 +123,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [edit, setEdit] = useState<(ProofreadingRow & { cache_token: string; project_identity: string }) | null>(null);
+  const [discardEdit, setDiscardEdit] = useState<null | { action: 'close' } | { action: 'open'; row: ProofreadingRow }>(null);
   const [draft, setDraft] = useState('');
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceSnapshot, setReplaceSnapshot] = useState<{ cache_token: string; rows: ProofreadingRow[] } | null>(null);
@@ -137,6 +138,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [scrollY, setScrollY] = useState(200);
   const [scrollX, setScrollX] = useState(900);
   const requestId = useRef(0);
+  const filterSignature = useRef('');
   const projectRef = useRef('');
   const matchIndexRef = useRef(-1);
   const dirtyRef = useRef(false);
@@ -164,6 +166,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
 
   useEffect(() => {
     setData(null);
+    filterSignature.current = '';
     setSelected(new Set());
     if (!dirtyRef.current) setEdit(null);
     setReplaceOpen(false);
@@ -219,10 +222,17 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     const id = ++requestId.current;
     const controller = new AbortController();
     const params = new URLSearchParams({ page: String(page), limit: String(limit), query: search, status, file_path: file, only_issues: String(onlyIssues), warning });
+    // 更多筛选由服务端对整份缓存求值，这里只负责把多选值按重复参数传过去。
+    filterStatus.forEach((value) => params.append('statuses', value));
+    filterFiles.forEach((value) => params.append('files', value));
+    filterWarnings.forEach((value) => params.append('warnings', value));
+    filterTerms.forEach((value) => params.append('terms', value));
     params.set('incremental', 'true');
+    const signature = params.toString();
     let timer: number | undefined;
     setLoading(true);
-    setData(null);
+    // 不清空已有表格：润色/校对运行期间每 2 秒都会刷新一次，清空会让
+    // 「已检查 N 条」闪回「正在载入翻译缓存」，也会把用户的选择清掉。
     setError('');
     setReplacePlan(null);
     setReplaceBusy('');
@@ -231,7 +241,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         const result = await request<ProofreadingData>('/api/proofreading?' + params, { signal: controller.signal });
         if (id !== requestId.current) return;
         setData(result);
-        setSelected(new Set()); setActive(null); selectionAnchor.current = null;
+        // 只有筛选条件变化才重置选择；润色/校对期间的后台轮询不能把用户
+        // 正在勾选的行清掉。
+        if (filterSignature.current !== signature) {
+          filterSignature.current = signature;
+          setSelected(new Set()); setActive(null); selectionAnchor.current = null;
+        }
         if (result.scan_complete === false) {
           timer = window.setTimeout(() => void load(), 80);
         } else {
@@ -247,7 +262,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     void load();
     return () => { requestId.current += 1; controller.abort(); window.clearTimeout(timer); };
 
-  }, [state.ready, projectIdentity, page, limit, search, status, file, onlyIssues, warning, refresh, state.translation.engine_status, state.translation.stop_barrier, state.translation.single_tasks]);
+  }, [state.ready, projectIdentity, page, limit, search, status, file, onlyIssues, warning, filterStatus, filterFiles, filterWarnings, filterTerms, refresh, state.translation.engine_status, state.translation.stop_barrier, state.translation.single_tasks]);
 
   useEffect(() => {
     if (!state.ready) return;
@@ -303,7 +318,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const reload = () => setRefresh((value) => value + 1);
   const closeEdit = () => {
     if (saving) return;
-    if (dirty && !window.confirm('译文尚未保存，确定放弃这次编辑？')) return;
+    if (dirty) { setDiscardEdit({ action: 'close' }); return; }
     setEdit(null);
   };
 
@@ -430,54 +445,68 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const items = data?.items ?? [];
   const activeRow = items.find((row) => row.id === active);
 
-  // 筛选维度（状态 / 文件 / 问题类型 / 术语表）在已载入的结果上求值，对齐 FilterDialog 的客户端筛选口径。
+  // 筛选维度（状态 / 文件 / 问题类型 / 术语表）全部由服务端对整份缓存求值，
+  // 分页、匹配数与扫描进度都以服务端返回为准，前端不再只筛当前页。
   const filterActive = Boolean(filterStatus.length || filterFiles.length || filterWarnings.length || filterTerms.length);
-  const filteredItems = useMemo(
-    () => filterRows(items, { statuses: filterStatus, files: filterFiles, warnings: filterWarnings, terms: filterTerms }),
-    [items, filterStatus, filterFiles, filterWarnings, filterTerms],
-  );
-  const clientPage = filterActive ? pageSlice(filteredItems, page, limit) : null;
-  const visibleItems = clientPage ? clientPage.items : filteredItems;
+  const scanFilter = onlyIssues || Boolean(warning) || filterWarnings.length > 0 || filterTerms.length > 0;
+  const pageCount = Math.max(1, Math.ceil((data?.matched ?? 0) / limit));
   const termOptions = useMemo(() => collectGlossaryTerms(items), [items]);
-  const availableWarnings = useMemo(() => collectWarnings(items), [items]);
+  /** 已选术语可能不在当前页带来的选项里，用 key 兜底显示，避免多选标签丢失。 */
+  const termSelectOptions = useMemo(() => {
+    const options = termOptions.map((term) => ({ value: term.key, label: term.label }));
+    const known = new Set(options.map((option) => option.value));
+    filterTerms.filter((key) => !known.has(key)).forEach((key) => {
+      options.push({ value: key, label: key.split('\u0000').join(' -> ') });
+    });
+    return options;
+  }, [termOptions, filterTerms]);
   const warningOptions = useMemo(() => [
     { value: '', label: '全部问题类型' },
-    ...(availableWarnings.length ? availableWarnings : Object.keys(WARNING_LABELS)).map((value) => ({ value, label: WARNING_LABELS[value] ?? value })),
-  ], [availableWarnings]);
-  /** 客户端「问题类型」多选：与 Qt5 FilterDialog 的问题类型区一致，含「无警告」占位。 */
-  const warningFilterOptions = useMemo(() => {
-    const values = availableWarnings.length ? availableWarnings : [...Object.keys(WARNING_LABELS), NO_WARNING];
-    return values.map((value) => ({ value, label: value === NO_WARNING ? t('proofreading_filter_no_warning') : WARNING_LABELS[value] ?? value }));
-  }, [availableWarnings, t]);
+    ...Object.keys(WARNING_LABELS).map((value) => ({ value, label: WARNING_LABELS[value] ?? value })),
+  ], []);
+  /** 「问题类型」多选：完整列出检查类型，含「无警告」占位；选项不再依赖当前页碰巧出现的问题。 */
+  const warningFilterOptions = useMemo(
+    () => [...Object.keys(WARNING_LABELS), NO_WARNING].map((value) => ({ value, label: value === NO_WARNING ? t('proofreading_filter_no_warning') : WARNING_LABELS[value] ?? value })),
+    [t],
+  );
 
   // 正则搜索：非法正则只提示，不影响列表；搜索永远只作用于当前筛选结果。
   const searchPattern = compilePattern(search, { regex: searchRegex });
   const searchError = searchPattern.ok ? '' : searchPattern.error;
   const matches = useMemo(
-    () => (searchError || !search ? [] : matchRowIndices(filteredItems, search, { regex: searchRegex })),
-    [filteredItems, search, searchRegex, searchError],
+    () => (searchError || !search ? [] : matchRowIndices(items, search, { regex: searchRegex })),
+    [items, search, searchRegex, searchError],
   );
-  const matchedRows = matches.map((index) => filteredItems[index]).filter(Boolean);
+  const matchedRows = matches.map((index) => items[index]).filter(Boolean);
   /** 批量替换对话框里的实时状态：非法正则不允许继续，影响范围由 previewReplace 计算。 */
   const planPreview = compilePattern(find, { regex: replaceRegex, caseSensitive });
   const needPreviewAll = Boolean(find) && planPreview.ok && (replaceScope === 'all' || items.length >= 100);
   const waitingForAll = needPreviewAll && !replacePlan;
 
-  /** 批量替换的「全部结果」作用域与筛选导出共用：按后端分页上限拉回全部命中行。 */
+  /** 批量替换的「全部结果」作用域与筛选导出共用：按当前服务端筛选拉回全部命中行。 */
   const loadAllRows = async () => {
     if (!data) return { rows: items, truncated: false };
     const params = new URLSearchParams({
-      page: '1', limit: '100', query: search, status, file_path: file, only_issues: 'false', warning,
-      incremental: 'true',
+      page: '1', limit: '100', query: search, status, file_path: file,
+      only_issues: String(onlyIssues), warning, incremental: 'true',
     });
-    const result = await request<ProofreadingData>('/api/proofreading?' + params);
+    filterStatus.forEach((value) => params.append('statuses', value));
+    filterFiles.forEach((value) => params.append('files', value));
+    filterWarnings.forEach((value) => params.append('warnings', value));
+    filterTerms.forEach((value) => params.append('terms', value));
+    let result = await request<ProofreadingData>('/api/proofreading?' + params);
+    // 问题类型/术语筛选要先扫完整份缓存；轮询到 scan_complete 再取结果，避免只拿到前几行。
+    while (result.scan_complete === false) {
+      await new Promise((resolve) => window.setTimeout(resolve, 80));
+      result = await request<ProofreadingData>('/api/proofreading?' + params);
+    }
     return { rows: result.items ?? [], truncated: (result.matched ?? 0) > (result.items ?? []).length };
   };
 
   const focusMatch = (row: ProofreadingRow) => {
     setActive(row.id);
     setSelected(new Set([row.id]));
-    setPage(Math.floor(filteredItems.indexOf(row) / Math.max(1, limit)) + 1);
+    // 搜索只在当前页命中的行里跳转，不需要再切服务端分页。
     window.requestAnimationFrame(() => {
       cancelFocus.current?.();
       cancelFocus.current = focusTableRow(tableRef, String(row.id), (target) => target.focus());
@@ -504,19 +533,17 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     state.pushToast('success', t('proofreading_filter_export_copied'));
     setExportRowsState(null);
   };
-  /** 导出筛选结果：按当前服务端筛选拉回整批命中行，再套用客户端筛选维度，对齐 FilterDialog 的导出报告。 */
+  /** 导出筛选结果：服务端已对整份缓存套用全部筛选维度，这里只负责拉回命中的行。 */
   const exportFilteredRows = async () => {
     if (saving || loading) return;
     setSaving(true);
     try {
       const loaded = await loadAllRows();
-      const warnings = filterWarnings.length ? filterWarnings : (warning ? [warning] : []);
-      const rows = filterRows(loaded.rows, { statuses: filterStatus, files: filterFiles, terms: filterTerms, warnings });
-      if (!rows.length) {
+      if (!loaded.rows.length) {
         state.pushToast('info', t('proofreading_filter_export_empty'));
         return;
       }
-      setExportRowsState({ filename: exportFilename(), text: exportText(rows), count: rows.length, truncated: loaded.truncated });
+      setExportRowsState({ filename: exportFilename(), text: exportText(loaded.rows), count: loaded.rows.length, truncated: loaded.truncated });
     } catch (failure) {
       state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -537,11 +564,6 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   }, [search, searchRegex, filterStatus, filterFiles, filterWarnings, filterTerms, page, limit]);
 
   useEffect(() => {
-    if (!filterActive || !clientPage || clientPage.page === page) return;
-    setPage(clientPage.page);
-  }, [filterActive, clientPage, page]);
-
-  useEffect(() => {
     if (!replaceOpen || saving) return;
     if (!find || !planPreview.ok) { setReplacePlan(null); return; }
     if (replaceScope === 'all' || items.length >= 100) { setReplacePlan(null); return; }
@@ -557,7 +579,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const openEdit = (row: ProofreadingRow) => {
     if (readonly || loading || saving) return;
     if (edit?.id === row.id) return;
-    if (dirty && !window.confirm('译文尚未保存，确定放弃这次编辑？')) return;
+    if (dirty) { setDiscardEdit({ action: 'open', row }); return; }
     setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
     setDraft(row.dst);
   };
@@ -572,9 +594,9 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   };
   const selectRow = (row: ProofreadingRow, event: MouseEvent | KeyboardEvent) => {
     if (event.shiftKey && selectionAnchor.current != null) {
-      const from = visibleItems.findIndex((item) => item.id === selectionAnchor.current);
-      const to = visibleItems.findIndex((item) => item.id === row.id);
-      if (from >= 0) setSelected(new Set(visibleItems.slice(Math.min(from, to), Math.max(from, to) + 1).map((item) => item.id)));
+      const from = items.findIndex((item) => item.id === selectionAnchor.current);
+      const to = items.findIndex((item) => item.id === row.id);
+      if (from >= 0) setSelected(new Set(items.slice(Math.min(from, to), Math.max(from, to) + 1).map((item) => item.id)));
     } else {
       if (event.ctrlKey || event.metaKey) toggle(row.id); else setSelected(new Set([row.id]));
       selectionAnchor.current = row.id;
@@ -663,6 +685,8 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     catch (failure) { state.pushToast('error', failure instanceof Error ? failure.message : String(failure)); }
   };
   const mutationDisabled = !state.ready || Boolean(readonly) || retranslateRunning || loading || saving || dirty;
+  // 只对「选中行里当前还有问题标记」的批次点亮确认入口，避免整页误点。
+  const confirmableSelected = items.some((row) => selected.has(row.id) && Boolean(row.warnings?.length));
 
   const contextMenuItems = (row: ProofreadingRow): MenuProps['items'] => {
     const multi = selected.has(row.id) && selected.size > 1;
@@ -699,12 +723,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         onClick: () => copyPairs(targetRows),
       },
       { type: 'divider' },
-      ...(row.warnings?.includes('RETRY_THRESHOLD') ? [{
+      {
         key: 'confirm',
         label: '确认译文无误',
         disabled: mutationDisabled,
         onClick: () => confirmSelection('confirm', targetRows),
-      }] : []),
+      },
       {
         key: 'reset',
         danger: true,
@@ -793,6 +817,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('retranslate')}>重译选中行</Button>
       {retranslateRunning && <Button size="small" danger disabled={retranslate.state === 'CANCELLING'} onClick={() => void cancelRetranslate()}>取消重译</Button>}
       <Button size="small" disabled={mutationDisabled || !selected.size} onClick={() => confirmSelection('reset')}>重置选中译文</Button>
+      <Button size="small" disabled={mutationDisabled || !confirmableSelected} onClick={() => confirmSelection('confirm')}>确认选中无误</Button>
       <Button size="small" disabled={loading || !data} onClick={() => void showReport()}>质量报告</Button>
       {(['proofread', 'polish'] as const).map((task) => (
         <Button size="small" key={task} disabled={mutationDisabled || !selected.size}
@@ -917,7 +942,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             placeholder={t('proofreading_filter_terms_placeholder')}
             maxTagCount="responsive"
             value={filterTerms}
-            options={termOptions.map((term: GlossaryTerm) => ({ value: term.key, label: term.label }))}
+            options={termSelectOptions}
             onChange={(values) => applyFilter({ terms: values })}
           />
           {termOptions.length ? null : (
@@ -943,7 +968,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         </div>
         {loading && <div className="rb-proof-loading" role="status" aria-live="polite">
           <Spin size="small" />
-          <span>{onlyIssues || warning ? t('proofreading_checking').replace('{checked}', (data?.checked ?? 0).toLocaleString()).replace('{total}', (data?.check_total ?? 0).toLocaleString()) : t('proofreading_loading')}</span>
+          <span>{scanFilter ? t('proofreading_checking').replace('{checked}', (data?.checked ?? 0).toLocaleString()).replace('{total}', (data?.check_total ?? 0).toLocaleString()) : t('proofreading_loading')}</span>
         </div>}
         <div className="rb-proof-table-scroll" ref={scrollRef} aria-busy={loading}>
           <Table<ProofreadingRow>
@@ -954,7 +979,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             tableLayout="fixed"
             rowKey="id"
             columns={columns}
-            dataSource={visibleItems}
+            dataSource={items}
             pagination={false}
             loading={false}
             virtual={true}
@@ -995,7 +1020,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           />
         </div>
         <footer className="proofreading-pagination">
-          <span>{data ? `${(filterActive ? filteredItems.length : data.matched ?? 0).toLocaleString()}${data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${(data.total ?? 0).toLocaleString()} 条` : '原译对照'}{filterActive ? ` · 已筛选 ${visibleItems.length} / ${items.length} 行（本页）` : ''}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
+          <span>{data ? `${(data.matched ?? 0).toLocaleString()}${data.scan_complete === false ? '＋' : ''} 条符合条件 · 共 ${(data.total ?? 0).toLocaleString()} 条` : '原译对照'}{selected.size ? ` · 已选 ${selected.size} 条` : ''}</span>
           <div className="proofreading-toolbar">
             <Select
               aria-label="每页条数"
@@ -1010,15 +1035,15 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
               size="small"
               style={{ width: 64 }}
               min={1}
-              max={filterActive ? (clientPage?.pages ?? 1) : Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}
+              max={pageCount}
               value={page}
               onChange={(value) => { if (typeof value === 'number') setPage(value); }}
             />
             <Button size="small" disabled={loading || page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
-            <span>{filterActive ? (clientPage?.page ?? 1) : data?.page ?? 1} / {filterActive ? (clientPage?.pages ?? 1) : Math.max(1, Math.ceil((data?.matched ?? 0) / limit))}</span>
+            <span>{data?.page ?? page} / {pageCount}</span>
             <Button
               size="small"
-              disabled={loading || !data || (filterActive ? (clientPage?.page ?? 1) >= (clientPage?.pages ?? 1) : page * limit >= data.matched)}
+              disabled={loading || !data || (data.page ?? page) >= pageCount}
               onClick={() => setPage((value) => value + 1)}
             >
               下一页
@@ -1096,8 +1121,22 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           </div>
         </Modal>
       )}
+      {discardEdit ? (
+        <Dialog title={t('proofreading_discard_title')} onCancel={() => setDiscardEdit(null)} onConfirm={() => {
+          const pending = discardEdit;
+          setDiscardEdit(null);
+          if (pending.action === 'close') {
+            setEdit(null);
+            return;
+          }
+          setEdit({ ...pending.row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+          setDraft(pending.row.dst);
+        }}>
+          {t('proofreading_discard_body')}
+        </Dialog>
+      ) : null}
       {selectionConfirm && <Dialog title={selectionConfirm.action === 'retranslate' ? '重新翻译' : selectionConfirm.action === 'reset' ? '重置选中译文' : '确认译文无误'} confirmText={selectionConfirm.action === 'retranslate' ? '开始重译' : '确认并保存'} onCancel={() => { if (!saving) setSelectionConfirm(null); }} onConfirm={mutationDisabled || selectionConfirm.project !== projectIdentity ? undefined : () => void applySelection()}>
-        <p>{selectionConfirm.action === 'retranslate' ? '使用当前翻译接口重新处理选中行，会消耗额度；失败行保留原译文。' : selectionConfirm.action === 'reset' ? '将清空选中行的译文、重试记录，并设为待翻译。' : '保留已有译文，清除重试次数和对应失败记录。'}共 {selectionConfirm.rows.length} 条，成功后保存到缓存。</p>
+        <p>{selectionConfirm.action === 'retranslate' ? '使用当前翻译接口重新处理选中行，会消耗额度；失败行保留原译文。' : selectionConfirm.action === 'reset' ? '将清空选中行的译文、重试记录，并设为待翻译。' : '保留已有译文，清除重试次数与当前查出的问题标记；译文若再修改，确认会自动失效。'}共 {selectionConfirm.rows.length} 条，成功后保存到缓存。</p>
       </Dialog>}
       {exportConfirm && <Dialog title="导出译文" confirmText="写入译文文件" onCancel={() => { if (!saving) setExportConfirm(null); }} onConfirm={mutationDisabled || exportConfirm.project !== projectIdentity ? undefined : () => void exportRows()}>
         <p>将当前缓存中的全部译文按原文件格式写入输出目录，可能覆盖已有译文文件。当前筛选不会限制导出范围。</p>

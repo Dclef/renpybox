@@ -400,6 +400,32 @@ class LocalizerZH():
     project_page_traditional_chinese_title: str = "使用繁体输出中文"
     project_page_traditional_chinese_content: str = "启用此功能后，在译文语言设置为中文时，将使用繁体字形输出中文文本"
 
+    # 工程文件 API 错误
+    project_file_api_invalid: str = "工程文件不可用（{code}）：{error}"
+    project_file_api_busy: str = "已有任务正在运行或收尾，请稍后再试"
+    project_file_api_no_output: str = "当前项目没有可用的翻译输出目录"
+    project_file_api_pending_save: str = "翻译结果待保存，请稍后重试：{error}"
+    project_file_api_invalid_setting: str = "工程文件不可用（invalid_settings）：{key} 的值无效"
+    project_file_api_cache_restore_failed: str = "{reason}，且恢复原缓存失败{backups}：{error}；恢复错误：{restore_errors}"
+    project_file_api_cache_restored: str = "{reason}，已恢复导入前的缓存{backups}：{error}"
+    project_file_api_backups_retained: str = "；备份保留在 {paths}"
+    project_file_api_restore_error: str = "{path}：{error}"
+    project_file_api_path_separator: str = "、"
+    project_file_api_error_separator: str = "；"
+    project_file_api_no_cache: str = "当前项目还没有翻译缓存，无法导出工程文件"
+    project_file_api_cache_read_failed: str = "翻译缓存读取失败，未导出：{error}"
+    project_file_api_assets_read_failed: str = "项目资产读取失败，未导出：{error}"
+    project_file_api_cache_backup_failed: str = "备份现有缓存失败，未导入：{error}"
+    project_file_api_assets_backup_failed: str = "备份项目资料缓存失败，未导入：{error}"
+    project_file_api_cache_install_failed: str = "写入导入缓存失败"
+    project_file_api_assets_sync_failed: str = "同步项目资料失败"
+    project_file_api_settings_save_failed: str = "配置保存失败，设置未生效"
+    project_file_api_legacy_folder_invalid: str = "旧缓存目录无效：请选择旧版输出目录或其 cache 子目录"
+    project_file_api_legacy_no_cache: str = "所选目录没有可迁移的翻译缓存（需要 cache.db，或 items.json 与 project.json）"
+    project_file_api_legacy_cache_invalid: str = "旧翻译缓存不完整或已损坏，未读取：{error}"
+    project_file_api_legacy_unbound: str = "请先绑定当前 Ren'Py 游戏后再导出旧缓存；工程文件会记录当前游戏，不会改用旧目录里的项目"
+    project_file_api_legacy_destination_forbidden: str = "导出路径会覆盖旧缓存、当前缓存或其他源文件，请另选一个 .rbox 保存位置"
+
     # 开始翻译
     translation_page_status_idle: str = "无任务"
     translation_page_status_testing: str = "测试中"
@@ -797,6 +823,11 @@ class LocalizerZH():
         "你直接产出与之一一对应的译文，再用 write_translation_batch 按同一批 id 写回，"
         "然后继续下一批。译一批写一批，不要在回复里罗列整批译文；"
         "写回失败的条目按返回的 code 修正后重写。\n"
+        "用户要求润色、优化、按原文改已有翻译时，两批工具都传 mode=\"polish\"："
+        "read_translation_batch 会返回已译条目并附上现有译文 dst，"
+        "你按原文打磨这些译文，再用 write_translation_batch(mode=\"polish\") 写回，"
+        "条目会被标记为已润色并与「新翻译」区分开。已经润色过的条目不会再次返回，"
+        "所以同样一路润到底，直到返回的 remaining 为 0 再收尾。\n"
         "用户说「翻译这个项目」这类整盘任务时，一路译到底：不要译几十条就停下来总结，"
         "也不要每批都问用户，直到待译条目为 0 再收尾。只有用户要求停止、"
         "或出现你自己解决不了的错误时才停。\n"
@@ -830,6 +861,10 @@ class LocalizerZH():
     agent_tool_arguments_must_be_object: str = "工具参数必须是 JSON 对象。"
     agent_tool_undeclared_arguments: str = "包含未声明参数：{names}。"
     agent_tool_missing_arguments: str = "缺少必填参数：{names}。"
+    agent_tool_arguments_truncated: str = (
+        "工具参数在 {limit} token 的输出上限处被截断，无法解析。原样重试仍会失败："
+        "请把单次条目数降到 10～20 条再试，分批把整批写完即可。"
+    )
     agent_tool_argument_must_be_string: str = "参数 {name} 必须是字符串。"
     agent_tool_argument_must_be_object: str = "参数 {name} 必须是对象。"
     agent_tool_argument_must_be_boolean: str = "参数 {name} 必须是布尔值。"
@@ -875,6 +910,10 @@ class LocalizerZH():
     agent_extract_failed: str = "文本抽取失败，请查看日志了解详情。"
     agent_translation_status_ready: str = (
         "翻译状态：引擎 {engine_status}，待翻译 {untranslated_count} 条。"
+    )
+    agent_quality_candidates_ready: str = (
+        "可润色 {polish} 条，可校对 {proofread} 条；润色只处理已翻译的句子，"
+        "先按这个数量决定分批，不要先读一批再看。"
     )
     agent_refresh_fallback_complete: str = (
         "replace_text 兜底补丁已刷新，共 {count} 条：{output_path}"
@@ -942,13 +981,16 @@ class LocalizerZH():
 
     # Agent 自带翻译
     agent_tool_read_translation_batch_description: str = (
-        "读取一批待翻译条目。返回每条的 id、原文 src、可选的 name_src（角色姓名）与 text_type。"
+        "读取一批条目。mode=translate（默认）取待翻译条目，返回每条的 id、原文 src、"
+        "可选的 name_src（角色姓名）与 text_type；mode=polish 取已经译好的条目，"
+        "额外返回现有译文 dst 与 name_dst，用于按原文润色已有翻译。"
         "这些条目来自当前项目的翻译缓存，与翻译引擎共用同一份数据。"
-        "拿不到条目说明已经译完或尚未抽取文本。"
+        "拿不到条目说明已经译完（或还没开始译）或尚未抽取文本。"
     )
     agent_tool_write_translation_batch_description: str = (
         "把译文写回项目：写入缓存、通过项目的质量检查（标记保留、术语、相似度），"
         "并更新翻译输出目录中的 .rpy。id 必须来自 read_translation_batch。"
+        "mode 要与读批时一致：translate 写入后标记为已翻译，polish 写入后标记为已润色。"
         "质量检查不通过的条目会被打回未翻译并计入 failed，不会写入文件。"
         "写回的是翻译工作目录，不是游戏目录；要让译文进游戏仍需 apply_translation。"
     )
@@ -966,6 +1008,13 @@ class LocalizerZH():
     agent_translate_nothing_written: str = "没有任何译文被接受（{count} 条被拒绝），请检查 id 是否来自 read_translation_batch。"
     agent_translate_writeback_failed: str = "译文已进入缓存，但写回输出目录失败：{detail}"
     agent_translate_batch_written: str = "已写入 {written} 条译文，{failed} 条未通过质量检查。"
+    agent_translate_mode_param_description: str = (
+        "取数口径：translate（默认，取还没翻译的条目）或 polish"
+        "（取已经译好的条目，返回值里带现有译文 dst，用于按原文润色）。"
+    )
+    agent_polish_batch_ready: str = "本批 {count} 条已译条目，剩余 {remaining} 条可润色。"
+    agent_polish_batch_empty: str = "没有可润色的条目，当前项目可能还没开始翻译。"
+    agent_polish_batch_written: str = "已写回 {written} 条润色译文，{failed} 条未通过质量检查。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
@@ -2256,10 +2305,12 @@ class LocalizerZH():
     workbench_open_do_not_translate_list: str = '打开禁翻表'
     workbench_open_custom_prompts: str = '打开自定义提示词'
     workbench_progress_loading: str = '正在读取项目文本并扫描角色候选…'
-    workbench_progress_worldbook: str = '正在生成世界观草稿，等待模型回复…'
+    workbench_progress_scanning_characters: str = '正在扫描角色台词（语料 {count} 条）…'
+    workbench_progress_worldbook: str = '正在生成世界观草稿（样本 {count} 条），等待模型回复…'
     workbench_progress_worldbook_done: str = '世界观草稿已生成并解析完成。'
     workbench_progress_no_characters: str = '没有找到可生成草稿的角色候选。'
     workbench_progress_characters: str = '角色卡第 {batch}/{total} 批，等待模型回复：{names}'
+    workbench_progress_characters_progress: str = '角色卡已完成 {completed}/{total} 批，等待剩余批次…'
     workbench_progress_characters_done: str = '已处理 {count} 张角色草稿。'
     workbench_progress_elapsed: str = '已用时间：{minutes} 分 {seconds} 秒'
     workbench_progress_complete: str = '分析完成：世界观草稿 {worlds} 份，角色草稿 {count} 张。请检查并应用。'
@@ -2515,8 +2566,19 @@ class LocalizerZH():
     toolbox_tool_name_extraction_description: str = '扫描脚本与 JSON，生成角色名清单'
     toolbox_tool_pack_unpack_title: str = '解包/打包'
     toolbox_tool_pack_unpack_description: str = '解包 RPA 文件或打包游戏资源'
-    toolbox_tool_error_repair_title: str = '错误修复'
-    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录中生成的 .rpy 错误'
+    toolbox_tool_error_repair_title: str = '脚本修复'
+    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录的 .rpy：缩进、重复译文、空块、残留增量目录，并可格式化'
+    error_repair_scan_summary: str = '发现 {total} 个问题（可自动修复 {fixable} 个，需人工 {manual} 个，环境问题 {env} 个）'
+    error_repair_no_issues: str = '未发现问题'
+    error_repair_fix_summary: str = '已修复 {files} 个文件、{items} 处'
+    error_repair_fix_remaining: str = '；仍有 {count} 个问题需人工处理'
+    error_repair_fix_rescan_skipped: str = '；修复过程未完成，未复扫'
+    error_repair_fix_rescan_incomplete: str = '；复扫未完成，剩余问题数量未知，请重新扫描'
+    error_repair_env_backup: str = '（合并前已完整备份到 {target}）'
+    error_repair_env_leftover: str = '增量抽取目录未合并：{name}（{count} 条重复译文，会让游戏报 translation already exists）'
+    error_repair_env_merged: str = '已合并 {name} 到 {tl}'
+    error_repair_env_moved: str = '已移出 {name} 到 {target}'
+    error_repair_env_failed: str = '处理 {name} 失败：{error}'
     toolbox_tool_translation_reuse_title: str = '更新翻译复用'
     toolbox_tool_translation_reuse_description: str = '按原文将旧译文安全填入新版本的空条目'
     toolbox_tool_formatter_title: str = '代码格式化'

@@ -278,11 +278,17 @@ def test_service_reset_clears_conversation() -> None:
     service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
     service.messages = [{"role": "user", "content": "旧任务"}]
     service._project_key = "old"
+    service._metrics.update({"iterations": 9, "steps": 40, "input_tokens": 1000})
 
     service.reset()
 
     assert service.messages == []
     assert service._project_key == ""
+    # 新建任务必须连用量一起清零，否则状态栏会停在上一个任务的数字上。
+    assert service.metrics_summary()["iterations"] == 0
+    assert service.metrics_summary()["steps"] == 0
+    assert service.metrics_summary()["total_tokens"] == 0
+    assert service.metrics_summary()["cache_hit_rate"] is None
 
 
 def test_service_trims_old_history_by_complete_user_round(monkeypatch) -> None:
@@ -338,3 +344,147 @@ def test_service_invalid_agent_platform_is_treated_as_unset() -> None:
 
     assert result.success is False
     assert result.code == "AGENT_PLATFORM_NOT_SET"
+
+
+def test_service_recovers_from_truncated_tool_arguments(monkeypatch) -> None:
+    """截断是可自愈错误：把原因回灌给模型后，下一轮正常写回应当成功。"""
+    observed_messages = []
+    responses = iter([
+        AgentRequestResult.failure("TOOL_ARGUMENTS_TRUNCATED", "参数被截断，请降低单次条目数。"),
+        AgentRequestResult(
+            True,
+            tool_calls=[AgentToolCall("call-1", "get_project_info", {})],
+        ),
+        AgentRequestResult(True, text="已经读取项目。"),
+    ])
+
+    def request_tools(_self, messages, _tools):
+        observed_messages.append(list(messages))
+        return next(responses)
+
+    monkeypatch.setattr(TaskRequester, "request_tools", request_tools)
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    result = service.run("继续写回")
+
+    assert result.success is True
+    assert result.message == "已经读取项目。"
+    # 第二次请求必须能看到「截断原因」，否则模型无从修正。
+    assert observed_messages[1][-1]["role"] == "user"
+    assert "参数被截断" in observed_messages[1][-1]["content"]
+
+
+def test_service_gives_up_after_repeated_truncation(monkeypatch) -> None:
+    responses = iter([
+        AgentRequestResult.failure("TOOL_ARGUMENTS_TRUNCATED", "参数被截断。")
+        for _ in range(AgentService.MAX_TRUNCATION_RETRIES + 1)
+    ])
+    monkeypatch.setattr(TaskRequester, "request_tools", lambda *_args, **_kwargs: next(responses))
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    result = service.run("继续写回")
+
+    assert result.success is False
+    assert result.code == "TOOL_ARGUMENTS_TRUNCATED"
+
+
+def test_metrics_accumulate_usage_and_steps(monkeypatch) -> None:
+    """状态栏数据：两轮请求、一次工具步，token 与缓存命中都要累加。"""
+    responses = iter([
+        AgentRequestResult(
+            True,
+            tool_calls=[AgentToolCall("call-1", "get_project_info", {})],
+            usage={"input_tokens": 1000, "output_tokens": 200, "cached_tokens": 768},
+        ),
+        AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 500, "output_tokens": 100, "cached_tokens": 0},
+        ),
+    ])
+    monkeypatch.setattr(TaskRequester, "request_tools", lambda *_args, **_kwargs: next(responses))
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    metrics = service.metrics_summary()
+
+    assert metrics["iterations"] == 2
+    assert metrics["steps"] == 1
+    assert metrics["requests"] == 2
+    assert metrics["input_tokens"] == 1500
+    assert metrics["output_tokens"] == 300
+    assert metrics["cached_tokens"] == 768
+    assert metrics["total_tokens"] == 1800
+    # 命中率按「缓存命中 / 输入」算，供应商不回缓存字段时是 None。
+    assert metrics["cache_hit_rate"] == round(768 / 1500, 4)
+    assert metrics["context_percent"] > 0
+    assert metrics["context_limit_chars"] > 0
+
+
+def test_metrics_report_no_cache_hit_rate_without_provider_support(monkeypatch) -> None:
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda *_args, **_kwargs: AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 100, "output_tokens": 50},
+        ),
+    )
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    metrics = service.metrics_summary()
+
+    assert metrics["cached_tokens"] == 0
+    assert metrics["cache_hit_rate"] is None
+
+
+def test_metrics_freeze_after_run_finishes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda *_args, **_kwargs: AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 100, "output_tokens": 50},
+        ),
+    )
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    first = service.metrics_summary()
+    second = service.metrics_summary()
+
+    assert first["elapsed_seconds"] == second["elapsed_seconds"]
+    assert first["tokens_per_second"] == second["tokens_per_second"]
+
+
+def test_metrics_accumulate_across_messages_in_one_task(monkeypatch) -> None:
+    """同一任务里追问要接着累计，而不是把「25 轮」打回「1 轮」。"""
+    responses = iter([
+        AgentRequestResult(True, text="第一次完成。", usage={"input_tokens": 100, "output_tokens": 40}),
+        AgentRequestResult(
+            True,
+            tool_calls=[AgentToolCall("call-1", "get_project_info", {})],
+            usage={"input_tokens": 200, "output_tokens": 60, "cached_tokens": 150},
+        ),
+        AgentRequestResult(True, text="第二次完成。", usage={"input_tokens": 300, "output_tokens": 80}),
+    ])
+    monkeypatch.setattr(TaskRequester, "request_tools", lambda *_args, **_kwargs: next(responses))
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    after_first = service.metrics_summary()
+    service.run("继续")
+    after_second = service.metrics_summary()
+
+    assert after_first["iterations"] == 1
+    assert after_second["iterations"] == 3  # 1 + 2 轮
+    assert after_second["steps"] == 1
+    assert after_second["input_tokens"] == 600
+    assert after_second["output_tokens"] == 180
+    assert after_second["cached_tokens"] == 150
+    assert after_second["total_tokens"] == 780
+    # 活跃时长跨轮累计，空闲时间不计入。
+    assert after_second["elapsed_seconds"] >= after_first["elapsed_seconds"]

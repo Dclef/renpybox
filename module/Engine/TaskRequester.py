@@ -810,6 +810,48 @@ class TaskRequester(Base):
         self.warning("[API-REQUEST] 请求失败，已达最大重试次数")
         return finish_result(last_result, failed=True)
 
+    CLOSED_CLIENT_MARKERS = (
+        "client has been closed",
+        "cannot send a request, as the client has been closed",
+        "closed client",
+    )
+
+    @classmethod
+    def is_closed_client_error(cls, exc: Any) -> bool:
+        """判断异常是否属于「缓存客户端已被关闭」。"""
+        lowered = str(exc or "").lower()
+        return any(marker in lowered for marker in cls.CLOSED_CLIENT_MARKERS)
+
+    @classmethod
+    def is_cancellation_side_effect(cls, exc: Any) -> bool:
+        """判断异常是否只是用户主动停止的副作用。
+
+        停止翻译会先 ``cancel_all_clients`` 关掉连接池，正在途中的请求随即
+        抛 ``Cannot send a request, as the client has been closed.``。这不是
+        故障，但以前被当成普通失败打了整段 ERROR + traceback，用户看到红字
+        以为出错了（2026-10-18 反馈）。
+        """
+        if cls.is_closed_client_error(exc) is False:
+            return False
+        return bool(cls.is_cancel_requested())
+
+    def _record_request_failure(
+        self,
+        exc: BaseException,
+        *,
+        client: Any = None,
+        key: str | None = None,
+    ) -> None:
+        """记录请求异常：用户主动停止只留 debug，真失败才打 ERROR + traceback。"""
+        if __class__.is_cancellation_side_effect(exc):
+            self._recover_closed_cached_client(exc, client = client, key = key)
+            self.last_error_message = ""
+            self.debug("[API-REQUEST] 用户停止任务，忽略关闭客户端产生的异常")
+            return
+        self.last_error_message = str(exc)
+        self._recover_closed_cached_client(exc, client = client, key = key)
+        self.error(f"{Localizer.get().log_task_fail}", exc)
+
     def _recover_closed_cached_client(
         self,
         exc: BaseException,
@@ -818,21 +860,18 @@ class TaskRequester(Base):
         key: str | None = None,
     ) -> bool:
         """命中“client 已关闭”类错误时，清理缓存并允许上层重试。"""
-        message = str(exc or "")
-        lowered = message.lower()
-        markers = (
-            "client has been closed",
-            "cannot send a request, as the client has been closed",
-            "closed client",
-        )
-        if any(marker in lowered for marker in markers) is False:
+        if __class__.is_closed_client_error(exc) is False:
             return False
 
         try:
             url = self.platform.get('api_url')
             format = self.platform.get('api_format')
             timeout = self.config.request_timeout
-            self.warning("[API-REQUEST] 检测到已关闭的缓存客户端，正在丢弃并等待重试")
+            # 用户主动停止时不提示「正在丢弃并等待重试」——不会有下一次重试。
+            if __class__.is_cancel_requested():
+                self.debug("[API-REQUEST] 用户停止任务，丢弃已关闭的缓存客户端")
+            else:
+                self.warning("[API-REQUEST] 检测到已关闭的缓存客户端，正在丢弃并等待重试")
             if key is not None:
                 __class__._discard_client(
                     url,
@@ -946,9 +985,7 @@ class TaskRequester(Base):
         except openai.BadRequestError:
             raise
         except Exception as e:
-            self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = client_key)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e, client = client, key = client_key)
             return True, None, None, None, None
 
         return False, "", response_result, input_tokens, output_tokens
@@ -1128,9 +1165,7 @@ class TaskRequester(Base):
         except openai.BadRequestError:
             raise
         except Exception as e:
-            self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = client_key)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e, client = client, key = client_key)
             return True, None, None, None, None
 
         return False, response_think, response_result, input_tokens, output_tokens
@@ -1390,9 +1425,7 @@ class TaskRequester(Base):
                     )
                     return True, None, None, None, None
         except Exception as e:
-            self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = client_key)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e, client = client, key = client_key)
             return True, None, None, None, None
 
         return False, response_think, response_result, input_tokens, output_tokens
@@ -1515,9 +1548,7 @@ class TaskRequester(Base):
                     output_tokens = getattr(usage, 'output_tokens', 0) or 0
 
         except Exception as e:
-            self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = client_key)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e, client = client, key = client_key)
             return True, None, None, None, None
 
         return False, response_think, response_result, input_tokens, output_tokens
@@ -1696,9 +1727,7 @@ class TaskRequester(Base):
                 self.warning(f"GoogleFree 返回数量不匹配: {len(dsts)}/{len(srcs)}")
                 return True, None, None, None, None
         except Exception as e:
-            self.last_error_message = str(e)
-            self._recover_closed_cached_client(e, client = client, key = key)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e, client = client, key = key)
             return True, None, None, None, None
 
         input_tokens = sum(len(v) for v in srcs)
@@ -1749,8 +1778,12 @@ class TaskRequester(Base):
                     if_print_warning = False,
                 )))
         except Exception as e:
-            self.last_error_message = str(e)
-            self.error(f"{Localizer.get().log_task_fail}", e)
+            if __class__.is_cancellation_side_effect(e):
+                self.last_error_message = ""
+                self.debug("[API-REQUEST] 用户停止任务，忽略关闭客户端产生的异常")
+            else:
+                self.last_error_message = str(e)
+                self.error(f"{Localizer.get().log_task_fail}", e)
             return True, None, None, None, None
 
         input_tokens = sum(len(v) for v in srcs)

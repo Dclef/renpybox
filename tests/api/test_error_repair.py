@@ -1,6 +1,8 @@
 """错误修复 API：真实临时目录扫描/修复/导出/lint 边界。"""
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import threading
 import time
@@ -344,12 +346,13 @@ def test_fix_cancel_after_first_write_reports_partial(repair_client, monkeypatch
     assert result.get("written") is True
     assert result.get("partial") is True
     assert int(result.get("fixed_files") or 0) >= 1
+    assert result.get("rescan_skipped") is True
     assert "\t" not in a.read_text(encoding="utf-8")
     assert engine.get_status() == Engine.Status.IDLE
 
 
 def test_fix_owner_change_before_first_write_blocks(repair_client, monkeypatch):
-    """探针 5：列表后、首写前切 owner → 阻止写入。"""
+    """探针 5：扫描完成后、首写前切 owner → 阻止写入。"""
     client, engine, tmp_path, _, config = repair_client
     owner = tmp_path / "Owner"
     other = tmp_path / "Other"
@@ -362,17 +365,17 @@ def test_fix_owner_change_before_first_write_blocks(repair_client, monkeypatch):
     a.write_text(before_a, encoding="utf-8")
     b.write_text(before_b, encoding="utf-8")
 
-    listed = threading.Event()
+    scanned = threading.Event()
     proceed = threading.Event()
-    real_list = ErrorRepairer.get_rpy_files
+    real_scan = ErrorRepairer.scan_folder
 
-    def gated_list(folder_path):
-        files = real_list(folder_path)
-        listed.set()
+    def gated_scan(self, *args, **kwargs):
+        result = real_scan(self, *args, **kwargs)
+        scanned.set()
         assert proceed.wait(5)
-        return files
+        return result
 
-    monkeypatch.setattr(ErrorRepairer, "get_rpy_files", staticmethod(gated_list))
+    monkeypatch.setattr(ErrorRepairer, "scan_folder", gated_scan)
 
     status = client.get("/api/error-repair", params={"folder": str(tl)}).json()
     response = client.post("/api/error-repair/fix", json={
@@ -384,7 +387,7 @@ def test_fix_owner_change_before_first_write_blocks(repair_client, monkeypatch):
     })
     assert response.status_code == 200, response.text
     job_id = response.json()["job"]["id"]
-    assert listed.wait(3)
+    assert scanned.wait(3)
     _bind(config, other)
     proceed.set()
     job = _finish(client, job_id, timeout=8.0)
@@ -505,7 +508,7 @@ def test_fix_with_all_options_off_preserves_empty_blocks(repair_client):
     response = client.post("/api/error-repair/fix", json={**body, "fix_empty_blocks": True})
     job = _finish(client, response.json()["job"]["id"])
     assert job["status"] == "done" and job["result"]["fixed_items"] == 1
-    assert script.read_bytes() == b""
+    assert script.read_bytes() == b"    # intentionally empty\n"
     [backup] = list(tl.glob("*.bak"))
     assert backup.read_bytes() == original
 
@@ -524,4 +527,462 @@ def test_checker_failure_is_not_reported_as_clean_scan(repair_client, monkeypatc
     assert "scan probe failed" in job["error"]
     assert "total_issues" not in job["result"]
     assert not client.get("/api/error-repair", params={"folder": str(tl)}).json()["has_scan_report"]
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def _scan_job(client, folder: Path, **body):
+    status = client.get("/api/error-repair", params={"folder": str(folder)}).json()
+    response = client.post("/api/error-repair/scan", json={
+        "folder": str(folder),
+        "project_key": status["project_key"],
+        "owner_project_key": status["owner_project_key"],
+        **body,
+    })
+    assert response.status_code == 200, response.text
+    return _finish(client, response.json()["job"]["id"])
+
+
+def _fix_job(client, folder: Path, **body):
+    status = client.get("/api/error-repair", params={"folder": str(folder)}).json()
+    response = client.post("/api/error-repair/fix", json={
+        "folder": str(folder),
+        "project_key": status["project_key"],
+        "owner_project_key": status["owner_project_key"],
+        "confirm": True,
+        **body,
+    })
+    assert response.status_code == 200, response.text
+    return _finish(client, response.json()["job"]["id"])
+
+
+def test_scan_returns_type_breakdown_and_manual_sample(repair_client):
+    """扫描结果分组：按类型统计 + 少量需人工样本，不返回全量列表。"""
+    client, engine, tmp_path, _, _ = repair_client
+    tl = tmp_path / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+    (tl / "tabs.rpy").write_text('\told "A"\n\tnew "A"\n', encoding="utf-8")
+    (tl / "placeholder.rpy").write_text(
+        'translate chinese strings:\n'
+        '    old "Hello [name]"\n'
+        '    new "你好"\n',
+        encoding="utf-8",
+    )
+    job = _scan_job(client, tl)
+    assert job["status"] == "done", job
+    result = job["result"]
+    breakdown = result["issues_by_type"]
+    assert breakdown and sum(breakdown.values()) == result["total_issues"]
+    assert result["fixable_issues"] + result["manual_issues"] == result["total_issues"]
+    assert result["fixable_issues"] >= 1
+    assert result["manual_issues"] >= 1
+    sample = result["manual_sample"]
+    assert sample and len(sample) <= 10
+    assert all(item["fixable"] is False for item in sample)
+    assert {"file", "line", "type", "message"} <= set(sample[0])
+    assert result["environment_issues"] == []
+    assert "report" not in result
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_scan_manual_sample_is_capped(repair_client):
+    """需人工样本最多 10 条，避免轮询快照被大目录撑爆。"""
+    client, _, tmp_path, _, _ = repair_client
+    tl = tmp_path / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+    (tl / "many.rpy").write_text(
+        'translate chinese strings:\n'
+        + ''.join(f'    old "hello {i} [name]"\n    new "你好 {i}"\n' for i in range(15)),
+        encoding="utf-8",
+    )
+    job = _scan_job(client, tl)
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert result["total_issues"] >= 15
+    assert len(result["manual_sample"]) == 10
+    assert result["manual_issues"] >= 10
+
+
+def test_fix_reports_rescan_fields_and_applies_new_options(repair_client):
+    """一键修复：修完复扫，返回分组结果；新增选项生效。"""
+    client, engine, tmp_path, _, _ = repair_client
+    tl = _tl(tmp_path)
+    job = _fix_job(
+        client,
+        tl,
+        fix_indent=True,
+        fix_trailing_spaces=True,
+        fix_empty_blocks=True,
+        fix_duplicates=True,
+    )
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert result["action"] == "fix"
+    assert result["written"] is True
+    assert result["fixed_files"] >= 1
+    assert result["fixed_items"] >= 1
+    assert result["rescan_skipped"] is False
+    assert isinstance(result["fixed_by_type"], dict)
+    assert isinstance(result["remaining_by_type"], dict)
+    assert isinstance(result["remaining_issues"], int)
+    assert isinstance(result["manual_sample"], list)
+    assert result["environment_fixes"] == []
+    assert not (tl / "tabs.rpy").read_text(encoding="utf-8").startswith("\t")
+    assert list(tl.glob("*.bak"))
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_scan_detects_incremental_leftover_and_fix_moves_it(repair_client):
+    """tl/<lang>_new 残留目录：扫描报环境问题，修复可原样移出游戏目录。"""
+    client, engine, tmp_path, _, config = repair_client
+    owner = tmp_path / "Owner"
+    owner_key = _bind(config, owner)
+    assert owner_key
+    tl = owner / "game" / "tl" / "chinese"
+    common = tl / "common.rpy"
+    common.write_text(
+        'translate chinese strings:\n'
+        '    old "Self-voicing disabled."\n'
+        '    new "已关闭自带语音。"\n',
+        encoding="utf-8",
+    )
+    leftover = owner / "game" / "tl" / "chinese_new"
+    leftover.mkdir()
+    (leftover / "common.rpy").write_text(
+        'translate chinese strings:\n'
+        '    old "Self-voicing disabled."\n'
+        '    new "Self-voicing disabled."\n',
+        encoding="utf-8",
+    )
+
+    scan_job = _scan_job(client, tl)
+    assert scan_job["status"] == "done", scan_job
+    environment = scan_job["result"]["environment_issues"]
+    assert len(environment) == 1, environment
+    issue = environment[0]
+    assert issue["kind"] == "incremental_leftover"
+    assert issue["type"] == "incremental_leftover"
+    assert issue["language"] == "chinese"
+    assert issue["issue_count"] >= 1
+    assert {"merge", "move"} <= set(issue["actions"])
+
+    fix_job = _fix_job(client, tl, fix_environment=True, environment_action="move")
+    assert fix_job["status"] == "done", fix_job
+    result = fix_job["result"]
+    assert result["rescan_skipped"] is False
+    assert len(result["environment_fixes"]) == 1
+    assert result["environment_fixes"][0]["ok"] is True
+    assert result["environment_fixes"][0]["action"] == "move"
+    assert result["written"] is True
+    assert not leftover.exists()
+    assert common.is_file()
+    assert json.loads(json.dumps(result))  # 结果必须可序列化给前端
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def _nc(path) -> str:
+    # API 返回的路径经过 normcase；Windows 上大小写与 tmp_path 不同。
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+_ENV_ONLY = {
+    "fix_indent": False,
+    "fix_trailing_spaces": False,
+    "fix_empty_blocks": False,
+    "fix_duplicates": False,
+    "fix_dialogue_quotes": False,
+    "fix_indent_level": False,
+    "fix_quotes": False,
+    "fix_environment": True,
+}
+
+
+def _leftover(project: Path, language: str) -> Path:
+    leftover = project / "game" / "tl" / f"{language}_new"
+    leftover.mkdir(parents=True)
+    (leftover / "common.rpy").write_text(
+        f'translate {language} strings:\n    old "Hi"\n    new "Hi {language}"\n',
+        encoding="utf-8",
+    )
+    return leftover
+
+
+def test_environment_card_action_only_handles_selected_leftover(repair_client):
+    client, engine, tmp_path, _, config = repair_client
+    owner = tmp_path / "Owner"
+    _bind(config, owner)
+    tl = owner / "game" / "tl" / "chinese"
+    (tl / "common.rpy").write_text(
+        'translate chinese strings:\n    old "Hi"\n    new "你好"\n', encoding="utf-8",
+    )
+    chinese_new = _leftover(owner, "chinese")
+    japanese_new = _leftover(owner, "japanese")
+    scan = _scan_job(client, tl)
+    assert scan["status"] == "done", scan
+    assert {_nc(issue["path"]) for issue in scan["result"]["environment_issues"]} == {
+        _nc(chinese_new), _nc(japanese_new),
+    }
+
+    job = _fix_job(
+        client, tl, **_ENV_ONLY, environment_action="move", environment_path=str(japanese_new),
+    )
+
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert [_nc(item["path"]) for item in result["environment_fixes"]] == [_nc(japanese_new)]
+    assert result["environment_fixes"][0]["ok"] is True
+    assert result["written"] is True
+    assert result["partial"] is False
+    assert result["fixed_files"] == 0
+    assert not japanese_new.exists()
+    assert (chinese_new / "common.rpy").is_file()
+    [moved] = list((owner / "_renpybox_backup").iterdir())
+    assert moved.name.startswith("japanese_new_")
+
+    # 已处理掉的目录不在新扫描结果里：拒绝且不碰其他残留目录。
+    stale = _fix_job(
+        client, tl, **_ENV_ONLY, environment_action="move", environment_path=str(japanese_new),
+    )
+    assert stale["status"] == "failed", stale
+    assert "扫描结果" in stale["error"]
+    assert stale["result"].get("written") in (False, None)
+    assert (chinese_new / "common.rpy").is_file()
+    assert len(list((owner / "_renpybox_backup").iterdir())) == 1
+
+    # 主目录之外的任意路径同样拒绝。
+    outside = tmp_path / "Elsewhere" / "chinese_new"
+    outside.mkdir(parents=True)
+    rejected = _fix_job(
+        client, tl, **_ENV_ONLY, environment_action="move", environment_path=str(outside),
+    )
+    assert rejected["status"] == "failed", rejected
+    assert outside.is_dir() and (chinese_new / "common.rpy").is_file()
+
+    status = client.get("/api/error-repair", params={"folder": str(tl)}).json()
+    without_flag = client.post("/api/error-repair/fix", json={
+        "folder": str(tl),
+        "project_key": status["project_key"],
+        "owner_project_key": status["owner_project_key"],
+        "confirm": True,
+        "environment_path": str(chinese_new),
+    })
+    assert without_flag.status_code == 400
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_environment_only_merge_reports_written_and_backup(repair_client, monkeypatch):
+    client, engine, tmp_path, _, config = repair_client
+    owner = tmp_path / "Owner"
+    _bind(config, owner)
+    tl = owner / "game" / "tl" / "chinese"
+    leftover = _leftover(owner, "chinese")
+    calls = []
+
+    def fake_fix(self, issue, action="merge"):
+        calls.append((issue["path"], action))
+        return {
+            "path": issue["path"], "action": action, "ok": True,
+            "message": "merged", "backup": str(owner / "_renpybox_backup" / "merge.zip"),
+        }
+
+    monkeypatch.setattr(ErrorRepairer, "fix_environment_issue", fake_fix)
+    job = _fix_job(client, tl, **_ENV_ONLY, environment_action="merge", environment_path=str(leftover))
+
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert [(_nc(path), action) for path, action in calls] == [(_nc(leftover), "merge")]
+    assert result["written"] is True
+    assert result["partial"] is False
+    assert result["success"] is True
+    assert result["environment_fixes"][0]["backup"].endswith("merge.zip")
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_environment_merge_failure_after_backup_still_reports_written(repair_client, monkeypatch):
+    client, engine, tmp_path, _, config = repair_client
+    owner = tmp_path / "Owner"
+    _bind(config, owner)
+    tl = owner / "game" / "tl" / "chinese"
+    leftover = _leftover(owner, "chinese")
+    backup = owner / "_renpybox_backup" / "merge.zip"
+
+    def fail_after_backup(self, issue, action="merge"):
+        backup.parent.mkdir(parents=True)
+        backup.write_bytes(b"verified archive")
+        return {
+            "path": issue["path"], "action": action, "ok": False,
+            "message": "merge failed", "backup": str(backup),
+        }
+
+    monkeypatch.setattr(ErrorRepairer, "fix_environment_issue", fail_after_backup)
+    job = _fix_job(client, tl, **_ENV_ONLY, environment_action="merge", environment_path=str(leftover))
+
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert result["written"] is True
+    assert result["partial"] is True
+    assert result["fixed_files"] == 0
+    assert result["fixed_items"] == 0
+    assert result["environment_fixes"][0]["ok"] is False
+    assert result["environment_fixes"][0]["backup"] == str(backup)
+    assert backup.read_bytes() == b"verified archive"
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def _dedupe_project(tmp_path: Path, config: Config) -> tuple[Path, dict[str, Path]]:
+    owner = tmp_path / "Owner"
+    _bind(config, owner)
+    tl = owner / "game" / "tl" / "chinese"
+    files = {}
+    for name in ("a", "b", "c"):
+        files[name] = tl / f"{name}.rpy"
+        files[name].write_text(
+            f'translate chinese strings:\n    old "Same"\n    new "{name}"\n', encoding="utf-8",
+        )
+    return tl, files
+
+
+_DEDUPE_ONLY = {
+    "fix_indent": False,
+    "fix_trailing_spaces": False,
+    "fix_empty_blocks": False,
+    "fix_duplicates": True,
+    "fix_dialogue_quotes": False,
+    "fix_indent_level": False,
+    "fix_quotes": False,
+}
+
+
+def test_dedupe_owner_switch_after_first_write_blocks_later_writes(repair_client, monkeypatch):
+    client, engine, tmp_path, _, config = repair_client
+    tl, files = _dedupe_project(tmp_path, config)
+    before_c = files["c"].read_bytes()
+    real_rewrite = ErrorRepairer._rewrite_with_backup
+    writes = []
+
+    def switching_rewrite(self, file_path, *args, **kwargs):
+        real_rewrite(self, file_path, *args, **kwargs)
+        writes.append(str(file_path))
+        if len(writes) == 1:
+            _bind(config, tmp_path / "Other")
+
+    monkeypatch.setattr(ErrorRepairer, "_rewrite_with_backup", switching_rewrite)
+    job = _fix_job(client, tl, **_DEDUPE_ONLY)
+
+    assert job["status"] == "failed", job
+    assert "项目已切换" in job["error"]
+    result = job["result"]
+    assert [_nc(path) for path in writes] == [_nc(files["b"])]
+    assert result["written"] is True
+    assert result["partial"] is True
+    assert result["fixed_files"] == 1
+    assert result["fixed_items"] == 1
+    assert result["rescan_skipped"] is True
+    assert files["c"].read_bytes() == before_c
+    assert not list(tl.glob("c.rpy.*.bak"))
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_dedupe_cancel_after_first_file_keeps_written_counts(repair_client, monkeypatch):
+    client, engine, tmp_path, _, config = repair_client
+    tl, files = _dedupe_project(tmp_path, config)
+    before_c = files["c"].read_bytes()
+    real_rewrite = ErrorRepairer._rewrite_with_backup
+    wrote_first = threading.Event()
+    release = threading.Event()
+
+    def gated_rewrite(self, file_path, *args, **kwargs):
+        real_rewrite(self, file_path, *args, **kwargs)
+        if not wrote_first.is_set():
+            wrote_first.set()
+            assert release.wait(5)
+
+    monkeypatch.setattr(ErrorRepairer, "_rewrite_with_backup", gated_rewrite)
+    status = client.get("/api/error-repair", params={"folder": str(tl)}).json()
+    response = client.post("/api/error-repair/fix", json={
+        "folder": str(tl),
+        "project_key": status["project_key"],
+        "owner_project_key": status["owner_project_key"],
+        "confirm": True,
+        **_DEDUPE_ONLY,
+    })
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job"]["id"]
+    assert wrote_first.wait(3)
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    release.set()
+    job = _finish(client, job_id)
+
+    assert job["status"] == "cancelled", job
+    result = job["result"]
+    assert result["written"] is True
+    assert result["partial"] is True
+    assert result["fixed_files"] == 1
+    assert result["fixed_items"] == 1
+    assert result["rescan_skipped"] is True
+    assert files["b"].read_text(encoding="utf-8") == '    # old "Same"\n    # new "b"\n'
+    assert files["c"].read_bytes() == before_c
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def _manual_issue_folder(tmp_path: Path) -> Path:
+    tl = tmp_path / "game" / "tl" / "chinese"
+    tl.mkdir(parents=True)
+    (tl / "syntax.rpy").write_text("label start\n    pass\n", encoding="utf-8")
+    return tl
+
+
+_ALL_OFF = {**_DEDUPE_ONLY, "fix_duplicates": False}
+
+
+def test_budget_exhausted_rescan_does_not_fabricate_fixed_counts(repair_client, monkeypatch):
+    client, engine, tmp_path, _, _ = repair_client
+    tl = _manual_issue_folder(tmp_path)
+    real_scan = ErrorRepairer.scan_folder
+    calls = {"n": 0}
+
+    def exhausting_scan(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            kwargs["should_cancel"] = lambda: True
+        return real_scan(self, *args, **kwargs)
+
+    monkeypatch.setattr(ErrorRepairer, "scan_folder", exhausting_scan)
+    job = _fix_job(client, tl, **_ALL_OFF)
+
+    assert job["status"] == "done", job
+    result = job["result"]
+    assert calls["n"] == 2
+    assert result["rescan_skipped"] is True
+    assert result["remaining_issues"] is None
+    assert result["remaining_by_type"] == {}
+    assert result["manual_sample"] == []
+    assert result["fixed_items"] == 0
+    assert result["fixed_by_type"] == {}
+    assert result["written"] is False
+    assert "复扫未完成" in result["message"]
+    assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_cancelled_rescan_reports_unknown_remaining(repair_client, monkeypatch):
+    client, engine, tmp_path, manager, _ = repair_client
+    tl = _manual_issue_folder(tmp_path)
+    real_scan = ErrorRepairer.scan_folder
+    calls = {"n": 0}
+
+    def cancelling_scan(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            [job] = [job for job in manager.list() if job.kind == "error_repair_fix"]
+            job.cancel_event.set()
+        return real_scan(self, *args, **kwargs)
+
+    monkeypatch.setattr(ErrorRepairer, "scan_folder", cancelling_scan)
+    job = _fix_job(client, tl, **_ALL_OFF)
+
+    assert job["status"] == "cancelled", job
+    result = job["result"]
+    assert result.get("rescan_skipped") is True
+    assert result.get("remaining_issues") is None
+    assert result.get("fixed_items") == 0
+    assert result.get("written") is False
     assert engine.get_status() == Engine.Status.IDLE

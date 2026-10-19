@@ -21,7 +21,7 @@ import {
   RPY_PAGE_SIZE,
 } from '../rpyExtractionView.mjs';
 import type { AppState } from '../useAppState';
-import { Banner, SettingsGroup } from '../ui';
+import { Banner, Dialog, SettingsGroup } from '../ui';
 import {
   toolErrorText,
   toolJobRunning,
@@ -172,6 +172,8 @@ export function RpyExtractionPage(props: {
   const [localError, setLocalError] = useState('');
   const [mutating, setMutating] = useState(false);
   const [leaveWaiting, setLeaveWaiting] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const discardResolve = useRef<((ok: boolean) => void) | null>(null);
   /** 编辑后本地失效 proof；null=已清，undefined=用服务端 */
   const [scanOverride, setScanOverride] = useState<ScanInfo | null | undefined>(undefined);
   const mutateSeq = useRef(0);
@@ -404,9 +406,23 @@ export function RpyExtractionPage(props: {
     language: language || 'chinese',
   }), [path, projectPath, category, language]);
 
-  function confirmDiscard(): boolean {
-    if (!pageDirty) return true;
-    return window.confirm(t('game_rules_discard'));
+  function confirmDiscard(): Promise<boolean> {
+    if (!pageDirty) return Promise.resolve(true);
+    if (discardResolve.current) {
+      return new Promise((resolve) => {
+        const previous = discardResolve.current;
+        discardResolve.current = (ok) => { previous?.(ok); resolve(ok); };
+      });
+    }
+    setDiscardOpen(true);
+    return new Promise((resolve) => { discardResolve.current = resolve; });
+  }
+
+  function finishDiscard(ok: boolean) {
+    const resolve = discardResolve.current;
+    discardResolve.current = null;
+    setDiscardOpen(false);
+    resolve?.(ok);
   }
 
   function openEditorDoc(doc: ProfileDoc) {
@@ -606,7 +622,7 @@ export function RpyExtractionPage(props: {
   }
 
   async function runUnbind() {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     const next = await mutate('/api/rpy-extraction/profiles/unbind', {});
     if (next) {
       const nextApplied = {
@@ -624,7 +640,7 @@ export function RpyExtractionPage(props: {
   async function pickPath() {
     const picked = await window.renpy?.pickFolder?.(path || undefined);
     if (!picked || picked === path) return;
-    if (pageDirty && !confirmDiscard()) return;
+    if (pageDirty && !(await confirmDiscard())) return;
     setPath(picked);
     setScanOverride(null);
     setScanPage(1);
@@ -660,6 +676,11 @@ export function RpyExtractionPage(props: {
 
   return (
     <div className="rb-asset-page rb-page-scroll" data-rb-page="rpy-extraction">
+      {discardOpen ? (
+        <Dialog title={t('game_rules_discard_title')} onCancel={() => finishDiscard(false)} onConfirm={() => finishDiscard(true)}>
+          {t('game_rules_discard')}
+        </Dialog>
+      ) : null}
       {displayError ? <Banner tone="error">{displayError}</Banner> : null}
       {/* 本工具不要求绑定项目；未绑定时可手填扫描路径 */}
       {!hasProject && !path.trim() ? <Banner tone="info">{t('rpy_rules_need_path')}</Banner> : null}
@@ -691,10 +712,12 @@ export function RpyExtractionPage(props: {
               value={path}
               onChange={(event) => {
                 const value = event.target.value;
-                if (value !== path && pageDirty && !confirmDiscard()) return;
-                setPath(value);
-                setScanOverride(null);
-                setScanPage(1);
+                void (async () => {
+                  if (value !== path && pageDirty && !(await confirmDiscard())) return;
+                  setPath(value);
+                  setScanOverride(null);
+                  setScanPage(1);
+                })();
               }}
               placeholder={t('rpy_rules_path')}
               disabled={busy || mutating}
@@ -713,13 +736,15 @@ export function RpyExtractionPage(props: {
               { value: 'tl', label: t('rpy_rules_tl') },
             ]}
             onChange={(value) => {
-              if (value !== category && pageDirty && !confirmDiscard()) return;
-              setCategory(value as 'source' | 'tl');
-              setEditor(null);
-              setEditorBaseline('');
-              setEditorOpen(false);
-              setScanOverride(undefined);
-              setScanPage(1);
+              void (async () => {
+                if (value !== category && pageDirty && !(await confirmDiscard())) return;
+                setCategory(value as 'source' | 'tl');
+                setEditor(null);
+                setEditorBaseline('');
+                setEditorOpen(false);
+                setScanOverride(undefined);
+                setScanPage(1);
+              })();
             }}
             disabled={busy || mutating}
           />
@@ -732,10 +757,12 @@ export function RpyExtractionPage(props: {
             value={language}
             onChange={(event) => {
               const value = event.target.value;
-              if (value !== language && pageDirty && !confirmDiscard()) return;
-              setLanguage(value);
-              setScanOverride(null);
-              setScanPage(1);
+              void (async () => {
+                if (value !== language && pageDirty && !(await confirmDiscard())) return;
+                setLanguage(value);
+                setScanOverride(null);
+                setScanPage(1);
+              })();
             }}
             disabled={busy || mutating}
             data-rb-rpy-language

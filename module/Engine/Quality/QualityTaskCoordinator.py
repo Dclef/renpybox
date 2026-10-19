@@ -18,6 +18,7 @@ from module.Cache.CacheProject import CacheProject
 from module.Config import Config
 from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
+from module.Project.PlatformDefaults import THINKING_LEVELS
 from module.Engine.Translator.TranslationTaskContext import (
     TranslationTaskContext,
     find_provider_by_identity,
@@ -124,6 +125,20 @@ ProgressCallback = Callable[[QualityTaskProgress], None]
 DoneCallback = Callable[[QualityTaskProgress], None]
 CacheManagerFactory = Callable[[], CacheManager]
 QualityTaskFactory = Callable[[TranslationTaskContext], Any]
+
+_QUALITY_THINKING_LEVELS = THINKING_LEVELS
+
+
+def _with_quality_thinking(provider: dict[str, Any], config: Config) -> dict[str, Any]:
+    """用质量任务自己的思考档位覆盖平台档位。
+
+    平台上的 thinking 是给人工翻译配的，用户常把它开到 MAX 换质量。润色只是
+    改写已有译文，沿用 MAX 会让每批 8 条也跑一到三分钟，因此质量任务固定跟随
+    ``config.quality_thinking_level``（默认 OFF），与平台设置互不影响。
+    """
+    level = str(getattr(config, "quality_thinking_level", "") or "").strip().upper()
+    provider["thinking"] = {"level": level if level in _QUALITY_THINKING_LEVELS else "OFF"}
+    return provider
 
 
 class QualityTaskCoordinator(Base):
@@ -564,18 +579,22 @@ class QualityTaskCoordinator(Base):
         )
         persisted = dict(persisted) if isinstance(persisted, Mapping) else {}
 
+        # 与「继续任务」口径一致：质量任务也用当前激活平台。用户改过模型或地址后，
+        # 校对与润色必须立刻跟随，否则会拿历史快照里的旧模型静默跑一整轮。
+        active = config.get_platform(config.activate_platform)
+        if isinstance(active, dict) and active:
+            return _with_quality_thinking(copy.deepcopy(active), config)
+
+        # 没有激活平台时（例如配置里恰好没选中任何一项），才退回按稳定身份匹配，
+        # 此时仍只借用当前凭据、语义沿用快照，避免误用别的接口额度。
         current = find_provider_by_identity(persisted, config.platforms)
         if persisted and not current:
             raise ValueError("快照中的翻译接口已不存在，请恢复原接口后再进行校对")
         if not current:
-            active = config.get_platform(config.activate_platform)
-            if isinstance(active, dict):
-                current = copy.deepcopy(active)
-        if not current:
             raise ValueError("当前没有可用于质量任务的接口配置")
         if not persisted:
-            return current
-        return merge_provider_credentials(persisted, current)
+            return _with_quality_thinking(current, config)
+        return _with_quality_thinking(merge_provider_credentials(persisted, current), config)
 
     @classmethod
     def _save_progress(

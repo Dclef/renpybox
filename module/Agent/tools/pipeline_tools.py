@@ -12,6 +12,7 @@ from typing import Any, Callable
 from base.LogManager import LogManager
 
 from module.Config import Config
+from module.Cache.QualityCandidates import count_quality_candidates
 from module.Engine.Engine import Engine
 from module.Extract.ReplaceGenerator import write_replace_script
 from module.Extract.UnifiedExtractor import UnifiedExtractor
@@ -79,6 +80,7 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
     project_status = ""
     untranslated_count = 0
     cache_ready = False
+    output: str | None = None
     active = (
         status in (Engine.Status.TRANSLATING, Engine.Status.STOPPING)
         or engine.has_stop_barrier()
@@ -109,6 +111,13 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
 
     running_count = int(engine.get_running_task_count())
     max_workers = int(getattr(config, "max_workers", 0) or 0)
+    # 润色/校对只处理已有译文，先报数能省掉「先读一批才发现没得润」的试错。
+    quality_counts = {"polish": 0, "proofread": 0, "total": 0}
+    if output is not None and not active and cache_ready:
+        try:
+            quality_counts = count_quality_candidates(str(output))
+        except Exception:  # noqa: BLE001 - 报数失败不该让状态查询整体失败
+            quality_counts = {"polish": 0, "proofread": 0, "total": 0}
     return {
         "engine_status": engine_status,
         "running": {"running": running_count, "max": max_workers},
@@ -118,6 +127,7 @@ def _translation_state_snapshot(config: Config) -> dict[str, Any]:
         "project_status": project_status,
         "stop_barrier": bool(engine.has_stop_barrier()),
         "single_tasks": bool(engine.has_single_tasks()),
+        "quality_candidates": quality_counts,
     }
 
 
@@ -391,6 +401,9 @@ def translation_status(
         engine_status=data["engine_status"],
         untranslated_count=data["untranslated_count"],
     )
+    candidates = data.get("quality_candidates") or {}
+    if int(candidates.get("polish") or 0) > 0:
+        message = f"{message} {localizer.agent_quality_candidates_ready.format(polish=candidates.get('polish', 0), proofread=candidates.get('proofread', 0))}"
     return ToolResult(True, message, data=data)
 
 
