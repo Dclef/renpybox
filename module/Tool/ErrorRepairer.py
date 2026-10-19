@@ -5,19 +5,23 @@ Ren'Py 错误修复工具
 
 import contextlib
 import dataclasses
+import hashlib
 import io
 import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import time
+import zipfile
 from collections import Counter
 from typing import Callable, Iterator, List, Dict, Tuple, Optional
 from pathlib import Path
 
 from base.LogManager import LogManager
 from module.File.AtomicWrite import atomic_write_text
+from module.Localizer.Localizer import Localizer
 from module.Renpy.renpy_tl_core import (
     TlBlockKind,
     TlDocument,
@@ -27,6 +31,43 @@ from module.Renpy.renpy_tl_core import (
     parse_tl_document,
 )
 from utils.call_game_python import get_python_path_from_game_path, get_py_path
+
+
+# 扫描问题的分类。auto：无参数即可安全批量修复；conditional：用户勾选后才修；
+# manual：只能人工处理（或仅提示）。UI/API 的默认修复范围只取 auto。
+AUTO_FIX_TYPES = frozenset({
+    "indent",
+    "empty_block",
+    "duplicate_old_new",
+    "unescaped_dialogue_quotes",
+})
+CONDITIONAL_FIX_TYPES = frozenset({
+    "indentation_level",
+    "quotes",
+})
+MANUAL_TYPES = frozenset({
+    "syntax",
+    "placeholder_missing",
+    "placeholder_extra",
+    "placeholder_rewritten",
+    "linebreak_mismatch",
+    "extra_empty_string",
+})
+# 环境级问题（不属于文件内错误，单独收集，不参与文件修复）。
+INCREMENTAL_LEFTOVER = "incremental_leftover"
+
+
+def classify_issue_type(type_name: str) -> str:
+    """把扫描出的问题类型归为 ``auto`` / ``conditional`` / ``manual``。
+
+    未知类型一律按 ``manual`` 处理：宁可不自动写盘，也不能误改。
+    """
+    name = str(type_name or "").strip()
+    if name in AUTO_FIX_TYPES:
+        return "auto"
+    if name in CONDITIONAL_FIX_TYPES:
+        return "conditional"
+    return "manual"
 
 
 @dataclasses.dataclass
@@ -47,6 +88,12 @@ class FolderScanResult:
     # Enumeration can be cancelled before it returns a list. In that case the
     # legacy integer total remains 0, but it must not mean an empty directory.
     total_files_known: bool = True
+    # 按类型统计的问题数，以及按分类聚合的可修复（auto）/需人工（manual）数量。
+    # conditional 两类都不计入：它们必须由用户显式勾选才会被修复。
+    issues_by_type: Dict[str, int] = dataclasses.field(default_factory=dict)
+    environment_issues: List[Dict] = dataclasses.field(default_factory=list)
+    fixable_count: int = 0
+    manual_count: int = 0
 
 
 class _ScanStopped(BaseException):
@@ -55,6 +102,27 @@ class _ScanStopped(BaseException):
 
 class ErrorRepairer:
     """错误修复器"""
+
+    # 模块级分类常量在类上再暴露一份：调用方既可 ``from ... import AUTO_FIX_TYPES``
+    # 也可 ``ErrorRepairer.AUTO_FIX_TYPES``。
+    AUTO_FIX_TYPES = AUTO_FIX_TYPES
+    CONDITIONAL_FIX_TYPES = CONDITIONAL_FIX_TYPES
+    MANUAL_TYPES = MANUAL_TYPES
+    INCREMENTAL_LEFTOVER = INCREMENTAL_LEFTOVER
+    classify_issue_type = staticmethod(classify_issue_type)
+
+    # 真正的 label 语句尾部只允许「标识符」或「标识符(参数)」，
+    # 其余形态是 screen 里的 label displayable（不是 label 语句）。
+    RE_LABEL_STATEMENT_TAIL = re.compile(r"^\.?[A-Za-z_]\w*(?:\s*\([^)]*\))?$")
+
+    # ``screen name(...):`` 以及 ``init -501 screen name(...):`` 都会开启 screen 块。
+    RE_SCREEN_HEADER = re.compile(r"^(?:init\s+[-+]?[0-9.]+\s+)?screen(?:\s|$)")
+
+    # ``python:`` / ``python early:`` / ``init python:`` 块内是 Python，
+    # 缩进由 Python 语法决定，不能按 Ren'Py 块层级判断。
+    RE_PYTHON_HEADER = re.compile(
+        r"^(?:(?:init\s+(?:[-+]?[0-9.]+\s+)?)|(?:translate\s+\S+\s+))?python(?:\s|:|$)"
+    )
 
     # 仅匹配单行、双引号定界的翻译或简单 say 语句。suffix 被限制为
     # 空白/注释，避免跨过 menu 条件、screen action 和同一行的其他代码。
@@ -134,6 +202,56 @@ class ErrorRepairer:
         if line.endswith("\r"):
             return line[:-1], "\r"
         return line, ""
+
+    @staticmethod
+    def _scan_code_structure(line: str) -> tuple[str, int]:
+        """返回（去掉字符串外注释并 rstrip 的代码, 括号净深度）。
+
+        用于「语句是否有冒号」「条件是否跨行」这类结构判断：注释里的冒号、
+        字符串里的括号都不能参与判断。转义字符按 Ren'Py 字符串语义跳过。
+        """
+        pieces: list[str] = []
+        depth = 0
+        quote = ""
+        escaped = False
+        for char in line:
+            if escaped:
+                pieces.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                pieces.append(char)
+                escaped = True
+                continue
+            if quote:
+                pieces.append(char)
+                if char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"'):
+                quote = char
+                pieces.append(char)
+                continue
+            if char == "#":
+                break
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+            pieces.append(char)
+        return "".join(pieces).rstrip(), depth
+
+    def _looks_like_label_statement_tail(self, remainder: str) -> bool:
+        """判断 ``label`` 后面剩下的内容是否像真正的 label 语句。
+
+        ``label foo`` / ``label foo(a)`` / 空（裸 ``label``）视为真语句；
+        ``label "名字" xalign 0.5``、``label char_name text_bold True`` 这类
+        带属性的写法是 screen displayable，不是 label 语句。
+        """
+        tail = str(remainder or "").strip()
+        if not tail:
+            return True
+        return self.RE_LABEL_STATEMENT_TAIL.match(tail) is not None
 
     def _has_unescaped_quote(self, text: str, quote_char: str) -> bool:
         return bool(self._unescaped_quote_offsets(text, quote_char))
@@ -652,6 +770,10 @@ class ErrorRepairer:
             if has_content:
                 output.extend(lines[index:end])
             else:
+                # 只去掉空块头。注释可能保存着重复项的另一份译文，必须留在脚本里。
+                body = lines[index + 1:end]
+                if any(line.lstrip().startswith("#") for line in body):
+                    output.extend(body)
                 removed += 1
             index = end
 
@@ -889,6 +1011,17 @@ class ErrorRepairer:
     ) -> List[Dict[str, any]]:
         """对已读入的行执行检查；``document`` 由调用方复用，不再重复解析。"""
         errors = []
+        # 只在含 translate 块的译文文件里检查缩进层级：源脚本的 screen 与
+        # Python 缩进写法与 tl 文件不同，在源文件上几乎全是误报。
+        has_translate_blocks = bool(document.blocks) if document is not None else False
+        # 跨行括号条件的挂起深度：>0 表示正在等待条件表达式闭合。
+        pending_bracket_depth = 0
+        # ``screen`` 块内 ``label`` 是 displayable，不是 label 语句；记录块缩进，
+        # 遇到缩进不大于它的有效行即视为离开该 screen 块。
+        screen_indent: Optional[int] = None
+        # python 块内缩进属于 Python 语法，不参与块级缩进层级判断。
+        python_indent: Optional[int] = None
+        inside_python = False
 
         try:
             for line_num, line in enumerate(lines, 1):
@@ -899,33 +1032,81 @@ class ErrorRepairer:
                         checkpoint()
                 # 语法检查
                 if check_syntax:
-                    # 检查 label 后是否有冒号
+                    code, bracket_depth = self._scan_code_structure(line)
+                    stripped_code = code.strip()
                     stripped_line = line.strip()
-                    if re.match(r"^label(?:\s|$)", stripped_line) and not stripped_line.endswith(":"):
-                        errors.append({
-                            "line": line_num,
-                            "type": "syntax",
-                            "message": "label 语句缺少冒号",
-                            "content": line.strip()
-                        })
+                    line_indent: Optional[int] = None
+                    if stripped_code:
+                        line_indent = self._get_indent_width(code)
+                        if screen_indent is not None and line_indent <= screen_indent:
+                            screen_indent = None
+                        if python_indent is not None and line_indent <= python_indent:
+                            python_indent = None
+                        if self.RE_SCREEN_HEADER.match(stripped_code) and \
+                           stripped_code.endswith(":"):
+                            screen_indent = line_indent
+                        elif self.RE_PYTHON_HEADER.match(stripped_code) and \
+                                stripped_code.endswith(":"):
+                            python_indent = line_indent
+                        inside_python = (
+                            python_indent is not None
+                            and line_indent > python_indent
+                        )
+                    inside_screen = (
+                        screen_indent is not None
+                        and line_indent is not None
+                        and line_indent > screen_indent
+                    )
+                    if pending_bracket_depth > 0:
+                        # 上一条控制流语句的条件还没闭合，本行是续行：
+                        # 只在括号回到 0 的闭合行判断是否有冒号。
+                        pending_bracket_depth += bracket_depth
+                        if pending_bracket_depth <= 0:
+                            pending_bracket_depth = 0
+                            if not stripped_code.endswith(":") and \
+                               not stripped_code.endswith("\\"):
+                                errors.append({
+                                    "line": line_num,
+                                    "type": "syntax",
+                                    "message": "控制流语句缺少冒号",
+                                    "content": stripped_line
+                                })
+                    else:
+                        # screen 里的 ``label "名字" xalign 0.5`` 是 displayable，
+                        # 不是 label 语句；只有屏幕外、且尾部像真语句时才按缺冒号处理。
+                        if re.match(r"^label(?:\s|$)", stripped_code) and \
+                           not stripped_code.endswith(":"):
+                            remainder = stripped_code[len("label"):]
+                            if not inside_screen and self._looks_like_label_statement_tail(remainder):
+                                errors.append({
+                                    "line": line_num,
+                                    "type": "syntax",
+                                    "message": "label 语句缺少冒号",
+                                    "content": stripped_line
+                                })
 
-                    # 检查翻译块头和控制流语句后是否有冒号。
-                    if re.match(r"^translate\s+\S+", stripped_line) and not stripped_line.endswith(":"):
-                        errors.append({
-                            "line": line_num,
-                            "type": "syntax",
-                            "message": "translate 语句缺少冒号",
-                            "content": stripped_line,
-                        })
+                        # 检查翻译块头和控制流语句后是否有冒号。
+                        if re.match(r"^translate\s+\S+", stripped_code) and \
+                           not stripped_code.endswith(":"):
+                            errors.append({
+                                "line": line_num,
+                                "type": "syntax",
+                                "message": "translate 语句缺少冒号",
+                                "content": stripped_code or stripped_line,
+                            })
 
-                    if re.match(r'^\s*(if|elif|else|menu|while|for)(?:\s|$)', line) and \
-                       not stripped_line.endswith(":"):
-                        errors.append({
-                            "line": line_num,
-                            "type": "syntax",
-                            "message": "控制流语句缺少冒号",
-                            "content": line.strip()
-                        })
+                        if re.match(r'^\s*(if|elif|else|menu|while|for)(?:\s|$)', line) and \
+                           not stripped_code.endswith(":"):
+                            if bracket_depth > 0:
+                                # 条件表达式跨行：等括号闭合后由闭合行判断。
+                                pending_bracket_depth = bracket_depth
+                            elif not stripped_code.endswith("\\"):
+                                errors.append({
+                                    "line": line_num,
+                                    "type": "syntax",
+                                    "message": "控制流语句缺少冒号",
+                                    "content": stripped_line
+                                })
 
                 # 缩进检查
                 if check_indent:
@@ -939,7 +1120,7 @@ class ErrorRepairer:
                             "content": line.strip()
                         })
 
-                if check_indent_level:
+                if check_indent_level and has_translate_blocks and not inside_python:
                     _, changed = self.repair_indentation_level(lines, line_num - 1, checkpoint=checkpoint)
                     if changed:
                         errors.append({
@@ -1048,6 +1229,7 @@ class ErrorRepairer:
         encoding: str = "utf-8",
         check_translation_issues: bool = True,
         *,
+        detect_environment: bool = True,
         max_files: Optional[int] = None,
         max_bytes: Optional[int] = None,
         deadline: Optional[float] = None,
@@ -1150,6 +1332,35 @@ class ErrorRepairer:
         else:
             self.logger.info(f"检查完成: 发现 {sum(map(len, all_errors.values()))} 个错误")
 
+        # 分类统计只反映「已扫描完」的结果；中断的扫描不能声称目录无问题。
+        issues_by_type: Dict[str, int] = {}
+        fixable_count = 0
+        manual_count = 0
+        environment_issues: List[Dict] = []
+        if not budget_exhausted:
+            type_counter: Counter = Counter()
+            for file_errors in all_errors.values():
+                for error in file_errors:
+                    type_name = str(error.get("type") or "").strip()
+                    if type_name:
+                        type_counter[type_name] += 1
+            issues_by_type = {
+                type_name: count for type_name, count in sorted(type_counter.items())
+            }
+            for type_name, count in issues_by_type.items():
+                category = classify_issue_type(type_name)
+                if category == "auto":
+                    fixable_count += count
+                elif category == "manual":
+                    manual_count += count
+            if detect_environment:
+                try:
+                    environment_issues = self.detect_environment_issues(folder_path)
+                except Exception as exc:
+                    # 环境检查是附加信息，不能因为探测失败让整次扫描失败。
+                    self.logger.warning(f"环境问题检测失败 {folder_path}: {exc}")
+                    environment_issues = []
+
         return FolderScanResult(
             errors=all_errors,
             scanned_files=scanned_files,
@@ -1157,7 +1368,150 @@ class ErrorRepairer:
             scanned_bytes=scanned_bytes,
             budget_exhausted=budget_exhausted,
             total_files_known=total_files_known,
+            issues_by_type=issues_by_type,
+            environment_issues=environment_issues,
+            fixable_count=fixable_count,
+            manual_count=manual_count,
         )
+
+    def _rewrite_with_backup(
+        self,
+        file_path: str | Path,
+        original_lines: List[str],
+        new_lines: List[str],
+        encoding: str,
+        *,
+        checkpoint: Optional[Callable[[], None]] = None,
+        before_replace: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """与 :meth:`auto_fix_file` 相同的安全写回：原文校验 + .bak + 原子替换。
+
+        ``original_lines`` 是修复前读到的内容；写之前重新读一遍字节做比对，
+        发现文件已被其他程序改动就直接放弃，避免覆盖别人的修改。
+        """
+        if checkpoint is not None:
+            checkpoint()
+        target = Path(file_path)
+        original = target.read_bytes()
+        if original.decode(encoding) != "".join(original_lines):
+            raise RuntimeError("文件已被其他程序修改，已停止修复")
+        backup = target.with_name(f"{target.name}.{secrets.token_hex(8)}.bak")
+        with open(backup, "xb") as writer:
+            writer.write(original)
+            writer.flush()
+            os.fsync(writer.fileno())
+        if checkpoint is not None:
+            checkpoint()
+        if before_replace is not None:
+            before_replace()
+        atomic_write_text(target, "".join(new_lines), encoding=encoding, newline="")
+
+    def _comment_out_line(self, line: str) -> tuple[str, bool]:
+        """保留缩进与换行，把整行注释掉；空行或已注释行原样返回。"""
+        content, line_ending = self._split_line_ending(line)
+        stripped = content.lstrip(" \t")
+        if not stripped or stripped.startswith("#"):
+            return line, False
+        indent = content[: len(content) - len(stripped)]
+        return f"{indent}# {stripped}{line_ending}", True
+
+    def _comment_out_duplicate_pairs(
+        self,
+        lines: List[str],
+        positions: List[Tuple[int, int]],
+    ) -> int:
+        """就地把重复的 old/new 两行注释掉，返回实际处理的条目数。"""
+        fixed_pairs = 0
+        for old_index, new_index in positions:
+            changed = False
+            for index in (old_index, new_index):
+                if not 0 <= index < len(lines):
+                    continue
+                commented, line_changed = self._comment_out_line(lines[index])
+                if line_changed:
+                    lines[index] = commented
+                    changed = True
+            if changed:
+                fixed_pairs += 1
+        return fixed_pairs
+
+    def _collect_duplicate_old_new_positions(
+        self,
+        lines: List[str],
+        seen_old: Dict[tuple, tuple[str, int]],
+        *,
+        file_path: str = "",
+        checkpoint: Optional[Callable[[], None]] = None,
+    ) -> List[Tuple[int, int]]:
+        """返回需要注释掉的（old 行, new 行）0 基行号。
+
+        重复口径与 :meth:`_scan_translation_issues` 一致：``(language, tuple(old 原文))``
+        在 ``translate <lang> strings:`` 块内出现多次。``seen_old`` 里已登记的 key
+        全部视为重复；其余 key 在本文件内优先保留有效译文（见
+        :meth:`_choose_duplicate_keepers`），并登记进 ``seen_old``。
+        """
+        entries = self._collect_old_new_entries(lines, checkpoint=checkpoint)
+        path_text = str(file_path)
+        keepers = self._choose_duplicate_keepers(
+            [(path_text, [entry for entry in entries if entry[0] not in seen_old])]
+        )
+        for key, keeper in keepers.items():
+            seen_old.setdefault(key, keeper)
+        return self._duplicate_loser_positions(path_text, entries, seen_old)
+
+    @staticmethod
+    def _is_informative_translation(pair: dict) -> bool:
+        """``new ""`` 或与 old 完全相同的 new 只是未翻译占位，不算有效译文。"""
+        targets = pair["target_values"]
+        return any(value != "" for value in targets) and targets != pair["source_values"]
+
+    def _collect_old_new_entries(
+        self,
+        lines: List[str],
+        *,
+        checkpoint: Optional[Callable[[], None]] = None,
+    ) -> List[Tuple[tuple, int, int, bool]]:
+        """返回 strings 块内每条 old/new：(key, old 行号, new 行号, 是否有效译文)，行号 1 基。"""
+        content_lines = [self._split_line_ending(line)[0] for line in lines]
+        document = parse_tl_document(content_lines, checkpoint=checkpoint)
+        entries: List[Tuple[tuple, int, int, bool]] = []
+        for pair in self._iter_translation_pairs(lines, document, checkpoint=checkpoint):
+            if not pair["is_old_new"]:
+                continue
+            entries.append((
+                (pair["language"], tuple(pair["source_values"])),
+                pair["source"].line_no,
+                pair["target"].line_no,
+                self._is_informative_translation(pair),
+            ))
+        return entries
+
+    @staticmethod
+    def _choose_duplicate_keepers(
+        entries_by_file: List[Tuple[str, List[Tuple[tuple, int, int, bool]]]],
+    ) -> Dict[tuple, Tuple[str, int]]:
+        """每个 key 保留按顺序第一条有效译文；全是占位时保留第一条。"""
+        keepers: Dict[tuple, Tuple[str, int]] = {}
+        informative: set = set()
+        for file_path, entries in entries_by_file:
+            for key, old_line, _new_line, useful in entries:
+                if key not in keepers or (useful and key not in informative):
+                    keepers[key] = (file_path, old_line)
+                    if useful:
+                        informative.add(key)
+        return keepers
+
+    @staticmethod
+    def _duplicate_loser_positions(
+        file_path: str,
+        entries: List[Tuple[tuple, int, int, bool]],
+        keepers: Dict[tuple, Tuple[str, int]],
+    ) -> List[Tuple[int, int]]:
+        return [
+            (old_line - 1, new_line - 1)
+            for key, old_line, new_line, _useful in entries
+            if keepers.get(key) != (file_path, old_line)
+        ]
 
     def auto_fix_file(
         self,
@@ -1169,6 +1523,8 @@ class ErrorRepairer:
         encoding: str = "utf-8",
         *,
         fix_empty_blocks: bool = True,
+        fix_trailing_spaces: bool = False,
+        fix_duplicates: bool = False,
         checkpoint: Optional[Callable[[], None]] = None,
     ) -> Tuple[bool, int]:
         """
@@ -1179,6 +1535,8 @@ class ErrorRepairer:
             fix_indent: 是否修复缩进
             fix_quotes: 是否尝试修复引号 (危险操作)
             encoding: 文件编码
+            fix_trailing_spaces: 是否删除行尾多余空格
+            fix_duplicates: 是否注释掉本文件内重复的 old/new 条目
 
         Returns:
             (是否成功, 修复数量)
@@ -1229,7 +1587,27 @@ class ErrorRepairer:
                         new_line = repaired_line
                         fix_count += 1
 
+                # 行尾空白放在其它修复之后：引号修复会把 suffix 原样带回。
+                if fix_trailing_spaces:
+                    content, line_ending = self._split_line_ending(new_line)
+                    trimmed = content.rstrip(" \t")
+                    if trimmed != content:
+                        new_line = f"{trimmed}{line_ending}"
+                        fix_count += 1
+
                 new_lines.append(new_line)
+
+            if fix_duplicates:
+                positions = self._collect_duplicate_old_new_positions(
+                    new_lines, {}, file_path=str(file_path), checkpoint=checkpoint,
+                )
+                if positions:
+                    fix_count += self._comment_out_duplicate_pairs(new_lines, positions)
+                    # 整块条目都被注释后必须连块头一起删掉，否则 Ren'Py 会报空翻译块。
+                    new_lines, removed_blocks = self._remove_empty_translate_blocks(
+                        new_lines, checkpoint=checkpoint,
+                    )
+                    fix_count += removed_blocks
 
             if fix_empty_blocks:
                 new_lines, removed_blocks = self._remove_empty_translate_blocks(new_lines, checkpoint=checkpoint)
@@ -1237,19 +1615,9 @@ class ErrorRepairer:
 
             # 写回文件
             if fix_count > 0:
-                if checkpoint is not None:
-                    checkpoint()
-                # A unique byte-for-byte backup must succeed before replacing the file.
-                target = Path(file_path)
-                original = target.read_bytes()
-                if original.decode(encoding) != "".join(lines):
-                    raise RuntimeError("文件已被其他程序修改，已停止修复")
-                backup = target.with_name(f"{target.name}.{secrets.token_hex(8)}.bak")
-                with open(backup, "xb") as writer:
-                    writer.write(original)
-                    writer.flush()
-                    os.fsync(writer.fileno())
-                atomic_write_text(target, "".join(new_lines), encoding=encoding, newline="")
+                self._rewrite_with_backup(
+                    file_path, lines, new_lines, encoding, checkpoint=checkpoint,
+                )
                 self.logger.info(f"修复完成: {file_path} ({fix_count} 处)")
 
             return True, fix_count
@@ -1257,6 +1625,385 @@ class ErrorRepairer:
         except Exception as e:
             self.logger.error(f"修复失败 {file_path}: {e}")
             return False, 0
+
+    def fix_duplicate_strings(
+        self,
+        folder: str | Path,
+        *,
+        checkpoint: Optional[Callable[[], None]] = None,
+        before_write: Optional[Callable[[], None]] = None,
+        on_file: Optional[Callable[[str, int], None]] = None,
+    ) -> tuple[int, list[str]]:
+        """跨文件注释掉重复的 ``translate <lang> strings`` 条目。
+
+        每个 (language, old) 保留第一条有效译文（``new ""`` 与 new==old 视为占位），
+        都是占位时保留第一条；其余 old/new 两行注释掉。
+
+        Args:
+            before_write: 每次写盘前调用（如项目归属校验），抛异常即停止后续写入。
+            on_file: 每写完一个文件回调 ``(路径, 本文件条目数)``；中途取消或
+                抛异常时调用方据此保留已写入的增量。
+
+        Returns:
+            (修复条目数, 实际改写的文件路径列表)
+        """
+        fixed_count = 0
+        changed_files: list[str] = []
+        try:
+            files = self.get_rpy_files(folder, checkpoint=checkpoint)
+        except OSError as exc:
+            self.logger.error(f"枚举待去重文件失败 {folder}: {exc}")
+            return 0, []
+
+        def read_lines(file_path: Path) -> List[str]:
+            with open(file_path, "r", encoding="utf-8", newline="") as f:
+                return list(f)
+
+        # 第一遍只读：看完所有文件才知道每个 key 该保留哪一条。
+        scanned: list[tuple[Path, str, List[Tuple[tuple, int, int, bool]]]] = []
+        for file_path in sorted(files, key=lambda path: path.as_posix().casefold()):
+            if checkpoint is not None:
+                checkpoint()
+            try:
+                lines = read_lines(file_path)
+            except OSError as exc:
+                self.logger.warning(f"跳过无法读取的文件 {file_path}: {exc}")
+                continue
+            try:
+                entries = self._collect_old_new_entries(lines, checkpoint=checkpoint)
+            except Exception as exc:
+                self.logger.warning(f"解析 {file_path} 失败，已跳过去重: {exc}")
+                continue
+            if entries:
+                digest = hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+                scanned.append((file_path, digest, entries))
+
+        keepers = self._choose_duplicate_keepers(
+            [(str(file_path), entries) for file_path, _digest, entries in scanned]
+        )
+
+        for file_path, digest, entries in scanned:
+            positions = self._duplicate_loser_positions(str(file_path), entries, keepers)
+            if not positions:
+                continue
+            if checkpoint is not None:
+                checkpoint()
+            try:
+                lines = read_lines(file_path)
+            except OSError as exc:
+                self.logger.warning(f"跳过无法读取的文件 {file_path}: {exc}")
+                continue
+            if hashlib.sha256("".join(lines).encode("utf-8")).hexdigest() != digest:
+                # 两遍之间文件被改过，行号已不可信。
+                self.logger.error(f"去重期间文件被其他程序修改，已跳过 {file_path}")
+                continue
+
+            new_lines = list(lines)
+            fixed_here = self._comment_out_duplicate_pairs(new_lines, positions)
+            if not fixed_here:
+                continue
+            # 条目全被注释掉的块必须连块头一起删除，否则 Ren'Py 报空翻译块。
+            new_lines, _ = self._remove_empty_translate_blocks(new_lines, checkpoint=checkpoint)
+            if before_write is not None:
+                before_write()
+            self._rewrite_with_backup(
+                file_path,
+                lines,
+                new_lines,
+                "utf-8",
+                checkpoint=checkpoint,
+                before_replace=before_write,
+            )
+            fixed_count += fixed_here
+            changed_files.append(str(file_path))
+            self.logger.info(f"去重完成: {file_path} ({fixed_here} 条)")
+            if on_file is not None:
+                on_file(str(file_path), fixed_here)
+
+        return fixed_count, changed_files
+
+    @staticmethod
+    def _find_tl_dir(folder: str | Path, *, max_levels: int = 3) -> Optional[Path]:
+        """定位 ``tl`` 目录：先看 ``folder`` 自身与其 ``tl`` / ``game/tl`` 子目录，
+        再向上找最近的名为 ``tl`` 的祖先（最多 ``max_levels`` 层）。"""
+        try:
+            path = Path(os.path.abspath(str(Path(folder).expanduser())))
+        except (OSError, ValueError):
+            return None
+        for direct in (path, path / "tl", path / "game" / "tl"):
+            if direct.name.casefold() == "tl" and direct.is_dir():
+                return direct
+        candidates = [path, *path.parents][: max_levels + 1]
+        for candidate in candidates:
+            if candidate.name.casefold() == "tl" and candidate.is_dir():
+                return candidate
+        return None
+
+    def _collect_strings_old_values(self, folder: str | Path) -> List[Tuple[str, str]]:
+        """轻量收集 ``translate <lang> strings:`` 块里的 old 原文。
+
+        环境检测只需要重复计数，用正则扫一遍即可，不构建完整文档，
+        避免影响扫描主流程的解析次数与进度回调。
+        """
+        values: List[Tuple[str, str]] = []
+        try:
+            files = self.get_rpy_files(folder)
+        except OSError:
+            return values
+
+        header_re = re.compile(r"^[ \t]*translate\s+([A-Za-z0-9_]+)\s+strings\s*:\s*$")
+        other_header_re = re.compile(r"^[ \t]*translate\s+\S+")
+        old_re = re.compile(r'^[ \t]*old\s+(["\'])(?P<text>.*)\1[ \t]*$')
+        new_re = re.compile(r'^[ \t]*new\s+(["\'])')
+        for path in files:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as source:
+                    lines = source.read().splitlines()
+            except OSError:
+                continue
+            language = ""
+            pending_old: Optional[str] = None
+            for line in lines:
+                header = header_re.match(line)
+                if header:
+                    language = header.group(1)
+                    pending_old = None
+                    continue
+                if other_header_re.match(line):
+                    language = ""
+                    pending_old = None
+                    continue
+                if not language:
+                    continue
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                old_match = old_re.match(line)
+                if old_match:
+                    pending_old = self._decode_renpy_literal(old_match.group("text"))
+                    continue
+                if pending_old is not None and new_re.match(line):
+                    values.append((language, pending_old))
+                pending_old = None
+        return values
+
+    def _count_duplicate_strings(self, main_dir: Path, leftover_dir: Path) -> int:
+        """估算残留增量目录里与主翻译目录重复的 strings 条目数。"""
+        seen: set[tuple[str, str]] = set()
+        if main_dir.is_dir():
+            seen.update(self._collect_strings_old_values(main_dir))
+        duplicates = 0
+        for key in self._collect_strings_old_values(leftover_dir):
+            if key in seen:
+                duplicates += 1
+            else:
+                seen.add(key)
+        return duplicates
+
+    def detect_environment_issues(self, folder: str | Path) -> List[Dict]:
+        """识别 ``game/tl/<lang>_new`` 这类未合并的增量抽取残留目录。
+
+        这类目录里的 ``translate ... strings:`` 会和主目录重复，Ren'Py 启动
+        直接报 "A translation ... already exists"；它不属于文件内错误，
+        所以要单独作为环境问题上报，由用户决定合并或移出。
+        """
+        issues: List[Dict] = []
+        try:
+            resolved = Path(os.path.abspath(str(Path(folder).expanduser())))
+        except (OSError, ValueError):
+            return issues
+        if not resolved.is_dir():
+            return issues
+        tl_dir = self._find_tl_dir(resolved)
+        if tl_dir is None:
+            return issues
+
+        try:
+            children = sorted(
+                (child for child in tl_dir.iterdir() if child.is_dir()),
+                key=lambda path: path.name.casefold(),
+            )
+        except OSError as exc:
+            self.logger.warning(f"读取翻译目录失败 {tl_dir}: {exc}")
+            return issues
+
+        name_suffix = "_new"
+        for child in children:
+            name = child.name
+            if len(name) <= len(name_suffix) or not name.casefold().endswith(name_suffix):
+                continue
+            language = name[: -len(name_suffix)]
+            if not language:
+                continue
+            try:
+                if not self.get_rpy_files(child):
+                    # 没有 .rpy 的残留目录不会产生重复翻译，不值得打扰用户。
+                    continue
+            except OSError:
+                continue
+            try:
+                issue_count = self._count_duplicate_strings(tl_dir / language, child)
+            except Exception as exc:
+                self.logger.warning(f"统计重复译文失败 {child}: {exc}")
+                issue_count = 0
+            issues.append({
+                "kind": INCREMENTAL_LEFTOVER,
+                "type": INCREMENTAL_LEFTOVER,
+                "path": str(child),
+                "language": language,
+                "message": Localizer.get().error_repair_env_leftover.format(
+                    name=name, count=issue_count,
+                ),
+                "issue_count": issue_count,
+                "actions": ["merge", "move"],
+            })
+        return issues
+
+    @staticmethod
+    def _resolve_project_root(tl_dir: Path) -> Path:
+        """由 ``tl`` 目录反推项目根：``<proj>/game/tl`` 与 ``<proj>/tl`` 都支持。"""
+        parents = tl_dir.parents
+        if len(parents) >= 2 and (parents[1] / "game").is_dir():
+            return parents[1]
+        if len(parents) >= 1:
+            return parents[0]
+        return tl_dir
+
+    @staticmethod
+    def _unique_move_target(project_root: Path, name: str, extension: str = "") -> Path:
+        """``_renpybox_backup/<name>_<时间戳><extension>``，同一秒冲突时追加序号，绝不覆盖。"""
+        backup_root = project_root / "_renpybox_backup"
+        base = f"{name}_{time.strftime('%Y%m%d_%H%M%S')}"
+        target = backup_root / f"{base}{extension}"
+        suffix = 2
+        while target.exists():
+            target = backup_root / f"{base}_{suffix}{extension}"
+            suffix += 1
+        return target
+
+    @staticmethod
+    def _archive_dirs(archive: Path, sources: List[Path]) -> None:
+        """把若干目录完整打进一个新 zip（顶层为各目录名）；任何失败都删掉半成品并抛出。
+
+        用 zip 而不是复制目录：备份可能落在游戏目录内，散落的 .rpy 会被 Ren'Py 加载。
+        """
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        expected = 0
+        try:
+            with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as bundle:
+                for source in sources:
+                    bundle.writestr(f"{source.name}/", b"")
+                    for root, dirs, names in os.walk(source):
+                        root_path = Path(root)
+                        dirs[:] = sorted(
+                            name for name in dirs
+                            if not (root_path / name).is_symlink()
+                            and not getattr(os.path, "isjunction", lambda _p: False)(root_path / name)
+                        )
+                        for name in sorted(names):
+                            path = root_path / name
+                            if path.is_symlink():
+                                continue
+                            bundle.write(path, path.relative_to(source.parent).as_posix())
+                            expected += 1
+            with zipfile.ZipFile(archive) as bundle:
+                broken = bundle.testzip()
+                stored = sum(1 for info in bundle.infolist() if not info.is_dir())
+            if broken is not None or stored != expected:
+                raise OSError(f"备份校验失败：{archive}")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                archive.unlink(missing_ok=True)
+            raise
+
+    def fix_environment_issue(self, issue: Dict, action: str = "merge") -> Dict:
+        """合并或移出一条环境问题；任何异常都转成 ``ok: False``，绝不抛出。"""
+        payload = {"path": "", "action": "", "ok": False, "message": ""}
+        issue = issue if isinstance(issue, dict) else {}
+        leftover = Path(str(issue.get("path") or ""))
+        name = leftover.name or str(issue.get("path") or "")
+        language = str(issue.get("language") or "").strip()
+        if not language and name.casefold().endswith("_new"):
+            language = name[: -len("_new")]
+        action_name = str(action or "merge").strip() or "merge"
+        payload.update(path=str(leftover), action=action_name)
+
+        localizer = Localizer.get()
+        if action_name not in {"merge", "move"}:
+            payload["message"] = localizer.error_repair_env_failed.format(
+                name=name, error=f"未知操作 {action_name}",
+            )
+            return payload
+        if not language:
+            payload["message"] = localizer.error_repair_env_failed.format(
+                name=name, error="无法判定语言目录",
+            )
+            return payload
+
+        try:
+            if not leftover.is_dir():
+                raise FileNotFoundError(f"目录不存在：{leftover}")
+            tl_dir = leftover.parent
+            project_root = self._resolve_project_root(tl_dir)
+
+            if action_name == "move":
+                target = self._unique_move_target(project_root, f"{language}_new")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # 只移动，绝不删除：残留目录里可能还有用户未合并的译文。
+                shutil.move(str(leftover), str(target))
+                payload.update(
+                    ok=True,
+                    message=localizer.error_repair_env_moved.format(
+                        name=name, target=str(target),
+                    ),
+                )
+                return payload
+
+            # 合并会改写主目录并删除增量目录，先把两者完整打包；备份失败则不合并。
+            main_dir = tl_dir / language
+            archive = self._unique_move_target(project_root, f"merge_{language}", ".zip")
+            try:
+                self._archive_dirs(
+                    archive, [path for path in (main_dir, leftover) if path.is_dir()],
+                )
+            except Exception as exc:
+                raise RuntimeError(f"合并前备份失败，未执行合并：{exc}") from exc
+            payload["backup"] = str(archive)
+            backup_note = localizer.error_repair_env_backup.format(target=str(archive))
+
+            # 延迟导入：避免 ErrorRepairer 在导入期就拉起整条提取器依赖链。
+            from module.Extract.UnifiedExtractor import UnifiedExtractor
+
+            merge_result = UnifiedExtractor().merge_incremental_folder(
+                project_root,
+                language,
+                leftover,
+                clean_duplicates=True,
+                target_tl_dir=main_dir,
+            )
+            success = bool(getattr(merge_result, "success", False))
+            detail = str(getattr(merge_result, "message", "") or "").strip()
+            if success:
+                payload.update(
+                    ok=True,
+                    message=localizer.error_repair_env_merged.format(
+                        name=name, tl=language,
+                    ) + backup_note,
+                )
+            else:
+                payload["message"] = localizer.error_repair_env_failed.format(
+                    name=name, error=detail or "合并失败",
+                ) + backup_note
+            return payload
+        except Exception as exc:
+            self.logger.error(f"处理环境问题失败 {leftover}: {exc}")
+            payload["ok"] = False
+            payload["message"] = localizer.error_repair_env_failed.format(
+                name=name, error=str(exc),
+            )
+            if payload.get("backup"):
+                payload["message"] += localizer.error_repair_env_backup.format(target=payload["backup"])
+            return payload
 
     def export_error_report(self, errors: Dict[str, List[Dict]], output_path: str) -> bool:
         """

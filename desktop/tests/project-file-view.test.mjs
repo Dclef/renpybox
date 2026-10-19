@@ -1,0 +1,124 @@
+/**
+ * .rbox 工程文件界面的静态契约。
+ *
+ * 运行（pwsh）：
+ *   cd desktop; node --test tests/project-file-view.test.mjs
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'renderer', 'src');
+const read = (...parts) => fs.readFileSync(path.join(src, ...parts), 'utf8');
+
+test('API 封装三条 .rbox 路由且都走 POST', () => {
+  const api = read('api.ts');
+  for (const [fn, route] of [
+    ['inspectProjectFile', 'inspect'],
+    ['exportProjectFile', 'export'],
+    ['importProjectFile', 'import'],
+  ]) {
+    const body = api.match(new RegExp(`export function ${fn}\\([\\s\\S]*?\\n\\}`))?.[0] ?? '';
+    assert.ok(body, `${fn} 缺失`);
+    assert.match(body, new RegExp(`'/api/project/file/${route}'`));
+    assert.match(body, /method: 'POST'/);
+  }
+});
+
+test('项目页用原生对话框和 rbox 过滤器，保存时补全后缀', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  assert.match(page, /\{ name: 'RenpyBox Project', extensions: \['rbox'\] \}/);
+  assert.match(page, /window\.renpy\?\.saveFile\(\{.*filters: RBOX_FILTERS \}\)/);
+  assert.match(page, /window\.renpy\?\.pickFile\(\{ filters: RBOX_FILTERS \}\)/);
+  assert.match(page, /\/\\\.rbox\$\/i\.test\(path\) \? path : `\$\{path\}\.rbox`/);
+  assert.match(page, /exportProjectFile\(withRboxSuffix\(picked\)\)|const target = withRboxSuffix\(picked\)/);
+});
+
+test('导入先 inspect，确认对话框里才调用 import，成功后刷新三份状态', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  const pick = page.match(/const pickImportFile = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(pick, /inspectProjectFile\(picked\)/);
+  assert.doesNotMatch(pick, /importProjectFile/);
+
+  const confirm = page.match(/const confirmImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(confirm, /importProjectFile\(pending\.info\.path\)/);
+  assert.match(confirm, /state\.reloadProject\(\), state\.reloadSettings\(\), state\.reloadTranslation\(\)/);
+  assert.match(page, /onConfirm=\{busy \? undefined : \(\) => void confirmImport\(pendingImport\)\}/);
+  assert.match(page, /project_root_matches/);
+  assert.match(page, /project_file_root_mismatch/);
+});
+
+test('导入结果同时展示并可打开项目资料缓存备份', () => {
+  const types = read('types.ts');
+  const result = types.match(/export interface ProjectFileImportResult[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(result, /assets_output_folder: string;/);
+  assert.match(result, /assets_backup_folder: string;/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  const confirm = page.match(/const confirmImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(confirm, /assetsBackup: result\.assets_backup_folder/);
+  assert.match(confirm, /project_file_import_success_assets/);
+  assert.match(page, /openFolder\(fileResult\.assetsBackup\)/);
+  assert.match(page, /project_file_assets_backup/);
+});
+
+test('旧数据先预览显式目录，取消或失败都不算导出成功', () => {
+  const api = read('api.ts');
+  for (const [fn, route] of [
+    ['inspectLegacyProjectCache', 'legacy/inspect'],
+    ['exportLegacyProjectFile', 'legacy/export'],
+  ]) {
+    const body = api.match(new RegExp(`export function ${fn}\\([\\s\\S]*?\\n\\}`))?.[0] ?? '';
+    assert.match(body, new RegExp(`'/api/project/file/${route}'`));
+    assert.match(body, /method: 'POST'/);
+  }
+  assert.match(api, /body: JSON\.stringify\(\{ folder \}\)/);
+  assert.match(api, /body: JSON\.stringify\(\{ folder, path \}\)/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  const pick = page.match(/const pickLegacyCache = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(pick, /pickFolder\(/);
+  assert.match(pick, /inspectLegacyProjectCache\(picked\)/);
+  assert.doesNotMatch(pick, /exportLegacyProjectFile|exportProjectFile/);
+
+  const save = page.match(/const saveLegacyCache = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(save, /if \(legacyFlight\.current\) return/);
+  assert.match(save, /if \(!picked\) return/);
+  const exportAt = save.indexOf('exportLegacyProjectFile(pending.cache_folder, target)');
+  const clearAt = save.indexOf('setPendingLegacy(null)');
+  assert.ok(exportAt > 0 && clearAt > exportAt);
+  assert.doesNotMatch(save, /exportProjectFile\(/);
+  assert.match(page, /onCancel=\{\(\) => \{ if \(!busy\) setPendingLegacy\(null\); \}\}/);
+  assert.match(page, /onConfirm=\{busy \? undefined : \(\) => void saveLegacyCache\(pendingLegacy\)\}/);
+});
+
+test('未绑定或任务进行中时先说明原因，成功后打开工程文件所在目录', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  assert.match(page, /state\.saving \|\| engineBusy/);
+  assert.match(page, /engine_status !== 'IDLE'/);
+  const reason = page.indexOf('project_file_need_project');
+  const busy = page.indexOf('project_file_busy');
+  const button = page.indexOf('project_file_legacy_migrate');
+  assert.ok(reason >= 0 && busy > reason && button > busy);
+  assert.match(page, /openFolder\(parentFolder\(fileResult\.path\)\)/);
+  assert.match(page, /source: result\.source_output_folder/);
+  assert.match(page, /pendingLegacy\.output_folder/);
+  assert.match(page, /pendingLegacy\.cache_folder/);
+  assert.match(page, /project_file_legacy_format_sqlite/);
+  assert.match(page, /project_file_legacy_next/);
+  assert.match(page, /rb-project-file-actions/);
+});
+
+test('工程文件文案中英文齐全', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  const zh = read('i18n', 'zh.ts');
+  const en = read('i18n', 'en.ts');
+  const keys = [...new Set(page.match(/project_file_[a-z_]+/g))];
+  assert.ok(keys.length > 10);
+  for (const key of keys) {
+    assert.match(zh, new RegExp(`\\n  ${key}: `), `zh 缺少 ${key}`);
+    assert.match(en, new RegExp(`\\n  ${key}: `), `en 缺少 ${key}`);
+  }
+});

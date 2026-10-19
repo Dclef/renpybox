@@ -546,6 +546,40 @@
     white-space: nowrap;
   }
 
+  .rb-project-page .rb-project-file .rb-settings-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rb-project-page .rb-project-file .rb-settings-body > * {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .rb-project-page .rb-project-file-guide {
+    margin: 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .rb-project-page .rb-project-file-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 100%;
+  }
+
+  .rb-project-page .rb-project-file-actions .ant-btn {
+    max-width: 100%;
+    height: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .rb-update-status,
   .rb-update-actions,
   .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }

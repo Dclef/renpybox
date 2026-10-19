@@ -1,5 +1,5 @@
 /**
- * 工程核心：错误修复 / 译文复用 / 格式化 / 解包 + 全部 7 入口受控 UI 自检。
+ * 工程核心：脚本修复（已合并代码格式化）/ 译文复用 / 解包 + 六入口受控 UI 自检。
  *
  * 运行（pwsh，勿终止 Vite 5179）：
  *   $env:RENPYBOX_UI_URL='http://127.0.0.1:5179'
@@ -199,24 +199,6 @@ function fixture() {
       return response({ job });
     }
 
-    if (p === '/api/formatter' && method === 'GET') {
-      const folder = parsed.searchParams.get('folder') || '';
-      return response({
-        project_key: folder ? 'fmt:' + folder.toLowerCase() : '',
-        owner_project_key: f.unbound ? '' : 'c:\\ui-check|chinese',
-        folder,
-        job: f.jobs.formatter || null,
-      });
-    }
-    if (p === '/api/formatter/format' && method === 'POST') {
-      if (!body.confirm) return new Response(JSON.stringify({ detail: '需要 confirm' }), { status: 400 });
-      const job = mkJob('formatter_format', body, {
-        action: 'format', written: true, success_count: 3, failed_files: [], message: '成功处理 3 个 RPY',
-      });
-      f.jobs.formatter = job;
-      return response({ job });
-    }
-
     if (p === '/api/archive' && method === 'GET') {
       return response({ job: f.jobs.archive || null, project_key: 'archive' });
     }
@@ -260,6 +242,10 @@ function fixture() {
 
   window.renpy = {
     appInfo: async () => ({ appVersion: 'v0.8.1', packaged: false }),
+    updater: {
+      state: async () => ({ status: 'dev', packaged: false, releaseNotes: '' }),
+      onState: () => () => {},
+    },
     pickFolder: async () => 'C:/ui-check/manual-tl',
     pickFile: async () => 'C:/ui-check/game.exe',
     saveFile: async () => 'C:/ui-check/error_report.xlsx',
@@ -296,7 +282,8 @@ app.whenReady().then(async () => {
   await win.webContents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
     source: '(' + fixture.toString() + ')()',
   });
-  await win.loadURL(process.env.RENPYBOX_UI_URL || 'http://127.0.0.1:5179');
+  if (process.env.RENPYBOX_UI_URL) await win.loadURL(process.env.RENPYBOX_UI_URL);
+  else await win.loadFile(path.join(__dirname, '../dist/index.html'));
 
   const js = async (code) => {
     const result = await win.webContents.debugger.sendCommand('Runtime.evaluate', {
@@ -359,11 +346,11 @@ app.whenReady().then(async () => {
 
   await assert("document.querySelector('.workspace-project')", '壳已渲染');
 
-  // --- 七入口均不应出现「原桌面版」占位 ---
+  // --- 六入口均不应出现「原桌面版」占位 ---
   await navPage("Ren'Py 工具箱");
   await pause(250);
   await capture('toolbox-engineer');
-  for (const query of ['错误修复', '更新翻译复用', '代码格式化', '安卓打包', '网页', '游戏模组', '解包']) {
+  for (const query of ['脚本修复', '更新翻译复用', '安卓打包', '网页', '游戏模组', '解包']) {
     await js(`(()=>{
       const root=document.querySelector('.toolbox-search');
       const e=root?.matches('input')?root:root?.querySelector('input');
@@ -375,25 +362,23 @@ app.whenReady().then(async () => {
     const pending = await js(`([...document.querySelectorAll('.tool-card')].some(c=>(c.textContent||'').includes('原桌面版')))`);
     if (pending) throw new Error('仍有原桌面版占位: ' + query);
   }
-  log('PASS 七入口无原桌面版占位');
+  log('PASS 六入口无原桌面版占位');
 
-  // --- 错误修复默认 ---
-  await openTool('错误修复');
-  await assert("document.body.innerText.includes('修复缩进') || document.body.innerText.includes('Fix Indentation')", '错误修复页打开');
+  // --- 脚本修复默认选项（安全集开，高风险项关） ---
+  await openTool('脚本修复');
+  await assert("document.body.innerText.includes('扫描并修复') || document.body.innerText.includes('Scan and Fix')", '错误修复页打开');
   const repairChecks = await js(`([...document.querySelectorAll('.ant-checkbox-wrapper')].map(w=>({
     text:(w.textContent||'').trim().slice(0,40),
     checked:!!w.querySelector('.ant-checkbox-checked'),
   })))`);
   log('repairChecks ' + JSON.stringify(repairChecks));
-  const indent = repairChecks.find((c) => /Tab|缩进问题（Tab/.test(c.text) && !/层级/.test(c.text));
-  const level = repairChecks.find((c) => /层级|Indentation Levels/.test(c.text));
-  const quotes = repairChecks.find((c) => /弯引号|Chinese Quotation|外层中文引号/.test(c.text));
-  const dialogue = repairChecks.find((c) => /未转义|Unescaped/.test(c.text));
-  if (!indent?.checked) throw new Error('fixIndent 默认应为 true');
-  if (level?.checked) throw new Error('fixIndentLevel 默认应为 false');
-  if (quotes?.checked) throw new Error('fixQuotes 默认应为 false');
-  if (dialogue?.checked) throw new Error('fixDialogueQuotes 默认应为 false');
-  log('PASS 错误修复四默认 true,false,false,false');
+  const indent = repairChecks.find((c) => /Tab/.test(c.text));
+  const level = repairChecks.find((c) => /层级|Level/.test(c.text));
+  const quotes = repairChecks.find((c) => /引号规范|Quotation Style/.test(c.text));
+  if (!indent?.checked) throw new Error('Tab 转空格默认应为 true');
+  if (level?.checked) throw new Error('缩进层级默认应为 false');
+  if (quotes?.checked) throw new Error('引号规范默认应为 false');
+  log('PASS 脚本修复默认 安全集开/高风险关');
   await capture('error-repair');
 
   // 空项目仍可独立使用
@@ -408,17 +393,6 @@ app.whenReady().then(async () => {
   await assert("document.body.innerText.includes('预览') || document.body.innerText.includes('Preview')", '译文复用预览按钮');
   await assert("document.body.innerText.includes('执行复用') || document.body.innerText.includes('Reuse Translations')", '译文复用执行按钮');
   await capture('translation-reuse');
-
-  // --- 格式化 ---
-  await openTool('代码格式化');
-  const fmtChecks = await js(`([...document.querySelectorAll('.ant-checkbox-wrapper')].map(w=>({
-    text:(w.textContent||'').trim().slice(0,40),
-    checked:!!w.querySelector('.ant-checkbox-checked'),
-  })))`);
-  log('fmtChecks ' + JSON.stringify(fmtChecks));
-  if (fmtChecks.length < 3 || fmtChecks.some((c) => !c.checked)) throw new Error('格式化三选项默认应为 true');
-  log('PASS 格式化三默认 true');
-  await capture('formatter');
 
   // --- 解包 ---
   await openTool('解包');
