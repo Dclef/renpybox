@@ -42,6 +42,7 @@ class AgentSession:
                 "confirmation": self._confirmation,
                 "stage": self._stage,
                 "budget": self._budget,
+                "metrics": self.service.metrics_summary(),
             })
 
     def _publish(self) -> None:

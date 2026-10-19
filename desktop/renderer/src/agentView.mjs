@@ -83,3 +83,45 @@ export function budgetParts(budget) {
     iterations: typeof iterations === 'number' && Number.isFinite(iterations) && iterations > 0 ? String(iterations) : '',
   };
 }
+
+function positiveNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * 底部状态栏数据：轮次/步数、吞吐、累计 token、缓存命中率、上下文占比。
+ *
+ * 每一项都单独给值：供应商不回 usage 时这些字段是 0 或 null，
+ * 由界面按需拼装，避免「没有数据却显示 0%」。
+ */
+export function metricsParts(metrics) {
+  const empty = {
+    rounds: 0,
+    steps: 0,
+    tokensPerSecond: 0,
+    totalTokens: '',
+    cacheHitPercent: null,
+    contextPercent: 0,
+    hasData: false,
+  };
+  if (!metrics || typeof metrics !== 'object') return empty;
+
+  const rounds = positiveNumber(metrics.iterations);
+  const steps = positiveNumber(metrics.steps);
+  const tokensPerSecond = positiveNumber(metrics.tokens_per_second);
+  const totalTokens = formatTokenCount(positiveNumber(metrics.total_tokens));
+  const hitRate = typeof metrics.cache_hit_rate === 'number' && Number.isFinite(metrics.cache_hit_rate)
+    ? Math.max(0, Math.min(1, metrics.cache_hit_rate))
+    : null;
+  const contextPercent = positiveNumber(metrics.context_percent);
+
+  return {
+    rounds,
+    steps,
+    tokensPerSecond,
+    totalTokens,
+    cacheHitPercent: hitRate === null ? null : Math.round(hitRate * 100),
+    contextPercent: contextPercent > 0 ? Math.round(contextPercent * 100) : 0,
+    hasData: rounds > 0 || Boolean(totalTokens) || contextPercent > 0,
+  };
+}

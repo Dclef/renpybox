@@ -2101,6 +2101,42 @@
     white-space: nowrap;
   }
 
+  /* 底部用量状态栏：轮次/步数、吞吐、累计 token、缓存命中、上下文占比。 */
+  .agent-metrics-strip {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 14px;
+    min-width: 0;
+    padding: 2px 4px 0;
+    color: var(--rb-text-secondary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-metrics-rounds {
+    flex-shrink: 0;
+    color: var(--rb-text-primary);
+    font-weight: 600;
+  }
+
+  .agent-metrics-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .agent-metrics-context {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .agent-metrics-context .agent-progress-track {
+    flex: 0 0 40px;
+    min-width: 40px;
+  }
+
   .agent-progress-track {
     flex: 1;
     height: 4px;
