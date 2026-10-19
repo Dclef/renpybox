@@ -2808,6 +2808,7 @@
   .rb-workbench-analysis-status strong { display: inline-flex; align-items: center; gap: 8px; margin-right: 12px; }
   .rb-workbench-analysis-status span, .rb-workbench-analysis-status p { color: var(--rb-text-secondary); overflow-wrap: anywhere; }
   .rb-workbench-analysis-status p { margin: 4px 0 0; }
+  .rb-workbench-analysis-progress { margin-top: 6px; max-width: 420px; }
   .rb-workbench-analysis-status > button { flex-shrink: 0; }
   .rb-workbench-draft-review { display: flex; flex-direction: column; gap: 16px; }
   .rb-workbench-draft-review h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
