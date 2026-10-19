@@ -885,6 +885,10 @@ class LocalizerZH():
     agent_translation_status_ready: str = (
         "翻译状态：引擎 {engine_status}，待翻译 {untranslated_count} 条。"
     )
+    agent_quality_candidates_ready: str = (
+        "可润色 {polish} 条，可校对 {proofread} 条；润色只处理已翻译的句子，"
+        "先按这个数量决定分批，不要先读一批再看。"
+    )
     agent_refresh_fallback_complete: str = (
         "replace_text 兜底补丁已刷新，共 {count} 条：{output_path}"
     )

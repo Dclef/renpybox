@@ -60,6 +60,15 @@ export const OUTPUT_PROTOCOL_OPTIONS = [
   { value: 'SINGLE_TEXT', label: '单条纯文本（SINGLE_TEXT）', labelKey: 'setting_output_protocol_single_text' as const },
 ];
 
+/** 思考档位：与 base/Base.py 的 ThinkingLevel 一致；OFF 表示不带任何思考参数。 */
+export const THINKING_LEVEL_OPTIONS = [
+  { value: 'OFF', label: '关闭', labelKey: 'setting_thinking_off' as const },
+  { value: 'LOW', label: '低', labelKey: 'setting_thinking_low' as const },
+  { value: 'MEDIUM', label: '中', labelKey: 'setting_thinking_medium' as const },
+  { value: 'HIGH', label: '高', labelKey: 'setting_thinking_high' as const },
+  { value: 'MAX', label: '最高', labelKey: 'setting_thinking_max' as const },
+];
+
 /** 应用设置里的语言下拉用的是 app_language（界面语言，不是翻译语言）。 */
 export const APP_LANGUAGE_OPTIONS: { value: string; label: string; labelKey: TextKey }[] = [
   { value: 'ZH', label: '简体中文', labelKey: 'language_zh' },
@@ -178,6 +187,16 @@ export const EXPERT_FIELDS: FieldSpec[] = [
       '启用后，每次请求只提交一行原文，并允许模型直接返回纯文本译文；适合腾讯 hy1.5 等速度快但批量 JSONLINE 格式容易错位的小模型，会增加请求次数但可显著降低行数不一致',
     descriptionKey: 'setting_single_line_translation_enable_body',
     kind: 'switch',
+  },
+  {
+    key: 'quality_thinking_level',
+    title: '校对/润色思考等级',
+    titleKey: 'setting_quality_thinking_level_title',
+    description:
+      '校对与润色使用这个思考档位，不跟随平台里给人工翻译设置的档位；改成 MAX 会让每批 8 条也要跑几分钟',
+    descriptionKey: 'setting_quality_thinking_level_body',
+    kind: 'select',
+    options: THINKING_LEVEL_OPTIONS,
   },
   {
     key: 'translation_output_protocol',

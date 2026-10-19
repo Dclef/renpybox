@@ -181,7 +181,12 @@ def read_translation_batch(
         return ToolResult(
             True,
             localizer.agent_polish_batch_empty if polishing else localizer.agent_translate_batch_empty,
-            data = {"remaining": 0, "items": []},
+            data = {
+                "remaining": 0,
+                "returned": 0,
+                "mode": MODE_POLISH if polishing else MODE_TRANSLATE,
+                "items": [],
+            },
         )
 
     size = max(1, min(int(batch_size or capacity["max_entries"]), MAX_BATCH_SIZE))
