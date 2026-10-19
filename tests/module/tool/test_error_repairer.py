@@ -1,4 +1,6 @@
+import zipfile
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -299,6 +301,7 @@ def test_empty_translate_strings_blocks_are_reported_and_removed(tmp_path) -> No
         "translate chinese strings:\n"
         '    old "Keep"\n'
         '    new "保留"\n\n'
+        '    # generated placeholder\n\n'
     )
 
 
@@ -1007,3 +1010,770 @@ def test_repair_backup_failure_prevents_write(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "open", open_without_backup)
     assert ErrorRepairer().auto_fix_file(str(script)) == (False, 0)
     assert script.read_bytes() == original
+
+
+def _syntax_errors(repairer: ErrorRepairer, tmp_path, content: str):
+    script = tmp_path / "syntax.rpy"
+    script.write_text(content, encoding="utf-8")
+    return repairer.check_file(
+        str(script),
+        check_indent=False,
+        check_indent_level=False,
+        check_quotes=False,
+        check_dialogue_quotes=False,
+        check_translation_issues=False,
+    )
+
+
+def _indent_level_errors(repairer: ErrorRepairer, script):
+    return repairer.check_file(
+        str(script),
+        check_syntax=False,
+        check_indent=False,
+        check_indent_level=True,
+        check_quotes=False,
+        check_dialogue_quotes=False,
+        check_translation_issues=False,
+    )
+
+
+def test_classify_issue_type_maps_each_kind_to_a_fix_mode() -> None:
+    classify = error_repairer_module.classify_issue_type
+
+    assert classify("indent") == "auto"
+    assert classify("empty_block") == "auto"
+    assert classify("duplicate_old_new") == "auto"
+    assert classify("unescaped_dialogue_quotes") == "auto"
+    assert classify("indentation_level") == "conditional"
+    assert classify("quotes") == "conditional"
+    assert classify("syntax") == "manual"
+    assert classify("placeholder_missing") == "manual"
+    assert classify("extra_empty_string") == "manual"
+    # 未知类型一律按人工处理，不允许被自动修掉。
+    assert classify("brand_new_type") == "manual"
+    # 类上暴露同一份集合与分类函数，供 API/UI 两种引用方式使用。
+    assert ErrorRepairer.AUTO_FIX_TYPES == error_repairer_module.AUTO_FIX_TYPES
+    assert ErrorRepairer.MANUAL_TYPES == error_repairer_module.MANUAL_TYPES
+    assert ErrorRepairer.classify_issue_type("quotes") == "conditional"
+
+
+def test_syntax_scan_ignores_screen_label_displayables(tmp_path) -> None:
+    content = (
+        "init -501 screen say(who, what):\n"
+        '    label "[char_name]" xalign 0.5 yalign 0.5 ypos 327 text_font "wqy.ttf"\n'
+        "    label char_name xalign 0.5 text_bold True\n"
+        "    label shop_info[\"title\"] text_size 80\n"
+        '    label _("Display")\n'
+        "    label title\n"
+        "screen plain():\n"
+        "    label \"没有属性的展示文本\"\n"
+    )
+
+    assert _syntax_errors(ErrorRepairer(), tmp_path, content) == []
+
+
+def test_syntax_scan_still_reports_real_label_statements_without_colon(tmp_path) -> None:
+    errors = _syntax_errors(ErrorRepairer(), tmp_path, 'label start\n    e "hi"\n')
+
+    assert [(error["line"], error["message"]) for error in errors] == [
+        (1, "label 语句缺少冒号"),
+    ]
+
+
+def test_syntax_scan_ignores_multiline_parenthesized_conditions(tmp_path) -> None:
+    content = (
+        "label start:\n"
+        '    if (renpy.get_screen("say") and\n'
+        '            wait_event(["proceed"]) > 0 and\n'
+        "            is_evening()):\n"
+        "        pass\n"
+        "    elif (is_in_progress(\n"
+        '            "x@1")):\n'
+        "        pass\n"
+        "    else:\n"
+        "        pass\n"
+    )
+
+    assert _syntax_errors(ErrorRepairer(), tmp_path, content) == []
+
+
+def test_syntax_scan_still_reports_conditions_that_never_get_a_colon(tmp_path) -> None:
+    content = (
+        "label start:\n"
+        "    if (a and\n"
+        "            b)\n"
+        "        pass\n"
+        "    while True\n"
+        "        pass\n"
+    )
+
+    errors = _syntax_errors(ErrorRepairer(), tmp_path, content)
+
+    assert [(error["line"], error["message"]) for error in errors] == [
+        (3, "控制流语句缺少冒号"),
+        (5, "控制流语句缺少冒号"),
+    ]
+
+
+def test_syntax_scan_ignores_colons_that_only_exist_inside_comments(tmp_path) -> None:
+    content = (
+        'translate chinese strings:  # 头注释里的冒号不算语句冒号\n'
+        '    old "a"\n'
+        '    new "b"\n'
+        "label start:  # note: 这里的冒号在注释里\n"
+        '    e "hi"\n'
+    )
+
+    assert _syntax_errors(ErrorRepairer(), tmp_path, content) == []
+
+
+def test_indentation_level_is_skipped_for_source_scripts_without_translate_blocks(tmp_path) -> None:
+    source = tmp_path / "screens.rpy"
+    source.write_text('screen test():\n  text "错位两格"\n', encoding="utf-8")
+
+    # 源脚本没有 translate 块：缩进层级检查全是误报，不应上报。
+    assert _indent_level_errors(ErrorRepairer(), source) == []
+
+    translation = tmp_path / "translation.rpy"
+    translation.write_text(
+        'translate chinese strings:\n'
+        '    old "a"\n'
+        '    new "b"\n'
+        "\n"
+        "screen test():\n"
+        '  text "错位两格"\n',
+        encoding="utf-8",
+    )
+
+    # 同一处错位出现在 tl 文件里仍然要报。
+    errors = _indent_level_errors(ErrorRepairer(), translation)
+    assert [(error["line"], error["type"]) for error in errors] == [
+        (6, "indentation_level"),
+    ]
+
+
+def test_auto_fix_removes_trailing_spaces_and_keeps_other_content(tmp_path) -> None:
+    script = tmp_path / "spaces.rpy"
+    script.write_text('label start:  \n    e "hi" \t\n\tnew "x"\n', encoding="utf-8")
+
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_trailing_spaces=True, fix_empty_blocks=False,
+    ) == (True, 3)
+    assert script.read_text(encoding="utf-8") == 'label start:\n    e "hi"\n    new "x"\n'
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_trailing_spaces=True, fix_empty_blocks=False,
+    ) == (True, 0)
+
+
+def test_trailing_space_fix_is_opt_in(tmp_path) -> None:
+    script = tmp_path / "spaces.rpy"
+    content = 'label start:  \n    e "hi"  \n'
+    script.write_text(content, encoding="utf-8")
+
+    assert ErrorRepairer().auto_fix_file(str(script), fix_empty_blocks=False) == (True, 0)
+    assert script.read_text(encoding="utf-8") == content
+
+
+def test_auto_fix_comments_same_file_duplicate_pairs(tmp_path) -> None:
+    script = tmp_path / "dup.rpy"
+    script.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "甲"\n'
+        "\n"
+        '    old "Same"\n'
+        '    new "乙"\n'
+        "\n"
+        '    old "Other"\n'
+        '    new "丙"\n',
+        encoding="utf-8",
+    )
+
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_empty_blocks=False, fix_duplicates=True,
+    ) == (True, 1)
+    assert script.read_text(encoding="utf-8") == (
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "甲"\n'
+        "\n"
+        '    # old "Same"\n'
+        '    # new "乙"\n'
+        "\n"
+        '    old "Other"\n'
+        '    new "丙"\n'
+    )
+    [backup] = list(tmp_path.glob("dup.rpy.*.bak"))
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_empty_blocks=False, fix_duplicates=True,
+    ) == (True, 0)
+    assert list(tmp_path.glob("dup.rpy.*.bak")) == [backup]
+
+
+def test_fix_duplicates_clears_duplicate_scan_errors(tmp_path) -> None:
+    script = tmp_path / "dup.rpy"
+    script.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "甲"\n'
+        '    old "Same"\n'
+        '    new "乙"\n',
+        encoding="utf-8",
+    )
+    repairer = ErrorRepairer()
+
+    before = repairer.scan_folder(str(tmp_path))
+    assert before.issues_by_type == {"duplicate_old_new": 1}
+    assert before.fixable_count == 1
+
+    assert repairer.auto_fix_file(
+        str(script), fix_empty_blocks=False, fix_duplicates=True,
+    ) == (True, 1)
+    assert repairer.scan_folder(str(tmp_path)).errors == {}
+
+
+def test_fix_duplicate_strings_comments_cross_file_duplicates(tmp_path) -> None:
+    first = tmp_path / "a.rpy"
+    second = tmp_path / "b.rpy"
+    first_content = 'translate chinese strings:\n    old "Same"\n    new "甲"\n'
+    second_content = (
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "乙"\n'
+        "\n"
+        '    old "Only"\n'
+        '    new "丙"\n'
+    )
+    first.write_text(first_content, encoding="utf-8")
+    second.write_text(second_content, encoding="utf-8")
+
+    assert ErrorRepairer().fix_duplicate_strings(str(tmp_path)) == (1, [str(second)])
+    assert first.read_text(encoding="utf-8") == first_content
+    assert second.read_text(encoding="utf-8") == (
+        'translate chinese strings:\n'
+        '    # old "Same"\n'
+        '    # new "乙"\n'
+        "\n"
+        '    old "Only"\n'
+        '    new "丙"\n'
+    )
+    # 第一条保留、后续注释后才能幂等：第二次不该再有改动。
+    assert ErrorRepairer().fix_duplicate_strings(str(tmp_path)) == (0, [])
+    assert not list(tmp_path.glob("a.rpy.*.bak"))
+    [backup] = list(tmp_path.glob("b.rpy.*.bak"))
+    assert backup.read_text(encoding="utf-8") == second_content
+
+
+def test_fix_duplicate_strings_drops_emptied_strings_block_only(tmp_path) -> None:
+    first = tmp_path / "a.rpy"
+    second = tmp_path / "b.rpy"
+    first.write_text('translate chinese strings:\n    old "Same"\n    new "甲"\n', encoding="utf-8")
+    second.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "乙"\n'
+        "\n"
+        "translate chinese start_1:\n"
+        '    # e "Same"\n'
+        '    e "同一"\n',
+        encoding="utf-8",
+    )
+
+    assert ErrorRepairer().fix_duplicate_strings(str(tmp_path)) == (1, [str(second)])
+    # 空块只移除块头，重复译文保留为文件级注释，编号对话块保持原样。
+    assert second.read_text(encoding="utf-8") == (
+        '    # old "Same"\n'
+        '    # new "乙"\n'
+        '\n'
+        "translate chinese start_1:\n"
+        '    # e "Same"\n'
+        '    e "同一"\n'
+    )
+
+
+def test_folder_scan_result_has_backward_compatible_defaults() -> None:
+    result = error_repairer_module.FolderScanResult({}, 0, 0, 0, False)
+
+    assert result.total_files_known is True
+    assert result.issues_by_type == {}
+    assert result.environment_issues == []
+    assert result.fixable_count == 0
+    assert result.manual_count == 0
+
+
+def test_scan_folder_summarizes_fixable_and_manual_issues(tmp_path) -> None:
+    (tmp_path / "indent.rpy").write_text('\tnew "A"\n', encoding="utf-8")
+    (tmp_path / "syntax.rpy").write_text("label start\n    pass\n", encoding="utf-8")
+
+    result = ErrorRepairer().scan_folder(str(tmp_path))
+
+    assert result.issues_by_type == {"indent": 1, "syntax": 1}
+    assert result.fixable_count == 1
+    assert result.manual_count == 1
+    assert result.environment_issues == []
+    assert result.budget_exhausted is False
+
+
+def _make_incremental_project(tmp_path):
+    translation = tmp_path / "game" / "tl" / "chinese"
+    leftover = tmp_path / "game" / "tl" / "chinese_new"
+    translation.mkdir(parents=True)
+    leftover.mkdir(parents=True)
+    strings = (
+        'translate chinese strings:\n'
+        '    old "Hello"\n'
+        '    new "你好"\n'
+        "\n"
+        '    old "Bye"\n'
+        '    new "再见"\n'
+    )
+    (translation / "script.rpy").write_text(strings, encoding="utf-8")
+    (leftover / "strings.rpy").write_text(strings, encoding="utf-8")
+    return translation, leftover, strings
+
+
+def test_detect_environment_issues_finds_unmerged_incremental_folder(tmp_path) -> None:
+    translation, leftover, _ = _make_incremental_project(tmp_path)
+    repairer = ErrorRepairer()
+
+    issues = repairer.detect_environment_issues(translation)
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["type"] == issue["kind"] == "incremental_leftover"
+    assert issue["language"] == "chinese"
+    assert issue["path"] == str(leftover)
+    assert issue["issue_count"] == 2
+    assert issue["actions"] == ["merge", "move"]
+    assert "chinese_new" in issue["message"]
+    assert "2 条重复译文" in issue["message"]
+    # 从 tl 目录、从项目根出发也要能识别（扫描入口可能停在任意一层）。
+    assert repairer.detect_environment_issues(tmp_path / "game" / "tl")[0]["language"] == "chinese"
+    assert repairer.detect_environment_issues(tmp_path)[0]["language"] == "chinese"
+    # 没有 tl 祖先的普通目录不做无端猜测。
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    assert repairer.detect_environment_issues(unrelated) == []
+
+
+def test_detect_environment_issues_ignores_leftover_without_scripts(tmp_path) -> None:
+    (tmp_path / "game" / "tl" / "chinese_new").mkdir(parents=True)
+
+    assert ErrorRepairer().detect_environment_issues(tmp_path / "game" / "tl") == []
+
+
+def test_scan_folder_reports_environment_issues_unless_disabled(tmp_path) -> None:
+    translation, _, _ = _make_incremental_project(tmp_path)
+    repairer = ErrorRepairer()
+
+    enabled = repairer.scan_folder(str(translation))
+    assert [issue["language"] for issue in enabled.environment_issues] == ["chinese"]
+    assert enabled.environment_issues[0]["issue_count"] == 2
+    assert enabled.errors == {}
+
+    disabled = repairer.scan_folder(str(translation), detect_environment=False)
+    assert disabled.environment_issues == []
+
+
+def test_fix_environment_issue_move_relocates_leftover(tmp_path) -> None:
+    translation, leftover, strings = _make_incremental_project(tmp_path)
+    repairer = ErrorRepairer()
+    issue = repairer.detect_environment_issues(translation)[0]
+
+    result = repairer.fix_environment_issue(issue, "move")
+
+    assert result["ok"] is True
+    assert result["action"] == "move"
+    assert result["path"] == str(leftover)
+    assert not leftover.exists()
+    assert [path.name for path in (translation.parent).iterdir()] == ["chinese"]
+    [moved] = list((tmp_path / "_renpybox_backup").iterdir())
+    assert moved.name.startswith("chinese_new_")
+    assert (moved / "strings.rpy").read_text(encoding="utf-8") == strings
+    assert str(moved) in result["message"]
+
+
+def test_fix_environment_issue_merge_passes_project_root(tmp_path, monkeypatch) -> None:
+    translation, leftover, _ = _make_incremental_project(tmp_path)
+    extractor_module = import_module("module.Extract.UnifiedExtractor")
+    calls = {}
+
+    def fake_merge(
+        self, game_dir, tl_name, incremental_dir=None, *,
+        clean_duplicates=True, config_snapshot=None, target_tl_dir=None,
+    ):
+        calls.update(
+            game_dir=game_dir,
+            tl_name=tl_name,
+            incremental_dir=incremental_dir,
+            clean_duplicates=clean_duplicates,
+            target_tl_dir=target_tl_dir,
+        )
+        return SimpleNamespace(success=True, message="")
+
+    monkeypatch.setattr(
+        extractor_module.UnifiedExtractor, "merge_incremental_folder", fake_merge,
+    )
+    repairer = ErrorRepairer()
+    issue = repairer.detect_environment_issues(translation)[0]
+
+    result = repairer.fix_environment_issue(issue, "merge")
+
+    assert result["ok"] is True
+    assert result["action"] == "merge"
+    assert "chinese" in result["message"]
+    assert calls == {
+        "game_dir": tmp_path,
+        "tl_name": "chinese",
+        "incremental_dir": leftover,
+        "clean_duplicates": True,
+        "target_tl_dir": translation,
+    }
+    assert result["backup"] in result["message"]
+    assert Path(result["backup"]).is_file()
+
+
+def test_fix_environment_issue_reports_failures_without_raising(tmp_path, monkeypatch) -> None:
+    translation, leftover, _ = _make_incremental_project(tmp_path)
+    extractor_module = import_module("module.Extract.UnifiedExtractor")
+    repairer = ErrorRepairer()
+    issue = repairer.detect_environment_issues(translation)[0]
+
+    def failing_merge(self, game_dir, tl_name, incremental_dir=None, **kwargs):
+        return SimpleNamespace(success=False, message="增量恢复路径不匹配")
+
+    monkeypatch.setattr(
+        extractor_module.UnifiedExtractor, "merge_incremental_folder", failing_merge,
+    )
+    failed = repairer.fix_environment_issue(issue, "merge")
+    assert failed["ok"] is False
+    assert "增量恢复路径不匹配" in failed["message"]
+    assert leftover.is_dir()
+
+    def exploding_merge(self, *args, **kwargs):
+        raise RuntimeError("模拟崩溃")
+
+    monkeypatch.setattr(
+        extractor_module.UnifiedExtractor, "merge_incremental_folder", exploding_merge,
+    )
+    crashed = repairer.fix_environment_issue(issue, "merge")
+    assert crashed["ok"] is False
+    assert "模拟崩溃" in crashed["message"]
+
+    assert repairer.fix_environment_issue(issue, "explode")["ok"] is False
+    missing = repairer.fix_environment_issue(
+        {"path": str(tmp_path / "missing_new"), "language": "chinese"}, "move",
+    )
+    assert missing["ok"] is False
+    assert "失败" in missing["message"]
+    # 失败不移动/删除残留目录；合并前写的只有 zip 备份，并在失败消息里给出位置。
+    assert leftover.is_dir()
+    assert failed["backup"] in failed["message"]
+    assert crashed["backup"] in crashed["message"]
+    backups = list((tmp_path / "_renpybox_backup").iterdir())
+    assert backups and all(path.suffix == ".zip" for path in backups)
+
+
+def test_fix_duplicate_strings_prefers_later_translated_entry(tmp_path) -> None:
+    first = tmp_path / "a.rpy"
+    second = tmp_path / "b.rpy"
+    third = tmp_path / "c.rpy"
+    first.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new ""\n'
+        "\n"
+        '    old "Echo"\n'
+        '    new "Echo"\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "同一"\n'
+        "\n"
+        '    old "Echo"\n'
+        '    new "回声"\n',
+        encoding="utf-8",
+    )
+    third_content = 'translate chinese strings:\n    old "Same"\n    new "另一个"\n'
+    third.write_text(third_content, encoding="utf-8")
+
+    count, files = ErrorRepairer().fix_duplicate_strings(str(tmp_path))
+
+    assert (count, files) == (3, [str(first), str(third)])
+    # 空译文与 new==old 的占位被注释，只移除空块头，第一条有效译文保留。
+    assert first.read_text(encoding="utf-8") == (
+        '    # old "Same"\n'
+        '    # new ""\n'
+        '\n'
+        '    # old "Echo"\n'
+        '    # new "Echo"\n'
+    )
+    assert second.read_text(encoding="utf-8") == (
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new "同一"\n'
+        "\n"
+        '    old "Echo"\n'
+        '    new "回声"\n'
+    )
+    assert third.read_text(encoding="utf-8") == '    # old "Same"\n    # new "另一个"\n'
+    [third_backup] = list(tmp_path.glob("c.rpy.*.bak"))
+    assert third_backup.read_text(encoding="utf-8") == third_content
+    assert ErrorRepairer().fix_duplicate_strings(str(tmp_path)) == (0, [])
+    assert ErrorRepairer().scan_folder(str(tmp_path)).errors == {}
+
+
+def test_fix_duplicate_strings_keeps_first_when_all_untranslated(tmp_path) -> None:
+    first = tmp_path / "a.rpy"
+    second = tmp_path / "b.rpy"
+    first_content = 'translate chinese strings:\n    old "Same"\n    new ""\n'
+    first.write_text(first_content, encoding="utf-8")
+    second.write_text('translate chinese strings:\n    old "Same"\n    new "Same"\n', encoding="utf-8")
+
+    assert ErrorRepairer().fix_duplicate_strings(str(tmp_path)) == (1, [str(second)])
+    assert first.read_text(encoding="utf-8") == first_content
+
+
+def test_auto_fix_duplicates_prefers_translated_entry_in_same_file(tmp_path) -> None:
+    script = tmp_path / "dup.rpy"
+    script.write_text(
+        'translate chinese strings:\n'
+        '    old "Same"\n'
+        '    new ""\n'
+        "\n"
+        '    old "Same"\n'
+        '    new "乙"\n',
+        encoding="utf-8",
+    )
+
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_empty_blocks=False, fix_duplicates=True,
+    ) == (True, 1)
+    assert script.read_text(encoding="utf-8") == (
+        'translate chinese strings:\n'
+        '    # old "Same"\n'
+        '    # new ""\n'
+        "\n"
+        '    old "Same"\n'
+        '    new "乙"\n'
+    )
+    assert ErrorRepairer().auto_fix_file(
+        str(script), fix_empty_blocks=False, fix_duplicates=True,
+    ) == (True, 0)
+
+
+def test_fix_duplicate_strings_reports_each_file_and_stops_before_guarded_write(tmp_path) -> None:
+    for name in ("a", "b", "c"):
+        (tmp_path / f"{name}.rpy").write_text(
+            f'translate chinese strings:\n    old "Same"\n    new "{name}"\n', encoding="utf-8",
+        )
+    original_c = (tmp_path / "c.rpy").read_text(encoding="utf-8")
+    reported: list[tuple[str, int]] = []
+    guard_calls = {"n": 0}
+
+    def before_write() -> None:
+        guard_calls["n"] += 1
+        if guard_calls["n"] == 3:
+            raise RuntimeError("项目已切换")
+
+    with pytest.raises(RuntimeError, match="项目已切换"):
+        ErrorRepairer().fix_duplicate_strings(
+            str(tmp_path),
+            before_write=before_write,
+            on_file=lambda path, count: reported.append((path, count)),
+        )
+
+    assert reported == [(str(tmp_path / "b.rpy"), 1)]
+    assert (tmp_path / "c.rpy").read_text(encoding="utf-8") == original_c
+    assert not list(tmp_path.glob("c.rpy.*.bak"))
+
+
+def test_fix_duplicate_strings_rechecks_guard_after_backup_before_replace(tmp_path) -> None:
+    (tmp_path / "a.rpy").write_text(
+        'translate chinese strings:\n    old "Same"\n    new "甲"\n', encoding="utf-8",
+    )
+    duplicate = tmp_path / "b.rpy"
+    original = 'translate chinese strings:\n    old "Same"\n    new "乙"\n'
+    duplicate.write_text(original, encoding="utf-8")
+    guard_calls = {"n": 0}
+
+    def switch_owner_after_backup() -> None:
+        guard_calls["n"] += 1
+        if guard_calls["n"] == 2:
+            raise RuntimeError("项目已切换")
+
+    with pytest.raises(RuntimeError, match="项目已切换"):
+        ErrorRepairer().fix_duplicate_strings(
+            str(tmp_path), before_write=switch_owner_after_backup,
+        )
+
+    assert duplicate.read_text(encoding="utf-8") == original
+    [backup] = list(tmp_path.glob("b.rpy.*.bak"))
+    assert backup.read_text(encoding="utf-8") == original
+
+
+def _stub_config_load(monkeypatch) -> None:
+    # 真实合并会读全局配置；测试里只用默认值，避免依赖用户 config.json。
+    config_module = import_module("module.Config")
+    monkeypatch.setattr(config_module.Config, "load", lambda self, *args, **kwargs: self)
+
+
+def _zip_files(archive: Path) -> dict[str, bytes]:
+    with zipfile.ZipFile(archive) as bundle:
+        return {
+            info.filename: bundle.read(info)
+            for info in bundle.infolist()
+            if not info.is_dir()
+        }
+
+
+def test_fix_environment_issue_real_merge_archives_originals_first(tmp_path, monkeypatch) -> None:
+    _stub_config_load(monkeypatch)
+    translation, leftover, strings = _make_incremental_project(tmp_path)
+    leftover_content = strings + "\n    old \"Fresh\"\n    new \"新的\"\n"
+    (leftover / "strings.rpy").write_text(leftover_content, encoding="utf-8")
+    originals = {
+        "chinese/script.rpy": (translation / "script.rpy").read_bytes(),
+        "chinese_new/strings.rpy": (leftover / "strings.rpy").read_bytes(),
+    }
+    repairer = ErrorRepairer()
+    issue = repairer.detect_environment_issues(translation)[0]
+
+    result = repairer.fix_environment_issue(issue, "merge")
+
+    assert result["ok"] is True, result
+    archive = Path(result["backup"])
+    assert archive.parent == tmp_path / "_renpybox_backup"
+    assert archive.suffix == ".zip"
+    assert archive.name in result["message"]
+    assert _zip_files(archive) == originals
+    assert not leftover.exists()
+    merged = "".join(path.read_text(encoding="utf-8") for path in translation.rglob("*.rpy"))
+    assert '"Fresh"' in merged and "新的" in merged
+
+
+def test_fix_environment_issue_merge_targets_nonstandard_tl_layout(tmp_path, monkeypatch) -> None:
+    _stub_config_load(monkeypatch)
+    project = tmp_path / "proj"
+    translation = project / "tl" / "chinese"
+    leftover = project / "tl" / "chinese_new"
+    translation.mkdir(parents=True)
+    leftover.mkdir(parents=True)
+    main_content = 'translate chinese strings:\n    old "Hello"\n    new "你好"\n'
+    leftover_content = 'translate chinese strings:\n    old "Fresh"\n    new "新的"\n'
+    (translation / "script.rpy").write_text(main_content, encoding="utf-8")
+    (leftover / "fresh.rpy").write_text(leftover_content, encoding="utf-8")
+    originals = {
+        "chinese/script.rpy": (translation / "script.rpy").read_bytes(),
+        "chinese_new/fresh.rpy": (leftover / "fresh.rpy").read_bytes(),
+    }
+    repairer = ErrorRepairer()
+    [issue] = repairer.detect_environment_issues(translation)
+
+    result = repairer.fix_environment_issue(issue, "merge")
+
+    assert result["ok"] is True, result
+    assert not (project / "game").exists()
+    assert not leftover.exists()
+    merged = "".join(path.read_text(encoding="utf-8") for path in translation.rglob("*.rpy"))
+    assert '"Fresh"' in merged and '"Hello"' in merged
+    assert _zip_files(Path(result["backup"])) == originals
+
+
+def test_fix_environment_issue_aborts_merge_when_backup_fails(tmp_path, monkeypatch) -> None:
+    translation, leftover, strings = _make_incremental_project(tmp_path)
+    extractor_module = import_module("module.Extract.UnifiedExtractor")
+    merged = []
+
+    def failing_archive(archive, sources):
+        raise OSError("磁盘已满")
+
+    monkeypatch.setattr(ErrorRepairer, "_archive_dirs", staticmethod(failing_archive))
+    monkeypatch.setattr(
+        extractor_module.UnifiedExtractor, "merge_incremental_folder",
+        lambda self, *args, **kwargs: merged.append(args),
+    )
+    repairer = ErrorRepairer()
+    issue = repairer.detect_environment_issues(translation)[0]
+
+    result = repairer.fix_environment_issue(issue, "merge")
+
+    assert result["ok"] is False
+    assert "备份失败" in result["message"] and "磁盘已满" in result["message"]
+    assert "backup" not in result
+    assert merged == []
+    assert (leftover / "strings.rpy").read_text(encoding="utf-8") == strings
+    assert (translation / "script.rpy").read_text(encoding="utf-8") == strings
+
+
+def test_archive_dirs_removes_partial_zip_on_failure(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "chinese"
+    source.mkdir()
+    (source / "a.rpy").write_text("x", encoding="utf-8")
+    archive = tmp_path / "backup" / "merge.zip"
+
+    def broken_write(self, *args, **kwargs):
+        raise OSError("写入失败")
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", broken_write)
+    with pytest.raises(OSError, match="写入失败"):
+        ErrorRepairer._archive_dirs(archive, [source])
+    assert not archive.exists()
+
+
+def test_merge_incremental_folder_explicit_target_skips_game_tl(tmp_path, monkeypatch) -> None:
+    _stub_config_load(monkeypatch)
+    extractor_module = import_module("module.Extract.UnifiedExtractor")
+    project = tmp_path / "proj"
+    translation = project / "tl" / "chinese"
+    leftover = project / "tl" / "chinese_new"
+    translation.mkdir(parents=True)
+    leftover.mkdir(parents=True)
+    (translation / "script.rpy").write_text(
+        'translate chinese strings:\n    old "Hello"\n    new "你好"\n', encoding="utf-8",
+    )
+    (leftover / "fresh.rpy").write_text(
+        'translate chinese strings:\n    old "Fresh"\n    new "新的"\n', encoding="utf-8",
+    )
+
+    result = extractor_module.UnifiedExtractor().merge_incremental_folder(
+        project, "chinese", clean_duplicates=True, target_tl_dir=translation,
+    )
+
+    assert result.success is True, result.message
+    assert result.tl_dir == translation
+    # 未传 incremental_dir 时按显式目标目录推导同级 <lang>_new。
+    assert result.incremental_dir == leftover
+    assert not leftover.exists()
+    assert not (project / "game").exists()
+    merged = "".join(path.read_text(encoding="utf-8") for path in translation.rglob("*.rpy"))
+    assert '"Fresh"' in merged
+
+
+def test_merge_incremental_folder_journal_recovery_scoped_to_standard_layout(tmp_path, monkeypatch) -> None:
+    extractor_module = import_module("module.Extract.UnifiedExtractor")
+    recovered = []
+    monkeypatch.setattr(
+        extractor_module.UnifiedExtractor,
+        "_recover_stale_incremental_state",
+        lambda self, game_dir, tl_name: recovered.append((game_dir, tl_name)),
+    )
+    snapshot = SimpleNamespace(
+        renpy_project_path="", renpy_game_folder="", renpy_tl_folder="", input_folder="", output_folder="",
+    )
+    extractor = extractor_module.UnifiedExtractor()
+    missing = tmp_path / "missing_new"
+
+    extractor.merge_incremental_folder(tmp_path, "chinese", missing, config_snapshot=snapshot)
+    extractor.merge_incremental_folder(
+        tmp_path, "chinese", missing, target_tl_dir=tmp_path / "game" / "tl" / "chinese",
+    )
+    assert recovered == [(tmp_path, "chinese"), (tmp_path, "chinese")]
+
+    extractor.merge_incremental_folder(
+        tmp_path, "chinese", missing, target_tl_dir=tmp_path / "tl" / "chinese",
+    )
+    assert len(recovered) == 2
+    assert not (tmp_path / "game").exists()

@@ -2261,31 +2261,47 @@ class UnifiedExtractor:
         *,
         clean_duplicates: bool = True,
         config_snapshot: Any = None,
+        target_tl_dir: str | Path | None = None,
     ) -> ExtractionResult:
-        """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。"""
+        """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。
+
+        ``target_tl_dir`` 为调用方已确认的目标语言目录（如 ``<项目>/tl/<lang>``）；
+        给出时不再从配置推导，也不会回退到 ``<项目>/game/tl``。
+        """
         result = ExtractionResult()
         game_dir = Path(game_dir)
-        # 若上次增量抽取被中断，先恢复 tl 再合并。
-        self._recover_stale_incremental_state(game_dir, tl_name)
+        standard_tl_dir = game_dir / "game" / "tl" / tl_name
+        explicit_tl_dir = Path(target_tl_dir) if target_tl_dir is not None else None
+        # 恢复日志只描述标准 game/tl 布局；显式指向其它布局时不能套用。
+        if explicit_tl_dir is None or os.path.normcase(os.path.abspath(explicit_tl_dir)) == os.path.normcase(
+            os.path.abspath(standard_tl_dir)
+        ):
+            # 若上次增量抽取被中断，先恢复 tl 再合并。
+            self._recover_stale_incremental_state(game_dir, tl_name)
         # 目标 TL 目录优先沿用请求快照/当前项目配置中的显式路径（例如项目根/tl），
         # 只有配置无法证明属于当前项目时才回退到标准 game/tl 布局。
-        tl_dir = None
-        try:
-            cfg = config_snapshot if config_snapshot is not None else Config().load()
-            configured_paths = RenpyProjectPaths.from_config(cfg, tl_name)
-            if (
-                configured_paths is not None
-                and configured_paths.project_root == game_dir.resolve()
-            ):
-                tl_dir = configured_paths.tl_language_dir
-        except Exception:
-            tl_dir = None
+        tl_dir = explicit_tl_dir
         if tl_dir is None:
-            tl_dir = game_dir / "game" / "tl" / tl_name
+            try:
+                cfg = config_snapshot if config_snapshot is not None else Config().load()
+                configured_paths = RenpyProjectPaths.from_config(cfg, tl_name)
+                if (
+                    configured_paths is not None
+                    and configured_paths.project_root == game_dir.resolve()
+                ):
+                    tl_dir = configured_paths.tl_language_dir
+            except Exception:
+                tl_dir = None
+        if tl_dir is None:
+            tl_dir = standard_tl_dir
         result.tl_dir = tl_dir
 
         if incremental_dir is None:
-            incremental_dir = game_dir / "game" / "tl" / f"{tl_name}_new"
+            incremental_dir = (
+                tl_dir.with_name(f"{tl_name}_new")
+                if explicit_tl_dir is not None
+                else game_dir / "game" / "tl" / f"{tl_name}_new"
+            )
         incremental_dir = Path(incremental_dir)
         result.incremental_dir = incremental_dir
 

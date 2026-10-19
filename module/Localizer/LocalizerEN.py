@@ -402,6 +402,32 @@ class LocalizerEN(LocalizerZH):
     project_page_traditional_chinese_title: str = "Output Chinese in Traditional Characters"
     project_page_traditional_chinese_content: str = "When enabled, Chinese text will be output in Traditional characters if the target language is set to Chinese"
 
+    # Project file API errors
+    project_file_api_invalid: str = "Project file is unavailable ({code}): {error}"
+    project_file_api_busy: str = "A task is running or shutting down. Please try again later."
+    project_file_api_no_output: str = "The current project has no available translation output folder."
+    project_file_api_pending_save: str = "Translation results are pending save. Please try again later: {error}"
+    project_file_api_invalid_setting: str = "Project file is unavailable (invalid_settings): invalid value for {key}"
+    project_file_api_cache_restore_failed: str = "{reason}; restoring the original cache also failed{backups}: {error}; restore errors: {restore_errors}"
+    project_file_api_cache_restored: str = "{reason}; the pre-import cache was restored{backups}: {error}"
+    project_file_api_backups_retained: str = "; backups retained at {paths}"
+    project_file_api_restore_error: str = "{path}: {error}"
+    project_file_api_path_separator: str = ", "
+    project_file_api_error_separator: str = "; "
+    project_file_api_no_cache: str = "This project has no translation cache to export."
+    project_file_api_cache_read_failed: str = "Failed to read the translation cache; nothing was exported: {error}"
+    project_file_api_assets_read_failed: str = "Failed to read project assets; nothing was exported: {error}"
+    project_file_api_cache_backup_failed: str = "Failed to back up the existing cache; nothing was imported: {error}"
+    project_file_api_assets_backup_failed: str = "Failed to back up project assets; nothing was imported: {error}"
+    project_file_api_cache_install_failed: str = "Failed to install the imported cache"
+    project_file_api_assets_sync_failed: str = "Failed to synchronize project assets"
+    project_file_api_settings_save_failed: str = "Failed to save settings; the imported settings were not applied"
+    project_file_api_legacy_folder_invalid: str = "The legacy cache folder is invalid. Choose an old output folder or its cache subfolder."
+    project_file_api_legacy_no_cache: str = "The selected folder has no translation cache to migrate (cache.db, or items.json together with project.json)."
+    project_file_api_legacy_cache_invalid: str = "The legacy translation cache is incomplete or damaged and was not read: {error}"
+    project_file_api_legacy_unbound: str = "Bind the current Ren'Py game before exporting a legacy cache. The project file records the current game and does not switch to the old folder."
+    project_file_api_legacy_destination_forbidden: str = "That export path would overwrite the legacy cache, the current cache, or another source file. Choose a different .rbox location."
+
     # 开始翻译
     translation_page_status_idle: str = "Idle"
     translation_page_status_testing: str = "Testing"
@@ -2680,8 +2706,19 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_name_extraction_description: str = 'Scan scripts and JSON files to create a character-name list'
     toolbox_tool_pack_unpack_title: str = 'Pack / Unpack'
     toolbox_tool_pack_unpack_description: str = 'Unpack RPA archives or package game assets'
-    toolbox_tool_error_repair_title: str = 'Error Repair'
-    toolbox_tool_error_repair_description: str = 'Scan and fix generated .rpy errors in the translation folder'
+    toolbox_tool_error_repair_title: str = 'Script Repair'
+    toolbox_tool_error_repair_description: str = 'Scan and fix .rpy issues in the translation folder: indentation, duplicate translations, empty blocks, leftover incremental folders, and formatting'
+    error_repair_scan_summary: str = 'Found {total} issue(s): {fixable} auto-fixable, {manual} manual, {env} environment'
+    error_repair_no_issues: str = 'No issues found'
+    error_repair_fix_summary: str = 'Fixed {files} file(s), {items} change(s)'
+    error_repair_fix_remaining: str = '; {count} issue(s) still need manual work'
+    error_repair_fix_rescan_skipped: str = '; fix did not finish, rescan skipped'
+    error_repair_fix_rescan_incomplete: str = '; rescan did not finish, remaining issues unknown; please scan again'
+    error_repair_env_backup: str = ' (full backup saved to {target} before merging)'
+    error_repair_env_leftover: str = 'Unmerged incremental folder: {name} ({count} duplicate lines; the game will fail with "translation already exists")'
+    error_repair_env_merged: str = 'Merged {name} into {tl}'
+    error_repair_env_moved: str = 'Moved {name} to {target}'
+    error_repair_env_failed: str = 'Failed to handle {name}: {error}'
     toolbox_tool_translation_reuse_title: str = 'Reuse Updated Translations'
     toolbox_tool_translation_reuse_description: str = 'Fill empty entries in a new version with matching previous translations'
     toolbox_tool_formatter_title: str = 'Code Formatter'
