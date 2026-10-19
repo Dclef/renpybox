@@ -86,10 +86,10 @@ class AgentService:
         self._run_state_lock = threading.Lock()
         # 本轮请求绑定的取消事件，供工具在执行期间检查停止信号。
         self._run_cancel_event: threading.Event | None = None
-        # 本轮用量统计：轮次、工具步数、token 与缓存命中，供界面状态栏展示。
+        # 会话用量统计：轮次、工具步数、token 与缓存命中，供界面状态栏展示。
+        # 跨消息累计（一个任务里追问不该把数字清零），只在新建任务时重置。
         self._metrics: dict[str, Any] = self._empty_metrics()
-        self._metrics_started_at = 0.0
-        self._metrics_finished_at = 0.0
+        self._run_started_at = 0.0
 
     @staticmethod
     def _empty_metrics() -> dict[str, Any]:
@@ -101,12 +101,23 @@ class AgentService:
             "output_tokens": 0,
             "cached_tokens": 0,
             "cache_reported": 0,
+            "elapsed_seconds": 0.0,
         }
 
-    def _reset_metrics(self) -> None:
-        self._metrics = self._empty_metrics()
-        self._metrics_started_at = time.monotonic()
-        self._metrics_finished_at = 0.0
+    def _begin_run_metrics(self) -> None:
+        """开始计时；会话级计数保持不变，只累计活跃时长。"""
+        self._run_started_at = time.monotonic()
+
+    def _end_run_metrics(self) -> None:
+        """把本轮耗时并入会话累计时长，并停止计时（空闲时不再增长）。"""
+        if not self._run_started_at:
+            return
+        self._metrics["elapsed_seconds"] = round(
+            float(self._metrics.get("elapsed_seconds", 0.0) or 0.0)
+            + max(0.0, time.monotonic() - self._run_started_at),
+            3,
+        )
+        self._run_started_at = 0.0
 
     def _accumulate_usage(self, usage: dict[str, int] | None) -> None:
         """累加单次请求的用量；供应商没回 usage 时只记请求数。"""
@@ -134,8 +145,9 @@ class AgentService:
         """
 
         metrics = dict(self._metrics)
-        end = self._metrics_finished_at or time.monotonic()
-        elapsed = max(0.0, end - self._metrics_started_at) if self._metrics_started_at else 0.0
+        elapsed = float(metrics.get("elapsed_seconds", 0.0) or 0.0)
+        if self._run_started_at:
+            elapsed += max(0.0, time.monotonic() - self._run_started_at)
         output_tokens = int(metrics.get("output_tokens", 0) or 0)
         input_tokens = int(metrics.get("input_tokens", 0) or 0)
         cached_tokens = int(metrics.get("cached_tokens", 0) or 0)
@@ -166,6 +178,9 @@ class AgentService:
         self.messages = []
         self._project_key = ""
         self._project_changed_during_run = False
+        # 新建任务要连用量一起清空，否则状态栏会继续显示上一个任务的数字。
+        self._metrics = self._empty_metrics()
+        self._run_started_at = 0.0
 
     def _close_requester(self) -> None:
         requester = self._requester
@@ -460,8 +475,7 @@ class AgentService:
     def _finalize(self, result: AgentRunResult) -> AgentRunResult:
         # 本轮结束即冻结计时：否则界面空闲时 tok/s 会随时间不断衰减，
         # 快照也会因为 elapsed 每次都不同而无法比较。
-        if not self._metrics_finished_at:
-            self._metrics_finished_at = time.monotonic()
+        self._end_run_metrics()
         # 项目在本轮被切换后，下一条用户消息必须从新项目重新建立上下文。
         if self._project_changed_during_run:
             config = self.config_loader()
@@ -584,7 +598,7 @@ class AgentService:
 
         self._requester = TaskRequester(config, request_platform, 0)
         self._project_changed_during_run = False
-        self._reset_metrics()
+        self._begin_run_metrics()
         details: list[dict[str, Any]] = []
 
         iteration = 0
@@ -593,7 +607,8 @@ class AgentService:
         truncated = 0
         while iteration < self.max_iterations:
             iteration_results: list[ToolResult] = []
-            self._metrics["iterations"] = iteration + 1
+            # 会话级累计：追问时数字继续往上加，而不是从 1 重新数。
+            self._metrics["iterations"] = int(self._metrics.get("iterations", 0)) + 1
             # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
             self._trim_history()
             if self._is_cancelled(cancel_event):
