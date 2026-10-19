@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -23,6 +23,7 @@
     "check:font-parity": "node scripts/run-electron.mjs scripts/check-font-parity.cjs",
     "check:desktop-dialogs": "node scripts/run-electron.mjs scripts/check-desktop-dialogs.cjs --workflows",
     "check:toolbox-ui": "node scripts/run-electron.mjs scripts/check-toolbox-ui.cjs",
+    "check:project-file": "node scripts/run-electron.mjs scripts/check-project-file.cjs",
     "check:translation-parity": "node scripts/run-electron.mjs scripts/check-translation-parity.cjs",
     "check:logs-shell": "node scripts/run-electron.mjs scripts/check-logs-shell.cjs",
     "check:ui": "node scripts/run-electron.mjs scripts/check-ui.cjs",
@@ -34,7 +35,7 @@
     "check:engineering-core-parity": "node scripts/run-electron.mjs scripts/check-engineering-core-parity.cjs",
     "check:android-parity": "node scripts/run-electron.mjs scripts/check-android-parity.cjs",
     "check:crawl": "node scripts/run-electron.mjs scripts/check-crawl.cjs",
-    "check:all": "npm run check:window-close && npm run check:window-recovery && npm run check:font-parity && npm run check:desktop-dialogs && npm run check:toolbox-ui",
+    "check:all": "npm run check:window-close && npm run check:window-recovery && npm run check:font-parity && npm run check:desktop-dialogs && npm run check:toolbox-ui && npm run check:project-file",
     "pack:dir": "npm run build:backend && npm run build:renderer && electron-builder --dir --publish never && npm run verify:package",
     "pack:win": "npm run build:backend && npm run build:renderer && electron-builder --win nsis zip --x64 --publish never && npm run verify:package",
     "dist": "npm run pack:win"

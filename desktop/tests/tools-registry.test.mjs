@@ -63,8 +63,8 @@ function registryEntries() {
   return entries;
 }
 
-test('registryEntries 读到全部 27 个工具', () => {
-  assert.equal(registryEntries().size, 27);
+test('registryEntries 读到全部 26 个工具', () => {
+  assert.equal(registryEntries().size, 26);
 });
 
 test('门禁工具仅为推荐流程项目动作 + 术语表 / 禁翻表', () => {

@@ -214,3 +214,72 @@ test('增量安装拉起应用器而不是 NSIS，失败后退回可下载的完
   const again = await broken.download();
   assert.equal(again.mode, 'full');
 });
+
+test('上次增量应用失败过时，同一版本改走全量并提示原因', async () => {
+  const downloads = [];
+  const updater = createDesktopUpdater({
+    packaged: true,
+    version: '0.9.1',
+    tempDir: path.join('tmp', 'renpybox-update'),
+    installDir: 'D:\\Games\\RenpyBox',
+    log: Object.assign(() => {}, { error() {} }),
+    readApplyError: async () => ({ version: '0.9.2', error: 'HASH_MISMATCH: resources/app.asar' }),
+    requestJson: async () => [release('0.9.2', [installer('0.9.2'), delta('0.9.2', '0.9.1')])],
+    downloadFile: async (url, destination) => {
+      downloads.push(url);
+      return { path: destination, size: 1, total: 1 };
+    },
+  });
+  const offered = await updater.check();
+  assert.equal(offered.status, 'available');
+  assert.equal(offered.deltaAssetUrl, '', '失败过的版本不再给增量包');
+  assert.match(offered.error, /上次增量更新失败/);
+  assert.match(offered.error, /HASH_MISMATCH/);
+  const done = await updater.download();
+  assert.equal(done.mode, 'full');
+  assert.equal(downloads.length, 1);
+});
+
+test('失败记录属于别的版本时不影响这次仍用增量包', async () => {
+  const updater = createDesktopUpdater({
+    packaged: true,
+    version: '0.9.1',
+    tempDir: path.join('tmp', 'renpybox-update'),
+    log: Object.assign(() => {}, { error() {} }),
+    readApplyError: async () => ({ version: '0.9.0', error: '旧版本失败' }),
+    requestJson: async () => [release('0.9.2', [installer('0.9.2'), delta('0.9.2', '0.9.1')])],
+    downloadFile: async (url, destination) => ({ path: destination, size: 1, total: 1 }),
+  });
+  const offered = await updater.check();
+  assert.equal(offered.error, '');
+  assert.match(offered.deltaAssetUrl, /delta\.zip$/);
+});
+
+test('读不到失败记录时照常检查更新', async () => {
+  const updater = createDesktopUpdater({
+    packaged: true,
+    version: '0.9.1',
+    tempDir: path.join('tmp', 'renpybox-update'),
+    log: Object.assign(() => {}, { error() {} }),
+    readApplyError: async () => { throw new Error('权限不足'); },
+    requestJson: async () => [release('0.9.2', [installer('0.9.2'), delta('0.9.2', '0.9.1')])],
+    downloadFile: async (url, destination) => ({ path: destination, size: 1, total: 1 }),
+  });
+  const offered = await updater.check();
+  assert.equal(offered.status, 'available');
+  assert.match(offered.deltaAssetUrl, /delta\.zip$/);
+});
+
+test('readApplyError 读取后删除文件，只提示一次', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'renpybox-apply-error-'));
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(path.join(dir, '_update_error.json'), JSON.stringify({
+    version: '0.9.1', patchVersion: '0.9.2', error: 'WAIT_TIMEOUT', at: '2026-10-18T00:00:00.000Z',
+  }));
+  const { readApplyError } = await import('../main/updater.js');
+  const first = await readApplyError(dir);
+  assert.deepEqual(first, { version: '0.9.2', error: 'WAIT_TIMEOUT' });
+  assert.equal(await readApplyError(dir), null, '同一条失败不能反复提示');
+  assert.equal(await readApplyError(''), null);
+  await rm(dir, { recursive: true, force: true });
+});

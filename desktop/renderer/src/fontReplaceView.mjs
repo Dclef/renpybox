@@ -102,14 +102,6 @@ export function formatFontRestoreHint(result, lang = 'ZH') {
   return '';
 }
 
-/** 写入终态（成功或失败）且已实际写入时，应作废旧扫描并允许重扫。 */
-export function fontWriteNeedsRescan(job, result) {
-  if (!job || !result) return false;
-  if (job.status !== 'done' && job.status !== 'failed') return false;
-  if (!result.written) return false;
-  return result.action === 'replace' || result.action === 'inject';
-}
-
 export function fontCopy(table, lang = 'ZH') {
   return table[lang === 'EN' ? 'EN' : 'ZH'] || table.ZH;
 }

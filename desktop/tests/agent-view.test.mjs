@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { budgetParts, formatTokenCount, languageFromTlPath, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../renderer/src/agentView.mjs';
+import { budgetParts, formatTokenCount, languageFromTlPath, metricsParts, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../renderer/src/agentView.mjs';
 
 test('工具卡片按状态与错误码区分取消、超时和失败', () => {
   assert.deepEqual(toolStatusInfo({ status: 'running' }), { label: '执行中', tone: 'running' });
@@ -60,3 +60,47 @@ test('预算行只取上下文窗口和最大轮数', () => {
   assert.deepEqual(budgetParts(undefined), { context: '', iterations: '' });
   assert.deepEqual(budgetParts({ context_window: 0, max_iterations: 0 }), { context: '', iterations: '' });
 });
+
+test('状态栏把轮次、步数、吞吐、token、缓存命中与上下文占比分开给出', () => {
+  const parts = metricsParts({
+    iterations: 25,
+    steps: 2145,
+    tokens_per_second: 221.4,
+    total_tokens: 227_000_000,
+    cache_hit_rate: 0.98,
+    context_percent: 0.12,
+  });
+
+  assert.equal(parts.rounds, 25);
+  assert.equal(parts.steps, 2145);
+  assert.equal(parts.tokensPerSecond, 221.4);
+  assert.equal(parts.totalTokens, '227M');
+  assert.equal(parts.cacheHitPercent, 98);
+  assert.equal(parts.contextPercent, 12);
+  assert.equal(parts.hasData, true);
+});
+
+test('没有步数时只报轮次，缓存命中缺失时返回 null 而不是 0', () => {
+  const parts = metricsParts({ iterations: 3, cache_hit_rate: null, context_percent: 0 });
+
+  assert.equal(parts.rounds, 3);
+  assert.equal(parts.steps, 0);
+  assert.equal(parts.cacheHitPercent, null);
+  assert.equal(parts.contextPercent, 0);
+  assert.equal(parts.hasData, true);
+});
+
+test('空 metrics 不触发状态栏，避免显示 0 轮 0 步', () => {
+  for (const value of [undefined, null, {}, 'x']) {
+    const parts = metricsParts(value);
+    assert.equal(parts.hasData, false);
+    assert.equal(parts.rounds, 0);
+    assert.equal(parts.cacheHitPercent, null);
+  }
+});
+
+test('缓存命中率被夹在 0 到 1 之间', () => {
+  assert.equal(metricsParts({ iterations: 1, cache_hit_rate: 1.5 }).cacheHitPercent, 100);
+  assert.equal(metricsParts({ iterations: 1, cache_hit_rate: -0.2 }).cacheHitPercent, 0);
+});
+

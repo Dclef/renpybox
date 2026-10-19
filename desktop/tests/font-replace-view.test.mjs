@@ -13,7 +13,6 @@ import {
   fontGameDirReady,
   fontToolsGamePathPayload,
   fontToolsStatusPath,
-  fontWriteNeedsRescan,
   formatFontBackupSideEffect,
   formatFontRestoreHint,
   formatFontScanSummary,
@@ -140,23 +139,7 @@ test('无引用扫描占位区别于尚未扫描', () => {
   );
 });
 
-test('写入终态需重扫：done/failed + written 的 inject/replace', () => {
-  assert.equal(
-    fontWriteNeedsRescan({ status: 'done' }, { written: true, action: 'replace' }),
-    true,
-  );
-  assert.equal(
-    fontWriteNeedsRescan({ status: 'failed' }, { written: true, action: 'inject', partial: true }),
-    true,
-  );
-  assert.equal(
-    fontWriteNeedsRescan({ status: 'done' }, { written: false, action: 'replace' }),
-    false,
-  );
-  assert.equal(
-    fontWriteNeedsRescan({ status: 'failed' }, { written: false, action: 'replace' }),
-    false,
-  );
+test('扫描过期提示有译文', () => {
   assert.equal(fontCopy(FONT_SCAN_STALE_LABEL, 'EN').includes('outdated'), true);
 });
 

@@ -183,6 +183,9 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   const [selected, setSelected] = useState<number | null>(null);
   const [pageToken, setPageToken] = useState(0);
   const [confirmReload, setConfirmReload] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmApply, setConfirmApply] = useState(false);
+  const [pendingJob, setPendingJob] = useState<{ path: string; body: Record<string, unknown>; title: string; message: string } | null>(null);
   const [editRequest, setEditRequest] = useState<DataSheetEditTarget | null>(null);
   const [job, setJob] = useState<LexiconJob | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -525,7 +528,6 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
 
   const clearAll = async () => {
     if (!snapshot || editLocked) return;
-    if (!window.confirm(t('lexicon_clear_confirm'))) return;
     const id = ++operation.current;
     const key = projectRef.current;
     setBusy(true);
@@ -550,10 +552,15 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     }
   };
 
-  const startJob = async (path: string, body: Record<string, unknown>, confirmText?: string) => {
+  const askJob = (path: string, body: Record<string, unknown>, title: string, message: string) => {
     if (editLocked) return;
     if (cellDirty) { setError('请先按 Enter 提交当前单元格，再启动任务。'); return; }
-    if (confirmText && !window.confirm(confirmText)) return;
+    setPendingJob({ path, body, title, message });
+  };
+
+  const startJob = async (path: string, body: Record<string, unknown>) => {
+    if (editLocked) return;
+    if (cellDirty) { setError('请先按 Enter 提交当前单元格，再启动任务。'); return; }
     const id = ++operation.current;
     const project = projectRef.current;
     const draft = generation.current;
@@ -606,9 +613,9 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     }
   };
 
-  const onScanCharacters = () => void startJob('/api/lexicon/glossary/scan-characters', {
+  const onScanCharacters = () => askJob('/api/lexicon/glossary/scan-characters', {
     confirm: true, rows: rowsRef.current.map(toApiRow),
-  }, '重新扫描会替换旧的自动角色候选，保留手工词条。继续？');
+  }, t('lexicon_scan_characters_title'), t('lexicon_scan_characters_body'));
 
   const applyRecoveredJob = async () => {
     const result = job?.result;
@@ -630,9 +637,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
         if (result.kind !== 'glossary' || JSON.stringify(result.snapshot_keys) !== JSON.stringify(keys)) { setError('词条已变化，请重新统计。'); return; }
         statsKeys.current = keys;
       }
-      if (!window.confirm('将这次任务结果应用到当前词表草稿，之后保存才生效。继续？')) return;
-      taskOwner.current = { id: job.id, project: projectRef.current, generation: generation.current };
-      completedJob.current = ''; setJob({ ...job });
+      setConfirmApply(true);
     } catch (e) {
       if (id === operation.current && project === projectRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -694,14 +699,14 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           <Button disabled={editLocked || selected == null} onClick={removeSelected}>{t('lexicon_delete_selected')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={dedupe}>{t('lexicon_deduplicate')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={onClassify}>{t('lexicon_auto_classify')}</Button>
-          <Button danger type="text" disabled={editLocked || !snapshot} onClick={() => void clearAll()}>{t('lexicon_clear')}</Button>
+          <Button danger type="text" disabled={editLocked || !snapshot} onClick={() => { if (snapshot && !editLocked) setConfirmClear(true); }}>{t('lexicon_clear')}</Button>
         </div>
 
         <div className="rb-toolbar">
-          <Button disabled={editLocked || !snapshot} onClick={() => void startJob('/api/lexicon/glossary/scan-candidates', {
+          <Button disabled={editLocked || !snapshot} onClick={() => askJob('/api/lexicon/glossary/scan-candidates', {
             confirm: true,
             rows: rowsRef.current.map(toApiRow),
-          }, t('lexicon_scan_candidates_confirm'))}>{t('lexicon_scan_candidates')}</Button>
+          }, t('lexicon_scan_candidates_title'), t('lexicon_scan_candidates_confirm'))}>{t('lexicon_scan_candidates')}</Button>
           <Button disabled={!activeJob || cancelling || Boolean(job?.cancel_requested)} onClick={() => {
             if (!job) return;
             setCancelling(true);
@@ -710,20 +715,20 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           <Button disabled={editLocked || !snapshot} onClick={() => void onScanCharacters()}>{t('lexicon_scan_characters')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={() => {
             const tasks = rowsRef.current.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim())).length;
-            void startJob('/api/lexicon/glossary/translate', {
+            askJob('/api/lexicon/glossary/translate', {
               mode: 'llm',
               rows: rowsRef.current.map(toApiRow),
               confirm: true,
-            }, t('lexicon_translate_llm_confirm').replace('{count}', String(tasks)));
+            }, t('lexicon_translate_llm_title'), t('lexicon_translate_llm_confirm').replace('{count}', String(tasks)));
           }}>{t('lexicon_translate_llm')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={() => {
             const tasks = rowsRef.current.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim())).length;
-            void startJob('/api/lexicon/glossary/translate', {
+            askJob('/api/lexicon/glossary/translate', {
               mode: 'fast',
               engine: 'bing',
               rows: rowsRef.current.map(toApiRow),
               confirm: true,
-            }, t('lexicon_translate_fast_confirm').replace('{count}', String(tasks)));
+            }, t('lexicon_translate_fast_title'), t('lexicon_translate_fast_confirm').replace('{count}', String(tasks)));
           }}>{t('lexicon_translate_fast')}</Button>
           <Dropdown
             menu={{
@@ -787,6 +792,31 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       {confirmReload ? (
         <Dialog title={t('lexicon_reload_title')} confirmText={t('lexicon_reload')} onCancel={() => setConfirmReload(false)} onConfirm={() => { setConfirmReload(false); void reload(); }}>
           {t('lexicon_reload_body')}
+        </Dialog>
+      ) : null}
+      {confirmClear ? (
+        <Dialog title={t('lexicon_clear_title')} confirmText={t('lexicon_clear')} onCancel={() => setConfirmClear(false)} onConfirm={() => { setConfirmClear(false); void clearAll(); }}>
+          {t('lexicon_clear_confirm')}
+        </Dialog>
+      ) : null}
+      {confirmApply ? (
+        <Dialog title={t('lexicon_apply_result_title')} onCancel={() => setConfirmApply(false)} onConfirm={() => {
+          if (!job) { setConfirmApply(false); return; }
+          taskOwner.current = { id: job.id, project: projectRef.current, generation: generation.current };
+          completedJob.current = '';
+          setJob({ ...job });
+          setConfirmApply(false);
+        }}>
+          {t('lexicon_apply_result_body')}
+        </Dialog>
+      ) : null}
+      {pendingJob ? (
+        <Dialog title={pendingJob.title} onCancel={() => setPendingJob(null)} onConfirm={() => {
+          const next = pendingJob;
+          setPendingJob(null);
+          void startJob(next.path, next.body);
+        }}>
+          {pendingJob.message}
         </Dialog>
       ) : null}
     </div>

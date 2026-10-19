@@ -434,24 +434,15 @@ app.whenReady().then(async () => {
     '启动静默检查更新 manual=false',
   );
 
-  // --- ErrorRepair ---
-  await openTool('错误修复');
+  // --- ErrorRepair（脚本修复：已合并代码格式化） ---
+  await openTool('脚本修复');
   await assert(
-    "document.body.innerText.includes('修复缩进') || document.body.innerText.includes('Fix Indentation')",
+    "document.body.innerText.includes('扫描并修复') || document.body.innerText.includes('Scan and Fix')",
     '错误修复页打开',
   );
   await assert("document.querySelector('[data-rb-tool-frame]')", 'ToolPageFrame 标记');
   await measureLayout('error-repair');
   await capture('ErrorRepairPage');
-
-  // --- Formatter ---
-  await openTool('代码格式化');
-  await assert(
-    "document.body.innerText.includes('格式化') || document.body.innerText.includes('Format')",
-    '格式化页打开',
-  );
-  await measureLayout('formatter');
-  await capture('FormatterPage');
 
   // --- 翻译方式：这些页根节点是 .rb-page，必须验证不会回到旧 grid 两行布局 ---
   for (const item of [
@@ -505,8 +496,7 @@ app.whenReady().then(async () => {
   // 窄屏可读性：核心详情页各截一张
   await win.setSize(720, 800);
   for (const item of [
-    ['错误修复', 'ErrorRepairPage-narrow', 'error-repair-narrow'],
-    ['代码格式化', 'FormatterPage-narrow', 'formatter-narrow'],
+    ['脚本修复', 'ErrorRepairPage-narrow', 'error-repair-narrow'],
     ['安卓打包', 'AndroidBuildPage-narrow', 'android-narrow'],
     ['网页', 'HtmlImportPage-narrow', 'html-narrow'],
     ['直接翻译 RPY', 'DirectRpyTranslatePage-narrow', 'direct-narrow'],
