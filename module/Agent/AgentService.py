@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from base.Base import Base
@@ -85,6 +86,73 @@ class AgentService:
         self._run_state_lock = threading.Lock()
         # 本轮请求绑定的取消事件，供工具在执行期间检查停止信号。
         self._run_cancel_event: threading.Event | None = None
+        # 本轮用量统计：轮次、工具步数、token 与缓存命中，供界面状态栏展示。
+        self._metrics: dict[str, Any] = self._empty_metrics()
+        self._metrics_started_at = 0.0
+        self._metrics_finished_at = 0.0
+
+    @staticmethod
+    def _empty_metrics() -> dict[str, Any]:
+        return {
+            "iterations": 0,
+            "steps": 0,
+            "requests": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "cache_reported": 0,
+        }
+
+    def _reset_metrics(self) -> None:
+        self._metrics = self._empty_metrics()
+        self._metrics_started_at = time.monotonic()
+        self._metrics_finished_at = 0.0
+
+    def _accumulate_usage(self, usage: dict[str, int] | None) -> None:
+        """累加单次请求的用量；供应商没回 usage 时只记请求数。"""
+
+        self._metrics["requests"] = int(self._metrics.get("requests", 0)) + 1
+        if not isinstance(usage, dict):
+            return
+        # 记录「有多少次请求真的带了缓存字段」：供应商不回该字段时，
+        # 命中率必须显示为未知，而不是骗人的 0%。
+        if "cached_tokens" in usage:
+            self._metrics["cache_reported"] = int(self._metrics.get("cache_reported", 0)) + 1
+        for name in ("input_tokens", "output_tokens", "cached_tokens"):
+            try:
+                amount = int(usage.get(name, 0) or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount > 0:
+                self._metrics[name] = int(self._metrics.get(name, 0)) + amount
+
+    def metrics_summary(self) -> dict[str, Any]:
+        """状态栏数据：轮次、步数、吞吐、累计 token、缓存命中率与上下文占比。
+
+        缓存的输入 token 是「被复用、没重新计费」的部分，命中率按
+        ``cached / input`` 算；供应商不回缓存字段时返回 None，界面据此隐藏。
+        """
+
+        metrics = dict(self._metrics)
+        end = self._metrics_finished_at or time.monotonic()
+        elapsed = max(0.0, end - self._metrics_started_at) if self._metrics_started_at else 0.0
+        output_tokens = int(metrics.get("output_tokens", 0) or 0)
+        input_tokens = int(metrics.get("input_tokens", 0) or 0)
+        cached_tokens = int(metrics.get("cached_tokens", 0) or 0)
+        metrics["elapsed_seconds"] = round(elapsed, 3)
+        metrics["tokens_per_second"] = round(output_tokens / elapsed, 2) if elapsed > 0 else 0.0
+        metrics["total_tokens"] = input_tokens + output_tokens
+        metrics["cache_hit_rate"] = (
+            round(cached_tokens / input_tokens, 4)
+            if input_tokens > 0 and int(metrics.get("cache_reported", 0) or 0) > 0
+            else None
+        )
+        context_chars = self._context_size()
+        limit = max(1, int(self.max_context_chars or 0))
+        metrics["context_chars"] = context_chars
+        metrics["context_limit_chars"] = limit
+        metrics["context_percent"] = round(min(1.0, context_chars / limit), 4)
+        return metrics
 
     def cancel(self) -> None:
         with self._run_state_lock:
@@ -269,8 +337,8 @@ class AgentService:
             callback(event, payload)
 
     def snapshot(self) -> dict[str, Any]:
-        """供 API 读取会话阶段；完整消息快照仍由 api.agent.AgentSession 维护。"""
-        return {"stage": self._stage}
+        """供 API 读取会话阶段与用量；完整消息快照仍由 api.agent.AgentSession 维护。"""
+        return {"stage": self._stage, "metrics": self.metrics_summary()}
 
     def budget_summary(self) -> dict[str, Any]:
         """本轮按模型推导出的预算，供界面展示「这个模型能用多少上下文」。"""
@@ -390,6 +458,10 @@ class AgentService:
         return True
 
     def _finalize(self, result: AgentRunResult) -> AgentRunResult:
+        # 本轮结束即冻结计时：否则界面空闲时 tok/s 会随时间不断衰减，
+        # 快照也会因为 elapsed 每次都不同而无法比较。
+        if not self._metrics_finished_at:
+            self._metrics_finished_at = time.monotonic()
         # 项目在本轮被切换后，下一条用户消息必须从新项目重新建立上下文。
         if self._project_changed_during_run:
             config = self.config_loader()
@@ -512,6 +584,7 @@ class AgentService:
 
         self._requester = TaskRequester(config, request_platform, 0)
         self._project_changed_during_run = False
+        self._reset_metrics()
         details: list[dict[str, Any]] = []
 
         iteration = 0
@@ -520,6 +593,7 @@ class AgentService:
         truncated = 0
         while iteration < self.max_iterations:
             iteration_results: list[ToolResult] = []
+            self._metrics["iterations"] = iteration + 1
             # 工具结果会在本轮继续增长；每次请求前再次裁剪旧回合。
             self._trim_history()
             if self._is_cancelled(cancel_event):
@@ -558,6 +632,8 @@ class AgentService:
                 # 某些兼容端点只在最终响应中提供 reasoning_content。
                 if result.success and result.reasoning and not reasoning_seen:
                     emit_reasoning(result.reasoning)
+            # 用量按每次请求累加（失败的响应通常也带 usage，计入更接近真实消耗）。
+            self._accumulate_usage(result.usage)
             if not result.success:
                 # 输出被 max_tokens 截断属于可自愈错误：模型只要降低单次条目数就能
                 # 继续。以前这里直接终止，模型连「为什么失败」都看不到，只能一直报
@@ -682,6 +758,7 @@ class AgentService:
                         cancel_check=self._cancel_check,
                         progress_callback=self._progress_callback(callback),
                     )
+                self._metrics["steps"] = int(self._metrics.get("steps", 0)) + 1
                 if call.name == "set_project" and tool_result.success:
                     self._project_changed_during_run = True
                 if call.name == "set_stage" and tool_result.success:
