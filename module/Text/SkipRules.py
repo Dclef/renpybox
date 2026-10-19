@@ -67,6 +67,18 @@ _RESOURCE_NAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 形如 xxx.yyy 的点号标识符（属性访问 / 模块名），预编译避免逐行构造正则。
+_RE_DOTTED_IDENTIFIER = re.compile(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+')
+
+# 资源扩展名的子串形式（".png"），预计算避免每次 lower + 字符串拼接。
+_RESOURCE_EXT_SNIPPETS = tuple(f'.{ext}' for ext in _RESOURCE_EXTENSIONS)
+
+# is_path_like 每行都会调用，正则在这里预编译，避免逐行重新解析模式。
+_RE_RENPY_TAG = re.compile(r'\{[^}]*\}')
+_RE_SQUARE_PLACEHOLDER = re.compile(r'\[[^\]]*\]')
+_RE_DRIVE_PATH = re.compile(r'[a-z]:[\\/]')
+_RE_PATH_WITH_EXT = re.compile(r'[\\/][^\\/]+\.[a-z0-9]{1,5}')
+
 # 匹配短文件名 (foo.txt / name.ext)
 _FILENAME_PATTERN = re.compile(r"^[a-z0-9_\-]+\.[a-z0-9]{2,5}$", re.IGNORECASE)
 
@@ -99,25 +111,16 @@ def _strip(text: str | None) -> str:
     return (text or "").strip()
 
 
+# CJK 判定用预编译正则替代逐字符 Python 循环：
+# 逐行解析大型项目时 _contains_cjk 会被调用数十万次，正则走 C 层快一个量级。
+_RE_CJK = re.compile(
+    '[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]'
+)
+
+
 def _contains_cjk(text: str) -> bool:
     """检测字符串是否包含中日韩文字符"""
-    for char in text:
-        # CJK 统一汉字
-        if '\u4e00' <= char <= '\u9fff':
-            return True
-        # CJK 扩展 A
-        if '\u3400' <= char <= '\u4dbf':
-            return True
-        # 日文平假名
-        if '\u3040' <= char <= '\u309f':
-            return True
-        # 日文片假名
-        if '\u30a0' <= char <= '\u30ff':
-            return True
-        # 韩文音节
-        if '\uac00' <= char <= '\ud7af':
-            return True
-    return False
+    return _RE_CJK.search(text) is not None
 
 
 def _contains_translatable_text(text: str) -> bool:
@@ -185,8 +188,8 @@ def is_resource_name(text: str | None) -> bool:
     
     # 逻辑：字符串中包含资源扩展名也应该跳过
     lower = candidate.lower()
-    for ext in _RESOURCE_EXTENSIONS:
-        if f'.{ext}' in lower:
+    for snippet in _RESOURCE_EXT_SNIPPETS:
+        if snippet in lower:
             return True
     
     return False
@@ -199,9 +202,9 @@ def is_path_like(text: str | None) -> bool:
         return False
 
     # 移除 Ren'Py 标签/占位符，避免误判（如 {color=...}{/color} 或 \[..\]）
-    temp = re.sub(r'\{[^}]*\}', '', candidate)
+    temp = _RE_RENPY_TAG.sub('', candidate)
     temp = temp.replace(r'\[', '[').replace(r'\]', ']')
-    temp = re.sub(r'\[[^\]]*\]', '', temp)
+    temp = _RE_SQUARE_PLACEHOLDER.sub('', temp)
     temp = temp.strip()
     if not temp:
         return False
@@ -209,7 +212,7 @@ def is_path_like(text: str | None) -> bool:
     lower = temp.lower()
 
     # 盘符路径或 UNC 路径
-    if re.search(r'[a-z]:[\\/]', temp):
+    if _RE_DRIVE_PATH.search(temp):
         return True
     if temp.startswith('\\'):
         return True
@@ -228,7 +231,7 @@ def is_path_like(text: str | None) -> bool:
         return True
 
     # 包含路径分隔符且带有扩展名
-    if re.search(r'[\\/][^\\/]+\.[a-z0-9]{1,5}', lower):
+    if _RE_PATH_WITH_EXT.search(lower):
         return True
 
     return False
@@ -322,20 +325,26 @@ def is_placeholder_or_tag(text: str | None) -> bool:
         return True
 
     # 脚本逻辑增强：检测无意义的纯 ASCII 小写字符串
+    # 只有不含空格的短串才可能是标识符；带空格的文本直接放行，
+    # 省掉大型项目里逐行调用时的整串字符扫描。
+    if ' ' in candidate:
+        return False
+
     has_uppercase = any(c.isupper() for c in candidate)
     has_cjk = _contains_cjk(candidate)
-    has_only_ascii_letters = all(c.isascii() for c in candidate if c.isalpha())
-    
+    # 纯 ASCII 串（绝大多数情况）走一次 C 层判定，非 ASCII 时才逐字符回退。
+    has_only_ascii_letters = candidate.isascii() or all(
+        c.isascii() for c in candidate if c.isalpha()
+    )
+
     # 如果只有 ASCII 字母且没有大写，很可能是变量名/标识符
     if has_only_ascii_letters and not has_cjk and not has_uppercase:
-        # 有空格的可能是正常文本
-        if ' ' not in candidate:
-            # 包含下划线或数字的是标识符
-            if '_' in candidate or any(c.isdigit() for c in candidate):
-                return True
-            # 纯小写且是有效标识符的较长字符串
-            if len(candidate) > 3 and candidate.isidentifier():
-                return True
+        # 包含下划线或数字的是标识符
+        if '_' in candidate or any(c.isdigit() for c in candidate):
+            return True
+        # 纯小写且是有效标识符的较长字符串
+        if len(candidate) > 3 and candidate.isidentifier():
+            return True
 
     return False
 
@@ -366,22 +375,24 @@ def should_skip_text(text: str | None, extra_checks: Iterable = ()) -> bool:
         return True
 
     # 额外过滤：纯 ASCII 且包含下划线或点号的标识符样式（如 func_name、obj.method）
-    if _contains_translatable_text(candidate) is False:
+    # 结果在这里算一次、后面复用，避免同一行反复做标签剥离与正则扫描。
+    translatable = _contains_translatable_text(candidate)
+    if translatable is False:
         return True
     if ' ' not in candidate and not _contains_cjk(candidate):
         if '_' in candidate:
             return True
         # 形如 xxx.yyy（无空格）也视为代码/函数名；句末句点不是
         # 属性访问，例如 "Narrative." 仍是需要翻译的 UI 文本。
-        if re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', candidate):
+        if _RE_DOTTED_IDENTIFIER.fullmatch(candidate):
             return True
     
     # 2. 占位符和标签检测
     if is_placeholder_or_tag(candidate):
         return True
     
-    # 3. 核心逻辑：检查是否包含可翻译内容
-    if not _contains_translatable_text(candidate):
+    # 3. 核心逻辑：检查是否包含可翻译内容（已在上方算过，非 False）
+    if not translatable:
         return True
     
     # 4. 额外自定义检查

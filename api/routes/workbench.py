@@ -231,24 +231,34 @@ async def start_analysis(request: Request, body: AnalysisRequest) -> dict:
         if job.cancel_event.is_set():
             raise asyncio.CancelledError()
 
-    def publish_progress(message: str) -> None:
+    def publish_progress(message: str, percent: int | None = None) -> None:
         if job.result["worker_active"]:
             job.result["message"] = message
-            manager.progress(job.id)
+            if isinstance(percent, int):
+                manager.progress(job.id, done = max(0, min(100, percent)), total = 100)
+            else:
+                manager.progress(job.id)
 
-    def progress(message: str) -> None:
+    def progress(message: str, percent: int | None = None) -> None:
         check_cancel()
-        loop.call_soon_threadsafe(publish_progress, message)
+        loop.call_soon_threadsafe(publish_progress, message, percent)
 
     service.progress_callback = progress
 
     def analyze() -> AnalysisResult:
         check_cancel()
         if body.action == "scan":
-            progress("正在读取项目文本并扫描角色")
+            progress("正在读取项目文本…", 5)
             items, summary = service.load_scope_items(config, body.scope)
             check_cancel()
-            candidates = service.scanner.build_candidates(config, items, service.resolve_project_root(config))
+            progress(f"已读取 {len(items)} 条文本，正在扫描角色台词…", 45)
+            candidates = service.scanner.build_candidates(
+                config,
+                items,
+                service.resolve_project_root(config),
+                lambda text: progress(text, 75),
+            )
+            progress(f"角色扫描完成，共 {len(candidates)} 个候选", 98)
             return AnalysisResult(body.scope, {}, [candidate.as_card_seed() for candidate in candidates], source_summary = summary)
         operation = {
             "all": service.analyze_all, "worldbook": service.generate_worldbook_only,
