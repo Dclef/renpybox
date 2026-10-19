@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from api.schemas import SettingsPatch, SettingsResponse
+from module.Project.PlatformDefaults import THINKING_LEVELS
 
 router = APIRouter(prefix = "/api/settings", tags = ["settings"])
 
@@ -49,6 +50,9 @@ HONORIFIC_RULE_KEYS = frozenset({
 HONORIFIC_TITLES_MAX_ROWS = 5000
 HONORIFIC_TITLE_MAX_LEN = 200
 HONORIFIC_COMMENT_MAX_LEN = 2000
+
+# 思考档位是枚举字符串，写错会让请求带上非法 reasoning_effort 然后被端点 400。
+THINKING_LEVEL_KEYS = frozenset({"agent_thinking_level", "quality_thinking_level"})
 
 
 def _is_secret(field_name: str) -> bool:
@@ -255,6 +259,16 @@ def _patch_settings(request: Request, patch: SettingsPatch) -> SettingsResponse:
         elif key == "honorific_placeholder_bridge_enable":
             if not isinstance(value, bool):
                 raise HTTPException(status_code=400, detail=f"{key} 期望布尔值")
+        elif key in THINKING_LEVEL_KEYS:
+            # 枚举字段写错会让请求带上非法的 reasoning_effort，端点直接 400；
+            # 在入口归一，坏值落到 OFF 而不是原样写进配置。
+            level = str(value or "").strip().upper()
+            if level not in THINKING_LEVELS:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"{key} 期望 {'/'.join(THINKING_LEVELS)} 之一",
+                )
+            value = level
         else:
             # 类型以声明字段为准：内存/落盘被污染成 bool/str/float 时仍可修复。
             kind = _declared_value_kind(field)

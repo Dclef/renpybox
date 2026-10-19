@@ -935,6 +935,11 @@ class LocalizerEN(LocalizerZH):
     agent_translation_status_ready: str = (
         "Translation status: engine {engine_status}, {untranslated_count} untranslated entries."
     )
+    agent_quality_candidates_ready: str = (
+        "{polish} entries can be polished and {proofread} can be proofread. "
+        "Polishing only touches translated lines, so size the batches from these counts "
+        "instead of reading a batch first."
+    )
     agent_refresh_fallback_complete: str = (
         "Refreshed the replace_text fallback with {count} entries: {output_path}"
     )
