@@ -11,7 +11,7 @@ import secrets
 import shutil
 import stat
 import time
-from typing import List, Tuple, Optional, Dict
+from typing import Callable, List, Tuple, Optional, Dict
 from pathlib import Path
 
 from base.LogManager import LogManager
@@ -27,12 +27,6 @@ class FontReplacer:
     MAX_BACKUPS = 3  # 保留的最大备份数量
     INLINE_FONT_TAG_PATTERN = re.compile(
         r'\{font\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^}\s]+))\s*\}'
-    )
-    # 匹配任意以字体后缀结尾的“文件名 token”，用于从已编译的 .rpyc 二进制
-    # 中直接捞取字体文件名（编译后字符串不再带引号）。
-    RE_FONT_FILE_TOKEN = re.compile(
-        r"[\w \u4e00-\u9fff\-./\\]{1,200}?\.(?:ttf|otf|ttc|otc)",
-        flags = re.IGNORECASE,
     )
 
     def __init__(self):
@@ -92,17 +86,39 @@ class FontReplacer:
             normalized = normalized[1:-1].strip()
         return normalized
 
-    def _iter_game_files(self, base_path: Path, extensions: List[str]) -> List[Path]:
-        """枚举游戏文件，并排除字体备份目录。"""
+    def _iter_game_files(
+        self,
+        base_path: Path,
+        extensions: List[str],
+        *,
+        check_cancel: Optional[Callable[[], None]] = None,
+    ) -> List[Path]:
+        """单次遍历游戏目录；直接剪掉备份与链接子树，并响应取消。"""
         files: List[Path] = []
-        for extension in extensions:
-            for file_path in base_path.rglob(f"*{extension}"):
-                try:
-                    if self.BACKUP_DIR_NAME in file_path.relative_to(base_path).parts:
-                        continue
-                except ValueError:
+        suffixes = {extension.casefold() for extension in extensions}
+        for directory, dirnames, filenames in os.walk(base_path, followlinks=False):
+            if check_cancel:
+                check_cancel()
+            base = Path(directory)
+            descend = []
+            for name in dirnames:
+                if check_cancel:
+                    check_cancel()
+                if name.casefold() == self.BACKUP_DIR_NAME.casefold():
                     continue
-                files.append(file_path)
+                try:
+                    info = (base / name).lstat()
+                except OSError:
+                    continue
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    continue
+                descend.append(name)
+            dirnames[:] = descend
+            for name in filenames:
+                if check_cancel:
+                    check_cancel()
+                if Path(name).suffix.casefold() in suffixes:
+                    files.append(base / name)
         return files
 
     def _extract_font_references(self, content: str) -> List[str]:
@@ -859,83 +875,45 @@ class FontReplacer:
         )
         return success_count, total_replacements, failed_files
 
-    def _extract_font_file_tokens(self, blob: str) -> List[str]:
-        """从 .rpyc 解码内容中捞取字体文件名 token（编译后字符串不再带引号）。"""
-        tokens: List[str] = []
-        for match in self.RE_FONT_FILE_TOKEN.findall(blob):
-            token = match.strip().strip("\"'").replace("\\", "/").lstrip("/")
-            # 过滤明显异常的超长/含控制字符的结果
-            if token and "\n" not in token and "\x00" not in token and len(token) <= 200:
-                tokens.append(token)
-        return tokens
-
-    def scan_fonts(self, folder_path: str) -> List[str]:
-        """
-        扫描文件夹中使用的所有字体
-
-        除 .rpy/.rpym 源码外，同时扫描已编译的 .rpyc/.rpymc，
-        以便在仅发布编译脚本的游戏中也能发现字体引用。
-
-        Args:
-            folder_path: 文件夹路径
-
-        Returns:
-            字体名称列表
-        """
+    def scan_fonts(
+        self, folder_path: str, *, check_cancel: Optional[Callable[[], None]] = None,
+    ) -> List[str]:
+        """只扫描 .rpy/.rpym 源码中的字体引用；目录遍历和文件处理均可取消。"""
         fonts = set()
         game_path = Path(self._resolve_game_dir(folder_path))
-
-        # 源码脚本：使用精确的引用提取
-        source_files = self._iter_game_files(game_path, [".rpy", ".rpym"])
-        for file_path in source_files:
+        script_files = self._iter_game_files(
+            game_path, [".rpy", ".rpym"], check_cancel=check_cancel,
+        )
+        self.logger.info(f"字体扫描: 找到 {len(script_files)} 个源码脚本文件")
+        for file_path in script_files:
+            if check_cancel:
+                check_cancel()
             try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                fonts.update(self._extract_font_references(content))
-            except Exception:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
                 continue
-
-        # 已编译脚本：二进制按字体后缀 token 捞取（编译后字符串不再带引号）
-        compiled_files = list(game_path.rglob("*.rpyc")) + list(game_path.rglob("*.rpymc"))
-        for file_path in compiled_files:
-            try:
-                with open(file_path, "rb") as f:
-                    blob = f.read().decode("utf-8", errors="ignore")
-                fonts.update(self._extract_font_file_tokens(blob))
-            except Exception:
-                continue
-
+            if check_cancel:
+                check_cancel()
+            fonts.update(self._extract_font_references(content))
+        if check_cancel:
+            check_cancel()
+        self.logger.info(f"字体扫描完成: {len(fonts)} 个字体引用")
         return sorted(fonts)
 
-    def discover_font_files(self, folder_path: str) -> List[Tuple[str, str]]:
-        """枚举 game 目录中的字体文件，返回 (相对路径, 绝对路径) 列表"""
+    def discover_font_files(
+        self, folder_path: str, *, check_cancel: Optional[Callable[[], None]] = None,
+    ) -> List[Tuple[str, str]]:
+        """单次遍历 game 目录，枚举字体文件并响应取消。"""
         results: List[Tuple[str, str]] = []
         base_path = Path(self._resolve_game_dir(folder_path))
-        if not base_path.exists():
-            return results
-
-        seen = set()
-        candidate_dirs = [base_path / "fonts", base_path / "gui", base_path]
-
-        for directory in candidate_dirs:
-            if not directory.exists():
-                continue
-            try:
-                for suffix in self.FONT_SUFFIXES:
-                    for file_path in directory.rglob(f"*{suffix}"):
-                        if not file_path.is_file():
-                            continue
-                        rel_path = file_path.relative_to(base_path)
-                        if self.BACKUP_DIR_NAME in rel_path.parts:
-                            continue
-                        rel_key = str(rel_path).replace("\\", "/")
-                        if rel_key in seen:
-                            continue
-                        seen.add(rel_key)
-                        results.append((rel_key, str(file_path)))
-            except Exception:
-                continue
-
+        for file_path in self._iter_game_files(
+            base_path, list(self.FONT_SUFFIXES), check_cancel=check_cancel,
+        ):
+            if check_cancel:
+                check_cancel()
+            if file_path.is_file():
+                rel_key = file_path.relative_to(base_path).as_posix()
+                results.append((rel_key, str(file_path)))
         results.sort(key=lambda item: item[0].lower())
         return results
 
