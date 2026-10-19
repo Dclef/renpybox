@@ -24,9 +24,16 @@ class CacheDB(Base):
         field.name for field in dataclasses.fields(CacheItem) if field.init is not False
     )
 
-    def __init__(self, db_path: str) -> None:
+    # 实时缓存默认 WAL；单文件容器（如 .rbox）需要 DELETE，避免留下 -wal/-shm。
+    JOURNAL_MODES = frozenset({"WAL", "DELETE", "TRUNCATE", "PERSIST"})
+
+    def __init__(self, db_path: str, journal_mode: str = "WAL") -> None:
+        mode = journal_mode.upper() if isinstance(journal_mode, str) else ""
+        if mode not in __class__.JOURNAL_MODES:
+            raise ValueError(f"Unsupported SQLite journal mode: {journal_mode!r}")
         super().__init__()
         self.db_path = db_path
+        self.journal_mode = mode
         self.lock = threading.Lock()
 
     def _open(self) -> sqlite3.Connection:
@@ -35,7 +42,7 @@ class CacheDB(Base):
             os.makedirs(parent, exist_ok = True)
         conn = sqlite3.connect(self.db_path, check_same_thread = False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA journal_mode={self.journal_mode}")
         conn.execute("PRAGMA synchronous=NORMAL")
         self._ensure_schema(conn)
         return conn

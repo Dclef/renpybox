@@ -1,7 +1,7 @@
 /**
  * 工具箱注册表 —— 与 frontend/RenpyToolbox/ToolRegistry.py 的 TOOL_SPECS 对齐。
  *
- * 27 个工具、四组划分、标题与描述全部取自 module/Localizer/LocalizerZH.py
+ * 26 个工具、四组划分、标题与描述全部取自 module/Localizer/LocalizerZH.py
  * 的真实文案。项目依赖以 TOOL_REQUIRES_PROJECT 为准；按桌面版的独立选目录流程，
  * 部分入口与 Qt5 的 requires_project 有意不同。
  */
@@ -315,13 +315,13 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     key: 'error_repair',
-    title: '错误修复',
-    description: '扫描并修复翻译目录中生成的 .rpy 错误',
+    title: '脚本修复',
+    description: '扫描并修复翻译目录的 .rpy：缩进、重复译文、空块、残留增量目录，并可格式化',
     group: 'engineer',
     requiresProject: false,
     icon: 'REPAIR',
     step: 0,
-    keywords: ['修复', '报错', 'rpy', 'script', 'repair'],
+    keywords: ['修复', '报错', 'rpy', 'script', 'repair', '格式化', '重复', '合并', 'format', 'duplicate', 'merge'],
   },
   {
     key: 'translation_reuse',
@@ -332,16 +332,6 @@ export const TOOL_SPECS: ToolSpec[] = [
     icon: 'REUSE',
     step: 0,
     keywords: ['更新', '复用', '旧译文', '哈希', 'reuse', 'migrate'],
-  },
-  {
-    key: 'formatter',
-    title: '代码格式化',
-    description: '格式化 .rpy 文件',
-    group: 'engineer',
-    requiresProject: false,
-    icon: 'FORMAT',
-    step: 0,
-    keywords: ['格式化', 'rpy', '代码', 'format', 'lint'],
   },
   {
     key: 'android_build',

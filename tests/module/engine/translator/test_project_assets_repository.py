@@ -122,6 +122,102 @@ def test_renpy_projects_do_not_inherit_each_others_workbench_assets(tmp_path) ->
     assert first_state.analysis_candidates["character_drafts"][0]["name"] == "First Draft Hero"
 
 
+def test_prepare_project_snapshot_matches_load_bootstrap_without_storage(tmp_path) -> None:
+    """导出快照与 load() 迁移结果一致，但只作用于副本，不创建/改写缓存。"""
+    config = _legacy_config(tmp_path / "snapshot-output")
+    project = CacheProject(id = "project-1", extras = {"progress": {"line": 2}})
+    original = project.asdict()
+
+    prepared = ProjectAssetsRepository.from_config(config).prepare_project_snapshot(project, config)
+
+    assert prepared is not project
+    assert project.asdict() == original
+    assert (tmp_path / "snapshot-output").exists() is False
+    assert prepared.get_id() == "project-1"
+    assert prepared.get_progress() == {"line": 2}
+
+    loaded_config = _legacy_config(tmp_path / "load-output")
+    loaded = ProjectAssetsRepository.from_config(loaded_config).load(loaded_config)
+    prepared_assets = prepared.get_project_assets()
+    loaded_assets = loaded.assets.to_dict()
+    prepared_assets.pop("updated_at")
+    loaded_assets.pop("updated_at")
+    assert prepared_assets == loaded_assets
+    assert prepared.get_analysis_candidates() == loaded.analysis_candidates
+
+
+def test_prepare_project_snapshot_keeps_populated_project_assets(tmp_path) -> None:
+    config = _legacy_config(tmp_path)
+    project = CacheProject(id = "project-1")
+    project.set_project_assets({
+        "revision": 3,
+        "glossary": {"enabled": True, "items": [{"source": "Door", "target": "门"}]},
+    })
+    project.set_analysis_candidates({"legacy_config_migrated": True, "items": []})
+
+    prepared = ProjectAssetsRepository.from_config(config).prepare_project_snapshot(project, config)
+
+    assert prepared.asdict() == project.asdict()
+    assert (tmp_path / "cache").exists() is False
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "json"])
+def test_replace_asset_sections_keeps_items_identity_progress_and_other_extras(tmp_path, monkeypatch, backend) -> None:
+    cache_path = tmp_path / "cache"
+    cache_path.mkdir()
+    stored = CacheProject(
+        id = "project-1",
+        status = Base.TranslationStatus.TRANSLATING,
+        extras = {"custom_partition": {"note": "keep"}},
+    )
+    stored.set_progress({"line": 4, "total_line": 10})
+    stored.set_translation_snapshot({"schema_version": 1, "source_language": "JA"})
+    stored.set_project_assets({
+        "revision": 3,
+        "glossary": {"enabled": True, "items": [{"source": "Door", "target": "门"}]},
+    })
+    stored.set_analysis_candidates({"legacy_config_migrated": True, "items": [{"source": "Gate", "target": ""}]})
+    items = [CacheItem(src = "line-1", dst = "一", status = Base.TranslationStatus.TRANSLATED)]
+    if backend == "sqlite":
+        CacheDB(str(cache_path / "cache.db")).set_translation_cache(stored, items)
+    else:
+        (cache_path / "project.json").write_text(json.dumps(stored.asdict(), ensure_ascii = False), encoding = "utf-8")
+        (cache_path / "items.json").write_text(json.dumps([item.asdict() for item in items]), encoding = "utf-8")
+    items_json_before = (cache_path / "items.json").read_bytes() if backend == "json" else None
+    live = CacheProject.from_dict(stored.asdict())
+    live.set_progress({"line": 7, "total_line": 10})
+    repository = ProjectAssetsRepository(str(tmp_path), cache_use_sqlite = backend == "sqlite")
+    monkeypatch.setattr(repository, "_resolve_active_project", lambda: live)
+
+    state = repository.replace_asset_sections(
+        {"revision": 1, "glossary": {"enabled": True, "items": [{"source": "Sky", "target": "天空"}]}},
+        {"legacy_config_migrated": True, "items": [{"source": "Cloud", "target": ""}]},
+    )
+
+    assert state.assets.revision == 4
+    assert [(term.source, term.target) for term in state.assets.glossary] == [("Sky", "天空")]
+    assert [item["source"] for item in state.analysis_candidates["items"]] == ["Cloud"]
+    if backend == "sqlite":
+        store = CacheDB(str(cache_path / "cache.db"))
+        saved = store.get_project()
+        assert [item.get_src() for item in store.get_items()] == ["line-1"]
+        assert not (cache_path / "project.json").exists()
+    else:
+        saved = CacheProject.from_dict(json.loads((cache_path / "project.json").read_text(encoding = "utf-8")))
+        assert (cache_path / "items.json").read_bytes() == items_json_before
+        assert not (cache_path / "cache.db").exists()
+    assert saved.get_id() == "project-1"
+    assert saved.get_status() == Base.TranslationStatus.TRANSLATING
+    assert saved.get_translation_snapshot()["source_language"] == "JA"
+    assert saved.get_extras()["custom_partition"] == {"note": "keep"}
+    assert saved.get_project_assets() == state.assets.to_dict()
+    assert saved.get_analysis_candidates() == state.analysis_candidates
+    # 发布到运行态只覆盖两个资产分区，运行中增长的进度不被磁盘旧值回退。
+    assert live.get_project_assets() == state.assets.to_dict()
+    assert live.get_analysis_candidates() == state.analysis_candidates
+    assert live.get_progress() == {"line": 7, "total_line": 10}
+
+
 def test_existing_equal_formal_and_draft_worldbook_is_preserved(tmp_path) -> None:
     """已有缓存不能因为正式世界观恰好等于草稿而被升级逻辑删除。"""
     worldbook = {"genre": "已确认项目", "setting_summary": "应保留"}

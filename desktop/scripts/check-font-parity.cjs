@@ -561,7 +561,11 @@ app.whenReady().then(async () => {
   await js('__uiFixture.deferScanDone=true');
   await clearWrites();
   await input('[data-rb-font-game-dir]', 'C:/ui-check-manual/game');
-  await pause(400);
+  await assert(
+    "[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='重新扫描字体'&&!b.disabled)",
+    '手动目标状态已就绪，可显式扫描',
+  );
+  await click('重新扫描字体');
   await assert(
     "__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan'&&String(w.body.game_path||'').includes('ui-check-manual'))",
     '手动目标 scan 带 game_path',
@@ -665,7 +669,11 @@ app.whenReady().then(async () => {
   // 恢复有效路径后可重新扫描
   await clearWrites();
   await input('[data-rb-font-game-dir]', 'C:/ui-check/game');
-  await pause(500);
+  await assert(
+    "[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='重新扫描字体'&&!b.disabled)",
+    '恢复路径后扫描按钮可用',
+  );
+  await click('重新扫描字体');
   await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '恢复路径后可扫描');
   await assert("!document.querySelector('[data-rb-font-game-empty]')", '恢复后空目录提示消失');
 
@@ -683,7 +691,7 @@ app.whenReady().then(async () => {
   }
   await openFontPage();
   await assert("[...document.querySelectorAll('button')].some(b=>b.textContent.replaceAll(' ','')==='一键注入字体' && !b.disabled)", '返回字体页仍可注入');
-  // 基础注入后首次展开高级区：首次扫描与写后重扫必须合并成一个请求。
+  // 基础注入和展开高级区都不隐式扫描；显式重扫只提交一次并保留写入报告。
   await js('__uiFixture.holdEngineScan = false');
   await clearWrites();
   await click('一键注入字体');
@@ -697,10 +705,11 @@ app.whenReady().then(async () => {
   await assert("!__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '基础注入完成后不自动扫描');
   await clearWrites();
   await js(`document.querySelector('.ant-collapse-header')?.click()`);
-  await assert("__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '注入后首次展开高级区触发扫描');
   await pause(1700);
-  await assert("__uiFixture.writes.filter(w=>w.p==='/api/font-tools/scan').length===1", '首次扫描与写后重扫合并为一次请求');
-  await assert("document.querySelector('[data-rb-font-write-report]')", '合并扫描后注入报告仍保留');
+  await assert("!__uiFixture.writes.some(w=>w.p==='/api/font-tools/scan')", '展开高级区不自动扫描');
+  await click('重新扫描字体');
+  await assert("__uiFixture.writes.filter(w=>w.p==='/api/font-tools/scan').length===1", '显式扫描只提交一次请求');
+  await assert("document.querySelector('[data-rb-font-write-report]')", '显式扫描后注入报告仍保留');
   await capture('font-parity-desktop');
 
   // 窄屏
