@@ -73,6 +73,44 @@ def test_resumed_round_progress_uses_completed_plus_remaining() -> None:
     assert translator.extras["total_line"] == 8
 
 
+def test_resync_failed_line_count_drops_rows_that_retried_successfully() -> None:
+    """失败行数是累加器，重试成功后必须回落，否则界面长期停在历史峰值。"""
+    translator = _translator()
+    translator.extras = {"failed_line_count": 2006, "line_count_mismatch_count": 7}
+    translator.cache_manager.items = [
+        CacheItem(src="Ok", dst="好的", status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(
+            src="Still failing",
+            status=Base.TranslationStatus.UNTRANSLATED,
+            retry_count=1,
+            metadata={
+                "translation_retry": {
+                    "schema_version": 1,
+                    "attempt": 1,
+                    "reasons": [
+                        {"code": "PLACEHOLDER_MISMATCH", "line_indices": [0, 1]}
+                    ],
+                }
+            },
+        ),
+    ]
+
+    translator._resync_failed_line_count()
+
+    # 只剩那 1 条仍带重试元数据（2 个行索引），历史累计的 2006 被清掉。
+    assert translator.extras["failed_line_count"] == 2
+    assert translator.extras["line_count_mismatch_count"] == 0
+
+
+def test_resync_failed_line_count_keeps_extras_when_cache_is_empty() -> None:
+    translator = _translator()
+    translator.extras = {"failed_line_count": 4}
+
+    translator._resync_failed_line_count()
+
+    assert translator.extras["failed_line_count"] == 4
+
+
 def test_translation_progress_merges_runtime_metrics() -> None:
     translator = _translator()
     translator.extras = translator._new_progress_extras(

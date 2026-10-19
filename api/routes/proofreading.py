@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 from collections.abc import Mapping
@@ -19,13 +20,18 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from base.Base import Base
+from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheManager import CacheManager
+from module.Cache.QualityCandidates import count_quality_candidates
 from module.Engine.Engine import Engine
 from module.Renpy.ProjectPaths import RenpyProjectPaths, translation_output_candidates
 from module.ResultChecker import ResultChecker, WarningType
 
 router = APIRouter(prefix="/api/proofreading", tags=["proofreading"])
+
+# 前端多选筛选里代表「无告警」的伪类型；只用于筛选，不会出现在逐行检查结果里。
+NO_WARNING = "NO_WARNING"
 
 
 class RowReference(BaseModel):
@@ -99,12 +105,21 @@ def _load_cache(config) -> tuple[str, CacheManager]:
     raise HTTPException(status_code=404, detail="没有可读取的完整翻译缓存，请先完成一次翻译。")
 
 
-def _row(index: int, item: CacheItem, warnings: list[WarningType] | None = None) -> dict:
-    return {
+def _row(
+    index: int,
+    item: CacheItem,
+    warnings: list[WarningType] | None = None,
+    terms: tuple[tuple[str, str], ...] = (),
+) -> dict:
+    row = {
         "id": index, "version": _version(item), "src": item.get_src(), "dst": item.get_dst(),
         "status": str(item.get_status()), "file_path": item.get_file_path(), "row": item.get_row(),
         "warnings": [str(warning) for warning in (warnings or [])],
     }
+    # 术语未生效的行把命中的词条带给渲染端，多选筛选的选项就来自这里。
+    if terms:
+        row["glossary_terms"] = [{"src": src, "dst": dst} for src, dst in terms]
+    return row
 
 
 def _readonly() -> bool:
@@ -112,34 +127,72 @@ def _readonly() -> bool:
     return engine.get_status() != Engine.Status.IDLE or engine.has_stop_barrier() or engine.has_single_tasks()
 
 
-def _read_snapshot(request: Request, config) -> dict:
-    # 只保留当前项目的只读快照；写入、文件代次或设置变化后重新载入。
+def _items_revision(output: str, config) -> str:
+    """缓存条目代次：只认条目内容，不认 extras/进度这类旁路写入。
+
+    润色、校对、批量编辑都会重写 project 里的 extras，导致 cache.db 的 mtime
+    与大小变化；但条目内容没变时逐行检查结果依然有效。SQLite 缓存直接读
+    写入时算好的 items_digest（一次 meta 查询），JSON 缓存退回文件签名。
+    """
+    cache_path = os.path.join(str(output), "cache")
+    db_path = os.path.join(cache_path, CacheManager.CACHE_DB_NAME)
+    try:
+        if os.path.isfile(db_path):
+            digest = CacheDB(db_path).get_items_digest()
+            if digest:
+                return digest
+    except Exception:
+        # 读不到摘要时退回文件签名，宁可重建快照也不要复用过期检查结果。
+        pass
+    files = []
+    for name in ("items.json", "project.json", CacheManager.RESET_JOURNAL_NAME):
+        path = os.path.join(cache_path, name)
+        try:
+            stat = os.stat(path)
+            files.append((path, stat.st_mtime_ns, stat.st_size))
+        except FileNotFoundError:
+            files.append((path, None))
+    return repr(files)
+
+
+def _snapshot_key(config) -> tuple:
+    """快照代次：项目配置 + 各候选输出目录的条目摘要。"""
     paths = translation_output_candidates(config)
-    def signature():
-        files = []
-        for output in paths:
-            for name in ("items.json", "project.json", "cache.db", "cache.db-wal", CacheManager.RESET_JOURNAL_NAME):
-                path = os.path.join(str(output), "cache", name)
-                try:
-                    stat = os.stat(path)
-                    files.append((path, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino))
-                except FileNotFoundError:
-                    files.append((path, None))
-        return tuple(files)
+    revisions = tuple((str(output), _items_revision(output, config)) for output in paths)
     config_key = hashlib.sha256(json.dumps(dataclasses.asdict(config), sort_keys=True, default=str).encode()).hexdigest()
-    key = (config_key, signature())
+    return (config_key, revisions)
+
+
+def _read_snapshot(request: Request, config) -> dict:
+    # 只保留当前项目的只读快照；条目内容或设置变化后重新载入。
+    key = _snapshot_key(config)
     snapshot = getattr(request.app.state, "proofreading_snapshot", None)
     if snapshot is not None and snapshot["key"] == key:
+        # 条目没变，但 extras 可能刚被质量任务更新，单独刷一次项目记录。
+        _refresh_snapshot_project(snapshot)
         return snapshot
     output, manager = _load_cache(config)
     visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
     snapshot = {
         "key": key, "output": output, "manager": manager,
         "visible": visible, "files": sorted({item.get_file_path() for _, item in visible}),
-        "warnings": {}, "checked": 0, "filter_key": None, "matches": [],
+        "warnings": {}, "terms": {}, "checked": 0, "filter_key": None, "matches": [],
     }
     request.app.state.proofreading_snapshot = snapshot
     return snapshot
+
+
+def _refresh_snapshot_project(snapshot: dict) -> None:
+    """把最新的 project 记录贴到复用的快照上，让质量任务进度立刻可见。"""
+    path = os.path.join(str(snapshot["output"]), "cache", CacheManager.CACHE_DB_NAME)
+    if not os.path.isfile(path):
+        return
+    try:
+        project = CacheDB(path).get_project()
+    except Exception:
+        return
+    if project is not None:
+        snapshot["manager"].set_project(project)
 
 
 @router.get("")
@@ -153,23 +206,49 @@ def read_rows(
     only_issues: bool = False,
     incremental: bool = False,
     warning: str = Query(default="", max_length=32),
+    statuses: list[str] = Query(default=[]),
+    files: list[str] = Query(default=[]),
+    warnings: list[str] = Query(default=[]),
+    terms: list[str] = Query(default=[]),
 ) -> dict:
-    """分页返回原译对照。搜索同时匹配原文、译文及相对文件路径。"""
+    """分页返回原译对照。搜索与多选筛选都由服务端对整份缓存求值。"""
+    # 空值只可能来自调用方拼出的空参数；files 例外，空路径代表「未分类」。
+    statuses = [value for value in statuses if value]
+    warnings = [value for value in warnings if value]
+    terms = [value for value in terms if value]
     if status and status not in Base.ITEM_VALID_STATUSES:
         raise HTTPException(status_code=400, detail="未知条目状态")
-    if warning and warning not in {str(value) for value in WarningType}:
+    for value in statuses:
+        if value not in Base.ITEM_VALID_STATUSES:
+            raise HTTPException(status_code=400, detail="未知条目状态")
+    warning_types = {str(value) for value in WarningType}
+    if warning and warning not in warning_types:
         raise HTTPException(status_code=400, detail="未知问题类型")
+    for value in warnings:
+        if value not in warning_types and value != NO_WARNING:
+            raise HTTPException(status_code=400, detail="未知问题类型")
     config = copy.deepcopy(request.app.state.config)
     with CacheManager.LOCK:
         snapshot = _read_snapshot(request, config)
         output, manager = snapshot["output"], snapshot["manager"]
-        visible, warnings = snapshot["visible"], snapshot["warnings"]
+        visible, warning_cache = snapshot["visible"], snapshot["warnings"]
         checker = ResultChecker(config, [])
         def check(index, item):
-            if index not in warnings:
-                warnings[index] = checker.check_single_item(item)
-            return warnings[index]
-        checking = only_issues or bool(warning)
+            if index not in warning_cache:
+                warning_cache[index] = checker.check_single_item(item)
+            return warning_cache[index]
+        def failed_terms(index, item):
+            # 只有「术语未生效」的行才可能带词条；按行缓存，筛选时不必重复扫描术语表。
+            cached = snapshot["terms"].get(index)
+            if cached is None:
+                if "GLOSSARY" not in {str(value) for value in check(index, item)}:
+                    cached = ()
+                else:
+                    cached = tuple(checker.get_failed_glossary_terms(item))
+                snapshot["terms"][index] = cached
+            return cached
+        # 问题类型、术语表都要逐行检查结果，沿用旧版的分块扫描；状态/文件/搜索只筛缓存条目。
+        checking = only_issues or bool(warning) or bool(warnings) or bool(terms)
         if checking:
             # 分块检查让第一页及时返回；切换筛选时复用同一份逐行检查结果。
             deadline = time.monotonic() + 0.12 if incremental else float("inf")
@@ -182,16 +261,45 @@ def read_rows(
         scan_complete = not checking or snapshot["checked"] == len(visible)
         candidates = visible[:snapshot["checked"]] if checking else visible
         needle = query.casefold().strip()
-        filter_key = (needle, status, file_path, only_issues, warning, snapshot["checked"] if checking else 0)
+        status_set = set(statuses)
+        file_set = set(files)
+        warning_set = set(warnings)
+        term_set = set(terms)
+        filter_key = (
+            needle, status, tuple(statuses), file_path, tuple(files), only_issues,
+            warning, tuple(warnings), tuple(terms), snapshot["checked"] if checking else 0,
+        )
         if snapshot["filter_key"] != filter_key:
-            snapshot["matches"] = [
-                (index, item) for index, item in candidates
-                if (not status or item.get_status() == status)
-                and (not file_path or item.get_file_path() == file_path)
-                and (not needle or needle in "\n".join((item.get_src(), item.get_dst(), item.get_file_path())).casefold())
-                and (not only_issues or bool(check(index, item)))
-                and (not warning or warning in check(index, item))
-            ]
+            def selected(index, item):
+                if status and str(item.get_status()) != status:
+                    return False
+                if status_set and str(item.get_status()) not in status_set:
+                    return False
+                if file_path and item.get_file_path() != file_path:
+                    return False
+                if file_set and item.get_file_path() not in file_set:
+                    return False
+                if needle and needle not in "\n".join((item.get_src(), item.get_dst(), item.get_file_path())).casefold():
+                    return False
+                if only_issues or warning or warning_set:
+                    found = {str(value) for value in check(index, item)}
+                    if only_issues and not found:
+                        return False
+                    if warning and warning not in found:
+                        return False
+                    if warning_set:
+                        # 与旧版客户端筛选一致：有告警的行按类型命中，无告警的行只在勾选「无警告」时命中。
+                        if found:
+                            if not found & warning_set:
+                                return False
+                        elif NO_WARNING not in warning_set:
+                            return False
+                if term_set:
+                    keys = {src + "\u0000" + dst for src, dst in failed_terms(index, item)}
+                    if not keys & term_set:
+                        return False
+                return True
+            snapshot["matches"] = [(index, item) for index, item in candidates if selected(index, item)]
             snapshot["filter_key"] = filter_key
         matches = snapshot["matches"]
         page = min(page, max(1, (len(matches) + limit - 1) // limit))
@@ -204,7 +312,10 @@ def read_rows(
                 report for key in ("polishing_progress", "proofreading_progress")
                 if isinstance(report := manager.get_project().get_extras().get(key), dict)
             ],
-            "items": [_row(index, item, check(index, item)) for index, item in matches[(page - 1) * limit:page * limit]],
+            "items": [
+                _row(index, item, check(index, item), failed_terms(index, item))
+                for index, item in matches[(page - 1) * limit:page * limit]
+            ],
         }
 
 
@@ -284,6 +395,37 @@ def _save(request: Request, output: str, manager: CacheManager, token: str) -> N
         runtime.require_flag = False
 
 
+def _reuse_snapshot_after_confirm(
+    request: Request,
+    snapshot: dict | None,
+    output: str,
+    manager: CacheManager,
+    cleared: list[int],
+) -> None:
+    """把旧快照接到刚保存的缓存上，已确认的行直接记为零告警。
+
+    没有这一步时，_save() 会丢弃快照，下一次带「仅看问题」的读取就会从第一行
+    重新扫描整份缓存；而确认操作只改人工确认记录，其它行的检查结论仍然有效。
+    """
+    if snapshot is None or _key(str(snapshot.get("output", ""))) != _key(output):
+        return
+    visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
+    if len(visible) != len(snapshot["visible"]):
+        # 条目数量变了，索引可能已经错位，宁可让下一次读取重建快照。
+        return
+    snapshot["key"] = _snapshot_key(request.app.state.config)
+    snapshot["manager"] = manager
+    snapshot["visible"] = visible
+    snapshot["files"] = sorted({item.get_file_path() for _, item in visible})
+    for index in cleared:
+        snapshot["warnings"][index] = []
+        snapshot["terms"][index] = ()
+    # 匹配结果依赖告警缓存，置空后下一次读取会按新缓存重新求值。
+    snapshot["filter_key"] = None
+    snapshot["matches"] = []
+    request.app.state.proofreading_snapshot = snapshot
+
+
 @router.patch("/item")
 def edit_item(request: Request, body: EditRequest) -> dict:
     """校验行版本后立即将译文保存到当前项目缓存。"""
@@ -324,20 +466,44 @@ def reset_rows(request: Request, body: SelectionRequest) -> dict:
 
 @router.post("/confirm")
 def confirm_rows(request: Request, body: SelectionRequest) -> dict:
-    """人工确认已有译文，仅清除达到重试阈值的警告与重试原因。"""
+    """人工确认已有译文，抹掉当前查出的告警（含文本保护、相似度等类型）。
+
+    重试计数与失败元数据一并清掉；确认记录绑定译文摘要，译文再改自动失效。
+    """
     with _write_access(request, body.cache_token) as (output, manager):
         targets = _targets(manager, body.rows)
+        # 确认只改人工确认记录，不改译文；旧快照的逐行检查结果仍可复用。
+        # 先确认快照与磁盘缓存一致，保存后再把它接到新条目上。
+        snapshot = getattr(request.app.state, "proofreading_snapshot", None)
+        reusable = (
+            snapshot is not None
+            and _key(str(snapshot.get("output", ""))) == _key(output)
+            and snapshot.get("key") == _snapshot_key(request.app.state.config)
+        )
         checker = ResultChecker(request.app.state.config, [item for _, item in targets])
         changed = 0
-        for _, item in targets:
-            if item.get_dst().strip() and WarningType.RETRY_THRESHOLD in checker.check_single_item(item):
-                item.set_retry_count(0)
-                metadata = item.get_metadata()
-                metadata.pop(CacheItem.TRANSLATION_RETRY_KEY, None)
+        processed: list[int] = []
+        for index, item in targets:
+            if not item.get_dst().strip():
+                continue
+            processed.append(index)
+            warnings = checker.check_single_item(item)
+            # 先落重试元数据的清理，再写确认记录，避免 set_metadata 把刚写的确认覆盖掉。
+            metadata = item.get_metadata()
+            had_retry = metadata.pop(CacheItem.TRANSLATION_RETRY_KEY, None) is not None
+            touched = had_retry or item.get_retry_count() > 0 or bool(warnings)
+            if had_retry:
                 item.set_metadata(metadata)
+            if item.get_retry_count() > 0:
+                item.set_retry_count(0)
+            if warnings:
+                item.set_manual_confirm([str(warning) for warning in warnings])
+            if touched:
                 changed += 1
         if changed:
             _save(request, output, manager, body.cache_token)
+            if reusable:
+                _reuse_snapshot_after_confirm(request, snapshot, output, manager, processed)
         return {"ok": True, "changed": changed}
 
 
@@ -505,6 +671,39 @@ def retranslate_rows(request: Request, body: SelectionRequest) -> dict:
         engine.end_single_task()
         raise
     return _retranslate_state(request)
+
+
+@router.get("/quality/candidates")
+def read_quality_candidates(request: Request) -> dict:
+    """只读统计可润色/可校对的条目数，供开始前先报数。
+
+    直接走 SQLite 的 json_extract 计数（58956 条约 0.5s），避免为报个数
+    把整份缓存反序列化一遍（实测 2.3s）。
+    """
+    config = copy.deepcopy(request.app.state.config)
+    with CacheManager.LOCK:
+        output, manager = _load_cache(config)
+        counts = count_quality_candidates(output, manager)
+        token = _cache_token(config, output)
+    return {"ok": True, "cache_token": token, **counts}
+
+
+def _count_quality_candidates(db_path: str) -> dict[str, int] | None:
+    """SQLite 直读计数；缓存不是 SQLite 或读取失败时返回 None 交给调用方兜底。"""
+    if not os.path.isfile(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri = True)
+        try:
+            total = int(conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
+            polish = _count_statuses(conn, Base.ITEM_POLISHABLE_STATUSES)
+            proofread = _count_statuses(conn, Base.ITEM_PROOFREADABLE_STATUSES)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    return {"polish": polish, "proofread": proofread, "total": total}
+
 
 
 @router.post("/quality")

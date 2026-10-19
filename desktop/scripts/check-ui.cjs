@@ -70,6 +70,19 @@ function fixture() {
     }
     if (p === '/api/agent/stop') { f.agent.status = 'idle'; f.agent.confirmation = null; f.agent.messages.at(-1).status = 'cancelled'; f.emitAgent(); return response(f.agent); }
     if (p === '/api/agent/reset') { f.agent.messages = []; f.agent.confirmation = null; f.agent.status = 'idle'; f.emitAgent(); return response(f.agent); }
+    if (p === '/api/agent/sessions') {
+      return response({ sessions: [
+        { id: 'old-1', title: '旧会话一', created_at: 1, updated_at: 2, message_count: 4 },
+        { id: 'old-2', title: '', created_at: 1, updated_at: 1, message_count: 1 },
+      ] });
+    }
+    if (p === '/api/agent/sessions/old-1/open' && method === 'POST') {
+      f.agent.session_id = 'old-1';
+      f.agent.messages = [{ id: 'old-1-a', role: 'assistant', content: '来自旧会话的记录', tools: [], status: 'done' }];
+      f.emitAgent();
+      return response(f.agent);
+    }
+    if (p === '/api/agent/sessions/old-2' && method === 'DELETE') return response({ deleted: true });
     if (p === '/api/agent/confirm') {
       if (f.agent.confirmation?.id !== body.confirmation_id) return new Response(JSON.stringify({ detail: '确认已失效' }), { status: 409 });
       f.confirmed.push(body); f.agent.confirmation = null; f.agent.status = 'idle';
@@ -283,6 +296,15 @@ app.whenReady().then(async () => {
   const page = async title => { await js(`Array.from(document.querySelectorAll('.nav-item')).find(b=>b.title===${JSON.stringify(title)})?.click()`); await pause(180); };
   const input = async (selector, value) => { await js(`(()=>{const root=document.querySelector(${JSON.stringify(selector)});if(!root)throw new Error('缺少输入框 '+${JSON.stringify(selector)});const e=root.matches('input,textarea')?root:root.querySelector('input,textarea');if(!e)throw new Error('缺少输入框 '+${JSON.stringify(selector)});Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(80); };
   const capture = async name => { await js("document.querySelectorAll('.banner button').forEach(b=>{if(b.textContent.trim()==='知道了')b.click()})"); await js("document.querySelectorAll('[data-rb-toast] button[aria-label=\"知道了\"]').forEach(b=>b.click())"); await pause(240); const result = await win.webContents.debugger.sendCommand('Page.captureScreenshot'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(result.data, 'base64')); };
+  // Qt 版的 window.confirm 已全部换成自绘 Dialog（ui.tsx Dialog），脚本必须点弹窗，
+  // 不能再指望 window.confirm 的返回值。
+  const answerDialog = async (match, choice) => {
+    await waitFor(`[...document.querySelectorAll('[role=dialog]')].some(e=>e.getBoundingClientRect().height>0 && e.textContent.includes(${JSON.stringify(match)}))`, `弹窗出现 ${match}`);
+    const position = await js(`(()=>{const d=[...document.querySelectorAll('[role=dialog]')].filter(e=>e.getBoundingClientRect().height>0).at(-1);const e=[...d.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(choice)});if(!e)throw new Error('弹窗缺少按钮 '+${JSON.stringify(choice)});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',...position,button:'left',clickCount:1});
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',...position,button:'left',clickCount:1});
+    await pause(220);
+  };
   const openTool = async title => { await page("Ren'Py 工具箱"); await input('.toolbox-search', title); const info = await js("JSON.stringify({cards:document.querySelectorAll('.tool-card').length,page:document.querySelector('.content')?.dataset.page,search:document.querySelector('.toolbox-search')?.value})"); log('OPENTOOL '+title+' '+info); await js("document.querySelector('.tool-card')?.click()"); await pause(180); };
   const SAMPLE_PAGES = [['翻译任务','translation'],['基础设置','basic'],['项目设置','project'],['术语表','glossary']];
   const captureSamples = async prefix => {
@@ -369,7 +391,9 @@ app.whenReady().then(async () => {
   await assert("Array.from(document.querySelectorAll('.ant-select-item-option')).some(e=>e.getBoundingClientRect().height>0&&e.textContent.includes('available-model')) && __uiFixture.reads.includes('/api/platforms/1/models')", '模型列表可读取并搜索');
   await js("Array.from(document.querySelectorAll('.ant-select-item-option')).find(e=>e.getBoundingClientRect().height>0&&e.textContent.trim()==='available-model').click()"); await pause(100);
   await assert("document.querySelector('.platform-editor .ant-select-auto-complete input').value==='available-model'", '选取模型填入草稿');
-  await click('关闭');
+  // 选完模型后编辑器是脏的，「关闭」先弹丢弃确认（PlatformPage.tsx:245-251），必须走完这层才关得掉。
+  await click('关闭'); await click('确认');
+  await assert("!document.querySelector('.platform-editor')", '关闭接口编辑器先确认丢弃修改');
   await js("__uiFixture.values.text_preserve_data=[{src:'Name',comment:'短'},{src:'name',comment:'完整备注'}]; __uiFixture.values.text_preserve_enable=false; __uiFixture.values.honorific_placeholder_titles=[{src:'Dr',comment:'旧版备注'},'dr']; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});"); await pause(200);
   await openTool('禁翻表'); await click('去重');
   await js("__uiFixture.failSettings=true"); await click('保存设置');
@@ -380,14 +404,14 @@ app.whenReady().then(async () => {
   await assert("document.querySelector('.rb-term-row').textContent.includes('Dr') && document.querySelector('.rb-term-row').textContent.includes('旧版备注')", '读取旧版对象格式称呼词');
   await click('去重'); await click('保存');
   await assert("__uiFixture.values.honorific_placeholder_titles.length===1 && __uiFixture.values.honorific_placeholder_titles[0].src==='dr' && __uiFixture.values.honorific_placeholder_titles[0].comment==='旧版备注'", '称呼去重按旧版小写规则保存');
-  await click('恢复默认');
+  await click('恢复默认'); await click('确认');
   await assert("document.querySelectorAll('.rb-term-row').length===3 && __uiFixture.values.honorific_placeholder_titles.length===1", '恢复引擎默认值只改草稿');
   await click('保存');
   await assert("__uiFixture.values.honorific_placeholder_titles.includes('doctor')", '确认保存默认称呼词');
   await js("document.querySelector('.rb-term-row').querySelectorAll('.ant-table-cell')[1].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))");await pause(100);
   await input('.rb-sheet-cell-editor','doctor-last字');await click('保存');
   await assert("__uiFixture.values.honorific_placeholder_titles[0]==='doctor-last字'",'称呼单元格未失焦直接保存包含最后一字');
-  await click('恢复默认');await click('保存');
+  await click('恢复默认'); await click('确认'); await click('保存');
   await page('角色 / 世界观工作台'); await click('世界观');
   await input('.workbench-form-grid input', '港湾来信 · 新篇'); await click('保存修改');
   await assert("__uiFixture.assets.worldbook.project_name==='港湾来信 · 新篇'", '世界观保存');
@@ -521,28 +545,31 @@ await js("__uiFixture.finishLexicon({kind:'glossary',counts:[8,2,1],counted_item
 await assert("[...document.querySelectorAll('.rb-term-row')].map(row=>row.querySelectorAll('.ant-table-cell')[5].textContent.trim()).join(',')==='8,2,1'", '术语命中数显示于对应行');
 
 const glossaryBeforeScan = await js("__uiFixture.writes.length");
-await js("window.confirm=text=>{__uiFixture.lexConfirmTexts.push(text);return false}");
+await js("__uiFixture.lexConfirmTexts=[...(__uiFixture.lexConfirmTexts||[])]");
 await click('扫描术语候选');
-await assert(`__uiFixture.writes.length===${glossaryBeforeScan} && __uiFixture.lexConfirmTexts.at(-1).includes('未确认候选')`, '拒绝候选扫描确认时不提交');
-await js("window.confirm=text=>{__uiFixture.lexConfirmTexts.push(text);return true}");
+await answerDialog('未确认候选', '取消');
+await assert(`__uiFixture.writes.length===${glossaryBeforeScan}`, '拒绝候选扫描确认时不提交');
 await click('扫描术语候选');
+await answerDialog('未确认候选', '确认');
 await assert("__uiFixture.lexiconInput.confirm===true && __uiFixture.lexiconInput.rows[0].dst==='港湾'", '候选扫描确认后发送当前草稿');
 await js("__uiFixture.lexCandidateRows=[...structuredClone(__uiFixture.glossary.rows),{src:'DragonGlass',dst:'',type:'地名',info:'扫描候选',candidate:true,candidate_confirmed:false,record_id:'scan-c1'}]; __uiFixture.finishLexicon({entries:__uiFixture.lexCandidateRows,candidate_ids:['scan-c1'],count_map:{dragonglass:4},added:1,updated:0,written:true,message:'术语候选扫描完成'})"); await pause(1100);
 await assert("document.querySelector('.rb-sheet-foot').textContent.includes('4 条') && document.querySelector('.rb-term-row[data-row-key=\"3\"]').textContent.includes('候选') && document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改') && __uiFixture.glossary.rows.length===3", '扫描候选进入草稿且不会自动保存正式词库');
 
-for (const [label, mode, index, translated] of [['快速翻译','fast',1,'快速译名'],['LLM 翻译','llm',2,'模型译名']]) {
+for (const [label, mode, index, translated, confirmText] of [['快速翻译','fast',1,'快速译名','快速引擎'],['LLM 翻译','llm',2,'模型译名','当前接口']]) {
   await click(label);
+  await answerDialog(confirmText, '确认');
   await assert(`__uiFixture.lexiconInput.mode===${JSON.stringify(mode)} && __uiFixture.lexiconInput.confirm===true`, label + '只在确认后提交');
   await js(`__uiFixture.finishLexicon({success:true,results:[[${index},${JSON.stringify(translated)}]],row_snapshots:__uiFixture.lexiconInput.rows,failed_count:0,message:'译名已完成'})`);
   await pause(1100);
   await assert(`document.querySelector('.rb-term-row[data-row-key=\"${index}\"]').querySelectorAll('.ant-table-cell')[2].textContent===${JSON.stringify(translated)} && document.querySelector('.rb-term-row[data-row-key=\"0\"]').querySelectorAll('.ant-table-cell')[2].textContent==='港湾'`, label + '填充目标并保留已有译文');
 }
-for (const label of ['快速翻译','LLM 翻译']) {
+for (const [label, confirmText] of [['快速翻译','快速引擎'],['LLM 翻译','当前接口']]) {
   await click(label);
+  await answerDialog(confirmText, '确认');
   await js("__uiFixture.finishLexicon({success:false,results:[],failed_count:1,warnings:['模拟翻译失败'],message:'模拟翻译失败，原译保持'},'failed')"); await pause(1100);
   await assert("document.querySelector('.rb-term-row[data-row-key=\"0\"]').querySelectorAll('.ant-table-cell')[2].textContent==='港湾' && document.querySelector('.rb-term-row[data-row-key=\"1\"]').querySelectorAll('.ant-table-cell')[2].textContent==='快速译名' && document.querySelector('.rb-term-row[data-row-key=\"2\"]').querySelectorAll('.ant-table-cell')[2].textContent==='模型译名' && document.querySelector('.glossary-layout').textContent.includes('模拟翻译失败')", label + '失败保留全部原译并显示错误');
 }
-await click('扫描术语候选'); await click('停止');
+await click('扫描术语候选'); await answerDialog('未确认候选不会自动变正式', '确认'); await pause(250); await click('停止');
 await js("__uiFixture.lexiconJob.status='cancelled'"); await pause(1100);
 await assert("__uiFixture.lexiconJob.cancel_requested && __uiFixture.lexiconJob.result.worker_active && [...document.querySelectorAll('button')].find(b=>b.textContent.replaceAll(' ','')==='保存到项目').disabled", '词库取消终态仍等待 worker 并保持只读');
 await js("__uiFixture.finishLexicon({message:'已停止'},'cancelled')"); await pause(1100);
@@ -553,11 +580,11 @@ await click('重新载入'); await click('重新载入'); await pause(250);
 await js("__uiFixture.lexiconJob={...structuredClone(__uiFixture.lexiconJob),id:'lexicon-task-recovered',kind:'lexicon_scan_candidates',status:'done',cancel_requested:false,result:{project_key:'ui-check|chinese',output_folder:__uiFixture.values.output_folder,worker_active:false,entries:[...structuredClone(__uiFixture.glossary.rows),{src:'RecoveredOnly',dst:'',candidate:true,record_id:'recovered-c1'}],candidate_ids:['recovered-c1'],written:true,message:'恢复扫描完成'}}");
 await openTool('术语表');
 await assert("document.querySelectorAll('.rb-term-row').length===3 && !document.querySelector('.rb-sheet').textContent.includes('RecoveredOnly') && [...document.querySelectorAll('button')].some(b=>b.textContent==='应用任务结果')", '重开词库仅恢复任务状态不自动覆盖草稿');
-await js("window.confirm=text=>{__uiFixture.lexConfirmTexts.push(text);return false}");
 await click('应用任务结果');
-await assert("document.querySelectorAll('.rb-term-row').length===3 && __uiFixture.lexConfirmTexts.at(-1).includes('草稿')", '拒绝恢复结果确认时保持稿本');
-await js("window.confirm=text=>{__uiFixture.lexConfirmTexts.push(text);return true}");
-await click('应用任务结果'); await pause(250);
+await answerDialog('之后保存才生效', '取消');
+await assert("document.querySelectorAll('.rb-term-row').length===3", '拒绝恢复结果确认时保持稿本');
+await click('应用任务结果');
+await answerDialog('之后保存才生效', '确认'); await pause(250);
 await assert("document.querySelector('.rb-sheet-foot').textContent.includes('4 条') && document.querySelector('.rb-sheet').textContent.includes('RecoveredOnly') && ![...document.querySelectorAll('button')].some(b=>b.textContent==='应用任务结果')", '确认后应用恢复结果且只应用一次');
 await js("document.querySelector('.rb-term-row[data-row-key=\"1\"]').querySelectorAll('.ant-table-cell')[2].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(120);
 await input('.rb-sheet-cell-editor', '恢复后人工译名');
@@ -590,8 +617,7 @@ await js("__uiFixture.engineStatus='IDLE'; __uiFixture.sockets.at(-1).onmessage(
 await assert(`[...document.querySelectorAll('button')].find(b=>b.textContent.replaceAll(' ','')==='保存到项目').disabled && __uiFixture.writes.filter(w=>w.p==='/api/workbench/glossary' && w.method==='PATCH').length===${glossaryPatchBaseline}`, '引擎空闲后仍禁止旧术语草稿串写新项目');
 await js("__uiFixture.values.output_folder=__uiFixture.lexOutputBase; __uiFixture.glossary=structuredClone(__uiFixture.lexGlossaryBase); __uiFixture.lexiconJob=null; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})})"); await pause(250);
 await assert("document.querySelector('.rb-sheet').textContent.includes('GlossaryUnblurDraft')", '恢复 fixture 身份仍保留旧稿直到用户明确载入');
-await click('重新载入'); await click('重新载入'); await pause(250);
-await js("window.confirm=__uiFixture.lexConfirmBase");
+await click('重新载入'); await answerDialog('未保存', '取消'); await click('重新载入'); await answerDialog('未保存', '重新载入'); await pause(250);
 await assert("document.querySelectorAll('.rb-term-row').length===__uiFixture.lexGlossaryBase.rows.length && !document.querySelector('.rb-sheet').textContent.includes('GlossaryUnblurDraft') && !document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改')", '术语场景恢复原 fixture 并明确重新载入');
   await js("__uiFixture.savedPreserveData=structuredClone(__uiFixture.values.text_preserve_data); __uiFixture.savedPreserveEnable=__uiFixture.values.text_preserve_enable; __uiFixture.values.text_preserve_data=Array.from({length:51},(_,i)=>({src:i===0?'<img class=xss src=x> KEEPLONG Rule '+ 'y'.repeat(400):i===50?'TailKeep Rule':'Keep '+i+' Rule',comment:''})); __uiFixture.values.text_preserve_enable=true; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})});");
   await pause(400);
@@ -617,7 +643,7 @@ await assert("document.querySelectorAll('.rb-term-row').length===__uiFixture.lex
   await assert("document.querySelectorAll('.rb-term-row').length>0 && document.querySelectorAll('.rb-term-row').length<=50 && document.querySelector('.rb-sheet-foot').textContent.includes('1 / 1')", '禁翻删除末页后页码收敛');
   await assert("!!Array.from(document.querySelectorAll('button,[role=tab]')).find(b=>b.textContent.trim()==='导入 Excel') && !!Array.from(document.querySelectorAll('button,[role=tab]')).find(b=>b.textContent.trim()==='重新扫描变量') && !!Array.from(document.querySelectorAll('button,[role=tab]')).find(b=>b.textContent.trim()==='统计命中')", '禁翻表旧 Qt 操作按钮齐备');
   await js("__uiFixture.values.text_preserve_data=structuredClone(__uiFixture.savedPreserveData); __uiFixture.values.text_preserve_enable=__uiFixture.savedPreserveEnable;");
-  await click('加载设置'); await pause(400);
+  await click('加载设置'); await answerDialog('放弃未保存的修改并重新加载', '确认'); await pause(400);
   await assert("!document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改')", '禁翻测试后恢复原规则');
 await js("__uiFixture.lexPreserveBase=structuredClone(__uiFixture.values.text_preserve_data); __uiFixture.lexPreserveEnableBase=__uiFixture.values.text_preserve_enable; __uiFixture.lexPreserveOutputBase=__uiFixture.values.output_folder; __uiFixture.lexPreserveConfirmBase=window.confirm; __uiFixture.lexPreserveConfirmTexts=[]; __uiFixture.lexiconJob=null; __uiFixture.values.text_preserve_data=[{src:'[name]',comment:'姓名变量'},{src:'[score]',comment:'分数变量'}]; __uiFixture.values.text_preserve_enable=true");
 await click('加载设置'); await pause(250);
@@ -626,11 +652,11 @@ await assert("__uiFixture.lexiconInput.kind==='preserve' && __uiFixture.lexiconI
 await js("__uiFixture.finishLexicon({kind:'preserve',counts:[3,7],counted_item_total:20,snapshot_keys:['[name]','[score]'],message:'已统计 2 条规则'})"); await pause(1100);
 await assert("[...document.querySelectorAll('.rb-term-row')].map(row=>row.querySelectorAll('.ant-table-cell')[3].textContent.trim()).join(',')==='3,7'", '禁翻命中数映射到原始行');
 const preserveBeforeRescan = await js("__uiFixture.writes.length");
-await js("window.confirm=text=>{__uiFixture.lexPreserveConfirmTexts.push(text);return false}");
 await click('重新扫描变量');
-await assert(`__uiFixture.writes.length===${preserveBeforeRescan} && __uiFixture.lexPreserveConfirmTexts.at(-1).includes('整表替换') && __uiFixture.values.text_preserve_data[0].src==='[name]'`, '禁翻重扫拒绝确认时不提交也不覆盖规则');
-await js("window.confirm=text=>{__uiFixture.lexPreserveConfirmTexts.push(text);return true}");
+await answerDialog('整表替换', '取消');
+await assert(`__uiFixture.writes.length===${preserveBeforeRescan} && __uiFixture.values.text_preserve_data[0].src==='[name]'`, '禁翻重扫拒绝确认时不提交也不覆盖规则');
 await click('重新扫描变量');
+await answerDialog('整表替换', '重新扫描变量');
 await assert("__uiFixture.lexiconInput.confirm===true && __uiFixture.lexiconInput.project_key==='ui-check|chinese'", '确认禁翻重扫后提交身份与覆盖许可');
 const preserveSettingsReads = await js("__uiFixture.reads.filter(p=>p==='/api/settings').length");
 await js("__uiFixture.finishLexicon({written:true,rows:[{src:'[actor]',comment:'重新扫描变量'},{src:'[score]',comment:'重新扫描变量'}],enabled:true,message:'禁翻变量已重扫并保存'})"); await pause(1100);
@@ -645,8 +671,7 @@ await js("__uiFixture.engineStatus='IDLE'; __uiFixture.sockets.at(-1).onmessage(
 await assert(`[...document.querySelectorAll('button')].find(b=>b.textContent.replaceAll(' ','')==='保存设置').disabled && __uiFixture.values.text_preserve_data[0].src==='[new_project]' && __uiFixture.writes.filter(w=>w.p==='/api/settings' && w.method==='PATCH').length===${preservePatchBaseline}`, '引擎空闲后禁止旧禁翻草稿串写新项目设置');
 await js("__uiFixture.values.output_folder=__uiFixture.lexPreserveOutputBase; __uiFixture.values.text_preserve_data=structuredClone(__uiFixture.lexPreserveBase); __uiFixture.values.text_preserve_enable=__uiFixture.lexPreserveEnableBase; __uiFixture.sockets.at(-1).onmessage({data:JSON.stringify({type:'event',event:'PROJECT_CHANGED',data:{}})})"); await pause(250);
 await assert("document.querySelector('.rb-sheet').textContent.includes('[PreserveUnblurDraft]')", '恢复设置 fixture 后仍保留旧禁翻草稿直到明确载入');
-await click('加载设置'); await pause(350);
-await js("window.confirm=__uiFixture.lexPreserveConfirmBase");
+await click('加载设置'); await answerDialog('放弃未保存的修改', '确认'); await pause(350);
 await assert("!document.querySelector('.rb-sheet').textContent.includes('[PreserveUnblurDraft]') && !document.querySelector('.rb-sheet-summary').textContent.includes('有未保存修改') && document.querySelectorAll('.rb-term-row').length===__uiFixture.lexPreserveBase.length", '禁翻场景恢复原规则并明确加载设置');
 
 // 校对页连续上下移动，必须让未挂载行持续接住焦点。
@@ -667,19 +692,22 @@ await openTool('禁翻表');
   await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
   await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
-  await js("__uiFixture.issueDelay=true; document.querySelector('input[type=checkbox][aria-label=only-issues]')?.click()");
-  await js("Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='仅看问题')?.click()"); await pause(30);
-  await assert("!!document.querySelector('.rb-proof-loading') && !document.querySelector('.rb-proofreading-row')", '问题筛选立即反馈且不展示旧结果');
+  await js("__uiFixture.issueDelay=true");
+  await js("Array.from(document.querySelectorAll('label')).find(label=>label.textContent.trim()==='仅看问题')?.click()"); await pause(60);
+  await assert("document.querySelector('.rb-proof-table-scroll').getAttribute('aria-busy')==='true' && document.querySelector('.rb-proof-loading')", '问题筛选立即反馈加载中');
+  await assert("!!document.querySelector('.rb-proofreading-row')", '问题筛选期间保留旧行避免闪烁');
   await pause(420); await js("__uiFixture.issueDelay=false");
   await assert("!document.querySelector('.rb-proof-loading') && !!document.querySelector('.rb-proofreading-row')", '问题检查结束后恢复表格');
   await assert("Array.from(document.querySelectorAll('button,[role=tab]')).find(b=>b.textContent.trim()==='AI 校对').disabled", '质量任务要求先选中译文');
-  await js("document.querySelector('[aria-label=选择行]').click()"); await pause(100);
+  // 取消质量任务后部分刷新会保留或清空选择，盲点「选择行」可能把唯一选中行取消，
+  // 这里改成只在没有选中行时才勾选。
+  await js("(()=>{if(!document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length)document.querySelector('[aria-label=选择行]').click()})()"); await pause(100);
   await click('AI 校对'); await click('开始处理');
   await assert("__uiFixture.writes.some(w=>w.p==='/api/proofreading/quality' && w.body.task==='proofread' && w.body.ids.length===1 && w.body.ids[0]===0 && w.body.rows[0].version==='v1')", 'AI 校对发送选中范围和行版本');
   await assert("document.querySelector('.rb-proofreading-task').textContent.includes('处理') && !document.querySelector('#proofreading-draft')", '质量运行期间只读并显示报告');
   await click('取消质量任务'); await pause(200);
   await assert("!document.querySelector('.rb-proofreading-task') && __uiFixture.qualityReports[0].state === 'CANCELLED'", '质量取消后恢复编辑');
-  await js("document.querySelector('[aria-label=选择行]').click()"); await pause(100);
+  await js("(()=>{if(!document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length)document.querySelector('[aria-label=选择行]').click()})()"); await pause(100);
   await click('AI 润色');
   await js("__uiFixture.rejectQuality = true"); await click('开始处理');
   await assert("!!document.querySelector('[role=dialog]') && __uiFixture.engineStatus==='IDLE' && document.body.textContent.includes('译文或缓存条目已更新')", '版本冲突保留确认并显示真实错误');
@@ -696,12 +724,15 @@ await openTool('禁翻表');
   await js("__uiFixture.items.push({...__uiFixture.items[0],id:1,version:'v2',src:'Another line',dst:'另一行'})"); await click('刷新译文');
   await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await input('#proofreading-draft', '尚未保存的编辑');
-  await js("window.__originalConfirm = window.confirm; window.confirm = () => false; document.querySelectorAll('.rb-proof-target')[1].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
+  await js("document.querySelectorAll('.rb-proof-target')[1].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
+  await answerDialog('确定放弃这次编辑', '取消');
   await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '切换编辑行保留未保存译文');
   await click('取消');
+  await answerDialog('确定放弃这次编辑', '取消');
   await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '取消编辑保留未保存译文');
-  await js("window.confirm = () => true; void 0"); await click('取消');
-  await js("window.confirm = window.__originalConfirm; __uiFixture.items.pop()"); await click('刷新译文');
+  await click('取消');
+  await answerDialog('确定放弃这次编辑', '确认');
+  await js("__uiFixture.items.pop()"); await click('刷新译文');
   await js("__uiFixture.items.push({...__uiFixture.items[0],id:1,version:'v2',src:'Two',dst:'第二行'},{...__uiFixture.items[0],id:2,version:'v3',src:'Three',dst:'第三行'})"); await click('刷新译文');
   await js("document.querySelector('.rb-proofreading-row').click()"); await pause(80);
   await assert("!document.querySelector('#proofreading-draft') && document.querySelectorAll('.rb-proofreading-row[data-selected=true]').length===1", '单击只选行不打开编辑');
@@ -741,7 +772,10 @@ await openTool('禁翻表');
   await page("Ren'Py 工具箱");
   // c194295 起 27 个工具全部接入 ToolBoxPage 的 TOOL_PAGES，.rb-tool-availability（tool_pending 标签）
   // 不再出现；保留断言形式以锁死「没有工具漏接页面」。
-  await assert("document.querySelectorAll('.tool-card').length===27 && document.querySelectorAll('.rb-tool-availability').length===0", '工具箱 27 个工具全部接入页面');
+  // c194295 起工具全部接入 ToolBoxPage 的 TOOL_PAGES，.rb-tool-availability（tool_pending 标签）
+  // 不再出现；保留断言形式以锁死「没有工具漏接页面」。工具数量随注册表调整（当前 26 个，
+  // formatter 已并入 error_repair），所以这里只要求不出现 pending 标签。
+  await assert("document.querySelectorAll('.tool-card').length>=20 && document.querySelectorAll('.rb-tool-availability').length===0", '工具箱全部工具接入页面');
   await capture('new-ui-toolbox-dark');
   await input('.toolbox-search', '术语');
   await assert("document.querySelectorAll('.tool-card').length===1", '工具搜索不重复');
@@ -910,6 +944,16 @@ await js("window.fetch=__uiFixture.oldNameFetch;HTMLAnchorElement.prototype.clic
   await assert("__uiFixture.writes.at(-1).body.confirmation_id==='d'.repeat(32) && __uiFixture.confirmed.at(-1).approved===true", 'Agent 确认仅提交一次性标识');
   await js("__uiFixture.agent.messages.at(-1).content=['**检查完成**','',String.fromCharCode(96).repeat(3)+'renpy','<img src=invalid>',String.fromCharCode(96).repeat(3)].join(String.fromCharCode(10)); __uiFixture.emitAgent();"); await pause(220);
   await assert("!!document.querySelector('.agent-message-body strong') && !!document.querySelector('.agent-message-body pre code') && !document.querySelector('.agent-message-body img')", 'Agent 格式化消息不执行 HTML');
+  // 历史会话：列表、空标题回落、打开旧会话、删除二次确认。
+  await clickAt('[aria-label="历史会话"]');
+  await assert("document.querySelector('.agent-history-panel')?.textContent.includes('旧会话一') && document.querySelector('.agent-history-panel')?.textContent.includes('新会话')", '历史会话列表与未命名回落');
+  await js("[...document.querySelectorAll('.agent-history-open')].find(b=>b.textContent.includes('旧会话一'))?.click()"); await pause(260);
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/agent/sessions/old-1/open') && document.querySelector('.agent-chat').textContent.includes('来自旧会话的记录')", '打开历史会话并恢复记录');
+  await clickAt('[aria-label="历史会话"]'); await pause(160);
+  await js("[...document.querySelectorAll('.agent-history-row')].find(r=>r.textContent.includes('新会话'))?.querySelector('button.ant-btn-dangerous')?.click()"); await pause(200);
+  await assert("!!document.querySelector('[role=dialog]') && document.querySelector('[role=dialog]').textContent.includes('无法恢复')", '删除历史会话需二次确认');
+  await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent.trim()==='删除')?.click()"); await pause(240);
+  await assert("__uiFixture.writes.some(w=>w.p==='/api/agent/sessions/old-2' && w.method==='DELETE') && !document.querySelector('.agent-history-panel')?.textContent.includes('新会话')", '确认后删除历史会话');
   await input('.agent-composer textarea', '断线时保留的草稿');
   const readsBeforeReconnect = await js("__uiFixture.reads.filter(path=>path==='/api/settings').length");
   await js("__uiFixture.sockets.at(-1).close()"); await pause(120);

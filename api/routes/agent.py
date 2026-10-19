@@ -52,3 +52,26 @@ def confirm_tool(request: Request, body: AgentConfirmationRequest) -> dict:
         return _sanitise(request.app.state.agent.confirm(body.confirmation_id, body.approved))
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/sessions")
+def list_sessions(request: Request) -> dict:
+    return {"sessions": _sanitise(request.app.state.agent.list_sessions())}
+
+
+@router.post("/sessions/{session_id}/open")
+def open_session(request: Request, session_id: str) -> dict:
+    try:
+        return _sanitise(request.app.state.agent.open_session(session_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(request: Request, session_id: str) -> dict:
+    try:
+        return {"deleted": bool(request.app.state.agent.delete_session(session_id))}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

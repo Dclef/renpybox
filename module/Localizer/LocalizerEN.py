@@ -402,6 +402,32 @@ class LocalizerEN(LocalizerZH):
     project_page_traditional_chinese_title: str = "Output Chinese in Traditional Characters"
     project_page_traditional_chinese_content: str = "When enabled, Chinese text will be output in Traditional characters if the target language is set to Chinese"
 
+    # Project file API errors
+    project_file_api_invalid: str = "Project file is unavailable ({code}): {error}"
+    project_file_api_busy: str = "A task is running or shutting down. Please try again later."
+    project_file_api_no_output: str = "The current project has no available translation output folder."
+    project_file_api_pending_save: str = "Translation results are pending save. Please try again later: {error}"
+    project_file_api_invalid_setting: str = "Project file is unavailable (invalid_settings): invalid value for {key}"
+    project_file_api_cache_restore_failed: str = "{reason}; restoring the original cache also failed{backups}: {error}; restore errors: {restore_errors}"
+    project_file_api_cache_restored: str = "{reason}; the pre-import cache was restored{backups}: {error}"
+    project_file_api_backups_retained: str = "; backups retained at {paths}"
+    project_file_api_restore_error: str = "{path}: {error}"
+    project_file_api_path_separator: str = ", "
+    project_file_api_error_separator: str = "; "
+    project_file_api_no_cache: str = "This project has no translation cache to export."
+    project_file_api_cache_read_failed: str = "Failed to read the translation cache; nothing was exported: {error}"
+    project_file_api_assets_read_failed: str = "Failed to read project assets; nothing was exported: {error}"
+    project_file_api_cache_backup_failed: str = "Failed to back up the existing cache; nothing was imported: {error}"
+    project_file_api_assets_backup_failed: str = "Failed to back up project assets; nothing was imported: {error}"
+    project_file_api_cache_install_failed: str = "Failed to install the imported cache"
+    project_file_api_assets_sync_failed: str = "Failed to synchronize project assets"
+    project_file_api_settings_save_failed: str = "Failed to save settings; the imported settings were not applied"
+    project_file_api_legacy_folder_invalid: str = "The legacy cache folder is invalid. Choose an old output folder or its cache subfolder."
+    project_file_api_legacy_no_cache: str = "The selected folder has no translation cache to migrate (cache.db, or items.json together with project.json)."
+    project_file_api_legacy_cache_invalid: str = "The legacy translation cache is incomplete or damaged and was not read: {error}"
+    project_file_api_legacy_unbound: str = "Bind the current Ren'Py game before exporting a legacy cache. The project file records the current game and does not switch to the old folder."
+    project_file_api_legacy_destination_forbidden: str = "That export path would overwrite the legacy cache, the current cache, or another source file. Choose a different .rbox location."
+
     # 开始翻译
     translation_page_status_idle: str = "Idle"
     translation_page_status_testing: str = "Testing"
@@ -845,6 +871,12 @@ class LocalizerEN(LocalizerZH):
         "read_skill for the relevant skills (text-preserve, glossary, proofreading); tags, "
         "variables, and escape placeholders must be preserved exactly. Confirm that no entries "
         "remain untranslated before applying.\n"
+        "When the user asks you to polish, refine, or improve existing translations against the "
+        "source, pass mode=\"polish\" to both batch tools: read_translation_batch then returns "
+        "already-translated entries together with their current text in dst, you refine them against "
+        "the source, and write_translation_batch(mode=\"polish\") writes them back marked as polished "
+        "so they are distinguishable from freshly translated ones. Polished entries are not returned "
+        "again, so keep going until the reported remaining count reaches 0.\n"
         "When the user asks you to translate the whole project, keep going until nothing is left: do "
         "not stop after a few dozen entries to summarize, and do not ask the user between batches. "
         "Stop only when the user asks you to, or when you hit an error you cannot resolve.\n"
@@ -878,6 +910,11 @@ class LocalizerEN(LocalizerZH):
     agent_tool_arguments_must_be_object: str = "Tool arguments must be a JSON object."
     agent_tool_undeclared_arguments: str = "Undeclared arguments: {names}."
     agent_tool_missing_arguments: str = "Missing required arguments: {names}."
+    agent_tool_arguments_truncated: str = (
+        "The tool arguments were cut off at the {limit}-token output limit, so they could not be "
+        "parsed. Retrying the same call will fail again: send fewer items per call (for example "
+        "10-20 entries) and keep going until the batch is done."
+    )
     agent_tool_argument_must_be_string: str = "Argument {name} must be a string."
     agent_tool_argument_must_be_object: str = "Argument {name} must be an object."
     agent_tool_argument_must_be_boolean: str = "Argument {name} must be a boolean."
@@ -923,6 +960,11 @@ class LocalizerEN(LocalizerZH):
     agent_extract_failed: str = "Text extraction failed. Check the log for details."
     agent_translation_status_ready: str = (
         "Translation status: engine {engine_status}, {untranslated_count} untranslated entries."
+    )
+    agent_quality_candidates_ready: str = (
+        "{polish} entries can be polished and {proofread} can be proofread. "
+        "Polishing only touches translated lines, so size the batches from these counts "
+        "instead of reading a batch first."
     )
     agent_refresh_fallback_complete: str = (
         "Refreshed the replace_text fallback with {count} entries: {output_path}"
@@ -992,15 +1034,18 @@ class LocalizerEN(LocalizerZH):
 
     # Agent-owned translation
     agent_tool_read_translation_batch_description: str = (
-        "Read a batch of untranslated entries. Each item has an id, the source text src, an optional "
-        "name_src (character name), and text_type. Entries come from the project's translation cache "
-        "and are the same data the translation engine uses. An empty batch means everything is "
-        "translated or text has not been extracted yet."
+        "Read a batch of entries. mode=translate (default) returns untranslated entries. Each item has "
+        "an id, the source text src, an optional name_src (character name), and text_type. mode=polish "
+        "returns already-translated entries and adds the existing translation dst and name_dst, so you "
+        "can polish existing work against the source. Entries come from the project's translation cache "
+        "and are the same data the translation engine uses. An empty batch means everything is done "
+        "for that mode, or text has not been extracted yet."
     )
     agent_tool_write_translation_batch_description: str = (
         "Write translations back to the project: into the cache, through the project's quality "
         "checks (markup preservation, glossary, similarity), and into the .rpy files under the "
-        "translation output folder. Ids must come from read_translation_batch. Entries that fail "
+        "translation output folder. Ids must come from read_translation_batch, and mode must match the "
+        "read call: translate marks entries translated, polish marks them polished. Entries that fail "
         "quality checks are reset to untranslated and counted as failed; they are not written. This "
         "writes the translation workspace, not the game folder; apply_translation is still required "
         "to put translations into the game."
@@ -1019,6 +1064,13 @@ class LocalizerEN(LocalizerZH):
     agent_translate_nothing_written: str = "No translation was accepted ({count} rejected). Check that the ids come from read_translation_batch."
     agent_translate_writeback_failed: str = "Translations reached the cache but writing the output folder failed: {detail}"
     agent_translate_batch_written: str = "Wrote {written} translations; {failed} failed the quality checks."
+    agent_translate_mode_param_description: str = (
+        "Which entries to take: translate (default, untranslated ones) or polish (already translated "
+        "ones; the response also carries the current translation in dst, for polishing against the source)."
+    )
+    agent_polish_batch_ready: str = "{count} translated entries in this batch, {remaining} left to polish."
+    agent_polish_batch_empty: str = "Nothing to polish; this project may not have any translations yet."
+    agent_polish_batch_written: str = "Wrote {written} polished entries; {failed} failed the quality checks."
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"
@@ -2389,10 +2441,12 @@ class LocalizerEN(LocalizerZH):
     workbench_open_do_not_translate_list: str = 'Open Do-Not-Translate List'
     workbench_open_custom_prompts: str = 'Open Custom Prompts'
     workbench_progress_loading: str = 'Reading project text and scanning character candidates...'
-    workbench_progress_worldbook: str = 'Generating the worldbuilding draft; waiting for the model...'
+    workbench_progress_scanning_characters: str = 'Scanning character lines ({count} corpus entries)...'
+    workbench_progress_worldbook: str = 'Generating the worldbuilding draft from {count} samples; waiting for the model...'
     workbench_progress_worldbook_done: str = 'Worldbuilding draft generated and parsed.'
     workbench_progress_no_characters: str = 'No character candidates available for draft generation.'
     workbench_progress_characters: str = 'Character batch {batch}/{total}; waiting for the model: {names}'
+    workbench_progress_characters_progress: str = 'Character batches done: {completed}/{total}, waiting for the rest...'
     workbench_progress_characters_done: str = 'Processed {count} character drafts.'
     workbench_progress_elapsed: str = 'Elapsed: {minutes} min {seconds} sec'
     workbench_progress_complete: str = 'Analysis complete: {worlds} worldbuilding drafts and {count} character drafts. Review and apply them.'
@@ -2652,8 +2706,19 @@ class LocalizerEN(LocalizerZH):
     toolbox_tool_name_extraction_description: str = 'Scan scripts and JSON files to create a character-name list'
     toolbox_tool_pack_unpack_title: str = 'Pack / Unpack'
     toolbox_tool_pack_unpack_description: str = 'Unpack RPA archives or package game assets'
-    toolbox_tool_error_repair_title: str = 'Error Repair'
-    toolbox_tool_error_repair_description: str = 'Scan and fix generated .rpy errors in the translation folder'
+    toolbox_tool_error_repair_title: str = 'Script Repair'
+    toolbox_tool_error_repair_description: str = 'Scan and fix .rpy issues in the translation folder: indentation, duplicate translations, empty blocks, leftover incremental folders, and formatting'
+    error_repair_scan_summary: str = 'Found {total} issue(s): {fixable} auto-fixable, {manual} manual, {env} environment'
+    error_repair_no_issues: str = 'No issues found'
+    error_repair_fix_summary: str = 'Fixed {files} file(s), {items} change(s)'
+    error_repair_fix_remaining: str = '; {count} issue(s) still need manual work'
+    error_repair_fix_rescan_skipped: str = '; fix did not finish, rescan skipped'
+    error_repair_fix_rescan_incomplete: str = '; rescan did not finish, remaining issues unknown; please scan again'
+    error_repair_env_backup: str = ' (full backup saved to {target} before merging)'
+    error_repair_env_leftover: str = 'Unmerged incremental folder: {name} ({count} duplicate lines; the game will fail with "translation already exists")'
+    error_repair_env_merged: str = 'Merged {name} into {tl}'
+    error_repair_env_moved: str = 'Moved {name} to {target}'
+    error_repair_env_failed: str = 'Failed to handle {name}: {error}'
     toolbox_tool_translation_reuse_title: str = 'Reuse Updated Translations'
     toolbox_tool_translation_reuse_description: str = 'Fill empty entries in a new version with matching previous translations'
     toolbox_tool_formatter_title: str = 'Code Formatter'

@@ -1,5 +1,5 @@
 /** 字体注入：扫描 / 预置注入 / 一键替换，对齐 Qt5 FontReplacePage。 */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Collapse, Form, Input, Progress, Select } from 'antd';
 
 import {
@@ -15,7 +15,6 @@ import {
   fontGameDirReady,
   fontToolsGamePathPayload,
   fontToolsStatusPath,
-  fontWriteNeedsRescan,
   formatFontBackupSideEffect,
   formatFontRestoreHint,
   formatFontScanSummary,
@@ -85,8 +84,6 @@ export function FontReplacePage(props: { state: AppState }) {
   const [confirmInject, setConfirmInject] = useState(false);
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const scannedIdentity = useRef('');
-  const rescanAfterWrite = useRef('');
   const statusPath = useMemo(() => fontToolsStatusPath(gameDir), [gameDir]);
   const suite = useProjectToolJob<FontResult, FontStatus>(state, statusPath, KINDS);
   const { status, keyReady, job, result, active, error, cancelling, busy } = suite;
@@ -148,7 +145,6 @@ export function FontReplacePage(props: { state: AppState }) {
     () => fontToolsGamePathPayload(gameDir, boundGame),
     [gameDir, boundGame],
   );
-  const scanScope = `${suite.identity}\0${statusPath}`;
 
   useEffect(() => {
     // 仅 owner（全局项目）变化时重置手动目录，避免改目录循环刷回绑定路径
@@ -163,8 +159,6 @@ export function FontReplacePage(props: { state: AppState }) {
     setOriginalFont('');
     setAutoBackup(true);
     setAdvancedOpen(false);
-    scannedIdentity.current = '';
-    rescanAfterWrite.current = '';
     if (languages.includes('chinese')) setSelected('chinese');
     else if (languages[0]) setSelected(languages[0]);
   }, [suite.identity]);
@@ -173,44 +167,6 @@ export function FontReplacePage(props: { state: AppState }) {
   useEffect(() => {
     if (!custom && languages.includes('chinese')) setSelected('chinese');
   }, [languagesKey, custom]);
-
-  // 绑定目录或手动目标变化后自动扫描；空目录禁止回退 bound；scope 含 statusPath
-  useEffect(() => {
-    if (!gameDirReady) {
-      // 空目录不得扫描；清掉占位，否则恢复同一路径时 scannedIdentity===scanScope 会跳过自动扫描
-      scannedIdentity.current = '';
-      return;
-    }
-    if (!keyReady || !hasProject || state.link !== 'open' || busy || engineBusy) return;
-    if (scannedIdentity.current === scanScope) return;
-    scannedIdentity.current = scanScope;
-    void suite.submit('/api/font-tools/scan', { ...pathPayload }).then((ok) => {
-      if (ok) return;
-      // pending 守卫丢弃时释放占位，避免永久跳过
-      if (scannedIdentity.current === scanScope) scannedIdentity.current = '';
-    });
-  }, [keyReady, hasProject, state.link, scanScope, busy, engineBusy, suite.submit, pathPayload, gameDirReady]);
-
-  // 注入/替换任意实际写入终态都作废旧 refs 并自动重扫；写报告由 last_write_job 保留
-  // busy/pending 时不得提前占位：否则 submit 被守卫丢弃后永远不再重试，页面会卡在 scan_stale
-  useEffect(() => {
-    if (active || busy || !fontWriteNeedsRescan(job, result)) return;
-    if (!job || rescanAfterWrite.current === job.id) return;
-    if (!keyReady || !hasProject || state.link !== 'open' || engineBusy) return;
-    if (!gameDirReady) return;
-    const writeId = job.id;
-    rescanAfterWrite.current = writeId;
-    scannedIdentity.current = scanScope;
-    void suite.submit('/api/font-tools/scan', { ...pathPayload }).then((ok) => {
-      if (ok) return;
-      // submit 被 pending/canonical 拒绝：释放占位，等 busy 结束后由本 effect 重试
-      if (rescanAfterWrite.current === writeId) rescanAfterWrite.current = '';
-      if (scannedIdentity.current === scanScope) scannedIdentity.current = '';
-    });
-  }, [
-    active, busy, job?.id, job?.status, result?.action, result?.written,
-    keyReady, hasProject, state.link, engineBusy, scanScope, suite.submit, pathPayload, gameDirReady,
-  ]);
 
   const fontRefsKey = fontRefs.join('\0');
   useEffect(() => {
@@ -263,7 +219,6 @@ export function FontReplacePage(props: { state: AppState }) {
 
   function rescan() {
     if (!fontGameDirReady(gameDir)) return;
-    scannedIdentity.current = scanScope;
     void suite.submit('/api/font-tools/scan', { ...pathPayload });
   }
 

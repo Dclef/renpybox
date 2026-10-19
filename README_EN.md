@@ -60,12 +60,12 @@
 
 ## Toolbox Modules 🧰
 
-The desktop Ren'Py Toolbox has 27 tools in four groups:
+The desktop Ren'Py Toolbox has 26 tools in four groups:
 
 - **Recommended (9)**: Resume translation, One-click translation, Review & polish, Apply translations, Install fonts, Add language switch, Default language, Glossary, Preserved text
 - **Translation (7)**: RPY extraction rules, Extract to TL, Translate RPY, HOOK translation, Translate source, Fill missing text, Text extract JSON
 - **Text & assets (4)**: Honorific bridge, Structure export, Batch correction, Name extraction
-- **Engineering (7)**: Unpack / pack, Error repair, Translation reuse, Code formatting, Android packaging, Web / AI translation wizard, Game mod injection
+- **Engineering (6)**: Unpack / pack, Script repair, Translation reuse, Android packaging, Web / AI translation wizard, Game mod injection
 
 Open proofreading from Toolbox **Review & polish**, or from Translation Task via **Open Proofreading**. Edits save to the translation cache; writing back to the game uses **Write translation files** or **Apply translations**. Editing in proofreading does not automatically rewrite game files.
 
@@ -83,10 +83,18 @@ Release assets:
 
 | File | Purpose |
 | --- | --- |
-| `RenpyBox-0.9.1-x64.exe` | Windows installer (recommended) |
-| `RenpyBox-0.9.1-x64.zip` | Portable ZIP; extract fully, then run the app inside |
+| `RenpyBox-0.9.4-x64.exe` | Windows installer (recommended) |
+| `RenpyBox-0.9.4-x64.zip` | Portable ZIP; extract fully, then run the app inside |
 
-Desktop packaged builds download a full installer when checking for updates (with size and SHA-256 verification). The app keeps its config in `%APPDATA%\RenpyBox` (the legacy `RenpyBox-newUI` folder is migrated automatically on first launch). To migrate from the older Python app, open **Platforms** and choose **Add Platform → Import from older version**, then select the old app's `config.json`; keys live in Windows Credential Manager and are picked up automatically.
+Desktop packaged builds prefer an incremental update from the previous version and fall back to the full installer for other versions or if the incremental update fails (with size and SHA-256 verification). The app keeps its config in `%APPDATA%\RenpyBox` (the legacy `RenpyBox-newUI` folder is migrated automatically on first launch). To migrate from the older Python app, open **Platforms** and choose **Add Platform → Import from older version**, then select the old app's `config.json`; keys live in Windows Credential Manager and are picked up automatically.
+
+Older SQLite and JSON translation caches remain usable; upgrading does not force a conversion. For backup or continuing on another machine, open **Project Settings → Project File (.rbox)**:
+
+1. Bind the matching game, choose **Create Project File from Older Data**, and select the old output folder or its `cache` folder. Older data outside the game folder is supported.
+2. Check the source, format, item count, and current game in the preview, then choose where to save. This only creates an `.rbox` file: older data stays unchanged and the current cache is not replaced. Project settings come from this app; the older program's configuration is not read automatically.
+3. Bind the same game at the destination, choose **Import Project File**, and confirm the preview. Import backs up the existing cache first and restores it if import fails.
+
+An `.rbox` file is a manual snapshot: save it again after further translation or setting changes. It contains the translation cache and allowed project settings, without game source files, API platforms, or credentials. Keep the game files separately and use **Import from older version** above to migrate API platforms.
 
 ## Quick Start
 
@@ -97,6 +105,11 @@ Desktop packaged builds download a full installer when checking for updates (wit
 5. If needed, use **Apply translations**, install fonts, add a language switch, or set the default language.
 
 ## Recent Updates 📅
+
+- 2026-10-20 v0.9.4:
+  - Added `.rbox` snapshots and a guided migration path for older SQLite / JSON caches, with compatibility notes, import previews, and backups.
+  - Combined error repair and code formatting into **Script repair**, with safe fixes enabled by default; improved glossary preparation and character / worldbook analysis.
+  - Added combined multi-select proofreading filters and cumulative Agent usage metrics; improved truncated-response recovery and fixed deleted history returning and implicit font scans.
 
 - 2026-10-15 v0.9.1:
   - Fixed an empty platform list on the first desktop launch; built-in platform templates are now prepared automatically.

@@ -54,7 +54,7 @@ const ENGLISH_TOOLS: Record<string, [string, string]> = {
   batch_correction: ['Batch correction', 'Apply text corrections across translation files'],
   name_extraction: ['Extract names', 'Collect names from scripts for consistent translation'],
   pack_unpack: ['Archives & decompilation', 'Pack, unpack and decompile game resources'],
-  error_repair: ['Check & repair scripts', 'Find script errors and repair supported issues'],
+  error_repair: ['Script repair', 'Scan and fix script issues: indentation, duplicates, empty blocks, leftover incremental folders, formatting'],
   translation_reuse: ['Reuse translations', 'Match and reuse translations from another project'],
   formatter: ['Format scripts', 'Normalize script formatting'],
   android_build: ['Android build', 'Install the SDK, sign and build APKs; pack shell archives and strip / restore the X- prefix.'],

@@ -173,6 +173,10 @@ def test_cancel_before_write_is_safe(font_app, monkeypatch):
     # 取消发生在真正写入前（check_cancel），不应留下完整注入产物
     assert not (game / "tl" / "chinese" / "base_box").exists()
     assert engine.get_status() == Engine.Status.IDLE
+    follow_up = client.post("/api/font-tools/scan", json={"project_key": paths.project_key})
+    assert follow_up.status_code == 200, follow_up.text
+    assert _finish(client, follow_up.json()["job"]["id"])["status"] == "done"
+    assert engine.get_status() == Engine.Status.IDLE
 
 
 def test_project_switch_rejects_stale_write(font_app, monkeypatch, tmp_path):
@@ -491,7 +495,7 @@ def test_inject_deploy_partial_failure_keeps_backup_and_written(font_app, monkey
 
 def test_inject_gui_exception_keeps_written_backup(font_app, monkeypatch, tmp_path):
     """部署成功后 GUI 异常：仍保留 written/partial/backup。"""
-    client, _, _, _, game, paths, _ = font_app
+    client, _, engine, _, game, paths, _ = font_app
     custom = tmp_path / "hook.ttf"
     custom.write_bytes(b"hook-font")
 
@@ -511,6 +515,11 @@ def test_inject_gui_exception_keeps_written_backup(font_app, monkeypatch, tmp_pa
     assert result["partial"] is True
     assert result.get("gui_hook") is False
     assert (game / "tl" / "chinese" / "base_box").is_dir()
+    assert engine.get_status() == Engine.Status.IDLE
+    follow_up = client.post("/api/font-tools/scan", json={"project_key": paths.project_key})
+    assert follow_up.status_code == 200, follow_up.text
+    assert _finish(client, follow_up.json()["job"]["id"])["status"] == "done"
+    assert engine.get_status() == Engine.Status.IDLE
 
 
 def test_inject_backup_copy_failure_leaves_no_live_rpy(font_app, monkeypatch):
@@ -820,7 +829,7 @@ def test_manual_game_path_uses_target_key_without_rebinding(font_app, tmp_path):
 
 
 def test_last_write_job_survives_rescan(font_app):
-    """自动重扫后 status.job 可为 scan，但 last_write_job 保留写入计数/备份路径。"""
+    """手动重扫后 status.job 可为 scan，last_write_job 仍保留写入信息。"""
     client, _, _, _, game, paths, _ = font_app
     _seed_fonts(game)
     inject = client.post("/api/font-tools/inject", json=_inject(paths.project_key))
@@ -906,3 +915,43 @@ def test_explicit_empty_game_path_rejected_omit_still_bound(font_app):
     )
     assert empty_inject.status_code == 400
     assert not (game / "tl" / "chinese" / "base_box").exists()
+
+
+@pytest.mark.parametrize("stage", ["scripts", "font_files"])
+def test_cancel_inside_scanner_releases_engine(font_app, monkeypatch, stage):
+    """取消须进入真实扫描器，不能一直等整次扫描自然结束。"""
+    from module.Tool.FontReplacer import FontReplacer
+
+    client, _, engine, _, game, paths, _ = font_app
+    _seed_fonts(game)
+    entered, release = threading.Event(), threading.Event()
+    real = FontReplacer._iter_game_files
+    callbacks = []
+
+    def walk(self, base_path, extensions, *, check_cancel=None):
+        is_fonts = ".ttf" in extensions
+        if is_fonts == (stage == "font_files"):
+            callbacks.append(check_cancel)
+            entered.set()
+            assert release.wait(5)
+        return real(self, base_path, extensions, check_cancel=check_cancel)
+
+    monkeypatch.setattr(FontReplacer, "_iter_game_files", walk)
+    try:
+        response = client.post("/api/font-tools/scan", json={"project_key": paths.project_key})
+        assert response.status_code == 200, response.text
+        job_id = response.json()["job"]["id"]
+        assert entered.wait(2)
+        assert engine.get_status() == Engine.Status.TESTING
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+    finally:
+        release.set()
+    job = _finish(client, job_id)
+    assert callbacks and all(callable(callback) for callback in callbacks)
+    assert job["status"] == "cancelled"
+    assert job["result"]["worker_active"] is False
+    assert job["result"]["written"] is False
+    assert engine.get_status() == Engine.Status.IDLE
+    injected = client.post("/api/font-tools/inject", json=_inject(paths.project_key))
+    assert injected.status_code == 200, injected.text
+    assert _finish(client, injected.json()["job"]["id"])["status"] == "done"

@@ -14,6 +14,11 @@ import type {
   HookTranslateStartOptions,
   HookTranslateStartResponse,
   JobSnapshot,
+  LegacyProjectCacheDescription,
+  LegacyProjectFileExportResult,
+  ProjectFileDescription,
+  ProjectFileExportResult,
+  ProjectFileImportResult,
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
@@ -132,6 +137,30 @@ export function confirmAgentTool(confirmationId: string, approved: boolean): Pro
   });
 }
 
+export interface AgentSessionSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export function listAgentSessions(): Promise<{ sessions: AgentSessionSummary[] }> {
+  return request<{ sessions: AgentSessionSummary[] }>('/api/agent/sessions');
+}
+
+export function openAgentSession(sessionId: string): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/open`, {
+    method: 'POST',
+  });
+}
+
+export function deleteAgentSession(sessionId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
 export function getVersion(): Promise<VersionInfo> {
   return request<VersionInfo>('/api/version');
 }
@@ -192,6 +221,48 @@ export function setProjectPath(projectPath: string, gameFolder?: string): Promis
  */
 export function resolveProject(path: string): Promise<ProjectInfo> {
   return request<ProjectInfo>('/api/project/resolve', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+// ---------- .rbox 工程文件 ----------
+
+/** 只读校验 .rbox 元数据，不触碰缓存。 */
+export function inspectProjectFile(path: string): Promise<ProjectFileDescription> {
+  return request<ProjectFileDescription>('/api/project/file/inspect', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+/** 把当前输出缓存与白名单项目设置导出为 .rbox。 */
+export function exportProjectFile(path: string): Promise<ProjectFileExportResult> {
+  return request<ProjectFileExportResult>('/api/project/file/export', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+}
+
+/** 严格预览用户显式选择的旧输出/cache 目录；不改当前工程绑定。 */
+export function inspectLegacyProjectCache(folder: string): Promise<LegacyProjectCacheDescription> {
+  return request<LegacyProjectCacheDescription>('/api/project/file/legacy/inspect', {
+    method: 'POST',
+    body: JSON.stringify({ folder }),
+  });
+}
+
+/** 从指定旧缓存创建 .rbox，不替换源缓存或当前输出。 */
+export function exportLegacyProjectFile(folder: string, path: string): Promise<LegacyProjectFileExportResult> {
+  return request<LegacyProjectFileExportResult>('/api/project/file/legacy/export', {
+    method: 'POST',
+    body: JSON.stringify({ folder, path }),
+  });
+}
+
+/** 备份并替换当前输出缓存，只应用白名单设置；不改项目/输入/输出路径。 */
+export function importProjectFile(path: string): Promise<ProjectFileImportResult> {
+  return request<ProjectFileImportResult>('/api/project/file/import', {
     method: 'POST',
     body: JSON.stringify({ path }),
   });

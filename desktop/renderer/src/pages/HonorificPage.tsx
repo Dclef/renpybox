@@ -7,7 +7,7 @@ import { request } from '../api';
 import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
 import { useT } from '../i18n';
 import type { AppState } from '../useAppState';
-import { Banner, NextStepBar } from '../ui';
+import { Banner, Dialog, NextStepBar } from '../ui';
 
 interface HonorificRow {
   id: string;
@@ -65,6 +65,7 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
   const [editGeneration, setEditGeneration] = useState(0);
   const [editRequest, setEditRequest] = useState<DataSheetEditTarget | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<'reload' | 'defaults' | 'clear' | null>(null);
   const unsaved = dirty || cellDirty;
   const engineBusy = state.saving || state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
   const locked = busy || engineBusy;
@@ -117,7 +118,6 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
   };
 
   const reload = async () => {
-    if (unsaved && !window.confirm(t('honorific_reload_confirm'))) return;
     const id = ++operation.current;
     setBusy(true);
     try {
@@ -142,7 +142,6 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
   };
 
   const loadDefaults = async () => {
-    if (!window.confirm(t('honorific_defaults_confirm'))) return;
     const id = ++operation.current;
     setBusy(true);
     try {
@@ -216,7 +215,6 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
   };
 
   const clearAll = () => {
-    if (!window.confirm(t('honorific_clear_confirm'))) return;
     setRows([]);
     setSelectedKey(null);
     setDirty(true);
@@ -241,9 +239,9 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
           <span>{summary}</span>
         </div>
         <span className="rb-toolbar-spacer" />
-        <Button disabled={locked} onClick={() => void reload()}>{t('rules_reload')}</Button>
-        <Button disabled={locked} onClick={() => void loadDefaults()}>{t('rules_defaults')}</Button>
-        <Button danger type="text" disabled={locked || !rows.length} onClick={clearAll}>{t('rules_clear')}</Button>
+        <Button disabled={locked} onClick={() => (unsaved ? setConfirm('reload') : void reload())}>{t('rules_reload')}</Button>
+        <Button disabled={locked} onClick={() => setConfirm('defaults')}>{t('rules_defaults')}</Button>
+        <Button danger type="text" disabled={locked || !rows.length} onClick={() => setConfirm('clear')}>{t('rules_clear')}</Button>
         <Button type="primary" disabled={locked || !unsaved} onClick={() => void save()}>{state.saving || busy ? t('honorific_saving') : t('honorific_save')}</Button>
       </div>
       <div className="rb-toolbar">
@@ -302,6 +300,21 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
         ]}
       />
       {onNextStep ? <NextStepBar label={t('flow_next_onekey')} dirty={unsaved} onNext={onNextStep} /> : null}
+      {confirm === 'reload' ? (
+        <Dialog title={t('honorific_reload_title')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void reload(); }}>
+          {t('honorific_reload_confirm')}
+        </Dialog>
+      ) : null}
+      {confirm === 'defaults' ? (
+        <Dialog title={t('honorific_defaults_title')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void loadDefaults(); }}>
+          {t('honorific_defaults_confirm')}
+        </Dialog>
+      ) : null}
+      {confirm === 'clear' ? (
+        <Dialog title={t('honorific_clear_title')} confirmText={t('rules_clear')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); clearAll(); }}>
+          {t('honorific_clear_confirm')}
+        </Dialog>
+      ) : null}
     </div>
   );
 }

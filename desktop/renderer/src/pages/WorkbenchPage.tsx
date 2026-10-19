@@ -1,6 +1,6 @@
 /** 项目资料工作台：手动编辑保存在项目资产仓库，提示词预览复用真实构造器。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Dropdown, Form, Input, Select, Spin, Tabs, Tag } from 'antd';
+import { Button, Dropdown, Form, Input, Progress, Select, Spin, Tabs, Tag } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT, type TextKey } from '../i18n';
@@ -105,7 +105,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | null>(null);
+  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | 'remove-all' | null>(null);
   const [snapshotProjectKey, setSnapshotProjectKey] = useState('');
   const [analysisAction, setAnalysisAction] = useState<Exclude<AnalysisAction, 'scan'>>('all');
   const [analysisScope, setAnalysisScope] = useState<AnalysisScope>('current');
@@ -464,6 +464,15 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             <strong>{analysisActive ? <Spin size="small" aria-hidden /> : null}{cancellationRequested ? t('workbench_status_cancelling') : statusLabels[analysisJob.status]}</strong>
             <span>{jobResult ? analysisLabels[jobResult.action] : t('workbench_analysis_title')} · {jobResult ? scopeLabels[jobResult.scope] : scopeLabels[analysisScope]}</span>
             {analysisJob.error || jobResult?.message ? <p>{analysisJob.error || jobResult?.message}</p> : null}
+            {analysisActive && analysisJob.total > 0 ? (
+              <Progress
+                className="rb-workbench-analysis-progress"
+                percent={Math.min(100, Math.max(0, Math.round((analysisJob.progress || 0) * 100)))}
+                size="small"
+                status={cancellationRequested ? 'exception' : 'active'}
+                showInfo
+              />
+            ) : null}
             {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts?.length ?? 0))}</p> : null}
             {cancellationRequested ? <p>{t('workbench_cancel_hint')}</p> : null}
           </div>
@@ -599,6 +608,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
               <div className="rb-workbench-roster-head">
                 <strong>角色资料 {draft.characters.length}</strong>
                 <Button size="small" type="default" disabled={busy} onClick={addCharacter}>新增</Button>
+                <Button size="small" danger disabled={busy || !draft.characters.length} onClick={() => setConfirm('remove-all')}>{t('workbench_remove_all_characters')}</Button>
               </div>
               <Input aria-label={t('workbench_search')} placeholder={t('workbench_search_placeholder')} value={search} onChange={(event) => setSearch(event.target.value)} />
               <div className="rb-workbench-roster-list">
@@ -687,6 +697,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
         </dl>
         <p>{t('workbench_analysis_confirm_hint')}</p>
       </Dialog> : null}
+      {confirm === 'remove-all' ? <Dialog title={t('workbench_remove_all_characters_title')} confirmText={t('workbench_remove_all_characters')} onCancel={() => setConfirm(null)} onConfirm={() => { if (!draft) return; setDraft({ ...draft, characters: [] }); setSelectedId(''); setPreview(null); setConfirm(null); }}>{t('workbench_remove_all_characters_body')}</Dialog> : null}
       {confirm === 'delete' && selected ? <Dialog title="删除角色资料" confirmText="删除" onCancel={() => setConfirm(null)} onConfirm={() => { if (!draft) return; const cards = draft.characters.filter((card) => card.id !== selected.id); setDraft({ ...draft, characters: cards }); setSelectedId(cards[0]?.id ?? ''); setConfirm(null); setPreview(null); }}>删除「{selected.name}」？点击保存后，删除才会写入当前项目。</Dialog> : null}
       {confirm === 'reload' ? <Dialog title="重新加载项目资料" confirmText="丢弃并重新加载" onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void reload(); }}>当前未保存的修改将被丢弃。</Dialog> : null}
       {confirm === 'apply' ? <Dialog title="应用已有草稿" confirmText="应用草稿" onCancel={() => setConfirm(null)} onConfirm={() => void applyDrafts()}>草稿将合并到正式世界观和角色资料中，并启用对应上下文。正式资料中的同名字段可能更新。</Dialog> : null}

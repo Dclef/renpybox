@@ -19,6 +19,12 @@ datas = [(str(staging / "resource"), "resource"),
          (str(project_root / "LICENSE"), ".")]
 for name in ("android_build_runner.py", "rpatool_core.py"):
     datas.append((str(project_root / "module" / "Tool" / name), "module/Tool"))
+# Agent 技能包（SKILL.md）只按文本按需读取，不是 Python 模块，import 扫描发现不了；
+# 漏掉时打包版 list_skills 永远返回空，模型只能反复猜技能名然后失败。
+skills_dir = project_root / "module" / "Agent" / "skills"
+if skills_dir.is_dir():
+    for skill_file in skills_dir.glob("*/SKILL.md"):
+        datas.append((str(skill_file), f"module/Agent/skills/{skill_file.parent.name}"))
 
 # Agent tools and provider SDKs are imported with importlib at runtime.
 hiddenimports = ["update_integrity", "update_path_policy", "unrpa"]

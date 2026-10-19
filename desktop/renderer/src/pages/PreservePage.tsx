@@ -8,7 +8,7 @@ import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
 import { useT } from '../i18n';
-import { Banner, NextStepBar } from '../ui';
+import { Banner, Dialog, NextStepBar } from '../ui';
 
 interface PreserveRow {
   src: string;
@@ -106,6 +106,7 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
   const [error, setError] = useState('');
   const [editRequest, setEditRequest] = useState<DataSheetEditTarget | null>(null);
   const [job, setJob] = useState<LexiconJob | null>(null);
+  const [confirm, setConfirm] = useState<'apply' | 'reload' | 'clear' | 'rescan' | null>(null);
   const excelInput = useRef<HTMLInputElement>(null);
   const completedJob = useRef('');
   const statsKeys = useRef<string[]>([]);
@@ -193,9 +194,7 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
         if (result.kind !== 'preserve' || JSON.stringify(result.snapshot_keys) !== JSON.stringify(keys)) { setError('规则已变化，请重新统计。'); return; }
         statsKeys.current = keys;
       } else if (job.kind !== 'lexicon_preserve_rescan' || !result.written) return;
-      if (!window.confirm('将这次任务结果载入当前禁翻表。继续？')) return;
-      taskOwner.current = { id: job.id, project: projectRef.current, generation: generation.current };
-      completedJob.current = ''; setJob({ ...job });
+      setConfirm('apply');
     } catch (e) {
       if (id === operation.current && project === projectRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -222,7 +221,6 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
   };
 
   const reload = async () => {
-    if ((dirty || cellDirty) && !window.confirm(t('rules_reload_confirm'))) return;
     const id = ++operation.current; const project = projectRef.current;
     setBusy(true);
     try {
@@ -257,7 +255,7 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
   };
 
   const clearAll = async () => {
-    if (editLocked || !window.confirm(t('lexicon_clear_confirm'))) return;
+    if (editLocked) return;
     const id = ++operation.current; const project = projectRef.current;
     if (!await state.saveSettings({ text_preserve_data: [], text_preserve_enable: false })) return;
     if (id !== operation.current || project !== projectRef.current) return;
@@ -361,7 +359,7 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
   };
 
   const onRescan = () => {
-    if (editLocked || !window.confirm(t('lexicon_rescan_variables_confirm'))) return;
+    if (editLocked) return;
     void startJob('/api/lexicon/preserve/rescan-variables', { confirm: true });
   };
 
@@ -380,16 +378,16 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
         <span className="rb-toolbar-spacer" />
         <Button disabled={editLocked} onClick={() => excelInput.current?.click()}>{t('lexicon_import_excel')}</Button>
         <Button disabled={locked || !rows.length} onClick={() => void exportExcel()}>{t('lexicon_export_excel')}</Button>
-        <Button disabled={locked} onClick={() => void reload()}>{t('lexicon_load_settings')}</Button>
+        <Button disabled={locked} onClick={() => ((dirty || cellDirty) ? setConfirm('reload') : void reload())}>{t('lexicon_load_settings')}</Button>
         <Button type="primary" disabled={editLocked || !(dirty || cellDirty)} onClick={() => void save()}>{state.saving ? t('lexicon_busy') : t('lexicon_save_settings')}</Button>
       </div>
       <div className="rb-toolbar">
         <Button disabled={editLocked} icon={<Plus size={16} strokeWidth={1.75} />} onClick={addRow}>{t('lexicon_add')}</Button>
         <Button disabled={editLocked || selected == null} onClick={removeSelected}>{t('lexicon_delete_selected')}</Button>
         <Button disabled={editLocked || !rows.length} onClick={deduplicate}>{t('rules_deduplicate')}</Button>
-        <Button danger type="text" disabled={editLocked || !rows.length} onClick={() => void clearAll()}>{t('lexicon_clear')}</Button>
+        <Button danger type="text" disabled={editLocked || !rows.length} onClick={() => { if (!editLocked) setConfirm('clear'); }}>{t('lexicon_clear')}</Button>
         <Button disabled={editLocked || !rows.length} onClick={() => void onStatistics()}>{t('lexicon_count_hits')}</Button>
-        <Button disabled={editLocked} onClick={() => void onRescan()}>{t('lexicon_rescan_variables')}</Button>
+        <Button disabled={editLocked} onClick={() => { if (!editLocked) setConfirm('rescan'); }}>{t('lexicon_rescan_variables')}</Button>
         {activeJob && job ? (
           <Button disabled={Boolean(job.cancel_requested)} onClick={() => void cancelJob(job.id)}>{t('lexicon_stop_scan')}</Button>
         ) : null}
@@ -434,6 +432,32 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
         ]}
       />
       {onNextStep ? <NextStepBar label={t('flow_next_honorific')} dirty={dirty || cellDirty} onNext={onNextStep} /> : null}
+      {confirm === 'apply' ? (
+        <Dialog title={t('lexicon_preserve_apply_title')} onCancel={() => setConfirm(null)} onConfirm={() => {
+          if (!job) { setConfirm(null); return; }
+          taskOwner.current = { id: job.id, project: projectRef.current, generation: generation.current };
+          completedJob.current = '';
+          setJob({ ...job });
+          setConfirm(null);
+        }}>
+          {t('lexicon_preserve_apply_body')}
+        </Dialog>
+      ) : null}
+      {confirm === 'reload' ? (
+        <Dialog title={t('rules_reload_title')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void reload(); }}>
+          {t('rules_reload_confirm')}
+        </Dialog>
+      ) : null}
+      {confirm === 'clear' ? (
+        <Dialog title={t('lexicon_preserve_clear_title')} confirmText={t('lexicon_clear')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void clearAll(); }}>
+          {t('lexicon_clear_confirm')}
+        </Dialog>
+      ) : null}
+      {confirm === 'rescan' ? (
+        <Dialog title={t('lexicon_rescan_title')} confirmText={t('lexicon_rescan_variables')} onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); onRescan(); }}>
+          {t('lexicon_rescan_variables_confirm')}
+        </Dialog>
+      ) : null}
     </div>
   );
 }
