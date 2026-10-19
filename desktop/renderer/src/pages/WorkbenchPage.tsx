@@ -1,6 +1,6 @@
 /** 项目资料工作台：手动编辑保存在项目资产仓库，提示词预览复用真实构造器。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Dropdown, Form, Input, Select, Spin, Tabs, Tag } from 'antd';
+import { Button, Dropdown, Form, Input, Progress, Select, Spin, Tabs, Tag } from 'antd';
 
 import { cancelJob, request } from '../api';
 import { useT, type TextKey } from '../i18n';
@@ -464,6 +464,15 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             <strong>{analysisActive ? <Spin size="small" aria-hidden /> : null}{cancellationRequested ? t('workbench_status_cancelling') : statusLabels[analysisJob.status]}</strong>
             <span>{jobResult ? analysisLabels[jobResult.action] : t('workbench_analysis_title')} · {jobResult ? scopeLabels[jobResult.scope] : scopeLabels[analysisScope]}</span>
             {analysisJob.error || jobResult?.message ? <p>{analysisJob.error || jobResult?.message}</p> : null}
+            {analysisActive && analysisJob.total > 0 ? (
+              <Progress
+                className="rb-workbench-analysis-progress"
+                percent={Math.min(100, Math.max(0, Math.round((analysisJob.progress || 0) * 100)))}
+                size="small"
+                status={cancellationRequested ? 'exception' : 'active'}
+                showInfo
+              />
+            ) : null}
             {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts?.length ?? 0))}</p> : null}
             {cancellationRequested ? <p>{t('workbench_cancel_hint')}</p> : null}
           </div>
