@@ -249,6 +249,17 @@ class RenpySourceParser:
         'variant', 'properties',
     }
     
+    # NO_TRANSLATE_ATTRIBUTES 的预编译版本：一次正则判定替代每次调用时的
+    # 全量 startswith 扫描 + re.escape/re.compile，避免逐行解析时重复构造正则。
+    RE_NO_TRANSLATE_LINE = re.compile(
+        r'^(?:'
+        + '|'.join(
+            re.escape(attr)
+            for attr in sorted(NO_TRANSLATE_ATTRIBUTES, key=len, reverse=True)
+        )
+        + r')(?:[ ]|:|\s+["\'])'
+    )
+
     # 文件扩展名模式 - 包含这些扩展名的字符串通常是资源路径
     FILE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg',
                        '.mp3', '.ogg', '.wav', '.opus', '.flac',
@@ -325,18 +336,12 @@ class RenpySourceParser:
     
     def _is_no_translate_line(self, line: str) -> bool:
         """检查行是否包含不应翻译的属性"""
+        if not line:
+            return False
         stripped = line.strip()
-        
-        # 检查是否以不翻译的属性开头
-        for attr in self.NO_TRANSLATE_ATTRIBUTES:
-            # 匹配 "attr value" 或 "attr:" 格式
-            if stripped.startswith(attr + ' ') or stripped.startswith(attr + ':'):
-                return True
-            # 检查 attr "value" 格式
-            if re.match(rf'^{re.escape(attr)}\s+["\']', stripped):
-                return True
-        
-        return False
+        if not stripped:
+            return False
+        return self.RE_NO_TRANSLATE_LINE.match(stripped) is not None
 
     def _extract_python_strings_with_ast(self, content: str) -> Dict[int, List[str]]:
         """使用AST从Python块中提取可翻译字符串

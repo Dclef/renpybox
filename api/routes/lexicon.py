@@ -414,11 +414,13 @@ async def scan_glossary_characters(request: Request, body: ProjectKeyBody) -> di
         raise HTTPException(status_code=400, detail="无法解析游戏目录")
     def compute(check_cancel, progress):
         check_cancel()
-        progress("正在扫描角色名字…")
+        progress("正在扫描角色名字…", done=5, total=100)
         names = LexiconOps.extract_names_from_source(source, check_cancel)
+        progress(f"已从源码找到 {len(names)} 个候选，正在补充翻译文件中的角色…", done=55, total=100)
         names |= LexiconOps.extract_names_from_miss_files(source, LexiconOps.effective_tl_name(config, tl_root), check_cancel)
         if not names:
             return {"success": True, "new_entries": [], "rows_delta": [], "removed_auto": 0, "message": "未找到角色名"}
+        progress(f"正在写入 {len(names)} 个角色候选…", done=80, total=100)
         with CacheManager.LOCK:
             _check_current(request, config, check_cancel)
             repository = _repository(config)
