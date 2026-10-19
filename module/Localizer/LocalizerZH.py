@@ -400,6 +400,32 @@ class LocalizerZH():
     project_page_traditional_chinese_title: str = "使用繁体输出中文"
     project_page_traditional_chinese_content: str = "启用此功能后，在译文语言设置为中文时，将使用繁体字形输出中文文本"
 
+    # 工程文件 API 错误
+    project_file_api_invalid: str = "工程文件不可用（{code}）：{error}"
+    project_file_api_busy: str = "已有任务正在运行或收尾，请稍后再试"
+    project_file_api_no_output: str = "当前项目没有可用的翻译输出目录"
+    project_file_api_pending_save: str = "翻译结果待保存，请稍后重试：{error}"
+    project_file_api_invalid_setting: str = "工程文件不可用（invalid_settings）：{key} 的值无效"
+    project_file_api_cache_restore_failed: str = "{reason}，且恢复原缓存失败{backups}：{error}；恢复错误：{restore_errors}"
+    project_file_api_cache_restored: str = "{reason}，已恢复导入前的缓存{backups}：{error}"
+    project_file_api_backups_retained: str = "；备份保留在 {paths}"
+    project_file_api_restore_error: str = "{path}：{error}"
+    project_file_api_path_separator: str = "、"
+    project_file_api_error_separator: str = "；"
+    project_file_api_no_cache: str = "当前项目还没有翻译缓存，无法导出工程文件"
+    project_file_api_cache_read_failed: str = "翻译缓存读取失败，未导出：{error}"
+    project_file_api_assets_read_failed: str = "项目资产读取失败，未导出：{error}"
+    project_file_api_cache_backup_failed: str = "备份现有缓存失败，未导入：{error}"
+    project_file_api_assets_backup_failed: str = "备份项目资料缓存失败，未导入：{error}"
+    project_file_api_cache_install_failed: str = "写入导入缓存失败"
+    project_file_api_assets_sync_failed: str = "同步项目资料失败"
+    project_file_api_settings_save_failed: str = "配置保存失败，设置未生效"
+    project_file_api_legacy_folder_invalid: str = "旧缓存目录无效：请选择旧版输出目录或其 cache 子目录"
+    project_file_api_legacy_no_cache: str = "所选目录没有可迁移的翻译缓存（需要 cache.db，或 items.json 与 project.json）"
+    project_file_api_legacy_cache_invalid: str = "旧翻译缓存不完整或已损坏，未读取：{error}"
+    project_file_api_legacy_unbound: str = "请先绑定当前 Ren'Py 游戏后再导出旧缓存；工程文件会记录当前游戏，不会改用旧目录里的项目"
+    project_file_api_legacy_destination_forbidden: str = "导出路径会覆盖旧缓存、当前缓存或其他源文件，请另选一个 .rbox 保存位置"
+
     # 开始翻译
     translation_page_status_idle: str = "无任务"
     translation_page_status_testing: str = "测试中"
@@ -2540,8 +2566,19 @@ class LocalizerZH():
     toolbox_tool_name_extraction_description: str = '扫描脚本与 JSON，生成角色名清单'
     toolbox_tool_pack_unpack_title: str = '解包/打包'
     toolbox_tool_pack_unpack_description: str = '解包 RPA 文件或打包游戏资源'
-    toolbox_tool_error_repair_title: str = '错误修复'
-    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录中生成的 .rpy 错误'
+    toolbox_tool_error_repair_title: str = '脚本修复'
+    toolbox_tool_error_repair_description: str = '扫描并修复翻译目录的 .rpy：缩进、重复译文、空块、残留增量目录，并可格式化'
+    error_repair_scan_summary: str = '发现 {total} 个问题（可自动修复 {fixable} 个，需人工 {manual} 个，环境问题 {env} 个）'
+    error_repair_no_issues: str = '未发现问题'
+    error_repair_fix_summary: str = '已修复 {files} 个文件、{items} 处'
+    error_repair_fix_remaining: str = '；仍有 {count} 个问题需人工处理'
+    error_repair_fix_rescan_skipped: str = '；修复过程未完成，未复扫'
+    error_repair_fix_rescan_incomplete: str = '；复扫未完成，剩余问题数量未知，请重新扫描'
+    error_repair_env_backup: str = '（合并前已完整备份到 {target}）'
+    error_repair_env_leftover: str = '增量抽取目录未合并：{name}（{count} 条重复译文，会让游戏报 translation already exists）'
+    error_repair_env_merged: str = '已合并 {name} 到 {tl}'
+    error_repair_env_moved: str = '已移出 {name} 到 {target}'
+    error_repair_env_failed: str = '处理 {name} 失败：{error}'
     toolbox_tool_translation_reuse_title: str = '更新翻译复用'
     toolbox_tool_translation_reuse_description: str = '按原文将旧译文安全填入新版本的空条目'
     toolbox_tool_formatter_title: str = '代码格式化'

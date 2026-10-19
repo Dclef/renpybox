@@ -51,7 +51,6 @@ import { AddLanguagePage } from './pages/AddLanguagePage';
 import { SetDefaultLanguagePage } from './pages/SetDefaultLanguagePage';
 import { ErrorRepairPage } from './pages/ErrorRepairPage';
 import { TranslationReusePage } from './pages/TranslationReusePage';
-import { FormatterPage } from './pages/FormatterPage';
 import { AndroidBuildPage } from './pages/AndroidBuildPage';
 import { HtmlImportPage } from './pages/HtmlImportPage';
 import { GameModPage } from './pages/GameModPage';
@@ -80,7 +79,7 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific' | 'onekey' | 'onekey-apply' | 'pack-unpack' | 'ma-suite' | 'batch-correction' | 'name-extraction' | 'direct-rpy-translate' | 'source-translate' | 'hook-translate' | 'hook-supplement' | 'font-replace' | 'rpy-extraction' | 'extract-to-tl' | 'extract-json' | 'add-language' | 'set-default-language' | 'error-repair' | 'translation-reuse' | 'formatter' | 'android-build' | 'html-import' | 'game-mod';
+type ToolPageKey = 'proofreading' | 'glossary' | 'preserve' | 'honorific' | 'onekey' | 'onekey-apply' | 'pack-unpack' | 'ma-suite' | 'batch-correction' | 'name-extraction' | 'direct-rpy-translate' | 'source-translate' | 'hook-translate' | 'hook-supplement' | 'font-replace' | 'rpy-extraction' | 'extract-to-tl' | 'extract-json' | 'add-language' | 'set-default-language' | 'error-repair' | 'translation-reuse' | 'android-build' | 'html-import' | 'game-mod';
 const TOOL_PAGE_TOOL_KEY: Record<ToolPageKey, string> = {
   proofreading: 'proofreading',
   glossary: 'local_glossary',
@@ -104,7 +103,6 @@ const TOOL_PAGE_TOOL_KEY: Record<ToolPageKey, string> = {
   'set-default-language': 'set_default_language',
   'error-repair': 'error_repair',
   'translation-reuse': 'translation_reuse',
-  formatter: 'formatter',
   'android-build': 'android_build',
   'html-import': 'html_import',
   'game-mod': 'game_mod',
@@ -132,7 +130,6 @@ const TOOL_PAGE_DESC: Record<ToolPageKey, TextKey> = {
   'set-default-language': 'app_tool_desc_set_default_language',
   'error-repair': 'app_tool_desc_error_repair',
   'translation-reuse': 'app_tool_desc_translation_reuse',
-  formatter: 'app_tool_desc_formatter',
   'android-build': 'app_tool_desc_android_build',
   'html-import': 'app_tool_desc_html_import',
   'game-mod': 'app_tool_desc_game_mod',
@@ -397,8 +394,6 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         return toolPage('error-repair', <ErrorRepairPage state={state} />);
       case 'translation-reuse':
         return toolPage('translation-reuse', <TranslationReusePage state={state} />);
-      case 'formatter':
-        return toolPage('formatter', <FormatterPage state={state} />);
       case 'android-build':
         return toolPage('android-build', <AndroidBuildPage state={state} />);
       case 'html-import':

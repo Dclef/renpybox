@@ -85,24 +85,7 @@ class ProjectAssetsRepository:
                 if active_project is not None and recovered is False
                 else self._read_project_unlocked()
             )
-            assets = ProjectAssets.from_dict(project.get_project_assets())
-            candidates = self.normalize_analysis_candidates(project.get_analysis_candidates())
-            changed = False
-
-            if self._has_project_state(assets) is False:
-                legacy_assets = self._legacy_assets_from_config(legacy_config)
-                assets = self._stamp_assets(legacy_assets, minimum_revision = 1)
-                project.set_project_assets(assets)
-                changed = True
-            elif assets.revision <= 0:
-                assets = self._stamp_assets(assets, minimum_revision = 1)
-                project.set_project_assets(assets)
-                changed = True
-
-            if candidates.get("legacy_config_migrated") is not True:
-                candidates = self._migrate_legacy_candidates(candidates, legacy_config)
-                project.set_analysis_candidates(candidates)
-                changed = True
+            changed = self._apply_legacy_bootstrap(project, legacy_config)
 
             if changed:
                 self._write_project_unlocked(project)
@@ -115,6 +98,31 @@ class ProjectAssetsRepository:
                     project.get_analysis_candidates()
                 ),
             )
+
+    def prepare_project_snapshot(self, project: CacheProject, legacy_config: Any = None) -> CacheProject:
+        """返回已按 ``load()`` 规则补齐旧全局资产的项目副本，不读写任何缓存文件。"""
+        prepared = CacheProject.from_dict(project.asdict())
+        self._apply_legacy_bootstrap(prepared, legacy_config)
+        return prepared
+
+    def _apply_legacy_bootstrap(self, project: CacheProject, legacy_config: Any) -> bool:
+        assets = ProjectAssets.from_dict(project.get_project_assets())
+        candidates = self.normalize_analysis_candidates(project.get_analysis_candidates())
+        changed = False
+
+        if self._has_project_state(assets) is False:
+            legacy_assets = self._legacy_assets_from_config(legacy_config)
+            project.set_project_assets(self._stamp_assets(legacy_assets, minimum_revision = 1))
+            changed = True
+        elif assets.revision <= 0:
+            project.set_project_assets(self._stamp_assets(assets, minimum_revision = 1))
+            changed = True
+
+        if candidates.get("legacy_config_migrated") is not True:
+            project.set_analysis_candidates(self._migrate_legacy_candidates(candidates, legacy_config))
+            changed = True
+
+        return changed
 
     def save_assets(self, assets: ProjectAssets | Mapping[str, Any]) -> ProjectAssets:
         incoming = ProjectAssets.from_dict(assets)
@@ -135,6 +143,30 @@ class ProjectAssetsRepository:
 
         project = self._update_project(update)
         return self.normalize_analysis_candidates(project.get_analysis_candidates())
+
+    def replace_asset_sections(
+        self,
+        project_assets: Mapping[str, Any],
+        analysis_candidates: Mapping[str, Any],
+    ) -> ProjectAssetsState:
+        """一次写入替换资产与候选两个分区；条目、项目 id/状态/进度和其它 extras 保持不变。"""
+        incoming = ProjectAssets.from_dict(project_assets)
+        candidates = self.normalize_analysis_candidates(analysis_candidates)
+
+        def update(project: CacheProject) -> None:
+            current = ProjectAssets.from_dict(project.get_project_assets())
+            # revision 必须越过当前值，仍持有旧 revision 的工作台保存才会被拒绝而不是覆盖替换结果。
+            revision = max(current.revision, incoming.revision, 0) + 1
+            project.set_project_assets(self._stamp_assets(incoming, minimum_revision = revision))
+            project.set_analysis_candidates(candidates)
+
+        project = self._update_project(update)
+        return ProjectAssetsState(
+            assets = ProjectAssets.from_dict(project.get_project_assets()),
+            analysis_candidates = self.normalize_analysis_candidates(
+                project.get_analysis_candidates()
+            ),
+        )
 
     def save_workbench_view(self, config: Any) -> ProjectAssetsState:
         """Persist only the workbench-owned asset and candidate sections."""
