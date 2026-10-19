@@ -7,6 +7,7 @@ from module.Extract.ReplaceGenerator import (
     render_replace_script,
 )
 from module.Extract.UnifiedExtractor import UnifiedExtractor
+import ast
 import types
 import py_compile
 import re
@@ -1263,6 +1264,94 @@ def test_replace_hook_unwraps_previous_generated_hook_on_reload():
     assert "renpybox_replace_text_auto._renpybox_auto_hook = True" in script
     assert "renpybox_replace_text_auto._renpybox_previous = _renpybox_replace_text_previous" in script
     assert "_renpybox_previous=_renpybox_replace_text_previous" in script
+    # 整个 translate 块只定义一个安装器，调用后立即删除，store 不新增名字。
+    assert "    def _renpybox_install():" in script
+    assert "    _renpybox_install()\n    del _renpybox_install" in script
+
+
+def test_generated_replace_hook_leaves_no_store_names():
+    """保存失败回归：translate python 块不能把函数留在 store 里。
+
+    Ren'Py 会把 translate python 块里改动过的 store 变量加进存档 roots，
+    store 里存在函数时 pickle 直接抛 ``PicklingError``。整个块体必须只在
+    安装器函数的局部作用域里定义，安装器调用后立刻删除。
+    """
+    pairs = [("Open Door", "Door"), ("Field: [value]", "Value: [value]")]
+    script = render_replace_script(pairs)
+
+    tree = ast.parse(script.replace("translate chinese python:", "if True:"))
+    block = tree.body[0].body
+    assert isinstance(block[0], ast.FunctionDef)
+    assert block[0].name == "_renpybox_install"
+    assert [line.strip() for line in script.splitlines()[-2:]] == [
+        "_renpybox_install()",
+        "del _renpybox_install",
+    ]
+
+    namespace = {"config": types.SimpleNamespace(replace_text=None)}
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+
+    hook = namespace["config"].replace_text
+    assert callable(hook)
+    assert hook("Open Door") == "Door"
+    assert hook("Field: 7") == "Value: 7"
+    assert hook("Main menu") == "Main menu"
+
+    # 语言再次切换会重跑 translate 块：必须解开上一次的自动钩子，且依旧不泄漏名字。
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+    reinstalled = namespace["config"].replace_text
+    assert reinstalled is not hook
+    assert reinstalled._renpybox_previous is None
+    assert reinstalled("Open Door") == "Door"
+    assert reinstalled("Field: 7") == "Value: 7"
+
+
+def test_generated_replace_hook_keeps_previous_config_hook_out_of_store():
+    def previous_hook(text):
+        return text.replace("Mana", "MP")
+
+    namespace = {"config": types.SimpleNamespace(replace_text=previous_hook)}
+    script = render_replace_script([("Potion", "药水")])
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+
+    hook = namespace["config"].replace_text
+    assert hook._renpybox_previous is previous_hook
+    assert hook("Mana Potion") == "MP 药水"
+
+    # 重跑后 chain 依然只有一层：旧自动钩子被解开，不会越套越深。
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+    reinstalled = namespace["config"].replace_text
+    assert reinstalled._renpybox_previous is previous_hook
+    assert reinstalled("Mana Potion") == "MP 药水"
+
+
+def test_sharded_generated_replace_hook_leaves_no_store_names(monkeypatch):
+    from module.Extract import ReplaceGenerator as generator
+
+    monkeypatch.setattr(generator, "REPLACE_SHARD_BYTES", 100)
+    pairs = [(f"Field {index}: [value]", f"Value {index}: [value]") for index in range(4)]
+    script = generator.render_replace_script(pairs)
+
+    assert "_renpybox_payloads = " in script
+    namespace = {"config": types.SimpleNamespace(replace_text=None)}
+    exec(script.replace("translate chinese python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+    hook = namespace["config"].replace_text
+    assert hook("Field 3: 27") == "Value 3: 27"
+
+
+def test_init_python_generated_hook_leaves_no_store_names():
+    script = render_replace_script([("Open Door", "Door")], use_translate_python=False)
+
+    assert "init python:" in script
+    namespace = {"config": types.SimpleNamespace(replace_text=None)}
+    exec(script.replace("init python:", "if True:"), namespace)
+    assert set(namespace) == {"config", "__builtins__"}
+    assert namespace["config"].replace_text("Open Door") == "Door"
 
 
 def test_replace_hook_imports_regex_inside_generated_function():
