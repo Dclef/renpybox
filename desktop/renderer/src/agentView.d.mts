@@ -18,3 +18,22 @@ export function stageKey(stage: string | null | undefined): string;
 export function formatTokenCount(n: number | null | undefined): string;
 
 export function budgetParts(budget: { context_window?: number; max_iterations?: number } | null | undefined): { context: string; iterations: string };
+
+export interface AgentMetricsParts {
+  rounds: number;
+  steps: number;
+  tokensPerSecond: number;
+  totalTokens: string;
+  cacheHitPercent: number | null;
+  contextPercent: number;
+  hasData: boolean;
+}
+
+export function metricsParts(metrics: {
+  iterations?: number;
+  steps?: number;
+  tokens_per_second?: number;
+  total_tokens?: number;
+  cache_hit_rate?: number | null;
+  context_percent?: number;
+} | null | undefined): AgentMetricsParts;

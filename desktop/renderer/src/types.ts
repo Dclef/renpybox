@@ -50,6 +50,22 @@ export interface AgentSnapshot {
     max_messages?: number;
     max_iterations?: number;
   };
+  /** 本轮用量统计：状态栏的轮次、步数、吞吐与上下文占比。 */
+  metrics?: {
+    iterations?: number;
+    steps?: number;
+    requests?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cached_tokens?: number;
+    total_tokens?: number;
+    elapsed_seconds?: number;
+    tokens_per_second?: number;
+    cache_hit_rate?: number | null;
+    context_chars?: number;
+    context_limit_chars?: number;
+    context_percent?: number;
+  };
 }
 
 /** 项目翻译状态：Base.TranslationStatus 的项目级取值 */
