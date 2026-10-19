@@ -132,6 +132,30 @@ export function confirmAgentTool(confirmationId: string, approved: boolean): Pro
   });
 }
 
+export interface AgentSessionSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export function listAgentSessions(): Promise<{ sessions: AgentSessionSummary[] }> {
+  return request<{ sessions: AgentSessionSummary[] }>('/api/agent/sessions');
+}
+
+export function openAgentSession(sessionId: string): Promise<AgentSnapshot> {
+  return request<AgentSnapshot>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/open`, {
+    method: 'POST',
+  });
+}
+
+export function deleteAgentSession(sessionId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+}
+
 export function getVersion(): Promise<VersionInfo> {
   return request<VersionInfo>('/api/version');
 }
