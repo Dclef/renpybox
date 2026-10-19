@@ -362,17 +362,42 @@ class AgentRequester:
         return name.upper() == "MAX_TOKENS" or name == "2"
 
     @staticmethod
-    def _usage(value: Any, input_names: tuple[str, ...], output_names: tuple[str, ...]) -> dict[str, int]:
+    def _nested_value(value: Any, path: str, default: Any = None) -> Any:
+        """按点号路径取值，例如 ``prompt_tokens_details.cached_tokens``。
+
+        供应商的缓存命中字段普遍嵌在 usage 子对象里，``_value`` 只能取一层，
+        这里补一条可读的嵌套通道；任一层缺失就返回默认值。
+        """
+
+        current = value
+        for part in str(path).split("."):
+            if current is None:
+                return default
+            current = AgentRequester._value(current, part, None)
+        return default if current is None else current
+
+    @staticmethod
+    def _usage(
+        value: Any,
+        input_names: tuple[str, ...],
+        output_names: tuple[str, ...],
+        cached_names: tuple[str, ...] = (),
+    ) -> dict[str, int]:
         result: dict[str, int] = {}
         for name in input_names:
-            amount = AgentRequester._value(value, name, None)
+            amount = AgentRequester._nested_value(value, name, None)
             if amount is not None:
                 result["input_tokens"] = int(amount)
                 break
         for name in output_names:
-            amount = AgentRequester._value(value, name, None)
+            amount = AgentRequester._nested_value(value, name, None)
             if amount is not None:
                 result["output_tokens"] = int(amount)
+                break
+        for name in cached_names:
+            amount = AgentRequester._nested_value(value, name, None)
+            if amount is not None:
+                result["cached_tokens"] = int(amount)
                 break
         return result
 
@@ -607,6 +632,12 @@ class AgentRequester:
             self._value(response, "usage", None),
             ("prompt_tokens", "input_tokens"),
             ("completion_tokens", "output_tokens"),
+            (
+                "prompt_tokens_details.cached_tokens",
+                "prompt_cache_hit_tokens",
+                "cache_read_input_tokens",
+                "cached_tokens",
+            ),
         )
         # finish_reason=length 说明输出被 max_tokens 砍断，参数一定不完整。
         if self._openai_hit_length(response):
@@ -644,6 +675,12 @@ class AgentRequester:
                     self._value(chunk, "usage", None),
                     ("prompt_tokens", "input_tokens"),
                     ("completion_tokens", "output_tokens"),
+                    (
+                        "prompt_tokens_details.cached_tokens",
+                        "prompt_cache_hit_tokens",
+                        "cache_read_input_tokens",
+                        "cached_tokens",
+                    ),
                 ) or usage
                 choices = self._value(chunk, "choices", []) or []
                 delta = self._value(choices[0], "delta", {}) if choices else {}
@@ -811,6 +848,7 @@ class AgentRequester:
             self._value(response, "usage", None),
             ("input_tokens", "prompt_tokens"),
             ("output_tokens", "completion_tokens"),
+            ("cache_read_input_tokens", "cached_tokens"),
         )
         if self._anthropic_hit_limit(response):
             return self._truncation_failure()
@@ -959,6 +997,7 @@ class AgentRequester:
             self._value(response, "usage_metadata", None),
             ("prompt_token_count", "input_tokens"),
             ("candidates_token_count", "output_token_count", "output_tokens"),
+            ("cached_content_token_count", "cached_tokens"),
         )
         if self._google_hit_limit(response):
             return self._truncation_failure()
@@ -998,6 +1037,7 @@ class AgentRequester:
                     self._value(chunk, "usage_metadata", None),
                     ("prompt_token_count", "input_tokens"),
                     ("candidates_token_count", "output_token_count", "output_tokens"),
+                    ("cached_content_token_count", "cached_tokens"),
                 ) or usage
                 candidates = self._value(chunk, "candidates", []) or []
                 content = self._value(candidates[0], "content", {}) if candidates else {}

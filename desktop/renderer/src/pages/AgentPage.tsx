@@ -3,7 +3,7 @@ import { Button, Checkbox, Popover, Select } from 'antd';
 import { ArrowDown, Bot, Plus, RefreshCw, Settings, Square } from 'lucide-react';
 import * as api from '../api';
 import { AgentMessageBody } from '../AgentMessageBody';
-import { budgetParts, isMachineApiFormat, languageFromTlPath, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../agentView.mjs';
+import { budgetParts, isMachineApiFormat, languageFromTlPath, metricsParts, selectableAgentPlatforms, stageKey, toolStatusInfo } from '../agentView.mjs';
 import type { AgentSnapshot, AgentThinkingLevel } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog } from '../ui';
@@ -396,6 +396,9 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
     : null;
   const stageDetail = runningProgress?.detail ?? '';
   const showStageStrip = Boolean(session && session.status !== 'idle' && (stageLabelKey || stagePercent !== null || stageDetail));
+  const metrics = metricsParts(session?.metrics);
+  // 状态栏只在有数据时出现：还没跑过任务就不该显示「0 轮 0 步」。
+  const showMetricsStrip = metrics.hasData;
   const settingsPanel = (
     <div className="agent-settings-panel">
       {budgetText ? <p className="agent-budget">{budgetText}</p> : null}
@@ -645,6 +648,39 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           {stagePercent !== null ? <span className="agent-stage-percent">{Math.round(stagePercent)}%</span> : null}
           {stagePercent !== null ? <ProgressTrack percent={stagePercent} label={t('agent_page_stage_strip')} /> : null}
           {stageDetail ? <span className="agent-stage-detail" title={stageDetail}>{stageDetail}</span> : null}
+        </div>
+      ) : null}
+
+      {showMetricsStrip ? (
+        <div className="agent-metrics-strip" role="status">
+          <span className="agent-metrics-rounds">
+            {metrics.steps > 0
+              ? t('agent_page_metrics_rounds_steps')
+                .replace('{rounds}', String(metrics.rounds))
+                .replace('{steps}', String(metrics.steps))
+              : t('agent_page_metrics_rounds').replace('{rounds}', String(metrics.rounds))}
+          </span>
+          {metrics.tokensPerSecond > 0 ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_throughput').replace('{speed}', String(Math.round(metrics.tokensPerSecond)))}
+            </span>
+          ) : null}
+          {metrics.totalTokens ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_total').replace('{total}', metrics.totalTokens)}
+            </span>
+          ) : null}
+          {metrics.cacheHitPercent !== null ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_cache').replace('{percent}', String(metrics.cacheHitPercent))}
+            </span>
+          ) : null}
+          {metrics.contextPercent > 0 ? (
+            <span className="agent-metrics-item agent-metrics-context" title={t('agent_page_metrics_context_title')}>
+              <ProgressTrack percent={metrics.contextPercent} label={t('agent_page_metrics_context_title')} />
+              <span>{metrics.contextPercent}%</span>
+            </span>
+          ) : null}
         </div>
       ) : null}
 

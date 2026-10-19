@@ -380,3 +380,76 @@ def test_service_gives_up_after_repeated_truncation(monkeypatch) -> None:
 
     assert result.success is False
     assert result.code == "TOOL_ARGUMENTS_TRUNCATED"
+
+
+def test_metrics_accumulate_usage_and_steps(monkeypatch) -> None:
+    """状态栏数据：两轮请求、一次工具步，token 与缓存命中都要累加。"""
+    responses = iter([
+        AgentRequestResult(
+            True,
+            tool_calls=[AgentToolCall("call-1", "get_project_info", {})],
+            usage={"input_tokens": 1000, "output_tokens": 200, "cached_tokens": 768},
+        ),
+        AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 500, "output_tokens": 100, "cached_tokens": 0},
+        ),
+    ])
+    monkeypatch.setattr(TaskRequester, "request_tools", lambda *_args, **_kwargs: next(responses))
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    metrics = service.metrics_summary()
+
+    assert metrics["iterations"] == 2
+    assert metrics["steps"] == 1
+    assert metrics["requests"] == 2
+    assert metrics["input_tokens"] == 1500
+    assert metrics["output_tokens"] == 300
+    assert metrics["cached_tokens"] == 768
+    assert metrics["total_tokens"] == 1800
+    # 命中率按「缓存命中 / 输入」算，供应商不回缓存字段时是 None。
+    assert metrics["cache_hit_rate"] == round(768 / 1500, 4)
+    assert metrics["context_percent"] > 0
+    assert metrics["context_limit_chars"] > 0
+
+
+def test_metrics_report_no_cache_hit_rate_without_provider_support(monkeypatch) -> None:
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda *_args, **_kwargs: AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 100, "output_tokens": 50},
+        ),
+    )
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    metrics = service.metrics_summary()
+
+    assert metrics["cached_tokens"] == 0
+    assert metrics["cache_hit_rate"] is None
+
+
+def test_metrics_freeze_after_run_finishes(monkeypatch) -> None:
+    """空闲时 elapsed 与 tok/s 必须冻结，否则界面会一直衰减、快照也无法比较。"""
+    monkeypatch.setattr(
+        TaskRequester,
+        "request_tools",
+        lambda *_args, **_kwargs: AgentRequestResult(
+            True,
+            text="完成。",
+            usage={"input_tokens": 100, "output_tokens": 50},
+        ),
+    )
+    service = AgentService(config_loader=_agent_config, dispatcher=_Dispatcher())
+
+    service.run("查看项目")
+    first = service.metrics_summary()
+    second = service.metrics_summary()
+
+    assert first["elapsed_seconds"] == second["elapsed_seconds"]
+    assert first["tokens_per_second"] == second["tokens_per_second"]
