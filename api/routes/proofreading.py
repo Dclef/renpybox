@@ -155,12 +155,17 @@ def _items_revision(output: str, config) -> str:
     return repr(files)
 
 
-def _read_snapshot(request: Request, config) -> dict:
-    # 只保留当前项目的只读快照；条目内容或设置变化后重新载入。
+def _snapshot_key(config) -> tuple:
+    """快照代次：项目配置 + 各候选输出目录的条目摘要。"""
     paths = translation_output_candidates(config)
     revisions = tuple((str(output), _items_revision(output, config)) for output in paths)
     config_key = hashlib.sha256(json.dumps(dataclasses.asdict(config), sort_keys=True, default=str).encode()).hexdigest()
-    key = (config_key, revisions)
+    return (config_key, revisions)
+
+
+def _read_snapshot(request: Request, config) -> dict:
+    # 只保留当前项目的只读快照；条目内容或设置变化后重新载入。
+    key = _snapshot_key(config)
     snapshot = getattr(request.app.state, "proofreading_snapshot", None)
     if snapshot is not None and snapshot["key"] == key:
         # 条目没变，但 extras 可能刚被质量任务更新，单独刷一次项目记录。
@@ -390,6 +395,37 @@ def _save(request: Request, output: str, manager: CacheManager, token: str) -> N
         runtime.require_flag = False
 
 
+def _reuse_snapshot_after_confirm(
+    request: Request,
+    snapshot: dict | None,
+    output: str,
+    manager: CacheManager,
+    cleared: list[int],
+) -> None:
+    """把旧快照接到刚保存的缓存上，已确认的行直接记为零告警。
+
+    没有这一步时，_save() 会丢弃快照，下一次带「仅看问题」的读取就会从第一行
+    重新扫描整份缓存；而确认操作只改人工确认记录，其它行的检查结论仍然有效。
+    """
+    if snapshot is None or _key(str(snapshot.get("output", ""))) != _key(output):
+        return
+    visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
+    if len(visible) != len(snapshot["visible"]):
+        # 条目数量变了，索引可能已经错位，宁可让下一次读取重建快照。
+        return
+    snapshot["key"] = _snapshot_key(request.app.state.config)
+    snapshot["manager"] = manager
+    snapshot["visible"] = visible
+    snapshot["files"] = sorted({item.get_file_path() for _, item in visible})
+    for index in cleared:
+        snapshot["warnings"][index] = []
+        snapshot["terms"][index] = ()
+    # 匹配结果依赖告警缓存，置空后下一次读取会按新缓存重新求值。
+    snapshot["filter_key"] = None
+    snapshot["matches"] = []
+    request.app.state.proofreading_snapshot = snapshot
+
+
 @router.patch("/item")
 def edit_item(request: Request, body: EditRequest) -> dict:
     """校验行版本后立即将译文保存到当前项目缓存。"""
@@ -436,11 +472,21 @@ def confirm_rows(request: Request, body: SelectionRequest) -> dict:
     """
     with _write_access(request, body.cache_token) as (output, manager):
         targets = _targets(manager, body.rows)
+        # 确认只改人工确认记录，不改译文；旧快照的逐行检查结果仍可复用。
+        # 先确认快照与磁盘缓存一致，保存后再把它接到新条目上。
+        snapshot = getattr(request.app.state, "proofreading_snapshot", None)
+        reusable = (
+            snapshot is not None
+            and _key(str(snapshot.get("output", ""))) == _key(output)
+            and snapshot.get("key") == _snapshot_key(request.app.state.config)
+        )
         checker = ResultChecker(request.app.state.config, [item for _, item in targets])
         changed = 0
-        for _, item in targets:
+        processed: list[int] = []
+        for index, item in targets:
             if not item.get_dst().strip():
                 continue
+            processed.append(index)
             warnings = checker.check_single_item(item)
             # 先落重试元数据的清理，再写确认记录，避免 set_metadata 把刚写的确认覆盖掉。
             metadata = item.get_metadata()
@@ -456,6 +502,8 @@ def confirm_rows(request: Request, body: SelectionRequest) -> dict:
                 changed += 1
         if changed:
             _save(request, output, manager, body.cache_token)
+            if reusable:
+                _reuse_snapshot_after_confirm(request, snapshot, output, manager, processed)
         return {"ok": True, "changed": changed}
 
 
