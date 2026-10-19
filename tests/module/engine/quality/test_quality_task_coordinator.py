@@ -555,3 +555,66 @@ def test_quality_resume_provider_rejects_reused_numeric_id() -> None:
 
     with pytest.raises(ValueError, match="接口已不存在"):
         QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+
+def test_quality_thinking_ignores_platform_max_level() -> None:
+    """平台给人工翻译配的 MAX 不该带进润色，否则每批 8 条也要跑几分钟。"""
+    snapshot = {"request_policy": {"provider": {"id": 7, "model": "snapshot-model"}}}
+    config = Config(activate_platform=7, platforms=[{
+        "id": 7,
+        "model": "current-model",
+        "thinking": {"level": "MAX"},
+        "api_key": ["key"],
+    }])
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["thinking"] == {"level": "OFF"}
+    assert provider["model"] == "current-model"
+
+
+def test_quality_thinking_follows_its_own_setting() -> None:
+    snapshot = {"request_policy": {"provider": {"id": 7, "model": "snapshot-model"}}}
+    config = Config(
+        activate_platform = 7,
+        quality_thinking_level = "LOW",
+        platforms = [{"id": 7, "model": "current-model", "thinking": {"level": "MAX"}}],
+    )
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["thinking"] == {"level": "LOW"}
+
+
+def test_quality_thinking_applies_to_identity_fallback() -> None:
+    """没有激活平台、退回按身份匹配时同样要换掉平台档位。"""
+    snapshot = {
+        "request_policy": {
+            "provider": {"id": 2, "credential_id": "a" * 32, "model": "snapshot-model"},
+        },
+    }
+    config = Config(activate_platform=-1, platforms=[{
+        "id": 7,
+        "credential_id": "a" * 32,
+        "thinking": {"level": "HIGH"},
+        "api_key": ["current-key"],
+    }])
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["thinking"] == {"level": "OFF"}
+    assert provider["model"] == "snapshot-model"
+
+
+def test_quality_thinking_rejects_unknown_level() -> None:
+    """配置被手工改坏时退回 OFF，不要把非法档位发给端点。"""
+    snapshot = {"request_policy": {"provider": {}}}
+    config = Config(
+        activate_platform = 7,
+        quality_thinking_level = "SUPERMAX",
+        platforms = [{"id": 7, "model": "current-model"}],
+    )
+
+    provider = QualityTaskCoordinator._resolve_runtime_provider(snapshot, config)
+
+    assert provider["thinking"] == {"level": "OFF"}

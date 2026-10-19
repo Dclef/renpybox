@@ -149,6 +149,9 @@ class Config():
     max_batch_source_tokens: int = 0
     # 0 使用后端默认输出预算，不随任务行数或重试批次收缩。
     max_output_tokens: int = 0
+    # 校对/润色的思考等级；不跟随平台里给人工翻译配的档位。
+    # 润色是改写已有译文，把平台上的 MAX 档带进来会让每批 8 条也跑 1~3 分钟。
+    quality_thinking_level: str = "OFF"
     # 默认使用固定并发；用户仍可手动设置 0，表示按接口槽位自动探测。
     max_workers: int = 16
     rpm_threshold: int = 0
