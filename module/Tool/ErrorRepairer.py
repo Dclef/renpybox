@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import tempfile
 import time
 import zipfile
 from collections import Counter
@@ -32,6 +33,14 @@ from module.Renpy.renpy_tl_core import (
 )
 from utils.call_game_python import get_python_path_from_game_path, get_py_path
 
+
+# Ren'Py lint 里已知「跟译文好不好无关」的提示：游戏把角色名存进运行时变量
+# （`$ x = "名字"` 后 `x "台词"`）时 lint 求不出 who，但 Ren'Py 的 say 明确
+# 支持字符串 who（见 renpy/exports.py 的 say 文档），运行时是好的。这类条目
+# 不计入译文问题，避免几百条噪音把真问题淹掉。
+IGNORED_LINT_HINT_TYPES = frozenset({
+    "who_unresolved",
+})
 
 # 扫描问题的分类。auto：无参数即可安全批量修复；conditional：用户勾选后才修；
 # manual：只能人工处理（或仅提示）。UI/API 的默认修复范围只取 auto。
@@ -171,9 +180,18 @@ class ErrorRepairer:
         "add",
     )
 
+    # 大型项目首次 lint 要加载全部脚本与图片，实测常见数分钟；
+    # 旧版固定 120 秒会把正常项目误判成「执行失败」，这里放宽到 30 分钟，可随时取消。
+    LINT_TIMEOUT = 1800.0
+
     def __init__(self):
         self.logger = LogManager.get()
         self.errors_found = []
+        # 最近一次 lint 失败原因（超时 / 找不到运行时 / 退出码），供上层拼提示。
+        self.last_lint_error = ""
+        # Ren'Py lint 的退出码：脚本有语法错误时 Ren'Py 会以 1 退出，但输出里
+        # 仍然有能直接定位问题的条目，调用方据此决定提示口径。
+        self.last_lint_exit_code = 0
 
     @staticmethod
     def resolve_translation_folder(folder_path: str | Path) -> Path:
@@ -2071,42 +2089,63 @@ class ErrorRepairer:
     
     def exec_renpy_lint(
         self, game_path: str, *, checkpoint: Optional[Callable[[], None]] = None,
-        timeout: float = 120.0,
+        timeout: float = LINT_TIMEOUT,
+        on_tick: Optional[Callable[[float], None]] = None,
     ) -> Optional[str]:
         """
         执行 Ren'Py 内置 lint 命令
         
         Args:
             game_path: 游戏可执行文件路径 (.exe)
+            checkpoint: 取消探针，抛 CancelledError 即中止并杀进程
+            timeout: 最长等待秒数（默认 LINT_TIMEOUT=30 分钟，旧版只有 120 秒）
+            on_tick: 每秒回调一次已运行秒数，用于刷新进度文案，避免看起来像卡死
             
         Returns:
             None 表示执行失败，空字符串表示执行成功且无输出，非空字符串
             表示执行成功并获得 Lint 输出。
         """
+        self.last_lint_error = ""
+        self.last_lint_exit_code = 0
+        report_path = ""
         try:
             python_path = get_python_path_from_game_path(game_path)
             py_path = get_py_path(game_path)
             game_dir = os.path.dirname(game_path)
             
             if not python_path or not os.path.isfile(python_path):
+                self.last_lint_error = f"找不到游戏自带的 Python 运行时：{python_path or '（空）'}"
                 self.logger.error(f"找不到游戏 Python: {python_path}")
                 return None
                 
             if not os.path.isfile(py_path):
+                self.last_lint_error = f"找不到游戏入口脚本：{py_path}"
                 self.logger.error(f"找不到游戏 .py 文件: {py_path}")
                 return None
             
             # 错误输出文件
             error_output = os.path.join(game_dir, "lint_errors.txt")
+
+            # 让 Ren'Py 把报告写成 UTF-8 文件：管道输出在中文 Windows 上按本地代码页
+            # 编码，按 UTF-8 解码时中文路径会被整段吃掉，过滤后一条都不剩。
+            try:
+                handle, report_path = tempfile.mkstemp(prefix="renpybox-lint-", suffix=".txt")
+                os.close(handle)
+            except OSError:
+                report_path = ""
             
             # 使用参数列表执行，避免 shell 对游戏路径做二次解释。
             command = [python_path, "-O", py_path, game_dir, "lint"]
+            if report_path:
+                command.append(report_path)
             
             self.logger.info(f"执行 Lint 命令: {command}")
             
             # 执行命令
             options = dict(
                 shell=False, text=True, encoding='utf-8', errors='ignore',
+                # 关掉标准输入：lint 若真要读键盘也不至于把进程挂在控制台上。
+                stdin=subprocess.DEVNULL,
                 creationflags=0x08000000 if os.name == 'nt' else 0,
                 cwd=game_dir,
             )
@@ -2114,12 +2153,21 @@ class ErrorRepairer:
                 result = subprocess.run(command, capture_output=True, timeout=timeout, **options)
             else:
                 checkpoint()
-                deadline = time.monotonic() + timeout
+                started = time.monotonic()
+                deadline = started + timeout
+                next_tick = 0.0
                 with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as process:
                     try:
                         while True:
                             checkpoint()
-                            remaining = deadline - time.monotonic()
+                            now = time.monotonic()
+                            elapsed = now - started
+                            # 每秒报一次心跳：前端状态文案会跟着走，用户不会以为程序挂了。
+                            if on_tick is not None and elapsed >= next_tick:
+                                next_tick = elapsed + 1.0
+                                with contextlib.suppress(Exception):
+                                    on_tick(elapsed)
+                            remaining = deadline - now
                             if remaining <= 0:
                                 raise subprocess.TimeoutExpired(command, timeout)
                             try:
@@ -2134,14 +2182,25 @@ class ErrorRepairer:
                             process.wait()
                 checkpoint()
             
-            # 合并 stdout 和 stderr
-            output = (result.stdout or "") + (result.stderr or "")
+            self.last_lint_exit_code = int(result.returncode or 0)
+            # 优先读报告文件（UTF-8、完整）；解析阶段报错时文件不会生成，退回管道输出。
+            output = ""
+            if report_path and os.path.isfile(report_path):
+                with contextlib.suppress(OSError):
+                    with open(report_path, "r", encoding="utf-8-sig", errors="replace") as handle:
+                        output = handle.read()
+            if not output.strip():
+                output = (result.stdout or "") + (result.stderr or "")
 
             if result.returncode != 0:
+                self.last_lint_error = f"Ren'Py 以退出码 {result.returncode} 结束"
                 self.logger.error(f"Lint 执行失败，退出码: {result.returncode}")
                 if output.strip():
                     self.logger.error(output.strip())
-                return None
+                # 只有输出里真的带「文件 + 行号」时才交回去：脚本解析错误时 Ren'Py
+                # 以 1 退出，但输出正是能直接定位问题的条目，丢掉等于什么都没查。
+                if not any(item.get("file") for item in self.parse_lint_errors(output)):
+                    return None
             
             if output.strip():
                 # 保存到文件
@@ -2152,10 +2211,22 @@ class ErrorRepairer:
             else:
                 self.logger.info("Lint 检查完成，未发现错误")
                 return ""
-                
+
+        except subprocess.TimeoutExpired:
+            # 超时不是「跑不起来」：多数是项目太大，如实说明上限，提示可以调长。
+            self.last_lint_error = (
+                f"超过 {timeout:.0f} 秒上限仍未结束，已中止（大型项目首次 lint 常需数分钟）"
+            )
+            self.logger.error(f"执行 Lint 超时: {self.last_lint_error}")
+            return None
         except Exception as e:
+            self.last_lint_error = f"{type(e).__name__}: {e}"
             self.logger.error(f"执行 Lint 失败: {e}")
             return None
+        finally:
+            if report_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(report_path)
     
     def parse_lint_errors(self, lint_output: str) -> List[Dict]:
         """
@@ -2171,7 +2242,10 @@ class ErrorRepairer:
         
         if not lint_output:
             return errors
-            
+
+        # Ren'Py lint 报告的第一行带 BOM，先去掉，否则首条会被当成正文。
+        lint_output = lint_output.lstrip("\ufeff")
+
         for line in lint_output.split('\n'):
             line = line.strip()
             if not line:
@@ -2179,9 +2253,14 @@ class ErrorRepairer:
                 
             error_info = {"raw": line}
             
-            # 解析常见错误格式，保留路径中的空格。
+            # Ren'Py lint 的真实格式（7.x / 8.x 一致），四种都要认：
+            #   File "game/x.rpy", line 12: 解析阶段错误
+            #   game/tl/chinese/x.rpy:12 具体问题      ← lint 报告主体
+            #   game/tl/chinese/x.rpy : 整文件问题     ← 孤儿译文等，没有行号
+            #   tl/chinese/x.rpy 文件名不是 ASCII      ← 无冒号，没有行号
+            # 只看 `, line N:` 是旧实现的错：真实报告一条都匹配不上，永远显示 0 条。
             location_match = re.match(
-                r'^(?:File\s+)?["\']?(?P<file>.+?\.rpy)["\']?,\s*'
+                r'^(?:File\s+)?["\']?(?P<file>.+?\.rpyc?)["\']?,\s*'
                 r'line\s+(?P<line>\d+):\s*(?P<message>.*)$',
                 line,
                 re.IGNORECASE,
@@ -2205,6 +2284,28 @@ class ErrorRepairer:
                         except ValueError:
                             pass
                 error_info["message"] = line
+
+            else:
+                located = re.match(
+                    r'^(?P<file>[^\s].*?\.rpyc?)\s*:\s*(?P<line>\d+)\s*:?\s*(?P<message>.*)$',
+                    line,
+                    re.IGNORECASE,
+                )
+                whole_file = located is None and re.match(
+                    r'^(?P<file>[^\s].*?\.rpyc?)\s*:\s*(?P<message>\S.*)$',
+                    line,
+                    re.IGNORECASE,
+                )
+                bare_file = located is None and whole_file is None and re.match(
+                    r'^(?P<file>[^\s].*?\.rpyc?)\s+(?P<message>\S.*)$',
+                    line,
+                    re.IGNORECASE,
+                )
+                matched = located or whole_file or bare_file
+                if matched is not None:
+                    error_info["file"] = matched.group("file")
+                    error_info["message"] = matched.group("message").strip()
+                    error_info["line"] = int(matched.group("line")) if located else 0
             
             # 标记错误类型
             if 'is not terminated with a newline' in line:
@@ -2221,17 +2322,24 @@ class ErrorRepairer:
                 error_info["type"] = "parse_error"
             elif 'Indentation mismatch' in line:
                 error_info["type"] = "indentation_mismatch"
+            elif 'is not an image' in line:
+                error_info["type"] = "missing_image"
+            elif 'orphan translation' in line:
+                error_info["type"] = "orphan_translation"
+            elif 'non-ASCII characters' in line:
+                error_info["type"] = "non_ascii_filename"
+            elif 'who part of a say statement' in line:
+                # 游戏把角色名存进变量（`$ x = "名字"` 后 `x "台词"`）时 lint 求值不到；
+                # Ren'Py 的 say 明确支持字符串 who，这是 lint 的常见误报。
+                error_info["type"] = "who_unresolved"
                  
             errors.append(error_info)
             
         return errors
 
     @staticmethod
-    def filter_lint_errors(
-        errors: List[Dict],
-        folder_path: str | Path,
-    ) -> List[Dict]:
-        """只保留目标翻译目录下的 Lint 文件错误。"""
+    def _lint_path_variants(folder_path: str | Path) -> list[list[str]]:
+        """翻译目录在 lint 报告里的几种写法（绝对路径 / game 起 / tl 起）。"""
         root_parts = [
             part.casefold()
             for part in Path(folder_path).expanduser().resolve().as_posix().split("/")
@@ -2239,7 +2347,6 @@ class ErrorRepairer:
         ]
         if not root_parts:
             return []
-
         variants = [root_parts]
         for marker in ("game", "tl"):
             try:
@@ -2247,24 +2354,71 @@ class ErrorRepairer:
             except ValueError:
                 continue
             variants.append(root_parts[marker_index:])
+        return variants
 
-        filtered: List[Dict] = []
+    @staticmethod
+    def _lint_error_file(error: Dict) -> str:
+        return str(error.get("file") or "").strip().strip("\"'")
+
+    @classmethod
+    def split_lint_errors(
+        cls,
+        errors: List[Dict],
+        folder_path: str | Path,
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """按「译文」与「源码」分成两组。
+
+        译者关心的是自己生成的那批 TL 文件；游戏本体的报错多半与翻译无关，
+        混在一起看不出重点，所以分开给界面展示（源码组仍要保留：它解释了
+        为什么 lint 可能整体跑不起来）。
+
+        已知误报（who_unresolved，见 parse_lint_errors）不进译文组：游戏把
+        角色名存进运行时变量时 lint 求值不到，但 Ren'Py 的 say 支持字符串
+        who，这跟译文对错无关；源码侧已经报过同一句话时，译文那份直接丢掉。
+        """
+        variants = cls._lint_path_variants(folder_path)
+        if not variants:
+            return [], []
+        tl_raw: List[Dict] = []
+        source_raw: List[Dict] = []
         for error in errors:
-            file_value = str(error.get("file") or "").strip().strip("\"'")
-            if not file_value or not file_value.casefold().endswith(".rpy"):
+            file_value = cls._lint_error_file(error)
+            # lint 会把已编译脚本报成 .rpyc，只认 .rpy 会把这类条目全丢掉。
+            if not file_value or not file_value.casefold().endswith((".rpy", ".rpyc")):
                 continue
             file_parts = [
                 part.casefold()
                 for part in file_value.replace("\\", "/").split("/")
                 if part
             ]
-            if any(
-                len(file_parts) >= len(variant)
-                and file_parts[:len(variant)] == variant
+            under_tl = any(
+                len(file_parts) >= len(variant) and file_parts[:len(variant)] == variant
                 for variant in variants
-            ):
-                filtered.append(error)
-        return filtered
+            )
+            (tl_raw if under_tl else source_raw).append(error)
+
+        def hint(item: Dict) -> bool:
+            return str(item.get("type") or "") in IGNORED_LINT_HINT_TYPES
+
+        def message_of(item: Dict) -> str:
+            return str(item.get("message") or item.get("raw") or "")
+
+        source_messages = {message_of(item) for item in source_raw}
+        tl_errors = [item for item in tl_raw if not hint(item)]
+        # 译文里的同类提示：源码侧已有就当重复丢掉，没有才挪进源码组。
+        moved = [
+            item for item in tl_raw
+            if hint(item) and message_of(item) not in source_messages
+        ]
+        return tl_errors, source_raw + moved
+
+    @staticmethod
+    def filter_lint_errors(
+        errors: List[Dict],
+        folder_path: str | Path,
+    ) -> List[Dict]:
+        """只保留目标翻译目录下的 Lint 文件错误。"""
+        return ErrorRepairer.split_lint_errors(errors, folder_path)[0]
     
     def fix_by_lint(self, game_path: str, max_iterations: int = 16) -> Tuple[bool, int]:
         """

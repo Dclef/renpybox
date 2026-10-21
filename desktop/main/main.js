@@ -14,7 +14,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 import { createLogger } from './logger.js';
@@ -102,9 +102,27 @@ const updater = createDesktopUpdater({
   afterInstallFailure: async () => { if (!quitting) await sidecar.restart(); },
   quit: () => app.quit(),
 });
-app.on('second-instance', () => {
+app.on('second-instance', (_event, argv) => {
   if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+  // 双击 .rbox 而应用已在运行：Windows 会把路径转交给现有实例。
+  const file = projectFileFromArgv(argv);
+  if (file) sendProjectFileOpen(file);
 });
+
+// .rbox 工程文件关联：安装包注册后，双击文件 = 带路径启动 / 转交现有实例。
+function projectFileFromArgv(argv) {
+  const candidates = (argv || [])
+    .map(item => String(item || '').trim())
+    .filter(item => item.toLowerCase().endsWith('.rbox') && existsSync(item))
+    .map(item => path.resolve(item));
+  return candidates.at(-1) || '';
+}
+
+function sendProjectFileOpen(file) {
+  if (!file) return;
+  log(`打开工程文件：${file}`);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('project-file:open', file);
+}
 
 function openExternal(url) {
   try { const parsed = new URL(url); if (['https:', 'http:'].includes(parsed.protocol)) return shell.openExternal(parsed.href); } catch {}
@@ -361,6 +379,8 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   try {
     await createMainWindow();
+    // 双击 .rbox 启动：路径就在启动参数里，窗口就绪后交给项目设置页确认导入。
+    sendProjectFileOpen(projectFileFromArgv(process.argv));
     if (!isDev) setTimeout(() => void updater.check(), 2500).unref();
   } catch (err) {
     log.error('启动失败', err);

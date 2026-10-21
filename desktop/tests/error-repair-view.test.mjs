@@ -25,6 +25,7 @@ test('默认只开安全项，高级项关闭', () => {
     fixDialogueQuotes: true,
     fixIndentLevel: false,
     fixQuotes: false,
+    fixLintAfter: true,
   });
 });
 

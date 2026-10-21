@@ -45,6 +45,16 @@ class EditRequest(BaseModel):
     dst: str = Field(max_length=100000)
 
 
+class BatchEditRow(RowReference):
+    dst: str = Field(max_length=100000)
+
+
+class BatchEditRequest(BaseModel):
+    cache_token: str = Field(min_length=64, max_length=64)
+    # 「改多行、存一次」：整批版本校验通过后才落盘一次，只触发一次重新检查。
+    rows: list[BatchEditRow] = Field(min_length=1, max_length=200)
+
+
 class ReplaceRequest(BaseModel):
     cache_token: str = Field(min_length=64, max_length=64)
     rows: list[RowReference] = Field(min_length=1, max_length=100)
@@ -395,6 +405,51 @@ def _save(request: Request, output: str, manager: CacheManager, token: str) -> N
         runtime.require_flag = False
 
 
+def _snapshot_reusable(request: Request, snapshot: dict | None, output: str) -> bool:
+    """落盘前先确认快照仍属于这份缓存，之后才谈得上复用逐行检查结果。"""
+    return (
+        snapshot is not None
+        and _key(str(snapshot.get("output", ""))) == _key(output)
+        and snapshot.get("key") == _snapshot_key(request.app.state.config)
+    )
+
+
+def _rebase_snapshot(request: Request, snapshot: dict, output: str, manager: CacheManager) -> bool:
+    """把快照挂到刚保存的缓存上；条目数量变了就放弃复用（索引可能错位）。"""
+    visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
+    if len(visible) != len(snapshot["visible"]):
+        return False
+    snapshot["key"] = _snapshot_key(request.app.state.config)
+    snapshot["manager"] = manager
+    snapshot["visible"] = visible
+    snapshot["files"] = sorted({item.get_file_path() for _, item in visible})
+    # 匹配结果依赖告警缓存，置空后下一次读取会按新缓存重新求值。
+    snapshot["filter_key"] = None
+    snapshot["matches"] = []
+    request.app.state.proofreading_snapshot = snapshot
+    return True
+
+
+def _reuse_snapshot_after_edit(
+    request: Request,
+    snapshot: dict | None,
+    output: str,
+    manager: CacheManager,
+    touched: list[int],
+) -> None:
+    """改写译文后只让被改的行重新检查，其余行的结论继续复用。
+
+    没有这一步时 _save() 会丢弃快照，保存后的第一次读取要从第一行重扫整份
+    缓存——「改一行等半天」正是这么来的。译文只影响本行结论，所以只把这些
+    行的告警/术语缓存作废即可。
+    """
+    if snapshot is None or not _rebase_snapshot(request, snapshot, output, manager):
+        return
+    for index in touched:
+        snapshot["warnings"].pop(index, None)
+        snapshot["terms"].pop(index, None)
+
+
 def _reuse_snapshot_after_confirm(
     request: Request,
     snapshot: dict | None,
@@ -407,23 +462,11 @@ def _reuse_snapshot_after_confirm(
     没有这一步时，_save() 会丢弃快照，下一次带「仅看问题」的读取就会从第一行
     重新扫描整份缓存；而确认操作只改人工确认记录，其它行的检查结论仍然有效。
     """
-    if snapshot is None or _key(str(snapshot.get("output", ""))) != _key(output):
+    if snapshot is None or not _rebase_snapshot(request, snapshot, output, manager):
         return
-    visible = [(index, item) for index, item in enumerate(manager.get_items()) if item.get_src().strip()]
-    if len(visible) != len(snapshot["visible"]):
-        # 条目数量变了，索引可能已经错位，宁可让下一次读取重建快照。
-        return
-    snapshot["key"] = _snapshot_key(request.app.state.config)
-    snapshot["manager"] = manager
-    snapshot["visible"] = visible
-    snapshot["files"] = sorted({item.get_file_path() for _, item in visible})
     for index in cleared:
         snapshot["warnings"][index] = []
         snapshot["terms"][index] = ()
-    # 匹配结果依赖告警缓存，置空后下一次读取会按新缓存重新求值。
-    snapshot["filter_key"] = None
-    snapshot["matches"] = []
-    request.app.state.proofreading_snapshot = snapshot
 
 
 @router.patch("/item")
@@ -431,9 +474,43 @@ def edit_item(request: Request, body: EditRequest) -> dict:
     """校验行版本后立即将译文保存到当前项目缓存。"""
     with _write_access(request, body.cache_token) as (output, manager):
         index, item = _targets(manager, [body.row])[0]
+        snapshot = getattr(request.app.state, "proofreading_snapshot", None)
+        reusable = _snapshot_reusable(request, snapshot, output)
         _set_translation(item, body.dst)
         _save(request, output, manager, body.cache_token)
+        if reusable:
+            _reuse_snapshot_after_edit(request, snapshot, output, manager, [index])
         return {"ok": True, "item": _row(index, item)}
+
+
+@router.patch("/items")
+def edit_items(request: Request, body: BatchEditRequest) -> dict:
+    """一次写入多行译文：全部版本校验通过后只落盘一次。
+
+    渲染端「改多行、点一次保存」走这里：N 次编辑只写一次缓存、只重新检查一次，
+    不必每改一行就等一轮整份缓存的扫描。
+    """
+    if len({row.id for row in body.rows}) != len(body.rows):
+        raise HTTPException(status_code=400, detail="同一行不能重复提交")
+    wanted = {row.id: row.dst for row in body.rows}
+    with _write_access(request, body.cache_token) as (output, manager):
+        targets = _targets(manager, body.rows)
+        snapshot = getattr(request.app.state, "proofreading_snapshot", None)
+        reusable = _snapshot_reusable(request, snapshot, output)
+        changed = 0
+        touched: list[int] = []
+        for index, item in targets:
+            dst = wanted[index]
+            if dst == item.get_dst():
+                continue
+            _set_translation(item, dst)
+            touched.append(index)
+            changed += 1
+        if changed:
+            _save(request, output, manager, body.cache_token)
+            if reusable:
+                _reuse_snapshot_after_edit(request, snapshot, output, manager, touched)
+        return {"ok": True, "changed": changed}
 
 
 @router.post("/replace")
@@ -475,11 +552,7 @@ def confirm_rows(request: Request, body: SelectionRequest) -> dict:
         # 确认只改人工确认记录，不改译文；旧快照的逐行检查结果仍可复用。
         # 先确认快照与磁盘缓存一致，保存后再把它接到新条目上。
         snapshot = getattr(request.app.state, "proofreading_snapshot", None)
-        reusable = (
-            snapshot is not None
-            and _key(str(snapshot.get("output", ""))) == _key(output)
-            and snapshot.get("key") == _snapshot_key(request.app.state.config)
-        )
+        reusable = _snapshot_reusable(request, snapshot, output)
         checker = ResultChecker(request.app.state.config, [item for _, item in targets])
         changed = 0
         processed: list[int] = []
