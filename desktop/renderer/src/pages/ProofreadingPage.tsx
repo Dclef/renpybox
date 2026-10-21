@@ -1,6 +1,6 @@
 /** 平行校对台：分页读取真实缓存，保存前由服务端检查项目和译文版本。 */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tooltip } from 'antd';
+import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType, TableRef } from 'antd/es/table';
 import type { MenuProps } from 'antd';
 import { request } from '../api';
@@ -32,6 +32,8 @@ interface ProofreadingRow {
   row: number;
   warnings?: string[];
   glossary_terms?: { src?: string; dst?: string }[];
+  /** 本页暂存、尚未写入缓存的译文（覆盖服务端 dst 显示）。 */
+  staged?: boolean;
 }
 
 interface QualityReport {
@@ -66,6 +68,9 @@ const WARNING_LABELS: Record<string, string> = {
   KANA: '假名残留', HANGEUL: '韩文残留', TEXT_PRESERVE: '文本保护失效',
   SIMILARITY: '原译相似度过高', GLOSSARY: '术语未生效', RETRY_THRESHOLD: '重试次数达阈值',
 };
+
+/** 批量保存时每次请求最多带多少行，与后端 BatchEditRequest 的上限一致。 */
+const BATCH_CHUNK = 100;
 
 interface TranslationReport {
   failed_count: number;
@@ -125,6 +130,11 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [edit, setEdit] = useState<(ProofreadingRow & { cache_token: string; project_identity: string }) | null>(null);
   const [discardEdit, setDiscardEdit] = useState<null | { action: 'close' } | { action: 'open'; row: ProofreadingRow }>(null);
   const [draft, setDraft] = useState('');
+  /**
+   * 已暂存、尚未写入缓存的译文：id → {version, dst}。
+   * 改多行只写一次缓存，也只让服务端重新检查一次问题项。
+   */
+  const [pending, setPending] = useState<Record<number, { version: string; dst: string }>>({});
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceSnapshot, setReplaceSnapshot] = useState<{ cache_token: string; rows: ProofreadingRow[] } | null>(null);
   const [find, setFind] = useState('');
@@ -156,7 +166,10 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const qualityTask = state.translation.progress.quality_task as Record<string, unknown> | undefined;
   const qualityRunning = state.translation.engine_status === 'QUALITY'
     || qualityTask?.state === 'RUNNING';
-  const dirty = Boolean(edit && draft !== edit.dst);
+  // 编辑框里还没暂存的改动 vs. 页面级未保存（含已暂存、待写入缓存的行）
+  const draftDirty = Boolean(edit && draft !== edit.dst);
+  const pendingCount = Object.keys(pending).length;
+  const dirty = draftDirty || pendingCount > 0;
   dirtyRef.current = dirty;
 
   useEffect(() => {
@@ -168,6 +181,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     setData(null);
     filterSignature.current = '';
     setSelected(new Set());
+    setPending({});
     if (!dirtyRef.current) setEdit(null);
     setReplaceOpen(false);
     setQualityConfirm(null);
@@ -318,27 +332,53 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const reload = () => setRefresh((value) => value + 1);
   const closeEdit = () => {
     if (saving) return;
-    if (dirty) { setDiscardEdit({ action: 'close' }); return; }
+    if (draftDirty) { setDiscardEdit({ action: 'close' }); return; }
     setEdit(null);
   };
 
-  const saveEdit = async () => {
+  /** 「保存」只暂存到本页：改多少行都不用等，稍后一次写入缓存。 */
+  const stageEdit = () => {
     if (!data || !edit || saving || readonly || editProjectChanged) return;
+    const { id, version, dst: editing } = edit;
+    const nextDraft = draft;
+    // 与磁盘上的译文比较：改回原样就把这一行从暂存里摘掉，不留「待保存」标记。
+    const serverDst = data.items.find((row) => row.id === id)?.dst ?? editing;
+    setPending((previous) => {
+      const next = { ...previous };
+      if (nextDraft === serverDst) delete next[id];
+      else next[id] = { version, dst: nextDraft };
+      return next;
+    });
+    setEdit(null);
+    if (nextDraft === serverDst) state.pushToast('info', '已还原为缓存中的译文。');
+    else state.pushToast('success', '译文已暂存，点「保存修改」统一写入缓存。');
+  };
+
+  /** 一次写入全部暂存译文：只落盘一次，也只重新检查一次问题项。 */
+  const savePending = async () => {
+    if (!data || !pendingCount || saving || readonly) return;
     const identity = projectRef.current;
+    const rows = Object.entries(pending).map(([id, entry]) => ({
+      id: Number(id), version: entry.version, dst: entry.dst,
+    }));
     setSaving(true);
     try {
-      await request('/api/proofreading/item', {
-        method: 'PATCH', body: JSON.stringify({
-          cache_token: edit.cache_token, row: { id: edit.id, version: edit.version }, dst: draft,
-        }),
+      const result = await request<{ changed: number }>('/api/proofreading/items', {
+        method: 'PATCH', body: JSON.stringify({ cache_token: data.cache_token, rows }),
       });
       if (identity !== projectRef.current) return;
-      setEdit(null);
-      state.pushToast('success', '译文已保存到当前项目缓存。');
+      setPending({});
+      state.pushToast('success', '已保存 ' + result.changed + ' 条译文，只重新检查这些行的问题项。');
       reload();
     } catch (failure) {
       state.pushToast('error', failure instanceof Error ? failure.message : String(failure));
     } finally { setSaving(false); }
+  };
+
+  const discardPending = () => {
+    if (!pendingCount || saving) return;
+    setPending({});
+    state.pushToast('info', '已放弃暂存的译文修改。');
   };
 
   const replaceRows = async (plan: { rows: { id: number; version: string; dst: string }[]; matchCount: number }) => {
@@ -349,13 +389,14 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     setReplaceBusy('');
     let changed = 0;
     try {
-      // 后端 /api/proofreading/replace 只接受纯文本；正则与影响范围在渲染端算好后逐行走 /item 落盘。
-      for (const row of plan.rows) {
-        setReplaceBusy(String(changed + 1) + '/' + String(plan.rows.length));
-        await request('/api/proofreading/item', {
-          method: 'PATCH', body: JSON.stringify({ cache_token: token, row: { id: row.id, version: row.version }, dst: row.dst }),
+      // 逐块调用批量保存：一次请求写一整块，避免每行都重写一次缓存。
+      for (let start = 0; start < plan.rows.length; start += BATCH_CHUNK) {
+        const chunk = plan.rows.slice(start, start + BATCH_CHUNK);
+        setReplaceBusy(String(start + chunk.length) + '/' + String(plan.rows.length));
+        const result = await request<{ changed: number }>('/api/proofreading/items', {
+          method: 'PATCH', body: JSON.stringify({ cache_token: token, rows: chunk }),
         });
-        changed += 1;
+        changed += Number(result.changed ?? 0);
         if (identity !== projectRef.current) return;
       }
       setReplaceOpen(false);
@@ -442,7 +483,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     }
   };
 
-  const items = data?.items ?? [];
+  // 列表显示叠加本页暂存的译文，用户改完能看到结果，但还没写进缓存。
+  const items = useMemo(() => (data?.items ?? []).map((row) => {
+    const staged = pending[row.id];
+    if (!staged || staged.dst === row.dst) return row;
+    return { ...row, dst: staged.dst, staged: true };
+  }), [data, pending]);
   const activeRow = items.find((row) => row.id === active);
 
   // 筛选维度（状态 / 文件 / 问题类型 / 术语表）全部由服务端对整份缓存求值，
@@ -579,7 +625,8 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const openEdit = (row: ProofreadingRow) => {
     if (readonly || loading || saving) return;
     if (edit?.id === row.id) return;
-    if (dirty) { setDiscardEdit({ action: 'open', row }); return; }
+    // 只有编辑框里没暂存的改动才算「会丢」；已暂存的行可以随时继续改。
+    if (draftDirty) { setDiscardEdit({ action: 'open', row }); return; }
     setEdit({ ...row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
     setDraft(row.dst);
   };
@@ -685,6 +732,8 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     catch (failure) { state.pushToast('error', failure instanceof Error ? failure.message : String(failure)); }
   };
   const mutationDisabled = !state.ready || Boolean(readonly) || retranslateRunning || loading || saving || dirty;
+  // 「编辑译文」不受暂存影响：暂存就是为了连续改多行，改完再一次保存。
+  const editDisabled = !state.ready || Boolean(readonly) || loading || saving;
   // 只对「选中行里当前还有问题标记」的批次点亮确认入口，避免整页误点。
   const confirmableSelected = items.some((row) => selected.has(row.id) && Boolean(row.warnings?.length));
 
@@ -702,7 +751,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         key: 'edit',
         icon: <Pencil size={14} />,
         label: '编辑译文',
-        disabled: mutationDisabled,
+        disabled: editDisabled,
         onClick: () => openEdit(row),
       },
       {
@@ -772,7 +821,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       width: Math.max(180, Math.floor((scrollX - 228) / 2)),
       className: 'rb-proof-cell-wrap',
       onCell: (row) => ({ onDoubleClick: () => openEdit(row) }),
-      render: (_value, row) => <span className="rb-proof-target">{row.dst || '（空译文）'}</span>,
+      render: (_value, row) => (
+        <>
+          <span className="rb-proof-target">{row.dst || '（空译文）'}</span>
+          {row.staged ? <Tag className="rb-proof-staged" color="gold">待保存</Tag> : null}
+        </>
+      ),
     },
     {
       title: '状态',
@@ -811,6 +865,14 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
 
   const actions = (
     <>
+      {pendingCount > 0 && (
+        <>
+          <Button size="small" type="primary" loading={saving} disabled={readonly} onClick={() => void savePending()}>
+            {'保存修改（' + pendingCount + ' 行）'}
+          </Button>
+          <Button size="small" disabled={saving} onClick={discardPending}>放弃暂存</Button>
+        </>
+      )}
       <Button size="small" disabled={loading || saving || dirty} onClick={reload}>刷新译文</Button>
       <Button size="small" disabled={mutationDisabled || !data?.total} onClick={() => { if (data) setExportConfirm({ cache_token: data.cache_token, project: projectIdentity }); }}>导出译文</Button>
       <Button size="small" disabled={mutationDisabled || !items.length} onClick={() => { if (data) { setReplaceSnapshot({ cache_token: data.cache_token, rows: selected.size ? items.filter((row) => selected.has(row.id)) : items }); setReplaceOpen(true); } }}>批量替换</Button>
@@ -847,6 +909,11 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         )}
         <div className="rb-proofreading-actions">{actions}</div>
         {readonly && <Banner tone="info">当前任务正在运行，译文可阅读；任务结束后可以编辑和保存。</Banner>}
+        {pendingCount > 0 && (
+          <Banner tone="info">
+            {'已暂存 ' + pendingCount + ' 行译文。可以继续改其它行，最后点「保存修改」一次写入缓存——问题项也只重新检查一次。'}
+          </Banner>
+        )}
         {qualityRunning && <div className="rb-proofreading-task"><Progress percent={qualityPercent} showInfo={false} size="small" /><span>{t(cancelling ? 'quality_cancelling' : 'quality_running')}</span></div>}
         {retranslate.state !== 'IDLE' && <div className="rb-proofreading-task">重译：{retranslate.done ?? 0} / {retranslate.total ?? 0} · 已保存 {retranslate.updated ?? 0} · 失败 {retranslate.failed ?? 0} · {retranslateRunning ? retranslate.state === 'CANCELLING' ? '等待已发出的请求结束…' : '处理中…' : retranslate.state === 'FAILED' ? '失败：' + retranslate.error : retranslate.state === 'CANCELLED' ? '已取消' : '已完成'}</div>}
         {error && <Banner tone="warning">{error}</Banner>}
@@ -1052,7 +1119,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
         </footer>
         <div className="rb-proofreading-location" title={activeRow?.file_path}>
           {activeRow ? activeRow.file_path + ':' + activeRow.row : '选择行后显示文件与行号'}
-          <span>编辑确认后自动保存缓存；导出译文才会写入文件。</span>
+          <span>点「保存修改」才写入缓存；导出译文才会写入文件。</span>
         </div>
       </div>
       {contextMenu && (
@@ -1088,7 +1155,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           footer={
             <div className="rb-dialog-actions">
               <Button onClick={closeEdit}>取消</Button>
-              <Button type="primary" disabled={saving || readonly || !dirty || editProjectChanged} onClick={() => void saveEdit()}>保存译文</Button>
+              <Button type="primary" disabled={saving || readonly || !draftDirty || editProjectChanged} onClick={stageEdit}>暂存译文</Button>
             </div>
           }
         >
@@ -1096,12 +1163,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
             onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                 event.preventDefault();
-                void saveEdit();
+                stageEdit();
               }
             }}
           >
             {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请复制译文后关闭编辑。</Banner>}
-            <p className="rb-metric-note">{edit.file_path}:{edit.row} · Ctrl + Enter 保存</p>
+            <p className="rb-metric-note">{edit.file_path}:{edit.row} · Ctrl + Enter 暂存（暂存只记在本页，回列表点「保存修改」才写入缓存）</p>
             <div className="rb-proof-bilingual-editor">
               <label>
                 <span>原文</span>
@@ -1123,14 +1190,14 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       )}
       {discardEdit ? (
         <Dialog title={t('proofreading_discard_title')} onCancel={() => setDiscardEdit(null)} onConfirm={() => {
-          const pending = discardEdit;
+          const discarded = discardEdit;
           setDiscardEdit(null);
-          if (pending.action === 'close') {
+          if (discarded.action === 'close') {
             setEdit(null);
             return;
           }
-          setEdit({ ...pending.row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
-          setDraft(pending.row.dst);
+          setEdit({ ...discarded.row, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+          setDraft(discarded.row.dst);
         }}>
           {t('proofreading_discard_body')}
         </Dialog>

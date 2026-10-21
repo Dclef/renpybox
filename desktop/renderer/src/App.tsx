@@ -183,6 +183,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const rpyLeaveBlockedRef = useRef(false);
   const [pendingPage, setPendingPage] = useState<PageKey | 'close' | null>(null);
   const [exitConfirm, setExitConfirm] = useState(false);
+  /** 双击 .rbox 打开：主进程推来的工程文件路径，交给项目设置页确认导入 */
+  const [incomingProjectFile, setIncomingProjectFile] = useState<string | null>(null);
   const closeRequestedRef = useRef<() => void>(() => {});
   const closeInFlight = useRef(false);
 
@@ -213,6 +215,12 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
 
   closeRequestedRef.current = () => navigate('close');
   useEffect(() => window.renpy?.onCloseRequested?.(() => closeRequestedRef.current()), []);
+  // 双击 .rbox：跳到项目设置页，把路径交给它确认导入
+  useEffect(() => window.renpy?.onProjectFileOpen?.((file) => {
+    if (!file) return;
+    setIncomingProjectFile(file);
+    navigate('project');
+  }), [navigate]);
   useEffect(() => {
     if (state.bootLanguage) window.renpy?.setLocale?.(state.bootLanguage);
   }, [state.bootLanguage]);
@@ -401,7 +409,7 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
       case 'game-mod':
         return toolPage('game-mod', <GameModPage state={state} />);
       case 'project':
-        return <ProjectPage state={state} />;
+        return <ProjectPage state={state} incomingFile={incomingProjectFile} onIncomingFileConsumed={() => setIncomingProjectFile(null)} />;
       case 'toolbox':
         return <ToolBoxPage state={state} onNavigate={navigate} />;
       case 'basic-settings':

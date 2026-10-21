@@ -81,6 +81,7 @@ export const ERROR_REPAIR_DEFAULTS: {
   fixDialogueQuotes: boolean;
   fixIndentLevel: boolean;
   fixQuotes: boolean;
+  fixLintAfter: boolean;
 };
 export function buildEnvironmentFixBody(input: {
   folder: string;

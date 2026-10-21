@@ -428,6 +428,61 @@ def test_lint_filter_keeps_only_translation_directory_errors(tmp_path) -> None:
     assert filtered == [errors[0]]
 
 
+def test_parse_real_renpy_lint_report_and_split_groups(tmp_path) -> None:
+    """Ren'Py 的报告是 `path:line 消息`（不是 Python 的 `File ..., line N:`），并按译文/源码分组。"""
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    report = (
+        "\ufeffRen'Py 8.2.0 lint report, generated at: Wed Oct 21 21:28:05 2026\n"
+        "\n"
+        "game/tl/chinese/tlcase.rpy:3 'nosuchimage_tl' is not an image.\n"
+        "\n"
+        "game/tl/chinese/翻译测试.rpy : this file contains orphan translations at line 1 (id abcd).\n"
+        "\n"
+        "tl/chinese/翻译测试.rpy contains non-ASCII characters in its filename.\n"
+        "\n"
+        "game/zz_lintcase.rpyc:2 'nosuchimage' is not an image.\n"
+        "\n"
+        'File "game/tl/chinese/broken.rpy", line 1: end of line expected.\n'
+        "\n"
+        "Statistics:\n"
+        "\n"
+        "The game contains 2 menus, 0 images, and 23 screens.\n"
+    )
+    errors = ErrorRepairer().parse_lint_errors(report)
+    tl_errors, source_errors = ErrorRepairer.split_lint_errors(errors, translation_dir)
+
+    assert [(item["file"], item["line"], item.get("type")) for item in tl_errors] == [
+        ("game/tl/chinese/tlcase.rpy", 3, "missing_image"),
+        ("game/tl/chinese/翻译测试.rpy", 0, "orphan_translation"),
+        ("tl/chinese/翻译测试.rpy", 0, "non_ascii_filename"),
+        ("game/tl/chinese/broken.rpy", 1, "syntax_error"),
+    ]
+    # 已编译脚本按 .rpyc 报出来，只认 .rpy 会把它丢掉；统计行不能被当成问题。
+    assert [(item["file"], item["line"]) for item in source_errors] == [("game/zz_lintcase.rpyc", 2)]
+
+
+def test_split_lint_errors_drops_runtime_speaker_noise(tmp_path) -> None:
+    """「运行时变量当角色名」是 lint 的常见误报：译文组不该留，源码侧重复的也丢掉。"""
+    translation_dir = tmp_path / "game" / "tl" / "chinese"
+    translation_dir.mkdir(parents=True)
+    hint = "Could not evaluate 'suspect1' in the who part of a say statement."
+    errors = [
+        {"file": "game/tl/chinese/events3.rpy", "line": 3171, "type": "who_unresolved", "message": hint},
+        {"file": "game/events3.rpy", "line": 1693, "type": "who_unresolved", "message": hint},
+        {"file": "game/tl/chinese/broken.rpy", "line": 1, "type": "syntax_error", "message": "end of line expected."},
+        {"file": "game/events3.rpy", "line": 2, "type": "missing_image", "message": "'x' is not an image."},
+    ]
+    tl_errors, source_errors = ErrorRepairer.split_lint_errors(errors, translation_dir)
+
+    # 译文只留真问题（语法错误 / 孤儿译文 / 文件名），who 提示一条都不进。
+    assert [item["file"] for item in tl_errors] == ["game/tl/chinese/broken.rpy"]
+    assert [(item["file"], item["type"]) for item in source_errors] == [
+        ("game/events3.rpy", "who_unresolved"),
+        ("game/events3.rpy", "missing_image"),
+    ]
+
+
 def test_syntax_scan_reports_malformed_translation_headers_and_else(tmp_path) -> None:
     script = tmp_path / "translation.rpy"
     script.write_text(

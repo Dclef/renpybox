@@ -52,6 +52,12 @@ contextBridge.exposeInMainWorld('renpy', {
   pickFile: (options) => ipcRenderer.invoke('dialog:pick-file', options),
   saveFile: (options) => ipcRenderer.invoke('dialog:save-file', options),
   openPath: (target) => ipcRenderer.invoke('shell:open-path', target),
+  /** 双击 .rbox（或启动参数带 .rbox）时主进程推过来的工程文件路径，返回取消订阅函数 */
+  onProjectFileOpen: (callback) => {
+    const handler = (_event, file) => callback(file);
+    ipcRenderer.on('project-file:open', handler);
+    return () => ipcRenderer.removeListener('project-file:open', handler);
+  },
   platform: process.platform,
   versions: {
     electron: process.versions.electron,
