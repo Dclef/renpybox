@@ -183,6 +183,8 @@ export const ERROR_REPAIR_DEFAULTS = {
   fixDialogueQuotes: true,
   fixIndentLevel: false,
   fixQuotes: false,
+  // 修复后顺带跑一次 Ren'Py Lint 复检：并入同一次任务，不用再单独检查一遍。
+  fixLintAfter: true,
 };
 
 /**

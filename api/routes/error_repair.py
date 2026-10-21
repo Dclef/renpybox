@@ -20,6 +20,7 @@ from module.Renpy.ProjectPaths import RenpyProjectPaths
 from module.Tool import ErrorRepairer as error_repairer_module
 from module.Tool.ErrorRepairer import ErrorRepairer
 from module.Tool.LexicalFs import lexical_abs, require_no_link_escape
+from utils.call_game_python import get_game_path_from_game_dir
 
 router = APIRouter(prefix="/api/error-repair", tags=["error-repair"])
 
@@ -31,6 +32,8 @@ _BUSY = "已有任务正在运行或收尾，请稍后再试"
 
 # 轮询快照必须保持小体积：明细只给样本，全量走导出。
 MANUAL_SAMPLE_LIMIT = 10
+# lint 结果同样走样本：轮询每 1.5 秒拉一次，大项目动辄上千条。
+LINT_SAMPLE_LIMIT = 20
 _AUTO_FIX_TYPES = frozenset({"indent", "empty_block", "duplicate_old_new", "unescaped_dialogue_quotes"})
 _CONDITIONAL_FIX_TYPES = frozenset({"indentation_level", "quotes"})
 
@@ -85,10 +88,16 @@ class FixBody(FolderBody):
     # 单卡片操作：只处理本次扫描里路径一致的那一条环境问题；为空表示处理全部。
     environment_path: str = ""
     confirm: bool = False
+    # 修复后顺带跑一次 Ren'Py Lint 复检（只看译文真问题），省得再单独检查一遍。
+    lint_after: bool = False
 
 
 class LintBody(FolderBody):
     game_exe: str = Field(min_length=1, pattern=r"\S")
+    # 大型项目首次 lint 常需数分钟；旧版固定 120 秒会把正常项目判成失败。
+    timeout_seconds: int = Field(default=1800, ge=30, le=7200)
+    # 检查范围：译文与源码分开检查、分开出结果；all 一次给两组（兼容旧调用）。
+    scope: str = Field(default="all", pattern=r"^(tl|source|all)$")
 
 
 class ExportBody(FolderBody):
@@ -160,6 +169,57 @@ def _acquire_engine() -> Engine:
     if not engine.try_set_status(Engine.Status.IDLE, Engine.Status.TESTING):
         raise HTTPException(status_code=409, detail=_BUSY)
     return engine
+
+
+def _lint_sample(items: list[dict], limit: int = LINT_SAMPLE_LIMIT) -> list[dict]:
+    """轮询快照只带样本：大项目 lint 动辄上千条。"""
+    return [
+        {
+            "file": str(item.get("file") or ""),
+            "line": int(item.get("line") or 0),
+            "type": str(item.get("type") or ""),
+            "message": str(item.get("message") or item.get("raw") or ""),
+        }
+        for item in items[:limit]
+    ]
+
+
+def _split_lint_hits(repairer: ErrorRepairer, output: str, folder: str) -> tuple[list[dict], list[dict], int]:
+    """解析 lint 报告 → (译文真问题, 源码真问题, 已忽略的常见写法提示数)。"""
+    parsed = repairer.parse_lint_errors(output)
+    tl_hits, source_hits = repairer.split_lint_errors(parsed, folder)
+    hints = frozenset(str(item) for item in error_repairer_module.IGNORED_LINT_HINT_TYPES)
+    real_source = [item for item in source_hits if str(item.get("type") or "") not in hints]
+    return tl_hits, real_source, len(source_hits) - len(real_source)
+
+
+def _detect_game_exe(bound: RenpyProjectPaths | None, folder: Path | None) -> str:
+    """猜一个可直接执行 lint 的游戏主程序（同名 .py + .exe 才算数）。
+
+    深度 Lint 要求填游戏主程序；这一项在项目里其实能自动定出来，让用户每次
+    手填等于把 lint 挡在门外。候选顺序：已绑定项目的根目录 → 翻译目录向上找
+    到的项目根。找不到就留空，仍可手选。
+    """
+    roots: list[Path] = []
+    if bound is not None:
+        roots.append(Path(bound.project_root))
+    if folder is not None:
+        cursor = folder
+        for _ in range(4):
+            if (cursor / "game").is_dir():
+                roots.append(cursor)
+                break
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+    for root in roots:
+        try:
+            found = get_game_path_from_game_dir(str(root))
+        except OSError:
+            found = None
+        if found:
+            return str(found)
+    return ""
 
 
 def _describe(folder: Path, *, owner_key: str = "") -> dict[str, Any]:
@@ -338,6 +398,10 @@ def read_status(
                 "has_scan_report": False,
             }
             project_key = ""
+        # 自动带出可执行 lint 的游戏主程序：省掉每次手填。
+        payload["game_exe"] = _detect_game_exe(
+            bound, Path(str(payload.get("folder") or "")) if payload.get("folder") else None,
+        )
     job = _latest_job(request, project_key) if project_key else None
     payload["job"] = job.snapshot() if job else None
     return payload
@@ -450,6 +514,8 @@ async def start_fix(request: Request, body: FixBody) -> dict:
             body_owner_key=body.owner_project_key,
             require_lexical_clean=True,
         )
+        # Lint 复检要游戏主程序：这里顺手记下来，compute 里直接用。
+        bound = current_paths(request.app.state.config)
     snapshot = str(folder)
     folder_key = project_key
 
@@ -616,6 +682,39 @@ async def start_fix(request: Request, body: FixBody) -> dict:
             fixed_by_type = {}
             fixed_items = direct_items
             manual_sample = []
+        # 5) 可选 Lint 复检：并入同一次任务，省得再单独检查一遍；失败不影响修复结果。
+        lint_info: dict[str, Any] | None = None
+        if body.lint_after:
+            progress("正在运行 Ren'Py Lint 复检", 92)
+            guard()
+            exe = _detect_game_exe(bound, Path(snapshot))
+            if not exe:
+                lint_info = {"skipped": "未识别到游戏主程序，跳过 Lint 复检"}
+            else:
+                limit = float(ErrorRepairer.LINT_TIMEOUT)
+
+                def lint_tick(elapsed: float) -> None:
+                    progress(f"Ren'Py Lint 复检运行中，已用 {int(elapsed)} 秒",
+                             92 + min(7, int(7 * elapsed / limit)))
+
+                lint_repairer = ErrorRepairer()
+                lint_output = lint_repairer.exec_renpy_lint(
+                    exe, checkpoint=check_cancel, timeout=limit, on_tick=lint_tick,
+                )
+                if lint_output is None:
+                    lint_info = {
+                        "skipped": f"Lint 未完成：{lint_repairer.last_lint_error or '请查看运行日志'}",
+                    }
+                else:
+                    tl_hits, real_source, hint_count = _split_lint_hits(lint_repairer, lint_output, snapshot)
+                    lint_info = {
+                        "issues": _lint_sample(tl_hits),
+                        "issue_count": len(tl_hits),
+                        "source_count": len(real_source),
+                        "ignored_hints": hint_count,
+                        "exit_code": int(getattr(lint_repairer, "last_lint_exit_code", 0) or 0),
+                    }
+
         partial = failed_files > 0 or any(not item["ok"] for item in environment_fixes)
         written = any_written()
         progress("修复完成", 100)
@@ -626,6 +725,14 @@ async def start_fix(request: Request, body: FixBody) -> dict:
             message += loc.error_repair_fix_rescan_incomplete
         elif after_total:
             message += loc.error_repair_fix_remaining.format(count=after_total)
+        if lint_info is not None:
+            if lint_info.get("skipped"):
+                message += f"；{lint_info['skipped']}"
+            else:
+                message += (
+                    f"；Lint 复检：译文 {lint_info['issue_count']} 条待处理、"
+                    f"源码 {lint_info['source_count']} 条，已忽略 {lint_info['ignored_hints']} 条常见写法提示"
+                )
         return {
             "success": not partial or written,
             "partial": partial,
@@ -640,6 +747,7 @@ async def start_fix(request: Request, body: FixBody) -> dict:
             "remaining_by_type": after_by_type,
             "manual_sample": manual_sample,
             "rescan_skipped": not rescan_complete,
+            "lint": lint_info,
             "folder": snapshot,
             "message": message,
         }
@@ -680,29 +788,96 @@ async def start_lint(request: Request, body: LintBody) -> dict:
             raise RuntimeError("项目已切换，未执行操作")
         progress("正在执行 Ren'Py lint", 30)
         repairer = ErrorRepairer()
-        lint_output = repairer.exec_renpy_lint(snapshot_exe, checkpoint=check_cancel)
+        timeout = float(body.timeout_seconds)
+
+        def tick(elapsed: float) -> None:
+            # 心跳：进度条往前走 + 文案累计秒数，避免长时间无输出像卡死。
+            percent = 30 + min(65, int(65 * elapsed / timeout))
+            progress(f"Ren'Py lint 运行中，已用 {int(elapsed)} 秒（上限 {int(timeout)} 秒，可取消）", percent)
+
+        lint_output = repairer.exec_renpy_lint(
+            snapshot_exe,
+            checkpoint=check_cancel,
+            timeout=timeout,
+            on_tick=tick,
+        )
         if lint_output is None:
-            raise RuntimeError("Lint 执行失败或超过 120 秒，请查看日志")
+            reason = str(getattr(repairer, "last_lint_error", "") or "").strip()
+            raise RuntimeError(f"Lint 未完成：{reason}" if reason else "Lint 执行失败，请查看运行日志")
         check_cancel()
         if not owner_still():
             raise RuntimeError("项目已切换，未执行操作")
         parsed = repairer.parse_lint_errors(lint_output)
-        filtered = repairer.filter_lint_errors(parsed, snapshot_folder)
+        # 译文问题 = 当前翻译目录里的；其余算源码问题。译者只需要看前者，
+        # 后者用来解释「游戏本体为什么起不来」，界面上分两组显示。
+        tl_errors, source_errors = repairer.split_lint_errors(parsed, snapshot_folder)
+        exit_code = int(getattr(repairer, "last_lint_exit_code", 0) or 0)
         lint_file = str(Path(snapshot_exe).parent / "lint_errors.txt") if lint_output else ""
+
+        hints = frozenset(str(item) for item in error_repairer_module.IGNORED_LINT_HINT_TYPES)
+        hint_count = sum(
+            1 for item in source_errors if str(item.get("type") or "") in hints
+        )
+        real_source = [
+            item for item in source_errors if str(item.get("type") or "") not in hints
+        ]
+        note = (
+            f"；已忽略 {hint_count} 条常见写法提示（运行时变量当角色名，Ren'Py 支持，与译文无关）"
+            if hint_count
+            else ""
+        )
+        scope = str(body.scope or "all")
+        # 分组检查：只把本次范围那一组的明细带回去，另一组只留计数提示。
+        tl_sample = _lint_sample(tl_errors) if scope in ("tl", "all") else []
+        source_sample = _lint_sample(real_source) if scope in ("source", "all") else []
+        if scope == "tl":
+            message = (
+                f"译文检查：发现 {len(tl_errors)} 条问题"
+                if tl_errors
+                else "译文检查：当前译文目录没有需要处理的问题"
+            )
+            if real_source:
+                message += f"（另有源码问题 {len(real_source)} 条，可单独检查）"
+            message += note
+        elif scope == "source":
+            message = (
+                f"源码检查：发现 {len(real_source)} 条问题"
+                if real_source
+                else "源码检查：游戏本体没有需要处理的问题"
+            )
+            if tl_errors:
+                message += f"（另有译文问题 {len(tl_errors)} 条，可单独检查）"
+            message += note
+        elif tl_errors:
+            message = f"Lint 发现 {len(tl_errors)} 条译文问题"
+            if real_source:
+                message += f"，另有 {len(real_source)} 条源码问题（与翻译无关）"
+            message += note
+        elif real_source:
+            message = f"译文目录没有 Lint 问题；游戏源码有 {len(real_source)} 条（与翻译无关）"
+            message += note
+        elif exit_code:
+            message = f"Lint 未完成：Ren'Py 以退出码 {exit_code} 结束，且没有可解析的条目"
+        else:
+            message = "Lint 未发现翻译目录相关问题"
         progress("Lint 完成", 100)
         return {
             "success": True,
             "action": "lint",
+            "scope": scope,
             "written": bool(lint_output and Path(lint_file).is_file()),
-            "error_count": len(filtered),
+            # error_count 保持旧含义（译文条目），另给源码条数与合计。
+            "error_count": len(tl_errors),
+            "source_error_count": len(real_source),
+            "ignored_hint_count": hint_count,
+            "total_error_count": len(tl_errors) + len(real_source),
+            "lint_exit_code": exit_code,
+            "tl_errors": tl_sample,
+            "source_errors": source_sample,
             "lint_errors_path": lint_file if lint_output else "",
             "folder": snapshot_folder,
             "game_exe": snapshot_exe,
-            "message": (
-                f"Lint 发现 {len(filtered)} 条与翻译目录相关的问题"
-                if filtered
-                else "Lint 未发现翻译目录相关问题"
-            ),
+            "message": message,
         }
 
     return await _start_job(

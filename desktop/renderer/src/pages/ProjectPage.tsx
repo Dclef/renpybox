@@ -54,8 +54,8 @@ function formatTime(value: string): string {
   return Number.isFinite(time) ? new Date(time).toLocaleString() : value || '—';
 }
 
-export function ProjectPage(props: { state: AppState }) {
-  const { state } = props;
+export function ProjectPage(props: { state: AppState; incomingFile?: string | null; onIncomingFileConsumed?: () => void }) {
+  const { state, incomingFile, onIncomingFileConsumed } = props;
   const t = useT();
   const [inputFolder, setInputFolder] = useState('');
   const [outputFolder, setOutputFolder] = useState('');
@@ -157,18 +157,31 @@ export function ProjectPage(props: { state: AppState }) {
     }
   }, [projectLabel, state, t]);
 
-  const pickImportFile = useCallback(async () => {
-    const picked = await window.renpy?.pickFile({ filters: RBOX_FILTERS });
-    if (!picked) return;
+  /** 打开 .rbox → 先 inspect，再弹确认框；「导入工程文件」按钮和双击文件都走这里。 */
+  const beginImport = useCallback(async (path: string) => {
     setBusy(true);
     try {
-      setPendingImport(await inspectProjectFile(picked));
+      setPendingImport(await inspectProjectFile(path));
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
   }, [state]);
+
+  const pickImportFile = useCallback(async () => {
+    const picked = await window.renpy?.pickFile({ filters: RBOX_FILTERS });
+    if (!picked) return;
+    await beginImport(picked);
+  }, [beginImport]);
+
+  // 双击 .rbox / 启动参数带 .rbox：主进程推路径过来，直接进入导入确认。
+  useEffect(() => {
+    const file = String(incomingFile ?? '').trim();
+    if (!file) return;
+    onIncomingFileConsumed?.();
+    void beginImport(file);
+  }, [incomingFile, beginImport, onIncomingFileConsumed]);
 
   const confirmImport = useCallback(async (pending: ProjectFileDescription) => {
     setPendingImport(null);
@@ -284,51 +297,6 @@ export function ProjectPage(props: { state: AppState }) {
           </dl>
         </section>
 
-        <SettingsGroup>
-          <SettingCard title={t('project_page_source_language_title')} description={t('project_page_source_language_content')}>
-            <SelectInput
-              label={t('project_page_source_language_title')}
-              value={sourceLanguage}
-              disabled={state.saving}
-              options={languageOptions}
-              onCommit={(next) => state.setSetting('source_language', next)}
-            />
-          </SettingCard>
-          <SettingCard title={t('project_page_target_language_title')} description={t('project_page_target_language_content')}>
-            <SelectInput
-              label={t('project_page_target_language_title')}
-              value={targetLanguage}
-              disabled={state.saving}
-              options={languageOptions}
-              onCommit={(next) => state.setSetting('target_language', next)}
-            />
-          </SettingCard>
-          <SettingCard title={t('project_page_input_folder_title')} description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || t('setting_input_folder_placeholder')}</span>}>
-            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>{t('setting_choose')}</Button>
-            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>{t('setting_open')}</Button>
-          </SettingCard>
-          <SettingCard title={t('project_page_output_folder_title')} description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || t('setting_output_folder_placeholder')}</span>}>
-            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>{t('setting_choose')}</Button>
-            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>{t('setting_open')}</Button>
-          </SettingCard>
-          <SettingCard title={t('project_page_output_folder_open_on_finish_title')} description={t('project_page_output_folder_open_on_finish_content')}>
-            <Switch
-              checked={values?.output_folder_open_on_finish === true}
-              disabled={state.saving}
-              label={t('project_page_output_folder_open_on_finish_title')}
-              onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
-            />
-          </SettingCard>
-          <SettingCard title={t('project_page_traditional_chinese_title')} description={t('project_page_traditional_chinese_content')}>
-            <Switch
-              checked={values?.traditional_chinese_enable === true}
-              disabled={state.saving}
-              label={t('project_page_traditional_chinese_title')}
-              onChange={(next) => state.setSetting('traditional_chinese_enable', next)}
-            />
-          </SettingCard>
-        </SettingsGroup>
-
         <div className="rb-project-file">
         <SettingsGroup
           title={t('project_file_title')}
@@ -412,6 +380,51 @@ export function ProjectPage(props: { state: AppState }) {
           ) : null}
         </SettingsGroup>
         </div>
+        <SettingsGroup>
+          <SettingCard title={t('project_page_source_language_title')} description={t('project_page_source_language_content')}>
+            <SelectInput
+              label={t('project_page_source_language_title')}
+              value={sourceLanguage}
+              disabled={state.saving}
+              options={languageOptions}
+              onCommit={(next) => state.setSetting('source_language', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_target_language_title')} description={t('project_page_target_language_content')}>
+            <SelectInput
+              label={t('project_page_target_language_title')}
+              value={targetLanguage}
+              disabled={state.saving}
+              options={languageOptions}
+              onCommit={(next) => state.setSetting('target_language', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_input_folder_title')} description={<span className="rb-path" title={inputFolder || undefined}>{inputFolder || t('setting_input_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('input', inputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!inputFolder} onClick={() => openFolder(inputFolder)}>{t('setting_open')}</Button>
+          </SettingCard>
+          <SettingCard title={t('project_page_output_folder_title')} description={<span className="rb-path" title={outputFolder || undefined}>{outputFolder || t('setting_output_folder_placeholder')}</span>}>
+            <Button type="default" size="small" disabled={busy} onClick={() => void pickFolder('output', outputFolder)}>{t('setting_choose')}</Button>
+            <Button type="default" size="small" disabled={!outputFolder} onClick={() => openFolder(outputFolder)}>{t('setting_open')}</Button>
+          </SettingCard>
+          <SettingCard title={t('project_page_output_folder_open_on_finish_title')} description={t('project_page_output_folder_open_on_finish_content')}>
+            <Switch
+              checked={values?.output_folder_open_on_finish === true}
+              disabled={state.saving}
+              label={t('project_page_output_folder_open_on_finish_title')}
+              onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_page_traditional_chinese_title')} description={t('project_page_traditional_chinese_content')}>
+            <Switch
+              checked={values?.traditional_chinese_enable === true}
+              disabled={state.saving}
+              label={t('project_page_traditional_chinese_title')}
+              onChange={(next) => state.setSetting('traditional_chinese_enable', next)}
+            />
+          </SettingCard>
+        </SettingsGroup>
+
       </div>
 
       {pendingLegacy ? (

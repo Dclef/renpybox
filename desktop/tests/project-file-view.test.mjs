@@ -38,8 +38,13 @@ test('项目页用原生对话框和 rbox 过滤器，保存时补全后缀', ()
 
 test('导入先 inspect，确认对话框里才调用 import，成功后刷新三份状态', () => {
   const page = read('pages', 'ProjectPage.tsx');
+  // 按钮与双击 .rbox 都走 beginImport：先 inspect，把 import 留在确认框里。
+  const begin = page.match(/const beginImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(begin, /inspectProjectFile\(path\)/);
+  assert.doesNotMatch(begin, /importProjectFile/);
+
   const pick = page.match(/const pickImportFile = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
-  assert.match(pick, /inspectProjectFile\(picked\)/);
+  assert.match(pick, /beginImport\(picked\)/);
   assert.doesNotMatch(pick, /importProjectFile/);
 
   const confirm = page.match(/const confirmImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
@@ -109,6 +114,32 @@ test('未绑定或任务进行中时先说明原因，成功后打开工程文�
   assert.match(page, /project_file_legacy_format_sqlite/);
   assert.match(page, /project_file_legacy_next/);
   assert.match(page, /rb-project-file-actions/);
+});
+
+test('双击 .rbox 直接打开：主进程推路径，项目页接着走确认导入', () => {
+  const main = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'main', 'main.js'),
+    'utf8',
+  );
+  assert.match(main, /project-file:open/);
+  assert.match(main, /\.rbox/);
+  // 启动参数与已运行实例转交两条路都要覆盖。
+  assert.match(main, /sendProjectFileOpen\(projectFileFromArgv\(process\.argv\)\)/);
+  assert.match(main, /app\.on\('second-instance', \(_event, argv\)/);
+
+  const preload = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'main', 'preload-main.cjs'),
+    'utf8',
+  );
+  assert.match(preload, /onProjectFileOpen: \(callback\)/);
+
+  const app = read('App.tsx');
+  assert.match(app, /onProjectFileOpen\?\.\(\(file\)/);
+  assert.match(app, /navigate\('project'\)/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  assert.match(page, /incomingFile\?: string \| null/);
+  assert.match(page, /beginImport\(file\)/);
 });
 
 test('工程文件文案中英文齐全', () => {

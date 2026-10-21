@@ -56,6 +56,14 @@ interface RepairEnvFix {
   backup?: string;
 }
 
+/** lint 报告条目：路径相对游戏根目录，line 为 0 表示整文件级问题。 */
+interface LintIssue {
+  file: string;
+  line: number;
+  type?: string;
+  message: string;
+}
+
 type EnvAction = 'merge' | 'move';
 
 interface RepairResult extends ToolResultBase {
@@ -85,13 +93,31 @@ interface RepairResult extends ToolResultBase {
   rescan_skipped?: boolean;
   // lint
   errors?: Array<Record<string, unknown>>;
+  /** 本次检查范围：tl 只看译文目录，source 只看游戏本体。 */
+  scope?: string;
   error_count?: number;
+  source_error_count?: number;
+  total_error_count?: number;
+  lint_exit_code?: number;
+  tl_errors?: LintIssue[];
+  source_errors?: LintIssue[];
   lint_errors_path?: string;
+  /** 并入「扫描并修复」的 Lint 复检结果。 */
+  lint?: {
+    issues?: LintIssue[];
+    issue_count?: number;
+    source_count?: number;
+    ignored_hints?: number;
+    exit_code?: number;
+    skipped?: string;
+  };
 }
 
 interface RepairStatus {
   project_key?: string;
   folder?: string;
+  /** 自动识别的游戏主程序（同名 .py + .exe），供 lint 卡片直接用。 */
+  game_exe?: string;
   owner_project_key?: string;
   has_scan_report?: boolean;
   owner_identity?: string[];
@@ -112,6 +138,9 @@ const COPY = {
     optionsDesc: '默认只勾安全项；高级项可能误改文件，建议先备份再勾选。',
     groupFormat: '格式化',
     groupRepair: '修复',
+    groupRecheck: '复检',
+    fixLintAfter: 'Ren\'Py Lint 复检（译文）',
+    fixLintAfterHint: '修复后跑一次 Ren\'Py 内置 lint，并入这次任务，不用再单独检查；“运行时变量当角色名”这类常见写法会自动忽略。需要游戏主程序，未识别到就跳过。',
     keepComments: '保留注释',
     keepCommentsHint: '注释始终保留，本项不可关闭。',
     fixIndent: 'Tab 转空格',
@@ -162,10 +191,14 @@ const COPY = {
     rescanSkipped: '修复或复扫未完成，剩余问题数量未知，请重新扫描。',
     remainingUnknown: '未知',
     idle: '空闲',
-    lintTitle: '深度 Lint 检查',
-    lintDesc: "调用 Ren'Py 内置 lint 命令进行深度语法检查",
-    exeLabel: '游戏主程序',
-    runLint: '执行 Lint 检查',
+    lintDesc: "调用 Ren'Py 内置 lint 命令进行深度语法检查（Ren'Py 脚本语法与 Python 不同，以 Ren'Py 自己的报告为准）",
+    lintTlGroup: '译文问题',
+    lintSourceGroup: '源码问题',
+    lintTlEmpty: '当前译文目录没有 lint 问题。',
+    lintExitCode: 'Ren\'Py 退出码 {code}',
+    lintReportPath: '完整报告',
+    lintIgnoredHints: '已忽略 {count} 条常见写法提示（运行时变量当角色名，Ren\'Py 支持，与译文无关）。',
+    lintSourceCount: '源码另有 {count} 条，与翻译无关。',
     exportFailed: '导出失败',
   },
   EN: {
@@ -177,6 +210,9 @@ const COPY = {
     optionsDesc: 'Only safe options are on by default. Advanced options may alter files unexpectedly; back up first.',
     groupFormat: 'Formatting',
     groupRepair: 'Repairs',
+    groupRecheck: 'Recheck',
+    fixLintAfter: 'Ren\'Py Lint recheck (translation)',
+    fixLintAfterHint: 'Run Ren\'Py lint once after the repair, as part of the same job. Common patterns like runtime-variable speaker names are ignored automatically. Needs the game executable; skipped if not detected.',
     keepComments: 'Keep comments',
     keepCommentsHint: 'Comments are always kept; this cannot be turned off.',
     fixIndent: 'Tabs to spaces',
@@ -227,10 +263,14 @@ const COPY = {
     rescanSkipped: 'The repair or rescan did not finish; remaining issues are unknown. Please scan again.',
     remainingUnknown: 'unknown',
     idle: 'Idle',
-    lintTitle: 'Deep Lint Check',
     lintDesc: "Run Ren'Py's built-in lint command for a deeper syntax check",
-    exeLabel: 'Game Executable',
-    runLint: 'Run Lint Check',
+    lintTlGroup: 'Translation issues',
+    lintSourceGroup: 'Source issues',
+    lintTlEmpty: 'No lint issues in the current translation folder.',
+    lintExitCode: 'Ren\'Py exit code {code}',
+    lintReportPath: 'Full report',
+    lintIgnoredHints: 'Ignored {count} hints about runtime-variable speaker names (Ren\'Py supports them; unrelated to translation).',
+    lintSourceCount: 'Source has {count} more, unrelated to translation.',
     exportFailed: 'Export failed',
   },
 } as const;
@@ -276,6 +316,36 @@ function TypeChips(props: { counts?: Record<string, number>; lang: 'ZH' | 'EN' }
 }
 
 /** 需人工清单：最多 10 条，点文件行复制完整路径；不打开编辑器。 */
+function LintIssueList(props: {
+  issues?: LintIssue[];
+  total: number;
+  empty: string;
+  uiCopy: Copy;
+}) {
+  const { issues, total, empty, uiCopy } = props;
+  const items = Array.isArray(issues) ? issues : [];
+  const more = Math.max(0, total - items.length);
+  if (!items.length) return <div className="rb-setting-desc">{empty}</div>;
+  return (
+    <>
+      <div className="rb-quality-items">
+        {items.map((issue, index) => (
+          <div
+            key={`${issue.file}:${issue.line}:${index}`}
+            style={{ display: 'flex', gap: 8, alignItems: 'baseline', minWidth: 0 }}
+          >
+            <code className="rb-lint-file" title={issue.file}>
+              {issue.line ? `${shortPath(issue.file)}:${issue.line}` : shortPath(issue.file)}
+            </code>
+            <span className="rb-setting-desc" style={{ minWidth: 0 }}>{issue.message || issue.type || ''}</span>
+          </div>
+        ))}
+      </div>
+      {more > 0 ? <div className="rb-metric-note">{uiCopy.sampleMore.replace('{count}', String(more))}</div> : null}
+    </>
+  );
+}
+
 function IssueSample(props: {
   issues?: RepairIssue[];
   total: number;
@@ -396,7 +466,6 @@ export function ErrorRepairPage(props: { state: AppState }) {
   const uiLang: 'ZH' | 'EN' = state.bootLanguage === 'EN' ? 'EN' : 'ZH';
   const uiCopy = COPY[uiLang];
   const [folder, setFolder] = useState('');
-  const [gameExe, setGameExe] = useState('');
   const [options, setOptions] = useState<RepairOptions>({ ...ERROR_REPAIR_DEFAULTS });
   const [confirmFix, setConfirmFix] = useState(false);
   // 卡片操作只针对该卡片的残留目录；路径随请求下发，由后端对照本次扫描校验。
@@ -417,7 +486,6 @@ export function ErrorRepairPage(props: { state: AppState }) {
 
   useEffect(() => {
     setFolder('');
-    setGameExe('');
     setOptions({ ...ERROR_REPAIR_DEFAULTS });
     setConfirmFix(false);
     setEnvAction(null);
@@ -430,12 +498,21 @@ export function ErrorRepairPage(props: { state: AppState }) {
     lastScanByFolder.current[normalizeFolder(result.folder)] = result;
   }, [job?.status, job?.id, result]);
 
+  // 翻译目录 / 游戏主程序能从项目里自动带出来（同名 .py + .exe 才算数），
+  // 每个身份只种一次：用户改过就不抢，lint 卡片不用每次手填。
+  const seededRef = useRef('');
+  useEffect(() => {
+    if (!status || seededRef.current === suite.identity) return;
+    seededRef.current = suite.identity;
+    const suggestedFolder = String(status.folder ?? '').trim();
+    if (suggestedFolder) setFolder((current) => (current.trim() ? current : suggestedFolder));
+  }, [status, suite.identity]);
+
   const done = job?.status === 'done';
   const fixView = done && result?.action === 'fix' ? result : null;
   const currentScan = done && result?.action === 'scan' ? result : null;
   const cachedScan = folder.trim() ? lastScanByFolder.current[normalizeFolder(folder)] : undefined;
   const scanView = fixView ? null : currentScan ?? cachedScan ?? null;
-  const lintView = done && result?.action === 'lint' ? result : null;
   const canExport = Boolean(status?.has_scan_report);
 
   function setOption(key: keyof RepairOptions, value: boolean) {
@@ -446,14 +523,6 @@ export function ErrorRepairPage(props: { state: AppState }) {
     const context = suite.identityRef.current;
     const next = await window.renpy?.pickFolder?.(folder || undefined);
     if (next && context === suite.identityRef.current) setFolder(next);
-  }
-
-  async function pickExe() {
-    const context = suite.identityRef.current;
-    const next = await window.renpy?.pickFile?.({
-      filters: [{ name: 'Executable', extensions: ['exe'] }],
-    });
-    if (next && context === suite.identityRef.current) setGameExe(next);
   }
 
   async function exportReport() {
@@ -504,6 +573,7 @@ export function ErrorRepairPage(props: { state: AppState }) {
       fix_environment: true,
       confirm: true,
       owner_project_key: ownerKey,
+      lint_after: options.fixLintAfter,
     });
   }
 
@@ -604,6 +674,14 @@ export function ErrorRepairPage(props: { state: AppState }) {
           checked={options.fixQuotes}
           disabled={blocked}
           onChange={(checked) => setOption('fixQuotes', checked)}
+        />
+        <OptionGroupLabel text={uiCopy.groupRecheck} />
+        <OptionItem
+          label={uiCopy.fixLintAfter}
+          hint={uiCopy.fixLintAfterHint}
+          checked={options.fixLintAfter}
+          disabled={blocked}
+          onChange={(checked) => setOption('fixLintAfter', checked)}
         />
       </SettingsGroup>
 
@@ -721,35 +799,36 @@ export function ErrorRepairPage(props: { state: AppState }) {
               ))
               : <div className="rb-setting-desc">{uiCopy.envNone}</div>}
           </div>
+          {fixView.lint ? (
+            <div style={{ flex: '1 1 100%', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              <div className="rb-setting-title">{`${uiCopy.lintTlGroup} · ${fixView.lint.skipped ? '—' : (fixView.lint.issue_count ?? 0)}`}</div>
+              {fixView.lint.skipped ? (
+                <div className="rb-setting-desc">{fixView.lint.skipped}</div>
+              ) : (
+                <>
+                  <LintIssueList
+                    issues={fixView.lint.issues}
+                    total={fixView.lint.issue_count ?? 0}
+                    empty={uiCopy.lintTlEmpty}
+                    uiCopy={uiCopy}
+                  />
+                  {fixView.lint.source_count ? (
+                    <div className="rb-metric-note">
+                      {fill(uiCopy.lintSourceCount, { count: fixView.lint.source_count })}
+                    </div>
+                  ) : null}
+                  {fixView.lint.ignored_hints ? (
+                    <div className="rb-metric-note">
+                      {fill(uiCopy.lintIgnoredHints, { count: fixView.lint.ignored_hints })}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ) : null}
         </SettingsGroup>
       ) : null}
 
-      {lintView ? (
-        <Banner tone="info">
-          {uiLang === 'EN'
-            ? `Lint: ${lintView.error_count ?? 0} issue(s)${lintView.lint_errors_path ? ` → ${lintView.lint_errors_path}` : ''}`
-            : `Lint：${lintView.error_count ?? 0} 条${lintView.lint_errors_path ? ` → ${lintView.lint_errors_path}` : ''}`}
-        </Banner>
-      ) : null}
-
-      <SettingsGroup title={uiCopy.lintTitle} description={uiCopy.lintDesc}>
-        <Form.Item label={uiCopy.exeLabel}>
-          <Space.Compact block>
-            <Input value={gameExe} onChange={(e) => setGameExe(e.target.value)} disabled={blocked} />
-            <Button onClick={() => void pickExe()} disabled={blocked}>{uiCopy.browse}</Button>
-          </Space.Compact>
-        </Form.Item>
-        <Button
-          disabled={blocked || !folderReady || !gameExe.trim()}
-          onClick={() => void suite.submit('/api/error-repair/lint', {
-            folder,
-            game_exe: gameExe,
-            owner_project_key: ownerKey,
-          })}
-        >
-          {uiCopy.runLint}
-        </Button>
-      </SettingsGroup>
 
       {confirmFix ? (
         <Dialog

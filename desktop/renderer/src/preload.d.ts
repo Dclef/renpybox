@@ -67,6 +67,8 @@ interface RenpyBridge {
   toggleMaximize: () => void;
   /** 订阅最大化状态变化，返回取消订阅函数 */
   onMaximizeChange: (callback: (maximized: boolean) => void) => () => void;
+  /** 双击 .rbox / 启动参数带 .rbox 时收到工程文件路径；返回取消订阅函数 */
+  onProjectFileOpen: (callback: (file: string) => void) => () => void;
   /** 目录选择（原生 dialog）与「打开目录」；取消返回 null */
   pickFolder: (defaultPath?: string) => Promise<string | null>;
   pickFile: (options?: FileDialogOptions) => Promise<string | null>;
