@@ -540,3 +540,64 @@ def test_server_side_multiselect_filters_cover_whole_cache(tmp_path, monkeypatch
     # 不合法值仍按 400 拒绝。
     assert client.get("/api/proofreading", params=[("statuses", "UNKNOWN")]).status_code == 400
     assert client.get("/api/proofreading", params=[("warnings", "UNKNOWN")]).status_code == 400
+
+
+@pytest.mark.parametrize("sqlite", [False, True])
+def test_batch_edit_writes_once_and_only_rechecks_touched_rows(tmp_path, monkeypatch, sqlite):
+    """一次保存多行：整批版本校验、只落盘一次，且只让被改的行重新检查。"""
+    config = Config()
+    config.renpy_project_path = config.renpy_game_folder = config.renpy_tl_folder = ""
+    config.input_folder = ""
+    config.output_folder = str(tmp_path / "batch")
+    config.cache_use_sqlite = sqlite
+    monkeypatch.setattr(Config, "load", lambda self: config)
+    engine = Engine()
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
+    manager = CacheManager(service=False)
+    manager.set_items([
+        CacheItem(src="first", dst="第一", file_path="a.rpy", row=1, status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="second", dst="第二", file_path="a.rpy", row=2, status=Base.TranslationStatus.TRANSLATED),
+        CacheItem(src="third", dst="第三", file_path="b.rpy", row=3, status=Base.TranslationStatus.TRANSLATED),
+    ])
+    manager.set_project(CacheProject(id="batch-fixture", status=Base.TranslationStatus.TRANSLATED))
+    manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder, strict=True)
+    app = FastAPI()
+    app.state.config = config
+    app.include_router(proofreading.router)
+    client = TestClient(app)
+
+    # 先跑一轮「仅看问题」，让逐行检查结果进入快照
+    first = client.get("/api/proofreading", params={"only_issues": "true"}).json()
+    assert first["scan_complete"] is True
+    snapshot = app.state.proofreading_snapshot
+    assert set(snapshot["warnings"]) == {0, 1, 2}
+
+    rows = [
+        {"id": row["id"], "version": row["version"], "dst": row["dst"] + "-改"}
+        for row in client.get("/api/proofreading").json()["items"][:2]
+    ]
+    token = first["cache_token"]
+
+    # 同一行重复提交 → 400
+    dup = {"cache_token": token, "rows": [rows[0], dict(rows[0])]}
+    assert client.patch("/api/proofreading/items", json=dup).status_code == 400
+
+    # 任一行版本过期 → 整批不写入，磁盘保持原样
+    stale = {"cache_token": token, "rows": [rows[0], {**rows[1], "version": "0" * 64}]}
+    assert client.patch("/api/proofreading/items", json=stale).status_code == 409
+    manager.load_from_file(config.output_folder, strict=True)
+    assert [item.get_dst() for item in manager.get_items()] == ["第一", "第二", "第三"]
+
+    # 正常批量保存：一次请求写入两行
+    ok = client.patch("/api/proofreading/items", json={"cache_token": token, "rows": rows})
+    assert ok.status_code == 200
+    assert ok.json()["changed"] == 2
+    manager.load_from_file(config.output_folder, strict=True)
+    assert [item.get_dst() for item in manager.get_items()] == ["第一-改", "第二-改", "第三"]
+
+    # 快照被复用：未改动的行保留旧检查结论，被改的行作废等待重新检查
+    assert app.state.proofreading_snapshot is snapshot
+    assert set(snapshot["warnings"]) == {2}
+    rescan = client.get("/api/proofreading", params={"only_issues": "true"}).json()
+    assert rescan["scan_complete"] is True
+    assert engine.get_status() == Engine.Status.IDLE

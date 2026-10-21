@@ -1,6 +1,6 @@
 {
   "name": "renpybox-desktop",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "private": true,
   "author": "dclef",
   "type": "module",
@@ -93,6 +93,15 @@
       "en-US",
       "zh-CN",
       "zh-TW"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "rbox",
+        "name": "RenpyBox Project",
+        "description": "RenpyBox 工程文件（翻译缓存与项目设置快照）",
+        "role": "Editor",
+        "icon": "icon.ico"
+      }
     ],
     "win": {
       "icon": "icon.ico",

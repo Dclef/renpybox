@@ -211,6 +211,7 @@ if (p === '/api/jobs') return response({ jobs: [f.workbenchJob, f.archiveJob, f.
     }
     if (p === '/api/proofreading/quality/cancel') { f.engineStatus = 'IDLE'; f.emitQuality({ ...f.qualityReports[0], state: 'CANCELLED' }); return response({ ok: true }); }
     if (p === '/api/proofreading/item') { f.items[0].dst = body.dst; return response({ ok: true }); }
+    if (p === '/api/proofreading/items') { body.rows.forEach(row => { f.items[row.id].dst = row.dst; }); return response({ ok: true, changed: body.rows.length }); }
     if (p === '/api/archive') return response({ job: f.archiveJob });
     if (p === '/api/archive/unpack' || p === '/api/archive/decompile' || p === '/api/archive/pack') {
       f.engineStatus = 'TESTING';
@@ -690,8 +691,10 @@ await openTool('禁翻表');
   // 工具页要等 /api/proofreading 首帧数据才渲染 .rb-proof-target；旧版这里直接 querySelector().dispatchEvent 会抛 TypeError。
   await waitForSelector('.rb-proof-target', '校对页目标单元格就绪');
   await js("document.querySelector('.rb-proof-target').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
-  await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('保存译文');
-  await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对保存');
+  await input('#proofreading-draft', '艾丽丝，那封信今早到了。'); await click('暂存译文');
+  await assert("__uiFixture.items[0].dst!=='艾丽丝，那封信今早到了。' && !!document.querySelector('.rb-proof-staged') && !document.querySelector('[role=dialog]') && !document.querySelector('#proofreading-draft')", '校对暂存只记在本页');
+  await click('保存修改（1 行）'); await pause(400);
+  await assert("__uiFixture.items[0].dst==='艾丽丝，那封信今早到了。' && !document.querySelector('.rb-proof-staged')", '一次保存把暂存译文写进缓存');
   await js("__uiFixture.issueDelay=true");
   await js("Array.from(document.querySelectorAll('label')).find(label=>label.textContent.trim()==='仅看问题')?.click()"); await pause(60);
   await assert("document.querySelector('.rb-proof-table-scroll').getAttribute('aria-busy')==='true' && document.querySelector('.rb-proof-loading')", '问题筛选立即反馈加载中');
@@ -727,6 +730,7 @@ await openTool('禁翻表');
   await js("document.querySelectorAll('.rb-proof-target')[1].dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))"); await pause(100);
   await answerDialog('确定放弃这次编辑', '取消');
   await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '切换编辑行保留未保存译文');
+  await pause(300);
   await click('取消');
   await answerDialog('确定放弃这次编辑', '取消');
   await assert("document.querySelector('#proofreading-draft').value==='尚未保存的编辑'", '取消编辑保留未保存译文');

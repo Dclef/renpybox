@@ -140,6 +140,44 @@ def test_fix_partial_counts_and_confirm_required(repair_client):
     assert engine.get_status() == Engine.Status.IDLE
 
 
+def test_fix_can_run_lint_recheck_in_the_same_job(repair_client, monkeypatch):
+    """Lint 复检并入「扫描并修复」：同一任务里出结果，误报提示单独计数。"""
+    client, _, tmp_path, _, config = repair_client
+    project = tmp_path / "89G"
+    owner_key = _bind(config, project)
+    (project / "LustfulDesires.py").write_text("", encoding="utf-8")
+    (project / "LustfulDesires.exe").write_bytes(b"MZ\0\0")
+    (project / "unins000.exe").write_bytes(b"MZ\0\0")
+    tl = project / "game" / "tl" / "chinese"
+    (tl / "script.rpy").write_text('\told "A"\n', encoding="utf-8")
+
+    seen: dict = {}
+    report = (
+        "game/tl/chinese/script.rpy:1 this file contains orphan translations at line 1 (id x).\n"
+        "game/tl/chinese/script.rpy:2 Could not evaluate 'suspect1' in the who part of a say statement.\n"
+        "game/script.rpy:2 Could not evaluate 'suspect1' in the who part of a say statement.\n"
+    )
+
+    def fake_lint(self, path, **kwargs):
+        seen["exe"] = path
+        return report
+
+    monkeypatch.setattr("api.routes.error_repair.ErrorRepairer.exec_renpy_lint", fake_lint)
+    response = client.post("/api/error-repair/fix", json={
+        "folder": str(tl), "fix_indent": True, "confirm": True, "lint_after": True,
+        "owner_project_key": owner_key,
+    })
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "done", job
+    lint = job["result"]["lint"]
+    # 游戏主程序自动识别（不含 unins000.exe），译文只留真问题，who 提示单独计数。
+    assert seen["exe"].endswith("LustfulDesires.exe")
+    assert lint["issue_count"] == 1
+    assert lint["issues"][0]["file"] == "game/tl/chinese/script.rpy"
+    assert lint["ignored_hints"] == 1
+    assert "LustfulDesires.exe" in job["result"]["message"] or "Lint 复检" in job["result"]["message"]
+
+
 def test_export_failure_not_fake_success(repair_client, monkeypatch):
     client, _, tmp_path, _, _ = repair_client
     tl = _tl(tmp_path)
@@ -179,11 +217,11 @@ def test_lint_none_fails_empty_succeeds(repair_client, monkeypatch):
     )
     monkeypatch.setattr(
         "api.routes.error_repair.ErrorRepairer.parse_lint_errors",
-        lambda self, output: [{"file": "game/script.rpy", "line": 1, "message": "x"}],
-    )
-    monkeypatch.setattr(
-        "api.routes.error_repair.ErrorRepairer.filter_lint_errors",
-        staticmethod(lambda errors, folder: []),
+        lambda self, output: [
+            {"file": "game/tl/chinese/script.rpy", "line": 2, "message": "译文缺图"},
+            {"file": "game/script.rpy", "line": 1, "message": "本体缺图"},
+            {"raw": "统计行"},
+        ],
     )
     response = client.post("/api/error-repair/lint", json={
         "folder": str(tl),
@@ -191,8 +229,80 @@ def test_lint_none_fails_empty_succeeds(repair_client, monkeypatch):
     })
     job = _finish(client, response.json()["job"]["id"])
     assert job["status"] == "done"
-    assert job["result"]["error_count"] == 0
+    # 译文条目走 error_count（旧字段含义不变），源码条目单独给一组。
+    assert job["result"]["error_count"] == 1
+    assert job["result"]["source_error_count"] == 1
+    assert job["result"]["tl_errors"][0]["file"] == "game/tl/chinese/script.rpy"
+    assert job["result"]["source_errors"][0]["file"] == "game/script.rpy"
     assert engine.get_status() == Engine.Status.IDLE
+
+
+def test_status_suggests_game_exe_without_manual_browse(repair_client):
+    """深度 Lint 的「游戏主程序」按项目自动识别：同名 .py + .exe 才算启动器。"""
+    client, _, tmp_path, _, config = repair_client
+    project = tmp_path / "89G"
+    _bind(config, project)
+    (project / "LustfulDesires.py").write_text("", encoding="utf-8")
+    exe = project / "LustfulDesires.exe"
+    exe.write_bytes(b"MZ\0\0")
+    # 卸载器这类不该被当成启动器。
+    (project / "unins000.exe").write_bytes(b"MZ\0\0")
+
+    payload = client.get("/api/error-repair").json()
+    assert payload["game_exe"] == str(exe)
+    assert payload["folder"].endswith("chinese")
+
+
+def test_lint_scope_checks_translation_and_source_separately(repair_client, monkeypatch):
+    """译文 / 源码分开检查：同一份报告，按 scope 只回填对应那一组的明细。"""
+    client, _, tmp_path, _, _ = repair_client
+    tl = _tl(tmp_path)
+    exe = tmp_path / "game.exe"
+    exe.write_bytes(b"MZ\0\0")
+    monkeypatch.setattr(
+        "api.routes.error_repair.ErrorRepairer.exec_renpy_lint",
+        lambda self, path, **kwargs: "game/tl/chinese/script.rpy:1 译文问题\ngame/script.rpy:2 源码问题",
+    )
+
+    def run(scope):
+        response = client.post("/api/error-repair/lint", json={
+            "folder": str(tl), "game_exe": str(exe), "scope": scope,
+        })
+        return _finish(client, response.json()["job"]["id"])["result"]
+
+    only_tl = run("tl")
+    assert only_tl["scope"] == "tl"
+    assert [item["file"] for item in only_tl["tl_errors"]] == ["game/tl/chinese/script.rpy"]
+    assert only_tl["source_errors"] == []
+    assert only_tl["error_count"] == 1 and only_tl["source_error_count"] == 1
+
+    only_source = run("source")
+    assert [item["file"] for item in only_source["source_errors"]] == ["game/script.rpy"]
+    assert only_source["tl_errors"] == []
+
+
+def test_lint_reports_timeout_reason_and_forwards_wait(repair_client, monkeypatch):
+    """超时不是「跑不起来」：要把上限与原因如实带给界面，且默认等待远大于旧的 120 秒。"""
+    client, _, tmp_path, _, _ = repair_client
+    tl = _tl(tmp_path)
+    exe = tmp_path / "game.exe"
+    exe.write_bytes(b"MZ\0\0")
+    seen: dict = {}
+    limit = int(ErrorRepairer.LINT_TIMEOUT)
+
+    def fake(self, path, **kwargs):
+        seen.update(kwargs)
+        self.last_lint_error = f"超过 {limit} 秒上限仍未结束，已中止（大型项目首次 lint 常需数分钟）"
+        return None
+
+    monkeypatch.setattr("api.routes.error_repair.ErrorRepairer.exec_renpy_lint", fake)
+    response = client.post("/api/error-repair/lint", json={"folder": str(tl), "game_exe": str(exe)})
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert str(limit) in job["error"]
+    assert seen["timeout"] == ErrorRepairer.LINT_TIMEOUT
+    assert limit > 120
+    assert callable(seen["on_tick"])
 
 
 def test_busy_engine_blocks_export_without_side_effects(repair_client):
