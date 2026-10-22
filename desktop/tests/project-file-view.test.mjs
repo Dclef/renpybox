@@ -204,6 +204,6 @@ test('标题栏常驻当前工程文件：绑定时显示文件名，丢失换�
   assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 3);
 
   const css = fs.readFileSync(path.join(src, 'styles', 'app.css'), 'utf8');
-  assert.match(css, /\.rb-project-file \{/);
-  assert.match(css, /\.rb-project-file\[data-missing='true'\]/);
+  assert.match(css, /\.rb-titlebar \.rb-project-file \{/);
+  assert.match(css, /\.rb-titlebar \.rb-project-file\[data-missing='true'\]/);
 });
