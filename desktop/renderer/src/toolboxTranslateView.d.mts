@@ -27,6 +27,14 @@ export function translationModeSummary(mode: unknown): string;
 
 export function translationProgressView(progress: unknown): { percent: number; label: string };
 
+export function sourceResumeView(info: unknown): {
+  canContinue: boolean;
+  percent: number;
+  line: number;
+  total: number;
+  hint: string;
+};
+
 export function toolboxStartGate(options?: {
   mode?: string;
   hasProject?: boolean;

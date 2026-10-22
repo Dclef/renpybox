@@ -306,6 +306,9 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
   const showDesktopRecovery = Boolean(window.renpy) && desktopInfo?.packaged !== false;
   const projectPath = String(state.project?.renpy_project_path ?? '');
   const projectName = projectPath.split(/[\\/]/).filter(Boolean).at(-1) || t('app_project_unbound_name');
+  // 单文件工程绑定后，标题栏一直显示文件名：它现在是真正的存储位置，不能只在设置页看。
+  const binding = state.projectFileBinding?.bound ? state.projectFileBinding : null;
+  const bindingName = binding ? binding.path.split(/[\\/]/).filter(Boolean).at(-1) || binding.path : '';
 
   // 翻译页 preflight 判定缺资产时，让用户能直接跳到工作台补齐，
   // 不必自己找侧边栏（对齐 TranslationPage._open_workbench）。
@@ -449,6 +452,24 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
           <span>{projectName}</span>
           <ChevronDown size={16} strokeWidth={1.75} />
         </button>
+        {binding ? (
+          <button
+            type="button"
+            className="rb-project-file"
+            data-missing={binding.exists ? undefined : 'true'}
+            aria-label={`${t('project_file_path')}：${binding.path}`}
+            title={
+              binding.exists
+                ? binding.path
+                : t('project_file_binding_missing').replace('{path}', binding.path)
+            }
+            disabled={!state.ready}
+            onClick={() => navigate('project')}
+          >
+            <FileText size={14} strokeWidth={1.75} />
+            <span>{bindingName}</span>
+          </button>
+        ) : null}
         <span className="rb-titlebar-spacer" />
         <span className="workspace-link rb-link" role="status" aria-label={linkText[link]}>
           <span className="rb-dot" data-state={link} />

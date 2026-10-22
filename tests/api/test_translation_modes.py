@@ -401,6 +401,130 @@ def test_mode_source_default_output_path(mode_app, tmp_path):
     assert Path(mode_app["config"].output_folder) == expected.resolve()
 
 
+def _write_source_cache(output: Path, *, status: Base.TranslationStatus, line: int, total: int) -> None:
+    """按真实 CacheManager 落一份缓存项目（状态+进度），供续跑探测读取。"""
+    from module.Cache.CacheManager import CacheManager
+
+    manager = CacheManager(service = False)
+    project = manager.get_project()
+    project.set_status(status)
+    project.set_progress({"line": line, "total_line": total})
+    assert manager.save_to_file(project, manager.get_items(), str(output)) is True
+
+
+def test_source_resumable_probe_reports_cache_progress(mode_app):
+    client = mode_app["client"]
+    source_in = mode_app["source_in"]
+    expected_out = source_in.parent / f"{source_in.name}_source_out"
+
+    # 无缓存：不可续跑
+    response = client.get(
+        "/api/translation/resumable",
+        params = {"mode": "source", "input_folder": str(source_in)},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["resumable"] is False
+    assert Path(body["output_folder"]) == expected_out.resolve()
+
+    # TRANSLATING 缓存：可续跑并带进度
+    _write_source_cache(
+        expected_out,
+        status = Base.TranslationStatus.TRANSLATING,
+        line = 2,
+        total = 5,
+    )
+    response = client.get(
+        "/api/translation/resumable",
+        params = {"mode": "source", "input_folder": str(source_in)},
+    )
+    body = response.json()
+    assert body["resumable"] is True
+    assert body["status"] == "TRANSLATING"
+    assert body["line"] == 2
+    assert body["total_line"] == 5
+
+    # TRANSLATED（已完成）缓存：不可续跑，应当重新开始
+    _write_source_cache(
+        expected_out,
+        status = Base.TranslationStatus.TRANSLATED,
+        line = 5,
+        total = 5,
+    )
+    response = client.get(
+        "/api/translation/resumable",
+        params = {"mode": "source", "input_folder": str(source_in)},
+    )
+    assert response.json()["resumable"] is False
+
+
+def test_source_continue_requires_resumable_cache(mode_app):
+    """停止后再「继续」必须落到可续跑缓存上；没有缓存就拒绝而不是整轮重翻。"""
+    client = mode_app["client"]
+    source_in = mode_app["source_in"]
+
+    response = _start(
+        client,
+        mode = "source",
+        status = "TRANSLATING",
+        input_folder = str(source_in),
+        renpy_backup_original = False,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] is False
+    assert body["reason"] == "NOT_RESUMABLE"
+    # 拒绝不得留下启动事件，也必须归还启动票据（后续 start 仍可受理）。
+    assert [event for event, _ in mode_app["emitted"]] == []
+
+    _write_source_cache(
+        source_in.parent / f"{source_in.name}_source_out",
+        status = Base.TranslationStatus.TRANSLATING,
+        line = 1,
+        total = 3,
+    )
+    response = _start(
+        client,
+        mode = "source",
+        status = "TRANSLATING",
+        input_folder = str(source_in),
+        renpy_backup_original = False,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted"] is True
+    assert _translation_start_payload(mode_app["emitted"])["status"] == Base.TranslationStatus.TRANSLATING
+
+
+def test_mode_source_continue_skips_prebackup(mode_app):
+    """续跑不重复前置备份：直接进入翻译，不再跑备份 job / 生成 .bak。"""
+    client = mode_app["client"]
+    app = mode_app["app"]
+    source_in = mode_app["source_in"]
+    rpy = source_in / "story.rpy"
+    rpy.write_text('label start:\n    "hi"\n', encoding = "utf-8")
+    _write_source_cache(
+        source_in.parent / f"{source_in.name}_source_out",
+        status = Base.TranslationStatus.TRANSLATING,
+        line = 1,
+        total = 3,
+    )
+
+    response = _start(
+        client,
+        mode = "source",
+        status = "TRANSLATING",
+        input_folder = str(source_in),
+        renpy_backup_original = True,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["accepted"] is True
+    # 全新开始会走 stage=backing_up + job；续跑必须直接受理翻译。
+    assert body["stage"] == "translating"
+    assert body["job"] is None
+    assert not rpy.with_suffix(".rpy.bak").exists()
+
+
 def test_mode_source_local_bak_backup_via_job(mode_app):
     client = mode_app["client"]
     app = mode_app["app"]

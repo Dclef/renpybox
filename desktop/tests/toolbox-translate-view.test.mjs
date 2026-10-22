@@ -7,6 +7,7 @@ import {
   decodeLangChoice,
   encodeLangChoice,
   normalizePath,
+  sourceResumeView,
   toolboxOwnerKey,
   toolboxProjectRootFromGamePath,
   toolboxStartGate,
@@ -112,4 +113,29 @@ test('gamePath 规范化与后端 from_path 项目根对齐', () => {
     toolboxTargetKeyFromGamePath('C:/external-C', 'chinese'),
   );
   assert.equal(toolboxProjectRootFromGamePath(''), '');
+});
+
+test('sourceResumeView：无可续跑缓存时只能重新开始', () => {
+  const view = sourceResumeView(null);
+  assert.equal(view.canContinue, false);
+  assert.equal(view.hint, '');
+  assert.equal(sourceResumeView({ resumable: false, line: 3, total_line: 9 }).canContinue, false);
+  assert.equal(sourceResumeView({}).canContinue, false);
+});
+
+test('sourceResumeView：有可续跑缓存时给出继续状态与进度', () => {
+  const view = sourceResumeView({ resumable: true, line: 3, total_line: 9 });
+  assert.equal(view.canContinue, true);
+  assert.equal(view.percent, 33);
+  assert.equal(view.line, 3);
+  assert.equal(view.total, 9);
+  assert.match(view.hint, /3\/9/);
+});
+
+test('sourceResumeView：行数缺失时仍可继续，不显示假进度', () => {
+  const view = sourceResumeView({ resumable: true, line: 0, total_line: 0 });
+  assert.equal(view.canContinue, true);
+  assert.equal(view.percent, 0);
+  assert.match(view.hint, /可继续翻译/);
+  assert.doesNotMatch(view.hint, /0\/0/);
 });

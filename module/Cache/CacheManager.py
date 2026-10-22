@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 
 from base.Base import Base
+from base.LogManager import LogManager
 from module.Config import Config
 from module.Cache.CacheDB import CacheDB
 from module.Cache.CacheItem import CacheItem
@@ -129,7 +130,74 @@ class CacheManager(Base):
             return True
 
     def _get_db_path(self, output_folder: str) -> str:
-        return f"{output_folder}/cache/{__class__.CACHE_DB_NAME}"
+        return __class__.db_path_for(output_folder)
+
+    @staticmethod
+    def bound_project_file(output_folder: str, binding: tuple[str, str] | None = None) -> str:
+        """绑定工程文件（.rbox）时返回其路径，否则返回空串。
+
+        单文件工程模式：绑定镜像（由 ``Config`` 在 save/load 时刷新，见
+        ``Config.get_bound_project_file``）中 ``project_file_path`` 非空且
+        ``output_folder`` 等于绑定作用域 ``project_file_output`` 时，翻译缓存
+        直接读写该 .rbox，不再落 ``<输出目录>/cache/`` 副本。增量 ``*_new``、
+        源码 ``*_source_out`` 等其它作用域照旧目录缓存。
+
+        这里刻意不调用 ``Config().load()``：翻译启动受理路径禁止重读全局
+        配置，路径解析必须无副作用。``binding`` 供已持有配置对象的调用方
+        显式传入。
+        """
+        output = str(output_folder or "").strip()
+        if output == "":
+            return ""
+        if binding is None:
+            binding = Config.get_bound_project_file()
+        bound = str(binding[0] or "").strip()
+        scope = str(binding[1] or "").strip()
+        if bound == "" or scope == "":
+            return ""
+        try:
+            if os.path.normcase(os.path.abspath(output)) != os.path.normcase(os.path.abspath(scope)):
+                return ""
+        except Exception:
+            return ""
+        return bound
+
+    @staticmethod
+    def is_bound_store(db_path: str) -> bool:
+        return str(db_path or "").strip().lower().endswith(".rbox")
+
+    @classmethod
+    def db_path_for(cls, output_folder: str) -> str:
+        bound = cls.bound_project_file(output_folder)
+        if bound != "":
+            return bound
+        return f"{output_folder}/cache/{cls.CACHE_DB_NAME}"
+
+    @classmethod
+    def cache_dir_for(cls, output_folder: str) -> str:
+        return os.path.join(str(output_folder or ""), "cache")
+
+    @staticmethod
+    def open_store(db_path: str) -> CacheDB:
+        """打开缓存库。绑定的 .rbox 用回滚日志（DELETE）：
+
+        .rbox 必须随时保持「无 -wal/-shm 旁路文件的单文件工程」，
+        ``ProjectFile`` 也只接受回滚日志格式的文件头。
+        """
+        mode = "DELETE" if CacheManager.is_bound_store(db_path) else "WAL"
+        return CacheDB(db_path, journal_mode = mode)
+
+    @staticmethod
+    def _sync_bound_store_meta(db_path: str) -> None:
+        """引擎改写绑定 .rbox 后校准 rbox.* 元数据，保持其仍是合法工程文件。"""
+        if not __class__.is_bound_store(db_path):
+            return
+        try:
+            from module.Project.ProjectFile import ProjectFile
+
+            ProjectFile.refresh_working_meta(db_path)
+        except Exception as exc:  # noqa: BLE001
+            LogManager.get().warning(f"工程文件元数据校准失败：{exc}")
 
     def _get_cache_path_key(self, output_folder: str) -> str:
         return os.path.normcase(os.path.abspath(output_folder))
@@ -142,28 +210,32 @@ class CacheManager(Base):
             return False
         if os.path.isfile(self._get_db_path(output_folder)):
             return True
+        # 绑定的 .rbox 本身就是 SQLite 工程文件，不能让 JSON 回退
+        # 在旁边另起一份目录缓存，造成两份数据分叉。
+        if __class__.bound_project_file(output_folder) != "":
+            return True
         return self.cache_use_sqlite
 
     def _load_items_from_sqlite(self, output_path: str) -> list[CacheItem] | None:
         db_path = self._get_db_path(output_path)
         if not os.path.isfile(db_path):
             return None
-        store = CacheDB(db_path)
+        store = __class__.open_store(db_path)
         return store.get_items()
 
     def _load_project_from_sqlite(self, output_path: str) -> CacheProject | None:
         db_path = self._get_db_path(output_path)
         if not os.path.isfile(db_path):
             return None
-        store = CacheDB(db_path)
+        store = __class__.open_store(db_path)
         return store.get_project()
 
     def _save_items_to_sqlite(self, output_path: str, items: list[CacheItem]) -> None:
-        store = CacheDB(self._get_db_path(output_path))
+        store = __class__.open_store(self._get_db_path(output_path))
         store.set_items(items)
 
     def _save_project_to_sqlite(self, output_path: str, project: CacheProject) -> None:
-        store = CacheDB(self._get_db_path(output_path))
+        store = __class__.open_store(self._get_db_path(output_path))
         store.set_project(project)
 
     # 保存缓存到文件
@@ -230,20 +302,34 @@ class CacheManager(Base):
             self.debug("跳过缓存保存：输出目录为空")
             return False
 
-        # 创建上级文件夹
-        os.makedirs(f"{output_folder}/cache", exist_ok = True)
+        bound_store = __class__.bound_project_file(output_folder)
+        if bound_store != "" and not os.path.isfile(bound_store):
+            # 绑定的工程文件不见了（被移动、删除或同步盘改名）。绝不能在这里新建空
+            # 库顶替：那会把“没找到工程”伪装成“空工程”，用户以为进度丢了、引擎也
+            # 会从头重翻。严格路径（导入/安装/写回）必须显式报错，自动保存则保留
+            # 内存进度并返回失败，等待用户修复绑定。
+            message = Localizer.get().cache_bound_store_missing.format(path = bound_store)
+            self.error(message)
+            if strict:
+                raise RuntimeError(message)
+            return False
+
+        # 创建上级文件夹（绑定工程文件时缓存直接落在 .rbox，无需 cache 目录）
+        if bound_store == "":
+            os.makedirs(f"{output_folder}/cache", exist_ok = True)
 
         # 优先写入 SQLite 缓存
         if self._should_use_sqlite(output_folder):
             with __class__.LOCK:
                 try:
-                    CacheDB(self._get_db_path(output_folder)).set_translation_cache(
+                    db_path = self._get_db_path(output_folder)
+                    __class__.open_store(db_path).set_translation_cache(
                         project,
                         items,
                     )
+                    __class__._sync_bound_store_meta(db_path)
                     if strict:
-                        db_path = self._get_db_path(output_folder)
-                        saved_project = CacheDB(db_path).get_project()
+                        saved_project = __class__.open_store(db_path).get_project()
                         if not os.path.isfile(db_path) or saved_project is None:
                             raise RuntimeError("缓存保存后未找到有效的 SQLite 项目记录")
                     self.require_flag = False
@@ -361,7 +447,7 @@ class CacheManager(Base):
                 db_path = self._get_db_path(output_path)
                 if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
                     try:
-                        store = CacheDB(db_path)
+                        store = __class__.open_store(db_path)
                         project = store.get_project()
                         if project is None:
                             raise CacheLoadError("SQLite cache has no project record")
@@ -406,7 +492,7 @@ class CacheManager(Base):
                     db_path = self._get_db_path(output_path)
                     if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
                         try:
-                            store = CacheDB(db_path)
+                            store = __class__.open_store(db_path)
                             items = store.get_items()
                             if self._sqlite_items_conflict_with_json(
                                 output_path,
@@ -488,7 +574,7 @@ class CacheManager(Base):
                     db_path = self._get_db_path(output_path)
                     if os.path.isfile(db_path) and self._should_use_sqlite(output_path):
                         try:
-                            project = CacheDB(db_path).get_project()
+                            project = __class__.open_store(db_path).get_project()
                             if project is None:
                                 raise CacheLoadError("SQLite cache has no project record")
                             self.project = project
@@ -588,13 +674,15 @@ class CacheManager(Base):
             if output_path:
                 if self._should_use_sqlite(output_path):
                     try:
-                        store = CacheDB(self._get_db_path(output_path))
+                        db_path = self._get_db_path(output_path)
+                        store = __class__.open_store(db_path)
                         reset_project = store.reset_translation_run(
                             self.project,
                             replacement_items,
                             snapshot = snapshot,
                             progress = progress,
                         )
+                        __class__._sync_bound_store_meta(db_path)
                     except Exception as exc:
                         # 坏 SQLite 与严格读取使用同一 JSON 回退策略，
                         # 重新开始翻译时也不能让旧数据库遮蔽有效条目。

@@ -230,6 +230,12 @@ class RenpyProjectPaths:
 
     @property
     def cache_dir(self) -> Path:
+        # 绑定工程文件（.rbox）时缓存就是 .rbox 本身，不再落 cache/ 目录。
+        from module.Cache.CacheManager import CacheManager
+
+        bound = CacheManager.bound_project_file(str(self.translation_output_dir))
+        if bound != "":
+            return Path(bound)
         return self.translation_output_dir / "cache"
 
     @property
@@ -578,6 +584,12 @@ def apply_to_config(
 
 
 def _has_cache(path: Path) -> bool:
+    # 绑定工程文件（.rbox）时，缓存就是 .rbox 文件本身。
+    from module.Cache.CacheManager import CacheManager
+
+    bound = CacheManager.bound_project_file(str(path))
+    if bound != "":
+        return os.path.isfile(bound)
     cache = path / "cache"
     db_path = cache / "cache.db"
 

@@ -653,7 +653,7 @@ class ProjectAssetsRepository:
         sqlite_missing_project = False
         if use_sqlite:
             try:
-                project = CacheDB(db_path).get_project()
+                project = CacheManager.open_store(db_path).get_project()
             except Exception as error:
                 self._sqlite_unavailable = True
                 sqlite_error = error
@@ -698,7 +698,7 @@ class ProjectAssetsRepository:
             and (os.path.isfile(db_path) or self.cache_use_sqlite)
         ):
             try:
-                CacheDB(db_path).set_project(project)
+                CacheManager.open_store(db_path).set_project(project)
             except Exception:
                 self._sqlite_unavailable = True
             else:
@@ -731,7 +731,7 @@ class ProjectAssetsRepository:
             # SQLite 可读且包含完整条目时，journal 可能只是旧 JSON 后端
             # 留下的残片；此时以 SQLite 为准，避免被无关坏日志阻断工作台。
             try:
-                store = CacheDB(str(db_path))
+                store = CacheManager.open_store(str(db_path))
                 project = store.get_project()
                 items = store.get_items()
                 complete = project is not None
@@ -810,7 +810,8 @@ class ProjectAssetsRepository:
         }
 
     def _db_path(self) -> str:
-        return str(Path(self.output_folder) / "cache" / CacheManager.CACHE_DB_NAME)
+        # 绑定工程文件（.rbox）时缓存直接落在 .rbox；否则仍是 <输出>/cache/cache.db。
+        return CacheManager.db_path_for(self.output_folder)
 
     def _project_json_path(self) -> str:
         return str(Path(self.output_folder) / "cache" / "project.json")

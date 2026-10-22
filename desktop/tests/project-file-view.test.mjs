@@ -48,9 +48,11 @@ test('导入先 inspect，确认对话框里才调用 import，成功后刷新�
   assert.doesNotMatch(pick, /importProjectFile/);
 
   const confirm = page.match(/const confirmImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
-  assert.match(confirm, /importProjectFile\(pending\.info\.path\)/);
+  assert.match(confirm, /importProjectFile\(pending\.info\.path, bind\)/);
   assert.match(confirm, /state\.reloadProject\(\), state\.reloadSettings\(\), state\.reloadTranslation\(\)/);
-  assert.match(page, /onConfirm=\{busy \? undefined : \(\) => void confirmImport\(pendingImport\)\}/);
+  assert.match(page, /onConfirm=\{busy \? undefined : \(\) => void confirmImport\(pendingImport, importBind\)\}/);
+  // 单文件工程：确认框提供绑定开关（默认开启），bind 透传给接口。
+  assert.match(page, /project_file_import_bind/);
   assert.match(page, /project_root_matches/);
   assert.match(page, /project_file_root_mismatch/);
 });
@@ -152,4 +154,56 @@ test('工程文件文案中英文齐全', () => {
     assert.match(zh, new RegExp(`\\n  ${key}: `), `zh 缺少 ${key}`);
     assert.match(en, new RegExp(`\\n  ${key}: `), `en 缺少 ${key}`);
   }
+});
+
+test('当前工程文件面板：绑定状态可见，缺失与网盘同步都要有提示', () => {
+  const api = read('api.ts');
+  const bindingGet = api.match(/export function getProjectFileBinding\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(bindingGet, /'\/api\/project\/file\/binding'/);
+  assert.doesNotMatch(bindingGet, /method: 'POST'/);
+  const bindingPost = api.match(/export function unbindProjectFile\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(bindingPost, /'\/api\/project\/file\/unbind'/);
+  assert.match(bindingPost, /method: 'POST'/);
+
+  const types = read('types.ts');
+  const contract = types.match(/export interface ProjectFileBinding[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(contract, /exists: boolean;/);
+  assert.match(contract, /item_count: number;/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  const panel = page.match(/project_file_binding_title[\s\S]*?project_file_title/)?.[0] ?? '';
+  assert.ok(panel, '缺少当前工程文件面板');
+  const reload = page.match(/const reloadBinding = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(reload, /getProjectFileBinding\(\)/);
+  assert.match(panel, /binding\?\.bound/);
+  assert.match(panel, /project_file_binding_missing/);
+  assert.match(panel, /project_file_unbind/);
+  // 解除绑定必须过确认框，成功后刷新三份状态
+  const unbind = page.match(/const unbindProject = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(unbind, /unbindProjectFile\(\)/);
+  assert.match(unbind, /state\.reloadProject\(\), state\.reloadSettings\(\), state\.reloadTranslation\(\)/);
+  assert.match(page, /void reloadBinding\(\);/);
+});
+
+test('标题栏常驻当前工程文件：绑定时显示文件名，丢失换色提示', () => {
+  const app = read('App.tsx');
+  assert.match(app, /state\.projectFileBinding\?\.bound/);
+  assert.match(app, /className="rb-project-file"/);
+  assert.match(app, /data-missing=\{binding\.exists \? undefined : 'true'\}/);
+  assert.match(app, /project_file_binding_missing/);
+  assert.match(app, /onClick=\{\(\) => navigate\('project'\)\}/);
+
+  const store = read('useAppState.ts');
+  assert.match(store, /projectFileBinding: ProjectFileBinding \| null;/);
+  assert.match(store, /const reloadProjectFileBinding = useCallback/);
+  assert.match(store, /api\.getProjectFileBinding\(\)/);
+  // 项目切换事件要跟着刷新标题栏，不然会一直显示上一个 .rbox
+  assert.match(store, /void reloadProjectFileBinding\(\);\s*\n\s*void Promise\.all\(\[reloadProject\(\)/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 3);
+
+  const css = fs.readFileSync(path.join(src, 'styles', 'app.css'), 'utf8');
+  assert.match(css, /\.rb-project-file \{/);
+  assert.match(css, /\.rb-project-file\[data-missing='true'\]/);
 });
