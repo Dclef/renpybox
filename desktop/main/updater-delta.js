@@ -20,6 +20,11 @@ export function deltaAssetName(version, baseVersion) {
   return `RenpyBox-${version}-from-${baseVersion}-x64.delta.zip`.toLowerCase();
 }
 
+/** 子进程在 update-apply.mjs 里校验参数后发出的 IPC 就绪信号。 */
+export const APPLIER_READY_MESSAGE = 'renpybox:update-ready';
+
+const APPLIER_READY_TIMEOUT_MS = 10_000;
+
 /** 找到能从 `currentVersion` 直接升级到发布版本的增量包。没有则返回 null。 */
 export function selectDeltaAsset(release, { currentVersion } = {}) {
   const version = desktopVersionString(release?.tag_name);
@@ -35,16 +40,38 @@ export function selectDeltaAsset(release, { currentVersion } = {}) {
   )) ?? null;
 }
 
-function waitUntilSpawned(child) {
+function waitForApplierReady(child, timeoutMs = APPLIER_READY_TIMEOUT_MS) {
   if (!child || typeof child.once !== 'function') {
     child?.unref?.();
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref?.();
-      resolve();
+    let settled = false;
+    const finish = (fn, ...args) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(...args);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill?.(); } catch { /* ignore */ }
+      finish(reject, Object.assign(new Error('增量应用器就绪超时'), { kind: 'install' }));
+    }, timeoutMs);
+    child.once('error', error => {
+      finish(reject, Object.assign(error, { kind: 'install' }));
+    });
+    child.once('exit', (code, signal) => {
+      finish(reject, Object.assign(
+        new Error(`增量应用器过早退出：${code ?? signal}`),
+        { kind: 'install' },
+      ));
+    });
+    child.once('message', msg => {
+      if (msg && msg.type === APPLIER_READY_MESSAGE) {
+        if (child.connected) child.disconnect?.();
+        child.unref?.();
+        finish(resolve);
+      }
     });
   });
 }
@@ -62,8 +89,8 @@ async function removeStaleCopies(tempDir, readdirImpl, rmImpl) {
 }
 
 /**
- * 复制 electron 可执行文件和 update-apply.mjs 到临时目录，再以 node 模式拉起。
- * 返回时子进程已 detach。
+ * 复制 electron 可执行文件、运行时 sidecar 与 update-apply.mjs 到临时目录，再以 node 模式拉起。
+ * 返回时子进程已 detach，且已收到就绪 IPC（脚本已开始执行）。
  */
 export async function spawnDeltaApplier({
   electronExe,
@@ -85,10 +112,14 @@ export async function spawnDeltaApplier({
   if (!baseVersion) throw Object.assign(new Error('缺少增量包基线版本'), { kind: 'install' });
   await mkdir(tempDir, { recursive: true });
   await removeStaleCopies(tempDir, readdirImpl, rmImpl);
+  // 增量更新仅 Windows 桌面；用 win32 解析安装目录，避免在 Linux CI 单测里 dirname 错切路径。
+  const electronDir = path.win32.dirname(electronExe);
   const copiedExe = path.join(tempDir, `RenpyBoxUpdate_${pid}_${now()}.exe`);
   const copiedScript = path.join(tempDir, 'update-apply.mjs');
   await copyFile(electronExe, copiedExe);
   await copyFile(scriptPath, copiedScript);
+  await copyFile(path.join(electronDir, 'icudtl.dat'), path.join(tempDir, 'icudtl.dat'));
+  await copyFile(path.join(electronDir, 'v8_context_snapshot.bin'), path.join(tempDir, 'v8_context_snapshot.bin'));
   const child = spawn(copiedExe, [
     copiedScript,
     '--patch', patchPath,
@@ -99,11 +130,12 @@ export async function spawnDeltaApplier({
     '--relaunch', relaunch ? '1' : '0',
   ], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    cwd: tempDir,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   });
   try {
-    await waitUntilSpawned(child);
+    await waitForApplierReady(child);
   } catch (error) {
     throw Object.assign(error, { kind: 'install' });
   }

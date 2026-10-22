@@ -5,7 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createDesktopUpdater } from '../main/updater.js';
-import { deltaAssetName, selectDeltaAsset, spawnDeltaApplier } from '../main/updater-delta.js';
+import {
+  APPLIER_READY_MESSAGE,
+  deltaAssetName,
+  selectDeltaAsset,
+  spawnDeltaApplier,
+} from '../main/updater-delta.js';
 
 const installer = version => ({
   name: `RenpyBox-${version}-x64.exe`,
@@ -48,13 +53,14 @@ test('selectDeltaAsset 只挑基线等于当前版本的增量包，且忽略大
   assert.equal(selectDeltaAsset(release('0.9.2', [delta('0.9.3', '0.9.1')]), current), null, '文件名版本必须等于发布版本');
 });
 
-test('spawnDeltaApplier 复制 exe 与脚本，并用 node 模式拉起，同时清掉旧副本', async () => {
+test('spawnDeltaApplier 复制 exe、sidecar 与脚本，等待 IPC 就绪后用 node 模式拉起，同时清掉旧副本', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'renpybox-delta-'));
   const copies = [];
   const spawned = [];
   const removed = [];
   const listed = [];
   let unrefed = false;
+  let disconnected = false;
   const result = await spawnDeltaApplier({
     electronExe: 'C:\\RenpyBox\\RenpyBox.exe',
     scriptPath: 'C:\\app\\update-apply.mjs',
@@ -72,14 +78,24 @@ test('spawnDeltaApplier 复制 exe 与脚本，并用 node 模式拉起，同时
     spawn: (exe, args, options) => {
       spawned.push({ exe, args, options });
       return {
+        connected: true,
+        disconnect() { disconnected = true; },
         unref() { unrefed = true; },
-        once(event, fn) { if (event === 'spawn') queueMicrotask(fn); },
+        once(event, fn) {
+          if (event === 'message') {
+            queueMicrotask(() => fn({ type: APPLIER_READY_MESSAGE }));
+          }
+        },
       };
     },
   });
-  assert.equal(copies.length, 2);
+  assert.equal(copies.length, 4);
   assert.equal(copies[0][0], 'C:\\RenpyBox\\RenpyBox.exe');
   assert.equal(copies[1][0], 'C:\\app\\update-apply.mjs');
+  assert.equal(path.win32.normalize(copies[2][0]), path.win32.normalize('C:\\RenpyBox\\icudtl.dat'));
+  assert.equal(copies[2][1], path.join(tempDir, 'icudtl.dat'));
+  assert.equal(path.win32.normalize(copies[3][0]), path.win32.normalize('C:\\RenpyBox\\v8_context_snapshot.bin'));
+  assert.equal(copies[3][1], path.join(tempDir, 'v8_context_snapshot.bin'));
   assert.match(result.copiedExe, /RenpyBoxUpdate_42_1000\.exe$/);
   // 旧的应用器副本会被删掉，避免每次更新在 userData 里留一个 240MB 的 exe
   assert.deepEqual(removed.map(([target]) => path.basename(target)), ['RenpyBoxUpdate_1_2.exe']);
@@ -94,10 +110,33 @@ test('spawnDeltaApplier 复制 exe 与脚本，并用 node 模式拉起，同时
   ]);
   assert.equal(spawned[0].args[0], copies[1][1]);
   assert.equal(spawned[0].options.detached, true);
-  assert.equal(spawned[0].options.stdio, 'ignore');
+  assert.deepEqual(spawned[0].options.stdio, ['ignore', 'ignore', 'ignore', 'ipc']);
+  assert.equal(spawned[0].options.cwd, tempDir);
   assert.equal(spawned[0].options.env.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(unrefed, true);
+  assert.equal(disconnected, true);
   await rm(tempDir, { recursive: true, force: true });
+});
+
+test('spawnDeltaApplier 在应用器过早退出时拒绝当作成功', async () => {
+  await assert.rejects(() => spawnDeltaApplier({
+    electronExe: 'C:\\RenpyBox\\RenpyBox.exe',
+    scriptPath: 'C:\\app\\update-apply.mjs',
+    patchPath: 'C:\\tmp\\patch.zip',
+    installDir: 'C:\\RenpyBox',
+    appExe: 'C:\\RenpyBox\\RenpyBox.exe',
+    pid: 42,
+    baseVersion: '0.9.1',
+    tempDir: os.tmpdir(),
+    copyFile: async () => {},
+    readdir: async () => [],
+    spawn: () => ({
+      once(event, fn) {
+        if (event === 'exit') queueMicrotask(() => fn(1, null));
+      },
+      kill() {},
+    }),
+  }), error => error.kind === 'install' && /过早退出/.test(error.message));
 });
 
 test('缺基线版本时拒绝拉起增量应用器', async () => {
