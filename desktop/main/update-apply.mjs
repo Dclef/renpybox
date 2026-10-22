@@ -14,6 +14,8 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { createInflateRaw } from 'node:zlib';
 
+export const APPLIER_READY_MESSAGE = 'renpybox:update-ready';
+
 export const FORMAT_PATCH = 'renpybox-patch/1';
 export const FORMAT_MANIFEST = 'renpybox-update-manifest/1';
 export const PATCH_META_NAME = '_patch_meta.json';
@@ -508,10 +510,38 @@ export async function resolveLaunchExe(installDir, appExe, manifestVersion) {
   return '';
 }
 
-function relaunchApp(appExe) {
-  if (!appExe) return;
-  const child = spawn(appExe, [], { detached: true, stdio: 'ignore' });
-  child.unref();
+function envWithoutElectronRunAsNode() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'ELECTRON_RUN_AS_NODE') delete env[key];
+  }
+  return env;
+}
+
+async function relaunchApp(appExe) {
+  if (!appExe) throw failure('缺少主程序路径');
+  return new Promise((resolve, reject) => {
+    const child = spawn(appExe, [], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: path.dirname(appExe),
+      env: envWithoutElectronRunAsNode(),
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function notifyApplierReady() {
+  if (typeof process.send !== 'function' || !process.connected) return;
+  try {
+    process.send({ type: APPLIER_READY_MESSAGE });
+  } catch {
+    // 父进程收到就绪后可能已断开 IPC，不算应用失败。
+  }
 }
 
 export async function applyPatchCli(argv = process.argv.slice(2)) {
@@ -527,8 +557,16 @@ export async function applyPatchCli(argv = process.argv.slice(2)) {
     if (!shouldRelaunch) return;
     // 主程序可能在这次更新里改过名，按安装目录的实际内容决定启动哪个 exe。
     const target = await resolveLaunchExe(installDir, appExe, meta?.version || '');
-    if (target) relaunchApp(target);
-    else await logLine(installDir, '找不到主程序，未能自动重启');
+    if (target) {
+      try {
+        await relaunchApp(target);
+        await logLine(installDir, `已重启主程序：${target}`);
+      } catch (error) {
+        await logLine(installDir, `重启主程序失败：${error.message}`);
+      }
+    } else {
+      await logLine(installDir, '找不到主程序，未能自动重启');
+    }
   };
   const finish = async (code, error) => {
     if (error) {
@@ -544,6 +582,8 @@ export async function applyPatchCli(argv = process.argv.slice(2)) {
   };
   try {
     if (!installDir || !patch) throw failure('缺少 --patch 或 --install-dir');
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw failure(`无效的进程号：${pid}`);
+    notifyApplierReady();
     await logLine(installDir, `开始应用增量包 ${patch}，等待进程 ${pid}`);
     await waitForPid(pid);
     await logLine(installDir, '主进程已退出，开始校验补丁');
