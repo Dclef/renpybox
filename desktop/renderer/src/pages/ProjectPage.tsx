@@ -367,9 +367,7 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
                 <Button size="small" disabled={projectFileBlocked} onClick={() => setBindingDetail(binding.path)}>{t('project_file_unbind')}</Button>
               </div>
             </>
-          ) : (
-            <p className="rb-metric-note">{t('project_file_binding_none')}</p>
-          )}
+          ) : null}
           {bindingDetail ? (
             <Dialog
               title={t('project_file_unbind_confirm')}
