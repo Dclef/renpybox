@@ -267,6 +267,26 @@ export interface ProjectFileImportResult extends ProjectFileDescription {
   item_count: number;
   applied_settings: string[];
   ignored_settings: string[];
+  /** 绑定模式（单文件工程）：.rbox 直接作为工作缓存使用 */
+  bound: boolean;
+  /** 绑定模式下生效的工程文件绝对路径；复制导入时为空串 */
+  project_file_path: string;
+}
+
+/** GET /api/project/file/binding：当前单文件工程的绑定状态 */
+export interface ProjectFileBinding {
+  bound: boolean;
+  /** 绑定的工程文件绝对路径 */
+  path: string;
+  /** 绑定作用域：只有该输出目录的缓存会读写这个 .rbox */
+  output_folder: string;
+  /** 工程文件是否还在原处（被移动/删除时为 false） */
+  exists: boolean;
+  size: number;
+  item_count: number;
+  updated_at: string;
+  /** 读取失败或文件缺失时的说明 */
+  detail: string;
 }
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -301,12 +321,23 @@ export interface TranslationState {
 
 export interface TranslationStartResponse {
   accepted: boolean;
-  reason: 'STARTED' | 'STOPPING' | 'ENGINE_BUSY' | 'ASSETS_MISSING' | 'PREPARE_FAILED' | string;
+  reason: 'STARTED' | 'STOPPING' | 'ENGINE_BUSY' | 'ASSETS_MISSING' | 'NOT_RESUMABLE' | 'PREPARE_FAILED' | string;
   detail?: string;
   request_id?: string;
   warnings?: string[];
   stage?: string;
   job?: JobSnapshot | null;
+}
+
+/** GET /api/translation/resumable：工具箱续跑探测结果。 */
+export interface TranslationResumableInfo {
+  resumable: boolean;
+  output_folder: string;
+  /** 缓存项目状态：TRANSLATING（可续跑）/ TRANSLATED / UNTRANSLATED / 空。 */
+  status: string;
+  line: number;
+  total_line: number;
+  detail: string;
 }
 
 export interface TokenEstimate {

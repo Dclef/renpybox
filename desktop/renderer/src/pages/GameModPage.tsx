@@ -46,7 +46,9 @@ export function GameModPage(props: { state: AppState }) {
   const i18n = useT();
   const uiLang = state.bootLanguage === 'EN' ? 'EN' : 'ZH';
   const t = (table: { ZH: string; EN: string }) => modCopy(table, uiLang);
-  const [gamePath, setGamePath] = useState('');
+  // 绑定工程后 game 目录直接填好，减少一次手选；换工程或手动改过都以本地值为准。
+  const defaultGamePath = String(state.project?.renpy_game_folder ?? state.project?.renpy_project_path ?? '');
+  const [gamePath, setGamePath] = useState(defaultGamePath);
   const [confirmInstall, setConfirmInstall] = useState<{ key: string; action: 'install' | 'uninstall' } | null>(null);
   const [confirmLegacy, setConfirmLegacy] = useState(false);
 
@@ -70,10 +72,10 @@ export function GameModPage(props: { state: AppState }) {
   const legacy = Boolean(status?.legacy_dumuqiao ?? result?.legacy_dumuqiao);
 
   useEffect(() => {
-    setGamePath('');
+    setGamePath(defaultGamePath);
     setConfirmInstall(null);
     setConfirmLegacy(false);
-  }, [suite.identity]);
+  }, [defaultGamePath, suite.identity]);
 
   async function pickGame() {
     const context = suite.identityRef.current;

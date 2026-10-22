@@ -800,8 +800,12 @@ def read_translation_cache_progress(
     progress: dict = {}
     project_status = ""
     untranslated_count = 0
+    store_db = CacheManager.db_path_for(output_folder)
     cache_dir = Path(output_folder) / "cache"
-    if not any((cache_dir / name).is_file() for name in ("cache.db", "project.json")):
+    if not (
+        Path(store_db).is_file()
+        or (cache_dir / "project.json").is_file()
+    ):
         return progress, project_status, untranslated_count, False
     try:
         with CacheManager.LOCK:

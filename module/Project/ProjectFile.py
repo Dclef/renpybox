@@ -179,6 +179,60 @@ class ProjectFile:
         return cls._inspect_file(cls._existing_path(path))
 
     @classmethod
+    def refresh_working_meta(cls, path: str | os.PathLike) -> None:
+        """引擎直写「绑定的工程文件」后，校准 rbox.* 元数据。
+
+        绑定模式下翻译缓存直接读写 .rbox（CacheDB 的 items/meta 结构不变），
+        但 ``rbox.item_count`` / ``rbox.items_digest`` / ``updated_at`` 等
+        工程文件标识由本方法补齐，保证它随时仍是可分享、可导入的 .rbox：
+        拷到另一台机器走「导入工程文件」不会被摘要校验拒绝。
+        """
+        target = cls._normalize_path(path)
+        conn = CacheDB(target, journal_mode = cls.JOURNAL_MODE)._open()
+        try:
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"PRAGMA application_id={cls.APPLICATION_ID}")
+            conn.execute(f"PRAGMA user_version={cls.SCHEMA_VERSION}")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            meta = {row[0]: row[1] for row in conn.execute("SELECT key, value FROM meta")}
+            item_count = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+            digest = str(meta.get("items_digest") or "")
+            now = datetime.now(timezone.utc).isoformat(timespec = "seconds")
+            rows = {
+                cls.META_FORMAT: cls.FORMAT,
+                cls.META_SCHEMA_VERSION: str(cls.SCHEMA_VERSION),
+                cls.META_UPDATED_AT: now,
+                cls.META_ITEM_COUNT: str(item_count),
+                cls.META_ITEMS_DIGEST: digest,
+                cls.META_RBOX_ITEMS_DIGEST: digest,
+            }
+            # 首次由引擎创建（绑定的 .rbox 被删后重建）时补齐不可变标识。
+            defaults = {
+                cls.META_CREATED_AT: now,
+                cls.META_APP_VERSION: "",
+                cls.META_PROJECT_ROOT: "",
+            }
+            for key, value in defaults.items():
+                if not isinstance(meta.get(key), str) or meta.get(key) == "":
+                    rows[key] = value
+            conn.executemany(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                sorted(rows.items()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @classmethod
     def load(cls, path: str | os.PathLike) -> ProjectFileSnapshot:
         """只读完整加载；所有条目通过解析和摘要校验后才返回。"""
         target = cls._existing_path(path)

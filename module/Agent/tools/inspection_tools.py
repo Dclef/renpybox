@@ -150,9 +150,17 @@ def _is_current_language_output(
     )
 
 
-def _cache_markers(output_path: Path) -> tuple[bool, bool]:
+def _store_paths(output_path: Path) -> tuple[Path, Path]:
+    """缓存库与 JSON 兜底目录：绑定工程文件（.rbox）时库就是 .rbox 本身。"""
     cache_dir = output_path / "cache"
-    database = cache_dir / CacheManager.CACHE_DB_NAME
+    bound = CacheManager.bound_project_file(str(output_path))
+    if bound != "":
+        return Path(bound), cache_dir
+    return cache_dir / CacheManager.CACHE_DB_NAME, cache_dir
+
+
+def _cache_markers(output_path: Path) -> tuple[bool, bool]:
+    database, cache_dir = _store_paths(output_path)
     items = (cache_dir / "items.json").is_file()
     journal = (cache_dir / CacheManager.RESET_JOURNAL_NAME).is_file()
     database_has_translation = (
@@ -276,8 +284,9 @@ def _database_has_translation_state(database: Path) -> bool:
         return True
 
 
-def _read_cache_pair(cache_dir: Path) -> tuple[CacheProject, list[CacheItem]]:
-    database = cache_dir / CacheManager.CACHE_DB_NAME
+def _read_cache_pair(cache_dir: Path, database: Path | None = None) -> tuple[CacheProject, list[CacheItem]]:
+    if database is None:
+        database = cache_dir / CacheManager.CACHE_DB_NAME
     items_json_exists = (cache_dir / "items.json").is_file()
     project_json_exists = (cache_dir / "project.json").is_file()
     json_available = items_json_exists and project_json_exists
@@ -325,9 +334,10 @@ def _load_cache(
         data["error_code"] = "CACHE_RECOVERY_REQUIRED"
         return data, None, []
 
+    database, cache_dir = _store_paths(output_path)
     try:
         with CacheManager.LOCK:
-            project, items = _read_cache_pair(output_path / "cache")
+            project, items = _read_cache_pair(cache_dir, database)
     except Exception as exc:
         LogManager.get().warning(f"Agent 项目体检读取翻译缓存失败: {exc}")
         data["error_code"] = "CACHE_UNREADABLE"
@@ -369,8 +379,7 @@ def _load_asset_project(
     output_path: Path,
 ) -> tuple[bool, bool, CacheProject | None]:
     """只读主输出中的项目元数据，不触发旧配置迁移。"""
-    cache_dir = output_path / "cache"
-    database = cache_dir / CacheManager.CACHE_DB_NAME
+    database, cache_dir = _store_paths(output_path)
     project_json = cache_dir / "project.json"
     journal = cache_dir / CacheManager.RESET_JOURNAL_NAME
     exists = database.is_file() or project_json.is_file() or journal.is_file()

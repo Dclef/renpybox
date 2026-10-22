@@ -206,6 +206,23 @@ class TranslationStartResponse(BaseModel):
     job: dict[str, Any] | None = None
 
 
+class TranslationResumableResponse(BaseModel):
+    """工具箱续跑探测：按 mode 推导出的输出目录上是否有可继续的翻译缓存。
+
+    源码翻译停止后再点「开始」应继续而不是重扫重翻；渲染端先问这个接口，
+    有可续跑缓存就发 ``status=TRANSLATING``（继续），否则发 ``UNTRANSLATED``。
+    只读缓存项目元数据，不载入条目。
+    """
+
+    resumable: bool = False
+    output_folder: str = ""
+    # 缓存项目状态：TRANSLATING（可续跑）/ TRANSLATED / UNTRANSLATED / 空。
+    status: str = ""
+    line: int = 0
+    total_line: int = 0
+    detail: str = ""
+
+
 class TranslationStateResponse(BaseModel):
     engine_status: str = "IDLE"
     stop_barrier: bool = False
