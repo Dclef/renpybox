@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from './api';
 import type {
   HealthInfo,
+  ProjectFileBinding,
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
@@ -50,6 +51,8 @@ export interface AppState {
   health: HealthInfo | null;
   version: VersionInfo | null;
   project: ProjectInfo | null;
+  /** 当前单文件工程（.rbox）绑定状态；未绑定时 bound=false 或 null。 */
+  projectFileBinding: ProjectFileBinding | null;
   theme: ThemeName;
   settings: SettingsResponse | null;
   translation: TranslationState;
@@ -63,6 +66,7 @@ export interface AppState {
   toasts: Toast[];
   reloadSettings: () => Promise<void>;
   reloadProject: () => Promise<void>;
+  reloadProjectFileBinding: () => Promise<void>;
   reloadTranslation: () => Promise<void>;
   setTheme: (theme: ThemeName) => void;
   setSetting: (key: string, value: unknown) => Promise<boolean>;
@@ -104,6 +108,7 @@ export function useAppState(): AppState {
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [projectFileBinding, setProjectFileBinding] = useState<ProjectFileBinding | null>(null);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [translation, setTranslation] = useState<TranslationState>(EMPTY_TRANSLATION);
   const [translationTimerDeadline, setTranslationTimerDeadline] = useState<number | null>(null);
@@ -142,6 +147,16 @@ export function useAppState(): AppState {
 
   const reloadProject = useCallback(async () => {
     setProject(await api.getProject());
+  }, []);
+
+  // 标题栏要一直显示当前单文件工程（.rbox），所以绑定状态也放到全局：
+  // 导入/解除/项目切换/窗口回焦都刷新一次，页面里自己的 binding 只管详情卡片。
+  const reloadProjectFileBinding = useCallback(async () => {
+    try {
+      setProjectFileBinding(await api.getProjectFileBinding());
+    } catch {
+      setProjectFileBinding(null);
+    }
   }, []);
 
   const translationRequest = useRef(0);
@@ -339,6 +354,15 @@ export function useAppState(): AppState {
     setBootLanguage(normalizeLang(settings?.values.app_language));
   }, [ready, bootLanguage, settings]);
 
+  // 标题栏工程文件徽标：连接建立时取一次，窗口回焦再核对（文件可能被移走/网盘同步）。
+  useEffect(() => {
+    if (link !== 'open') return;
+    void reloadProjectFileBinding();
+    const onFocus = () => void reloadProjectFileBinding();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [link, reloadProjectFileBinding]);
+
   const upsertJob = useCallback((job: JobSnapshot) => {
     const summary = { ...job };
     delete summary.result;
@@ -409,6 +433,7 @@ export function useAppState(): AppState {
           case 'PROJECT_CHANGED':
           case 'PROJECT_STATUS':
             if (message.event === 'PROJECT_CHANGED') setTranslationTimer(null);
+            void reloadProjectFileBinding();
             void Promise.all([reloadProject(), reloadSettings(), reloadTranslation()]).catch((error) => pushToast('error', String(error)));
             break;
           case 'GLOSSARY_REFRESH':
@@ -459,7 +484,7 @@ export function useAppState(): AppState {
         }
         handlers.current.forEach((handler) => handler(message));
       }
-    }, [pushToast, reloadProject, reloadSettings, reloadTranslation, setTranslationTimer]),
+    }, [pushToast, reloadProject, reloadProjectFileBinding, reloadSettings, reloadTranslation, setTranslationTimer]),
     setLink,
     useCallback((message: WsJobMessage) => upsertJob(message.job), [upsertJob]),
   );
@@ -483,6 +508,7 @@ export function useAppState(): AppState {
     health,
     version,
     project,
+    projectFileBinding,
     theme,
     settings,
     translation,
@@ -493,6 +519,7 @@ export function useAppState(): AppState {
     toasts,
     reloadSettings,
     reloadProject,
+    reloadProjectFileBinding,
     reloadTranslation,
     setTheme,
     setSetting,

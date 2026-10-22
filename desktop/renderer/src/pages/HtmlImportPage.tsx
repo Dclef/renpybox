@@ -57,7 +57,10 @@ export function HtmlImportPage(props: { state: AppState }) {
   const uiLang = state.bootLanguage === 'EN' ? 'EN' : 'ZH';
   const t = (table: { ZH: string; EN: string }) => htmlCopy(table, uiLang);
 
-  const [tlDir, setTlDir] = useState('');
+  // 绑定工程后默认用工程的 tl/<语言> 目录，换工程时重新跟随；用户也可以手动改成别的目录。
+  const defaultTlDir = String(state.project?.renpy_tl_folder ?? '');
+
+  const [tlDir, setTlDir] = useState(defaultTlDir);
   const [txtOut, setTxtOut] = useState('');
   const [manifestPath, setManifestPath] = useState('');
   const [translatedTxt, setTranslatedTxt] = useState('');
@@ -92,7 +95,7 @@ export function HtmlImportPage(props: { state: AppState }) {
   });
 
   useEffect(() => {
-    setTlDir('');
+    setTlDir(defaultTlDir);
     setTxtOut('');
     setManifestPath('');
     setTranslatedTxt('');
@@ -108,7 +111,7 @@ export function HtmlImportPage(props: { state: AppState }) {
     setExcelPath('');
     setExcelTxtOut('');
     setExcelColumn('译文');
-  }, [suite.identity]);
+  }, [defaultTlDir, suite.identity]);
 
   useEffect(() => {
     if (result?.action === 'extract' && result.manifest_path && job?.status === 'done') {

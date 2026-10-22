@@ -500,13 +500,15 @@ export function ErrorRepairPage(props: { state: AppState }) {
 
   // 翻译目录 / 游戏主程序能从项目里自动带出来（同名 .py + .exe 才算数），
   // 每个身份只种一次：用户改过就不抢，lint 卡片不用每次手填。
+  // 后端没算出 tl 目录（例如语言目录还没建）时退回工程里记录的 tl/<语言> 路径。
   const seededRef = useRef('');
   useEffect(() => {
     if (!status || seededRef.current === suite.identity) return;
     seededRef.current = suite.identity;
-    const suggestedFolder = String(status.folder ?? '').trim();
+    const suggestedFolder = String(status.folder ?? '').trim()
+      || String(state.project?.renpy_tl_folder ?? state.settings?.values?.renpy_tl_folder ?? '').trim();
     if (suggestedFolder) setFolder((current) => (current.trim() ? current : suggestedFolder));
-  }, [status, suite.identity]);
+  }, [status, suite.identity, state.project?.renpy_tl_folder, state.settings?.values?.renpy_tl_folder]);
 
   const done = job?.status === 'done';
   const fixView = done && result?.action === 'fix' ? result : null;

@@ -26,7 +26,8 @@ def count_quality_candidates(output_folder: str, manager: CacheManager | None = 
     就返回全 0，调用方无需区分「没有条目」和「读不到缓存」。
     """
 
-    db_path = os.path.join(str(output_folder), "cache", CacheManager.CACHE_DB_NAME)
+    # 绑定工程文件（.rbox）时缓存直接在 .rbox 里；否则是 <输出>/cache/cache.db。
+    db_path = CacheManager.db_path_for(output_folder)
     counts = _count_from_sqlite(db_path)
     if counts is not None:
         return counts
