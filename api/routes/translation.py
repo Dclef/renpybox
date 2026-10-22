@@ -40,6 +40,7 @@ from api.schemas import (
     TokenEstimateResult,
     TranslationOwnerRequest,
     TranslationReinjectRequest,
+    TranslationResumableResponse,
     TranslationStartRequest,
     TranslationStartResponse,
     TranslationStateResponse,
@@ -328,6 +329,45 @@ def _resolve_source_input(raw: Path) -> Path:
         if _path_key(raw) == _path_key(paths.project_root):
             return paths.game_dir
     return raw
+
+
+def _cache_resumable_at(output: Path) -> dict[str, Any]:
+    """读取输出目录缓存的项目状态；只读元数据，不载入条目。
+
+    ``resumable=True`` 当且仅当缓存项目状态为 ``TRANSLATING``（可续跑），
+    与 ``Base.PROJECT_RESUMABLE_STATUSES`` / 续跑入口 ``_initialize_translation_run``
+    的判定一致。缓存缺失或损坏时返回 ``resumable=False`` 并在 ``detail`` 说明。
+    """
+    output = normalise_path(output) or Path(str(output or ""))
+    info: dict[str, Any] = {
+        "resumable": False,
+        "output_folder": str(output.resolve(strict = False)),
+        "status": "",
+        "line": 0,
+        "total_line": 0,
+        "detail": "",
+    }
+    cache_dir = output / "cache"
+    store_db = CacheManager.db_path_for(info["output_folder"])
+    if not (
+        os.path.isfile(store_db)
+        or (cache_dir / "project.json").is_file()
+    ):
+        return info
+    try:
+        manager = CacheManager(service = False)
+        manager.load_project_from_file(info["output_folder"], strict = True)
+        project = manager.get_project()
+        progress = project.get_progress()
+        info["status"] = str(project.get_status())
+        info["line"] = int(progress.get("line") or 0)
+        info["total_line"] = int(progress.get("total_line") or 0)
+        info["resumable"] = (
+            project.get_status() in Base.PROJECT_RESUMABLE_STATUSES
+        )
+    except Exception as exc:  # noqa: BLE001
+        info["detail"] = f"缓存读取失败：{exc}"
+    return info
 
 
 def _has_effective_tl_files(tl_dir: Path) -> bool:
@@ -620,6 +660,7 @@ def _prepare_payload(
     preflight_confirmed: bool = False,
     *,
     config_snapshot: Any | None = None,
+    bind_resumable: bool = True,
 ) -> tuple[dict[str, Any] | None, TranslationStartResponse | None]:
     """构造 TRANSLATION_START 载荷。返回 (payload, 拒绝原因)。
 
@@ -630,13 +671,19 @@ def _prepare_payload(
     preflight 弹窗选「仍然继续」后会置 ``payload["preflight_confirmed"]=True``
     再发事件。不带这个标志重试会拿回同一个 ASSETS_MISSING 拒绝，界面就永远
     停在弹窗里。
+
+    ``bind_resumable`` 只给普通 start（翻译页续跑）用：按运行清单把 output
+    绑回上次的缓存目录。工具箱 mode 必须传 False——它的输入/输出由请求显式
+    推导（source 是 ``*_source_out``，常在绑定项目根之外），再走清单重绑会把
+    续跑指到别的缓存目录上。
     """
     try:
         if config_snapshot is not None:
             config = copy.deepcopy(config_snapshot)
         else:
             config = Config().load()
-        config = _bind_resumable_output(config, status)
+        if bind_resumable:
+            config = _bind_resumable_output(config, status)
         # 旧桌面端可能已保存「SINGLE_TEXT + 单行关闭」，快照里规范化，避免整轮请求失败。
         sync_output_protocol(config)
 
@@ -947,12 +994,31 @@ async def request_translation_start(
 
         request_id = str(body.request_id or "").strip() or uuid.uuid4().hex[:12]
 
+        # source 续跑：显式 TRANSLATING 必须有可继续缓存。没有就当场拒绝，
+        # 不放行到翻译线程去炸 strict 载入——那只会给用户一个初始化失败的红字，
+        # 而不是「请重新开始」的出路。UNTRANSLATED（重新开始）不检查。
+        if (
+            candidate is not None
+            and str(body.mode or "") == "source"
+            and status in Base.PROJECT_RESUMABLE_STATUSES
+        ):
+            resume_info = _cache_resumable_at(Path(str(candidate.output_folder)))
+            if not resume_info.get("resumable"):
+                return TranslationStartResponse(
+                    accepted = False,
+                    reason = "NOT_RESUMABLE",
+                    detail = "没有可继续的源码翻译缓存，请重新开始。",
+                    request_id = request_id,
+                )
+
         payload, rejection = _prepare_payload(
             app,
             status,
             request_id,
             preflight_confirmed = bool(body.preflight_confirmed),
             config_snapshot = candidate,
+            # 工具箱 mode 的输入/输出已由候选显式推导，不得按运行清单重绑。
+            bind_resumable = body.mode is None,
         )
         if rejection is not None:
             return rejection
@@ -962,7 +1028,14 @@ async def request_translation_start(
         if payload is not None:
             payload["start_reservation"] = reservation
 
-        if candidate is not None and str(body.mode or "") == "source" and _source_needs_prebackup(body, candidate):
+        # 续跑（TRANSLATING）跳过前置备份：上次启动的备份已在翻译前完成，
+        # 继续时再复制整份 .rpy 只会拖慢「继续」。仅全新开始走备份 job。
+        if (
+            candidate is not None
+            and str(body.mode or "") == "source"
+            and status == Base.TranslationStatus.UNTRANSLATED
+            and _source_needs_prebackup(body, candidate)
+        ):
             handed_off = True
             return await _start_source_with_prebackup(
                 app,
@@ -1105,7 +1178,8 @@ def reinject_translation(request: Request, body: TranslationReinjectRequest) -> 
     output = _resolve_reinject_tl(live, body)
     cache_dir = output / "cache"
     db_file = output / "cache.db"
-    if not cache_dir.exists() and not db_file.exists():
+    bound_store = CacheManager.db_path_for(str(output))
+    if not cache_dir.exists() and not db_file.exists() and not os.path.isfile(bound_store):
         raise HTTPException(status_code = 404, detail = "目标目录没有可写回的翻译缓存")
 
     folder = str(output.resolve(strict = False))
@@ -1115,6 +1189,32 @@ def reinject_translation(request: Request, body: TranslationReinjectRequest) -> 
         payload["request_id"] = request_id
     _emit(Base.Event.TRANSLATION_CACHE_REINJECT, payload)
     return {"ok": True, "output_folder": folder}
+
+
+@router.get("/resumable", response_model = TranslationResumableResponse)
+def read_resumable(
+    mode: str = "source",
+    input_folder: str = "",
+) -> TranslationResumableResponse:
+    """工具箱续跑探测：按 mode 推导输出目录，报告是否有可继续的翻译缓存。
+
+    源码翻译停止后再次「开始」应继续而不是从头重扫；渲染端在输入变化 /
+    引擎回到空闲时问一次，有可续跑缓存就改走 ``status=TRANSLATING`` 的续跑。
+    只读缓存项目元数据，不做任何写盘。
+    """
+    if mode not in TRANSLATION_TOOLBOX_MODES:
+        raise HTTPException(status_code = 400, detail = f"未知翻译方式：{mode}")
+    if mode != "source":
+        # direct/supplement 的输入=输出=tl 目录，续跑探测等它们的页面需要时再开。
+        raise HTTPException(status_code = 400, detail = f"暂不支持续跑探测：{mode}")
+    raw = normalise_path(input_folder)
+    if raw is None:
+        raise HTTPException(status_code = 400, detail = "源码翻译需要完整的输入路径")
+    if not raw.exists():
+        raise HTTPException(status_code = 400, detail = "源码翻译输入路径不存在")
+    input_path = _resolve_source_input(raw)
+    output_path = _default_source_output(input_path)
+    return TranslationResumableResponse(**_cache_resumable_at(output_path))
 
 
 @router.get("/state", response_model = TranslationStateResponse)
@@ -1144,7 +1244,8 @@ def read_state(request: Request) -> TranslationStateResponse:
         output = resolve_translation_output(request.app.state.config)
         if output is not None:
             output_folder = str(output)
-            if any(os.path.isfile(os.path.join(output_folder, "cache", name)) for name in ("cache.db", "project.json")):
+            store_db = CacheManager.db_path_for(output_folder)
+            if os.path.isfile(store_db) or os.path.isfile(os.path.join(output_folder, "cache", "project.json")):
                 try:
                     manager = CacheManager(service = False)
                     manager.load_project_from_file(output_folder, strict = True)

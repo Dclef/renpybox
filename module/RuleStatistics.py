@@ -24,12 +24,19 @@ class GlossaryTextSnapshot:
 
 
 def get_statistics_cache_dir(config: Config) -> str:
-    """返回当前统计要读取的缓存目录绝对路径。"""
+    """返回当前统计要读取的缓存位置。
+
+    绑定工程文件（.rbox）时是 .rbox 文件本身（单文件工程），
+    否则是输出目录下的 ``cache/`` 目录。
+    """
     output_folder = str(getattr(config, "output_folder", "") or "").strip()
     if output_folder == "":
         return ""
 
     output_abs = os.path.abspath(output_folder)
+    bound = CacheManager.bound_project_file(output_abs)
+    if bound != "":
+        return bound
     return os.path.join(output_abs, "cache")
 
 
@@ -48,7 +55,7 @@ def _iter_fast_items(output_folder: str):
     只要有任何异常就返回 None，由调用方回退到原来的完整读法 —— 兼容 JSON
     缓存、旧库结构和半成品写入等边角情况。
     """
-    db_path = os.path.join(output_folder, "cache", "cache.db")
+    db_path = CacheManager.db_path_for(output_folder)
     if not os.path.isfile(db_path):
         return None
     try:

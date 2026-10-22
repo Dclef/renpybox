@@ -145,10 +145,11 @@ def _items_revision(output: str, config) -> str:
     写入时算好的 items_digest（一次 meta 查询），JSON 缓存退回文件签名。
     """
     cache_path = os.path.join(str(output), "cache")
-    db_path = os.path.join(cache_path, CacheManager.CACHE_DB_NAME)
+    # 绑定工程文件（.rbox）时条目摘要直接读 .rbox。
+    db_path = CacheManager.db_path_for(str(output))
     try:
         if os.path.isfile(db_path):
-            digest = CacheDB(db_path).get_items_digest()
+            digest = CacheManager.open_store(db_path).get_items_digest()
             if digest:
                 return digest
     except Exception:
@@ -194,11 +195,11 @@ def _read_snapshot(request: Request, config) -> dict:
 
 def _refresh_snapshot_project(snapshot: dict) -> None:
     """把最新的 project 记录贴到复用的快照上，让质量任务进度立刻可见。"""
-    path = os.path.join(str(snapshot["output"]), "cache", CacheManager.CACHE_DB_NAME)
+    path = CacheManager.db_path_for(str(snapshot["output"]))
     if not os.path.isfile(path):
         return
     try:
-        project = CacheDB(path).get_project()
+        project = CacheManager.open_store(path).get_project()
     except Exception:
         return
     if project is not None:
