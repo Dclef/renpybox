@@ -235,7 +235,8 @@ app.whenReady().then(async () => {
     const english = await js("document.querySelector('.rb-project-file').innerText");
     assert.match(english, /SQLite/);
     assert.match(english, /JSON/);
-    assert.match(english, /manual snapshot/);
+    assert.match(english, /snapshot copy/);
+    assert.match(english, /No project file is bound/);
     assert.equal(/[\u3400-\u9fff]/.test(english), false, 'English project file copy must be complete');
     assert.deepEqual(await js("[...document.querySelectorAll('.rb-project-file,.rb-project-file-actions,.rb-project-file .rb-settings-body')].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.className)"), [], 'English project file actions must fit 1024px');
     await click('Create Project File from Older Data');
