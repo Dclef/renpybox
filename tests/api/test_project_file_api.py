@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -379,6 +380,7 @@ def test_busy_project_file_api_error_uses_english_localizer(tmp_path, config, fr
 # ---------- import ----------
 
 def test_import_backs_up_and_replaces_cache_and_applies_only_allowlisted_settings(tmp_path, config, fresh_engine) -> None:
+    # 复制安装语义（bind=False）：内容物化进 <输出>/cache，工程文件保持只读快照。
     _write_sqlite_cache(config, _project("old"), _items("old-1", "old-2"))
     original_paths = {
         name: getattr(config, name)
@@ -395,11 +397,12 @@ def test_import_backs_up_and_replaces_cache_and_applies_only_allowlisted_setting
     })
 
     with _client(config) as client:
-        response = client.post("/api/project/file/import", json = {"path": str(path)})
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert fresh_engine.get_status() == Engine.Status.IDLE
+    assert body["bound"] is False
     assert body["item_count"] == 3
     assert body["applied_settings"] == ["target_language", "text_preserve_enable", "translation_custom_style"]
     assert body["ignored_settings"] == ["max_workers", "output_folder", "platforms", "renpy_project_path"]
@@ -437,7 +440,7 @@ def test_import_into_legacy_json_cache_keeps_json_backend(tmp_path, config) -> N
     path = _rbox(tmp_path)
 
     with _client(config) as client:
-        response = client.post("/api/project/file/import", json = {"path": str(path)})
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
 
     assert response.status_code == 200, response.text
     assert not (_cache_dir(config) / CacheManager.CACHE_DB_NAME).exists()
@@ -451,10 +454,223 @@ def test_import_without_existing_cache_creates_cache_and_no_backup(tmp_path, con
     path = _rbox(tmp_path)
 
     with _client(config) as client:
-        response = client.post("/api/project/file/import", json = {"path": str(path)})
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
 
     assert response.status_code == 200, response.text
     assert response.json()["backup_folder"] == ""
+    assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
+
+
+def test_binding_endpoint_reports_bound_project_file(tmp_path, config) -> None:
+    """GET /file/binding：当前工程文件路径、条目数、大小都要能看到。"""
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+        response = client.get("/api/project/file/binding")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["bound"] is True
+    assert Path(body["path"]) == path.resolve()
+    assert body["exists"] is True
+    assert body["item_count"] == 3
+    assert body["size"] > 0
+    assert body["updated_at"] != ""
+    assert Path(body["output_folder"]) == Path(config.output_folder)
+    assert body["detail"] == ""
+
+
+def test_binding_endpoint_flags_missing_project_file(tmp_path, config) -> None:
+    """工程文件被移走 → exists=false + 明确说明，条目数归零。"""
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+
+        moved = tmp_path / "moved.rbox"
+        import shutil as _shutil
+
+        _shutil.move(str(path), str(moved))
+        body = client.get("/api/project/file/binding").json()
+        assert body["exists"] is False
+        assert str(path.resolve()) in body["detail"]
+        assert body["item_count"] == 0
+
+
+def test_unbind_project_file_moves_progress_back_to_dir_cache(tmp_path, config) -> None:
+    """解除绑定：进度落回 <输出>/cache，绑定落空并持久化，.rbox 保留为快照。"""
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+        assert not (_cache_dir(config) / CacheManager.CACHE_DB_NAME).exists()
+
+        response = client.post("/api/project/file/unbind")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["bound"] is False
+    assert body["path"] == ""
+    assert body["item_count"] == 3
+    assert Path(body["snapshot"]) == path.resolve()
+
+    # 目录缓存回来且内容一致
+    assert (_cache_dir(config) / CacheManager.CACHE_DB_NAME).is_file()
+    assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
+
+    # 绑定已清空并落盘
+    assert config.project_file_path == ""
+    assert Config().load().project_file_path == ""
+
+    # .rbox 保留：仍是可导入的完整快照
+    assert path.is_file()
+    assert ProjectFile.inspect(path).item_count == 3
+    assert CacheManager.db_path_for(config.output_folder).endswith(CacheManager.CACHE_DB_NAME)
+
+
+def test_unbind_without_binding_returns_404(tmp_path, config) -> None:
+    with _client(config) as client:
+        response = client.post("/api/project/file/unbind")
+    assert response.status_code == 404
+    assert "绑定" in response.json()["detail"]
+
+
+def test_import_binds_rbox_as_working_cache_and_retires_dir_cache(tmp_path, config) -> None:
+    """绑定模式（默认）：.rbox 即工作缓存，不再物化 cache 副本。"""
+    _write_sqlite_cache(config, _project("old"), _items("old-1", "old-2"))
+    path = _rbox(tmp_path)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/import", json = {"path": str(path)})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["bound"] is True
+    assert Path(body["project_file_path"]) == path.resolve()
+
+    # 绑定落在配置里，且持久化
+    assert config.project_file_path == str(path.resolve())
+    assert config.project_file_output == config.output_folder
+    saved = Config().load()
+    assert saved.project_file_path == str(path.resolve())
+    assert saved.project_file_output == config.output_folder
+
+    # 旧目录缓存被收走（已备份），工作缓存就是 .rbox
+    assert not (_cache_dir(config) / CacheManager.CACHE_DB_NAME).exists()
+    assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
+    backup = Path(body["backup_folder"])
+    assert (backup / CacheManager.CACHE_DB_NAME).is_file()
+
+    # .rbox 仍是合法工程文件：可 inspect、可 load，且无 -wal/-shm 旁路文件
+    assert ProjectFile.inspect(path).item_count == 3
+    assert [item.get_src() for item in ProjectFile.load(path).items] == ["new-1", "new-2", "new-3"]
+    assert not path.with_name(f"{path.name}-wal").exists()
+    assert not path.with_name(f"{path.name}-shm").exists()
+    assert not path.with_name(f"{path.name}-journal").exists()
+
+
+def test_bound_store_saves_keep_rbox_shareable(tmp_path, config) -> None:
+    """引擎直写绑定 .rbox 后，它必须仍是可导入的工程文件（摘要/计数一致）。"""
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+
+    manager = CacheManager(service = False)
+    manager.load_from_file(config.output_folder, strict = True)
+    project_value = manager.get_project()
+    project_value.set_status(Base.TranslationStatus.TRANSLATING)
+    project_value.set_progress({"line": 1, "total_line": 4})
+    assert manager.save_to_file(project_value, _items("saved-1"), config.output_folder, strict = True) is True
+
+    # 另一台机器视角：直接 load 这个文件必须通过完整性校验
+    snapshot = ProjectFile.load(path)
+    assert [item.get_src() for item in snapshot.items] == ["saved-1"]
+    assert snapshot.info.item_count == 1
+    assert not path.with_name(f"{path.name}-wal").exists()
+    assert not path.with_name(f"{path.name}-shm").exists()
+
+
+def test_bound_store_missing_refuses_to_create_empty_project(tmp_path, config) -> None:
+    """绑定的 .rbox 被移走后，保存不得新建空库顶替（否则进度会伪装成空工程）。
+
+    严格路径必须显式报错；自动保存保留内存进度并返回 False。
+    """
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+
+    manager = CacheManager(service = False)
+    manager.load_from_file(config.output_folder, strict = True)
+    os.remove(path)
+
+    # 自动保存：保留内存数据，返回 False，绝不落空文件
+    assert manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder) is False
+    assert not path.exists()
+    assert not (_cache_dir(config) / CacheManager.CACHE_DB_NAME).exists()
+    assert len(manager.get_items()) == 3
+
+    # 严格路径（导入/写回）：必须显式报错
+    with pytest.raises(RuntimeError, match = re.escape(str(path))):
+        manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder, strict = True)
+    assert not path.exists()
+
+    # 解除绑定后恢复旧行为：可以正常落目录缓存
+    config.project_file_path = ""
+    config.project_file_output = ""
+    config.save(strict = True)
+    Config._refresh_bound_project_file(config)
+    assert manager.save_to_file(manager.get_project(), manager.get_items(), config.output_folder, strict = True) is True
+    assert (_cache_dir(config) / CacheManager.CACHE_DB_NAME).is_file()
+
+
+def test_import_bind_false_keeps_copy_semantics(tmp_path, config) -> None:
+    """显式关闭绑定：内容复制进目录缓存，工程文件保持只读快照。"""
+    path = _rbox(tmp_path)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["bound"] is False
+    assert config.project_file_path == ""
+    assert config.project_file_output == ""
+    assert (_cache_dir(config) / CacheManager.CACHE_DB_NAME).is_file()
+    assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
+
+
+def test_import_bind_false_after_bind_clears_binding_and_installs_dir_cache(tmp_path, config) -> None:
+    """先绑定、再按旧语义导入：必须解除绑定并真的写回目录缓存。
+
+    回归：安装路径若仍解析到绑定的 .rbox，会把内容写进工程文件且不生 cache.db。
+    """
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+        assert config.project_file_path != ""
+
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["bound"] is False
+    assert config.project_file_path == ""
+    assert config.project_file_output == ""
+    assert Config().load().project_file_path == ""
+    assert (_cache_dir(config) / CacheManager.CACHE_DB_NAME).is_file()
+    assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
+    # 旧 .rbox 不再被当作工作缓存：内容保持导入时的快照，不随目录缓存变化
+    assert ProjectFile.inspect(path).item_count == 3
+
+
+def test_bound_store_scope_is_limited_to_bound_output(tmp_path, config) -> None:
+    """绑定只作用于绑定输出目录；其它作用域（如增量输出）照旧目录缓存。"""
+    path = _rbox(tmp_path)
+    with _client(config) as client:
+        assert client.post("/api/project/file/import", json = {"path": str(path)}).status_code == 200
+
+    other_output = tmp_path / "chinese_new"
+    other_output.mkdir()
+    manager = CacheManager(service = False)
+    manager.save_to_file(_project("delta"), _items("delta-1"), str(other_output), strict = True)
+
+    assert (other_output / "cache" / CacheManager.CACHE_DB_NAME).is_file()
     assert _read_cache(config)[1] == ["new-1", "new-2", "new-3"]
 
 
@@ -539,7 +755,7 @@ def test_failed_cache_install_restores_previous_files(tmp_path, config, fresh_en
 
     monkeypatch.setattr(project, "_install_cache", half_install)
     with _client(config) as client:
-        response = client.post("/api/project/file/import", json = {"path": str(path)})
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
 
     assert response.status_code == 500
     assert "写入导入缓存失败" in response.json()["detail"]
@@ -558,7 +774,7 @@ def test_failed_install_into_empty_output_removes_partial_cache(tmp_path, config
 
     monkeypatch.setattr(project, "_install_cache", half_install)
     with _client(config) as client:
-        response = client.post("/api/project/file/import", json = {"path": str(path)})
+        response = client.post("/api/project/file/import", json = {"path": str(path), "bind": False})
 
     assert response.status_code == 500
     assert _cache_snapshot(config) == {}

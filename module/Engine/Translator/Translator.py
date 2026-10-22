@@ -676,6 +676,11 @@ class Translator(Base):
         if path == "":
             return False
 
+        # 绑定工程文件（.rbox）时，缓存就是 .rbox 文件本身。
+        bound = CacheManager.bound_project_file(path)
+        if bound != "":
+            return os.path.isfile(bound)
+
         cache_dir = os.path.join(path, "cache")
         return any(
             os.path.isfile(candidate)
