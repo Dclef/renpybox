@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import os
@@ -125,13 +126,18 @@ def resolve_project(request: Request, body: ProjectResolveRequest) -> ProjectInf
 
 
 # ---------- .rbox 工程文件 ----------
-# .rbox 只是当前输出缓存的快照，运行期仍读写 <output>/cache；Ren'Py 源码保持外部绑定。
+# .rbox 是单文件工程：绑定后直接作为工作缓存被读写（回滚日志模式，无 -wal/-shm
+# 旁路文件），随时可拷贝分享；「保存/导出」另存的是快照副本。Ren'Py 源码保持外部
+# 绑定，译文 .rpy 产物照旧写输出目录。bind=False 时退回旧语义（内容复制进
+# <output>/cache/，快照与工作缓存分离）。
 # 导入只替换当前配置解析出的输出缓存和白名单设置，从不改写项目/输入/输出路径；
 # 规范输出目录（工作台资产所在）与之不同时，只同步其资产分区，两处缓存一起备份/回滚。
 
 
 class ProjectFileRequest(BaseModel):
     path: str
+    # 绑定模式（默认）：该 .rbox 直接作为工作缓存使用，不再物化目录缓存副本。
+    bind: bool = True
 
 
 class LegacyCacheRequest(BaseModel):
@@ -540,6 +546,38 @@ def _backup_cache(output: str) -> _CacheBackup:
     return _CacheBackup(folder, files)
 
 
+@contextlib.contextmanager
+def _legacy_store_scope():
+    """临时忽略工程文件绑定：安装/恢复目录缓存时必须写 ``<输出>/cache``。
+
+    绑定模式下缓存路径解析会指向 .rbox；``bind=false`` 导入或同步资产分区时，
+    写入目标必须是目录缓存，否则会把内容写进正在绑定的工程文件。
+    期间冻结绑定镜像：``CacheManager`` 构造时的 ``Config().load()`` 不得把它
+    改回已持久化的旧绑定。
+    """
+    saved = Config.BOUND_PROJECT_FILE
+    Config.BOUND_PROJECT_FILE = ("", "")
+    Config.BOUND_PROJECT_FILE_FROZEN = True
+    try:
+        yield
+    finally:
+        Config.BOUND_PROJECT_FILE_FROZEN = False
+        Config.BOUND_PROJECT_FILE = saved
+
+
+def _retire_cache_files(output: str, backup: _CacheBackup) -> None:
+    """绑定工程文件后收走旧目录缓存文件（备份已先行复制）。
+
+    不留旧 cache.db 的原因：它会成为绑定失效时的静默回退，把过期条目
+    当作进度继续读。备份目录里的副本仍然可以随时手动还原。
+    """
+    cache_dir = os.path.join(output, "cache")
+    for name in (*_CACHE_FILES, *_CACHE_SCRATCH_FILES):
+        path = os.path.join(cache_dir, name)
+        if os.path.isfile(path):
+            os.remove(path)
+
+
 def _restore_cache(output: str, backup: _CacheBackup) -> None:
     cache_dir = os.path.join(output, "cache")
     for name in backup.files:
@@ -655,9 +693,13 @@ def export_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
         with CacheManager.LOCK:
             _flush_runtime_cache(output)
             cache_dir = os.path.join(output, "cache")
-            if not any(
-                os.path.isfile(os.path.join(cache_dir, name))
-                for name in (CacheManager.CACHE_DB_NAME, "items.json", "project.json")
+            store_db = CacheManager.db_path_for(output)
+            if not (
+                os.path.isfile(store_db)
+                or any(
+                    os.path.isfile(os.path.join(cache_dir, name))
+                    for name in ("items.json", "project.json")
+                )
             ):
                 raise HTTPException(
                     status_code = 404,
@@ -760,9 +802,116 @@ def export_legacy_cache(request: Request, body: LegacyCacheExportRequest) -> dic
     return result
 
 
+def _binding_payload(
+    config: Any,
+    *,
+    bound: str = "",
+    output: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bound_path = bound if bound != "" else str(getattr(config, "project_file_path", "") or "").strip()
+    output_folder = output if output != "" else str(getattr(config, "project_file_output", "") or "").strip()
+    exists = bound_path != "" and os.path.isfile(bound_path)
+    payload: dict[str, Any] = {
+        "bound": bound_path != "",
+        "path": bound_path,
+        "output_folder": output_folder,
+        "exists": exists,
+        "size": 0,
+        "item_count": 0,
+        "updated_at": "",
+        "detail": "",
+    }
+    if bound_path != "" and exists:
+        payload["size"] = os.path.getsize(bound_path)
+        try:
+            info = ProjectFile.inspect(bound_path)
+            payload["item_count"] = int(info.item_count or 0)
+            payload["updated_at"] = str(info.updated_at or "")
+        except Exception as exc:  # noqa: BLE001
+            payload["detail"] = Localizer.get().project_file_api_bound_read_failed.format(error = exc)
+    elif bound_path != "":
+        payload["detail"] = Localizer.get().project_file_api_bound_missing.format(path = bound_path)
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+@router.get("/file/binding")
+def read_project_file_binding(request: Request) -> dict[str, Any]:
+    """当前单文件工程绑定状态：哪个 .rbox 在工作、还在不在原地、是否有同步风险。
+
+    只读：不解条目、不占用引擎、不改任何缓存。
+    """
+    return _binding_payload(request.app.state.config)
+
+
+@router.post("/file/unbind")
+def unbind_project_file(request: Request) -> dict[str, Any]:
+    """解除绑定：把 .rbox 里的进度落回 ``<输出>/cache``，工程文件留作只读快照。
+
+    为什么不顺便删掉 .rbox：它是唯一可分享/可回滚的完整副本，删了就没有退路。
+    """
+    config = request.app.state.config
+    bound = str(getattr(config, "project_file_path", "") or "").strip()
+    if bound == "":
+        raise HTTPException(
+            status_code = 404,
+            detail = Localizer.get().project_file_api_no_binding,
+        )
+    with _EngineReservation():
+        output = _target_output(config)
+        with CacheManager.LOCK:
+            manager = _new_cache_manager(config)
+            try:
+                manager.load_from_file(output, strict = True)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code = 500,
+                    detail = Localizer.get().project_file_api_cache_read_failed.format(error = exc),
+                ) from exc
+            project = manager.get_project()
+            items = manager.get_items()
+            try:
+                # 写目录缓存必须忽略绑定：否则内容又写回 .rbox。
+                with _legacy_store_scope():
+                    saved = CacheManager(service = False).save_to_file(
+                        project,
+                        items,
+                        output,
+                        strict = True,
+                    )
+                if saved is not True:
+                    raise RuntimeError("目录缓存写入未返回成功")
+            except Exception as exc:
+                raise HTTPException(
+                    status_code = 500,
+                    detail = Localizer.get().project_file_api_unbind_failed.format(error = exc),
+                ) from exc
+            config.project_file_path = ""
+            config.project_file_output = ""
+            try:
+                config.save(strict = True)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code = 500,
+                    detail = Localizer.get().project_file_api_settings_save_failed.format(error = exc),
+                ) from exc
+
+    result = _binding_payload(config, bound = "", output = output)
+    result["snapshot"] = bound
+    result["item_count"] = len(items)
+    return result
+
+
 @router.post("/file/import")
 def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str, Any]:
-    """完整校验后备份并替换当前输出缓存，只应用白名单设置；任一步失败都回滚缓存。"""
+    """完整校验后把 .rbox 设为工作缓存（默认绑定）或安装目录缓存，失败回滚。
+
+    绑定模式（单文件工程）：``project_file_path`` 指向该 .rbox，翻译缓存
+    直接读写它，不再物化 ``<输出>/cache/cache.db`` 副本；旧目录缓存先备份
+    再收走。``bind=False`` 保持旧语义（内容复制进目录缓存）。
+    """
     config = request.app.state.config
     with _EngineReservation():
         try:
@@ -776,9 +925,17 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
         assets_output = assets_repository.output_folder
         sync_assets = bool(assets_output) and _path_key(assets_output) != _path_key(output)
         expected_digest = CacheDB.items_digest(snapshot.items)
+        bind = bool(getattr(body, "bind", True))
         staged = copy.deepcopy(config)
         for key, value in applied.items():
             setattr(staged, key, value)
+        if bind:
+            staged.project_file_path = os.path.abspath(body.path)
+            staged.project_file_output = output
+        else:
+            # 显式关闭绑定：先解除旧绑定，安装才不会继续写进 .rbox。
+            staged.project_file_path = ""
+            staged.project_file_output = ""
 
         with CacheManager.LOCK:
             runtime = _flush_runtime_cache(output)
@@ -802,7 +959,11 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
                         detail = Localizer.get().project_file_api_assets_backup_failed.format(error = exc),
                     ) from exc
             try:
-                _install_cache(config, output, snapshot.project, snapshot.items, expected_digest)
+                if bind:
+                    _retire_cache_files(output, backup)
+                else:
+                    with _legacy_store_scope():
+                        _install_cache(config, output, snapshot.project, snapshot.items, expected_digest)
             except Exception as exc:
                 raise _rollback_failed(
                     [(output, backup)],
@@ -815,10 +976,12 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
                 restore_targets.append((assets_output, assets_backup))
                 restore_runtime = _runtime_sections_restorer(assets_runtime)
                 try:
-                    assets_repository.replace_asset_sections(
-                        snapshot.project.get_project_assets(),
-                        snapshot.project.get_analysis_candidates(),
-                    )
+                    # 资产分区恒写目录缓存（资产一定读规范输出目录，与绑定的运行输出无关）。
+                    with _legacy_store_scope():
+                        assets_repository.replace_asset_sections(
+                            snapshot.project.get_project_assets(),
+                            snapshot.project.get_analysis_candidates(),
+                        )
                 except Exception as exc:
                     raise _rollback_failed(
                         restore_targets,
@@ -838,6 +1001,9 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
 
             for key in applied:
                 setattr(config, key, getattr(staged, key))
+            # 绑定字段不在白名单里，单独落到 live 配置（bind=false 时是解除绑定）。
+            config.project_file_path = staged.project_file_path
+            config.project_file_output = staged.project_file_output
             if runtime is not None:
                 # 停止后的翻译器仍会自动保存内存缓存；同步成导入结果，避免旧快照覆盖。
                 runtime.set_project(CacheProject.from_dict(snapshot.project.asdict()))
@@ -852,5 +1018,7 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
         item_count = len(snapshot.items),
         applied_settings = sorted(applied),
         ignored_settings = ignored,
+        bound = bind,
+        project_file_path = staged.project_file_path if bind else "",
     )
     return result

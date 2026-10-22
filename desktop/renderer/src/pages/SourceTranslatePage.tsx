@@ -10,6 +10,7 @@ import {
   defaultSourceOutputDir,
   encodeLangChoice,
   normalizePath,
+  sourceResumeView,
   toolboxOwnerKey,
   toolboxStartGate,
   toolboxTlLanguageName,
@@ -20,8 +21,8 @@ import {
 } from '../toolboxTranslateView.mjs';
 import type { PageKey } from '../nav';
 import type { AppState } from '../useAppState';
-import type { JobSnapshot } from '../types';
-import { Banner, SettingsGroup, Switch } from '../ui';
+import type { JobSnapshot, TranslationResumableInfo } from '../types';
+import { Banner, Dialog, SettingsGroup, Switch } from '../ui';
 import { useT } from '../i18n';
 
 type InputKind = 'folder' | 'file';
@@ -65,6 +66,8 @@ export function SourceTranslatePage(props: {
   const [backupPercent, setBackupPercent] = useState(0);
   const [backupJobId, setBackupJobId] = useState('');
   const [assetsMissing, setAssetsMissing] = useState(false);
+  const [resumeInfo, setResumeInfo] = useState<TranslationResumableInfo | null>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const pollGen = useRef(0);
 
   useEffect(() => {
@@ -102,6 +105,37 @@ export function SourceTranslatePage(props: {
     }),
     [backingUp, engineBusy, inputPath, outputPath, projectPath, state.link],
   );
+
+  const resumeView = useMemo(() => sourceResumeView(resumeInfo), [resumeInfo]);
+
+  // 输入变化、引擎回到空闲（停止/完成）时探测一次续跑缓存：
+  // 有缓存时「开始」必须继续，不能重扫重翻。
+  useEffect(() => {
+    const input = normalizePath(inputPath);
+    if (!input || !layout.ok) {
+      // 输入无效/被清空：立刻丢掉旧探测结果，不能对错误目录显示「继续翻译」。
+      setResumeInfo(null);
+      return;
+    }
+    if (state.link !== 'open' || engineBusy || backingUp) return;
+    // 先收起旧提示（换目录后旧缓存不作数），再防抖探测一次。
+    setResumeInfo(null);
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api
+        .getSourceResumeInfo(input)
+        .then((info) => {
+          if (!cancelled) setResumeInfo(info.resumable ? info : null);
+        })
+        .catch(() => {
+          if (!cancelled) setResumeInfo(null);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [backingUp, engineBusy, inputPath, layout.ok, state.link]);
 
   useEffect(() => {
     if (!backingUp || !backupJobId) return;
@@ -177,7 +211,7 @@ export function SourceTranslatePage(props: {
     if (path) setExternalBackupDir(path);
   };
 
-  const start = async (preflightConfirmed = false) => {
+  const start = async (preflightConfirmed = false, projectStatus: 'UNTRANSLATED' | 'TRANSLATING' = 'UNTRANSLATED') => {
     if (!gate.canStart || busy || backingUp) return;
     if (externalBackup && !normalizePath(externalBackupDir)) {
       state.pushToast('warning', t('source_translate_pick_backup_dir_first'));
@@ -188,7 +222,7 @@ export function SourceTranslatePage(props: {
     const target = decodeLangChoice(targetChoice);
     setBusy(true);
     try {
-      const response = await state.startTranslation('UNTRANSLATED', preflightConfirmed, {
+      const response = await state.startTranslation(projectStatus, preflightConfirmed, {
         mode: 'source',
         project_key: ownerKey || undefined,
         input_folder: input,
@@ -205,6 +239,10 @@ export function SourceTranslatePage(props: {
       }
       if (!response.accepted) {
         setBusy(false);
+        if (response.reason === 'NOT_RESUMABLE') {
+          // 缓存刚好没了（被删/损坏）：退回「重新开始」，别把用户堵死。
+          setResumeInfo(null);
+        }
         return;
       }
       setAssetsMissing(false);
@@ -215,7 +253,7 @@ export function SourceTranslatePage(props: {
         setBackupPercent(0);
         return;
       }
-      state.pushToast('success', t('source_translate_submitted'));
+      state.pushToast('success', t(projectStatus === 'TRANSLATING' ? 'source_translate_resumed' : 'source_translate_submitted'));
       setBusy(false);
     } catch (error) {
       setBusy(false);
@@ -243,6 +281,9 @@ export function SourceTranslatePage(props: {
       {!gate.canStart && !backingUp ? <Banner tone="warning">{gate.hint}</Banner> : null}
       {layout.ok && outputPath ? (
         <Banner tone="info">{`输出将写入：${normalizePath(outputPath)}`}</Banner>
+      ) : null}
+      {resumeView.canContinue && !translating && !backingUp ? (
+        <Banner tone="info">{resumeView.hint}</Banner>
       ) : null}
 
       <SettingsGroup title={t('direct_rpy_paths_description')} description={t('source_translate_note')}>
@@ -345,8 +386,19 @@ export function SourceTranslatePage(props: {
 
       <SettingsGroup title={t('source_translate_start')}>
         <div className="rb-tool-actions">
-          <Button type="primary" disabled={!gate.canStart || busy || backingUp} loading={busy || backingUp} onClick={() => void start(false)}>
-            {t('source_translate_start')}</Button>
+          <Button
+            type="primary"
+            disabled={!gate.canStart || busy || backingUp}
+            loading={busy || backingUp}
+            onClick={() => void start(false, resumeView.canContinue ? 'TRANSLATING' : 'UNTRANSLATED')}
+          >
+            {resumeView.canContinue ? t('source_translate_continue') : t('source_translate_start')}
+          </Button>
+          {resumeView.canContinue ? (
+            <Button disabled={busy || backingUp} onClick={() => setConfirmRestart(true)}>
+              {t('source_translate_restart')}
+            </Button>
+          ) : null}
           <Button danger disabled={!backingUp && !translating} onClick={() => void stop()}>
             {t('source_translate_stop')}</Button>
           {onNavigate ? (
@@ -372,6 +424,19 @@ export function SourceTranslatePage(props: {
         <Banner tone="warning">
           {t('hook_supplement_assets_missing')}<Button type="link" onClick={() => void start(true)}>{t('hook_supplement_continue_anyway')}</Button>
         </Banner>
+      ) : null}
+
+      {confirmRestart ? (
+        <Dialog
+          title={t('source_translate_restart_title')}
+          onConfirm={() => {
+            setConfirmRestart(false);
+            void start(false, 'UNTRANSLATED');
+          }}
+          onCancel={() => setConfirmRestart(false)}
+        >
+          <p>{t('source_translate_restart_confirm')}</p>
+        </Dialog>
       ) : null}
     </div>
   );

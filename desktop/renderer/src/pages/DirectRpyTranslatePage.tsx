@@ -33,9 +33,15 @@ export function DirectRpyTranslatePage(props: {
     [boundTl, projectPath],
   );
 
-  // Qt 初值：游戏/显式 TL 为空，语言名 chinese；不强制绑定项目。
-  const [gamePath, setGamePath] = useState('');
-  const [tlParent, setTlParent] = useState('');
+  // Qt 初值：游戏/显式 TL 为空，语言名 chinese；不强制绑定项目。绑定工程时把工程路径填好，用户仍可改成别的目录。
+  const defaultTlParent = useMemo(() => {
+    const tl = normalizePath(boundTl);
+    const cut = tl.lastIndexOf('\\');
+    return cut > 2 ? tl.slice(0, cut) : '';
+  }, [boundTl]);
+
+  const [gamePath, setGamePath] = useState(projectPath);
+  const [tlParent, setTlParent] = useState(defaultTlParent);
   const [tlName, setTlName] = useState('chinese');
   const [langChoice, setLangChoice] = useState(() => encodeLangChoice('ZH', false));
   const [backup, setBackup] = useState(false);

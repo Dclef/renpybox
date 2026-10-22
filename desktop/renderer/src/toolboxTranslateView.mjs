@@ -185,6 +185,31 @@ export function toolboxStartGate({
   return { canStart: false, hint: '未知翻译方式' };
 }
 
+/**
+ * 源码翻译「继续 / 重新开始」按钮状态。
+ *
+ * 停止后的源码翻译缓存还在输出目录里（项目状态 TRANSLATING）；此时点「开始」
+ * 必须继续（status=TRANSLATING）而不是重扫重翻。`info` 来自
+ * GET /api/translation/resumable。
+ *
+ * @returns {{ canContinue: boolean, percent: number, line: number, total: number, hint: string }}
+ */
+export function sourceResumeView(info) {
+  const canContinue = Boolean(info?.resumable);
+  const line = Number(info?.line ?? 0) || 0;
+  const total = Number(info?.total_line ?? 0) || 0;
+  if (!canContinue) {
+    return { canContinue: false, percent: 0, line: 0, total: 0, hint: '' };
+  }
+  const percent = total > 0
+    ? Math.max(0, Math.min(100, Math.round((line / total) * 100)))
+    : 0;
+  const hint = total > 0
+    ? `检测到上次未完成的源码翻译（已完成 ${line}/${total} 行），可继续翻译。`
+    : '检测到上次未完成的源码翻译，可继续翻译。';
+  return { canContinue: true, percent, line, total, hint };
+}
+
 /** 语言下拉值编码：`ZH` / `ZH:trad` / `EN` … */
 export function encodeLangChoice(code, traditional) {
   const c = String(code || 'ZH').toUpperCase();

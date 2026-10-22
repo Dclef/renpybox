@@ -19,11 +19,13 @@ import type {
   ProjectFileDescription,
   ProjectFileExportResult,
   ProjectFileImportResult,
+  ProjectFileBinding,
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
   TokenEstimate,
   TranslationReinjectOptions,
+  TranslationResumableInfo,
   TranslationStartOptions,
   TranslationStartResponse,
   TranslationState,
@@ -260,12 +262,25 @@ export function exportLegacyProjectFile(folder: string, path: string): Promise<L
   });
 }
 
-/** 备份并替换当前输出缓存，只应用白名单设置；不改项目/输入/输出路径。 */
-export function importProjectFile(path: string): Promise<ProjectFileImportResult> {
+/**
+ * 导入 .rbox：默认绑定模式（单文件工程，.rbox 直接作为工作缓存，不再复制
+ * cache 副本）；`bind=false` 保持旧语义（内容复制进 <输出>/cache/）。
+ */
+export function importProjectFile(path: string, bind = true): Promise<ProjectFileImportResult> {
   return request<ProjectFileImportResult>('/api/project/file/import', {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, bind }),
   });
+}
+
+/** 当前单文件工程绑定状态：哪个 .rbox 在工作、是否还在原地、有无同步风险。 */
+export function getProjectFileBinding(): Promise<ProjectFileBinding> {
+  return request<ProjectFileBinding>('/api/project/file/binding');
+}
+
+/** 解除绑定：进度落回 <输出>/cache，工程文件留作只读快照。 */
+export function unbindProjectFile(): Promise<ProjectFileBinding & { snapshot: string }> {
+  return request<ProjectFileBinding & { snapshot: string }>('/api/project/file/unbind', { method: 'POST' });
 }
 
 export function listJobs(): Promise<JobSnapshot[]> {
@@ -322,6 +337,15 @@ export function saveGlossary(
 
 export function getTranslationState(): Promise<TranslationState> {
   return request<TranslationState>('/api/translation/state');
+}
+
+/**
+ * 工具箱续跑探测：按 mode 推导输出目录，报告是否有可继续的翻译缓存。
+ * 源码翻译停止后再次「开始」靠它区分「继续翻译」与「重新开始」。
+ */
+export function getSourceResumeInfo(inputFolder: string): Promise<TranslationResumableInfo> {
+  const query = new URLSearchParams({ mode: 'source', input_folder: inputFolder });
+  return request<TranslationResumableInfo>(`/api/translation/resumable?${query.toString()}`);
 }
 
 export function startTranslation(
