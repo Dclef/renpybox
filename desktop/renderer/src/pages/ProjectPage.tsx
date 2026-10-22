@@ -26,10 +26,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button } from 'antd';
 
-import { exportLegacyProjectFile, exportProjectFile, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject } from '../api';
+import { exportLegacyProjectFile, exportProjectFile, getProjectFileBinding, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject, unbindProjectFile } from '../api';
 import { useT } from '../i18n';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
-import type { LegacyProjectCacheDescription, ProjectFileDescription } from '../types';
+import type { LegacyProjectCacheDescription, ProjectFileBinding, ProjectFileDescription } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
 
@@ -61,9 +61,26 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
   const [outputFolder, setOutputFolder] = useState('');
   const [busy, setBusy] = useState(false);
   const [pendingImport, setPendingImport] = useState<ProjectFileDescription | null>(null);
+  // 绑定模式（单文件工程）：.rbox 直接作为工作缓存，不再复制 cache 副本。
+  const [importBind, setImportBind] = useState(true);
   const [pendingLegacy, setPendingLegacy] = useState<LegacyProjectCacheDescription | null>(null);
   const [fileResult, setFileResult] = useState<ProjectFileResult | null>(null);
+  const [binding, setBinding] = useState<ProjectFileBinding | null>(null);
+  const [bindingDetail, setBindingDetail] = useState<string | null>(null);
   const legacyFlight = useRef(false);
+
+  // 单文件工程状态：哪个 .rbox 在工作、还在不在原地。
+  const reloadBinding = useCallback(async () => {
+    try {
+      setBinding(await getProjectFileBinding());
+    } catch {
+      setBinding(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadBinding();
+  }, [reloadBinding]);
 
   // 语言下拉的选项文案在数据表里按 code 存，渲染时用 t() 换成当前界面语言。
   const languageOptions = LANGUAGE_OPTIONS.map((option) => ({ value: option.value, label: t(option.labelKey) }));
@@ -154,8 +171,10 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+      void reloadBinding();
+      void state.reloadProjectFileBinding();
     }
-  }, [projectLabel, state, t]);
+  }, [projectLabel, reloadBinding, state, t]);
 
   /** 打开 .rbox → 先 inspect，再弹确认框；「导入工程文件」按钮和双击文件都走这里。 */
   const beginImport = useCallback(async (path: string) => {
@@ -183,11 +202,11 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
     void beginImport(file);
   }, [incomingFile, beginImport, onIncomingFileConsumed]);
 
-  const confirmImport = useCallback(async (pending: ProjectFileDescription) => {
+  const confirmImport = useCallback(async (pending: ProjectFileDescription, bind: boolean) => {
     setPendingImport(null);
     setBusy(true);
     try {
-      const result = await importProjectFile(pending.info.path);
+      const result = await importProjectFile(pending.info.path, bind);
       await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
       setFileResult({
         kind: 'import',
@@ -201,20 +220,45 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
       });
       state.pushToast(
         'success',
-        result.assets_backup_folder
-          ? t('project_file_import_success_assets')
-            .replace('{backup}', result.backup_folder || '—')
-            .replace('{assets_backup}', result.assets_backup_folder)
-          : result.backup_folder
-            ? t('project_file_import_success').replace('{backup}', result.backup_folder)
-            : t('project_file_import_success_no_backup'),
+        result.bound
+          ? t('project_file_import_bound_success').replace('{path}', result.project_file_path || pending.info.path)
+          : result.assets_backup_folder
+            ? t('project_file_import_success_assets')
+              .replace('{backup}', result.backup_folder || '—')
+              .replace('{assets_backup}', result.assets_backup_folder)
+            : result.backup_folder
+              ? t('project_file_import_success').replace('{backup}', result.backup_folder)
+              : t('project_file_import_success_no_backup'),
       );
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+      void reloadBinding();
+      void state.reloadProjectFileBinding();
     }
-  }, [state, t]);
+  }, [reloadBinding, state, t]);
+
+  /** 解除绑定：进度从 .rbox 落回目录缓存，.rbox 保留为快照副本。 */
+  const unbindProject = useCallback(async () => {
+    setBindingDetail(null);
+    if (state.saving || engineBusy) {
+      state.pushToast('warning', t('project_file_unbind_blocked'));
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await unbindProjectFile();
+      await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
+      state.pushToast('success', t('project_file_unbind_success').replace('{output}', result.output_folder || '—'));
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+      void reloadBinding();
+      void state.reloadProjectFileBinding();
+    }
+  }, [engineBusy, reloadBinding, state, t]);
 
   const pickLegacyCache = useCallback(async () => {
     const picked = await window.renpy?.pickFolder(outputFolder || inputFolder || undefined);
@@ -298,6 +342,46 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
         </section>
 
         <div className="rb-project-file">
+        <SettingsGroup
+          title={t('project_file_binding_title')}
+          description={t('project_file_binding_none')}
+        >
+          {binding?.bound ? (
+            <>
+              {!binding.exists ? (
+                <>
+                  <Banner tone="error">{t('project_file_binding_missing').replace('{path}', binding.path)}</Banner>
+                  <p className="rb-project-file-guide">{t('project_file_binding_missing_hint')}</p>
+                </>
+              ) : null}
+              {binding.detail && binding.exists ? <Banner tone="warning">{binding.detail}</Banner> : null}
+              <dl className="rb-workbench-draft-fields">
+                <div><dt>{t('project_file_path')}</dt><dd className="rb-path" title={binding.path}>{binding.path}</dd></div>
+                <div><dt>{t('project_file_binding_output')}</dt><dd className="rb-path" title={binding.output_folder}>{binding.output_folder || '—'}</dd></div>
+                <div><dt>{t('project_file_item_count')}</dt><dd>{binding.exists ? binding.item_count : '—'}</dd></div>
+                <div><dt>{t('project_file_binding_size')}</dt><dd>{binding.exists ? `${Math.round(binding.size / 1024 / 1024)} MB` : '—'}</dd></div>
+                <div><dt>{t('project_file_binding_updated')}</dt><dd>{binding.updated_at ? formatTime(binding.updated_at) : '—'}</dd></div>
+              </dl>
+              <div className="rb-project-file-actions">
+                <Button type="link" size="small" onClick={() => openFolder(parentFolder(binding.path))}>{t('project_file_open_folder')}</Button>
+                <Button size="small" disabled={projectFileBlocked} onClick={() => setBindingDetail(binding.path)}>{t('project_file_unbind')}</Button>
+              </div>
+            </>
+          ) : (
+            <p className="rb-metric-note">{t('project_file_binding_none')}</p>
+          )}
+          {bindingDetail ? (
+            <Dialog
+              title={t('project_file_unbind_confirm')}
+              confirmText={t('project_file_unbind_confirm')}
+              onCancel={() => setBindingDetail(null)}
+              onConfirm={busy ? undefined : () => { setBindingDetail(null); void unbindProject(); }}
+            >
+              <p>{t('project_file_unbind_body').replace('{path}', bindingDetail)}</p>
+            </Dialog>
+          ) : null}
+        </SettingsGroup>
+
         <SettingsGroup
           title={t('project_file_title')}
           description={t('project_file_description')}
@@ -451,7 +535,7 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
           title={t('project_file_import_title')}
           confirmText={t('project_file_import_confirm')}
           onCancel={() => setPendingImport(null)}
-          onConfirm={busy ? undefined : () => void confirmImport(pendingImport)}
+          onConfirm={busy ? undefined : () => void confirmImport(pendingImport, importBind)}
         >
           <p>{t('project_file_import_body')}</p>
           {pendingRootMismatch ? <Banner tone="warning">{t('project_file_root_mismatch')}</Banner> : null}
@@ -465,6 +549,12 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
             <div><dt>{t('project_file_app_version')}</dt><dd>{pendingImport.info.app_version || '—'}</dd></div>
             <div><dt>{t('project_file_updated_at')}</dt><dd>{formatTime(pendingImport.info.updated_at)}</dd></div>
           </dl>
+          <Switch
+            label={t('project_file_import_bind')}
+            checked={importBind}
+            onChange={setImportBind}
+          />
+          <p className="card-description">{t('project_file_import_bind_hint')}</p>
         </Dialog>
       ) : null}
     </div>

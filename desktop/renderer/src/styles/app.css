@@ -76,6 +76,44 @@
     color: var(--rb-text-disabled);
   }
 
+  /* 标题栏工程文件徽标：绑定 .rbox 后它是真实存储位置，丢失 / 网盘同步要一眼能看出来。 */
+  .rb-project-file {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 200px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--rb-divider);
+    border-radius: 6px;
+    background: var(--rb-surface-subtle);
+    color: var(--rb-text-secondary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+  }
+
+  .rb-project-file > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rb-project-file:hover:not(:disabled) {
+    background: var(--rb-surface-hover);
+    color: var(--rb-text-primary);
+  }
+
+  .rb-project-file:disabled { cursor: default; }
+
+  .rb-project-file[data-missing='true'] {
+    border-color: color-mix(in srgb, var(--rb-error) 45%, var(--rb-border));
+    color: var(--rb-error);
+  }
+
   .rb-titlebar-spacer {
     flex: 1;
     min-width: 8px;

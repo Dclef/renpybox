@@ -198,6 +198,12 @@ class Config():
     )
     output_folder_open_on_finish: bool = False
     traditional_chinese_enable: bool = False
+    # 工程文件绑定（单文件工程）：project_file_path 非空时，绑定输出目录的
+    # 翻译缓存直接读写该 .rbox，不再落 <输出目录>/cache/ 副本。
+    # project_file_output 是绑定作用域（导入时的输出目录）：只有该目录的缓存
+    # 存取走 .rbox，增量 *_new / 源码 *_source_out 等其它作用域照旧用目录缓存。
+    project_file_path: str = ""
+    project_file_output: str = ""
 
     # GlossaryPage
     glossary_enable: bool = True
@@ -324,6 +330,13 @@ class Config():
     # 读写到不同的 ``./config.json``。
     CONFIG_PATH: ClassVar[str] = str(get_app_paths().config_path)
     CONFIG_LOCK: ClassVar[threading.Lock] = threading.Lock()
+    # 工程文件绑定镜像 (project_file_path, project_file_output)：save/load 时
+    # 刷新，供缓存路径解析直接读取。路径解析不能自己 Config.load()——翻译启动
+    # 受理路径有「禁止重读全局配置」的硬约束（快照必须来自请求级候选）。
+    BOUND_PROJECT_FILE: ClassVar[tuple[str, str]] = ("", "")
+    # 安装/恢复目录缓存期间由调用方冻结绑定镜像：期间任何 Config().load()
+    # （例如 CacheManager 构造时读 cache_use_sqlite）都不得改写它。
+    BOUND_PROJECT_FILE_FROZEN: ClassVar[bool] = False
 
     @classmethod
     def migrate_dict(cls, raw: dict[str, Any] | None) -> dict[str, Any]:
@@ -617,6 +630,20 @@ class Config():
             else self.OUTPUT_PROTOCOL_JSONLINE
         )
 
+    @classmethod
+    def get_bound_project_file(cls) -> tuple[str, str]:
+        """返回工程文件绑定镜像 (project_file_path, project_file_output)。"""
+        return cls.BOUND_PROJECT_FILE
+
+    @classmethod
+    def _refresh_bound_project_file(cls, config: "Config") -> None:
+        if cls.BOUND_PROJECT_FILE_FROZEN:
+            return
+        cls.BOUND_PROJECT_FILE = (
+            str(getattr(config, "project_file_path", "") or "").strip(),
+            str(getattr(config, "project_file_output", "") or "").strip(),
+        )
+
     def load(self, path: str = None) -> Self:
         # UI 主线程读盘计数（锁外打点；摘要可能触发 LogManager 初始化再进 load，锁外才安全）
         if threading.current_thread() is threading.main_thread():
@@ -637,6 +664,7 @@ class Config():
                             if k in field_names:
                                 setattr(self, k, v)
                         self._normalise_runtime_paths()
+                        __class__._refresh_bound_project_file(self)
             except Exception as e:
                 failure = e
 
@@ -686,6 +714,7 @@ class Config():
                     path,
                     json.dumps(payload, indent = 4, ensure_ascii = False),
                 )
+                __class__._refresh_bound_project_file(self)
             except Exception as e:
                 failure = e
 
