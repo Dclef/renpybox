@@ -3,10 +3,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Dropdown, Input, InputNumber, Modal, Progress, Select, Space, Spin, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType, TableRef } from 'antd/es/table';
 import type { MenuProps } from 'antd';
-import { request } from '../api';
+import { request, apiBase } from '../api';
 import { focusTableRow } from '../components/tableFocus';
 import type { AppState } from '../useAppState';
-import { MoreHorizontal, AlertTriangle, ChevronDown, ChevronUp, Copy, Info, Pencil, RotateCcw } from 'lucide-react';
+import { MoreHorizontal, AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Info, Pencil, RotateCcw } from 'lucide-react';
 import type { MouseEvent, KeyboardEvent } from 'react';
 import { Banner, Dialog, PageHeader } from '../ui';
 import { useT } from '../i18n';
@@ -34,6 +34,36 @@ interface ProofreadingRow {
   glossary_terms?: { src?: string; dst?: string }[];
   /** 本页暂存、尚未写入缓存的译文（覆盖服务端 dst 显示）。 */
   staged?: boolean;
+}
+
+/** 一个图片/视频落地结果：relative 是 game/ 下的相对路径。 */
+interface SceneAsset {
+  kind: 'image' | 'video' | 'none';
+  relative: string;
+  note: string;
+}
+
+interface SceneLayer extends SceneAsset {
+  tag: string;
+}
+
+/** 一行台词对应的画面。reason 非空表示静态还原失败。 */
+interface SceneStage {
+  file: string;
+  line: number;
+  scene_line: number;
+  scene_tag: string;
+  background: SceneAsset | null;
+  layers: SceneLayer[];
+  reason: string;
+}
+
+interface SceneInfo {
+  ok: boolean;
+  source: { file: string; line: number; label: string };
+  speaker: { src: string; dst: string };
+  stage: SceneStage | null;
+  reason: string;
 }
 
 interface QualityReport {
@@ -122,6 +152,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [locationOpen, setLocationOpen] = useState(false);
   const [location, setLocation] = useState<{ path: string; row: number; lines: { number: number; text: string }[] } | null>(null);
   const [locationError, setLocationError] = useState('');
+  const locationBoxRef = useRef<HTMLPreElement | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -130,6 +161,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const [edit, setEdit] = useState<(ProofreadingRow & { cache_token: string; project_identity: string }) | null>(null);
   const [discardEdit, setDiscardEdit] = useState<null | { action: 'close' } | { action: 'open'; row: ProofreadingRow }>(null);
   const [draft, setDraft] = useState('');
+  // 「编辑译文」里的画面：打开某一行时按源脚本静态还原一次，改译文不重查。
+  const [scene, setScene] = useState<SceneInfo | null>(null);
+  const [sceneLoading, setSceneLoading] = useState(false);
+  const [sceneError, setSceneError] = useState('');
+  // 画面里的台词条显示什么：译文（默认）/ 原文 / 双语对照
+  const [overlayMode, setOverlayMode] = useState<'dst' | 'src' | 'both'>('dst');
   /**
    * 已暂存、尚未写入缓存的译文：id → {version, dst}。
    * 改多行只写一次缓存，也只让服务端重新检查一次问题项。
@@ -354,9 +391,37 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
     else state.pushToast('success', '译文已暂存，点「保存修改」统一写入缓存。');
   };
 
+  /**
+   * 编辑弹窗里的「上一个 / 下一个」：有草稿先按暂存规则收进 pending，再切相邻行，
+   * 这样连续改多行不用每次点暂存、关窗、再点下一行。
+   */
+  const stepEdit = (delta: number) => {
+    if (!edit || saving || readonly || editProjectChanged) return;
+    const index = items.findIndex((row) => row.id === edit.id);
+    if (index < 0) return;
+    const target = items[index + delta];
+    if (!target) {
+      state.pushToast('info', delta > 0 ? '已经是最后一条了。' : '已经是第一条了。');
+      return;
+    }
+    if (draftDirty && data) {
+      const { id, version } = edit;
+      const nextDraft = draft;
+      const serverDst = data.items.find((row) => row.id === id)?.dst ?? edit.dst;
+      setPending((previous) => {
+        const next = { ...previous };
+        if (nextDraft === serverDst) delete next[id];
+        else next[id] = { version, dst: nextDraft };
+        return next;
+      });
+    }
+    setEdit({ ...target, cache_token: data?.cache_token ?? '', project_identity: projectIdentity });
+    setDraft(target.dst);
+    setDiscardEdit(null);
+  };
+
   /** 一次写入全部暂存译文：只落盘一次，也只重新检查一次问题项。 */
-  const savePending = async () => {
-    if (!data || !pendingCount || saving || readonly) return;
+  const savePending = async () => {    if (!data || !pendingCount || saving || readonly) return;
     const identity = projectRef.current;
     const rows = Object.entries(pending).map(([id, entry]) => ({
       id: Number(id), version: entry.version, dst: entry.dst,
@@ -727,6 +792,66 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       if (identity === projectRef.current) setLocation(result);
     } catch (failure) { if (identity === projectRef.current) setLocationError(failure instanceof Error ? failure.message : String(failure)); }
   };
+  // 定位译文：算出目标所在的整条 translate 块，便于整块淡高亮。
+  const locationBlock = useMemo(() => {
+    if (!location) return null;
+    const lines = location.lines;
+    const head = (text: string) => /^translate\s/.test(text);
+    const index = lines.findIndex((line) => line.number === location.row);
+    if (index < 0) return null;
+    let start = index;
+    while (start > 0 && !head(lines[start].text)) start -= 1;
+    if (!head(lines[start].text)) start = index;
+    let end = index;
+    while (end < lines.length - 1 && !head(lines[end + 1].text)) end += 1;
+    return { start: lines[start].number, end: lines[end].number };
+  }, [location]);
+  // 打开即把目标行滚到可视区中间——否则 ±20 行里目标行常常落在折叠线以下。
+  useLayoutEffect(() => {
+    const box = locationBoxRef.current;
+    if (!box || !location) return;
+    const target = box.querySelector<HTMLElement>('[data-target="true"]');
+    if (!target) return;
+    box.scrollTop = Math.max(0, target.offsetTop - (box.clientHeight - target.offsetHeight) / 2);
+  }, [location]);
+  // 编辑译文弹窗里的画面：只在这一行变化时查一次，改文本不重查。
+  useEffect(() => {
+    if (!edit) {
+      setScene(null);
+      setSceneError('');
+      setSceneLoading(false);
+      return;
+    }
+    const identity = projectRef.current;
+    setScene(null);
+    setSceneError('');
+    setSceneLoading(true);
+    void (async () => {
+      try {
+        const result = await request<SceneInfo>('/api/proofreading/scene', {
+          method: 'POST',
+          body: JSON.stringify({
+            cache_token: edit.cache_token,
+            row: { id: edit.id, version: edit.version },
+          }),
+        });
+        if (identity === projectRef.current) setScene(result);
+      } catch (failure) {
+        if (identity === projectRef.current) {
+          setSceneError(failure instanceof Error ? failure.message : String(failure));
+        }
+      } finally {
+        if (identity === projectRef.current) setSceneLoading(false);
+      }
+    })();
+  }, [edit?.id, edit?.version, edit?.cache_token]);
+  /** game/ 下的相对路径 → 后端可直接吐的地址；打包后窗口是 file:// 源，必须走绝对地址。 */
+  const assetUrl = (relative: string) => `${apiBase()}/api/proofreading/asset?path=${encodeURIComponent(relative)}`;
+  const sceneBackground = scene?.stage?.background ?? null;
+  const sceneUsable = Boolean(sceneBackground?.relative);
+  // 画面里的台词条：说话人优先用译名，正文直接用正在编辑的 draft，边改边看。
+  const overlayName = scene?.speaker.dst || scene?.speaker.src || '';
+  const overlayDst = draft || edit?.dst || '';
   const cancelRetranslate = async () => {
     try { setRetranslate(await request<typeof retranslate>('/api/proofreading/retranslate/cancel', { method: 'POST' })); }
     catch (failure) { state.pushToast('error', failure instanceof Error ? failure.message : String(failure)); }
@@ -897,6 +1022,12 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
   const qualityPercent = data?.quality_reports?.at(-1)?.total_count
     ? 100 * (data.quality_reports.at(-1)?.completed_count ?? 0) / (data.quality_reports.at(-1)?.total_count ?? 1)
     : 0;
+
+  // 「上一个 / 下一个」按当前筛选后的顺序走，序号对得上用户在表里看到的位置。
+  const editIndex = edit ? items.findIndex((row) => row.id === edit.id) : -1;
+  const editHasPrev = editIndex > 0;
+  const editHasNext = editIndex >= 0 && editIndex < items.length - 1;
+  const editPosition = editIndex >= 0 ? `${editIndex + 1} / ${items.length}` : '';
 
   return (
     <div className={embedded ? 'proofreading-page rb-embedded' : 'proofreading-page rb-page'}>
@@ -1138,9 +1269,21 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
       {locationOpen && (
         <Modal open onCancel={() => setLocationOpen(false)} title="定位译文" width={900} footer={null}>
           {locationError ? <Banner tone="warning">{locationError}</Banner> : !location ? <p>正在读取目标行…</p> : <>
-            <p className="rb-proofreading-location">{location.path}:{location.row}</p>
-            <Button size="small" onClick={() => void copyText(location.path)}>复制文件路径</Button>
-            <pre className="rb-proof-context">{location.lines.map((line) => <div key={line.number} data-target={line.number === location.row}>{String(line.number).padStart(6)}  {line.text}</div>)}</pre>
+            <div className="rb-locate-head">
+              <span className="rb-locate-path" title={location.path}>{location.path}</span>
+              <span className="rb-locate-row">第 {location.row} 行</span>
+              <Button size="small" onClick={() => void copyText(location.path)}>复制文件路径</Button>
+            </div>
+            <pre className="rb-proof-context" ref={locationBoxRef}>
+              {location.lines.map((line) => {
+                const inBlock = Boolean(locationBlock && line.number >= locationBlock.start && line.number <= locationBlock.end);
+                return (
+                  <div key={line.number} data-target={line.number === location.row} data-block={inBlock}>
+                    {String(line.number).padStart(6)}  {line.text}
+                  </div>
+                );
+              })}
+            </pre>
           </>}
         </Modal>
       )}
@@ -1149,11 +1292,16 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           open
           onCancel={closeEdit}
           title="编辑译文"
-          width={960}
+          width={1240}
           centered
           classNames={{ body: 'rb-proof-editor' }}
           footer={
             <div className="rb-dialog-actions">
+              <div className="rb-proof-editor-step">
+                <Button icon={<ChevronLeft size={14} />} disabled={saving || !editHasPrev} onClick={() => stepEdit(-1)}>上一个</Button>
+                <Button disabled={saving || !editHasNext} onClick={() => stepEdit(1)}>下一个 <ChevronRight size={14} /></Button>
+                <span className="rb-metric-note">{editPosition}</span>
+              </div>
               <Button onClick={closeEdit}>取消</Button>
               <Button type="primary" disabled={saving || readonly || !draftDirty || editProjectChanged} onClick={stageEdit}>暂存译文</Button>
             </div>
@@ -1169,10 +1317,68 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
           >
             {editProjectChanged && <Banner tone="warning">项目已切换，未保存的译文已保留。请复制译文后关闭编辑。</Banner>}
             <p className="rb-metric-note">{edit.file_path}:{edit.row} · Ctrl + Enter 暂存（暂存只记在本页，回列表点「保存修改」才写入缓存）</p>
-            <div className="rb-proof-bilingual-editor">
+            {!sceneUsable && (
+              <p className="rb-proof-scene-hint" data-tone={sceneError ? 'error' : 'muted'}>
+                {sceneLoading ? <Spin size="small" /> : null}
+                {sceneError
+                  || (sceneLoading ? '正在还原这句的画面…' : (scene?.reason || '这句没有画面信息。'))}
+              </p>
+            )}
+            <div className={sceneUsable ? 'rb-proof-bilingual-editor is-split' : 'rb-proof-bilingual-editor'}>
+              {sceneUsable && (
+                <figure className="rb-proof-scene">
+                  <div className="rb-proof-scene-media">
+                    {sceneBackground!.kind === 'video' ? (
+                      <video src={assetUrl(sceneBackground!.relative)} muted loop autoPlay playsInline />
+                    ) : (
+                      <img src={assetUrl(sceneBackground!.relative)} alt={scene?.stage?.scene_tag || '画面'} />
+                    )}
+                    {scene?.stage?.scene_tag ? <span className="rb-proof-scene-tag">{scene.stage.scene_tag}</span> : null}
+                    <div className="rb-proof-scene-modes" role="group" aria-label="画面台词显示">
+                      {([['dst', '译文'], ['src', '原文'], ['both', '双语']] as const).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          data-on={overlayMode === mode}
+                          onClick={() => setOverlayMode(mode)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="rb-proof-scene-dialog">
+                      {overlayName ? <span className="rb-proof-scene-dialog-name">{overlayName}</span> : null}
+                      {overlayMode !== 'dst' && (
+                        <p className="rb-proof-scene-dialog-text is-src" title={edit.src}>{edit.src}</p>
+                      )}
+                      {overlayMode !== 'src' && (
+                        <p className="rb-proof-scene-dialog-text" title={overlayDst}>{overlayDst || '（这句还没有译文）'}</p>
+                      )}
+                    </div>
+                  </div>
+                  {(scene?.stage?.layers.length ?? 0) > 0 && (
+                    <div className="rb-proof-scene-layers">
+                      {scene!.stage!.layers.map((layer) => (
+                        <img key={layer.tag} src={assetUrl(layer.relative)} alt={layer.tag} title={layer.tag} />
+                      ))}
+                    </div>
+                  )}
+                  <figcaption className="rb-metric-note rb-proof-scene-note">
+                    <Tooltip title="画面是按源脚本里的 scene/show 静态推出来的，没有启动游戏。转场与 ATL 动画的中间态、按剧情变量走的分支、以及脚本里动态设定的画面，实际游戏里可能不是这个样子。">
+                      <span className="rb-proof-scene-caution">
+                        <AlertTriangle size={12} />
+                        静态还原，非游戏实际画面
+                      </span>
+                    </Tooltip>
+                    <span className="rb-proof-scene-source">
+                      game/{scene?.source.file}:{scene?.source.line} · {sceneBackground!.note}
+                    </span>
+                  </figcaption>
+                </figure>
+              )}
               <label>
                 <span>原文</span>
-                <Input.TextArea readOnly value={edit.src} autoSize={{ minRows: 10, maxRows: 16 }} />
+                <Input.TextArea readOnly value={edit.src} autoSize={{ minRows: sceneUsable ? 7 : 10, maxRows: 16 }} />
               </label>
               <label>
                 <span>译文</span>
@@ -1180,7 +1386,7 @@ export function ProofreadingPage({ state, onDirtyChange, embedded = false }: {
                   id="proofreading-draft"
                   value={draft}
                   disabled={saving || readonly}
-                  autoSize={{ minRows: 10, maxRows: 16 }}
+                  autoSize={{ minRows: sceneUsable ? 7 : 10, maxRows: 16 }}
                   onChange={(event) => setDraft(event.target.value)}
                 />
               </label>
