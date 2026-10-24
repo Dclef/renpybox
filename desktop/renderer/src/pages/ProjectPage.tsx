@@ -26,10 +26,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button } from 'antd';
 
-import { exportLegacyProjectFile, exportProjectFile, getProjectFileBinding, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject, unbindProjectFile } from '../api';
+import { exportLegacyProjectFile, exportProjectFile, getProjectFileBinding, getStoryBlueprintReadiness, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject, unbindProjectFile } from '../api';
 import { useT } from '../i18n';
+import type { TextKey } from '../i18n';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
-import type { LegacyProjectCacheDescription, ProjectFileBinding, ProjectFileDescription } from '../types';
+import type { LegacyProjectCacheDescription, ProjectFileBinding, ProjectFileDescription, StoryBlueprintReadiness } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
 
@@ -67,7 +68,21 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
   const [fileResult, setFileResult] = useState<ProjectFileResult | null>(null);
   const [binding, setBinding] = useState<ProjectFileBinding | null>(null);
   const [bindingDetail, setBindingDetail] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<StoryBlueprintReadiness | null>(null);
   const legacyFlight = useRef(false);
+
+  // 项目体检：解包 → 绑定 → 蓝图能不能出图，在这里一次说清。
+  const reloadReadiness = useCallback(async () => {
+    try {
+      setReadiness(await getStoryBlueprintReadiness());
+    } catch {
+      setReadiness(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadReadiness();
+  }, [reloadReadiness, state.project]);
 
   // 单文件工程状态：哪个 .rbox 在工作、还在不在原地。
   const reloadBinding = useCallback(async () => {
@@ -340,6 +355,46 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
             </div>
           </dl>
         </section>
+
+        {/* 项目体检：按依赖顺序告诉人「现在卡在哪一步、下一步点哪个按钮」 */}
+        {readiness ? (
+          <section className="rb-checkup" data-stage={readiness.stage}>
+            <div className="rb-checkup-head">
+              <span className="rb-checkup-kicker">{t('project_checkup_title')}</span>
+              <span className={`rb-checkup-badge${readiness.stage === 'ready' ? ' is-ok' : ''}`}>
+                {t(`project_checkup_stage_${readiness.stage}` as TextKey)}
+              </span>
+            </div>
+            <ul className="rb-checkup-steps">
+              <li data-ok={readiness.stage !== 'unbound' && readiness.stage !== 'no_game' || undefined}>
+                <span className="rb-checkup-mark" />
+                {t('project_checkup_bound')}
+              </li>
+              <li data-ok={readiness.rpy_files > 0 || undefined}>
+                <span className="rb-checkup-mark" />
+                {t('project_checkup_unpacked')}
+                <em>{readiness.rpy_files > 0
+                  ? t('project_checkup_rpy_count').replace('{count}', String(readiness.rpy_files))
+                  : readiness.rpa_files > 0
+                    ? t('project_checkup_rpa_count').replace('{count}', String(readiness.rpa_files))
+                    : t('project_checkup_no_file')}
+                </em>
+              </li>
+              <li data-ok={readiness.has_tl || undefined}>
+                <span className="rb-checkup-mark" />
+                {t('project_checkup_tl')}
+                <em>{readiness.has_tl ? t('project_checkup_tl_yes') : t('project_checkup_tl_no')}</em>
+              </li>
+            </ul>
+            <p className="rb-checkup-next">
+              {readiness.stage === 'packed'
+                ? t('project_checkup_next_packed')
+                : readiness.stage === 'ready'
+                  ? t('project_checkup_next_ready')
+                  : t(`project_checkup_next_${readiness.stage}` as TextKey)}
+            </p>
+          </section>
+        ) : null}
 
         <div className="rb-project-file">
         <SettingsGroup

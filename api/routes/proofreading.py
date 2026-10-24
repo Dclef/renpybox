@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import Iterator, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from base.Base import Base
@@ -26,6 +27,8 @@ from module.Cache.CacheManager import CacheManager
 from module.Cache.QualityCandidates import count_quality_candidates
 from module.Engine.Engine import Engine
 from module.Renpy.ProjectPaths import RenpyProjectPaths, translation_output_candidates
+from module.Renpy.ImageResolver import VIDEO_EXT, IMAGE_EXT, get_resolver
+from module.Renpy.SceneContext import get_scanner
 from module.ResultChecker import ResultChecker, WarningType
 
 router = APIRouter(prefix="/api/proofreading", tags=["proofreading"])
@@ -78,6 +81,13 @@ class QualityRequest(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=500)
     # 新版携带行版本；旧调用方仍可只传 ids。
     rows: list[RowReference] | None = Field(default=None, min_length=1, max_length=500)
+
+
+class SceneRequest(BaseModel):
+    """看画面：一次只查一行，和编辑译文的弹窗一一对应。"""
+
+    cache_token: str = Field(min_length=64, max_length=64)
+    row: RowReference
 
 
 def _key(path: str) -> str:
@@ -666,6 +676,105 @@ def locate_row(request: Request, body: SelectionRequest) -> dict:
             raise HTTPException(status_code=404, detail="译文文件已变化，目标行不存在。")
         return {"path": str(candidate), "row": row, "lines": lines}
     raise HTTPException(status_code=404, detail="找不到译文文件，请先导出译文。")
+
+
+@router.post("/scene")
+def scene_for_row(request: Request, body: SceneRequest) -> dict:
+    """这一行台词在游戏里出现时，画面上是什么。
+
+    只做静态还原：回到 game/ 下的源脚本找 scene/show，不启动游戏、不截图。
+    还原不出来就返回空 stage 与具体原因，界面据此显示「没有画面信息」。
+    """
+    config = copy.deepcopy(request.app.state.config)
+    paths = RenpyProjectPaths.from_config(config)
+    if paths is None:
+        raise HTTPException(status_code=409, detail="还没有绑定 Ren'Py 工程，无法还原画面。")
+    with CacheManager.LOCK:
+        snapshot = _read_snapshot(request, config)
+        output, manager = snapshot["output"], snapshot["manager"]
+        if body.cache_token != _cache_token(config, output):
+            raise HTTPException(status_code=409, detail="项目已变化，请刷新后重看画面。")
+        _, item = _targets(manager, [body.row])[0]
+        relative = str(item.get_file_path() or "").strip().replace("\\", "/")
+        src = item.get_src()
+        name_src = item.get_name_src()
+        name_dst = item.get_name_dst()
+        extra = item.get_extra_field()
+        meta = extra.get("renpy", {}) if isinstance(extra, dict) else {}
+        block = meta.get("block", {}) if isinstance(meta, dict) else {}
+        label = str(block.get("label") or "") if isinstance(block, dict) else ""
+    if not relative:
+        raise HTTPException(status_code=400, detail="条目缺少源文件路径。")
+
+    def _first(value) -> str:
+        # name_src 可能是字符串，也可能是按「|」拆出的多段人名
+        if isinstance(value, (list, tuple)):
+            return " / ".join(str(part) for part in value if str(part).strip())
+        return str(value or "")
+
+    speaker = {"src": _first(name_src), "dst": _first(name_dst)}
+
+    scanner = get_scanner(paths.game_dir)
+    line = scanner.locate_line(relative, src, label)
+    if line <= 0:
+        return {
+            "ok": False,
+            "source": {"file": relative, "line": 0, "label": label},
+            "speaker": speaker,
+            "stage": None,
+            "reason": "在 game/%s 里没找到这句原文，可能源脚本已被改过或只发布了 .rpyc" % relative,
+        }
+    stage = scanner.stage_at(relative, line)
+    return {
+        "ok": not stage.reason,
+        "source": {"file": relative, "line": line, "label": label},
+        "speaker": speaker,
+        "stage": stage.as_dict(),
+        "reason": stage.reason,
+    }
+
+
+_ASSET_SUFFIXES = {suffix for suffix in (*IMAGE_EXT, *VIDEO_EXT)}
+# Windows 自带 mimetypes 表未必认识 webp/avif，显式给一份，别让浏览器当成附件下载
+_ASSET_MEDIA_TYPES = {
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+
+@router.get("/asset")
+def read_asset(request: Request, path: str = Query(min_length=1, max_length=600)) -> FileResponse:
+    """按 game/ 下的相对路径回源图或视频；路径必须落在工程 game 目录内。"""
+    config = copy.deepcopy(request.app.state.config)
+    paths = RenpyProjectPaths.from_config(config)
+    if paths is None:
+        raise HTTPException(status_code=409, detail="还没有绑定 Ren'Py 工程。")
+    game = Path(paths.game_dir).resolve()
+    raw = str(path or "").replace("\\", "/").lstrip("/")
+    if not raw or ".." in raw.split("/"):
+        raise HTTPException(status_code=400, detail="资源路径不合法。")
+    target = (game / raw).resolve()
+    try:
+        target.relative_to(game)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="资源不在工程目录内。") from exc
+    if target.suffix.lower() not in _ASSET_SUFFIXES:
+        raise HTTPException(status_code=403, detail="只允许读取图片或视频文件。")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在，可能需要先解包 .rpa。")
+    return FileResponse(
+        str(target),
+        media_type=_ASSET_MEDIA_TYPES.get(target.suffix.lower()),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 def _retranslate_state(request: Request) -> dict:

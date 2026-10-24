@@ -39,6 +39,7 @@ export type PageKey =
   | 'platform'
   | 'toolbox'
   | 'workbench'
+  | 'story-blueprint'
   | 'basic-settings'
   | 'expert-settings'
   | 'custom-prompt'
@@ -86,6 +87,7 @@ const PAGES: NavItem[] = [
   { key: 'html-import', labelKey: 'app_html_import_page', icon: 'Wrench' },
   { key: 'game-mod', labelKey: 'app_game_mod_page', icon: 'Wrench' },
   { key: 'workbench', labelKey: 'app_workbench_page', icon: 'UsersRound' },
+  { key: 'story-blueprint', labelKey: 'app_story_blueprint_page', icon: 'Waypoints' },
   { key: 'basic-settings', labelKey: 'app_basic_settings_page', icon: 'SlidersHorizontal' },
   { key: 'expert-settings', labelKey: 'app_expert_settings_page', icon: 'SlidersHorizontal' },
   { key: 'custom-prompt', labelKey: 'app_custom_prompt_navigation_item', icon: 'SlidersHorizontal' },
@@ -106,7 +108,7 @@ export const TOOLBOX_PAGES: PageKey[] = ['proofreading', 'glossary', 'preserve',
 export const NAV_SECTIONS: NavItem[][] = [
   [page('translation'), page('agent')],
   [page('project'), page('platform')],
-  [{ ...page('toolbox'), members: TOOLBOX_PAGES }, page('workbench')],
+  [{ ...page('toolbox'), members: TOOLBOX_PAGES }, page('workbench'), page('story-blueprint')],
   [page('basic-settings'), page('expert-settings'), page('custom-prompt')],
 ];
 

@@ -392,3 +392,26 @@ export interface WsHelloMessage {
 }
 
 export type WsMessage = WsHelloMessage | WsEventMessage | WsJobMessage | { type: string; [key: string]: unknown };
+
+// 剧情蓝图的类型只在纯计算层声明一次，这里转出去给 api.ts / 页面复用，避免两份形状漂移。
+export type {
+  Filters,
+  LayoutOptions,
+  LayoutResult,
+  Position,
+  Segment,
+  StoryBlueprintChapter,
+  StoryBlueprintEdge,
+  StoryBlueprintImage,
+  StoryBlueprintLabelDetail,
+  StoryBlueprintLine,
+  StoryBlueprintNode,
+  StoryBlueprintProject,
+  StoryBlueprintReadiness,
+  StoryBlueprintResponse,
+  StoryBlueprintStage,
+  StoryBlueprintStats,
+  StoryBlueprintStatus,
+  View,
+  Viewport,
+} from './pages/storyBlueprint/storyBlueprintView.mjs';

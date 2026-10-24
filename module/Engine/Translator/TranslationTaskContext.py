@@ -54,6 +54,16 @@ _CHARACTER_LIST_FIELDS = (
     "match_keywords",
     "sample_lines",
 )
+# 工作台的关系图/名册字段。翻译本身不用它们（提示词只读 relationship_notes 那类
+# 自然语言字段），但角色卡是同一份资产，快照过滤器要是把它们丢了，
+# 工作台每次存盘都会静默抹掉关系边和阵营——所以这里原样透传，不做语义加工。
+_CHARACTER_EXTRA_FIELDS = (
+    "relations",
+    "co_occurrence",
+    "faction",
+    "line_count",
+    "avatar",
+)
 
 
 class TranslationSnapshotError(ValueError):
@@ -558,6 +568,25 @@ def _build_character_id(name: str) -> str:
     return f"character_{digest}"
 
 
+def _normalize_character_relations(value: Any) -> list[dict[str, Any]]:
+    """角色关系边按原结构透传。
+
+    这里刻意不做工作台那套（target/count/samples）语义规范化：快照只负责
+    不丢数据，字段含义归 module/Workbench/WorkbenchData.py 管，两处各写一套
+    迟早会对不上。缺字段的老数据交给读盘侧补默认值。
+    """
+    if isinstance(value, Mapping):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        normalized = _normalize_data(item)
+        if isinstance(normalized, dict) and normalized:
+            result.append(normalized)
+    return result
+
+
 def _normalize_character_card(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -577,6 +606,15 @@ def _normalize_character_card(value: Any) -> dict[str, Any] | None:
         card["match_keywords"].insert(0, name)
     card["enabled"] = _normalize_bool(value.get("enabled", True), default = True)
     card["is_primary"] = _normalize_bool(value.get("is_primary", False))
+    # 工作台的关系图/名册字段：只透传，不参与翻译提示词。
+    card["relations"] = _normalize_character_relations(value.get("relations", []))
+    co_occurrence = _normalize_data(value.get("co_occurrence", {}))
+    card["co_occurrence"] = co_occurrence if isinstance(co_occurrence, dict) else {}
+    card["faction"] = _normalize_text(value.get("faction", ""))
+    card["line_count"] = _normalize_int(value.get("line_count", 0), default = 0)
+    avatar = _normalize_data(value.get("avatar", None))
+    # 没有头像（None）是正常状态，前端据此画首字色块；空对象也归一成 None。
+    card["avatar"] = avatar if isinstance(avatar, dict) and avatar else None
     return card
 
 
