@@ -21,6 +21,7 @@ import {
   SlidersHorizontal,
   SpellCheck,
   UsersRound,
+  Waypoints,
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
@@ -98,6 +99,7 @@ export type NavIconName =
   | 'Wrench'
   | 'BookOpenText'
   | 'UsersRound'
+  | 'Waypoints'
   | 'SlidersHorizontal'
   | 'Settings'
   | 'Info';
@@ -111,6 +113,7 @@ export const NAV_ICONS: Record<NavIconName, LucideIcon> = {
   Wrench,
   BookOpenText,
   UsersRound,
+  Waypoints,
   SlidersHorizontal,
   Settings,
   Info,

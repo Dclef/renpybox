@@ -30,6 +30,7 @@ import { AgentPage } from './pages/AgentPage';
 import { ToolBoxPage } from './pages/ToolBoxPage';
 import { TranslationPage } from './pages/TranslationPage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
+import { StoryBlueprintPage } from './pages/StoryBlueprintPage';
 import { ProofreadingPage } from './pages/ProofreadingPage';
 import { GlossaryPage } from './pages/GlossaryPage';
 import { PreservePage } from './pages/PreservePage';
@@ -425,6 +426,8 @@ export function App(props: { state: AppState; link: 'connecting' | 'open' | 'clo
         return <SettingsPage state={state} variant="app" title={t('app_settings_page')} description={t('app_settings_page_header_description')} />;
       case 'workbench':
         return <WorkbenchPage state={state} onDirtyChange={setDirty} onNavigate={navigate} />;
+      case 'story-blueprint':
+        return <StoryBlueprintPage state={state} onNavigate={navigate} />;
       case 'agent':
         return <AgentPage state={state} onOpenPlatforms={() => navigate('platform')} />;
       case 'platform':

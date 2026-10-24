@@ -23,6 +23,9 @@ import type {
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
+  StoryBlueprintLabelDetail,
+  StoryBlueprintReadiness,
+  StoryBlueprintResponse,
   TokenEstimate,
   TranslationReinjectOptions,
   TranslationResumableInfo,
@@ -509,4 +512,28 @@ export function estimateTokens(): Promise<TokenEstimate> {
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+/** 整份剧情蓝图：章节、label 节点、真实进度与控制流。 */
+export function getStoryBlueprint(): Promise<StoryBlueprintResponse> {
+  return request<StoryBlueprintResponse>('/api/story-blueprint');
+}
+
+/** 项目体检：剧情蓝图能不能出图、卡在哪一步（未绑定 / 无 game / 已打包未解包 / 可出图）。 */
+export function getStoryBlueprintReadiness(): Promise<StoryBlueprintReadiness> {
+  return request<StoryBlueprintReadiness>('/api/story-blueprint/readiness');
+}
+
+/** 卡片缩略图地址：path 是 game/ 下的相对路径，安全校验在后端 asset 接口。 */
+export function blueprintAssetUrl(path: string): string {
+  return `${apiBase()}/api/story-blueprint/asset?path=${encodeURIComponent(path)}`;
+}
+
+/** 一个 label 的逐行明细：行号、说话人、原文、缓存译文与状态。 */
+export function getStoryBlueprintLabel(
+  chapter: string,
+  id: string,
+): Promise<StoryBlueprintLabelDetail> {
+  const query = new URLSearchParams({ chapter, id });
+  return request<StoryBlueprintLabelDetail>(`/api/story-blueprint/label?${query.toString()}`);
 }
