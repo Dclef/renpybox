@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import bisect
 import re
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -10,7 +12,16 @@ from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Text.SkipRules import should_skip_text
-from module.Workbench.WorkbenchData import build_character_id, normalize_text, normalize_text_list
+from module.Workbench import AvatarResolver, RelationMiner
+from module.Workbench.WorkbenchData import (
+    RELATION_CHAPTER_LIMIT,
+    RELATION_CHAPTER_SAMPLE_LIMIT,
+    RELATION_SAMPLE_LIMIT,
+    RELATION_SOURCE_RULE,
+    build_character_id,
+    normalize_text,
+    normalize_text_list,
+)
 
 ScanProgress = Callable[[str], None]
 
@@ -24,9 +35,17 @@ class CharacterCandidate:
     match_keywords: list[str] = field(default_factory = list)
     sample_lines: list[str] = field(default_factory = list)
     related_names: list[str] = field(default_factory = list)
+    # 同场证据：同场角色名 -> 同场 label 数，图谱连线粗细用它。
+    related_weights: dict[str, int] = field(default_factory = dict)
     name_translation: str = ""
+    # 扫描统计的台词句数：图谱节点大小、名册排序都按它，和 sample_lines 的抽样条数不是一回事。
+    line_count: int = 0
     sample_count: int = 0
     low_confidence: bool = False
+    # 规则挖出的关系边（source = "rule"），扫描时写入草稿；AI 分析可以覆盖它们。
+    relations: list[dict[str, Any]] = field(default_factory = list)
+    # 头像：目录约定命中的图片，None 时前端画首字色块兜底。
+    avatar: dict[str, Any] | None = None
 
     def as_card_seed(self) -> dict[str, Any]:
         """转换为角色卡草稿。"""
@@ -47,6 +66,11 @@ class CharacterCandidate:
             "sample_lines": self.sample_lines[:12],
             "enabled": True,
             "is_primary": False,
+            "faction": "",
+            "relations": [dict(item) for item in self.relations],
+            "co_occurrence": dict(self.related_weights),
+            "avatar": dict(self.avatar) if self.avatar else None,
+            "line_count": self.line_count,
         }
 
 
@@ -57,8 +81,12 @@ class ProjectCharacterScanResult:
     names: set[str] = field(default_factory = set)
     preserves: set[str] = field(default_factory = set)
     speaker_samples: dict[str, list[str]] = field(default_factory = dict)
-    co_occurrence: dict[str, list[str]] = field(default_factory = dict)
+    # 角色名 -> {同场角色名: 同场 label 数}；按 label（场景块）统计，
+    # 文件级共现会把整份脚本压成「人人相连」，边就没有意义了。
+    co_occurrence: dict[str, dict[str, int]] = field(default_factory = dict)
     speaker_counts: dict[str, int] = field(default_factory = dict)
+    # 参与过同场判定的场景数（label 内至少两人开口）
+    scene_count: int = 0
     # 角色名 -> 源码文本里真实出现过的 `[var]` 插值（var 是该角色的 Character 变量）
     speaker_variables: dict[str, list[str]] = field(default_factory = dict)
     file_count: int = 0
@@ -90,6 +118,8 @@ class CharacterScanner(Base):
         re.MULTILINE,
     )
     RE_VARIABLE_IN_TEXT = re.compile(r"\[(\w+)\]")
+    # label 是 Ren'Py 的场景块边界；同 label 内开口的角色才算同场。
+    RE_LABEL = re.compile(r"^label\s+([\w.]+)", re.MULTILINE)
     RE_DIGITS = re.compile(r"\d")
 
     # 扫描结果缓存：路径 -> (指纹, 结果)。指纹取所有 rpy 的 mtime+size，
@@ -99,6 +129,8 @@ class CharacterScanner(Base):
 
     # 单人角色最多保留多少条台词样本（从全部去重台词里按源码位置均匀抽取）
     MAX_SAMPLES_PER_NAME = 24
+    # 每个角色最多记住多少个同场角色（按同场次数降序）
+    CO_OCCURRENCE_LIMIT = 16
     # 角色候选携带的样本数
     CANDIDATE_SAMPLE_LIMIT = 12
     # 低于该台词数视为低置信度
@@ -308,12 +340,18 @@ class CharacterScanner(Base):
         total_files = max(1, len(contents))
         step = max(1, total_files // 8)
 
+        scene_total = 0
         for position, (path, content) in enumerate(contents.items(), start = 1):
             for var_name in self.RE_VARIABLE_IN_TEXT.findall(content):
                 result.preserves.add(f"[{var_name}]")
                 text_variables.add(var_name)
 
-            file_speakers: list[str] = []
+            # 同场判定按 label 走：每句台词归到它上方最近的 label。
+            # 按文件统计会让同一个人和几十个路人都连上，图谱看不出结构。
+            label_marks = [(match.start(), match.group(1)) for match in self.RE_LABEL.finditer(content)]
+            label_starts = [item[0] for item in label_marks]
+            scene_speakers: dict[str, list[str]] = defaultdict(list)
+            scene_order: list[str] = []
             for match in self.RE_DIALOGUE_LINE.finditer(content):
                 speaker_var = match.group("speaker") or ""
                 speaker_name = speaker_map.get(speaker_var, "")
@@ -323,6 +361,12 @@ class CharacterScanner(Base):
                 result.line_count += 1
                 speaker_counts[speaker_name] += 1
 
+                scene = self._scene_at(label_marks, label_starts, match.start())
+                if speaker_name not in scene_speakers[scene]:
+                    scene_speakers[scene].append(speaker_name)
+                if scene not in scene_order:
+                    scene_order.append(scene)
+
                 quoted = match.group("quote") or ""
                 text = quoted[1:-1] if len(quoted) >= 2 else quoted
                 sample = self.normalize_sample_line(text)
@@ -330,13 +374,16 @@ class CharacterScanner(Base):
                     continue
 
                 speaker_samples[speaker_name].setdefault(sample.casefold(), sample)
-                if speaker_name not in file_speakers:
-                    file_speakers.append(speaker_name)
 
-            for speaker in file_speakers:
-                for other in file_speakers:
-                    if other != speaker:
+            for scene in scene_order:
+                names = scene_speakers[scene]
+                if len(names) < 2:
+                    continue
+                scene_total += 1
+                for index, speaker in enumerate(names):
+                    for other in names[index + 1:]:
                         co_counters[speaker][other] += 1
+                        co_counters[other][speaker] += 1
             if progress is not None and (position % step == 0 or position == total_files):
                 progress(
                     f"正在抽取台词 {position}/{total_files}，"
@@ -358,10 +405,11 @@ class CharacterScanner(Base):
                 variables[speaker_name].append(f"[{var_name}]")
         result.speaker_variables = {key: sorted(values) for key, values in variables.items()}
         result.co_occurrence = {
-            key: [name for name, _ in counter.most_common(8)]
+            key: dict(counter.most_common(self.CO_OCCURRENCE_LIMIT))
             for key, counter in co_counters.items()
             if key
         }
+        result.scene_count = scene_total
         result.speaker_counts = dict(speaker_counts)
 
         if progress is not None:
@@ -373,6 +421,12 @@ class CharacterScanner(Base):
         )
         self._remember(cache_key, fingerprint, result)
         return result
+
+    @staticmethod
+    def _scene_at(marks: list[tuple[int, str]], starts: list[int], position: int) -> str:
+        """返回该位置所属的 label；位于文件开头等 label 之外时返回空串。"""
+        index = bisect.bisect_right(starts, position) - 1
+        return marks[index][1] if index >= 0 else ""
 
     def _remember(
         self,
@@ -483,6 +537,8 @@ class CharacterScanner(Base):
             return max(scan.speaker_counts.get(value, 0), item_counts.get(value, 0))
 
         limit = self.CANDIDATE_SAMPLE_LIMIT
+        relation_edges = self.mine_relations(scan, project_root, progress = progress)
+        avatar_index = self.avatar_index(project_root)
         candidates: list[CharacterCandidate] = []
         for name in sorted(names, key = lambda value: (-line_count(value), value.casefold())):
             sample_lines = self.select_evenly(normalize_text_list(scan.speaker_samples.get(name, [])), limit)
@@ -491,8 +547,15 @@ class CharacterScanner(Base):
                 extra = [line for line in normalize_text_list(item_samples.get(name, [])) if line.casefold() not in seen]
                 sample_lines += self.select_evenly(extra, limit - len(sample_lines))
 
+            # 同场证据以 label 级共现为准；缓存条目的文件级共现只补进提示词名单，
+            # 不计权重——同文件不等于同场，拿来连边会把图谱糊成毛线团。
+            weights = {
+                other: hits
+                for other, hits in scan.co_occurrence.get(name, {}).items()
+                if other != name and hits > 0
+            }
             co_names = normalize_text_list(
-                scan.co_occurrence.get(name, []) + [other for other, _ in item_co.get(name, Counter()).most_common(8)]
+                list(weights) + [other for other, _ in item_co.get(name, Counter()).most_common(8)]
             )
             count = line_count(name)
 
@@ -502,10 +565,118 @@ class CharacterScanner(Base):
                 match_keywords = normalize_text_list([name] + scan.speaker_variables.get(name, [])),
                 sample_lines = sample_lines,
                 related_names = co_names[:8],
+                related_weights = dict(list(weights.items())[:self.CO_OCCURRENCE_LIMIT]),
                 name_translation = glossary_names.get(name, ""),
+                line_count = count,
                 sample_count = count,
                 low_confidence = max(count, len(sample_lines)) < self.LOW_CONFIDENCE_LINES,
+                relations = relation_edges.get(name, []),
+                avatar = self.resolve_avatar(avatar_index, name, scan.speaker_variables.get(name, [])),
             )
             candidates.append(candidate)
 
         return candidates
+
+    # ------------------------------------------------------- 关系与头像（纯本地）
+    @classmethod
+    def mine_relations(
+        cls,
+        scan: ProjectCharacterScanResult,
+        project_root: str | Path | None,
+        progress: ScanProgress | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """用规则挖关系边，按 from 角色分组返回；不调 AI、不联网。
+
+        规则只在源码里找「称谓词 + 同场景同名变量」，所以对不上任何角色时
+        返回空字典即可，不影响扫描主流程。
+        """
+        if project_root is None or not scan.names:
+            return {}
+        game_dir = cls._game_dir(project_root)
+        if game_dir is None:
+            return {}
+        if progress is not None:
+            progress("正在按称谓规则挖掘人物关系…")
+        try:
+            rows = RelationMiner.mine(game_dir, set(scan.names))
+        except Exception as exc:  # 规则挖掘失败不能拖垮角色扫描
+            cls().warning("[CharacterScanner] 关系挖掘失败，跳过", exc)
+            return {}
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            samples = [str(item) for item in list(row.samples or []) if str(item).strip()]
+            grouped[row.from_name].append({
+                "target": row.to_name,
+                "relation": row.relation,
+                "category": row.category,
+                # note 保留首条证据，兼容旧前端只读 note 的显示方式；
+                # samples/count 才是模型复核真正用得上的完整证据。
+                "note": "证据：" + (samples[0] if samples else ""),
+                "source": RELATION_SOURCE_RULE,
+                "count": max(int(getattr(row, "count", 1) or 1), 1),
+                "samples": samples[:RELATION_SAMPLE_LIMIT],
+                # 章节证据原样透传：时间线按它画「这条关系出现在哪几章」。
+                "chapters": [
+                    {
+                        "file": str(chapter.get("file", "")),
+                        "line": max(int(chapter.get("line") or 1), 1),
+                        "count": max(int(chapter.get("count") or 1), 1),
+                        "samples": [
+                            str(text)
+                            for text in list(chapter.get("samples") or [])[:RELATION_CHAPTER_SAMPLE_LIMIT]
+                            if str(text).strip()
+                        ],
+                    }
+                    for chapter in list(getattr(row, "chapters", []) or [])[:RELATION_CHAPTER_LIMIT]
+                    if str(chapter.get("file", "")).strip() != ""
+                ],
+            })
+        cls().info(f"[CharacterScanner] 规则关系 {len(rows)} 条 / {len(grouped)} 个角色")
+        return dict(grouped)
+
+    @classmethod
+    def avatar_index(cls, project_root: str | Path | None) -> AvatarResolver.AvatarIndex | None:
+        """取头像索引（按 game 目录缓存）；工程不可读时返回 None。"""
+        if project_root is None:
+            return None
+        game_dir = cls._game_dir(project_root)
+        if game_dir is None:
+            return None
+        try:
+            return AvatarResolver.resolve(game_dir)
+        except Exception as exc:
+            cls().warning("[CharacterScanner] 头像索引建立失败，跳过", exc)
+            return None
+
+    @classmethod
+    def resolve_avatar(
+        cls,
+        index: AvatarResolver.AvatarIndex | None,
+        name: str,
+        aliases: Sequence[str] = (),
+    ) -> dict[str, Any] | None:
+        """按名字取头像；没有合适图片时返回 None，由前端画首字色块。
+
+        aliases 传该角色的 Ren'Py 变量名：美术文件常按变量名命名
+        （`Flower Fairy` 的图叫 `face_ffairy.webp`），变量名来自 Character 定义，
+        是确定的对应关系。
+        """
+        if index is None:
+            return None
+        try:
+            avatar = index.lookup(name, aliases)
+        except Exception as exc:
+            cls().warning(f"[CharacterScanner] 头像解析失败：{name}", exc)
+            return None
+        return avatar.as_dict() if avatar is not None else None
+
+    @staticmethod
+    def _game_dir(project_root: str | Path) -> Path | None:
+        """工程根目录或 game 目录都能接受，返回真实的 game 目录。"""
+        try:
+            root = Path(project_root)
+        except (TypeError, ValueError):
+            return None
+        game_dir = root if root.name.lower() == "game" else root / "game"
+        return game_dir if game_dir.is_dir() else None

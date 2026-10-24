@@ -19,6 +19,7 @@ from module.Config import Config
 from module.Localizer.Localizer import Localizer
 from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester
+from module.Engine import LiveActivity
 from module.Engine.RequestProgress import request_progress
 from module.File.FileManager import FileManager
 from module.Text.SkipRules import is_path_like, is_resource_name
@@ -31,6 +32,7 @@ from module.Workbench.WorkbenchData import (
     normalize_analysis_scope,
     normalize_character_card,
     normalize_character_cards,
+    normalize_relation_category,
     normalize_text,
     normalize_text_list,
     normalize_worldbook,
@@ -730,6 +732,21 @@ class WorkbenchAnalysisService(Base):
         label: str = "AI 分析",
     ) -> str:
         """发起一次 JSON 文本请求，并把思考片段/用量/耗时写进日志。"""
+        text, _input_tokens, _output_tokens = self.request_json_text_verbose(
+            config, platform, prompt, round_index = round_index, label = label,
+        )
+        return text
+
+    def request_json_text_verbose(
+        self,
+        config: Config,
+        platform: dict[str, Any],
+        prompt: str,
+        *,
+        round_index: int = 0,
+        label: str = "AI 分析",
+    ) -> tuple[str, int, int]:
+        """同 request_json_text，但额外返回 (文本, 输入 tokens, 输出 tokens)。"""
         request_platform = build_analysis_platform(
             platform,
             lambda message: self.info(f"[Workbench] {label} {message}"),
@@ -737,8 +754,11 @@ class WorkbenchAnalysisService(Base):
         requester = TaskRequester(config, request_platform, round_index)
         self.info(f"[Workbench] {label} 请求：prompt {len(prompt)} 字，首行 {prompt.splitlines()[0][:60]}")
         started_at = time.perf_counter()
-        with request_progress(self.info, f"[Workbench] {label}"):
-            skip, response_think, response_text, input_tokens, output_tokens = requester.request(
+        # 界面要能看到模型正在想什么：下面这段只要走流式，就会把增量写进这个缓冲。
+        LiveActivity.begin(f"{label} · prompt {len(prompt)} 字")
+        try:
+            with request_progress(self.info, f"[Workbench] {label}"):
+                skip, response_think, response_text, input_tokens, output_tokens = requester.request(
                 [
                     {
                         "role": "user",
@@ -747,6 +767,10 @@ class WorkbenchAnalysisService(Base):
                 ],
                 response_shape = "none",
             )
+        finally:
+            LiveActivity.finish()
+        # 思考内容只写日志的话界面上什么都看不到；挂到实例上，让调用方能把它带回前端。
+        self._last_think = str(response_think or "")
         self._log_model_exchange(
             label,
             response_think,
@@ -756,7 +780,7 @@ class WorkbenchAnalysisService(Base):
         )
         if skip or not isinstance(response_text, str) or response_text.strip() == "":
             raise AnalysisServiceError("AI 分析接口返回为空，请稍后重试。")
-        return response_text.strip()
+        return response_text.strip(), input_tokens, output_tokens
 
     def generate_worldbook_draft(
         self,
@@ -1192,3 +1216,290 @@ class WorkbenchAnalysisService(Base):
         if selected:
             return selected
         return CharacterScanner.select_evenly(list(originals.values()), self.CHARACTER_SAMPLE_LIMIT)
+
+    # -------------------------------------------------------- 关系 AI 复核
+    # 一次复核请求最多带多少条候选边；边太多会让单次请求超时/超 token。
+    RELATION_REVIEW_MAX_PAIRS = 60
+    # 角色清洗：一次请求最多带多少个候选名字。名字 + 两三条样本大概 60 token，
+    # 60 个一批既能让模型横向比较，又不至于让提示词长到稀释判断质量。
+    CHARACTER_CLEAN_BATCH = 60
+    CHARACTER_CLEAN_MAX = 400
+    CHARACTER_CLEAN_ROLES: tuple[str, ...] = ("main", "side", "walkon", "noise")
+    # 复核提示词里每条候选最多带几条证据原文。
+    RELATION_REVIEW_SAMPLES = 3
+
+    def build_relation_review_prompt(
+        self,
+        candidates: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+    ) -> str:
+        """构建关系复核提示词；只给有源码证据的候选，不让模型自由生成人物对。"""
+        world_text = normalize_worldbook(worldbook_draft)
+        blocks: list[str] = []
+        for index, row in enumerate(candidates, start = 1):
+            samples = [normalize_text(item) for item in row.get("samples", [])][: self.RELATION_REVIEW_SAMPLES]
+            count = int(row.get("count") or 0)
+            lines = [
+                f"{index}. {row.get('from', '')} → {row.get('to', '')}",
+                f"   称谓词：{row.get('word', '')}",
+                f"   规则判定：{row.get('relation', '')}（{row.get('category', '')}）",
+                f"   命中次数：{count if count > 0 else 1}",
+            ]
+            if samples:
+                lines.append("   源码证据：")
+                lines.extend(f"   - {sample}" for sample in samples)
+            else:
+                lines.append("   源码证据：暂无（命中次数不足以留样）")
+            blocks.append("\n".join(lines))
+
+        return "\n".join(
+            [
+                "你是视觉小说本地化策划助手。下面是按「称谓词 × 同场景角色」规则从源码挖出的人物关系候选，",
+                "每条都附有源码台词证据。请逐条复核：规则判定是否成立、关系词是否恰当。",
+                "请严格只输出 JSON 数组，不要输出 Markdown、解释、代码块。返回内容必须是可直接解析的 json。",
+                "数组元素必须且只能包含以下键：from, to, relation, category, keep, reason。",
+                "约束：",
+                "1. 只复核输入清单里的人物对，from/to 必须原样照抄输入值，不得新增、合并或改写角色名。",
+                "2. keep=true 表示规则判定成立（relation 可根据证据改写成更准确的中文关系词，category 取 family/romantic/friendly/hostile/work/other 之一）。",
+                "3. keep=false 表示规则误判（例如台词里的称谓只是比喻、称呼错了对象、或两个角色并非该关系），并在 reason 里用中文说明原因；被否决的人物对会留档为「已否决」，不再在关系图上画线，但角色本身不会被删除。",
+                "4. reason 用中文，一句话即可；不确定时写「证据不足，维持规则判定」。",
+                "5. 证据里看不出的设定不要编造；证据只证明「提到过」时不等于关系成立，需结合称谓变量同场出现这一点判断。",
+                "6. 「命中次数」是该人物对在源码里被同一称谓规则命中的次数，次数多说明证据更可靠，但不是关系成立的充分条件。",
+                "世界观摘要：",
+                f"- 项目名称：{world_text.get('project_name', '') or '未确定'}",
+                f"- 背景摘要：{world_text.get('setting_summary', '') or '未确定'}",
+                "候选关系：",
+                "\n".join(blocks) if blocks else "（无候选）",
+                "请按以下 json 数组示例输出：",
+                """[
+  {
+    "from": "",
+    "to": "",
+    "relation": "",
+    "category": "",
+    "keep": true,
+    "reason": ""
+  }
+]""",
+            ]
+        )
+
+    def build_character_clean_prompt(
+        self,
+        candidates: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+    ) -> str:
+        """构建角色清洗提示词。
+
+        扫描是机械的：每句台词的说话人都会被收进来，所以名单里必然混着
+        报幕员、音效、未解析的占位符、群戏标签。这一步只让模型做归类，
+        不允许它新增或改名——名字必须原样返回，否则服务端直接丢弃。
+
+        这一步只判断「谁是人」，不碰任何一条人物关系：关系是另一条 AI 复核线管的，
+        清洗顺手改关系会让用户改好的边莫名消失。
+        """
+        world_text = normalize_worldbook(worldbook_draft)
+        context = "、".join(
+            f"{label}：{normalize_text(world_text.get(key, ''))}"
+            for key, label in (
+                ("project_name", "作品"),
+                ("genre", "类型"),
+                ("setting_summary", "背景"),
+                ("tone_style", "基调"),
+            )
+            if normalize_text(world_text.get(key, ""))
+        )
+        blocks: list[str] = []
+        for index, row in enumerate(candidates, start = 1):
+            samples = [normalize_text(line)[:60] for line in (row.get("samples") or [])][:2]
+            sample_text = " / ".join(f"「{line}」" for line in samples if line)
+            variable = normalize_text(row.get("variable", ""))
+            parts = [f"{index}. {row.get('name', '')}"]
+            parts.append(f"台词 {int(row.get('lines') or 0)} 条")
+            if variable:
+                parts.append(f"变量名 {variable}")
+            if sample_text:
+                parts.append(f"样本 {sample_text}")
+            blocks.append(" | ".join(parts))
+        background = f"作品背景：{context}" if context else "（没有背景资料，只按名字和台词判断）"
+        roster = chr(10).join(blocks)
+        # 提示词里有大量花括号（JSON 示例、占位符字样），用普通字符串 + 替换拼接，
+        # 免得写成 f-string 时被当成表达式。
+        return """你在清洗一份从 Ren'Py 游戏源码自动扫描出来的角色名单。
+
+扫描是机械的：每一句台词的说话人都被收了进来，所以名单里混着不是角色的东西。
+你要给每个名字归类，只能从下面四类里选：
+
+- main：主角或贯穿全篇的核心角色（台词多、有专属立绘、剧情围绕他展开）
+- side：有名字、有独立人格的配角
+- walkon：有台词、但没有独立人格的人类路人（店员、士兵、守卫、路人甲这类）
+- noise：根本不是角色
+
+最重要的判断：这个说话人是不是一个「人」。
+下面这些一律归 noise，不管它台词有多少条：
+1. 动物与非人类：猫、狗、宠物、妖怪、使魔、机器人、AI、精灵、拟人吉祥物。
+   名字像 A Cat / Cat / Dog / Puppy / Tama 这种，或者样本里在喵、汪、叫的，都是 noise。
+2. 旁白与报幕：旁白、叙述者、Narrator、Announcer、报幕员、系统提示、屏幕文字、字幕。
+3. 音效与标记：Sfx、Sound、音效、音乐标记、??? 、*** 、空名字。
+4. 未解析的占位符：名字里带方括号、花括号、尖括号、$ 、% 的，是没渲染出来的插值。
+5. 群体标签：Everyone / A group / Two voices / 众人 / 群演 / 全班同学 这种集合。
+
+判据：
+1. 台词条数只是参考，主要看样本内容指不指向一个「具体的人」。
+2. walkon 只留给有人类身份、有台词、但没有独立人格的路人；不是人类就不是 walkon，是 noise。
+3. 同一个人的不同写法（台词里带格式标记的、缩写）看起来重复时，选一个当 main 或 side，其余的 note 写「疑似重复」。
+4. faction 只在你能从名字、样本、背景里明确看出所属群体时才写，拿不准就留空，不要猜。
+
+{background}
+
+只输出 JSON 数组，不要任何解释。每个元素四个键：
+{"name": "原样照抄名单里的名字", "role": "main|side|walkon|noise", "faction": "8 字以内的中文群体标签，如 王家/商会/教会/主角家，拿不准就留空", "note": "20 字以内，说清判断依据"}
+
+硬性要求：
+1. 不要新增名单里没有的名字，不要改写名字。
+2. 只做角色归类，不要输出、评论或修改任何人物关系。
+
+名单：
+{roster}""".replace("{background}", background).replace("{roster}", roster)
+
+    def clean_characters(
+        self,
+        config: Config,
+        candidates: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+        *,
+        batch_size: int | None = None,
+    ) -> dict[str, Any]:
+        """让模型给扫描出来的名字归类，返回 {name 小写: 判定}。
+
+        只做归类，不删除也不新增：服务端按「输入清单里出现过的名字」过滤，
+        模型编出来的名字直接丢掉。是否真的删掉角色由调用方决定。
+        """
+        if not candidates:
+            return {"judged": {}, "prompt_tokens": 0, "completion_tokens": 0}
+        platform = self.ensure_analysis_ready(config, engine_reserved = False)
+        size = max(1, int(batch_size or self.CHARACTER_CLEAN_BATCH))
+        selected = list(candidates)[: self.CHARACTER_CLEAN_MAX]
+        known = {normalize_text(row.get("name", "")).casefold(): row for row in selected}
+        judged: dict[str, dict[str, Any]] = {}
+        thinks: list[str] = []
+        prompt_tokens = 0
+        completion_tokens = 0
+        for start in range(0, len(selected), size):
+            batch = selected[start: start + size]
+            prompt = self.build_character_clean_prompt(batch, worldbook_draft)
+            raw, input_tokens, output_tokens = self.request_json_text_verbose(
+                config, platform, prompt, round_index = 0, label = "角色清洗",
+            )
+            prompt_tokens += int(input_tokens)
+            completion_tokens += int(output_tokens)
+            think = str(getattr(self, "_last_think", "") or "")
+            if think:
+                thinks.append(f"[第 {len(thinks) + 1} 批] " + think)
+            try:
+                parsed = repair.loads(raw)
+            except Exception as exc:
+                raise AnalysisServiceError(f"角色清洗解析失败：{exc}", raw_response = raw) from exc
+            if not isinstance(parsed, list):
+                raise AnalysisServiceError("角色清洗解析失败：模型返回的不是 JSON 数组。", raw_response = raw)
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                key = normalize_text(item.get("name", "")).casefold()
+                row = known.get(key)
+                if row is None:
+                    continue
+                role = normalize_text(item.get("role", "")).casefold()
+                if role not in self.CHARACTER_CLEAN_ROLES:
+                    role = "side"
+                judged[key] = {
+                    "name": row.get("name", ""),
+                    "role": role,
+                    "faction": normalize_text(item.get("faction", ""))[:16],
+                    "note": normalize_text(item.get("note", ""))[:40],
+                }
+        self.info(
+            f"[Workbench] 角色清洗完成：{len(judged)} / {len(selected)} 个名字有判定，"
+            f"tokens {prompt_tokens}/{completion_tokens}"
+        )
+        return {
+            "judged": judged,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            # 分批调用会攒出好几段思考，只把最后 6000 字带回去，够看又不至于撑爆响应。
+            "think": (chr(10) + chr(10)).join(thinks)[-6000:],
+        }
+
+    def analyze_relations(
+        self,
+        config: Config,
+        candidate_edges: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+        *,
+        max_pairs: int | None = None,
+    ) -> dict[str, Any]:
+        """用 AI 复核规则挖出的关系边。
+
+        candidate_edges 是 RelationMiner 输出整理后的候选（含 from/to/word/relation/
+        category/count/samples），只复核有证据的边；返回 applied/rejected 明细与 token 用量。
+        """
+        if not candidate_edges:
+            return {"applied": [], "rejected": [], "prompt_tokens": 0, "completion_tokens": 0}
+        platform = self.ensure_analysis_ready(config, engine_reserved = False)
+        limit = max(1, int(max_pairs or self.RELATION_REVIEW_MAX_PAIRS))
+        selected = list(candidate_edges)[:limit]
+        prompt = self.build_relation_review_prompt(selected, worldbook_draft)
+        raw, input_tokens, output_tokens = self.request_json_text_verbose(
+            config, platform, prompt, round_index = 0, label = "关系复核",
+        )
+        try:
+            parsed = repair.loads(raw)
+        except Exception as exc:
+            raise AnalysisServiceError(f"关系复核解析失败：{exc}", raw_response = raw) from exc
+        if not isinstance(parsed, list):
+            raise AnalysisServiceError("关系复核解析失败：模型返回的不是 JSON 数组。", raw_response = raw)
+
+        # 只认「输入清单里出现过的 from/to 对」；模型幻觉出来的人物对直接丢弃。
+        index_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in selected:
+            key = (normalize_text(row.get("from", "")).casefold(), normalize_text(row.get("to", "")).casefold())
+            index_by_pair.setdefault(key, row)
+
+        applied: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            key = (normalize_text(item.get("from", "")).casefold(), normalize_text(item.get("to", "")).casefold())
+            row = index_by_pair.get(key)
+            if row is None:
+                continue
+            # 模型偶尔会把同一个人物对吐两遍（一次 keep 一次否决），只认第一条。
+            if key in seen:
+                continue
+            seen.add(key)
+            entry = {
+                "from": row.get("from", ""),
+                "to": row.get("to", ""),
+                "word": row.get("word", ""),
+                "relation": normalize_text(item.get("relation", "")) or row.get("relation", ""),
+                "category": normalize_relation_category(item.get("category", "")),
+                # count/samples 原样带回写回端：候选里已经按人物对合并过全部规则边。
+                "count": int(row.get("count") or 0),
+                "samples": [normalize_text(text) for text in (row.get("samples") or [])],
+                "keep": bool(item.get("keep", False)),
+                "reason": normalize_text(item.get("reason", "")),
+            }
+            (applied if entry["keep"] else rejected).append(entry)
+        self.info(
+            f"[Workbench] 关系复核完成：{len(applied)} 条确认 / {len(rejected)} 条误判，"
+            f"tokens {input_tokens}/{output_tokens}"
+        )
+        return {
+            "applied": applied,
+            "rejected": rejected,
+            "prompt_tokens": int(input_tokens),
+            "completion_tokens": int(output_tokens),
+            "think": str(getattr(self, "_last_think", "") or "")[-4000:],
+        }

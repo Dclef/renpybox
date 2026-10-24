@@ -1,13 +1,16 @@
 /** 项目资料工作台：手动编辑保存在项目资产仓库，提示词预览复用真实构造器。 */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dropdown, Form, Input, Progress, Select, Spin, Tabs, Tag } from 'antd';
 
-import { cancelJob, request } from '../api';
+import { cancelJob, getStoryBlueprintReadiness, request } from '../api';
 import { useT, type TextKey } from '../i18n';
 import type { PageKey } from '../nav';
-import type { JobSnapshot } from '../types';
+import type { JobSnapshot, StoryBlueprintReadiness } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, Empty, PageHeader, SettingsGroup, Switch } from '../ui';
+import { RelationGraphTab } from './workbench/RelationGraphTab';
+import { isLikelyCharacter } from './workbench/relationGraph';
+import type { CharacterAvatar, CharacterRelation } from './workbench/relationGraph';
 
 interface CharacterCard {
   id: string;
@@ -23,6 +26,11 @@ interface CharacterCard {
   sample_lines: string[];
   enabled: boolean;
   is_primary: boolean;
+  // 以下四项由扫描/模型同步，老载荷可能整块缺失（后端无头像时给 null），图谱页自己会兜底。
+  faction?: string | null;
+  relations?: CharacterRelation[] | null;
+  co_occurrence?: Record<string, number> | null;
+  avatar?: CharacterAvatar | null;
 }
 interface EditableAssets {
   worldbook: Record<string, string>;
@@ -35,6 +43,34 @@ interface WorkbenchSnapshot extends EditableAssets {
   revision: number;
   worldbook_draft: Record<string, string>;
   character_drafts: CharacterCard[];
+}
+/** AI 复核关系的返回：写回后的新快照 + 采纳/否决条数 + 这次花掉的 token。 */
+interface RelationReviewResult {
+  ok: boolean;
+  applied: number;
+  rejected: number;
+  think?: string;
+  usage: { prompt_tokens: number; completion_tokens: number };
+  snapshot: WorkbenchSnapshot;
+}
+/** AI 清洗角色的返回：判定数 / 丢掉几个 / 被补上阵营标记者，以及新快照。 */
+interface CharacterCleanResult {
+  ok: boolean;
+  judged: number;
+  dropped: number;
+  enriched: number;
+  think?: string;
+  usage: { prompt_tokens: number; completion_tokens: number };
+  snapshot: WorkbenchSnapshot;
+}
+/** 模型请求的实时进度（后端 /api/workbench/activity）。 */
+interface AiActivity {
+  active: boolean;
+  label: string;
+  think: string;
+  content: string;
+  elapsed: number;
+  idle: number;
 }
 interface PromptPreview {
   matched_names: string[];
@@ -63,10 +99,11 @@ function analysisRunning(job: AnalysisJob | null): boolean {
   return Boolean(job && (job.status === 'pending' || job.status === 'running' || analysisResult(job)?.worker_active));
 }
 
-type TabKey = 'overview' | 'worldbook' | 'characters' | 'preview';
+type TabKey = 'overview' | 'worldbook' | 'characters' | 'preview' | 'graph';
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'overview', label: '概览' }, { key: 'worldbook', label: '世界观' },
   { key: 'characters', label: '角色卡' }, { key: 'preview', label: '提示词预览' },
+  { key: 'graph', label: '关系图谱' },
 ];
 const WORLD_FIELDS = [
   ['project_name', '项目名称'], ['genre', '作品类型'], ['setting_summary', '背景摘要'],
@@ -105,7 +142,11 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | 'remove-all' | null>(null);
+  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | 'remove-all' | 'relations' | 'clean' | null>(null);
+  /** 最近一次 AI 调用的思考内容：模型返回里带着，展示出来方便核对结论怎么来的。 */
+  const [aiThink, setAiThink] = useState('');
+  /** 正在跑的模型请求的实时输出，等待期间每秒刷一次。 */
+  const [activity, setActivity] = useState<AiActivity | null>(null);
   const [snapshotProjectKey, setSnapshotProjectKey] = useState('');
   const [analysisAction, setAnalysisAction] = useState<Exclude<AnalysisAction, 'scan'>>('all');
   const [analysisScope, setAnalysisScope] = useState<AnalysisScope>('current');
@@ -121,6 +162,8 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   const engineStatusRef = useRef(state.translation.engine_status);
   const busyRef = useRef(false);
   const [sample, setSample] = useState('');
+  /** 项目体检：解包 → 绑工程 → 有没有 .rpy，决定关系图谱给哪种引导。 */
+  const [readiness, setReadiness] = useState<StoryBlueprintReadiness | null>(null);
   const [preview, setPreview] = useState<PromptPreview | null>(null);
   const sequence = useRef(0);
   const dirtyRef = useRef(false);
@@ -148,6 +191,35 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
       .join(' ').toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) ?? [];
   const selected = draft?.characters.find((card) => card.id === selectedId);
   const worldCount = draft ? Object.values(draft.worldbook).filter((text) => text.trim()).length : 0;
+  // 图谱要能直接看扫描结果：扫描出来的角色先进「待审核草稿」，得先去角色卡页点「应用草稿」
+  // 才有正式资料。但那一步不好撤回，而看图正是审核前最需要做的事，所以这里把草稿也并进来。
+  // 同 id 以正式资料为准；正式资料里没有的草稿会在图谱里以「草稿」标注。
+  // 实时面板优先显示「正在跑的那次」，跑完再用结果里带回来的完整思考。
+  const liveRunning = Boolean(activity?.active);
+  const liveThink = activity?.think ?? '';
+  const liveContent = activity?.content ?? '';
+  const liveElapsed = activity?.elapsed ?? 0;
+  const liveIdle = activity?.idle ?? 0;
+  // 清洗的对象是扫描产物，也就是「待审核草稿」，不是用户已经确认过的正式资料。
+  const draftPendingCount = (snapshot?.character_drafts ?? []).filter((card) => isLikelyCharacter(card)).length;
+  // AI 复核只处理「有源码证据的规则边」：同一对人只算一次，和 backend 的去重口径一致。
+  const ruleEdgePairs = useMemo(() => {
+    const seen = new Set<string>();
+    for (const card of draft?.characters ?? []) {
+      for (const relation of card.relations ?? []) {
+        if (String(relation.source ?? '').toLowerCase() !== 'rule') continue;
+        seen.add(`${String(card.name).toLocaleLowerCase()}->${String(relation.target).toLocaleLowerCase()}`);
+      }
+    }
+    return seen.size;
+  }, [draft?.characters]);
+  const graphCharacters = useMemo(() => {
+    const saved = draft?.characters ?? [];
+    const known = new Set(saved.map((card) => card.id));
+    const pending = (snapshot?.character_drafts ?? [])
+      .filter((card) => card.id && !known.has(card.id) && isLikelyCharacter(card));
+    return [...saved, ...pending];
+  }, [draft?.characters, snapshot?.character_drafts]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
@@ -203,6 +275,20 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
     return () => { sequence.current += 1; analysisSequence.current += 1; };
   }, [reload, projectKey]);
 
+  // 关系图谱的引导要按「卡在哪一步」说话，所以换项目就重新体检一次。
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const next = await getStoryBlueprintReadiness();
+        if (alive) setReadiness(next);
+      } catch {
+        if (alive) setReadiness(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [projectKey, state.project]);
+
   useEffect(() => {
     if (!snapshotProjectKey || snapshotProjectKey !== projectKey || state.link !== 'open') return;
     let alive = true;
@@ -239,6 +325,9 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             setError(t('workbench_external_update'));
           }
           refreshedJob.current = job.id;
+          // 扫完之后体检信息可能变了（比如刚解包过、或换了目录），顺手刷一次，
+          // 免得关系图谱还停在上一次的引导上。
+          void getStoryBlueprintReadiness().then(setReadiness).catch(() => undefined);
         }
       } catch (failure) {
         if (valid()) {
@@ -341,6 +430,74 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
       if (current === sequence.current && key === projectRef.current) {
         adopt(next);
         state.pushToast('success', '草稿已应用到正式项目资料');
+      }
+    } catch (failure) {
+      if (current === sequence.current && key === projectRef.current) setError(errorText(failure));
+    } finally { if (current === sequence.current && key === projectRef.current) setBusy(false); }
+  }
+
+  useEffect(() => {
+    if (!busy) { setActivity(null); return undefined; }
+    let stopped = false;
+    const tick = () => {
+      // 只读快照，抢不到也不要打断主流程。
+      request<AiActivity>('/api/workbench/activity')
+        .then((snap) => { if (!stopped) setActivity(snap); })
+        .catch(() => { /* 请求失败时保持上一次内容 */ });
+    };
+    tick();
+    const timer = window.setInterval(tick, 1_200);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [busy]);
+
+  async function cleanCharacters() {
+    setConfirm(null);
+    if (!snapshot || mutationBlocked || dirty) return;
+    const current = ++sequence.current;
+    const key = projectRef.current;
+    setBusy(true);
+    setError('');
+    try {
+      // 清洗只动「待审核草稿」，正式角色资料不碰：扫描是机械的，脏名字都在草稿里。
+      const result = await request<CharacterCleanResult>('/api/workbench/characters/clean', {
+        method: 'POST',
+        body: JSON.stringify({ storage_key: snapshot.storage_key, revision: snapshot.revision }),
+      });
+      if (current === sequence.current && key === projectRef.current) {
+        adopt(result.snapshot);
+        setAiThink(result.think ?? '');
+        const usage = result.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+        state.pushToast('success', `角色清洗完成：判定 ${result.judged} 个，移除 ${result.dropped} 个非角色，补充资料 ${result.enriched} 个（${usage.prompt_tokens + usage.completion_tokens} tokens）`);
+      }
+    } catch (failure) {
+      if (current === sequence.current && key === projectRef.current) setError(errorText(failure));
+    } finally { if (current === sequence.current && key === projectRef.current) setBusy(false); }
+  }
+
+  async function reviewRelations() {
+    setConfirm(null);
+    if (!snapshot || mutationBlocked || dirty) return;
+    const current = ++sequence.current;
+    const key = projectRef.current;
+    setBusy(true);
+    setError('');
+    try {
+      // 后端只复核有证据的规则边，模型只能确认/改写/否决，不能自己新增人物对。
+      // 结果直接写回角色卡，所以返回的是新快照，本地草稿同步重建。
+      const result = await request<RelationReviewResult>('/api/workbench/relations/analyze', {
+        method: 'POST',
+        body: JSON.stringify({
+          storage_key: snapshot.storage_key,
+          revision: snapshot.revision,
+          ref: '规则证据',
+          max_pairs: 0,
+        }),
+      });
+      if (current === sequence.current && key === projectRef.current) {
+        adopt(result.snapshot);
+        setAiThink(result.think ?? '');
+        const usage = result.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+        state.pushToast('success', `AI 复核完成：采纳 ${result.applied} 条、否决 ${result.rejected} 条（被否决的边保留在图谱里，可以恢复成人工关系；${usage.prompt_tokens + usage.completion_tokens} tokens）`);
       }
     } catch (failure) {
       if (current === sequence.current && key === projectRef.current) setError(errorText(failure));
@@ -663,6 +820,39 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
               </section>
             ) : <Empty>选择一位角色，或新增角色资料。</Empty>}
           </div>
+        ) : tab === 'graph' ? (
+          <>
+            {liveRunning || aiThink ? (
+              <details className="rb-ai-think" open={liveRunning}>
+                <summary>
+                  {liveRunning
+                    ? `模型正在思考 · 已 ${liveElapsed} 秒 · ${liveThink.length} 字${liveIdle > 6 ? ' · 正在等下一段' : ''}`
+                    : `AI 思考过程（${aiThink.length} 字，点开看它怎么判断的）`}
+                </summary>
+                <pre>{liveRunning ? (liveThink || liveContent || '还没有输出，模型可能还在排队或没有开思考档位…') : aiThink}</pre>
+              </details>
+            ) : null}
+          <RelationGraphTab
+            characters={graphCharacters}
+            readiness={readiness}
+            canScan={canAnalyze}
+            onScan={() => void startAnalysis('scan')}
+            onNavigate={onNavigate}
+            disabled={busy || loading || analysisActive}
+            reviewing={busy}
+            reviewable={ruleEdgePairs}
+            onReview={() => setConfirm('relations')}
+            cleanable={draftPendingCount}
+            onClean={() => setConfirm('clean')}
+            onChange={(characters) => {
+              // 图谱里也能看到还没应用的角色草稿，但草稿不属于这份可编辑资料：
+              // 只把正式角色卡写回去，避免在图谱上随手一改就把草稿悄悄转正。
+              const saved = new Set(draft.characters.map((card) => card.id));
+              setDraft({ ...draft, characters: characters.filter((card) => saved.has(card.id)) });
+              setPreview(null);
+            }}
+          />
+          </>
         ) : (
           <>
             <SettingsGroup title="试一段原文，检查上下文" description="检查已保存资料的角色命中和背景片段；预览不会调用 AI，也不会产生费用。">
@@ -700,6 +890,24 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
       {confirm === 'remove-all' ? <Dialog title={t('workbench_remove_all_characters_title')} confirmText={t('workbench_remove_all_characters')} onCancel={() => setConfirm(null)} onConfirm={() => { if (!draft) return; setDraft({ ...draft, characters: [] }); setSelectedId(''); setPreview(null); setConfirm(null); }}>{t('workbench_remove_all_characters_body')}</Dialog> : null}
       {confirm === 'delete' && selected ? <Dialog title="删除角色资料" confirmText="删除" onCancel={() => setConfirm(null)} onConfirm={() => { if (!draft) return; const cards = draft.characters.filter((card) => card.id !== selected.id); setDraft({ ...draft, characters: cards }); setSelectedId(cards[0]?.id ?? ''); setConfirm(null); setPreview(null); }}>删除「{selected.name}」？点击保存后，删除才会写入当前项目。</Dialog> : null}
       {confirm === 'reload' ? <Dialog title="重新加载项目资料" confirmText="丢弃并重新加载" onCancel={() => setConfirm(null)} onConfirm={() => { setConfirm(null); void reload(); }}>当前未保存的修改将被丢弃。</Dialog> : null}
+      {confirm === 'clean' ? <Dialog title="用 AI 清洗扫描出来的角色" confirmText="开始清洗" cancelText={t('workbench_cancel')} onCancel={() => setConfirm(null)} onConfirm={() => void cleanCharacters()}>
+        <p>扫描是机械的：每句台词的说话人都会被收进来，所以名单里混着 A Cat 这样的动物、报幕员、音效、没解析出来的占位符和群戏标签。这一步让模型判断「谁是人」。</p>
+        <dl className="rb-workbench-draft-fields">
+          <div><dt>待清洗</dt><dd>{`${draftPendingCount} 个草稿角色`}</dd></div>
+          <div><dt>预计用量</dt><dd>{`约 ${(draftPendingCount * 0.09).toFixed(1)} 千 token`}</dd></div>
+          <div><dt>写回位置</dt><dd>只改「待审核草稿」，正式资料不动</dd></div>
+        </dl>
+        <p>判为「不是人」的会从草稿里移除；人类角色会补上阵营标签、标出主角、写一句备注。只升不降：已经标成主角的不会被改回去。这一步不会改动任何一条关系。</p>
+      </Dialog> : null}
+      {confirm === 'relations' ? <Dialog title="用 AI 复核规则挖出的关系" confirmText="开始复核" cancelText={t('workbench_cancel')} onCancel={() => setConfirm(null)} onConfirm={() => void reviewRelations()}>
+        <p>把每条边连同证据台词一起发给模型，由它判断这条关系对不对、关系词怎么写、归入哪个类别。模型不能新增人物对，也不会删除任何角色。</p>
+        <dl className="rb-workbench-draft-fields">
+          <div><dt>待复核</dt><dd>{`${ruleEdgePairs} 对人`}</dd></div>
+          <div><dt>预计用量</dt><dd>{`约 ${(ruleEdgePairs * 0.16).toFixed(1)} 千 token`}</dd></div>
+          <div><dt>写回规则</dt><dd>人工改过的边不会被覆盖</dd></div>
+        </dl>
+        <p>模型判为不对的边不会消失：它们会标记成「已否决」，图谱默认不画，可以在图谱页的「已否决」里逐条查看并恢复成人工关系。</p>
+      </Dialog> : null}
       {confirm === 'apply' ? <Dialog title="应用已有草稿" confirmText="应用草稿" onCancel={() => setConfirm(null)} onConfirm={() => void applyDrafts()}>草稿将合并到正式世界观和角色资料中，并启用对应上下文。正式资料中的同名字段可能更新。</Dialog> : null}
     </div>
   );

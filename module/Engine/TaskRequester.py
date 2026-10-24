@@ -15,6 +15,7 @@ from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
 from module.ProxySettings import create_httpx_client, default_http_timeout, proxies_for_url, resolve_proxy_url
+from module.Engine import LiveActivity
 
 
 class ThinkingLevel(StrEnum):
@@ -961,10 +962,12 @@ class TaskRequester(Base):
                 reasoning = getattr(delta, 'reasoning_content', None)
                 if isinstance(reasoning, str) and reasoning:
                     response_think_parts.append(reasoning)
+                    LiveActivity.append('think', reasoning)
 
                 content = getattr(delta, 'content', None)
                 if isinstance(content, str) and content:
                     response_result_parts.append(content)
+                    LiveActivity.append('content', content)
                     if detector.feed(content):
                         degraded = True
                         self.warning("[STREAM] 检测到输出退化，提前中断")
@@ -1137,11 +1140,13 @@ class TaskRequester(Base):
                 reasoning = getattr(delta, 'reasoning_content', None)
                 if isinstance(reasoning, str) and reasoning:
                     response_think_parts.append(reasoning)
+                    LiveActivity.append('think', reasoning)
 
                 # content（正文内容）
                 content = getattr(delta, 'content', None)
                 if isinstance(content, str) and content:
                     response_result_parts.append(content)
+                    LiveActivity.append('content', content)
                     # 退化检测
                     if detector.feed(content):
                         degraded = True

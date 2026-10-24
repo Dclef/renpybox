@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from api.events import EventBridge
 from api.hub import ConnectionHub
 from api.jobs import JobManager
-from api.routes import agent, android_build, archive, asset_suite, error_repair, extract_json, extract_to_tl, font_tools, formatter, game_mod, glossary, hook_translate, html_import, jobs, language_tools, lexicon, onekey, platforms, proofreading, project, rpy_extraction, settings, system, translation, translation_reuse, update, workbench, ws
+from api.routes import agent, android_build, archive, asset_suite, error_repair, extract_json, extract_to_tl, font_tools, formatter, game_mod, glossary, hook_translate, html_import, jobs, language_tools, lexicon, onekey, platforms, proofreading, project, rpy_extraction, settings, story_blueprint, system, translation, translation_reuse, update, workbench, ws
 from api.routes.ws import drain_loop
 
 
@@ -108,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(platforms.router)
     app.include_router(workbench.router)
     app.include_router(proofreading.router)
+    app.include_router(story_blueprint.router)
     app.include_router(project.router)
     app.include_router(archive.router)
     app.include_router(asset_suite.router)
