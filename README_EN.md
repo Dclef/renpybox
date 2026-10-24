@@ -57,6 +57,10 @@
 - High-fidelity formatting: AST completion, missing-text scanning, and `miss_patch` support generate `replace_text*.rpy` patches while preserving existing translations.
 - Ren'Py toolbox: RPY formatting, indentation and quote checks and repairs, trailing-space cleanup, batch font replacement, RPA unpacking and packing, RPYC decompilation, language entry and default-language settings, and Android packaging through the Android wrapper workflow.
 - Progress visibility: the Translation Task page shows tokens, progress, and task status.
+- Story blueprint: lays out every story segment by chapter with its file and line number, line count, and translation progress, draws where each choice / jump goes and where it comes from, and shows the scene image for the moment. Use it to learn the structure before translating and to find untranslated segments while translating.
+- Character relationship graph: mines relationships from `.rpy` files using the honorific words in the source text, so it does not require translating or generating a worldbook first; when there is no data it tells you the next step based on a project check (no bound project, not unpacked, or not scanned yet).
+
+![Story blueprint: story segments and jump targets by chapter](./docs/screenshots/desktop-story-blueprint-zh.png)
 
 ## Toolbox Modules 🧰
 
@@ -105,6 +109,21 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 5. If needed, use **Apply translations**, install fonts, add a language switch, or set the default language.
 
 ## Recent Updates 📅
+
+- 2026-10-25 v0.9.7:
+  - Added the story blueprint: lays out every story segment by chapter with its file and line number, line count, and translation progress, and draws where each choice / jump goes and where it comes from.
+  - The blueprint shows the scene image for the moment, restored from `scene` statements per chapter.
+  - Added the character relationship graph: mines relationships from `.rpy` files using the rule "honorific word × a character variable in the same scene", so evidence is verifiable and no translation or worldbook is needed first.
+  - The graph shows a timeline of when each relationship appears by chapter, so the same pair can be compared across chapters.
+
+- 2026-10-23 v0.9.6:
+  - Added single-file `.rbox` project binding: choose binding on import and translation progress is stored in that one file; the title bar always shows the file name, and the project page shows entry count / size / last updated and lets you unbind.
+  - After binding, error repair, HTML import, direct `tl/*.rpy` translation, game mod, and similar pages auto-fill the project directory; stopping and restarting source translation resumes instead of rescanning and duplicating backups.
+  - Fixed creating an empty cache when the bound project file was moved or deleted; removed cloud-sync directory reminders.
+
+- 2026-10-22 v0.9.5:
+  - Parallel proofreading now stages changes and saves once; script repair adds Ren'Py Lint re-checks and allows longer waits on large projects.
+  - `.rbox` files can be opened with a double-click and show an import confirmation; the installer registers the file association and icon.
 
 - 2026-10-20 v0.9.4:
   - Added `.rbox` snapshots and a guided migration path for older SQLite / JSON caches, with compatibility notes, import previews, and backups.
