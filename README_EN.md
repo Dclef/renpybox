@@ -57,6 +57,10 @@
 - High-fidelity formatting: AST completion, missing-text scanning, and `miss_patch` support generate `replace_text*.rpy` patches while preserving existing translations.
 - Ren'Py toolbox: RPY formatting, indentation and quote checks and repairs, trailing-space cleanup, batch font replacement, RPA unpacking and packing, RPYC decompilation, language entry and default-language settings, and Android packaging through the Android wrapper workflow.
 - Progress visibility: the Translation Task page shows tokens, progress, and task status.
+- Story blueprint: lays out every story segment by chapter with its file and line number, line count, and translation progress, draws where each choice / jump goes and where it comes from, and shows the scene image for the moment. Use it to learn the structure before translating and to find untranslated segments while translating.
+- Character relationship graph: mines relationships from `.rpy` files using the honorific words in the source text, so it does not require translating or generating a worldbook first; when there is no data it tells you the next step based on a project check (no bound project, not unpacked, or not scanned yet).
+
+![Story blueprint: story segments and jump targets by chapter](./docs/screenshots/desktop-story-blueprint-zh.png)
 
 ## Toolbox Modules 🧰
 
