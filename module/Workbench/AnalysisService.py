@@ -1227,6 +1227,11 @@ class WorkbenchAnalysisService(Base):
     CHARACTER_CLEAN_ROLES: tuple[str, ...] = ("main", "side", "walkon", "noise")
     # 复核提示词里每条候选最多带几条证据原文。
     RELATION_REVIEW_SAMPLES = 3
+    # 关系推断：一次请求最多带多少对「只有同场共现、没有规则证据」的角色。
+    # 同场次数本身就是现成证据，候选多了反而稀释判断，12 对足够覆盖主要人物。
+    RELATION_INFER_MAX_PAIRS = 12
+    # 推断提示词里每个角色最多带几条台词样例，用来判断说话风格与称呼口吻。
+    RELATION_INFER_SAMPLES = 2
 
     def build_relation_review_prompt(
         self,
@@ -1269,6 +1274,75 @@ class WorkbenchAnalysisService(Base):
                 f"- 项目名称：{world_text.get('project_name', '') or '未确定'}",
                 f"- 背景摘要：{world_text.get('setting_summary', '') or '未确定'}",
                 "候选关系：",
+                "\n".join(blocks) if blocks else "（无候选）",
+                "请按以下 json 数组示例输出：",
+                """[
+  {
+    "from": "",
+    "to": "",
+    "relation": "",
+    "category": "",
+    "keep": true,
+    "reason": ""
+  }
+]""",
+            ]
+        )
+
+    def build_relation_infer_prompt(
+        self,
+        candidates: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+    ) -> str:
+        """构建关系推断提示词：只给「同场共现」与双方人设，不让模型凭空造人物对。
+
+        规则复核问的是「这条规则判定对不对」；推断问的是「这两个人到底是什么关系」。
+        后者只有同场次数当证据，所以必须把双方的身份/性格/说话风格/关系备注/台词样例
+        一并给模型，否则它只能按名字瞎猜。
+        """
+        world_text = normalize_worldbook(worldbook_draft)
+        blocks: list[str] = []
+        for index, row in enumerate(candidates, start = 1):
+            count = int(row.get("count") or 0)
+            lines = [f"{index}. {row.get('from', '')} ↔ {row.get('to', '')}（同场 {count} 次）"]
+            for label, card in (("角色 A", row.get("from_card") or {}), ("角色 B", row.get("to_card") or {})):
+                lines.append(
+                    f"   {label}：{normalize_text(card.get('name', ''))}（{int(card.get('line_count') or 0)} 句台词）"
+                )
+                for key, caption in (
+                    ("identity", "身份"),
+                    ("personality", "性格"),
+                    ("speech_style", "说话风格"),
+                    ("relationship_notes", "关系备注"),
+                ):
+                    value = normalize_text(card.get(key, ""))
+                    if value:
+                        lines.append(f"     {caption}：{value}")
+                samples = [
+                    normalize_text(item) for item in (card.get("sample_lines") or [])
+                ][: self.RELATION_INFER_SAMPLES]
+                if samples:
+                    lines.append("     台词样例：")
+                    lines.extend(f"       - {sample}" for sample in samples)
+            blocks.append("\n".join(lines))
+
+        return "\n".join(
+            [
+                "你是视觉小说本地化策划助手。下面是同一场景里反复出现的角色对（同场共现统计），",
+                "但源码里没有「称谓词 × 角色变量」的规则证据，需要你根据双方资料推断他们最可能的关系。",
+                "请严格只输出 JSON 数组，不要输出 Markdown、解释、代码块。返回内容必须是可直接解析的 json。",
+                "数组元素必须且只能包含以下键：from, to, relation, category, keep, reason。",
+                "约束：",
+                "1. 只判断输入清单里的人物对，from/to 必须原样照抄输入值，不得新增、合并或改写角色名。",
+                "2. keep=true 表示资料足够支撑一个关系判断；relation 用简洁的中文关系词（如：恋人、姐妹、师生、同事、邻居）。",
+                "3. category 取 family / romantic / friendly / hostile / work / other 之一。",
+                "4. keep=false 表示资料里看不出关系（只是同场、没有说话往来），不要硬猜；reason 写清为什么证据不足。",
+                "5. reason 用中文一句话，必须同时提到「同场次数」和资料里的具体线索（身份/性格/关系备注/台词样例）。",
+                "6. 同场次数多只代表两人经常一起出现，不等于亲密关系；资料里没有的关系不要编造。",
+                "世界观摘要：",
+                f"- 项目名称：{world_text.get('project_name', '') or '未确定'}",
+                f"- 背景摘要：{world_text.get('setting_summary', '') or '未确定'}",
+                "同场共现的角色对：",
                 "\n".join(blocks) if blocks else "（无候选）",
                 "请按以下 json 数组示例输出：",
                 """[
@@ -1494,6 +1568,78 @@ class WorkbenchAnalysisService(Base):
             (applied if entry["keep"] else rejected).append(entry)
         self.info(
             f"[Workbench] 关系复核完成：{len(applied)} 条确认 / {len(rejected)} 条误判，"
+            f"tokens {input_tokens}/{output_tokens}"
+        )
+        return {
+            "applied": applied,
+            "rejected": rejected,
+            "prompt_tokens": int(input_tokens),
+            "completion_tokens": int(output_tokens),
+            "think": str(getattr(self, "_last_think", "") or "")[-4000:],
+        }
+
+    def infer_relations(
+        self,
+        config: Config,
+        candidate_pairs: Sequence[dict[str, Any]],
+        worldbook_draft: Any,
+        *,
+        max_pairs: int | None = None,
+    ) -> dict[str, Any]:
+        """按同场共现 + 双方人设让模型推断关系。
+
+        规则关系靠「称谓词 × 角色变量名」，变量名是 s/p 这种短名的工程一条都挖不到；
+        但每张角色卡都记着「和谁同场过多少次」，这是现成的弱证据。这一步把它交给模型，
+        让它结合身份/性格/关系备注判断「这两个人是什么关系」。keep=false 表示资料不足，
+        只计入 rejected 计数、不写回任何卡（没有规则边可留档）。
+        """
+        if not candidate_pairs:
+            return {"applied": [], "rejected": [], "prompt_tokens": 0, "completion_tokens": 0}
+        platform = self.ensure_analysis_ready(config, engine_reserved = False)
+        limit = max(1, int(max_pairs or self.RELATION_INFER_MAX_PAIRS))
+        selected = list(candidate_pairs)[:limit]
+        prompt = self.build_relation_infer_prompt(selected, worldbook_draft)
+        raw, input_tokens, output_tokens = self.request_json_text_verbose(
+            config, platform, prompt, round_index = 0, label = "关系推断",
+        )
+        try:
+            parsed = repair.loads(raw)
+        except Exception as exc:
+            raise AnalysisServiceError(f"关系推断解析失败：{exc}", raw_response = raw) from exc
+        if not isinstance(parsed, list):
+            raise AnalysisServiceError("关系推断解析失败：模型返回的不是 JSON 数组。", raw_response = raw)
+
+        # 只认输入清单里的人物对；模型幻觉出来的名字直接丢弃。
+        index_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in selected:
+            key = (normalize_text(row.get("from", "")).casefold(), normalize_text(row.get("to", "")).casefold())
+            index_by_pair.setdefault(key, row)
+
+        applied: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            key = (normalize_text(item.get("from", "")).casefold(), normalize_text(item.get("to", "")).casefold())
+            row = index_by_pair.get(key)
+            if row is None or key in seen:
+                continue
+            seen.add(key)
+            relation = normalize_text(item.get("relation", ""))
+            entry = {
+                "from": row.get("from", ""),
+                "to": row.get("to", ""),
+                # 同场次数直接当证据强度写进 count，前端按它排序/显示。
+                "count": max(int(row.get("count") or 0), 1),
+                "relation": relation,
+                "category": normalize_relation_category(item.get("category", "")),
+                "keep": bool(item.get("keep", False)) and relation != "",
+                "reason": normalize_text(item.get("reason", "")),
+            }
+            (applied if entry["keep"] else rejected).append(entry)
+        self.info(
+            f"[Workbench] 关系推断完成：{len(applied)} 对采纳 / {len(rejected)} 对证据不足，"
             f"tokens {input_tokens}/{output_tokens}"
         )
         return {

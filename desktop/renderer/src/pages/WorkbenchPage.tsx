@@ -10,6 +10,7 @@ import type { AppState } from '../useAppState';
 import { Banner, Dialog, Empty, PageHeader, SettingsGroup, Switch } from '../ui';
 import { RelationGraphTab } from './workbench/RelationGraphTab';
 import { isLikelyCharacter } from './workbench/relationGraph';
+import { countInferablePairs, resolveDraftNotice } from './workbench/workbenchDrafts.mjs';
 import type { CharacterAvatar, CharacterRelation } from './workbench/relationGraph';
 
 interface CharacterCard {
@@ -44,9 +45,10 @@ interface WorkbenchSnapshot extends EditableAssets {
   worldbook_draft: Record<string, string>;
   character_drafts: CharacterCard[];
 }
-/** AI 复核关系的返回：写回后的新快照 + 采纳/否决条数 + 这次花掉的 token。 */
+/** AI 复核 / 推断关系的返回：写回后的新快照 + 采纳/否决条数 + 这次花掉的 token。 */
 interface RelationReviewResult {
   ok: boolean;
+  mode?: 'review' | 'infer';
   applied: number;
   rejected: number;
   think?: string;
@@ -142,7 +144,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | 'remove-all' | 'relations' | 'clean' | null>(null);
+  const [confirm, setConfirm] = useState<'delete' | 'reload' | 'apply' | 'analysis' | 'remove-all' | 'relations' | 'clean' | 'infer' | null>(null);
   /** 最近一次 AI 调用的思考内容：模型返回里带着，展示出来方便核对结论怎么来的。 */
   const [aiThink, setAiThink] = useState('');
   /** 正在跑的模型请求的实时输出，等待期间每秒刷一次。 */
@@ -220,6 +222,9 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
       .filter((card) => card.id && !known.has(card.id) && isLikelyCharacter(card));
     return [...saved, ...pending];
   }, [draft?.characters, snapshot?.character_drafts]);
+  // 「AI 推断关系」的候选：同场共现、且没被人工/否决边挡路的角色对（口径与后端一致）。
+  // 规则边一条都没有时，这是唯一能在图谱里看到关系的路，所以按钮必须跟着这个数走。
+  const inferablePairs = useMemo(() => countInferablePairs(graphCharacters), [graphCharacters]);
 
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
@@ -504,6 +509,36 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
     } finally { if (current === sequence.current && key === projectRef.current) setBusy(false); }
   }
 
+  async function inferRelations() {
+    setConfirm(null);
+    if (!snapshot || mutationBlocked || dirty) return;
+    const current = ++sequence.current;
+    const key = projectRef.current;
+    setBusy(true);
+    setError('');
+    try {
+      // 规则边一条都挖不到时，用「同场共现 + 双方人设」让模型推断关系。
+      // 后端只写 source=ai 的边：人工/否决边永不覆盖，所以这个动作可以放心重跑。
+      const result = await request<RelationReviewResult>('/api/workbench/relations/analyze', {
+        method: 'POST',
+        body: JSON.stringify({
+          storage_key: snapshot.storage_key,
+          revision: snapshot.revision,
+          mode: 'infer',
+          max_pairs: 0,
+        }),
+      });
+      if (current === sequence.current && key === projectRef.current) {
+        adopt(result.snapshot);
+        setAiThink(result.think ?? '');
+        const usage = result.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+        state.pushToast('success', `AI 推断完成：写入 ${result.applied} 对关系、${result.rejected} 对证据不足没写（同场次数已记进证据强度；${usage.prompt_tokens + usage.completion_tokens} tokens）`);
+      }
+    } catch (failure) {
+      if (current === sequence.current && key === projectRef.current) setError(errorText(failure));
+    } finally { if (current === sequence.current && key === projectRef.current) setBusy(false); }
+  }
+
   async function previewPrompt() {
     if (!snapshot || dirty || mutationBlocked) return;
     const current = ++sequence.current;
@@ -543,6 +578,16 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
   }
 
   const jobResult = analysisResult(analysisJob);
+  // 草稿横幅只认实时快照：清洗 / 应用 / 重扫之后立刻改口，不再停在扫描那一刻的数字上。
+  // jobResult 只用来判断「刚才确实扫出过草稿、现在归零了」＝已经被应用，而不是直接照抄旧数字。
+  const draftWorldbookCount = Object.values(snapshot?.worldbook_draft ?? {})
+    .filter((text) => Boolean(String(text ?? '').trim())).length;
+  const draftNotice = resolveDraftNotice({
+    characters: draftPendingCount,
+    worldbook: draftWorldbookCount,
+    generatedCharacters: jobResult?.character_count ?? 0,
+    generatedWorldbook: jobResult?.worldbook_fields ?? 0,
+  });
   const analysisLabels = {
     scan: t('workbench_scan'), all: t('workbench_analysis_all'),
     worldbook: t('workbench_analysis_worldbook'), characters: t('workbench_analysis_characters'),
@@ -605,7 +650,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
           {loading ? '正在读取项目资料…' : dirty ? '有未保存的修改' : snapshot ? '项目资料已同步' : '等待选择项目'}
         </Tag>
         <span className="rb-workbench-status-metrics">
-          {draft ? `背景设定 ${worldCount} 项 · 角色资料 ${draft.characters.length} 位 · 待审核草稿 ${snapshot?.character_drafts?.length ?? 0} 张` : '选择项目后，即可维护独立的背景与角色资料。'}
+          {draft ? `背景设定 ${worldCount} 项 · 角色资料 ${draft.characters.length} 位 · 待审核草稿 ${draftPendingCount} 张` : '选择项目后，即可维护独立的背景与角色资料。'}
         </span>
         <span className="rb-workbench-status-hint">{dirty ? '点击「保存修改」后用于后续翻译。' : '保存后立即用于下一次翻译与提示词预览。'}</span>
       </div>
@@ -630,7 +675,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
                 showInfo
               />
             ) : null}
-            {analysisJob.status === 'done' && !analysisActive ? <p>{t('workbench_analysis_result').replace('{worldbook}', String(jobResult?.worldbook_fields ?? Object.values(snapshot?.worldbook_draft ?? {}).filter(Boolean).length)).replace('{characters}', String(jobResult?.character_count ?? snapshot?.character_drafts?.length ?? 0))}</p> : null}
+            {analysisJob.status === 'done' && !analysisActive && draftNotice.visible ? <p role="status">{draftNotice.message}</p> : null}
             {cancellationRequested ? <p>{t('workbench_cancel_hint')}</p> : null}
           </div>
           {analysisActive ? <Button type="default" size="small" disabled={cancellationRequested || state.link !== 'open'} onClick={() => void cancelAnalysis()}>{t('workbench_cancel_analysis')}</Button> : null}
@@ -656,7 +701,7 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
               <div className="rb-workbench-stats">
                 <div><strong>{worldCount}</strong><span>背景设定</span></div>
                 <div><strong>{draft.characters.length}</strong><span>角色资料</span></div>
-                <div><strong>{snapshot?.character_drafts?.length ?? 0}</strong><span>待审核草稿</span></div>
+                <div><strong>{draftPendingCount}</strong><span>待审核草稿</span></div>
               </div>
             </div>
             <SettingsGroup title={t('workbench_analysis_title')} description={t('workbench_analysis_description')}>
@@ -844,6 +889,8 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
             onReview={() => setConfirm('relations')}
             cleanable={draftPendingCount}
             onClean={() => setConfirm('clean')}
+            inferable={inferablePairs}
+            onInfer={() => setConfirm('infer')}
             onChange={(characters) => {
               // 图谱里也能看到还没应用的角色草稿，但草稿不属于这份可编辑资料：
               // 只把正式角色卡写回去，避免在图谱上随手一改就把草稿悄悄转正。
@@ -907,6 +954,15 @@ export function WorkbenchPage(props: { state: AppState; onDirtyChange?: (dirty: 
           <div><dt>写回规则</dt><dd>人工改过的边不会被覆盖</dd></div>
         </dl>
         <p>模型判为不对的边不会消失：它们会标记成「已否决」，图谱默认不画，可以在图谱页的「已否决」里逐条查看并恢复成人工关系。</p>
+      </Dialog> : null}
+      {confirm === 'infer' ? <Dialog title="用 AI 推断角色关系" confirmText="开始推断" cancelText={t('workbench_cancel')} onCancel={() => setConfirm(null)} onConfirm={() => void inferRelations()}>
+        <p>规则关系靠「称谓词 + 同场景角色变量名」挖掘，你这版游戏的 Character 变量名是 s、p 这样的短名，规则一条都挖不到。这一步改用「同场共现次数 + 双方人设」当证据，让模型判断两人是什么关系。</p>
+        <dl className="rb-workbench-draft-fields">
+          <div><dt>可推断</dt><dd>{`${inferablePairs} 对角色`}</dd></div>
+          <div><dt>预计用量</dt><dd>{`约 ${(Math.min(inferablePairs, 12) * 0.5).toFixed(1)} 千 token`}</dd></div>
+          <div><dt>写回规则</dt><dd>只写 AI 边；人工改过和已否决的边不会被覆盖</dd></div>
+        </dl>
+        <p>推断出的边会同时写到两个人的卡上，证据强度就是同场次数，备注里会写「AI 推断（同场 N 次）」。资料不足的人物对不会写进卡里。</p>
       </Dialog> : null}
       {confirm === 'apply' ? <Dialog title="应用已有草稿" confirmText="应用草稿" onCancel={() => setConfirm(null)} onConfirm={() => void applyDrafts()}>草稿将合并到正式世界观和角色资料中，并启用对应上下文。正式资料中的同名字段可能更新。</Dialog> : null}
     </div>

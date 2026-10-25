@@ -16,6 +16,7 @@ import type { PageKey } from '../../nav';
 import type { StoryBlueprintReadiness } from '../storyBlueprint/storyBlueprintView.mjs';
 import { AvatarBlock } from './GraphAvatar';
 import { resolveGraphBlocked, scanBlockedHint } from './graphBlocked.mjs';
+import { resolveAiAction } from './workbenchDrafts.mjs';
 import { RelationGraphCanvas } from './RelationGraphCanvas';
 import { RelationOverlay } from './RelationOverlay';
 import {
@@ -66,6 +67,14 @@ interface Props<C extends WorkbenchCharacter> {
   cleanable?: number;
   /** 打开清洗确认弹窗；同样是页面层发请求，因为它要动 snapshot 里的草稿。 */
   onClean?: () => void;
+  /**
+   * 有多少对角色有同场共现、可交给「AI 推断关系」。
+   * 规则关系靠「称谓词 × Character 变量名」，变量名是 s/p 的工程永远 0 条边；
+   * 这时用同场次数当弱证据让模型推断，是唯一能在图谱里看到关系的路。
+   */
+  inferable?: number;
+  /** 打开推断确认弹窗；由页面层发请求并合并回快照。 */
+  onInfer?: () => void;
 }
 
 function rowKey(row: RelationRowRef): string {
@@ -122,6 +131,7 @@ function rejectedReason(note: string): string {
 export function RelationGraphTab<C extends WorkbenchCharacter>(props: Props<C>) {
   const { characters, onChange, disabled, reviewable = 0, reviewing = false, onReview, cleanable = 0, onClean } = props;
   const { readiness = null, onScan, onNavigate, canScan = false } = props;
+  const { inferable = 0, onInfer } = props;
   const [focusId, setFocusId] = useState('');
   const [overlayOpen, setOverlayOpen] = useState(false);
   /** 回退栈：点过谁就压一层，只记 id，跟着角色卡走。 */
@@ -137,6 +147,15 @@ export function RelationGraphTab<C extends WorkbenchCharacter>(props: Props<C>) 
   const rows = useMemo(() => buildRelationRows(characters), [characters]);
   // 中栏画布和伙伴圆环都不画被否决的边，它们只在右栏「已否决」小节里出现。
   const canvasRows = useMemo(() => visibleRows(rows), [rows]);
+  // 三个 AI 动作共用一套判定（文案/置灰/可见原因），全部从实时计数派生：
+  // 快照一变，按钮和那句「为什么点不了」立刻跟着变，不会像旧横幅一样停在扫描那一刻。
+  const cleanState = resolveAiAction({ mode: 'clean', count: cleanable, reviewing, disabled });
+  const reviewState = resolveAiAction({ mode: 'review', count: reviewable, reviewing, disabled });
+  const inferState = resolveAiAction({ mode: 'infer', count: inferable, reviewing, disabled });
+  // 规则边一条都没有、却有同场共现时才把复核按钮换成推断；有规则证据优先走复核。
+  const useInfer = reviewState.count === 0 && inferState.count > 0;
+  const relationState = useInfer ? inferState : reviewState;
+  const actionHints = [cleanState.hint, relationState.hint].filter(Boolean);
 
   const focus = useMemo(() => {
     const hit = focusId ? index.byId.get(focusId) : undefined;
@@ -249,32 +268,38 @@ export function RelationGraphTab<C extends WorkbenchCharacter>(props: Props<C>) 
             <Button
               size="small"
               loading={reviewing}
-              disabled={disabled || reviewing || cleanable === 0}
-              title={cleanable === 0
-                ? '没有可清洗的角色草稿：先跑一次角色扫描'
-                : `让模型给这 ${cleanable} 个草稿角色归类，去掉报幕员/音效/占位符这类非角色`}
+              disabled={cleanState.blocked}
+              title={cleanState.count > 0
+                ? `让模型给这 ${cleanState.count} 个草稿角色归类，去掉报幕员/音效/占位符这类非角色`
+                : cleanState.hint}
               onClick={onClean}
             >
-              {cleanable > 0 ? `AI 清洗角色 · ${cleanable}` : 'AI 清洗角色'}
+              {cleanState.label}
             </Button>
           ) : null}
-          {onReview ? (
+          {onReview || onInfer ? (
             <Button
               size="small"
               loading={reviewing}
-              disabled={disabled || reviewing || reviewable === 0}
-              title={reviewable === 0
-                ? '没有可复核的规则边：先跑一次角色扫描，或者这些关系都已经人工确认过'
-                : `把 ${reviewable} 对规则挖出的关系交给模型做判断题`}
-              onClick={onReview}
+              disabled={relationState.blocked}
+              title={relationState.count > 0
+                ? (useInfer
+                  ? `把 ${relationState.count} 对同场共现的角色交给模型推断关系`
+                  : `把 ${relationState.count} 对规则挖出的关系交给模型做判断题`)
+                : relationState.hint}
+              onClick={useInfer ? onInfer : onReview}
             >
-              {reviewable > 0 ? `AI 复核关系 · ${reviewable}` : 'AI 复核关系'}
+              {relationState.label}
             </Button>
           ) : null}
           <span className="rb-graph-chip">角色 <b>{characters.length}</b></span>
           <span className="rb-graph-chip">关系 <b>{rows.length}</b></span>
         </span>
       </div>
+
+      {actionHints.length ? (
+        <p className="rb-graph-hints" role="status">{actionHints.join(' · ')}</p>
+      ) : null}
 
       <div className="rb-graph-body">
         <aside className="rb-graph-rail" aria-label="角色名册">

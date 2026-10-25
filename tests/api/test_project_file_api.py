@@ -23,7 +23,7 @@ from module.Engine.Engine import Engine
 from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
 from module.Engine.Translator.TranslationTaskContext import ProjectAssets, TermAsset
 from module.Localizer.Localizer import Localizer
-from module.Project.ProjectFile import ProjectFile
+from module.Project.ProjectFile import ProjectFile, ProjectFileError
 from module.Renpy.ProjectPaths import RenpyProjectPaths, resolve_translation_output
 
 
@@ -1363,3 +1363,322 @@ def test_legacy_export_refuses_destinations_that_clobber_source_or_live_files(tm
     assert script.read_bytes() == before["script"]
     assert not (legacy / "cache" / "moved.rbox").exists()
     assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+# ---------- 创建工程文件：绑定动作默认生成 .rbox ----------
+
+def _bind_default_output(tmp_path: Path, config: Config) -> Path:
+    """绑定一个真实 Ren'Py 项目到默认输出目录，返回该输出目录。"""
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    config.renpy_project_path = str(tmp_path / "MyGame")
+    config.renpy_game_folder = str(game)
+    config.renpy_tl_folder = str(game / "tl" / "chinese")
+    config.input_folder = str(game / "tl" / "chinese")
+    config.output_folder = str(tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese")
+    return Path(config.output_folder)
+
+
+def _resolve_paths(config: Config) -> None:
+    """模拟还没绑定项目的全新配置（输出目录也由后端推导）。"""
+    config.renpy_project_path = config.renpy_game_folder = config.renpy_tl_folder = ""
+    config.input_folder = ""
+    config.output_folder = ""
+
+
+def test_create_empty_project_file_binds_and_stays_loadable(tmp_path, config, fresh_engine) -> None:
+    """空工程：POST /file/create 产出合法 .rbox 并设为工作缓存。"""
+    output = _bind_default_output(tmp_path, config)
+    output.mkdir(parents = True)
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/create", json = {})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    target = output / "MyGame.rbox"
+    assert Path(body["project_file_path"]) == target
+    assert body["created"] is True
+    assert body["bound"] is True
+    assert body["item_count"] == 0
+    assert body["migrated_item_count"] == 0
+
+    # 默认路径写出来的是合法工程文件：可 inspect、可 load、无 -wal/-shm 旁路文件
+    assert target.is_file()
+    assert ProjectFile.inspect(target).item_count == 0
+    assert ProjectFile.load(target).items == []
+    assert not target.with_name(f"{target.name}-wal").exists()
+    assert not target.with_name(f"{target.name}-journal").exists()
+
+    # 绑定落进配置并持久化；工作缓存就是 .rbox，输出目录不再物化 cache.db
+    assert Path(config.project_file_path) == target
+    assert Path(config.project_file_output) == output
+    assert Path(Config().load().project_file_path) == target
+    assert not (output / "cache" / CacheManager.CACHE_DB_NAME).exists()
+    assert _read_cache(config)[1] == []
+
+    # 后续翻译进度直接写进 .rbox，它仍可被当工程文件加载
+    manager = CacheManager(service = False)
+    assert manager.save_to_file(_project("created"), _items("line-1"), str(output), strict = True) is True
+    assert [item.get_src() for item in ProjectFile.load(target).items] == ["line-1"]
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_binding_endpoint_exposes_default_path_and_switch(tmp_path, config) -> None:
+    """「创建工程文件」按钮要拿到默认路径；开关状态也随绑定状态回传。"""
+    output = _bind_default_output(tmp_path, config)
+    output.mkdir(parents = True)
+
+    with _client(config) as client:
+        body = client.get("/api/project/file/binding").json()
+
+    assert body["bound"] is False
+    assert body["auto_create"] is True
+    assert Path(body["default_path"]) == output / "MyGame.rbox"
+
+
+def test_create_migrates_existing_directory_cache_with_backup(tmp_path, config, fresh_engine) -> None:
+    """已有目录缓存时：条目与工作台资产迁进 .rbox，旧 cache 有可回滚备份。"""
+    output = _bind_default_output(tmp_path, config)
+    project = _project("old")
+    project.set_project_assets({
+        "revision": 3,
+        "glossary": {"enabled": True, "items": [{"source": "Sky", "target": "天空"}]},
+    })
+    project.set_analysis_candidates({"legacy_config_migrated": True, "items": [{"source": "Cloud", "target": ""}]})
+    _write_sqlite_at(output, project, _items("old-1", "old-2"))
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/create", json = {})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    target = output / "MyGame.rbox"
+    assert body["migrated_item_count"] == 2
+
+    snapshot = ProjectFile.load(target)
+    assert [item.get_src() for item in snapshot.items] == ["old-1", "old-2"]
+    assets = ProjectAssets.from_dict(snapshot.project.get_project_assets())
+    assert assets.revision == 3
+    assert [(term.source, term.target) for term in assets.glossary] == [("Sky", "天空")]
+    assert [item["source"] for item in snapshot.project.get_analysis_candidates()["items"]] == ["Cloud"]
+
+    # 旧目录缓存被收走，但备份还在（可手动回滚），并成为工作缓存
+    assert not (output / "cache" / CacheManager.CACHE_DB_NAME).exists()
+    backup = Path(body["backup_folder"])
+    assert backup.parent == output / "cache" / "backup"
+    assert [item.get_src() for item in CacheDB(str(backup / CacheManager.CACHE_DB_NAME)).get_items()] == ["old-1", "old-2"]
+    assert _read_cache(config)[1] == ["old-1", "old-2"]
+    assert Path(Config().load().project_file_path) == target
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_create_refuses_existing_target_without_touching_cache(tmp_path, config) -> None:
+    output = _bind_default_output(tmp_path, config)
+    _write_sqlite_at(output, _project("old"), _items("old-1"))
+    taken = output / "taken.rbox"
+    taken.write_bytes(b"not ours")
+    # -wal/-shm 是 SQLite 探测缓存的副产物，不算内容改动。
+    before = {name: data for name, data in _tree_bytes(output).items() if not name.endswith(("-wal", "-shm"))}
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/create", json = {"path": str(taken)})
+
+    assert response.status_code == 409
+    assert "已存在" in response.json()["detail"]
+    after = {name: data for name, data in _tree_bytes(output).items() if not name.endswith(("-wal", "-shm"))}
+    assert after == before
+    assert config.project_file_path == ""
+
+
+def test_create_write_failure_leaves_directory_cache_intact(tmp_path, config, fresh_engine, monkeypatch) -> None:
+    """写文件失败（如只读目录）→ 500，旧缓存原样，不留半个文件。"""
+    output = _bind_default_output(tmp_path, config)
+    _write_sqlite_at(output, _project("old"), _items("old-1", "old-2"))
+    before = {name: data for name, data in _tree_bytes(output).items() if not name.endswith(("-wal", "-shm"))}
+    config.save(strict = True)
+
+    def fail_export(*_args, **_kwargs):
+        raise ProjectFileError(ProjectFileError.WRITE_FAILED, "Read-only file system")
+
+    monkeypatch.setattr(project.ProjectFile, "export", fail_export)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/create", json = {})
+
+    assert response.status_code == 500
+    assert "Read-only" in response.json()["detail"]
+    after = {name: data for name, data in _tree_bytes(output).items() if not name.endswith(("-wal", "-shm"))}
+    assert after == before
+    assert not (output / "MyGame.rbox").exists()
+    assert config.project_file_path == ""
+    assert _read_cache(config)[1] == ["old-1", "old-2"]
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_create_install_failure_rolls_back_cache_and_removes_new_file(tmp_path, config, fresh_engine, monkeypatch) -> None:
+    """绑定事务失败 → 目录缓存回滚，刚创建的 .rbox 不留在磁盘上。"""
+    output = _bind_default_output(tmp_path, config)
+    _write_sqlite_at(output, _project("old"), _items("old-1", "old-2"))
+    config.save(strict = True)
+
+    def fail_retire(*_args, **_kwargs):
+        raise RuntimeError("retire failed")
+
+    monkeypatch.setattr(project, "_retire_cache_files", fail_retire)
+
+    with _client(config) as client:
+        response = client.post("/api/project/file/create", json = {})
+
+    assert response.status_code == 500
+    assert "写入导入缓存失败" in response.json()["detail"]
+    assert (output / "cache" / CacheManager.CACHE_DB_NAME).is_file()
+    assert _read_cache(config)[1] == ["old-1", "old-2"]
+    assert not (output / "MyGame.rbox").exists()
+    assert config.project_file_path == ""
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_unbind_after_create_returns_to_directory_cache(tmp_path, config, fresh_engine) -> None:
+    """创建后绑定的工程文件解除绑定：进度落回目录缓存，.rbox 留作快照。"""
+    output = _bind_default_output(tmp_path, config)
+    _write_sqlite_at(output, _project("old"), _items("old-1", "old-2"))
+    config.save(strict = True)
+
+    with _client(config) as client:
+        assert client.post("/api/project/file/create", json = {}).status_code == 200
+        response = client.post("/api/project/file/unbind")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["bound"] is False
+    assert (output / "cache" / CacheManager.CACHE_DB_NAME).is_file()
+    assert _read_cache(config)[1] == ["old-1", "old-2"]
+    assert config.project_file_path == ""
+    assert (output / "MyGame.rbox").is_file()
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+# ---------- 绑定工程时自动创建 ----------
+
+def test_resolve_auto_creates_and_binds_default_project_file(tmp_path, config, fresh_engine) -> None:
+    """用户实测场景：绑定新工程后输出目录里就该出现并绑定 <项目名>.rbox。"""
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    _resolve_paths(config)
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
+    target = output / "MyGame.rbox"
+    assert Path(body["auto_created_project_file"]) == target
+    assert body["auto_create_error"] == ""
+    assert target.is_file()
+    assert ProjectFile.inspect(target).item_count == 0
+    assert Path(config.project_file_path) == target
+    assert Path(config.project_file_output) == output
+    assert Path(Config().load().project_file_path) == target
+    assert not (output / "cache" / CacheManager.CACHE_DB_NAME).exists()
+    assert _read_cache(config)[1] == []
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_resolve_auto_create_switch_off_creates_nothing(tmp_path, config, fresh_engine) -> None:
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    _resolve_paths(config)
+    config.project_file_auto_create = False
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["auto_created_project_file"] == ""
+    assert response.json()["auto_create_error"] == ""
+    output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
+    assert output.is_dir()
+    assert not (output / "MyGame.rbox").exists()
+    assert config.project_file_path == ""
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_resolve_auto_create_migrates_existing_directory_cache(tmp_path, config, fresh_engine) -> None:
+    """绑定前已有缓存（旧版本用目录缓存的工程）→ 迁移进新 .rbox 再绑定。"""
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
+    _write_sqlite_at(output, _project("old"), _items("old-1", "old-2"))
+    _resolve_paths(config)
+    config.output_folder = str(output)
+    config.save(strict = True)
+
+    with _client(config) as client:
+        response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
+
+    assert response.status_code == 200, response.text
+    target = output / "MyGame.rbox"
+    assert Path(response.json()["auto_created_project_file"]) == target
+    assert [item.get_src() for item in ProjectFile.load(target).items] == ["old-1", "old-2"]
+    assert not (output / "cache" / CacheManager.CACHE_DB_NAME).exists()
+    assert list((output / "cache" / "backup").iterdir()), "旧目录缓存必须有备份"
+    assert _read_cache(config)[1] == ["old-1", "old-2"]
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_resolve_auto_create_failure_does_not_block_binding(tmp_path, config, fresh_engine, monkeypatch) -> None:
+    """创建失败（只读目录）只给提示：绑定本身仍然成功，输出目录照旧创建。"""
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    _resolve_paths(config)
+    config.save(strict = True)
+
+    def fail_export(*_args, **_kwargs):
+        raise ProjectFileError(ProjectFileError.WRITE_FAILED, "Read-only file system")
+
+    monkeypatch.setattr(project.ProjectFile, "export", fail_export)
+
+    with _client(config) as client:
+        response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["auto_created_project_file"] == ""
+    assert "Read-only" in body["auto_create_error"]
+    assert body["renpy_project_path"] == str(tmp_path / "MyGame")
+    output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
+    assert output.is_dir()
+    assert not (output / "MyGame.rbox").exists()
+    assert config.project_file_path == ""
+    assert fresh_engine.get_status() == Engine.Status.IDLE
+
+
+def test_resolve_auto_create_skips_while_engine_busy(tmp_path, config, fresh_engine) -> None:
+    """引擎在跑任务时不能抢锁创建：跳过自动创建，绑定照常成功。"""
+    game = tmp_path / "MyGame" / "game"
+    (game / "tl" / "chinese").mkdir(parents = True)
+    (game / "script.rpy").write_text("label start:\n", encoding = "utf-8")
+    _resolve_paths(config)
+    config.save(strict = True)
+    fresh_engine.set_status(Engine.Status.TRANSLATING)
+
+    with _client(config) as client:
+        response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["auto_created_project_file"] == ""
+    assert response.json()["auto_create_error"] != ""
+    assert not (tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese" / "MyGame.rbox").exists()
+    assert config.project_file_path == ""
+    assert fresh_engine.get_status() == Engine.Status.TRANSLATING
