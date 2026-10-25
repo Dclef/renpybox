@@ -118,6 +118,12 @@ class ProjectInfo(BaseModel):
     renpy_tl_folder: str = ""
     theme: str = ""
     app_language: str = ""
+    # 绑定动作（/api/project/resolve）后自动创建并绑定的 .rbox 绝对路径；
+    # 空串表示这次绑定没有触发自动创建。
+    auto_created_project_file: str = ""
+    # 自动创建失败时的技术原因（原始异常文本）。绑定本身仍然成功，
+    # 界面据此提示用户手动兜底创建；空串表示没有失败。
+    auto_create_error: str = ""
 
 
 # ---------- 翻译主流程 ----------

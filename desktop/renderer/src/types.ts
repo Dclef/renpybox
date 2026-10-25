@@ -199,6 +199,10 @@ export interface ProjectInfo {
   renpy_tl_folder: string;
   theme: string;
   app_language: string;
+  /** 绑定工程后自动创建并绑定的 .rbox 路径；这次绑定没触发时为空串 */
+  auto_created_project_file?: string;
+  /** 自动创建失败的原因（绑定仍然成功）；没有失败时为空串 */
+  auto_create_error?: string;
 }
 
 export interface ProjectFileInfo {
@@ -273,6 +277,14 @@ export interface ProjectFileImportResult extends ProjectFileDescription {
   project_file_path: string;
 }
 
+/** POST /api/project/file/create：创建 .rbox 并绑定 */
+export interface ProjectFileCreateResult extends ProjectFileImportResult {
+  /** 这次调用确实创建了新文件（而不是导入既有文件） */
+  created: boolean;
+  /** 创建时从目录缓存迁进文件的条目数；空工程为 0 */
+  migrated_item_count: number;
+}
+
 /** GET /api/project/file/binding：当前单文件工程的绑定状态 */
 export interface ProjectFileBinding {
   bound: boolean;
@@ -287,6 +299,10 @@ export interface ProjectFileBinding {
   updated_at: string;
   /** 读取失败或文件缺失时的说明 */
   detail: string;
+  /** 未绑定时「创建工程文件」的默认路径：<输出目录>/<项目名>.rbox */
+  default_path: string;
+  /** 「绑定工程时自动创建工程文件」开关的当前值 */
+  auto_create: boolean;
 }
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';

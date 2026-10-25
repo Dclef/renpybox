@@ -21,6 +21,7 @@ from module.PromptBuilder import PromptBuilder
 from module.Workbench.AnalysisService import AnalysisResult, AnalysisServiceError, WorkbenchAnalysisService
 from module.Workbench.RelationMiner import RELATION_WORDS as _RELATION_WORDS
 from module.Workbench.WorkbenchData import (
+    RELATION_PINNED_SOURCES,
     RELATION_SAMPLE_LIMIT,
     RELATION_SOURCE_AI,
     RELATION_SOURCE_REJECTED,
@@ -31,6 +32,7 @@ from module.Workbench.WorkbenchData import (
     normalize_character_card,
     normalize_character_cards,
     normalize_relation_chapters,
+    normalize_relations,
     normalize_text,
     normalize_text_list,
     normalize_worldbook,
@@ -73,9 +75,10 @@ class CharacterCleanRequest(AssetVersion):
 
 
 class RelationAnalyzeRequest(AssetVersion):
-    """关系 AI 复核请求：只复核有源码证据的候选边。"""
+    """关系 AI 请求：默认复核规则证据；infer 模式改为按同场共现推断关系。"""
 
     ref: Literal["规则证据", "全部"] = "规则证据"
+    mode: Literal["review", "infer"] = "review"
     max_pairs: int = Field(default = 0, ge = 0, le = 500)
 
 
@@ -325,6 +328,143 @@ def _group_rule_edges(edges: list[dict]) -> list[dict]:
     return list(grouped.values())
 
 
+def _infer_profile(card: dict) -> dict:
+    """推断提示词用的角色摘要：只带模型判断关系需要的字段。"""
+    return {
+        "name": card.get("name", ""),
+        "identity": normalize_text(card.get("identity", "")),
+        "personality": normalize_text(card.get("personality", "")),
+        "speech_style": normalize_text(card.get("speech_style", "")),
+        "relationship_notes": normalize_text(card.get("relationship_notes", "")),
+        "sample_lines": [normalize_text(text) for text in (card.get("sample_lines") or [])],
+        "line_count": int(card.get("line_count") or 0),
+    }
+
+
+def _collect_cooccurrence_pairs(cards: list[dict], limit: int) -> list[dict]:
+    """把角色卡里的同场共现记录整理成「AI 推断关系」的候选对。
+
+    规则关系靠「称谓词 × 角色变量名」，变量名是 s/p 这种短名的工程一条都挖不到；
+    但每张卡都记着和谁同场过多少次，这是「两人经常一起出现」的现成弱证据。
+    按 (名字, 名字) 无向去重（A→B 与 B→A 只算一对），次数取两侧较大值，
+    最后按次数降序截 limit 对。正式资料与草稿都参与：草稿是待审区，推断结果也
+    只会写到对应的那张卡上。
+    """
+    profiles: dict[str, dict] = {}
+    for raw in cards:
+        card = normalize_character_card(raw)
+        name = normalize_text(card.get("name", ""))
+        if name == "":
+            continue
+        # 正式资料在前：同名的草稿不覆盖正式卡的人设摘要。
+        profiles.setdefault(name.casefold(), card)
+    pairs: dict[tuple[str, str], dict] = {}
+    for key, card in profiles.items():
+        for target, count in (card.get("co_occurrence") or {}).items():
+            other = normalize_text(target).casefold()
+            try:
+                hit = int(count)
+            except (TypeError, ValueError):
+                continue
+            # 对方不在名册里（已删卡/未扫描）时推断也没地方写，直接跳过。
+            if other == "" or other == key or hit <= 0 or other not in profiles:
+                continue
+            pair = tuple(sorted((key, other)))
+            current = pairs.get(pair)
+            if current is None:
+                pairs[pair] = {
+                    "from": profiles[pair[0]]["name"],
+                    "to": profiles[pair[1]]["name"],
+                    "count": hit,
+                }
+            else:
+                # 两侧各记一次同样的次数；取较大值避免一边漏记把证据抹小。
+                current["count"] = max(int(current["count"]), hit)
+    ordered = sorted(
+        pairs.values(),
+        key = lambda row: (-int(row["count"]), str(row["from"]).casefold(), str(row["to"]).casefold()),
+    )
+    result: list[dict] = []
+    for row in ordered[: max(1, int(limit))]:
+        result.append({
+            "from": row["from"],
+            "to": row["to"],
+            "count": int(row["count"]),
+            "from_card": _infer_profile(profiles[row["from"].casefold()]),
+            "to_card": _infer_profile(profiles[row["to"].casefold()]),
+        })
+    return result
+
+
+def _has_pinned_edge(card: dict, target: str) -> bool:
+    """这张卡上是否已有指向 target 的人工/否决边（这两种边自动流程永不覆盖）。"""
+    key = normalize_text(target).casefold()
+    return any(
+        item.get("source") in RELATION_PINNED_SOURCES
+        and normalize_text(item.get("target", "")).casefold() == key
+        for item in (card.get("relations") or [])
+    )
+
+
+def _write_inferred_edge(card: dict, target: str, relation: str, category: str, note: str, count: int) -> None:
+    """把一条推断边写到卡上：替换该 target 原有的 ai 边，不碰其他来源的边。"""
+    target_key = normalize_text(target).casefold()
+    kept = [
+        item for item in (card.get("relations") or [])
+        if not (
+            item.get("source") == RELATION_SOURCE_AI
+            and normalize_text(item.get("target", "")).casefold() == target_key
+        )
+    ]
+    kept.append({
+        "target": target,
+        "relation": relation,
+        "category": category,
+        "note": note,
+        "source": RELATION_SOURCE_AI,
+        "count": count,
+        # 推断没有台词证据，samples 留空，不假装有；note 里写清是「同场 N 次」推出来的。
+        "samples": [],
+        "chapters": [],
+    })
+    card["relations"] = normalize_relations(kept)
+
+
+def _apply_relation_infer(cards: list[dict], applied: list[dict]) -> tuple[list[dict], set[tuple[str, str]]]:
+    """把推断出的关系对称写进两张角色卡；返回 (卡片, 实际写入的人物对集合)。
+
+    只动 relations：
+    - manual / rejected 是用户既有结论，任何自动流程都不覆盖；只要任一侧对这个人
+      已有这两种边，整对跳过——写单边会让图谱出现「A 认 B、B 不认 A」的怪边；
+    - 已存在的 ai 边（上一次推断或复核的产物）按 target 整条替换，不叠加；
+    - note 带「同场 N 次」与模型理由，方便用户回看这条边是怎么来的。
+    """
+    by_name = {
+        normalize_text(card.get("name", "")).casefold(): card
+        for card in cards
+        if normalize_text(card.get("name", "")) != ""
+    }
+    written: set[tuple[str, str]] = set()
+    for pair in applied:
+        left_name = normalize_text(pair.get("from", ""))
+        right_name = normalize_text(pair.get("to", ""))
+        relation = normalize_text(pair.get("relation", ""))
+        left = by_name.get(left_name.casefold())
+        right = by_name.get(right_name.casefold())
+        if left is None or right is None or left is right or relation == "":
+            continue
+        if _has_pinned_edge(left, right_name) or _has_pinned_edge(right, left_name):
+            continue
+        count = max(int(pair.get("count") or 0), 1)
+        reason = normalize_text(pair.get("reason", ""))
+        note = f"AI 推断（同场 {count} 次）" + (f"：{reason}" if reason else "")
+        category = normalize_text(pair.get("category", "")) or "other"
+        _write_inferred_edge(left, right_name, relation, category, note, count)
+        _write_inferred_edge(right, left_name, relation, category, note, count)
+        written.add((left_name.casefold(), right_name.casefold()))
+    return cards, written
+
+
 def _clean_candidates(cards: list[dict]) -> tuple[list[dict], dict[str, dict]]:
     """把草稿角色卡整理成清洗候选；返回候选列表和「名字 -> 卡」的索引。"""
     candidates: list[dict] = []
@@ -524,28 +664,46 @@ def _apply_relation_review(
 
 @router.post("/relations/analyze")
 def analyze_relations(request: Request, body: RelationAnalyzeRequest) -> dict:
-    """AI 复核规则挖出的候选关系，结果写回角色卡。
+    """AI 复核规则挖出的候选关系，或按同场共现推断关系，结果写回角色卡。
 
-    keep=true 用 source=ai 覆盖该对的规则边；keep=false 把该对换成 source=rejected
-    的留档边（图上不画线、重扫也不会复活）。候选同时来自正式资料和草稿，
-    否则用户没点「应用草稿」时这条复核线上一条边都拿不到。
+    review（默认）：keep=true 用 source=ai 覆盖该对的规则边；keep=false 把该对换成
+    source=rejected 的留档边（图上不画线、重扫也不会复活）。候选同时来自正式资料和
+    草稿，否则用户没点「应用草稿」时这条复核线上一条边都拿不到。
+
+    infer：规则关系一条都挖不到时（例如 Character 变量名是 s/p，称谓词规则必然 0 命中），
+    改用每张卡上的同场共现次数当弱证据，让模型结合双方人设推断关系。结论只写
+    source=ai 的边：人工/否决边永不覆盖，同场次数直接记进 count 当证据强度。
     """
     service = WorkbenchAnalysisService()
-    # 复核要请求模型，先在锁内取快照；模型调用放锁外，避免长时间占住全局缓存锁。
+    # 取候选要读缓存，先在锁内取快照；模型调用放锁外，避免长时间占住全局缓存锁。
     with CacheManager.LOCK:
         repository, config, state = _load(request, body)
         cards = normalize_character_cards(config.renpy_workbench_character_cards)
         drafts = normalize_character_cards(config.renpy_workbench_generated_character_drafts)
-        # 正式资料在前：同一 from/to 冲突时以正式卡的证据为准。
-        # 目前只复核规则边：manual 是人定的不用复核，AI 边已经复核过，rejected 已否决。
-        unique_edges = _group_rule_edges(_collect_rule_edges(cards + drafts))
+        if body.mode == "infer":
+            candidates = _collect_cooccurrence_pairs(
+                cards + drafts, WorkbenchAnalysisService.RELATION_INFER_MAX_PAIRS,
+            )
+        else:
+            # 正式资料在前：同一 from/to 冲突时以正式卡的证据为准。
+            # 目前只复核规则边：manual 是人定的不用复核，AI 边已经复核过，rejected 已否决。
+            candidates = _group_rule_edges(_collect_rule_edges(cards + drafts))
         worldbook = normalize_worldbook(config.renpy_workbench_worldbook_data)
         draft = normalize_worldbook(config.renpy_workbench_generated_worldbook_draft)
         if any(draft.values()) and not any(worldbook.values()):
             worldbook = draft
 
+    if body.mode == "infer" and not candidates:
+        raise HTTPException(
+            status_code = 400,
+            detail = "没有可推断的角色对：这些角色之间没有同场记录，先跑一次角色扫描",
+        )
+
     try:
-        result = service.analyze_relations(config, unique_edges, worldbook, max_pairs = body.max_pairs or None)
+        if body.mode == "infer":
+            result = service.infer_relations(config, candidates, worldbook, max_pairs = body.max_pairs or None)
+        else:
+            result = service.analyze_relations(config, candidates, worldbook, max_pairs = body.max_pairs or None)
     except AnalysisServiceError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
@@ -557,20 +715,34 @@ def analyze_relations(request: Request, body: RelationAnalyzeRequest) -> dict:
         if state.assets.revision != body.revision:
             raise HTTPException(status_code = 409, detail = "项目资料已更新，请重新加载后再复核")
         # 正式资料与草稿各写各的集合，绝不合并：草稿是待审区，混进正式资料等于替用户点了「应用」。
-        cards, applied_here, rejected_here = _apply_relation_review(
-            normalize_character_cards(config.renpy_workbench_character_cards), applied, rejected,
-        )
-        drafts, draft_applied, draft_rejected = _apply_relation_review(
-            normalize_character_cards(config.renpy_workbench_generated_character_drafts), applied, rejected,
-        )
+        if body.mode == "infer":
+            cards, written_cards = _apply_relation_infer(
+                normalize_character_cards(config.renpy_workbench_character_cards), result["applied"],
+            )
+            drafts, written_drafts = _apply_relation_infer(
+                normalize_character_cards(config.renpy_workbench_generated_character_drafts), result["applied"],
+            )
+            applied_here = written_cards | written_drafts
+            # 推断没有「留档否决边」：keep=false 只是资料不足，不往卡里写 rejected。
+            rejected_here = set(rejected)
+        else:
+            cards, applied_here, rejected_here = _apply_relation_review(
+                normalize_character_cards(config.renpy_workbench_character_cards), applied, rejected,
+            )
+            drafts, draft_applied, draft_rejected = _apply_relation_review(
+                normalize_character_cards(config.renpy_workbench_generated_character_drafts), applied, rejected,
+            )
+            applied_here = applied_here | draft_applied
+            rejected_here = rejected_here | draft_rejected
         config.renpy_workbench_character_cards = normalize_character_cards(cards)
         config.renpy_workbench_generated_character_drafts = normalize_character_cards(drafts)
         state = repository.save_workbench_view(config)
     return {
         "ok": True,
+        "mode": body.mode,
         # 计数用「边对数」：一张卡可能挂着好几条规则边，按条数报会让用户看到的数字对不上人。
-        "applied": len(applied_here | draft_applied),
-        "rejected": len(rejected_here | draft_rejected),
+        "applied": len(applied_here),
+        "rejected": len(rejected_here),
         "think": result.get("think", ""),
         "usage": {
             "prompt_tokens": result["prompt_tokens"],

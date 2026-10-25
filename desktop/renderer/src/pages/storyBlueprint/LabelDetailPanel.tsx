@@ -15,7 +15,7 @@ import type {
   StoryBlueprintNode,
   StoryBlueprintStatus,
 } from '../../types';
-import { formatPercent, labelName, nodeHeading } from './storyBlueprintView.mjs';
+import { formatPercent, isShowImage, labelName, nodeHeading } from './storyBlueprintView.mjs';
 
 interface Props {
   node: StoryBlueprintNode;
@@ -140,13 +140,20 @@ export function LabelDetailPanel(props: Props) {
       </div>
 
       {node.image ? (
-        <img
-          className="rb-blueprint-drawer-image"
-          src={blueprintAssetUrl(node.image.path)}
-          alt=""
-          loading="lazy"
-          decoding="async"
-        />
+        <div className="rb-blueprint-drawer-media">
+          <img
+            className="rb-blueprint-drawer-image"
+            src={blueprintAssetUrl(node.image.path)}
+            alt=""
+            loading="lazy"
+            decoding="async"
+          />
+          {isShowImage(node.image) ? (
+            <span className="rb-blueprint-drawer-source" title={t('story_blueprint_show_source_hint')}>
+              {t('story_blueprint_show_source')}
+            </span>
+          ) : null}
+        </div>
       ) : (
         <div className="rb-blueprint-drawer-image is-empty">{t('story_blueprint_no_image')}</div>
       )}

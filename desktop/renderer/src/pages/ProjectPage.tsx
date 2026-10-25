@@ -26,11 +26,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button } from 'antd';
 
-import { exportLegacyProjectFile, exportProjectFile, getProjectFileBinding, getStoryBlueprintReadiness, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject, unbindProjectFile } from '../api';
+import { createProjectFile, exportLegacyProjectFile, exportProjectFile, getProjectFileBinding, getStoryBlueprintReadiness, importProjectFile, inspectLegacyProjectCache, inspectProjectFile, resolveProject, unbindProjectFile } from '../api';
 import { useT } from '../i18n';
 import type { TextKey } from '../i18n';
 import { LANGUAGE_OPTIONS } from '../settingsSchema';
-import type { LegacyProjectCacheDescription, ProjectFileBinding, ProjectFileDescription, StoryBlueprintReadiness } from '../types';
+import type { LegacyProjectCacheDescription, ProjectFileBinding, ProjectFileDescription, ProjectInfo, StoryBlueprintReadiness } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch } from '../ui';
 
@@ -38,6 +38,7 @@ const RBOX_FILTERS = [{ name: 'RenpyBox Project', extensions: ['rbox'] }];
 
 type ProjectFileResult =
   | { kind: 'export'; path: string; itemCount: number; settings: number; source?: string }
+  | { kind: 'create'; path: string; itemCount: number; backup: string }
   | { kind: 'import'; path: string; itemCount: number; backup: string; assetsOutput: string; assetsBackup: string; applied: number; ignored: number };
 
 function withRboxSuffix(path: string): string {
@@ -111,6 +112,17 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
     setOutputFolder(String(values.output_folder ?? ''));
   }, [values]);
 
+  // 绑定后自动创建工程文件：成功只报路径，失败只报原因（绑定本身已经成功）。
+  const noteAutoCreate = useCallback((info: ProjectInfo) => {
+    const created = String(info.auto_created_project_file ?? '');
+    const failed = String(info.auto_create_error ?? '');
+    if (!created && !failed) return;
+    // 自动创建改了绑定，标题栏与「当前工程文件」面板都要跟着刷新。
+    void state.reloadProjectFileBinding();
+    if (created) state.pushToast('success', t('project_file_auto_created').replace('{path}', created));
+    if (failed) state.pushToast('warning', t('project_file_auto_create_failed').replace('{error}', failed));
+  }, [state, t]);
+
   /**
    * 选目录。原壳的 `_sync_renpy_paths_from_selection` 语义：
    * 只有目录本身带 Ren'Py 项目结构时才同步项目身份，否则仅保留为输入目录
@@ -125,9 +137,10 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
         if (!await state.setSetting(which === 'input' ? 'input_folder' : 'output_folder', picked)) return;
         if (which === 'input') {
           try {
-            await resolveProject(picked);
+            const info = await resolveProject(picked);
             await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
             state.pushToast('success', t('project_page_project_bound_toast'));
+            noteAutoCreate(info);
           } catch (error) {
             const message = error instanceof Error ? error.message : '';
             state.pushToast(
@@ -140,7 +153,7 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
         setBusy(false);
       }
     },
-    [state],
+    [noteAutoCreate, state, t],
   );
 
   const pickProject = useCallback(async () => {
@@ -149,15 +162,16 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
     if (!picked) return;
     setBusy(true);
     try {
-      await resolveProject(picked);
+      const info = await resolveProject(picked);
       await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
       state.pushToast('success', t('project_page_project_bound_direct'));
+      noteAutoCreate(info);
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [inputFolder, state]);
+  }, [inputFolder, noteAutoCreate, state, t]);
 
   const openFolder = useCallback((target: string) => {
     if (!target) return;
@@ -274,6 +288,37 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
       void state.reloadProjectFileBinding();
     }
   }, [engineBusy, reloadBinding, state, t]);
+
+  /** 新建工程文件并绑定：默认放输出目录的 <项目名>.rbox，目录缓存会迁进文件。 */
+  const createProject = useCallback(async (choosePath: boolean) => {
+    if (state.saving || engineBusy) {
+      state.pushToast('warning', t('project_file_unbind_blocked'));
+      return;
+    }
+    let target = '';
+    if (choosePath) {
+      const picked = await window.renpy?.saveFile({
+        defaultPath: binding?.default_path || `${projectLabel || 'project'}.rbox`,
+        filters: RBOX_FILTERS,
+      });
+      if (!picked) return;
+      target = withRboxSuffix(picked);
+    }
+    setBusy(true);
+    try {
+      const result = await createProjectFile(target);
+      const path = result.project_file_path || result.info.path;
+      await Promise.all([state.reloadProject(), state.reloadSettings(), state.reloadTranslation()]);
+      setFileResult({ kind: 'create', path, itemCount: result.migrated_item_count, backup: result.backup_folder });
+      state.pushToast('success', t('project_file_create_success').replace('{path}', path));
+    } catch (error) {
+      state.pushToast('error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+      void reloadBinding();
+      void state.reloadProjectFileBinding();
+    }
+  }, [binding, engineBusy, projectLabel, reloadBinding, state, t]);
 
   const pickLegacyCache = useCallback(async () => {
     const picked = await window.renpy?.pickFolder(outputFolder || inputFolder || undefined);
@@ -433,6 +478,22 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
               <p>{t('project_file_unbind_body').replace('{path}', bindingDetail)}</p>
             </Dialog>
           ) : null}
+          {binding && !binding.bound ? (
+            <>
+              <p className="rb-project-file-guide">{t('project_file_create_unbound_hint')}</p>
+              {binding.default_path ? (
+                <p className="rb-project-file-guide">{t('project_file_create_hint').replace('{path}', binding.default_path)}</p>
+              ) : null}
+              <div className="rb-project-file-actions">
+                <Button type="primary" size="small" disabled={projectFileBlocked} onClick={() => void createProject(false)}>
+                  {t('project_file_create')}
+                </Button>
+                <Button size="small" disabled={projectFileBlocked} onClick={() => void createProject(true)}>
+                  {t('project_file_create_elsewhere')}
+                </Button>
+              </div>
+            </>
+          ) : null}
         </SettingsGroup>
 
         <SettingsGroup
@@ -452,7 +513,7 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
           {fileResult ? (
             <dl className="rb-workbench-draft-fields">
               <div>
-                <dt>{t(fileResult.kind === 'export' ? 'project_file_last_export' : 'project_file_last_import')}</dt>
+                <dt>{t(fileResult.kind === 'export' ? 'project_file_last_export' : fileResult.kind === 'create' ? 'project_file_last_created' : 'project_file_last_import')}</dt>
                 <dd>
                   <span className="rb-path" title={fileResult.path}>{fileResult.path}</span>
                   {fileResult.kind === 'export' && fileResult.source ? (
@@ -463,11 +524,27 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
                   ) : null}
                 </dd>
               </div>
-              <div><dt>{t('project_file_item_count')}</dt><dd>{fileResult.itemCount}</dd></div>
+              {fileResult.kind !== 'create' ? <div><dt>{t('project_file_item_count')}</dt><dd>{fileResult.itemCount}</dd></div> : null}
               {fileResult.kind === 'export' && fileResult.source ? (
                 <div><dt>{t('project_file_legacy_source')}</dt><dd className="rb-path" title={fileResult.source}>{fileResult.source}</dd></div>
               ) : null}
-              {fileResult.kind === 'export' ? (
+              {fileResult.kind === 'create' ? (
+                <>
+                  <div>
+                    <dt>{t('project_file_item_count')}</dt>
+                    <dd>{t('project_file_create_migrated').replace('{count}', String(fileResult.itemCount))}</dd>
+                  </div>
+                  {fileResult.backup ? (
+                    <div>
+                      <dt>{t('project_file_backup')}</dt>
+                      <dd>
+                        <span className="rb-path" title={fileResult.backup}>{fileResult.backup}</span>{' '}
+                        <Button type="link" size="small" onClick={() => openFolder(fileResult.backup)}>{t('setting_open')}</Button>
+                      </dd>
+                    </div>
+                  ) : null}
+                </>
+              ) : fileResult.kind === 'export' ? (
                 <div>
                   <dt>{t('project_file_settings')}</dt>
                   <dd>{t('project_file_settings_exported').replace('{count}', String(fileResult.settings))}</dd>
@@ -550,6 +627,14 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
               disabled={state.saving}
               label={t('project_page_output_folder_open_on_finish_title')}
               onChange={(next) => state.setSetting('output_folder_open_on_finish', next)}
+            />
+          </SettingCard>
+          <SettingCard title={t('project_file_auto_create_title')} description={t('project_file_auto_create_description')}>
+            <Switch
+              checked={values?.project_file_auto_create !== false}
+              disabled={state.saving}
+              label={t('project_file_auto_create')}
+              onChange={(next) => state.setSetting('project_file_auto_create', next)}
             />
           </SettingCard>
           <SettingCard title={t('project_page_traditional_chinese_title')} description={t('project_page_traditional_chinese_content')}>

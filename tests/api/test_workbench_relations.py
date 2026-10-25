@@ -1,17 +1,22 @@
-"""AI 清洗角色 / AI 复核关系的验收口径。
+"""AI 清洗角色 / AI 复核关系 / AI 推断关系的验收口径。
 
-两条线各管一件事，谁都不许越界：
+三条线各管一件事，谁都不许越界：
 - 清洗只判断「谁是人」，把猫狗、报幕员、占位符丢掉，绝不动任何一条关系；
 - 复核只处理规则挖出来的边，保留就换成 AI 边，否决就留档成 rejected 边，
-  重扫不能让它复活，也绝不删除角色卡。
+  重扫不能让它复活，也绝不删除角色卡；
+- 推断只在规则一条都挖不到时，用同场共现 + 双方人设补 ai 边，人工/否决边永不覆盖。
 """
 from __future__ import annotations
+
+import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.routes.workbench import (
     _apply_clean,
+    _apply_relation_infer,
+    _collect_cooccurrence_pairs,
     _collect_rule_edges,
     _group_rule_edges,
     _merge_scan_drafts,
@@ -50,6 +55,13 @@ def _rule(target: str, relation: str, *, count: int = 1, samples: list[str] | No
         "count": count,
         "samples": list(samples or []),
     }
+
+
+def _co_card(name: str, co_occurrence: dict[str, int], **extra) -> dict:
+    """带同场共现记录的角色卡（真实扫描的形态：两侧各记一次同样的次数）。"""
+    card = _card(name, **extra)
+    card["co_occurrence"] = co_occurrence
+    return card
 
 
 # --------------------------------------------------------------- 数据层规范
@@ -540,3 +552,156 @@ def test_translation_snapshot_keeps_relation_chapters():
     assert chapters[0]["line"] == 9 and chapters[0]["count"] == 3
     # 往返仍然相等（快照层的既有契约）。
     assert ProjectAssets.from_dict(assets.to_dict()) == assets
+
+
+# --------------------------------------------------------- 推断：同场共现端到端
+def _infer(client, monkeypatch, verdicts):
+    """用假的模型返回跑一次 mode=infer。"""
+    monkeypatch.setattr(WorkbenchAnalysisService, "ensure_analysis_ready", lambda self, config, **kwargs: {})
+    monkeypatch.setattr(
+        WorkbenchAnalysisService,
+        "request_json_text_verbose",
+        lambda self, config, platform, prompt, **kwargs: (json.dumps(verdicts, ensure_ascii = False), 10, 5),
+    )
+    snapshot = client.get("/api/workbench").json()
+    response = client.post(
+        "/api/workbench/relations/analyze",
+        json = {
+            "storage_key": snapshot["storage_key"],
+            "revision": snapshot["revision"],
+            "mode": "infer",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_collect_cooccurrence_pairs_dedupes_both_sides_and_drops_unknown_names():
+    cards = [
+        _co_card("Sayaka", {"You": 66, "Mika": 3, "Nobody": 9}, line_count = 1033, identity = "隔壁邻居"),
+        _co_card("You", {"Sayaka": 66}, line_count = 1325),
+        _co_card("Mika", {"Sayaka": 3}, line_count = 40),
+    ]
+
+    pairs = _collect_cooccurrence_pairs(cards, 10)
+
+    # A→B 与 B→A 只算一对；按次数降序；对方不在名册里的共现记录跳过（没地方写）。
+    assert [(row["from"], row["to"], row["count"]) for row in pairs] == [
+        ("Sayaka", "You", 66),
+        ("Mika", "Sayaka", 3),
+    ]
+    assert pairs[0]["from_card"]["identity"] == "隔壁邻居"
+    assert pairs[0]["from_card"]["line_count"] == 1033
+    assert pairs[0]["to_card"]["line_count"] == 1325
+
+
+def test_collect_cooccurrence_pairs_respects_limit():
+    cards = [
+        _co_card("A", {"B": 5, "C": 4, "D": 3}),
+        _co_card("B", {"A": 5}),
+        _co_card("C", {"A": 4}),
+        _co_card("D", {"A": 3}),
+    ]
+    assert [row["count"] for row in _collect_cooccurrence_pairs(cards, 2)] == [5, 4]
+
+
+def test_infer_writes_symmetric_ai_edges_from_cooccurrence(tmp_path, monkeypatch):
+    cards = [
+        _co_card("Sayaka", {"You": 66}, line_count = 1033, relationship_notes = "总来借酱油"),
+        _co_card("You", {"Sayaka": 66}, line_count = 1325),
+    ]
+    client, _ = _client(tmp_path, monkeypatch, cards)
+
+    result = _infer(client, monkeypatch, [
+        {"from": "Sayaka", "to": "You", "relation": "恋人", "category": "romantic", "keep": True, "reason": "同场 66 次且备注里互相抱怨"},
+    ])
+
+    assert result["mode"] == "infer"
+    assert result["applied"] == 1
+    sayaka = _relations(result, "characters", "Sayaka")
+    assert len(sayaka) == 1
+    assert sayaka[0]["source"] == RELATION_SOURCE_AI
+    assert (sayaka[0]["target"], sayaka[0]["relation"], sayaka[0]["category"]) == ("You", "恋人", "romantic")
+    # 同场次数直接当证据强度，note 里写清这条边怎么来的。
+    assert sayaka[0]["count"] == 66
+    assert sayaka[0]["note"].startswith("AI 推断（同场 66 次）")
+    # samples 留空：推断没有台词证据，不能假装有。
+    assert sayaka[0]["samples"] == []
+    # 对称写入，否则图谱只有单向边。
+    you = _relations(result, "characters", "You")
+    assert [(item["target"], item["relation"]) for item in you] == [("Sayaka", "恋人")]
+
+
+def test_infer_replaces_previous_ai_edge_and_skips_pinned_pairs(tmp_path, monkeypatch):
+    cards = [
+        _co_card("Sayaka", {"You": 66}, relations = [{
+            "target": "You", "relation": "邻居", "category": "other",
+            "source": RELATION_SOURCE_AI, "note": "上一轮推断", "count": 66,
+        }]),
+        _co_card("You", {"Sayaka": 66, "Mika": 5}, relations = [{
+            "target": "Mika", "relation": "同事", "category": "work",
+            "source": "manual", "note": "人工确认", "count": 2,
+        }]),
+        _co_card("Mika", {"You": 5}),
+    ]
+    client, _ = _client(tmp_path, monkeypatch, cards)
+
+    result = _infer(client, monkeypatch, [
+        {"from": "Sayaka", "to": "You", "relation": "恋人", "category": "romantic", "keep": True, "reason": "证据足够"},
+        {"from": "Mika", "to": "You", "relation": "朋友", "category": "friendly", "keep": True, "reason": "一起出场"},
+    ])
+
+    # You 对 Mika 有人工边 → 这一对整对跳过，不给 Mika 写单边。
+    assert result["applied"] == 1
+    # 上一次推断的 ai 边被新结论替换，不叠加成两条。
+    sayaka = _relations(result, "characters", "Sayaka")
+    assert [(item["target"], item["relation"]) for item in sayaka] == [("You", "恋人")]
+    assert _relations(result, "characters", "Mika") == []
+    you = _relations(result, "characters", "You")
+    assert sorted(item["target"] for item in you) == ["Mika", "Sayaka"]
+    manual = next(item for item in you if item["target"] == "Mika")
+    assert (manual["source"], manual["relation"]) == ("manual", "同事")
+
+
+def test_infer_keep_false_writes_nothing(tmp_path, monkeypatch):
+    cards = [
+        _co_card("Sayaka", {"You": 66}),
+        _co_card("You", {"Sayaka": 66}),
+    ]
+    client, _ = _client(tmp_path, monkeypatch, cards)
+
+    result = _infer(client, monkeypatch, [
+        {"from": "Sayaka", "to": "You", "relation": "", "category": "", "keep": False, "reason": "资料不足"},
+    ])
+
+    assert result["applied"] == 0
+    assert result["rejected"] == 1
+    # 推断没有「规则边留档」的概念：证据不足不往卡里写 rejected 边。
+    assert _relations(result, "characters", "Sayaka") == []
+    assert _relations(result, "characters", "You") == []
+
+
+def test_infer_rejects_when_no_cooccurrence(tmp_path, monkeypatch):
+    cards = [_card("Alice"), _card("Bob")]
+    client, _ = _client(tmp_path, monkeypatch, cards)
+    monkeypatch.setattr(WorkbenchAnalysisService, "ensure_analysis_ready", lambda self, config, **kwargs: {})
+    snapshot = client.get("/api/workbench").json()
+
+    response = client.post(
+        "/api/workbench/relations/analyze",
+        json = {"storage_key": snapshot["storage_key"], "revision": snapshot["revision"], "mode": "infer"},
+    )
+
+    assert response.status_code == 400
+    assert "同场记录" in response.json()["detail"]
+
+
+def test_relations_analyze_defaults_to_review(tmp_path, monkeypatch):
+    cards = [_card("Alice", [_rule("Bob", "姐妹", count = 3, samples = ["叫姐姐"])]), _card("Bob")]
+    client, _ = _client(tmp_path, monkeypatch, cards)
+
+    result = _review(client, monkeypatch, [
+        {"from": "Alice", "to": "Bob", "relation": "姐妹", "category": "family", "keep": True, "reason": "成立"},
+    ])
+
+    assert result["mode"] == "review"

@@ -204,6 +204,11 @@ class Config():
     # 存取走 .rbox，增量 *_new / 源码 *_source_out 等其它作用域照旧用目录缓存。
     project_file_path: str = ""
     project_file_output: str = ""
+    # 绑定工程时自动创建工程文件：绑定动作（/api/project/resolve 改变项目身份）
+    # 成功后，若 project_file_path 为空，就在输出目录默认位置创建并绑定 .rbox；
+    # 已有目录缓存时把现有内容迁移进文件（复用导入的备份+安装事务）。
+    # 只发生在绑定动作里，不做后台迁移；创建失败不影响绑定本身。
+    project_file_auto_create: bool = True
 
     # GlossaryPage
     glossary_enable: bool = True
