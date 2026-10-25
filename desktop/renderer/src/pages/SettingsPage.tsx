@@ -35,7 +35,7 @@ import type { AppState } from '../useAppState';
 import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
 import { Button, Progress, Tooltip } from 'antd';
-import { displayVersion, describeUpdateDelivery, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
+import { displayVersion, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
 
 type Variant = 'basic' | 'expert' | 'app';
 
@@ -292,25 +292,10 @@ function DesktopAboutCard({ state }: { state: AppState }) {
   else if (status === 'checking') statusText = t('app_update_status_checking');
   else if (status === 'available') statusText = fill(t('app_update_status_new'), { version: displayVersion(update?.version || '') });
   else if (status === 'latest') statusText = t('app_update_status_latest');
-  else if (status === 'downloading') statusText = fill(t('app_update_status_downloading'), { percent: progress });
+  // 下载中文案不再带百分数：百分比只在进度条右侧显示一次，避免同一行重复出现
+  else if (status === 'downloading') statusText = t('app_update_status_downloading');
   else if (status === 'downloaded') statusText = t('app_update_status_downloaded');
   else if (status === 'error') statusText = update?.error || t('app_update_status_failed');
-  // 增量更新是这版的重点，把「本次走的是增量还是全量、省了多少」直接写出来。
-  const delivery = describeUpdateDelivery(update);
-  let deliveryText = '';
-  if (status === 'available') {
-    deliveryText = delivery.kind === 'delta'
-      ? fill(t('app_update_delivery_delta_hint'), {
-        size: formatMegabytes(delivery.modeSize),
-        saved: formatMegabytes(delivery.savedBytes),
-      })
-      : fill(t('app_update_delivery_full_hint'), { size: formatMegabytes(delivery.fullSize) });
-  } else if (delivery.kind === 'delta' && delivery.savedBytes > 0 && ['downloading', 'downloaded'].includes(status || '')) {
-    deliveryText = fill(t('app_update_delivery_delta_active'), {
-      size: formatMegabytes(delivery.modeSize),
-      saved: formatMegabytes(delivery.savedBytes),
-    });
-  }
 
   return (
     <>
@@ -327,10 +312,9 @@ function DesktopAboutCard({ state }: { state: AppState }) {
         <SettingCard title={t('app_update_desktop_status')} description={null}>
           <div className="rb-update-status" aria-live="polite">
             <span>{statusText}</span>
-            {deliveryText ? <span className="rb-update-status-note">{deliveryText}</span> : null}
             {status === 'downloading' ? (
               <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: progress })}>
-                <Progress percent={progress} style={{ width: 160 }} size="small" />
+                <Progress percent={progress} style={{ width: 160 }} size="small" showInfo={false} />
                 <span>{progress}%</span>
               </div>
             ) : null}
@@ -473,8 +457,9 @@ function WebAboutCard(props: { state: AppState }) {
             </span>
             {ui.showProgress ? (
               <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: ui.progress })}>
-                <Progress percent={ui.progress} style={{ width: 160 }} size="small" />
-                <span>{ui.progress}%</span>
+                <Progress percent={ui.progress} style={{ width: 160 }} size="small" showInfo={false} />
+                {/* 状态文案自带百分数时不再重复渲染，保证整行只有一处百分比 */}
+                {ui.statusText.includes('%') ? null : <span>{ui.progress}%</span>}
               </div>
             ) : null}
             <div className="rb-update-actions">

@@ -13,9 +13,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"com{i}" for i in range(1, 10)}
     | {f"lpt{i}" for i in range(1, 10)}
 )
-_PROTOCOL_RESERVED_PATHS = frozenset(
-    {"_update_manifest.json", "_patch_meta.json", "_update_journal.json"}
-)
+_PROTOCOL_RESERVED_PATHS = frozenset({"_update_manifest.json"})
 _PROTOCOL_RESERVED_ROOTS = frozenset({"_update_staging"})
 
 
@@ -203,68 +201,6 @@ def validate_manifest_paths(
         if windows_path_key(path.split("/", 1)[0]) in _PROTOCOL_RESERVED_ROOTS:
             raise RuntimeError(f"Unsafe {label} path: reserved protocol root {path!r}")
     return set(paths_by_key.values())
-
-
-def validate_patch_paths(
-    meta: dict,
-    members: Iterable[object],
-    *,
-    patch_meta_name: str,
-    manifest_name: str,
-) -> None:
-    """校验 patch 的 ZIP 载荷和三组协议路径之间的一致性。"""
-    files = meta.get("files")
-    deleted = meta.get("deleted")
-    manifest = meta.get("manifest")
-    if not isinstance(files, dict) or not isinstance(deleted, list):
-        raise RuntimeError("Invalid patch file lists")
-
-    reserved_paths = (patch_meta_name, manifest_name)
-    file_paths_by_key = validate_file_paths(files, label="patch file path")
-    deleted_paths_by_key = validate_file_paths(deleted, label="patch deleted path")
-    manifest_paths = validate_manifest_paths(
-        manifest,
-        label="patch manifest",
-        reserved_paths=reserved_paths,
-    )
-    manifest_keys = {windows_path_key(path) for path in manifest_paths}
-    reserved_keys = {
-        windows_path_key(path)
-        for path in {*_PROTOCOL_RESERVED_PATHS, *reserved_paths}
-    }
-
-    for label, paths_by_key in (
-        ("patch file", file_paths_by_key),
-        ("patch deleted", deleted_paths_by_key),
-    ):
-        conflict = reserved_keys & set(paths_by_key)
-        if conflict:
-            raise RuntimeError(
-                f"Unsafe {label} path: reserved protocol file "
-                f"{paths_by_key[next(iter(conflict))]!r}"
-            )
-        for path in paths_by_key.values():
-            if windows_path_key(path.split("/", 1)[0]) in _PROTOCOL_RESERVED_ROOTS:
-                raise RuntimeError(
-                    f"Unsafe {label} path: reserved protocol root {path!r}"
-                )
-
-    overlap = set(file_paths_by_key) & set(deleted_paths_by_key)
-    if overlap:
-        raise RuntimeError("Patch files and deleted paths overlap")
-    if not set(files).issubset(manifest_paths):
-        raise RuntimeError("Patch files are not a subset of target manifest")
-    if set(deleted_paths_by_key) & manifest_keys:
-        raise RuntimeError("Deleted paths still exist in target manifest")
-
-    archive_files = validate_zip_members(
-        members,
-        label="patch ZIP",
-        allowed_protocol_paths=(patch_meta_name,),
-    )
-    expected_files = {patch_meta_name, *files}
-    if archive_files != expected_files:
-        raise RuntimeError("Patch ZIP payload does not match patch metadata")
 
 
 def safe_target(

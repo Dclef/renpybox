@@ -16,10 +16,11 @@ import type {
   JobSnapshot,
   LegacyProjectCacheDescription,
   LegacyProjectFileExportResult,
+  ProjectFileBinding,
+  ProjectFileCreateResult,
   ProjectFileDescription,
   ProjectFileExportResult,
   ProjectFileImportResult,
-  ProjectFileBinding,
   ProjectInfo,
   SettingsResponse,
   StartableProjectStatus,
@@ -273,6 +274,17 @@ export function importProjectFile(path: string, bind = true): Promise<ProjectFil
   return request<ProjectFileImportResult>('/api/project/file/import', {
     method: 'POST',
     body: JSON.stringify({ path, bind }),
+  });
+}
+
+/**
+ * 在输出目录创建一个新的 .rbox 并绑定为当前单文件工程（默认路径为
+ * `<输出目录>/<项目名>.rbox`）。既有目录缓存会迁进文件；不覆盖已有文件。
+ */
+export function createProjectFile(path = ''): Promise<ProjectFileCreateResult> {
+  return request<ProjectFileCreateResult>('/api/project/file/create', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
   });
 }
 

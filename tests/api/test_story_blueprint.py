@@ -155,8 +155,102 @@ def test_scan_title_uses_translation_comment_and_scene_image(tmp_path):
     # outside 的 new 是英文原文，不能拿来当标题。
     assert nodes["outside"]["title_zh"] is None
     assert nodes["start"]["image"]["path"] == "images/bg/room.webp"
+    # 画面来源写清楚：这张是 scene 背景，不是 show 兜底图。
+    assert nodes["start"]["image"]["source"] == "scene"
     # scene black 是颜色不是文件，按解析失败处理。
     assert nodes["ending"]["image"] is None
+
+
+SHOW_SCRIPT = """\
+label showonly:
+    scene black
+    show cap1
+    e "One"
+    show cap2
+    e "Two"
+    return
+
+label scene_first:
+    scene bg room
+    show cap1
+    e "Hi"
+    return
+
+label hidden:
+    show cap1
+    hide cap1
+    e "Gone"
+    return
+
+label interface:
+    show screen hud
+    show expression "images/logo.png"
+    e "UI"
+    return
+"""
+
+
+def _make_show_project(tmp_path: Path) -> dict:
+    """scene 全是黑场、画面全靠 show 的工程（真实欧美 galgame 的常见形态）。"""
+    project = _make_project(tmp_path)
+    game = project["game_dir"]
+    for name in ("cap1", "cap2"):
+        (game / "images" / f"{name}.jpg").write_bytes(_PNG)
+    (game / "script.rpy").write_text(SHOW_SCRIPT, encoding="utf-8")
+    return project
+
+
+def test_scan_falls_back_to_show_when_scene_is_black(tmp_path):
+    project = _make_show_project(tmp_path)
+    clear_indexes()
+
+    nodes = _nodes(scan(project["game_dir"], project["tl_dir"], "chinese"))
+
+    # scene 只有黑场：退回 label 结束时还在显示的 show 图（cap2 是最后一张）。
+    assert nodes["showonly"]["image"]["path"] == "images/cap2.jpg"
+    assert nodes["showonly"]["image"]["source"] == "show"
+    assert nodes["showonly"]["show_image_count"] == 2
+
+    # scene 能落到文件时仍然优先，show 只作为兜底。
+    assert nodes["scene_first"]["image"]["path"] == "images/bg/room.webp"
+    assert nodes["scene_first"]["image"]["source"] == "scene"
+    assert nodes["scene_first"]["show_image_count"] == 1
+
+    # hide 之后的 show 不算「label 结束时观众看到的画面」。
+    assert nodes["hidden"]["image"] is None
+    assert nodes["hidden"]["show_image_count"] == 0
+
+    # show screen / show expression 是界面与内联表达式，不是按标签找文件。
+    assert nodes["interface"]["image"] is None
+    assert nodes["interface"]["show_image_count"] == 0
+
+
+def test_read_label_reports_same_show_fallback(tmp_path):
+    project = _make_show_project(tmp_path)
+    clear_indexes()
+
+    detail = read_label(project["game_dir"], "script", "showonly")
+
+    assert detail["image"]["path"] == "images/cap2.jpg"
+    assert detail["image"]["source"] == "show"
+    assert detail["show_image_count"] == 2
+    # 详情和画布必须一致：hide 掉的图在详情里也不能冒出来。
+    hidden = read_label(project["game_dir"], "script", "hidden")
+    assert hidden["image"] is None
+    assert hidden["show_image_count"] == 0
+
+
+def test_show_image_source_survives_blueprint_endpoint(tmp_path):
+    project = _make_show_project(tmp_path)
+    clear_indexes()
+
+    response = _client(_bound_config(project)).get("/api/story-blueprint")
+
+    assert response.status_code == 200
+    nodes = {node["id"]: node for node in response.json()["nodes"]}
+    assert nodes["showonly"]["image"]["source"] == "show"
+    assert nodes["showonly"]["show_image_count"] == 2
+    assert nodes["scene_first"]["image"]["source"] == "scene"
 
 
 def test_scene_image_index_resolves_files_definitions_and_conditions(tmp_path):

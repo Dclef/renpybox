@@ -63,7 +63,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      # 全量包内嵌清单：下次基于它生成增量包时才能校验基线版本。
+      # 全量包内嵌清单：更新器记录安装态版本与文件哈希，仅此用途；失败只告警不阻塞发布。
       - name: Embed update manifest into the portable zip
         continue-on-error: true
         shell: pwsh
@@ -72,49 +72,6 @@ jobs:
           try {
             python buildtools/update_assets.py manifest --dist desktop/release/win-unpacked --version $version --zip "desktop/release/RenpyBox-$version-x64.zip"
             if ($LASTEXITCODE -ne 0) { throw "清单写入失败，退出码 $LASTEXITCODE" }
-          } catch {
-            Write-Host "::warning::$($_.Exception.Message)"
-            exit 0
-          }
-
-      # 上一版不存在（首发）或增量包生成失败时只告警，不让安装包构建失败。
-      - name: Build incremental patch from previous release
-        continue-on-error: true
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
-          try {
-            $json = (gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100") | Out-String
-            if ($LASTEXITCODE -ne 0) { throw '无法读取 GitHub Releases' }
-            $releases = $json | ConvertFrom-Json
-            $current = [version]$version
-            $best = $null
-            foreach ($release in @($releases)) {
-              if ($release.draft) { continue }
-              $tag = [string]$release.tag_name
-              $stripped = $tag -replace '^RenpyBox_v', '' -replace '^RenpyBox_', '' -replace '^v', ''
-              if ($stripped -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { continue }
-              $parsed = [version]$stripped
-              if ($parsed -ge $current) { continue }
-              $expected = "RenpyBox-$stripped-x64.zip"
-              $asset = @($release.assets) | Where-Object { $_.name -ieq $expected } | Select-Object -First 1
-              if (-not $asset) { continue }
-              if (-not $best -or $parsed -gt $best.Parsed) {
-                $best = @{ Parsed = $parsed; Tag = $tag; Version = $stripped; Name = [string]$asset.name }
-              }
-            }
-            if (-not $best) { throw '没有上一版全量包，跳过增量包' }
-            gh release download $best.Tag --repo $env:GITHUB_REPOSITORY --pattern $best.Name --dir $env:RUNNER_TEMP --clobber
-            if ($LASTEXITCODE -ne 0) { throw "下载上一版失败：$($best.Tag)" }
-            $prevZip = Join-Path $env:RUNNER_TEMP $best.Name
-            # 文件名必须带基线版本：客户端只接受基线等于自身版本的增量包，
-            # 跳过中间版本的安装（如 0.9.0 → 0.9.2）会自动回退到全量安装包。
-            $deltaName = "RenpyBox-$version-from-$($best.Version)-x64.delta.zip"
-            python buildtools/update_assets.py patch --dist desktop/release/win-unpacked --version $version --prev-zip $prevZip --prev-version $best.Version --out "desktop/release/$deltaName"
-            if ($LASTEXITCODE -ne 0) { throw "增量包生成失败，退出码 $LASTEXITCODE" }
-            Write-Host "delta patch ready: $deltaName (base $($best.Version))"
           } catch {
             Write-Host "::warning::$($_.Exception.Message)"
             exit 0
@@ -134,5 +91,4 @@ jobs:
           path: |
             desktop/release/RenpyBox-*-x64.exe
             desktop/release/RenpyBox-*-x64.zip
-            desktop/release/RenpyBox-*-x64.delta.zip
           if-no-files-found: warn

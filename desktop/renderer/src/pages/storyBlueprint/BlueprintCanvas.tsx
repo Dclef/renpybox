@@ -16,7 +16,7 @@ import type {
   View,
   Viewport,
 } from '../../types';
-import { LAYOUT, clampScale, clampView, isPlaceholder, nodeHeading } from './storyBlueprintView.mjs';
+import { LAYOUT, clampScale, clampView, isPlaceholder, isShowImage, nodeHeading } from './storyBlueprintView.mjs';
 
 interface Props {
   nodes: StoryBlueprintNode[];
@@ -238,6 +238,14 @@ export function BlueprintCanvas(props: Props) {
                   <span className="rb-blueprint-noimg">{t('story_blueprint_no_image')}</span>
                 ) : null}
                 {placeholder ? <span className="rb-blueprint-ghost">{t('story_blueprint_placeholder')}</span> : null}
+                {isShowImage(node.image) ? (
+                  <span
+                    className="rb-blueprint-source"
+                    title={t('story_blueprint_show_source_hint')}
+                  >
+                    {t('story_blueprint_show_source')}
+                  </span>
+                ) : null}
                 {externalOut?.[node.id] ? (
                   <span className="rb-blueprint-exit" title={t('story_blueprint_exit_hint')}>
                     ⇢{externalOut[node.id]}

@@ -18,12 +18,6 @@ export interface DesktopUpdateState {
   assetSize?: number;
   assetDigest?: string;
   filePath?: string;
-  /** full：NSIS 安装包；delta：文件级增量包。空字符串表示尚未下载。 */
-  mode?: '' | 'full' | 'delta';
-  deltaAssetName?: string;
-  deltaAssetUrl?: string;
-  deltaAssetSize?: number;
-  deltaAssetDigest?: string;
 }
 
 export interface DesktopAppInfo {

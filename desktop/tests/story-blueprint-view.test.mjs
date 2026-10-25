@@ -18,6 +18,8 @@ import {
   hasCjk,
   isNoiseTitle,
   isPlaceholder,
+  isShowImage,
+  imageSource,
   labelName,
   layoutNodes,
   nodeHeading,
@@ -267,4 +269,22 @@ test('isNoiseTitle 只把纯标点当噪音', () => {
   assert.equal(isNoiseTitle('...'), true);
   assert.equal(isNoiseTitle('?!'), true);
   assert.equal(isNoiseTitle('Wow!'), false);
+});
+
+test('imageSource：show 兜底图与 scene 背景分得开，老数据缺 source 按 scene', () => {
+  assert.equal(imageSource({ path: 'images/cap1.jpg', source: 'show' }), 'show');
+  assert.equal(imageSource({ path: 'images/bg room.jpg', source: 'scene' }), 'scene');
+  // v0.9.7 之前后端只出 scene 图，没有 source 字段；不能凭空冒出「来自 show」。
+  assert.equal(imageSource({ path: 'images/bg room.jpg' }), 'scene');
+  assert.equal(imageSource(null), 'scene');
+  assert.equal(imageSource(undefined), 'scene');
+  // 脏 source 值也按 scene 处理，避免把未知来源标成 show。
+  assert.equal(imageSource({ path: 'x.jpg', source: 'gallery' }), 'scene');
+});
+
+test('isShowImage 只对 show 兜底图返回 true', () => {
+  assert.equal(isShowImage({ path: 'images/cap1.jpg', source: 'show' }), true);
+  assert.equal(isShowImage({ path: 'images/bg room.jpg', source: 'scene' }), false);
+  assert.equal(isShowImage({ path: 'images/bg room.jpg' }), false);
+  assert.equal(isShowImage(null), false);
 });

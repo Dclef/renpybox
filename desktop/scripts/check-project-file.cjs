@@ -14,6 +14,7 @@ function fixture() {
   const state = window.__projectFile = {
     inspects: [],
     exports: [],
+    creates: [],
     saveCalls: [],
     opened: [],
     saveMode: 'cancel',
@@ -68,6 +69,51 @@ function fixture() {
     if (route === '/api/version') payload = { app_version: '0.9.3', api_version: '1' };
     if (route === '/api/project') payload = { renpy_project_path: 'C:/ui-check', renpy_game_folder: 'C:/ui-check/game', renpy_tl_folder: 'C:/ui-check/game/tl/chinese', theme: 'LIGHT', app_language: 'ZH' };
     if (route === '/api/translation/state') payload = translation;
+    if (route === '/api/project/file/binding') {
+      // 未绑定：面板展示「创建工程文件」入口和默认位置。
+      payload = {
+        bound: false,
+        path: '',
+        output_folder: '',
+        exists: false,
+        size: 0,
+        item_count: 0,
+        updated_at: '',
+        detail: '',
+        default_path: 'C:/ui-check/game/tl/chinese/ui-check.rbox',
+        auto_create: true,
+      };
+    }
+    if (route === '/api/project/file/create') {
+      const body = JSON.parse(options.body);
+      state.creates.push(body);
+      const target = body.path || 'C:/ui-check/game/tl/chinese/ui-check.rbox';
+      payload = {
+        info: {
+          path: target,
+          schema_version: 1,
+          app_version: '0.9.3',
+          created_at: '',
+          updated_at: '',
+          project_root: 'C:/ui-check',
+          item_count: 7,
+          items_digest: '',
+        },
+        output_folder: 'C:/ui-check/game/tl/chinese',
+        current_project_root: 'C:/ui-check',
+        project_root_matches: true,
+        backup_folder: 'E:/backup/cache',
+        assets_output_folder: '',
+        assets_backup_folder: '',
+        item_count: 7,
+        applied_settings: [],
+        ignored_settings: [],
+        bound: true,
+        project_file_path: target,
+        created: true,
+        migrated_item_count: 7,
+      };
+    }
     if (route === '/api/project/file/legacy/inspect') {
       const body = JSON.parse(options.body);
       state.inspects.push(body);
@@ -163,13 +209,17 @@ app.whenReady().then(async () => {
     const layout = await js(`(() => {
       const root = document.querySelector('.rb-project-file');
       const note = root.querySelector('.banner');
-      const actions = root.querySelector('.rb-project-file-actions');
+      // 绑定面板也可能有操作行；这里锁定「导出 / 导入 / 旧数据」那一行。
+      const actions = [...root.querySelectorAll('.rb-project-file-actions')]
+        .find((row) => row.textContent.includes('从旧版数据创建工程文件'));
+      if (!actions) return { missing: true };
       const buttons = [...actions.querySelectorAll('button')].map((button) => {
         const rect = button.getBoundingClientRect();
         return { text: button.textContent.trim(), disabled: button.disabled, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       });
       return { noteTop: note.getBoundingClientRect().top, buttonTop: buttons[0].top, buttons, width: innerWidth };
     })()`);
+    assert.ok(!layout.missing, 'project file actions row missing');
     assert.ok(layout.noteTop < layout.buttonTop, 'compatibility notice must sit above the actions');
     assert.equal(layout.buttons.length, 3);
     for (const button of layout.buttons) {
@@ -181,6 +231,36 @@ app.whenReady().then(async () => {
     await js("document.querySelector('.rb-project-file').scrollIntoView({ block: 'center' })");
     await pause(50);
     await shot('project-file-1024.png');
+
+    // 未绑定时的「创建工程文件」：默认位置可见，点击即按默认路径创建并绑定。
+    const createRow = await js(`(() => {
+      const row = [...document.querySelectorAll('.rb-project-file-actions')]
+        .find((element) => element.textContent.includes('创建工程文件') && !element.textContent.includes('旧版'));
+      const hint = [...document.querySelectorAll('.rb-project-file-guide')]
+        .map((element) => element.textContent.trim())
+        .find((text) => text.includes('C:/ui-check/game/tl/chinese/ui-check.rbox'));
+      return { buttons: [...row.querySelectorAll('button')].map((button) => button.textContent.trim()), hint: hint || '' };
+    })()`);
+    assert.deepEqual(createRow.buttons, ['创建工程文件', '另存到…']);
+    assert.match(createRow.hint, /C:\/ui-check\/game\/tl\/chinese\/ui-check\.rbox/);
+    await click('创建工程文件');
+    await waitFor("window.__projectFile.creates.length === 1 && document.body.textContent.includes('已创建并绑定工程文件')");
+    assert.deepEqual(await js('window.__projectFile.creates[0]'), { path: '' }, 'default path must let the backend decide');
+    assert.match(await js('document.body.textContent'), /ui-check\.rbox/);
+    await shot('project-file-create.png');
+
+    // 自动创建开关跟着配置项渲染（默认开启）。
+    const autoCreate = await js(`(() => {
+      const control = document.querySelector('button[role="switch"][aria-label="自动创建工程文件"]');
+      const row = control?.closest('.rb-setting-row');
+      return control ? { on: control.getAttribute('aria-checked'), title: row?.textContent.includes('绑定工程时自动创建工程文件') ?? false } : null;
+    })()`);
+    assert.ok(autoCreate, 'auto-create switch missing');
+    assert.equal(autoCreate.on, 'true', 'auto-create defaults to on');
+    assert.equal(autoCreate.title, true, 'auto-create switch needs its setting card title');
+    await js("document.querySelector('button[role=\"switch\"][aria-label=\"自动创建工程文件\"]').scrollIntoView({ block: 'center' })");
+    await pause(50);
+    await shot('project-file-auto-create.png');
 
     await click('从旧版数据创建工程文件');
     await waitFor(`document.querySelector('.ant-modal')?.textContent.includes(${JSON.stringify(OUTSIDE)})`);
@@ -237,6 +317,8 @@ app.whenReady().then(async () => {
     assert.match(english, /JSON/);
     assert.match(english, /snapshot copy/);
     assert.match(english, /No project file is bound/);
+    assert.match(english, /Create project file/);
+    assert.match(english, /Save as…/);
     assert.equal(/[\u3400-\u9fff]/.test(english), false, 'English project file copy must be complete');
     assert.deepEqual(await js("[...document.querySelectorAll('.rb-project-file,.rb-project-file-actions,.rb-project-file .rb-settings-body')].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.className)"), [], 'English project file actions must fit 1024px');
     await click('Create Project File from Older Data');

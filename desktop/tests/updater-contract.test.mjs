@@ -15,6 +15,7 @@ const installer = (version, { legacy = false } = {}) => ({
   size: 280000000,
   browser_download_url: `https://example.test/renpybox/renpybox-${version}-x64.exe`,
 });
+/** 发布资产只认全量安装包；更新链路上没有别的可选资产。 */
 const release = (version, { assets, draft = false, prerelease = true } = {}) => ({
   tag_name: `v${version}`,
   html_url: `https://github.com/example/renpybox/releases/tag/v${version}`,
@@ -70,7 +71,10 @@ function fixture({
       launches.push(filePath);
     },
   });
-  return { updater, requests, downloads, launches, quits, states, signals: () => downloadSignals, release: () => releaseDownload() };
+  return {
+    updater, requests, downloads, launches, quits, states,
+    signals: () => downloadSignals, release: () => releaseDownload(),
+  };
 }
 
 test('版本标签只提供版本号，命名统一为 RenpyBox 且兼容旧 newui 测试版', () => {
@@ -237,4 +241,29 @@ test('安装包启动失败时给出可读错误', async () => {
   assert.equal(state.status, 'error');
   assert.match(state.error, /启动安装程序失败：EPERM/);
   assert.equal(f.quits.length, 0);
+});
+
+test('更新契约只走全量安装包：check 给 exe 资产，download 落地 exe，install 拉起安装器', async () => {
+  const f = fixture({
+    currentVersion: '0.9.0',
+    releases: [release('0.9.1', { prerelease: false })],
+  });
+  const offered = await f.updater.check();
+  assert.equal(offered.status, 'available');
+  assert.equal(offered.assetName, 'RenpyBox-0.9.1-x64.exe');
+  assert.match(offered.assetUrl, /RenpyBox-0\.9\.1-x64\.exe$/i);
+  // 增量链路移除后，state 上不应再出现增量相关字段
+  for (const key of ['mode', 'deltaAssetName', 'deltaAssetUrl', 'deltaAssetSize', 'deltaAssetDigest']) {
+    assert.equal(key in offered, false, `state 不应包含 ${key}`);
+  }
+
+  const downloaded = await f.updater.download();
+  assert.equal(downloaded.status, 'downloaded');
+  assert.equal(f.downloads.length, 1);
+  assert.equal(f.downloads[0].url, offered.assetUrl);
+  assert.equal(downloaded.filePath, path.join('tmp', 'renpybox-update', 'RenpyBox-0.9.1-x64.exe'));
+
+  await f.updater.install();
+  assert.deepEqual(f.launches, [downloaded.filePath]);
+  assert.equal(f.quits.length, 1);
 });
