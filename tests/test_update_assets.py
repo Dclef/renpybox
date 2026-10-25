@@ -9,12 +9,9 @@ import pytest
 import updater
 from buildtools.update_assets import (
     MANIFEST_NAME,
-    PATCH_META_NAME,
     build_manifest,
-    build_patch,
     append_manifest_to_zip,
     file_sha256,
-    validate_patch_zip,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,18 +21,13 @@ _WORKFLOW_7ZA_COMPRESS = ("a", "-y", "-bt", "-mx5")
 _WORKFLOW_7ZA_UTF8 = "-mcu=on"
 
 
-def _make_version_tree(root: Path, version: str, big: bool = False) -> Path:
+def _make_version_tree(root: Path, version: str) -> Path:
     """伪造一个版本的 dist 目录（含主程序标记 exe 与若干文件）。"""
-    import random
-
     dist = root / f"dist_{version.replace('.', '_')}"
     (dist / "_internal").mkdir(parents=True)
-    # exe 内容跨版本固定：是否进 patch 由测试显式控制，避免默认出现在 changed 里
     (dist / "RenpyBox.exe").write_bytes(b"EXE-MARK")
     (dist / "_internal" / "base.py").write_text(f"# base {version}", encoding="utf-8")
-    # 随机内容防止 deflate 把大文件压没了，保证体积断言有意义
-    payload = random.Random(42).randbytes(1024 * 1024) if big else b"x" * 128
-    (dist / "_internal" / "data.bin").write_bytes(payload)
+    (dist / "_internal" / "data.bin").write_bytes(b"x" * 128)
     (dist / "resource").mkdir()
     (dist / "resource" / "model.bin").write_bytes(b"m" * 2048)
     return dist
@@ -61,20 +53,6 @@ def _install_from(dist: Path, install_dir: Path, version: str | None = None, man
         (install_dir / MANIFEST_NAME).write_text(
             json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
         )
-
-
-def _extract_prev(root: Path, prev_zip: Path) -> Path:
-    from buildtools.update_assets import extract_prev_zip
-
-    return extract_prev_zip(prev_zip, root / "prev_extract")
-
-
-def _build_patch_for(tmp_path: Path, v1: Path, v2: Path) -> Path:
-    prev_zip = _make_full_zip(v1, tmp_path / "v1_full.zip", "v1.0.0")
-    prev_payload = _extract_prev(tmp_path, prev_zip)
-    patch_zip = tmp_path / "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
-    build_patch(v2, "v2.0.0", prev_payload, "v1.0.0", patch_zip)
-    return patch_zip
 
 
 def test_release_workflow_ships_desktop_artifacts_only() -> None:
@@ -231,331 +209,6 @@ def test_manifest_append_is_readbackable_and_unique(tmp_path: Path) -> None:
         append_manifest_to_zip(zip_path, meta)
 
 
-def test_extract_prev_zip_rejects_unsafe_member_before_extracting(tmp_path: Path) -> None:
-    from buildtools.update_assets import extract_prev_zip
-
-    zip_path = tmp_path / "unsafe-prev.zip"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("../victim.txt", "bad")
-
-    with pytest.raises(RuntimeError):
-        extract_prev_zip(zip_path, tmp_path / "prev")
-
-    assert not (tmp_path / "victim.txt").exists()
-    assert not (tmp_path / "prev").exists()
-
-
-def test_build_patch_detects_changed_added_deleted(tmp_path: Path) -> None:
-    v1 = _make_version_tree(tmp_path, "v1.0.0", big=True)
-    v2 = _make_version_tree(tmp_path, "v2.0.0", big=True)
-    (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
-    (v2 / "_internal" / "new_file.txt").write_text("new", encoding="utf-8")
-    (v2 / "resource" / "model.bin").unlink()
-
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-
-    with zipfile.ZipFile(patch_zip, "r") as zf:
-        names = set(zf.namelist())
-        meta = json.loads(zf.read(PATCH_META_NAME).decode("utf-8"))
-
-    assert PATCH_META_NAME in names
-    assert set(meta["files"]) == {"_internal/base.py", "_internal/new_file.txt"}
-    assert meta["deleted"] == ["resource/model.bin"]
-    assert meta["base_version"] == "v1.0.0"
-    assert meta["version"] == "v2.0.0"
-    # meta 内嵌完整目标 manifest
-    assert set(meta["manifest"]["files"]) == {
-        "RenpyBox.exe",
-        "_internal/base.py",
-        "_internal/data.bin",
-        "_internal/new_file.txt",
-    }
-    assert validate_patch_zip(patch_zip, expected_version="v2.0.0") == meta
-
-
-def test_build_patch_failure_leaves_no_publishable_zip(monkeypatch, tmp_path: Path) -> None:
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
-    (v2 / "_internal" / "new_file.txt").write_text("new", encoding="utf-8")
-    prev_zip = _make_full_zip(v1, tmp_path / "v1_full.zip", "v1.0.0")
-    prev_payload = _extract_prev(tmp_path, prev_zip)
-    out_zip = tmp_path / "RenpyBox_v2.0.0.from-v1.0.0.patch.zip"
-    out_zip.write_bytes(b"stale-partial-zip")
-
-    original_write = zipfile.ZipFile.write
-    calls = 0
-
-    def fail_second_write(self, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("simulated zip write failure")
-        return original_write(self, *args, **kwargs)
-
-    monkeypatch.setattr(zipfile.ZipFile, "write", fail_second_write)
-
-    with pytest.raises(OSError, match="simulated zip write failure"):
-        build_patch(v2, "v2.0.0", prev_payload, "v1.0.0", out_zip)
-
-    assert not out_zip.exists()
-    assert not list(tmp_path.glob(f".{out_zip.name}.*.tmp"))
-
-
-def test_patch_zip_far_smaller_than_full_zip(tmp_path: Path) -> None:
-    """验收口径：patch 场景 download_bytes ≈ compressed_changed_payload。"""
-    v1 = _make_version_tree(tmp_path, "v1.0.0", big=True)
-    v2 = _make_version_tree(tmp_path, "v2.0.0", big=True)
-    (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
-
-    full_v2 = _make_full_zip(v2, tmp_path / "v2_full.zip", "v2.0.0")
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-
-    # 只有 base.py 变化的 patch 必须远小于全量包（全量含 1MB 的 data.bin）
-    assert patch_zip.stat().st_size < full_v2.stat().st_size // 10
-
-
-def test_updater_applies_patch_end_to_end(tmp_path: Path) -> None:
-    v1 = _make_version_tree(tmp_path, "v1.0.0", big=True)
-    v2 = _make_version_tree(tmp_path, "v2.0.0", big=True)
-    (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
-    (v2 / "_internal" / "new_file.txt").write_text("new", encoding="utf-8")
-    (v2 / "resource" / "model.bin").unlink()
-
-    install_dir = tmp_path / "install"
-    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-
-    updater.apply_update(
-        pid = 0,
-        zip_path = patch_zip,
-        install_dir = install_dir,
-        release_url = None,
-        restart = False,
-        exe_name = "RenpyBox.exe",
-    )
-
-    # 变化文件已提交、新增文件就位、删除清单生效
-    assert (install_dir / "_internal" / "base.py").read_text(encoding="utf-8") == "# base v2.0.0 CHANGED"
-    assert (install_dir / "_internal" / "new_file.txt").read_text(encoding="utf-8") == "new"
-    assert not (install_dir / "resource" / "model.bin").exists()
-    # 未变化的文件保持原样
-    assert (install_dir / "_internal" / "data.bin").read_bytes() == (v1 / "_internal" / "data.bin").read_bytes()
-    # 安装态 manifest 已更新为 v2 全量清单
-    installed = json.loads((install_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
-    assert installed["version"] == "v2.0.0"
-    assert "_internal/new_file.txt" in installed["files"]
-    # journal、.new、staging 全部清理，patch 包删除
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-    assert not list(install_dir.rglob("*.new"))
-    assert not (install_dir / "_update_staging").exists()
-    assert not patch_zip.exists()
-
-    log_text = (install_dir / "log" / "last_update.log").read_text(encoding="utf-8")
-    assert "Patch: v2.0.0" in log_text
-    assert "Applied: 2 files" in log_text
-
-
-def test_updater_full_patch_patch_sequence(tmp_path: Path) -> None:
-    """首次全量建立基线后，连续两个 patch 都必须按版本链应用。"""
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    v3 = _make_version_tree(tmp_path, "v3.0.0")
-    (v2 / "_internal" / "base.py").write_text("v2", encoding="utf-8")
-    (v3 / "_internal" / "base.py").write_text("v3", encoding="utf-8")
-    (v3 / "_internal" / "third.txt").write_text("third", encoding="utf-8")
-
-    install_dir = tmp_path / "install"
-    full_v1 = _make_full_zip(v1, tmp_path / "v1_full.zip", "v1.0.0")
-    updater.apply_update(
-        pid=0,
-        zip_path=full_v1,
-        install_dir=install_dir,
-        release_url=None,
-        restart=False,
-        exe_name="RenpyBox.exe",
-    )
-
-    patch_v2 = _build_patch_for(tmp_path, v1, v2)
-    updater.apply_update(
-        pid=0,
-        zip_path=patch_v2,
-        install_dir=install_dir,
-        release_url=None,
-        restart=False,
-        exe_name="RenpyBox.exe",
-    )
-
-    prev_v2 = _make_full_zip(v2, tmp_path / "v2_full_for_v3.zip", "v2.0.0")
-    prev_payload = _extract_prev(tmp_path, prev_v2)
-    patch_v3 = tmp_path / "RenpyBox_v3.0.0.from-v2.0.0.patch.zip"
-    build_patch(v3, "v3.0.0", prev_payload, "v2.0.0", patch_v3)
-    updater.apply_update(
-        pid=0,
-        zip_path=patch_v3,
-        install_dir=install_dir,
-        release_url=None,
-        restart=False,
-        exe_name="RenpyBox.exe",
-    )
-
-    assert (install_dir / "_internal" / "base.py").read_text(encoding="utf-8") == "v3"
-    assert (install_dir / "_internal" / "third.txt").read_text(encoding="utf-8") == "third"
-    installed = json.loads((install_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
-    assert installed["version"] == "v3.0.0"
-
-
-def test_updater_rejects_patch_without_matching_installed_base_manifest(
-    tmp_path: Path,
-) -> None:
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-    install_dir = tmp_path / "install"
-    _install_from(v1, install_dir)
-
-    with pytest.raises(RuntimeError, match="installed manifest"):
-        updater.apply_update(
-            pid=0,
-            zip_path=patch_zip,
-            install_dir=install_dir,
-            release_url=None,
-            restart=False,
-            exe_name="RenpyBox.exe",
-        )
-
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-    assert not (install_dir / "_update_staging").exists()
-    assert patch_zip.exists()
-
-
-def test_updater_patch_resumes_interrupted_commit(tmp_path: Path) -> None:
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    # 两个变化文件：构造一个已提交、一个中断在现场的 journal
-    (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
-    (v2 / "_internal" / "data.bin").write_bytes(b"y" * 256)
-
-    install_dir = tmp_path / "install"
-    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-
-    meta = updater._read_patch_meta(patch_zip)
-    rels = sorted(meta["files"])
-    assert len(rels) == 2
-    committed_rel, staged_rel = rels[0], rels[1]
-
-    with zipfile.ZipFile(patch_zip, "r") as zf:
-        # 已提交项：目标已是 v2 内容；中断项：.new 已就位
-        (install_dir.joinpath(*committed_rel.split("/"))).write_bytes(zf.read(committed_rel))
-        staged_new = install_dir.joinpath(*staged_rel.split("/"))
-        staged_new = staged_new.with_name(staged_new.name + ".new")
-        staged_new.write_bytes(zf.read(staged_rel))
-
-    (install_dir / updater.JOURNAL_NAME).write_text(
-        json.dumps({
-            "format": updater.PATCH_FORMAT,
-            "version": "v2.0.0",
-            "staged": rels,
-            "committed": [committed_rel],
-        }),
-        encoding="utf-8",
-    )
-
-    updater.apply_update(
-        pid = 0,
-        zip_path = patch_zip,
-        install_dir = install_dir,
-        release_url = None,
-        restart = False,
-        exe_name = "RenpyBox.exe",
-    )
-
-    # 全部文件抵达 v2 状态，journal 与 .new 清理
-    assert (install_dir / "_internal" / "base.py").read_text(encoding="utf-8") == "# base v2.0.0 CHANGED"
-    assert (install_dir / "_internal" / "data.bin").read_bytes() == b"y" * 256
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-    assert not list(install_dir.rglob("*.new"))
-
-
-def test_updater_patch_stale_journal_is_discarded(tmp_path: Path) -> None:
-    """版本不匹配的旧 journal 与 .new 残留必须被清理后全新应用。"""
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    (v2 / "_internal" / "base.py").write_text("# base v2.0.0 CHANGED", encoding="utf-8")
-
-    install_dir = tmp_path / "install"
-    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
-    stale_new = install_dir / "_internal" / "base.py.new"
-    stale_new.write_bytes(b"stale")
-    (install_dir / updater.JOURNAL_NAME).write_text(
-        json.dumps({
-            "format": updater.PATCH_FORMAT,
-            "version": "v9.9.9",
-            "staged": ["_internal/base.py"],
-            "committed": [],
-        }),
-        encoding="utf-8",
-    )
-
-    patch_zip = _build_patch_for(tmp_path, v1, v2)
-    updater.apply_update(
-        pid = 0,
-        zip_path = patch_zip,
-        install_dir = install_dir,
-        release_url = None,
-        restart = False,
-        exe_name = "RenpyBox.exe",
-    )
-
-    assert (install_dir / "_internal" / "base.py").read_text(encoding="utf-8") == "# base v2.0.0 CHANGED"
-    assert not stale_new.exists()
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-
-
-def test_updater_rejects_invalid_target_manifest_before_install(
-    tmp_path: Path,
-) -> None:
-    """客户端不能接受发布侧未通过的 patch manifest。"""
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    (v2 / "_internal" / "base.py").write_text("changed", encoding="utf-8")
-    valid_patch = _build_patch_for(tmp_path, v1, v2)
-    invalid_patch = tmp_path / "invalid.patch.zip"
-
-    with zipfile.ZipFile(valid_patch, "r") as source:
-        payload = {
-            info.filename: source.read(info.filename)
-            for info in source.infolist()
-        }
-    meta = json.loads(payload[PATCH_META_NAME].decode("utf-8"))
-    meta["manifest"]["format"] = "invalid-manifest-format"
-    payload[PATCH_META_NAME] = json.dumps(meta).encode("utf-8")
-    with zipfile.ZipFile(invalid_patch, "w", zipfile.ZIP_DEFLATED) as target:
-        for name, data in payload.items():
-            target.writestr(name, data)
-
-    install_dir = tmp_path / "install"
-    _install_from(v1, install_dir, manifest=build_manifest(v1, "v1.0.0"))
-    sentinel = install_dir / "sentinel.txt"
-    sentinel.write_text("keep", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Invalid target manifest"):
-        updater.apply_update(
-            pid=0,
-            zip_path=invalid_patch,
-            install_dir=install_dir,
-            release_url=None,
-            restart=False,
-            exe_name="RenpyBox.exe",
-        )
-
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-    assert invalid_patch.is_file()
-
-
 def test_full_update_embeds_installed_manifest(tmp_path: Path) -> None:
     """全量包（内嵌 manifest）应用后写入安装态 manifest，meta 不落入安装目录。"""
     v2 = _make_version_tree(tmp_path, "v2.0.0")
@@ -624,88 +277,8 @@ def test_full_update_without_manifest_skips_install_state(tmp_path: Path) -> Non
     assert not (install_dir / MANIFEST_NAME).exists()
 
 
-@pytest.mark.parametrize("damage", ["missing", "modified"])
-def test_patch_rejects_damaged_unchanged_dependency(tmp_path: Path, damage: str) -> None:
-    """补丁不携带的依赖必须完整，不能更新成功后才暴露启动缺文件。"""
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    install = tmp_path / "install"
-    _install_from(v1, install, manifest=build_manifest(v1, "v1.0.0"))
-    patch = _build_patch_for(tmp_path, v1, v2)
-    dependency = install / "_internal" / "data.bin"
-    if damage == "missing":
-        dependency.unlink()
-    else:
-        dependency.write_bytes(b"z" * dependency.stat().st_size)
-    with pytest.raises(RuntimeError, match="全量更新"):
-        updater.apply_update(
-            pid=0, zip_path=patch, install_dir=install,
-            release_url=None, restart=False, exe_name="RenpyBox.exe",
-        )
-    assert (install / "_internal" / "base.py").read_bytes() == (v1 / "_internal" / "base.py").read_bytes()
-    assert not (install / updater.JOURNAL_NAME).exists()
-    assert patch.is_file()
-
-
-def test_patch_command_verifies_reconstructed_installation(tmp_path: Path) -> None:
-    from buildtools.update_assets import main
-
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    full = _make_full_zip(v1, tmp_path / "v1.zip", "v1.0.0")
-    patch = tmp_path / "v2.patch.zip"
-    assert main([
-        "patch", "--dist", str(v2), "--version", "v2.0.0",
-        "--prev-zip", str(full), "--prev-version", "v1.0.0", "--out", str(patch),
-    ]) == 0
-    assert validate_patch_zip(patch, "v2.0.0")["base_version"] == "v1.0.0"
-
-
-def test_find_payload_dir_accepts_pre_rename_executable(tmp_path: Path) -> None:
-    """0.9.1 的主程序叫 "RenpyBox New UI.exe"，用它当基线时也要能定位安装根。"""
-    from buildtools.update_assets import find_payload_dir
-
-    legacy = tmp_path / "legacy"
-    legacy.mkdir()
-    (legacy / "RenpyBox New UI.exe").write_bytes(b"EXE")
-    (legacy / "resources").mkdir()
-    (legacy / "resources" / "app.asar").write_bytes(b"asar")
-    assert find_payload_dir(legacy) == legacy
-
-    nested = tmp_path / "nested"
-    inner = nested / "RenpyBox-0.9.1"
-    inner.mkdir(parents=True)
-    (inner / "RenpyBox New UI.exe").write_bytes(b"EXE")
-    assert find_payload_dir(nested) == inner
-
-    with pytest.raises(RuntimeError, match="Payload dir not found"):
-        find_payload_dir(tmp_path / "empty")
-
-
-def test_patch_command_accepts_baseline_without_embedded_manifest(tmp_path: Path) -> None:
-    """0.9.x 的全量包没有内嵌清单；生成增量包时要自己补一份基线清单才能验证。"""
-    from buildtools.update_assets import main
-
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    legacy_zip = tmp_path / "v1-no-manifest.zip"
-    with zipfile.ZipFile(legacy_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
-        for item in sorted(v1.rglob("*")):
-            if item.is_file():
-                zf.write(item, item.relative_to(v1).as_posix())
-    with zipfile.ZipFile(legacy_zip) as zf:
-        assert MANIFEST_NAME not in zf.namelist()
-
-    patch = tmp_path / "v2.patch.zip"
-    assert main([
-        "patch", "--dist", str(v2), "--version", "v2.0.0",
-        "--prev-zip", str(legacy_zip), "--prev-version", "v1.0.0", "--out", str(patch),
-    ]) == 0
-    assert validate_patch_zip(patch, "v2.0.0")["base_version"] == "v1.0.0"
-
-
-def test_delta_asset_name_carries_base_version() -> None:
-    """增量包只对生成它的那一版有效，文件名必须带基线版本，否则跨版本会盖出混合安装。"""
+def test_desktop_workflow_embeds_update_manifest() -> None:
+    """全量包必须内嵌清单，更新器才能记录安装态文件哈希。"""
     import yaml
 
     workflow_dir = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -714,49 +287,14 @@ def test_delta_asset_name_carries_base_version() -> None:
         Loader=yaml.BaseLoader,
     )
     steps = desktop["jobs"]["package"]["steps"]
-    # 全量包必须内嵌清单，否则下一版生成增量包时无法校验基线
-    manifest_step = next(step for step in steps if step.get("name") == "Embed update manifest into the portable zip")
-    assert "buildtools/update_assets.py manifest" in manifest_step["run"]
-    assert manifest_step["continue-on-error"] == "true"
-    patch_step = next(step for step in steps if step.get("name") == "Build incremental patch from previous release")
-    # 首发没有上一版：这一步失败不能让安装包构建失败
-    assert patch_step["continue-on-error"] == "true"
-    run = patch_step["run"]
-    assert 'RenpyBox-$version-from-$($best.Version)-x64.delta.zip' in run
-    assert "buildtools/update_assets.py patch" in run
-
-    upload = next(
+    manifest_step = next(
         step for step in steps
-        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+        if step.get("name") == "Embed update manifest into the portable zip"
     )
-    assert "desktop/release/RenpyBox-*-x64.delta.zip" in upload["with"]["path"]
-    # 增量包可能不存在（首发/上一版缺失），不能让上传整步失败
-    assert upload["with"]["if-no-files-found"] == "warn"
-
-    release = yaml.load(
-        (workflow_dir / "release.yml").read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
+    assert "buildtools/update_assets.py manifest" in manifest_step["run"]
+    # 清单内嵌失败只告警，不能让安装包构建失败
+    assert manifest_step["continue-on-error"] == "true"
+    # 增量 patch 通道已整体移除，发布流程不得再生成 patch 包
+    assert not any(
+        "update_assets.py patch" in str(step.get("run") or "") for step in steps
     )
-    draft_run = next(step["run"] for step in release["jobs"]["draft"]["steps"] if "run" in step)
-    # 发布侧按 $version 匹配的不是写死名字，筛出来的是 from-<base> 形式
-    assert 'Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-from-*-x64.delta.zip"' in draft_run
-    assert "RenpyBox-$version-x64.delta.zip\"" not in draft_run
-    # exe 与 zip 仍必须存在，增量包缺失只是少传一个资产
-    assert 'if (!(Test-Path -LiteralPath $file)' in draft_run
-
-
-def test_patch_command_discards_failed_reconstruction(tmp_path: Path, monkeypatch) -> None:
-    from buildtools.update_assets import main
-
-    v1 = _make_version_tree(tmp_path, "v1.0.0")
-    v2 = _make_version_tree(tmp_path, "v2.0.0")
-    full = _make_full_zip(v1, tmp_path / "v1.zip", "v1.0.0")
-    patch = tmp_path / "v2.patch.zip"
-    # 模拟应用器遗漏文件，即使未报错也不能发布校验不一致的补丁。
-    monkeypatch.setattr(updater, "apply_update", lambda **kwargs: None)
-    with pytest.raises(RuntimeError, match="校验失败"):
-        main([
-            "patch", "--dist", str(v2), "--version", "v2.0.0",
-            "--prev-zip", str(full), "--prev-version", "v1.0.0", "--out", str(patch),
-        ])
-    assert not patch.exists()

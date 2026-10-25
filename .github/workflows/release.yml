@@ -49,16 +49,15 @@ jobs:
           $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
           if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') { throw 'Expected a stable desktop version' }
           if ((Get-Content version.txt -Raw).Trim() -ne "v$version") { throw 'version.txt and application versions differ' }
-          $files = @(
-            "release-assets/RenpyBox-$version-x64.exe",
-            "release-assets/RenpyBox-$version-x64.zip"
-          )
-          foreach ($file in $files) {
-            if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) { throw "Missing artifact: $file" }
+          # 安装包与全量 zip 必须各正好一个，不接受"至少一个"，也不额外收集其他资产。
+          $installers = @(Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-x64.exe" -File -ErrorAction SilentlyContinue)
+          $portableZips = @(Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-x64.zip" -File -ErrorAction SilentlyContinue)
+          if ($installers.Count -ne 1) { throw "Expected exactly one installer for v$version, found $($installers.Count)" }
+          if ($portableZips.Count -ne 1) { throw "Expected exactly one portable zip for v$version, found $($portableZips.Count)" }
+          foreach ($required in @($installers[0], $portableZips[0])) {
+            if ($required.Length -eq 0) { throw "Missing artifact: release-assets/$($required.Name)" }
           }
-          foreach ($delta in @(Get-ChildItem -Path release-assets -Filter "RenpyBox-$version-from-*-x64.delta.zip" -File -ErrorAction SilentlyContinue)) {
-            if ($delta.Length -gt 0) { $files += $delta.FullName }
-          }
+          $files = @($installers[0].FullName, $portableZips[0].FullName)
           $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
           $section = [regex]::Match($changelog, ('(?ms)^## v' + [regex]::Escape($version) + '[^\r\n]*\r?\n(.*?)(?=^## |\z)'))
           if (!$section.Success) { throw "Missing changelog for v$version" }

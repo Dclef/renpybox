@@ -1,10 +1,8 @@
 import { spawn } from 'node:child_process';
-import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { downloadInstaller } from './updater-download.js';
 import { downloadCandidates } from './updater-mirror.js';
-import { deltaAssetName, selectDeltaAsset, spawnDeltaApplier as defaultSpawnDeltaApplier } from './updater-delta.js';
 import {
   DESKTOP_TAG_PATTERN,
   compareDesktopVersions,
@@ -14,12 +12,16 @@ import {
 } from './updater-release.js';
 
 /**
- * 桌面更新：直接查 GitHub Releases 的桌面发布，只用安装包资产。
+ * 桌面更新：直接查 GitHub Releases 的桌面发布，只用完整安装包（exe）。
  *
  * 有意不使用 electron-updater：那条链路要求每次发布同时上传 blockmap 与 app-update.yml，
  * 这些文件会出现在面向用户的 release 资产里。这里改为自己查 API、自己下载、
  * 自己拉起安装包，所以 release 只需要放 exe 与 zip。
- * 有增量包（RenpyBox-<ver>-x64.delta.zip）时优先文件级更新；下载或拉起失败则回退全量安装包。
+ *
+ * 更新只有一条路径：下载 `RenpyBox-<ver>-x64.exe` 后拉起 NSIS 安装器，
+ * 一步升到最新版。原来的「优先文件级增量包、失败回退全量」已移除：
+ * 增量包只覆盖上一版基线，跨版本用不上，应用失败还要再下一次全量，
+ * 用户实际体验是白下一次 100MB+ 的增量包。
  *
  * 发布解析在 updater-release.js（安装包必须与标签版本同名），
  * 下载校验在 updater-download.js（大小 + 逐字节 SHA-256）。
@@ -110,35 +112,6 @@ async function defaultLaunchInstaller(filePath, { installDir = '' } = {}) {
 }
 
 /**
- * 读取并清除增量应用器留下的失败记录。
- *
- * 增量包在主进程退出之后才被应用，失败发生在没有 UI 的时刻：应用器只能把
- * 原因写进安装目录的 `_update_error.json`。不读它的话，用户看到的现象是
- * 「点了更新、重启后还是旧版本」，界面上没有任何解释。
- */
-export async function readApplyError(installDir) {
-  if (!installDir) return null;
-  const file = path.join(installDir, '_update_error.json');
-  let text;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch {
-    return null;
-  }
-  // 无论解析成功与否都删掉：同一条失败只提示一次。
-  await rm(file, { force: true }).catch(() => {});
-  try {
-    const payload = JSON.parse(text);
-    return {
-      version: String(payload?.patchVersion ?? ''),
-      error: String(payload?.error ?? ''),
-    };
-  } catch {
-    return { version: '', error: '' };
-  }
-}
-
-/**
  * 显式维护桌面更新状态，状态字段与旧实现保持一致，
  * 渲染端（应用设置）与壳窗口（update-dialog）都直接读这套字段。
  */
@@ -156,13 +129,8 @@ export function createDesktopUpdater({
   requestJson = url => defaultRequestJson(url, fetchImpl),
   downloadFile = defaultDownloadFile,
   launchInstaller = defaultLaunchInstaller,
-  spawnDeltaApplier = defaultSpawnDeltaApplier,
-  deltaScriptPath = '',
-  electronExe = process.execPath,
   /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
   installDir = '',
-  /** 上一次增量应用留在安装目录里的失败记录；测试可注入。 */
-  readApplyError: readApplyErrorImpl = () => readApplyError(installDir),
 }) {
   let state = {
     status: packaged ? 'idle' : 'dev',
@@ -173,11 +141,6 @@ export function createDesktopUpdater({
     progress: 0,
     releaseNotes: '',
     releaseUrl: `https://github.com/${repo}/releases`,
-    mode: '',
-    deltaAssetName: '',
-    deltaAssetUrl: '',
-    deltaAssetSize: 0,
-    deltaAssetDigest: '',
   };
   let checkPromise;
   let downloadPromise;
@@ -185,14 +148,35 @@ export function createDesktopUpdater({
   let installerPath = '';
   let installing = false;
   let cancelling = false;
-  /** 上一次增量应用失败的版本与原因：只提示一次，之后强制走全量。 */
-  let applyFailure = null;
 
   const snapshot = () => ({ ...state });
   const update = next => { state = { ...state, ...next }; broadcast(snapshot()); return snapshot(); };
   const failed = error => {
     log.error('[update]', error);
     return update({ status: 'error', error: friendlyUpdateError(error) });
+  };
+
+  /**
+   * 下载安装包并上报进度。
+   *
+   * 路径只有一个：发布里的完整安装包 exe。落盘位置取临时目录 +
+   * 发布资产名（缺失时用规范名），下载结果与校验在 downloadFile 里完成。
+   */
+  const fetchAsset = async (url, name, size, digest, { signal } = {}) => {
+    const destination = path.join(tempDir || '.', name);
+    update({ status: 'downloading', progress: 0, error: '' });
+    const result = await downloadFile(url, destination, {
+      fetchImpl,
+      signal,
+      expectedSize: size,
+      expectedDigest: digest,
+      onProgress: ({ received, total }) => {
+        if (cancelling) return;
+        update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0 });
+      },
+    });
+    installerPath = result?.path || destination;
+    return update({ status: 'downloaded', progress: 100, filePath: installerPath });
   };
 
   return {
@@ -203,42 +187,25 @@ export function createDesktopUpdater({
       if (checkPromise) return checkPromise;
       update({ status: 'checking', error: '', progress: 0 });
       checkPromise = Promise.resolve()
-        // 上次增量应用失败过的话，先把它捞出来：同一版本不再给增量包，
-        // 否则用户会一直重复「下载增量 → 重启 → 还是旧版」。
-        .then(() => readApplyErrorImpl())
-        .catch(() => null)
-        .then(past => {
-          applyFailure = past && past.version ? past : null;
-          return requestJson(`${API_ROOT}/repos/${repo}/releases?per_page=50`);
-        })
+        .then(() => requestJson(`${API_ROOT}/repos/${repo}/releases?per_page=50`))
         .then(releases => {
           const release = pickLatestRelease(releases, version);
           if (!release) return update({
             status: 'latest', version: '', progress: 0, error: '', releaseNotes: '',
             releaseUrl: `https://github.com/${repo}/releases`,
-            mode: '', deltaAssetName: '', deltaAssetUrl: '', deltaAssetSize: 0, deltaAssetDigest: '',
           });
           const asset = selectInstallerAsset(release);
-          const nextVersion = String(release.tag_name ?? '').replace(/^v/, '');
-          // 同一版本刚失败过增量应用：这次只提示原因，并走全量安装包。
-          const skipDelta = Boolean(applyFailure && applyFailure.version === nextVersion);
-          const delta = skipDelta ? null : selectDeltaAsset(release, { currentVersion: version });
           return update({
             status: 'available',
-            version: nextVersion,
-            error: skipDelta ? `上次增量更新失败（${applyFailure.error || '未知原因'}），本次将使用完整安装包` : '',
+            version: String(release.tag_name ?? '').replace(/^v/, ''),
+            error: '',
             progress: 0,
-            mode: '',
             releaseNotes: typeof release.body === 'string' ? release.body : '',
             releaseUrl: typeof release.html_url === 'string' && release.html_url ? release.html_url : `https://github.com/${repo}/releases`,
             assetName: String(asset.name ?? ''),
             assetUrl: String(asset.browser_download_url ?? ''),
             assetSize: Number(asset.size) || 0,
             assetDigest: String(asset.digest ?? ''),
-            deltaAssetName: delta ? String(delta.name ?? '') : '',
-            deltaAssetUrl: delta ? String(delta.browser_download_url ?? '') : '',
-            deltaAssetSize: delta ? (Number(delta.size) || 0) : 0,
-            deltaAssetDigest: delta ? String(delta.digest ?? '') : '',
           });
         })
         .catch(failed)
@@ -250,57 +217,17 @@ export function createDesktopUpdater({
       if (!packaged) return Promise.reject(new Error('开发模式不下载应用更新，请使用安装版测试。'));
       if (state.status !== 'available') return Promise.reject(new Error('请先检查更新，确认存在可下载的新版本。'));
       const assetUrl = state.assetUrl;
-      if (!assetUrl && !state.deltaAssetUrl) return Promise.reject(new Error('发布版本缺少 Windows 安装包资产。'));
-      // 增量包文件名带基线版本；只有基线等于当前版本时 selectDeltaAsset 才会选中它，
-      // 跨版本（如 0.9.0 → 0.9.2）一律走全量安装包。
-      const deltaFileName = state.deltaAssetUrl
-        ? (state.deltaAssetName || deltaAssetName(state.version, state.currentVersion))
-        : '';
+      if (!assetUrl) return Promise.reject(new Error('发布版本缺少 Windows 安装包资产。'));
       cancelling = false;
       controller = new AbortController();
-      update({ status: 'downloading', progress: 0, error: '', mode: state.deltaAssetUrl ? 'delta' : 'full' });
-      const fetchAsset = (url, name, size, digest, mode) => {
-        const destination = path.join(tempDir || '.', name);
-        update({ status: 'downloading', progress: 0, error: '', mode });
-        return downloadFile(url, destination, {
-          fetchImpl,
-          signal: controller.signal,
-          expectedSize: size,
-          expectedDigest: digest,
-          onProgress: ({ received, total }) => {
-            if (cancelling) return;
-            update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0, mode });
-          },
-        }).then(result => {
-          installerPath = result?.path || destination;
-          return update({ status: 'downloaded', progress: 100, error: '', filePath: installerPath, mode });
-        });
-      };
-      downloadPromise = Promise.resolve()
-        .then(async () => {
-          if (state.deltaAssetUrl) {
-            try {
-              return await fetchAsset(
-                state.deltaAssetUrl,
-                deltaFileName,
-                state.deltaAssetSize,
-                state.deltaAssetDigest,
-                'delta',
-              );
-            } catch (error) {
-              if (cancelling || error?.name === 'AbortError') throw error;
-              log.error('[update] 增量包下载失败，改下完整安装包', error);
-            }
-          }
-          if (!assetUrl) throw Object.assign(new Error('发布版本缺少 Windows 安装包资产。'), { kind: 'download' });
-          return fetchAsset(
-            assetUrl,
-            state.assetName || `RenpyBox-${state.version}-x64.exe`,
-            state.assetSize,
-            state.assetDigest,
-            'full',
-          );
-        })
+      const signal = controller.signal;
+      downloadPromise = fetchAsset(
+        assetUrl,
+        state.assetName || `RenpyBox-${state.version}-x64.exe`,
+        state.assetSize,
+        state.assetDigest,
+        { signal },
+      )
         .catch(error => (cancelling || error?.name === 'AbortError'
           ? update({ status: 'available', progress: 0, error: '' })
           : failed(error)))
@@ -321,45 +248,16 @@ export function createDesktopUpdater({
       installing = true;
       try {
         await beforeInstall();
-        if (state.mode === 'delta') {
-          await spawnDeltaApplier({
-            electronExe,
-            scriptPath: deltaScriptPath,
-            patchPath: installerPath,
-            installDir,
-            appExe: electronExe,
-            pid: process.pid,
-            baseVersion: state.currentVersion,
-            relaunch: true,
-            tempDir: tempDir || installDir,
-          });
-        } else {
-          await launchInstaller(installerPath, { installDir });
-        }
-        // 安装器或增量应用器已拉起，主进程可以走正常退出清理。
+        await launchInstaller(installerPath, { installDir });
+        // 安装器已拉起，主进程可以走正常退出清理。
         quit();
         return snapshot();
       } catch (error) {
-        if (state.mode === 'delta') {
-          installing = false;
-          installerPath = '';
-          try { await afterInstallFailure(); } catch (restartError) { log.error('[update] backend recovery failed', restartError); }
-          log.error('[update]', error);
-          return update({
-            status: 'available',
-            mode: '',
-            error: '增量更新失败，将回退到完整安装包',
-            progress: 0,
-            filePath: '',
-            deltaAssetName: '',
-            deltaAssetUrl: '',
-            deltaAssetSize: 0,
-            deltaAssetDigest: '',
-          });
-        }
-        installing = false;
+        // 安装器没拉起来：把后端拉回可用状态，并把失败原因交回界面。
         try { await afterInstallFailure(); } catch (restartError) { log.error('[update] backend recovery failed', restartError); }
         return failed(error?.kind ? error : Object.assign(error ?? new Error('未知原因'), { kind: 'install' }));
+      } finally {
+        installing = false;
       }
     },
   };
