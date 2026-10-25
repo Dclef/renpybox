@@ -29,6 +29,8 @@ BLOCK_LABEL_RE = re.compile(r"^(.*)_([0-9a-f]{8})$")
 JUMP_RE = re.compile(r"^jump\s+([A-Za-z_][\w.]*)\s*$")
 MENU_RE = re.compile(r"^\s*menu\b")
 SCENE_RE = re.compile(r"^\s*scene\s+(.+?)\s*$")
+SHOW_RE = re.compile(r"^\s*show\s+(.+?)\s*$")
+HIDE_RE = re.compile(r"^\s*hide\s+(.+?)\s*$")
 QUOTED_LINE_RE = re.compile(r'^(["\'])(.*)\1$')
 SAY_RE = re.compile(r'^(?:([A-Za-z_][\w.]*)\s+)?(["\'])(.*)\2(?:\s+with\s+[\w.]+)?\s*$')
 # Ren'Py 里 `"Soldier" "台词"` 表示「用引号指定显示名的旁白」，说话人在引号里。
@@ -77,6 +79,10 @@ STATEMENT_WORDS = frozenset(
 )
 # 场景语句里 `scene bg hall night with dissolve` 的尾巴，截断后再当图片标签。
 SCENE_TRAILERS = (" with ", " at ", " behind ", " onlayer ", " as ", " zorder ")
+# `show` 的首词落在这里说明它不是「按标签查文件」的画面语句：
+# `show screen x` / `show layer master` 是界面层，`show expression "..."` / `show text "..."`
+# 是内联表达式，都交给 SceneImageIndex 也解析不出文件。只认剩下的媒体标签。
+SHOW_NON_MEDIA_PREFIXES = frozenset({"screen", "layer", "expression", "text", "image", "window"})
 
 
 def _indent(line: str) -> int:
@@ -144,16 +150,82 @@ def is_noise_title(text: str) -> bool:
     return not stripped or NOISE_TITLE_RE.match(stripped) is not None
 
 
-def _scene_tag(line: str) -> str | None:
-    match = SCENE_RE.match(_strip_comment(line))
-    if match is None:
-        return None
-    rest = match.group(1).strip()
+def _cut_trailers(rest: str) -> str:
+    """把 `with dissolve` / `at center` 这类尾巴截掉，剩下纯图片标签。"""
     for trailer in SCENE_TRAILERS:
         cut = rest.find(trailer)
         if cut >= 0:
             rest = rest[:cut].strip()
-    return rest or None
+    return rest
+
+
+def _scene_tag(line: str) -> str | None:
+    match = SCENE_RE.match(_strip_comment(line))
+    if match is None:
+        return None
+    return _cut_trailers(match.group(1).strip()) or None
+
+
+def _show_tag(line: str) -> str | None:
+    """一行 `show` 里的媒体标签；不是「按标签查文件」的画面语句返回 None。
+
+    真实工程里大量画面只有 `show xxx`（`scene` 全是 `scene black` 之类的黑场），
+    所以必须把 show 也收进来。这些形态一律跳过：
+    `show screen flower_fx_out(out_dur=0.9)`（界面层）、`show layer master`、
+    `show expression "images/logo.png"`（内联表达式，路径在字符串里，前端缓存不到
+    这个 tag）、`show text "..."`、`show image "..."`（同 expression 的内联写法）。
+    `show e happy at center zorder 3` 这类则保留 `e happy` 交给文件索引解析。
+    """
+    match = SHOW_RE.match(_strip_comment(line))
+    if match is None:
+        return None
+    rest = match.group(1).strip()
+    if not rest:
+        return None
+    head = rest.split(None, 1)[0].lower()
+    if head in SHOW_NON_MEDIA_PREFIXES:
+        return None
+    return _cut_trailers(rest) or None
+
+
+def _resolve_show_image(index, shows: list[str]) -> tuple[dict | None, int]:
+    """show 兜底：取最后一条能落到文件的 show（label 结束时观众看到的画面）。
+
+    返回 (图片, 可解析的不同图片数)。数量按落到的文件去重 —— 同一个 tag 反复
+    `show` 很多次（真实工程里一段能 show 几十张立绘/插图）只算一张。
+    """
+    found: dict | None = None
+    seen: set[str] = set()
+    for tag in shows:
+        resolved = index.resolve(tag)
+        if resolved is None:
+            continue
+        key = resolved["path"]
+        if key not in seen:
+            seen.add(key)
+        found = resolved
+    return found, len(seen)
+
+
+def _resolve_label_image(
+    index,
+    scenes: list[str],
+    shows: list[str],
+) -> tuple[dict | None, int]:
+    """一个 label 的画面：scene 优先，show 兜底，都没有才是 None。
+
+    `image.source` 说明这张图是怎么来的 —— 不少工程（例如只拿 show 铺插画的
+    欧美 galgame）根本没有可用的 scene，前端得让用户知道看到的是场景里的演出图，
+    不是背景。
+    """
+    show_image, show_count = _resolve_show_image(index, shows)
+    for tag in scenes:
+        resolved = index.resolve(tag)
+        if resolved is not None:
+            return {**resolved, "source": "scene"}, show_count
+    if show_image is not None:
+        return {**show_image, "source": "show"}, show_count
+    return None, show_count
 
 
 def _game_rpy_files(game_dir: Path) -> list[Path]:
@@ -208,22 +280,66 @@ def _parse_labels(path: Path, game_dir: Path) -> list[dict]:
     return labels
 
 
-def _label_says_and_scenes(body: list[str]) -> tuple[int, list[str], list[str]]:
-    """返回 (对白行数, 前几行对白文本, label 体内所有 scene 标签)。
+def _label_says_and_scenes(body: list[str]) -> tuple[int, list[str], list[str], list[str]]:
+    """返回 (对白行数, 前几行对白文本, label 体内所有 scene 标签, 结束时的 show 层)。
 
     scene 要收集全部而不是只看第一条：多数剧本开头先 `scene black with fade`
     黑场，真正的画面在后面；解析时按顺序试到第一张能落到文件的图。
+
+    只靠 `show` 铺插画的工程（scene 全是黑场）得靠第四项才能拿到画面：按出现
+    顺序维护「当前还显示着哪些 show」—— `scene` 会清屏（即使是 scene black），
+    `hide` 会把对应 tag（含 `eileen happy` 这种带属性的）收走，最后留下来的
+    才是这个 label 结束时观众看到的画面。
     """
     says: list[str] = []
     scenes: list[str] = []
+    visible: list[str] = []
     for line in body:
-        tag = _scene_tag(line)
-        if tag is not None and not tag.lower().startswith("expression"):
-            scenes.append(tag)
+        scene_tag = _scene_tag(line)
+        if scene_tag is not None:
+            if not scene_tag.lower().startswith("expression"):
+                scenes.append(scene_tag)
+            visible.clear()
+        else:
+            show_tag = _show_tag(line)
+            if show_tag is not None:
+                visible.append(show_tag.lower())
+            else:
+                hidden = _hide_tag(line)
+                if hidden is not None:
+                    _drop_visible(visible, hidden)
         text = _say_text(line)
         if text is not None:
             says.append(text)
-    return len(says), says, scenes
+    return len(says), says, scenes, visible
+
+
+def _hide_tag(line: str) -> str | None:
+    """`hide eileen` 这类隐藏画面的标签；`hide screen` 等界面指令返回 None。"""
+    match = HIDE_RE.match(_strip_comment(line))
+    if match is None:
+        return None
+    rest = match.group(1).strip()
+    if not rest:
+        return None
+    head = rest.split(None, 1)[0].lower()
+    if head in SHOW_NON_MEDIA_PREFIXES:
+        return None
+    return _cut_trailers(rest) or None
+
+
+def _drop_visible(visible: list[str], hidden: str) -> None:
+    """`hide eileen` 也要把 `eileen happy` 收走：Ren'Py 按基础 tag 隐藏整张图。"""
+    key = " ".join(hidden.split()).lower()
+    visible[:] = [
+        tag for tag in visible if tag != key and not tag.startswith(f"{key} ")
+    ]
+
+
+def _label_media(body: list[str]) -> tuple[list[str], list[str]]:
+    """(label 体内所有 scene, label 结束时仍可见的 show 标签)。"""
+    _, _, scenes, visible = _label_says_and_scenes(body)
+    return scenes, visible
 
 
 def _menu_jumps(body: list[str], body_start: int) -> list[dict]:
@@ -451,7 +567,7 @@ def scan(
     seen_edges: set[tuple] = set()
     for item in labels:
         body = item["body"]
-        say, says, scenes = _label_says_and_scenes(body)
+        say, says, scenes, shows = _label_says_and_scenes(body)
         zh = int(zh_per_label.get(item["id"], 0))
         blocks = int(blocks_per_label.get(item["id"], 0))
         # 缓存里的译文按出现顺序取：同文件重复的同一句也能各自计数。
@@ -464,11 +580,7 @@ def scan(
                 cache_zh += 1
         effective = cache_zh if from_cache else zh
         title_src, title_zh = _pick_title(says, dsts, lines_map)
-        image = None
-        for scene_tag in scenes:
-            image = index.resolve(scene_tag)
-            if image is not None:
-                break
+        image, show_count = _resolve_label_image(index, scenes, shows)
         nodes.append(
             {
                 "id": item["id"],
@@ -484,6 +596,9 @@ def scan(
                 "progress": effective,
                 "tl_blocks": blocks,
                 "image": image,
+                # 只回一个数字而不是数组：前端只需要「这段有几张演出图」这个提示，
+                # 全量列表既撑大 payload 又得改渲染逻辑。
+                "show_image_count": show_count,
                 "status": _status(effective, say),
                 "placeholder": blocks > 0 and effective == 0,
             }
@@ -579,13 +694,13 @@ def read_label(
     translations = translations or TranslationIndex.empty()
     from_cache = len(translations) > 0
     body, body_start = item["body"], item["body_start"]
+    # 画面口径必须和 scan() 完全一致：scene 优先、show 只算 label 结束时仍可见的
+    # 那些（scene 清屏、hide 收走）。两处各写一套的话会出现「画布上有图、点开详情
+    # 没图」这种更让人困惑的不一致。
+    _, _, scenes, shows = _label_says_and_scenes(body)
     lines: list[dict] = []
     says: list[str] = []
-    scenes: list[str] = []
     for offset, raw in enumerate(body):
-        tag = _scene_tag(raw)
-        if tag is not None and not tag.lower().startswith("expression"):
-            scenes.append(tag)
         text = _say_text(raw)
         if text is None:
             continue
@@ -602,11 +717,7 @@ def read_label(
         )
 
     index = get_index(game_dir)
-    image = None
-    for scene_tag in scenes:
-        image = index.resolve(scene_tag)
-        if image is not None:
-            break
+    image, show_count = _resolve_label_image(index, scenes, shows)
     cache_zh = sum(1 for line in lines if line["dst"])
     effective = cache_zh if from_cache else 0
     title_src, title_zh = _pick_title(says, [line["dst"] for line in lines], {})
@@ -621,6 +732,7 @@ def read_label(
         "say": len(lines),
         "cache_zh": cache_zh,
         "image": image,
+        "show_image_count": show_count,
         "status": _status(effective, len(lines)),
         "lines": lines,
     }

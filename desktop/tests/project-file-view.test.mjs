@@ -201,9 +201,36 @@ test('标题栏常驻当前工程文件：绑定时显示文件名，丢失换�
   assert.match(store, /void reloadProjectFileBinding\(\);\s*\n\s*void Promise\.all\(\[reloadProject\(\)/);
 
   const page = read('pages', 'ProjectPage.tsx');
-  assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 3);
+  // 保存 / 导入 / 解除绑定 / 创建 四处写操作 + 绑定后自动创建，都要刷新标题栏。
+  assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 5);
 
   const css = fs.readFileSync(path.join(src, 'styles', 'app.css'), 'utf8');
   assert.match(css, /\.rb-titlebar \.rb-project-file \{/);
   assert.match(css, /\.rb-titlebar \.rb-project-file\[data-missing='true'\]/);
+});
+
+test('未绑定时可一键创建工程文件，默认位置来自后端', () => {
+  const api = read('api.ts');
+  const body = api.match(/export function createProjectFile\([\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(body, 'createProjectFile 缺失');
+  assert.match(body, /'\/api\/project\/file\/create'/);
+  assert.match(body, /method: 'POST'/);
+
+  const page = read('pages', 'ProjectPage.tsx');
+  // 只有未绑定时才出现创建入口：绑定了就该走解除绑定，而不是换个文件。
+  assert.match(page, /binding && !binding\.bound/);
+  assert.match(page, /binding\.default_path/);
+  assert.match(page, /project_file_create_hint/);
+  assert.match(page, /createProjectFile\(target\)/);
+  // 「另存到」走原生对话框，后缀照旧补全
+  assert.match(page, /defaultPath: binding\?\.default_path \|\| `\$\{projectLabel \|\| 'project'\}\.rbox`/);
+
+  // 自动创建开关直接写配置项，默认开启
+  assert.match(page, /values\?\.project_file_auto_create !== false/);
+  assert.match(page, /state\.setSetting\('project_file_auto_create', next\)/);
+  // 绑定后只提示自动创建结果，失败不阻塞绑定
+  assert.match(page, /project_file_auto_created/);
+  assert.match(page, /project_file_auto_create_failed/);
+  const bind = page.match(/const pickProject = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(bind, /noteAutoCreate\(info\)/);
 });

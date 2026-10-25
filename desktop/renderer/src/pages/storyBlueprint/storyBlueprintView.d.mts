@@ -1,11 +1,17 @@
 /** 剧情蓝图纯计算层的类型声明（供渲染端 import type 使用）。 */
 
+/** 图片来自哪类语句：`scene` 是场景背景（正常口径），`show` 是立绘/插图兜底。
+ * 旧后端返回的 image 没有这个字段，一律按 'scene' 处理。 */
+export type StoryBlueprintImageSource = 'scene' | 'show';
+
 export interface StoryBlueprintImage {
   /** 相对 game/ 的路径，正斜杠；由 /api/story-blueprint/asset 回源。 */
   path: string;
   kind: 'image' | 'video';
   tag: string;
   note?: string;
+  /** 缺省（旧数据）视为 'scene'。 */
+  source?: StoryBlueprintImageSource;
 }
 
 export type StoryBlueprintStatus = 'done' | 'part' | 'todo';
@@ -26,6 +32,9 @@ export interface StoryBlueprintNode {
   progress: number;
   tl_blocks: number;
   image: StoryBlueprintImage | null;
+  /** 该 label 内能解析成图片的 show 标签数量；缺省视为 0。
+   * 只给数量不给列表：卡片只需要「这段有几张演出图」的提示。 */
+  show_image_count?: number;
   status: StoryBlueprintStatus;
   placeholder: boolean;
 }
@@ -93,6 +102,7 @@ export interface StoryBlueprintLabelDetail {
   say: number;
   cache_zh: number;
   image: StoryBlueprintImage | null;
+  show_image_count?: number;
   status: StoryBlueprintStatus;
   lines: StoryBlueprintLine[];
 }
@@ -193,6 +203,12 @@ export function nodeHeading(node: Pick<StoryBlueprintNode, 'id' | 'title_src' | 
 };
 export function nodeStatus(node: Pick<StoryBlueprintNode, 'say' | 'zh' | 'cache_zh'>): StoryBlueprintStatus;
 export function isPlaceholder(node: Pick<StoryBlueprintNode, 'tl_blocks' | 'zh' | 'cache_zh'>): boolean;
+
+/** 图片来源：'scene' 场景背景 / 'show' 立绘插图兜底；缺 source 的旧数据按 'scene'。 */
+export function imageSource(image: { source?: StoryBlueprintImageSource } | null | undefined): StoryBlueprintImageSource;
+
+/** 是否 show 兜底图，卡片/详情据此标注「来自 show」。 */
+export function isShowImage(image: { source?: StoryBlueprintImageSource } | null | undefined): boolean;
 export function layoutNodes(nodes: StoryBlueprintNode[], options?: LayoutOptions): LayoutResult;
 export function buildSegments(
   nodes: StoryBlueprintNode[],

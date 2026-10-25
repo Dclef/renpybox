@@ -630,14 +630,6 @@
   .rb-update-status,
   .rb-update-actions,
   .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-  /* 「本次走增量还是全量、省了多少」——比单独一行状态更能解释下载体积 */
-  .rb-update-status-note {
-    flex-basis: 100%;
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-    line-height: 1.45;
-    text-align: right;
-  }
   /* 对齐 Qt UpdateDetailsDialog CaptionLabel：changelog 下方的包大小 / 发布日期 */
   .rb-update-release-meta {
     margin: 8px 0 0;
@@ -1808,6 +1800,15 @@
   }
 
   .rb-graph-chip b { color: var(--rb-text-primary); font-weight: 600; }
+
+  /* 按钮为什么点不了：放在按钮下方一行，不再只藏在 title 里。 */
+  .rb-graph-hints {
+    margin: 0;
+    padding: 6px 12px 0;
+    color: var(--rb-text-tertiary);
+    font-size: 12px;
+    line-height: 18px;
+  }
 
   .rb-graph-body {
     display: grid;
@@ -4547,6 +4548,22 @@
   color: var(--rb-text-tertiary);
   font-family: var(--rb-font-mono);
   font-size: 11px;
+}
+
+.rb-blueprint-drawer-media {
+  position: relative;
+}
+
+.rb-blueprint-drawer-source {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.58);
+  color: #fff;
+  font-size: 10px;
+  pointer-events: none;
 }
 
 .rb-blueprint-drawer-image {

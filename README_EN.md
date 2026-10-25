@@ -110,12 +110,6 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 ## Recent Updates 📅
 
-- 2026-10-25 v0.9.7:
-  - Added the story blueprint: lays out every story segment by chapter with its file and line number, line count, and translation progress, and draws where each choice / jump goes and where it comes from.
-  - The blueprint shows the scene image for the moment, restored from `scene` statements per chapter.
-  - Added the character relationship graph: mines relationships from `.rpy` files using the rule "honorific word × a character variable in the same scene", so evidence is verifiable and no translation or worldbook is needed first.
-  - The graph shows a timeline of when each relationship appears by chapter, so the same pair can be compared across chapters.
-
 - 2026-10-23 v0.9.6:
   - Added single-file `.rbox` project binding: choose binding on import and translation progress is stored in that one file; the title bar always shows the file name, and the project page shows entry count / size / last updated and lets you unbind.
   - After binding, error repair, HTML import, direct `tl/*.rpy` translation, game mod, and similar pages auto-fill the project directory; stopping and restarting source translation resumes instead of rescanning and duplicating backups.
@@ -129,49 +123,6 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
   - Added `.rbox` snapshots and a guided migration path for older SQLite / JSON caches, with compatibility notes, import previews, and backups.
   - Combined error repair and code formatting into **Script repair**, with safe fixes enabled by default; improved glossary preparation and character / worldbook analysis.
   - Added combined multi-select proofreading filters and cumulative Agent usage metrics; improved truncated-response recovery and fixed deleted history returning and implicit font scans.
-
-- 2026-10-15 v0.9.1:
-  - Fixed an empty platform list on the first desktop launch; built-in platform templates are now prepared automatically.
-  - Added **Import from older version** under **Platforms**: select the `config.json` in the Python app directory to bring your platforms back; keys live in Windows Credential Manager and are reused automatically.
-
-- 2026-10-14 v0.9.0:
-  - New desktop interface (Windows installer and portable build) with Translation Task, Ren'Py Toolbox, Proofreading, and Character / Worldbook Workbench; prompts support preview and editing.
-  - Check for updates and install downloads; view, export, and locate runtime logs. Installer downloads verify size and SHA-256.
-  - Large TL file checks show progress and can be cancelled; automatic repair keeps a backup first. Improved recovery when a page fails or the window stops responding.
-  - Python compatibility build adds a desktop migration notice; the Python app and source remain available.
-
-- 2026-10-09 v0.8.2:
-  - Fixed slow write-back validation for large Ren'Py projects while preserving duplicate-text, character-name, and AST matching semantics.
-  - Fixed cache exports and fallback reinjection reading from the output directory; incremental and proofreading exports now restore the matching input path from the run manifest.
-  - Strengthened write-back path safety checks and fixed first-time export of a single TL script.
-
-- 2026-10-07 v0.8.1:
-  - Fixed project-settings translation input folders being rewritten to `game/tl/<language>`; one-click translation now writes back to the folder you selected.
-  - Fixed opening the extraction-rules dialog immediately after saving a project being treated as a project change and clearing candidates.
-
-- 2026-10-02 v0.8.0:
-  - Opening the model list no longer waits for every translation SDK to load, and switching projects and saving the translation cache are noticeably faster.
-  - Proofreading filters, similarity checks, and placeholder checks are faster, so large projects no longer stutter repeatedly.
-  - Fixed incomplete translations being reported as success, lost progress after a task stops unexpectedly, and one failing check aborting the whole report.
-  - Fixed per-language runtime replacement patches overwriting each other, interrupted write-back leaving damaged translations, and silent success on incomplete backfill.
-  - Fixed the extraction-rules dialog and the proofreading target dialog keeping a light background in the dark theme.
-  - RPY extraction settings are now grouped by the syntax they read, note which flows share each rule set, and say when a change has not been applied yet.
-
-- 2026-09-27 v0.7.12:
-  - Added RPY extraction settings with separate source-RPY and TL-RPY profiles for built-in, custom, and combined modes.
-  - Custom extraction is available in one-click, TL, and source translation, with a beginner-friendly default view and optional advanced rule editing.
-  - Improved TL pairing and source write-back safety for custom rules.
-
-- 2026-09-22 v0.7.11:
-  - Added Google and Bing free translation engines, no API key required; available in one-click, TL, source-code, and direct-RPY translation as well as the local glossary.
-  - The direct-RPY page adds an "auto write-back" switch and a manual write-back button; fixed switch labels losing their text when turned on.
-  - Removed unused interfaces such as DeepL, DeepLX, Caiyun, Youdao, and Alibaba, and cleaned up legacy compatibility modules.
-
-- 2026-09-17 v0.7.10:
-  - Fixed the permission error that interrupted updates when the updater replaced itself.
-  - Restored incremental updates: when the version matches and installed files are intact, only changed files are downloaded.
-  - Missing, corrupted, or previously interrupted installations are automatically repaired with a full package.
-  - Incremental packages are verified before release, and user configs and input files are preserved during updates.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 

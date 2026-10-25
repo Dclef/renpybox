@@ -11,6 +11,7 @@ import contextlib
 import copy
 import dataclasses
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -21,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from api.schemas import ProjectInfo, ProjectPathRequest, ProjectResolveRequest
+from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from base.Version import Version
 from module.Cache.CacheDB import CacheDB
@@ -122,7 +124,13 @@ def resolve_project(request: Request, body: ProjectResolveRequest) -> ProjectInf
     )
     # 输出目录必须存在，否则第一个任务会因为目录不存在直接失败。
     ensure_output_folder(config)
-    return _info(request)
+    # 用户反馈：绑定了工程却没有任何 .rbox。绑定动作是唯一「默认生成工程文件」
+    # 的时机；失败只返回提示（前端给手动按钮兜底），不影响绑定成功。
+    created, create_error = _auto_create_project_file(config)
+    info = _info(request)
+    info.auto_created_project_file = created
+    info.auto_create_error = create_error
+    return info
 
 
 # ---------- .rbox 工程文件 ----------
@@ -138,6 +146,12 @@ class ProjectFileRequest(BaseModel):
     path: str
     # 绑定模式（默认）：该 .rbox 直接作为工作缓存使用，不再物化目录缓存副本。
     bind: bool = True
+
+
+class ProjectFileCreateRequest(BaseModel):
+    """创建工程文件。``path`` 留空时用默认位置 ``<输出目录>/<项目名>.rbox``。"""
+
+    path: str = ""
 
 
 class LegacyCacheRequest(BaseModel):
@@ -257,6 +271,32 @@ def _project_root(config: Any) -> str:
     if paths is not None:
         return str(paths.project_root)
     return str(getattr(config, "renpy_project_path", "") or "")
+
+
+# 默认工程文件名取项目根目录名。Windows 文件名不允许的字符换成下划线，
+# 免得默认路径在真实工程名（含冒号/斜杠）上直接创建失败。
+_PROJECT_LABEL_INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _project_label(config: Any) -> str:
+    root = _project_root(config)
+    label = os.path.basename(root.rstrip("\\/"))
+    label = _PROJECT_LABEL_INVALID.sub("_", label).strip(" .")
+    return label or "project"
+
+
+def default_project_file_path(config: Any, output: str) -> str:
+    """默认工程文件绝对路径：``<输出目录>/<项目名>.rbox``。"""
+    return os.path.join(str(output), f"{_project_label(config)}{ProjectFile.SUFFIX}")
+
+
+def _binding_applies(config: Any, output: str) -> bool:
+    """当前绑定是否真的对这个输出目录生效（CacheManager 只认作用域内的绑定）。"""
+    bound = str(getattr(config, "project_file_path", "") or "").strip()
+    scope = str(getattr(config, "project_file_output", "") or "").strip()
+    if bound == "" or scope == "":
+        return False
+    return _path_key(scope) == _path_key(output)
 
 
 def _describe(config: Any, info: ProjectFileInfo, output: str) -> dict[str, Any]:
@@ -672,6 +712,242 @@ def _rollback_failed(
     )
 
 
+def _install_project_file(config: Any, path: str, *, bind: bool = True) -> dict[str, Any]:
+    """把既有 .rbox 设为工作缓存（bind）或安装目录缓存，失败回滚。
+
+    「导入工程文件」与「创建工程文件」共用这一个事务：备份现有目录缓存 →
+    收走/安装 → 同步工作台资产分区 → 持久化绑定。调用方必须已持有
+    ``_EngineReservation``（占用引擎、互斥任务），并负责把失败翻译成 HTTP 错误。
+    """
+    try:
+        snapshot = ProjectFile.load(path)
+    except ProjectFileError as exc:
+        raise _project_file_error(exc) from exc
+    applied, ignored = _import_settings(snapshot.settings)
+    output = _target_output(config)
+    # 工作台资产固定读 Ren'Py 规范输出目录；它与当前输出不同时须同步资产分区，否则工作台仍读旧资料。
+    assets_repository = ProjectAssetsRepository.from_config(config)
+    assets_output = assets_repository.output_folder
+    sync_assets = bool(assets_output) and _path_key(assets_output) != _path_key(output)
+    expected_digest = CacheDB.items_digest(snapshot.items)
+    staged = copy.deepcopy(config)
+    for key, value in applied.items():
+        setattr(staged, key, value)
+    if bind:
+        staged.project_file_path = os.path.abspath(path)
+        staged.project_file_output = output
+    else:
+        # 显式关闭绑定：先解除旧绑定，安装才不会继续写进 .rbox。
+        staged.project_file_path = ""
+        staged.project_file_output = ""
+
+    with CacheManager.LOCK:
+        runtime = _flush_runtime_cache(output)
+        assets_runtime = _flush_runtime_cache(assets_output) if sync_assets else None
+        try:
+            backup = _backup_cache(output)
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 500,
+                detail = Localizer.get().project_file_api_cache_backup_failed.format(error = exc),
+            ) from exc
+        assets_backup = _CacheBackup("", ())
+        if sync_assets:
+            try:
+                assets_backup = _backup_cache(assets_output)
+            except Exception as exc:
+                if backup.folder:
+                    shutil.rmtree(backup.folder, ignore_errors = True)
+                raise HTTPException(
+                    status_code = 500,
+                    detail = Localizer.get().project_file_api_assets_backup_failed.format(error = exc),
+                ) from exc
+        try:
+            if bind:
+                _retire_cache_files(output, backup)
+            else:
+                with _legacy_store_scope():
+                    _install_cache(config, output, snapshot.project, snapshot.items, expected_digest)
+        except Exception as exc:
+            raise _rollback_failed(
+                [(output, backup)],
+                Localizer.get().project_file_api_cache_install_failed,
+                exc,
+            ) from exc
+        restore_targets = [(output, backup)]
+        restore_runtime = None
+        if sync_assets:
+            restore_targets.append((assets_output, assets_backup))
+            restore_runtime = _runtime_sections_restorer(assets_runtime)
+            try:
+                # 资产分区恒写目录缓存（资产一定读规范输出目录，与绑定的运行输出无关）。
+                with _legacy_store_scope():
+                    assets_repository.replace_asset_sections(
+                        snapshot.project.get_project_assets(),
+                        snapshot.project.get_analysis_candidates(),
+                    )
+            except Exception as exc:
+                raise _rollback_failed(
+                    restore_targets,
+                    Localizer.get().project_file_api_assets_sync_failed,
+                    exc,
+                    restore_runtime,
+                ) from exc
+        try:
+            staged.save(strict = True)
+        except Exception as exc:
+            raise _rollback_failed(
+                    restore_targets,
+                    Localizer.get().project_file_api_settings_save_failed,
+                    exc,
+                    restore_runtime,
+                ) from exc
+
+        for key in applied:
+            setattr(config, key, getattr(staged, key))
+        # 绑定字段不在白名单里，单独落到 live 配置（bind=false 时是解除绑定）。
+        config.project_file_path = staged.project_file_path
+        config.project_file_output = staged.project_file_output
+        if runtime is not None:
+            # 停止后的翻译器仍会自动保存内存缓存；同步成导入结果，避免旧快照覆盖。
+            runtime.set_project(CacheProject.from_dict(snapshot.project.asdict()))
+            runtime.set_items([CacheItem.from_dict(item.asdict()) for item in snapshot.items])
+            runtime.require_flag = False
+
+    result = _describe(config, snapshot.info, output)
+    result.update(
+        backup_folder = backup.folder,
+        assets_output_folder = assets_output if sync_assets else "",
+        assets_backup_folder = assets_backup.folder,
+        item_count = len(snapshot.items),
+        applied_settings = sorted(applied),
+        ignored_settings = ignored,
+        bound = bind,
+        project_file_path = staged.project_file_path if bind else "",
+    )
+    return result
+
+
+def _read_directory_cache(config: Any, output: str) -> tuple[CacheProject, list[CacheItem]]:
+    """读当前输出目录的目录缓存，忽略工程文件绑定；没有缓存时返回空工程 + 空条目。"""
+    with _legacy_store_scope():
+        manager = _new_cache_manager(config)
+        try:
+            manager.load_from_file(output, strict = True)
+        except Exception:
+            # 全新工程本来就没有缓存：创建空工程文件是正常路径，不是错误。
+            return CacheProject(), []
+        return manager.get_project(), manager.get_items()
+
+
+def _create_and_bind_project_file(config: Any, target: str = "") -> dict[str, Any]:
+    """创建 .rbox 并走绑定事务；失败时删掉新文件，旧目录缓存由事务回滚。
+
+    现状目录里已有缓存时，先把内容（含工作台资产）写进文件再安装，
+    等于「迁移 + 绑定」；没有缓存时写出的就是合法空工程。
+    调用方必须已持有 ``_EngineReservation``。
+    """
+    output = _target_output(config)
+    path = os.path.abspath(str(target or "").strip() or default_project_file_path(config, output))
+    if os.path.splitext(path)[1].lower() != ProjectFile.SUFFIX:
+        raise HTTPException(
+            status_code = 400,
+            detail = Localizer.get().project_file_api_invalid.format(
+                code = ProjectFileError.INVALID_PATH,
+                error = f"工程文件必须以 {ProjectFile.SUFFIX} 结尾：{path}",
+            ),
+        )
+    if os.path.isdir(path):
+        raise HTTPException(
+            status_code = 400,
+            detail = Localizer.get().project_file_api_invalid.format(
+                code = ProjectFileError.INVALID_PATH,
+                error = f"目标路径是目录：{path}",
+            ),
+        )
+    if os.path.exists(path):
+        raise HTTPException(
+            status_code = 409,
+            detail = Localizer.get().project_file_api_invalid.format(
+                code = ProjectFileError.INVALID_PATH,
+                error = f"目标工程文件已存在，请改用「导入工程文件」：{path}",
+            ),
+        )
+    parent = os.path.dirname(path)
+    try:
+        os.makedirs(parent, exist_ok = True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 500,
+            detail = Localizer.get().project_file_api_invalid.format(
+                code = ProjectFileError.WRITE_FAILED,
+                error = f"无法创建工程文件所在目录：{exc}",
+            ),
+        ) from exc
+
+    project, items = _read_directory_cache(config, output)
+    # 旧版本资产可能还只在全局配置里；写进文件后才能跟着工程走。
+    try:
+        snapshot_project = ProjectAssetsRepository.from_config(config).prepare_project_snapshot(
+            project,
+            config,
+        )
+    except Exception:
+        snapshot_project = project
+    try:
+        ProjectFile.export(
+            path,
+            snapshot_project,
+            items,
+            project_root = _project_root(config),
+            settings = _export_settings(config),
+            app_version = Version.CURRENT,
+        )
+    except ProjectFileError as exc:
+        raise _project_file_error(exc) from exc
+    try:
+        result = _install_project_file(config, path, bind = True)
+    except BaseException:
+        # 导入事务自己已回滚目录缓存；这里再删掉刚写出的文件，不留没人绑定的半成品。
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        raise
+    result["created"] = True
+    result["project_file_path"] = path
+    result["migrated_item_count"] = len(items)
+    return result
+
+
+def _auto_create_project_file(config: Any) -> tuple[str, str]:
+    """绑定动作后按开关自动创建并绑定工程文件，返回 (路径, 失败原因)。
+
+    失败只返回可展示的原因，绝不抛出：绑定成功这件事不能被它推翻。
+    """
+    if not bool(getattr(config, "project_file_auto_create", True)):
+        return "", ""
+    try:
+        output = _target_output(config)
+    except HTTPException:
+        return "", ""
+    if _binding_applies(config, output):
+        return "", ""
+    try:
+        previous = str(getattr(config, "project_file_path", "") or "").strip()
+        if previous:
+            # 旧绑定作用域与当前输出不符，运行期本来就不会生效；新文件接管，旧文件原样保留。
+            Base().warning(
+                f"工程文件绑定作用域不匹配，将重新创建并绑定：{previous}",
+                console = False,
+            )
+        with _EngineReservation():
+            result = _create_and_bind_project_file(config, default_project_file_path(config, output))
+        return str(result.get("project_file_path") or ""), ""
+    except HTTPException as exc:
+        return "", str(exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return "", str(exc)
+
+
 @router.post("/file/inspect")
 def inspect_project_file(request: Request, body: ProjectFileRequest) -> dict[str, Any]:
     """只读快速校验 .rbox 元数据，不解析条目、不占用引擎、不触碰缓存。"""
@@ -821,7 +1097,16 @@ def _binding_payload(
         "item_count": 0,
         "updated_at": "",
         "detail": "",
+        # 「创建工程文件」按钮要知道默认落在哪里；开关状态一并回传，设置页读不到时兜底。
+        "default_path": "",
+        "auto_create": bool(getattr(config, "project_file_auto_create", True)),
     }
+    try:
+        resolved = resolve_translation_output(config)
+        if resolved is not None:
+            payload["default_path"] = default_project_file_path(config, str(resolved))
+    except Exception:  # noqa: BLE001
+        payload["default_path"] = ""
     if bound_path != "" and exists:
         payload["size"] = os.path.getsize(bound_path)
         try:
@@ -914,111 +1199,16 @@ def import_project_file(request: Request, body: ProjectFileRequest) -> dict[str,
     """
     config = request.app.state.config
     with _EngineReservation():
-        try:
-            snapshot = ProjectFile.load(body.path)
-        except ProjectFileError as exc:
-            raise _project_file_error(exc) from exc
-        applied, ignored = _import_settings(snapshot.settings)
-        output = _target_output(config)
-        # 工作台资产固定读 Ren'Py 规范输出目录；它与当前输出不同时须同步资产分区，否则工作台仍读旧资料。
-        assets_repository = ProjectAssetsRepository.from_config(config)
-        assets_output = assets_repository.output_folder
-        sync_assets = bool(assets_output) and _path_key(assets_output) != _path_key(output)
-        expected_digest = CacheDB.items_digest(snapshot.items)
-        bind = bool(getattr(body, "bind", True))
-        staged = copy.deepcopy(config)
-        for key, value in applied.items():
-            setattr(staged, key, value)
-        if bind:
-            staged.project_file_path = os.path.abspath(body.path)
-            staged.project_file_output = output
-        else:
-            # 显式关闭绑定：先解除旧绑定，安装才不会继续写进 .rbox。
-            staged.project_file_path = ""
-            staged.project_file_output = ""
+        return _install_project_file(config, body.path, bind = bool(getattr(body, "bind", True)))
 
-        with CacheManager.LOCK:
-            runtime = _flush_runtime_cache(output)
-            assets_runtime = _flush_runtime_cache(assets_output) if sync_assets else None
-            try:
-                backup = _backup_cache(output)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code = 500,
-                    detail = Localizer.get().project_file_api_cache_backup_failed.format(error = exc),
-                ) from exc
-            assets_backup = _CacheBackup("", ())
-            if sync_assets:
-                try:
-                    assets_backup = _backup_cache(assets_output)
-                except Exception as exc:
-                    if backup.folder:
-                        shutil.rmtree(backup.folder, ignore_errors = True)
-                    raise HTTPException(
-                        status_code = 500,
-                        detail = Localizer.get().project_file_api_assets_backup_failed.format(error = exc),
-                    ) from exc
-            try:
-                if bind:
-                    _retire_cache_files(output, backup)
-                else:
-                    with _legacy_store_scope():
-                        _install_cache(config, output, snapshot.project, snapshot.items, expected_digest)
-            except Exception as exc:
-                raise _rollback_failed(
-                    [(output, backup)],
-                    Localizer.get().project_file_api_cache_install_failed,
-                    exc,
-                ) from exc
-            restore_targets = [(output, backup)]
-            restore_runtime = None
-            if sync_assets:
-                restore_targets.append((assets_output, assets_backup))
-                restore_runtime = _runtime_sections_restorer(assets_runtime)
-                try:
-                    # 资产分区恒写目录缓存（资产一定读规范输出目录，与绑定的运行输出无关）。
-                    with _legacy_store_scope():
-                        assets_repository.replace_asset_sections(
-                            snapshot.project.get_project_assets(),
-                            snapshot.project.get_analysis_candidates(),
-                        )
-                except Exception as exc:
-                    raise _rollback_failed(
-                        restore_targets,
-                        Localizer.get().project_file_api_assets_sync_failed,
-                        exc,
-                        restore_runtime,
-                    ) from exc
-            try:
-                staged.save(strict = True)
-            except Exception as exc:
-                raise _rollback_failed(
-                        restore_targets,
-                        Localizer.get().project_file_api_settings_save_failed,
-                        exc,
-                        restore_runtime,
-                    ) from exc
 
-            for key in applied:
-                setattr(config, key, getattr(staged, key))
-            # 绑定字段不在白名单里，单独落到 live 配置（bind=false 时是解除绑定）。
-            config.project_file_path = staged.project_file_path
-            config.project_file_output = staged.project_file_output
-            if runtime is not None:
-                # 停止后的翻译器仍会自动保存内存缓存；同步成导入结果，避免旧快照覆盖。
-                runtime.set_project(CacheProject.from_dict(snapshot.project.asdict()))
-                runtime.set_items([CacheItem.from_dict(item.asdict()) for item in snapshot.items])
-                runtime.require_flag = False
+@router.post("/file/create")
+def create_project_file(request: Request, body: ProjectFileCreateRequest) -> dict[str, Any]:
+    """创建并绑定工程文件；已有目录缓存时把内容迁移进文件。
 
-    result = _describe(config, snapshot.info, output)
-    result.update(
-        backup_folder = backup.folder,
-        assets_output_folder = assets_output if sync_assets else "",
-        assets_backup_folder = assets_backup.folder,
-        item_count = len(snapshot.items),
-        applied_settings = sorted(applied),
-        ignored_settings = ignored,
-        bound = bind,
-        project_file_path = staged.project_file_path if bind else "",
-    )
-    return result
+    绑定工程时后端会自动创建（见 ``project_file_auto_create``）；这个端点既是
+    界面上的手动兜底，也可以把旧工程现有的目录缓存一次性迁进新 .rbox。
+    """
+    config = request.app.state.config
+    with _EngineReservation():
+        return _create_and_bind_project_file(config, body.path)

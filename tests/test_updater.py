@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import updater
-from buildtools.update_assets import build_manifest, build_patch
+from buildtools.update_assets import build_manifest
 
 
 # ---------- _should_update_file / _file_hash ----------
@@ -178,44 +178,13 @@ def test_full_update_rejects_payload_without_main_executable(tmp_path: Path) -> 
     assert zip_path.is_file()
 
 
-def test_patch_meta_rejects_deleted_escape_before_install(tmp_path: Path) -> None:
-    meta = {
-        "format": updater.PATCH_FORMAT,
-        "version": "v2.0.0",
-        "base_version": "v1.0.0",
-        "files": {},
-        "deleted": ["../victim.txt"],
-        "manifest": {
-            "format": updater.MANIFEST_FORMAT,
-            "version": "v2.0.0",
-            "files": {},
-        },
-    }
-    zip_path = tmp_path / "unsafe.patch.zip"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr(updater.PATCH_META_NAME, json.dumps(meta))
-
-    install_dir = tmp_path / "install"
-    install_dir.mkdir()
-    with pytest.raises(RuntimeError):
-        updater.apply_update(
-            pid=0,
-            zip_path=zip_path,
-            install_dir=install_dir,
-            release_url=None,
-            restart=False,
-            exe_name="RenpyBox.exe",
-        )
-
-    assert not (tmp_path / "victim.txt").exists()
-    assert not (install_dir / updater.JOURNAL_NAME).exists()
-
-
 @pytest.mark.parametrize(
     "reserved_member",
     [
-        "_update_journal.json",
-        "_UPDATE_JOURNAL.JSON",
+        # 协议文件的非规范大小写别名
+        "_UPDATE_MANIFEST.JSON",
+        # 保留根目录本体与其下的条目
+        "_update_staging",
         "_update_staging/escape.bin",
     ],
 )
@@ -234,7 +203,7 @@ def test_full_update_rejects_protocol_namespace_before_side_effects(
         files={"RenpyBox.exe": b"MAIN", reserved_member: b"BAD"},
     )
 
-    with pytest.raises(RuntimeError, match="reserved protocol"):
+    with pytest.raises(RuntimeError, match="protocol"):
         updater.apply_update(
             pid=0,
             zip_path=zip_path,
@@ -389,77 +358,10 @@ def test_apply_update_cleans_stale_exe_old_leftovers(tmp_path: Path) -> None:
     assert not stale_internal.exists()
 
 
-def test_patch_delete_failure_keeps_old_manifest_and_journal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    v1 = tmp_path / "v1"
-    v2 = tmp_path / "v2"
-    (v1 / "_internal").mkdir(parents=True)
-    (v2 / "_internal").mkdir(parents=True)
-    (v1 / "RenpyBox.exe").write_bytes(b"MAIN")
-    (v2 / "RenpyBox.exe").write_bytes(b"MAIN")
-    (v1 / "_internal" / "changed.txt").write_text("old", encoding="utf-8")
-    (v2 / "_internal" / "changed.txt").write_text("new", encoding="utf-8")
-    (v1 / "_internal" / "obsolete.txt").write_text("remove", encoding="utf-8")
-
-    install_dir = tmp_path / "install"
-    for item in v1.rglob("*"):
-        if item.is_file():
-            target = install_dir / item.relative_to(v1)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(item.read_bytes())
-    (install_dir / updater.MANIFEST_NAME).write_text(
-        json.dumps(build_manifest(v1, "v1.0.0")), encoding="utf-8"
-    )
-    patch_zip = tmp_path / "v2.patch.zip"
-    build_patch(v2, "v2.0.0", v1, "v1.0.0", patch_zip)
-
-    old_unlink = Path.unlink
-    obsolete = install_dir / "_internal" / "obsolete.txt"
-
-    def fail_obsolete_unlink(path: Path, *args, **kwargs):
-        if path == obsolete:
-            raise PermissionError("simulated delete failure")
-        return old_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_obsolete_unlink)
-
-    with pytest.raises(RuntimeError, match="Delete failed"):
-        updater.apply_update(
-            pid=0,
-            zip_path=patch_zip,
-            install_dir=install_dir,
-            release_url=None,
-            restart=False,
-            exe_name="RenpyBox.exe",
-        )
-
-    installed = json.loads((install_dir / updater.MANIFEST_NAME).read_text(encoding="utf-8"))
-    assert installed["version"] == "v1.0.0"
-    assert obsolete.exists()
-    assert (install_dir / updater.JOURNAL_NAME).exists()
-
-    monkeypatch.undo()
-    updater.apply_update(
-        pid=0,
-        zip_path=patch_zip,
-        install_dir=install_dir,
-        release_url=None,
-        restart=False,
-        exe_name="RenpyBox.exe",
-    )
-    installed = json.loads((install_dir / updater.MANIFEST_NAME).read_text(encoding="utf-8"))
-    assert installed["version"] == "v2.0.0"
-    assert not obsolete.exists()
-    assert not list(install_dir.rglob("*.new"))
-
-
 @pytest.mark.skipif(os.name != "nt", reason="需要 Windows 文件属性")
 @pytest.mark.parametrize("attributes", [0x2, 0x4, 0x1, 0x7])
-@pytest.mark.parametrize("patch", [False, True], ids=["full", "patch"])
 def test_update_replaces_updater_with_windows_attributes(
-    tmp_path: Path, attributes: int, patch: bool
+    tmp_path: Path, attributes: int
 ) -> None:
     """使用真实文件属性复现旧发布包更新器被隐藏、系统或只读标记阻挡。"""
     import ctypes
@@ -481,15 +383,7 @@ def test_update_replaces_updater_with_windows_attributes(
         "_internal/RenpyBoxUpdater2.exe": b"NEW-UPDATER",
     }
     zip_path = tmp_path / "update.zip"
-    if patch:
-        new_dir = tmp_path / "new"
-        for rel, content in payload.items():
-            path = new_dir / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-        build_patch(new_dir, "v2.0.0", install_dir, "v1.0.0", zip_path)
-    else:
-        _build_payload_zip(zip_path, files=payload)
+    _build_payload_zip(zip_path, files=payload)
 
     assert set_attributes(str(target), attributes)
     try:
@@ -504,12 +398,6 @@ def test_update_replaces_updater_with_windows_attributes(
         assert target.read_bytes() == b"NEW-UPDATER"
         assert not zip_path.exists()
         assert not (install_dir / "_update_staging").exists()
-        assert not (install_dir / updater.JOURNAL_NAME).exists()
-        if patch:
-            manifest = json.loads(
-                (install_dir / updater.MANIFEST_NAME).read_text(encoding="utf-8")
-            )
-            assert manifest["version"] == "v2.0.0"
     finally:
         # 即使回归失败也恢复属性，避免测试临时目录清理失败。
         assert set_attributes(str(target), 0x80)
@@ -530,22 +418,3 @@ def test_full_update_preserves_game_rule_storage(tmp_path):
     updater.apply_update(pid=0, zip_path=payload, install_dir=install,
                          release_url=None, restart=False, exe_name="RenpyBox.exe")
     assert rules_file.read_bytes() == before
-
-
-@pytest.mark.parametrize("delete", [False, True])
-def test_patch_rejects_user_rule_storage_before_changes(tmp_path, monkeypatch, delete):
-    storage = tmp_path / "storage"
-    storage.mkdir()
-    path = storage / "game_extraction_profiles.json"
-    path.write_bytes(b"keep rules")
-    relative = "storage/game_extraction_profiles.json"
-    meta = {"files": {} if delete else {relative: {}}, "deleted": [relative] if delete else []}
-    monkeypatch.setattr(updater, "_read_patch_meta", lambda path: meta)
-    with pytest.raises(RuntimeError, match="storage"):
-        updater._apply_patch_update(
-            zip_path=tmp_path / "patch.zip", install_dir=tmp_path, log_dir=tmp_path / "log",
-            release_url=None, restart=False, exe_name="RenpyBox.exe",
-            wait_pid_sec=0, total_start=time.perf_counter(),
-        )
-    assert path.read_bytes() == b"keep rules"
-    assert not (tmp_path / "_update_staging").exists()

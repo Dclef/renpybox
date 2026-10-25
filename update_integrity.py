@@ -6,16 +6,13 @@ from pathlib import Path
 from update_path_policy import safe_target_cached, validate_manifest_paths
 
 
-def validate_installed_files(
-    install_dir: Path, manifest: dict, *, replaced: tuple[str, ...] = ()
-) -> None:
-    """校验补丁不会提供的文件，防止缺失或损坏的旧依赖被当作完整安装。"""
+def validate_installed_files(install_dir: Path, manifest: dict) -> None:
+    """校验安装态文件与清单一致，缺文件或内容不符时要求改用全量更新。"""
     validate_manifest_paths(
         manifest,
         label="installed files",
-        reserved_paths=("_update_manifest.json", "_patch_meta.json"),
+        reserved_paths=("_update_manifest.json",),
     )
-    skipped = set(replaced)
     root = install_dir.resolve()
     parents: dict[str, Path] = {}
     for rel, entry in manifest["files"].items():
@@ -28,8 +25,6 @@ def validate_installed_files(
             or any(char not in "0123456789abcdefABCDEF" for char in entry["sha256"])
         ):
             raise RuntimeError(f"安装清单无效，请使用全量更新：{rel}")
-        if rel in skipped:
-            continue
         path = safe_target_cached(
             install_dir, rel, label="installed file", parent_cache=parents,
             root_resolved=root,

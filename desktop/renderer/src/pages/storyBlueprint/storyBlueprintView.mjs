@@ -113,6 +113,21 @@ export function isPlaceholder(node) {
 }
 
 /**
+ * 这张图的来源：'scene' 是场景背景，'show' 是立绘/插图兜底。
+ *
+ * 旧后端返回的 image 没有 source 字段，一律按 'scene' 处理 —— 那时能出图的
+ * 本来就只可能是 scene，这样老数据观感不变，也不会凭空冒出「来自 show」徽标。
+ */
+export function imageSource(image) {
+  return image?.source === 'show' ? 'show' : 'scene';
+}
+
+/** 是否为 show 兜底图：前端据此在图片角落标注来源，避免被误认成背景。 */
+export function isShowImage(image) {
+  return imageSource(image) === 'show';
+}
+
+/**
  * 蛇形布局（列优先）：第 0 列从上到下，第 1 列从下到上，以此类推。
  *
  * 返回的 positions 始终覆盖全部节点 —— 视口裁剪只裁 DOM，不裁这份坐标，
