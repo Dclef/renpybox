@@ -630,14 +630,6 @@
   .rb-update-status,
   .rb-update-actions,
   .rb-update-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-  /* 「本次走增量还是全量、省了多少」——比单独一行状态更能解释下载体积 */
-  .rb-update-status-note {
-    flex-basis: 100%;
-    color: var(--rb-text-secondary);
-    font-size: 12px;
-    line-height: 1.45;
-    text-align: right;
-  }
   /* 对齐 Qt UpdateDetailsDialog CaptionLabel：changelog 下方的包大小 / 发布日期 */
   .rb-update-release-meta {
     margin: 8px 0 0;
