@@ -297,6 +297,11 @@ function DesktopAboutCard({ state }: { state: AppState }) {
   else if (status === 'downloaded') statusText = t('app_update_status_downloaded');
   else if (status === 'error') statusText = update?.error || t('app_update_status_failed');
 
+  // 「已下载 / 总大小」：百分数只说了一半，用户还要知道还剩多少 MB 没下。
+  const downloadedBytes = Math.max(0, Number(update?.downloadedBytes) || 0);
+  const totalBytes = Math.max(0, Number(update?.totalBytes) || Number(update?.assetSize) || 0);
+  const bytesText = totalBytes > 0 ? `${formatMegabytes(downloadedBytes)} / ${formatMegabytes(totalBytes)}` : '';
+
   return (
     <>
       <SettingsGroup title={t('app_update_group_title')} description={t('app_update_desktop_group_description')}>
@@ -316,6 +321,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
               <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: progress })}>
                 <Progress percent={progress} style={{ width: 160 }} size="small" showInfo={false} />
                 <span>{progress}%</span>
+                {bytesText ? <span className="rb-update-bytes">{bytesText}</span> : null}
               </div>
             ) : null}
             <div className="rb-update-actions">

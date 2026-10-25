@@ -18,6 +18,9 @@ export interface DesktopUpdateState {
   assetSize?: number;
   assetDigest?: string;
   filePath?: string;
+  // 下载进度：已下载字节与总字节，界面用来显示「72.3 MB / 234.8 MB」。
+  downloadedBytes?: number;
+  totalBytes?: number;
 }
 
 export interface DesktopAppInfo {

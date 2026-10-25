@@ -139,6 +139,8 @@ export function createDesktopUpdater({
     version: '',
     error: '',
     progress: 0,
+    downloadedBytes: 0,
+    totalBytes: 0,
     releaseNotes: '',
     releaseUrl: `https://github.com/${repo}/releases`,
   };
@@ -164,7 +166,7 @@ export function createDesktopUpdater({
    */
   const fetchAsset = async (url, name, size, digest, { signal } = {}) => {
     const destination = path.join(tempDir || '.', name);
-    update({ status: 'downloading', progress: 0, error: '' });
+    update({ status: 'downloading', progress: 0, downloadedBytes: 0, error: '' });
     const result = await downloadFile(url, destination, {
       fetchImpl,
       signal,
@@ -172,11 +174,22 @@ export function createDesktopUpdater({
       expectedDigest: digest,
       onProgress: ({ received, total }) => {
         if (cancelling) return;
-        update({ status: 'downloading', progress: total > 0 ? Math.round((received / total) * 100) : 0 });
+        // 进度条之外还要给出「已下载 / 总大小」，用户才能判断还要等多久。
+        update({
+          status: 'downloading',
+          progress: total > 0 ? Math.round((received / total) * 100) : 0,
+          downloadedBytes: Math.max(0, Number(received) || 0),
+          totalBytes: total > 0 ? Number(total) : (Number(size) || 0),
+        });
       },
     });
     installerPath = result?.path || destination;
-    return update({ status: 'downloaded', progress: 100, filePath: installerPath });
+    return update({
+      status: 'downloaded',
+      progress: 100,
+      downloadedBytes: Number(state.totalBytes) || Number(size) || 0,
+      filePath: installerPath,
+    });
   };
 
   return {
@@ -205,6 +218,8 @@ export function createDesktopUpdater({
             assetName: String(asset.name ?? ''),
             assetUrl: String(asset.browser_download_url ?? ''),
             assetSize: Number(asset.size) || 0,
+            totalBytes: Number(asset.size) || 0,
+            downloadedBytes: 0,
             assetDigest: String(asset.digest ?? ''),
           });
         })

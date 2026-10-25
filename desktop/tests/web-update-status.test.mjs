@@ -105,6 +105,10 @@ test('下载中：整行只出现一处百分数', () => {
   assert.doesNotMatch(desktop, /app_update_status_downloading'\), \{ percent/);
   assert.match(desktop, /<Progress percent=\{progress\}[^>]*showInfo=\{false\}/);
   assert.match(desktop, /<span>\{progress\}%<\/span>/);
+  // 百分比之外还要给「已下载 / 总大小」，否则用户只知道百分比不知道剩多少 MB
+  assert.match(desktop, /downloadedBytes/);
+  assert.match(desktop, /formatMegabytes\(downloadedBytes\)/);
+  assert.match(desktop, /<span className="rb-update-bytes">\{bytesText\}<\/span>/);
 
   // 网页端卡片：同样关掉进度条内置文字；状态文案自带百分数时不再重复渲染右侧 span
   const webStart = settingsPage.indexOf('function WebAboutCard');
