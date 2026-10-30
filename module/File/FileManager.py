@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import random
 from datetime import datetime
@@ -11,6 +12,7 @@ from module.Cache.CacheItem import CacheItem
 from module.Cache.CacheProject import CacheProject
 from module.Config import Config
 from module.File.ASS import ASS
+from module.File.AtomicWrite import atomic_write_text
 from module.File.EPUB import EPUB
 from module.File.KVJSON import KVJSON
 from module.File.MD import MD
@@ -211,6 +213,73 @@ class FileManager(Base):
 
         return project, items
 
+    # 写回失败诊断：完整异常落到 JSON 明细，抛给界面的消息只保留可读摘要，
+    # 避免几 KB 的异常原文直接糊在 Toast 里。
+    WRITEBACK_FAILURE_REPORT_NAME: str = "writeback_failures.json"
+    WRITEBACK_FAILURE_MESSAGE_LIMIT: int = 1500
+    WRITEBACK_FAILURE_DETAIL_LIMIT: int = 400
+
+    def _truncate_writeback_failure_text(self, text: str, limit: int) -> str:
+        if not isinstance(text, str):
+            text = str(text)
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
+
+    def _write_writeback_failure_report(self, failures: list[dict]) -> Path | None:
+        """把逐 writer 的完整异常落盘；诊断文件自身失败绝不能掩盖原始异常。"""
+        try:
+            output_folder = getattr(self.config, "output_folder", "") or ""
+            if not output_folder:
+                return None
+
+            folder = Path(output_folder)
+            report_path = folder / self.WRITEBACK_FAILURE_REPORT_NAME
+            folder.mkdir(parents = True, exist_ok = True)
+            atomic_write_text(
+                report_path,
+                json.dumps(failures, ensure_ascii = False, indent = 2),
+                allowed_roots = [folder],
+            )
+            return Path(os.path.abspath(report_path))
+        except Exception as exc:
+            # 明细落盘失败（含日志不可用）都不能掩盖原始写回异常。
+            try:
+                self.warning(f"{self.WRITEBACK_FAILURE_REPORT_NAME} 写回失败明细落盘失败", exc)
+            except Exception:
+                pass
+            return None
+
+    def _build_writeback_failure_error(
+        self,
+        failures: list[dict],
+        report_path: Path | None,
+    ) -> RuntimeError:
+        header = "部分文件写回失败："
+        suffix = f"（完整明细见 {report_path}）" if report_path is not None else ""
+        budget = max(self.WRITEBACK_FAILURE_MESSAGE_LIMIT - len(header) - len(suffix), 0)
+        details = [
+            (
+                f"{failure['writer']}: "
+                f"{self._truncate_writeback_failure_text(failure['message'], self.WRITEBACK_FAILURE_DETAIL_LIMIT)}"
+            )
+            for failure in failures
+        ]
+        joined = "；".join(details)
+        if len(joined) > budget:
+            joined = self._truncate_writeback_failure_text(joined, budget)
+
+        message = header + joined + suffix
+        if len(message) > self.WRITEBACK_FAILURE_MESSAGE_LIMIT:
+            # 极端长路径等异常情况下仍保证总量上限，保留开头的关键前缀。
+            message = self._truncate_writeback_failure_text(
+                message,
+                self.WRITEBACK_FAILURE_MESSAGE_LIMIT,
+            )
+        return RuntimeError(message)
+
     # 写
     def write_to_path(self, items: list[CacheItem]) -> None:
         items_to_write = self._prepare_items_for_write(items)
@@ -230,14 +299,20 @@ class FileManager(Base):
             ("KVJSON", KVJSON(self.config)),
             ("MESSAGEJSON", MESSAGEJSON(self.config)),
         )
-        errors: list[str] = []
+        failures: list[dict] = []
         for writer_name, writer in writers:
             try:
                 writer.write_to_path(items_to_write)
             except Exception as exc:
+                # 先记完整异常（日志/控制台），再收集明细用于落盘与最终报错。
                 self.error(f"{writer_name} 写回失败", exc)
-                errors.append(f"{writer_name}: {exc}")
-        if errors:
-            error = RuntimeError("部分文件写回失败：" + "；".join(errors))
+                failures.append({
+                    "writer": writer_name,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                })
+        if failures:
+            report_path = self._write_writeback_failure_report(failures)
+            error = self._build_writeback_failure_error(failures, report_path)
             self.error(f"{Localizer.get().log_write_file_fail}", error)
             raise error

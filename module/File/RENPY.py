@@ -12,6 +12,7 @@ from module.Renpy.renpy_tl_io import RenpyTlItemExtractor
 from module.Renpy.renpy_tl_core import parse_tl_document, validate_tl_document
 from module.Renpy.renpy_tl_io import RenpyTlLineUpdater
 from module.File.AtomicWrite import atomic_write_text, validate_write_path
+from module.File import WritebackVerdict
 
 
 class RENPY(Base):
@@ -542,18 +543,13 @@ class RENPY(Base):
 
     @staticmethod
     def _has_translated_value(source, target) -> bool:
-        if isinstance(target, str):
-            return target != "" and target != source
-        if isinstance(target, list):
-            return bool(target) and target != source
-        return False
+        # 判定逻辑统一收敛到 WritebackVerdict，避免与 RENPYSOURCE 各写一份。
+        return WritebackVerdict.has_translated_value(source, target)
 
     @staticmethod
     def _normalize_compare_value(value) -> str:
         """归一化后比较写回结果，避免列表/空白差异造成误报。"""
-        if isinstance(value, list):
-            return "|".join(str(v) for v in value if v is not None)
-        return str(value or "").strip()
+        return WritebackVerdict.normalize_compare_value(value)
 
     def _normalize_name_key(self, value: str | list[str] | None) -> str:
         if isinstance(value, list):

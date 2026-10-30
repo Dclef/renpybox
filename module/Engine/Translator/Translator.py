@@ -53,6 +53,32 @@ class TranslationCancelled(RuntimeError):
 # 槽位探测失败只会回落到默认并发，不值得按分钟级超时去等。
 SLOT_PROBE_TIMEOUT: float = 10.0
 
+# 写回失败的异常文本可能有几 KB（逐个 writer 累加），Toast 只展示可读摘要，
+# 完整内容仍由 self.error(...) 落到日志里。
+TOAST_ERROR_MESSAGE_LIMIT: int = 800
+WRITEBACK_FAILURE_MARKER: str = "部分文件写回失败"
+WRITEBACK_FAILURE_DETAIL_HINT: str = "（完整明细见 "
+
+
+def _truncate_error_message(message: str, limit: int = TOAST_ERROR_MESSAGE_LIMIT) -> str:
+    text = message if isinstance(message, str) else str(message)
+    if len(text) <= limit:
+        return text
+
+    # 明细落盘提示在消息末尾，截断时优先保留，否则用户看不到定位入口。
+    tail = ""
+    hint_index = text.rfind(WRITEBACK_FAILURE_DETAIL_HINT)
+    if hint_index >= 0 and len(text) - hint_index <= limit // 2:
+        tail = text[hint_index:]
+    head = text[: max(limit - len(tail) - 1, 0)] + "…"
+    truncated = head + tail
+    if WRITEBACK_FAILURE_MARKER not in truncated:
+        # 关键子串必须留在提示里，供用户与既有用例识别这类失败。
+        truncated = f"{WRITEBACK_FAILURE_MARKER}：{truncated}"
+        if len(truncated) > limit:
+            truncated = truncated[: limit - 1] + "…"
+    return truncated
+
 
 # 翻译器
 class Translator(Base):
@@ -556,7 +582,7 @@ class Translator(Base):
                 self.error("[EXPORT] 写入译文文件失败", exc)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
-                    "message": str(exc),
+                    "message": _truncate_error_message(exc),
                 })
         # 导出是后台辅助操作，应用退出时不能被非守护线程阻塞。
         threading.Thread(target = task, args = (event, data), daemon = True).start()
@@ -596,7 +622,7 @@ class Translator(Base):
                 self.error("[REINJECT] 从缓存写入译文文件失败", exc)
                 self.emit(Base.Event.APP_TOAST_SHOW, {
                     "type": Base.ToastType.ERROR,
-                    "message": str(exc),
+                    "message": _truncate_error_message(exc),
                 })
                 return
             self.info(f"[REINJECT] 译文文件写入完成：{output_folder}")
@@ -608,7 +634,8 @@ class Translator(Base):
                 ),
             })
 
-        threading.Thread(target = task, args = (event, data)).start()
+        # 重新注入是后台辅助操作，应用退出时不能被非守护线程阻塞。
+        threading.Thread(target = task, args = (event, data), daemon = True).start()
 
     # 翻译状态检查事件
     def translation_project_status_check(self, event: str, data: dict) -> None:
