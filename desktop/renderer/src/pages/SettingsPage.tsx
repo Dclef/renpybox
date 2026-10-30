@@ -53,10 +53,16 @@ function fieldsFor(variant: Variant): FieldSpec[] {
 function SpecCard(props: {
   spec: FieldSpec;
   value: unknown;
-  disabled: boolean;
+  /**
+   * 缺省不禁用。字段一律「失焦/回车才提交」，跟随 state.saving 禁用会在
+   * 一次 PATCH 期间禁掉用户正在输入的控件并抢走焦点
+   * （2026-10-30「输入一个字就得点一下」反馈）；乱序写入由 useAppState 的
+   * 保存队列 + 按序合并响应解决，不再依赖禁用控件。
+   */
+  disabled?: boolean;
   onChange: (key: string, next: unknown) => void;
 }) {
-  const { spec, value, disabled, onChange } = props;
+  const { spec, value, disabled = false, onChange } = props;
   const t = useT();
   const set = (next: unknown) => onChange(spec.key, next);
   const title = spec.titleKey ? t(spec.titleKey) : spec.title;
@@ -159,7 +165,6 @@ export function SettingsPage(props: {
         key={spec.key}
         spec={spec}
         value={values?.[spec.key]}
-        disabled={state.saving}
         onChange={(key, next) => { void applySetting(key, next); }}
       />
     ));
@@ -585,7 +590,7 @@ function ProxyCard(props: { state: AppState; value: unknown; proxyEnabled: unkno
       <TextInput
         value={typeof value === 'string' ? value : ''}
         label={title}
-        disabled={state.saving}
+        // 不随 state.saving 禁用：保存一开就 disable 会抢走正在输入框的焦点。
         placeholder={t('app_settings_page_proxy_url')}
         allowEmpty
         onCommit={(next) => state.setSetting('proxy_url', next)}

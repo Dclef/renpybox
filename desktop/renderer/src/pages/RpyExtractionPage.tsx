@@ -710,14 +710,14 @@ export function RpyExtractionPage(props: {
           <div className="rb-tool-actions" style={{ display: 'flex', gap: 8 }}>
             <Input
               value={path}
+              // 输入立刻生效：这里不能 await 确认框。
+              // 1) 每个字符都走一次 confirmDiscard，有未保存规则时会连环弹窗；
+              // 2) await 期间 value 不变，连打几个字符会把中间字符吞掉（只留最后一个）。
+              // 未保存规则的保护改由真正触发扫描的动作（pickPath / 开始扫描）来问。
               onChange={(event) => {
-                const value = event.target.value;
-                void (async () => {
-                  if (value !== path && pageDirty && !(await confirmDiscard())) return;
-                  setPath(value);
-                  setScanOverride(null);
-                  setScanPage(1);
-                })();
+                setPath(event.target.value);
+                setScanOverride(null);
+                setScanPage(1);
               }}
               placeholder={t('rpy_rules_path')}
               disabled={busy || mutating}
@@ -755,14 +755,11 @@ export function RpyExtractionPage(props: {
         <Form.Item label={t('rpy_rules_language')} style={{ marginBottom: 12 }}>
           <Input
             value={language}
+            // 同 path：输入立即生效，不 await 确认框，否则连打会吞字符、还会连环弹窗。
             onChange={(event) => {
-              const value = event.target.value;
-              void (async () => {
-                if (value !== language && pageDirty && !(await confirmDiscard())) return;
-                setLanguage(value);
-                setScanOverride(null);
-                setScanPage(1);
-              })();
+              setLanguage(event.target.value);
+              setScanOverride(null);
+              setScanPage(1);
             }}
             disabled={busy || mutating}
             data-rb-rpy-language
