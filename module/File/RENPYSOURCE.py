@@ -8,8 +8,17 @@ from base.Base import Base
 from module.Cache.CacheItem import CacheItem
 from module.Config import Config
 from module.Engine.Engine import Engine
+from module.File import WritebackVerdict
 from module.Translate.RenpySourceTranslator import RenpySourceTranslator
 from module.File.AtomicWrite import atomic_write_text, validate_write_path
+
+# 只有"已翻译"类状态才值得人工复核：写回后仍落进 stale/unapplied 时进 needs_review，
+# 避免把从未翻译或已排除的条目也当成异常上报。
+REVIEW_STATUSES = frozenset({
+    Base.TranslationStatus.TRANSLATED,
+    Base.TranslationStatus.POLISHED,
+    Base.TranslationStatus.TRANSLATED_IN_PAST,
+})
 
 
 class RENPYSOURCE(Base):
@@ -121,6 +130,35 @@ class RENPYSOURCE(Base):
         if replacement == current:
             return line
         return line[:literal.start()] + replacement + line[literal.end():]
+
+    @classmethod
+    def _line_has_only_destination(
+        cls,
+        translator: RenpySourceTranslator,
+        line: str,
+        destination: str,
+    ) -> bool:
+        """行内只有一个字符串字面量，且该字面量已经是目标译文。"""
+        matches = list(translator.RE_SINGLE_LINE_STRING_LITERAL.finditer(line))
+        if len(matches) != 1:
+            return False
+        return cls._literal_slot_has_destination(translator, line, 0, destination)
+
+    @staticmethod
+    def _matches_expected_rewrite(
+        translator: RenpySourceTranslator,
+        reference_line: str | None,
+        current_line: str,
+        source: str,
+        destination: str,
+    ) -> bool:
+        """输出行是否正好等于「原始行替换后应得的结果」。"""
+        if reference_line is None or source not in reference_line:
+            # 参考行里没有原文时替换是空操作，未翻译行会和自己相等，必须先排除。
+            return False
+        expected = translator._replace_text_in_line(reference_line, source, destination)
+        expected = translator._restore_non_literal_structure(reference_line, expected)
+        return expected == current_line
 
     def read_from_path(self, abs_paths: List[str]) -> List[CacheItem]:
         """读取 .rpy 源码并生成 CacheItem"""
@@ -271,15 +309,40 @@ class RENPYSOURCE(Base):
                     reference_lines = None
 
             lines = text.split("\n")
+            # 本组条目开始前的输出行快照：用于识别同一行多条被前序条目消费的情况。
+            baseline_lines = list(lines)
             applied = 0
             already_applied = 0
             skipped = 0
             translated_items = 0
+            no_translation = 0
+            untranslatable = 0
+            # 残留条目先记完整对象，写盘后还能回头取证改判（见下方结果取证层）。
+            stale_items: list[dict] = []
+            unapplied_entries: list[dict] = []
+            benign_samples: list[dict] = []
+
+            def record_benign(kind: str, row: int, src: str) -> None:
+                """留前几条良性残留样例，方便用户核对报告。"""
+                if len(benign_samples) >= 5:
+                    return
+                benign_samples.append(
+                    {
+                        "kind": kind,
+                        "row": row,
+                        "src": WritebackVerdict.truncate_sample(src),
+                    }
+                )
+
+            def record_stale(item: CacheItem, row: int, src: str, dst: str) -> None:
+                stale_items.append({"item": item, "row": row, "src": src, "dst": dst})
+                record_benign("stale", row, src)
 
             group_items.sort(key=lambda item: item.get_row())
             for item in group_items:
                 src = item.get_src()
                 dst = item.get_dst()
+                row = item.get_row()
                 if not isinstance(src, str) or src.strip() == "":
                     skipped += 1
                     continue
@@ -287,22 +350,34 @@ class RENPYSOURCE(Base):
                     skipped += 1
                     continue
 
-                if dst != src:
-                    translated_items += 1
-
-                row = item.get_row()
-                if row <= 0 or row > len(lines):
+                if dst == src:
+                    # 缓存里本来就没有译文：无字符文本单独计数，不和真实失败混在一起。
+                    if WritebackVerdict.is_untranslatable_markup(src):
+                        untranslatable += 1
+                        record_benign("untranslatable", row, src)
+                    else:
+                        no_translation += 1
+                        record_benign("no_translation", row, src)
                     skipped += 1
                     continue
 
-                original_line = lines[row - 1]
+                translated_items += 1
+
+                if row <= 0 or row > len(lines):
+                    record_stale(item, row, src, dst)
+                    skipped += 1
+                    continue
+
+                current_line = lines[row - 1]
+                baseline_line = baseline_lines[row - 1]
+                reference_line = (
+                    reference_lines[row - 1]
+                    if reference_lines is not None and row <= len(reference_lines)
+                    else None
+                )
+
                 literal_slot = self._recorded_literal_slot(item)
-                if (
-                    literal_slot is None
-                    and reference_lines is not None
-                    and row <= len(reference_lines)
-                ):
-                    reference_line = reference_lines[row - 1]
+                if literal_slot is None and reference_line is not None:
                     matching_slots = [
                         index
                         for index, match in enumerate(
@@ -315,36 +390,80 @@ class RENPYSOURCE(Base):
                     if len(matching_slots) == 1:
                         literal_slot = matching_slots[0]
 
-                if literal_slot is None:
-                    new_line = translator._replace_text_in_line(
-                        original_line, src, dst
+                # 判定 1：译文已经在位。有槽位时只看本槽位，避免把同一行其他
+                # 槽位里的译文误判成本条已生效。
+                if literal_slot is not None and self._literal_slot_has_destination(
+                    translator, current_line, literal_slot, dst
+                ):
+                    already_applied += 1
+                    continue
+                # 未翻译行（与原始行完全相同）不可能是"已经生效"的终点，先跳过判定省开销。
+                if (
+                    reference_line is None or current_line != reference_line
+                ) and (
+                    self._line_has_only_destination(translator, current_line, dst)
+                    or self._matches_expected_rewrite(
+                        translator, reference_line, current_line, src, dst
                     )
-                else:
+                ):
+                    # 无槽位条目：单字面量行已是译文，或输出行正好等于原始行替换结果。
+                    already_applied += 1
+                    continue
+
+                if literal_slot is not None:
                     new_line = self._replace_literal_at_slot(
                         translator,
-                        original_line,
+                        current_line,
                         literal_slot,
                         src,
                         dst,
                     )
-                if reference_lines is not None and row <= len(reference_lines):
+                else:
+                    new_line = translator._replace_text_in_line(
+                        current_line, src, dst
+                    )
+                if reference_line is not None:
                     # 用原始源码恢复非字符串代码结构，避免 screen action 等表达式被污染。
-                    new_line = translator._restore_non_literal_structure(reference_lines[row - 1], new_line)
-                if new_line == original_line:
-                    if (
-                        dst != src
-                        and literal_slot is not None
-                        and self._literal_slot_has_destination(
-                            translator, original_line, literal_slot, dst
+                    new_line = translator._restore_non_literal_structure(
+                        reference_line, new_line
+                    )
+
+                if new_line == current_line and literal_slot is not None:
+                    # 记录的槽位可能已随行内容变动失效，退回全文替换再试一次。
+                    new_line = translator._replace_text_in_line(
+                        current_line, src, dst
+                    )
+                    if reference_line is not None:
+                        new_line = translator._restore_non_literal_structure(
+                            reference_line, new_line
                         )
-                    ):
-                        already_applied += 1
-                        continue
+
+                if new_line != current_line:
+                    lines[row - 1] = new_line
+                    applied += 1
+                    continue
+
+                # 判定 2：本行没有变化，按证据区分良性残留与真实失败。
+                if (
+                    current_line != baseline_line
+                    and src in baseline_line
+                    and src not in current_line
+                ):
+                    # 同一行有多条条目，本条的 src 已被前序条目消费掉。
+                    already_applied += 1
+                    continue
+                if src not in current_line and not (
+                    reference_line is not None and src in reference_line
+                ):
+                    # 当前输出行与原始源码里都没有该原文：陈旧缓存，不算失败。
+                    record_stale(item, row, src, dst)
                     skipped += 1
                     continue
 
-                lines[row - 1] = new_line
-                applied += 1
+                # 判定 3：原文确实存在但替换没有落地，属于真实未生效。
+                unapplied_entries.append(
+                    {"item": item, "row": row, "src": src, "dst": dst}
+                )
 
             # 写回前备份（仅本地 .bak）
             if self.config.renpy_backup_original:
@@ -359,11 +478,6 @@ class RENPYSOURCE(Base):
                     except Exception:
                         pass
 
-            if applied + already_applied < translated_items:
-                errors.append(
-                    f"译文未生效 {rel_path} (translated={translated_items}, "
-                    f"applied={applied}, already_applied={already_applied}, skipped={skipped})"
-                )
             try:
                 atomic_write_text(
                     target_path,
@@ -375,6 +489,89 @@ class RENPYSOURCE(Base):
                 errors.append(f"写入失败 {target_path}: {exc}")
                 continue
 
+            # ===== 结果取证层 =====
+            # 行漂（上游 .rpy 插删行导致缓存行号/文本对不上）时，译文往往已经在
+            # 文件里了，只是不在缓存指认的那一行。此时把它们当失败会误报，用户
+            # 还会看到"已翻译 100%"却在导出文件里读到英文。这里对刚写好的内容做
+            # 一次字面量取证：dst 在文件里真实存在，就改判 already_applied。
+            if stale_items:
+                literal_texts: Set[str] = set()
+                for probe_line in lines:
+                    for match in RenpySourceTranslator.RE_SINGLE_LINE_STRING_LITERAL.finditer(
+                        probe_line
+                    ):
+                        literal_texts.add(
+                            WritebackVerdict.normalize_compare_value(match.group("text"))
+                        )
+
+                if literal_texts:
+                    def exists_in_file(dst: str) -> bool:
+                        normalized = WritebackVerdict.normalize_compare_value(dst)
+                        return normalized != "" and normalized in literal_texts
+
+                    kept_stale: list[dict] = []
+                    reclassified = 0
+                    for entry_file in stale_items:
+                        if exists_in_file(entry_file["dst"]):
+                            already_applied += 1
+                            reclassified += 1
+                            record_benign("already_in_file", entry_file["row"], entry_file["src"])
+                        else:
+                            kept_stale.append(entry_file)
+                    stale_items = kept_stale
+                    # 注意：unapplied 不做取证改判。unapplied 意味着原文还留在文件里
+                    # （或参考行里仍有原文却没替换成功），译文出现在同一行别的槽位
+                    # 属于巧合，不能当成"已生效"，否则会放过真实失败。
+                    # stale 条目先前计过 skipped，改判为已生效后要把这笔账退回去。
+                    skipped = max(skipped - reclassified, 0)
+
+            stale = len(stale_items)
+            unapplied_items: list[dict] = [
+                {
+                    "row": entry["row"],
+                    "src": WritebackVerdict.truncate_sample(entry["src"]),
+                    "dst": WritebackVerdict.truncate_sample(entry["dst"]),
+                }
+                for entry in unapplied_entries
+            ]
+            # 状态标着"已翻译"却没能落地的条目，单独列出来供人工复核；
+            # 这里只读状态、绝不改状态。
+            review_sources = [(entry, "stale") for entry in stale_items] + [
+                (entry, "unapplied") for entry in unapplied_entries
+            ]
+            needs_review: list[dict] = [
+                {
+                    "row": entry["row"],
+                    "src": WritebackVerdict.truncate_sample(entry["src"]),
+                    "dst": WritebackVerdict.truncate_sample(entry["dst"]),
+                    "status": str(entry["item"].get_status()),
+                    "reason": reason,
+                }
+                for entry, reason in review_sources
+                if entry["item"].get_status() in REVIEW_STATUSES
+            ]
+
+            if unapplied_items:
+                samples = "、".join(
+                    f"{entry['row']}:{entry['src']}->{entry['dst']}"
+                    for entry in unapplied_items[:3]
+                )
+                errors.append(
+                    f"译文未生效 {rel_path} (translated={translated_items}, "
+                    f"applied={applied}, already_applied={already_applied}, "
+                    f"unapplied={len(unapplied_items)}, skipped={skipped})"
+                    + (f"；样例 {samples}" if samples else "")
+                )
+
+            if stale > 0 or untranslatable > 0:
+                # 这些是良性残留，不抛错，但必须让用户在 console 上看见。
+                # no_translation 不触发告警：部分翻译的项目每次导出都会有大量
+                # 未翻译条目，按它告警等于制造噪音。
+                self.warning(
+                    f"RENPYSOURCE 写回跳过 {stale + untranslatable + no_translation} 条良性残留: {rel_path} "
+                    f"(stale={stale}, untranslatable={untranslatable}, no_translation={no_translation})"
+                )
+
             report.append(
                 {
                     "file": rel_path,
@@ -385,6 +582,13 @@ class RENPYSOURCE(Base):
                     "applied": applied,
                     "already_applied": already_applied,
                     "skipped": skipped,
+                    "no_translation": no_translation,
+                    "untranslatable": untranslatable,
+                    "stale": stale,
+                    "unapplied": len(unapplied_items),
+                    "unapplied_items": unapplied_items,
+                    "benign_samples": benign_samples,
+                    "needs_review": needs_review,
                 }
             )
 

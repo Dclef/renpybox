@@ -173,26 +173,55 @@ export function useAppState(): AppState {
     applyTranslationSnapshot(request, epoch, await api.getTranslationState());
   }, [applyTranslationSnapshot]);
 
+  // PATCH 串行队列：并发提交会互相覆盖服务端返回的整份 values，
+  // 早发晚到的响应会把后改的字段抹掉。这里排队执行，并按提交序号合并响应，
+  // 让「保存中」不再需要靠禁用输入框来防乱序 —— 禁用会直接抢走焦点。
+  const saveChain = useRef<Promise<void>>(Promise.resolve());
+  const saveSubmitSeq = useRef(0);
+  const saveLatestByKey = useRef(new Map<string, { value: unknown; seq: number }>());
+  const mergeSavedResponse = useCallback((next: SettingsResponse, seq: number) => {
+    const values: Record<string, unknown> = { ...next.values };
+    // 这次请求之后又提交过的字段，以本地最新值为准，避免被旧响应回滚。
+    saveLatestByKey.current.forEach((entry, key) => {
+      if (entry.seq > seq) values[key] = entry.value;
+    });
+    setSettings({ ...next, values });
+  }, []);
+
   const saveSettings = useCallback(
     async (values: Record<string, unknown>) => {
       setSettings((prev) => prev ? { ...prev, values: { ...prev.values, ...values } } : prev);
+      const seq = ++saveSubmitSeq.current;
+      Object.entries(values).forEach(([key, value]) => saveLatestByKey.current.set(key, { value, seq }));
       setSaving(true);
-      try {
-        const next = await api.patchSettings(values, true);
-        setSettings(next);
-        if (Object.keys(values).some((key) => ['input_folder', 'output_folder', 'renpy_project_path', 'renpy_tl_folder'].includes(key))) {
-          await reloadTranslation();
+      let saved = false;
+      // 队列本身永不 reject：一旦链条变成 rejected，后续 then 会跳过，
+      // 用户再改设置就静默不保存了。所有异常都在内部消化成 saved=false。
+      const run: Promise<void> = saveChain.current.then(async () => {
+        try {
+          const next = await api.patchSettings(values, true);
+          mergeSavedResponse(next, seq);
+          if (Object.keys(values).some((key) => ['input_folder', 'output_folder', 'renpy_project_path', 'renpy_tl_folder'].includes(key))) {
+            await reloadTranslation();
+          }
+          saved = true;
+        } catch (error) {
+          pushToast('error', '保存设置失败：' + (error instanceof Error ? error.message : String(error)));
+          const fresh = await api.getSettings().catch(() => null);
+          if (fresh) {
+            try { mergeSavedResponse(fresh, seq); } catch { setSettings(fresh); }
+          }
+          saved = false;
         }
-        return true;
-      } catch (error) {
-        pushToast('error', '保存设置失败：' + (error instanceof Error ? error.message : String(error)));
-        await api.getSettings().then(setSettings).catch(() => {});
-        return false;
-      } finally {
-        setSaving(false);
-      }
+      }).catch(() => { saved = false; });
+      saveChain.current = run;
+      // 队列里最后一个请求结束时才退出保存态。
+      await run.finally(() => {
+        if (saveChain.current === run) setSaving(false);
+      });
+      return saved;
     },
-    [pushToast, reloadTranslation],
+    [mergeSavedResponse, pushToast, reloadTranslation],
   );
 
   const setSetting = useCallback((key: string, value: unknown) => saveSettings({ [key]: value }), [saveSettings]);

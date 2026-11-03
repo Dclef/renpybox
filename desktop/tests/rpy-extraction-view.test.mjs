@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 import {
   advancedMustStayOpen,
@@ -99,4 +104,22 @@ test('TL 模板新增规则与 clone 新 id', () => {
   assert.ok(cloned);
   assert.notEqual(cloned.id, 'old');
   assert.match(cloned.name, /副本/);
+});
+
+test('路径与语言输入框不得逐字 await 确认框', () => {
+  // 回归：这两个输入框曾在 onChange 里 await confirmDiscard() 再 setState。
+  // 后果是 (1) 连打字符时中间字符被吞（await 期间 value 不变）；
+  // (2) 有未保存规则时每敲一个字弹一次「放弃修改？」。
+  const page = fs.readFileSync(path.join(root, 'renderer/src/pages/RpyExtractionPage.tsx'), 'utf8');
+  for (const flag of ['data-rb-rpy-path', 'data-rb-rpy-language']) {
+    const at = page.indexOf(flag);
+    assert.ok(at > 0, `找不到 ${flag}`);
+    // 从输入框起点往前取一段，检查它的 onChange 体里有没有异步确认。
+    const start = page.lastIndexOf('<Input', at);
+    const body = page.slice(start, at);
+    assert.doesNotMatch(body, /await confirmDiscard/, `${flag} 的 onChange 不得 await 确认框`);
+    assert.doesNotMatch(body, /void \(async/, `${flag} 的 onChange 不得包 async IIFE`);
+  }
+  // 但手动选目录仍要在换目录前确认丢弃未保存规则。
+  assert.match(page, /async function pickPath\(\)[\s\S]{0,400}confirmDiscard\(\)/, 'pickPath 仍需保留丢弃确认');
 });

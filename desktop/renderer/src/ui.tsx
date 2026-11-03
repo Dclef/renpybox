@@ -125,7 +125,14 @@ export function Switch(props: {
   );
 }
 
-/** 数字输入。空串允许临时存在（用户正在输入），不提交。 */
+/**
+ * 数字输入：本地草稿 + 失焦/回车提交。
+ *
+ * 与 TextInput 同一个道理：InputNumber 的 onChange 每敲一个字符就触发，
+ * 直接 onCommit 会触发异步落盘，外层把控件 disabled 掉（或把服务端值写回来），
+ * 浏览器随即丢焦点，表现为「一次只能输入一个字、每打一个字都要再点一下」。
+ * 这里只在本地更新草稿，真正提交留给 blur / 回车；聚焦期间不拿外部值覆盖草稿。
+ */
 export function NumberInput(props: {
   value: number;
   min: number;
@@ -135,17 +142,52 @@ export function NumberInput(props: {
   onCommit: (next: number) => void;
 }) {
   const { value, min, max, disabled, label, onCommit } = props;
+  const [draft, setDraft] = useState<number | null>(Number.isFinite(value) ? value : null);
+  const focused = useRef(false);
+  // 用户是否真的改动过本次编辑。只点进去再离开不应该触发一次落盘。
+  const focusedDirty = useRef(false);
+  const draftRef = useRef<number | null>(draft);
+  draftRef.current = draft;
+  // onChange 必须同步写 draftRef：回车时 antd 先 flushInputValue 触发 onChange、
+  // 再调 onPressEnter，只靠渲染时赋值会让 commit 读到上一个旧值。
+  const updateDraft = (next: number | null) => {
+    draftRef.current = next;
+    setDraft(next);
+  };
+  useEffect(() => {
+    // 正在输入时不要用外部值覆盖草稿，否则会把用户刚敲的数字顶回去。
+    if (!focused.current) updateDraft(Number.isFinite(value) ? value : null);
+  }, [value]);
+  const commit = () => {
+    const next = draftRef.current;
+    const edited = focusedDirty.current;
+    if (next === null || !Number.isFinite(next)) {
+      // 清空后离开：回到上一个合法值，不把空值写进配置。
+      updateDraft(Number.isFinite(value) ? value : null);
+      return;
+    }
+    // 只做显示层的钳制，不因为「值越界」就自动提交：
+    // 历史配置里可能存着越界值（例如下限 1 的字段存了 0），
+    // 用户只是点进去再离开、一个字都没改，也触发一次落盘是很意外的。
+    const clamped = Math.min(max, Math.max(min, next));
+    if (clamped !== next) updateDraft(clamped);
+    if (edited && clamped !== value) onCommit(clamped);
+  };
   return (
     <AntInputNumber
       style={{ width: 120 }}
       aria-label={label}
-      value={Number.isFinite(value) ? value : null}
+      value={draft}
       min={min}
       max={max}
       disabled={disabled}
+      onFocus={() => { focused.current = true; focusedDirty.current = false; }}
       onChange={(next) => {
-        if (typeof next === 'number' && Number.isFinite(next)) onCommit(next);
+        updateDraft(typeof next === 'number' && Number.isFinite(next) ? next : null);
+        focusedDirty.current = true;
       }}
+      onBlur={() => { focused.current = false; commit(); focusedDirty.current = false; }}
+      onPressEnter={commit}
     />
   );
 }

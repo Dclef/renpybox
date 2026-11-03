@@ -21,7 +21,7 @@ def test_runtime_hook_payloads_do_not_enter_translation_input(tmp_path, monkeypa
     assert [item.get_src() for item in items] == ["Visible text"]
 
 
-def test_writeback_reports_errors_after_running_remaining_writers(monkeypatch):
+def test_writeback_reports_errors_after_running_remaining_writers(tmp_path, monkeypatch):
     calls: list[str] = []
     writer_names = (
         "RENPYTRANSLATIONSJSON",
@@ -56,8 +56,12 @@ def test_writeback_reports_errors_after_running_remaining_writers(monkeypatch):
             lambda _config, writer_name=name: DummyWriter(writer_name),
         )
 
+    config = Config()
+    # 诊断明细必须落在临时目录：默认 Config() 会把 writeback_failures.json
+    # 写进仓库的 output/，让每次跑测试都留下残留文件。
+    config.output_folder = str(tmp_path / "output")
     with pytest.raises(RuntimeError, match="TXT.*fictional writer failure"):
-        FileManager(Config()).write_to_path([])
+        FileManager(config).write_to_path([])
 
     assert calls == list(writer_names)
 

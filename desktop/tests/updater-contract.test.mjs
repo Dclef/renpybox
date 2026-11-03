@@ -196,6 +196,12 @@ test('下载报告进度并在完成后进入 downloaded', async () => {
   assert.equal(f.downloads.length, 1);
   assert.equal(f.downloads[0].url, offered.assetUrl);
   assert.ok(f.states.some(state => state.status === 'downloading' && state.progress === 25), '进度应按已下载字节上报');
+  // 界面要显示「已下载 / 总大小」，所以状态里必须带字节数而不是只有百分数
+  const midway = f.states.find(state => state.status === 'downloading' && state.progress === 25);
+  assert.equal(midway.downloadedBytes, 100);
+  assert.equal(midway.totalBytes, 400);
+  assert.equal(done.downloadedBytes, 400);
+  assert.equal(done.totalBytes, 400);
 });
 
 test('取消下载回到 available 且可重新下载', async () => {

@@ -53,10 +53,16 @@ function fieldsFor(variant: Variant): FieldSpec[] {
 function SpecCard(props: {
   spec: FieldSpec;
   value: unknown;
-  disabled: boolean;
+  /**
+   * 缺省不禁用。字段一律「失焦/回车才提交」，跟随 state.saving 禁用会在
+   * 一次 PATCH 期间禁掉用户正在输入的控件并抢走焦点
+   * （2026-10-30「输入一个字就得点一下」反馈）；乱序写入由 useAppState 的
+   * 保存队列 + 按序合并响应解决，不再依赖禁用控件。
+   */
+  disabled?: boolean;
   onChange: (key: string, next: unknown) => void;
 }) {
-  const { spec, value, disabled, onChange } = props;
+  const { spec, value, disabled = false, onChange } = props;
   const t = useT();
   const set = (next: unknown) => onChange(spec.key, next);
   const title = spec.titleKey ? t(spec.titleKey) : spec.title;
@@ -159,7 +165,6 @@ export function SettingsPage(props: {
         key={spec.key}
         spec={spec}
         value={values?.[spec.key]}
-        disabled={state.saving}
         onChange={(key, next) => { void applySetting(key, next); }}
       />
     ));
@@ -297,6 +302,11 @@ function DesktopAboutCard({ state }: { state: AppState }) {
   else if (status === 'downloaded') statusText = t('app_update_status_downloaded');
   else if (status === 'error') statusText = update?.error || t('app_update_status_failed');
 
+  // 「已下载 / 总大小」：百分数只说了一半，用户还要知道还剩多少 MB 没下。
+  const downloadedBytes = Math.max(0, Number(update?.downloadedBytes) || 0);
+  const totalBytes = Math.max(0, Number(update?.totalBytes) || Number(update?.assetSize) || 0);
+  const bytesText = totalBytes > 0 ? `${formatMegabytes(downloadedBytes)} / ${formatMegabytes(totalBytes)}` : '';
+
   return (
     <>
       <SettingsGroup title={t('app_update_group_title')} description={t('app_update_desktop_group_description')}>
@@ -316,6 +326,7 @@ function DesktopAboutCard({ state }: { state: AppState }) {
               <div className="rb-update-progress" aria-label={fill(t('app_update_download_progress'), { percent: progress })}>
                 <Progress percent={progress} style={{ width: 160 }} size="small" showInfo={false} />
                 <span>{progress}%</span>
+                {bytesText ? <span className="rb-update-bytes">{bytesText}</span> : null}
               </div>
             ) : null}
             <div className="rb-update-actions">
@@ -579,7 +590,7 @@ function ProxyCard(props: { state: AppState; value: unknown; proxyEnabled: unkno
       <TextInput
         value={typeof value === 'string' ? value : ''}
         label={title}
-        disabled={state.saving}
+        // 不随 state.saving 禁用：保存一开就 disable 会抢走正在输入框的焦点。
         placeholder={t('app_settings_page_proxy_url')}
         allowEmpty
         onCommit={(next) => state.setSetting('proxy_url', next)}

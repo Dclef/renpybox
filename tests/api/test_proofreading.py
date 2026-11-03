@@ -366,12 +366,18 @@ def test_locate_and_retranslate_reuse_old_engine_safely(tmp_path, monkeypatch):
         return 1
     monkeypatch.setattr(engine, "translate_items", translate)
     assert client.post("/api/proofreading/retranslate", json=payload).status_code == 200
-    assert started.wait(2) and engine.has_single_tasks()
+    # 线程启动 + 单任务登记需要真实调度。CI 或并行跑全量时机器负载更高，
+    # 2 秒会偶发超时（实测同一用例单独跑 3 次全过、全量随机顺序约半数失败），
+    # 这里放宽到 10 秒：它只在异常变慢时才多等，正常情况仍是毫秒级返回。
+    assert started.wait(10) and engine.has_single_tasks()
     assert client.post("/api/proofreading/reset", json=payload).status_code == 409
     assert client.post("/api/proofreading/retranslate", json=payload).status_code == 409
     assert client.post("/api/proofreading/retranslate/cancel").json()["state"] == "CANCELLING"
     release.set()
-    for _ in range(200):
+    # 等待后台任务真正收尾；同样是「负载高时窗口过窄」的加固，最长 5 秒。
+    deadline = time.time() + 5
+    state = {"state": "", "updated": 0}
+    while time.time() < deadline:
         state = client.get("/api/proofreading/retranslate").json()
         if not engine.has_single_tasks():
             break
