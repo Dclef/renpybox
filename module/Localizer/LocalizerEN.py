@@ -1090,6 +1090,16 @@ class LocalizerEN(LocalizerZH):
     agent_translate_glossary_failed_hint: str = (
         "Use the glossary terms given above to fix these entries, then write them again."
     )
+    agent_summary_prompt: str = (
+        "Summarize the conversation below into one paragraph. Keep the user's core intent, "
+        "confirmed conclusions, unfinished items, and key constraints (terms, paths, counts). "
+        "Do not invent anything not present."
+    )
+    agent_summary_header: str = "Summary of the earlier conversation:"
+    agent_summary_failed: str = "Context compaction failed; fell back to trimming old messages."
+    agent_batch_ceiling_reduced: str = (
+        "Output was truncated, so the batch limit was lowered to {limit} entries."
+    )
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"

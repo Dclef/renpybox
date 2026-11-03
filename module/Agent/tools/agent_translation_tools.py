@@ -198,6 +198,7 @@ def read_translation_batch(
     batch_size: int | None = None,
     max_chars: int | None = None,
     mode: str = MODE_TRANSLATE,
+    batch_ceiling: int | None = None,
 ) -> ToolResult:
     """返回一批条目供 Agent 自行翻译或润色。
 
@@ -254,6 +255,9 @@ def read_translation_batch(
         )
 
     size = max(1, min(int(batch_size or capacity["max_entries"]), MAX_BATCH_SIZE))
+    # 会话内硬上限：上一批被输出截断时会把条目数压小，模型不来就由程序压住。
+    if batch_ceiling is not None and int(batch_ceiling) > 0:
+        size = min(size, int(batch_ceiling))
     budget = max(500, min(int(max_chars or capacity["max_chars"]), MAX_BATCH_CHARS))
 
     batch: list[dict[str, Any]] = []

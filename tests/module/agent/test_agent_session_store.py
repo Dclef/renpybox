@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from module.Agent.AgentSessionStore import (
     MAX_TITLE_CHARS,
     SCHEMA_VERSION,
@@ -96,3 +99,49 @@ def test_oversized_session_is_not_written(tmp_path) -> None:
 
     assert store.save(session_id="big", messages=huge) is None
     assert store.load("big") is None
+
+
+def test_stage_and_budget_round_trip(tmp_path: Path) -> None:
+    """阶段与预算要能随会话落盘并读回，供历史会话恢复状态栏。"""
+
+    store = AgentSessionStore(root = tmp_path)
+    store.save(
+        session_id = "abc",
+        messages = [{"role": "user", "content": "翻完这个项目"}],
+        stage = "translate",
+        budget = {"context_window": 200000, "max_iterations": 12},
+    )
+
+    payload = store.load("abc")
+
+    assert payload is not None
+    assert payload["stage"] == "translate"
+    assert payload["budget"]["context_window"] == 200000
+
+
+def test_legacy_session_without_stage_loads_fine(tmp_path: Path) -> None:
+    """旧会话文件没有 stage / budget，必须照样能加载（schema 版本不变）。"""
+
+    store = AgentSessionStore(root = tmp_path)
+    store._ensure_root()
+    legacy = {
+        "schema_version": SCHEMA_VERSION,
+        "id": "legacy",
+        "title": "旧会话",
+        "created_at": 1.0,
+        "updated_at": 1.0,
+        "messages": [{"role": "user", "content": "旧消息"}],
+        "context": [],
+        "metrics": {},
+    }
+    (tmp_path / "legacy.json").write_text(
+        json.dumps(legacy, ensure_ascii = False),
+        encoding = "utf-8",
+    )
+
+    payload = store.load("legacy")
+
+    assert payload is not None
+    # 旧文件没有这两个键，读取侧必须用 .get() 兜底而不是抛异常
+    assert payload.get("stage", "") == ""
+    assert payload.get("budget", {}) == {}

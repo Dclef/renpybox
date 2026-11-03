@@ -24,6 +24,7 @@ def _lazy_tool_handler(
     config_loader: ConfigLoader,
     cancel_check: Callable[[], bool] | None = None,
     pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
+    batch_ceiling: Callable[[], int] | None = None,
 ) -> Callable[..., ToolResult]:
     """延迟加载工具实现，避免打开 Agent 页面时初始化整套翻译依赖。"""
 
@@ -45,6 +46,10 @@ def _lazy_tool_handler(
         # 工具会明确返回 AGENT_APP_CONTEXT_MISSING。
         if pipeline_callbacks is not None and "pipeline_callbacks" in parameters:
             arguments["pipeline_callbacks"] = pipeline_callbacks
+        # 会话内批次上限：只有声明了 batch_ceiling 的取批工具才拿到它，
+        # 由 AgentService 在参数被截断后压低、成功批次后放宽。
+        if batch_ceiling is not None and "batch_ceiling" in parameters:
+            arguments["batch_ceiling"] = batch_ceiling()
         # 不是每个工具都要配置：list_skills 这类纯静态工具既不声明参数也不
         # 收 **kwargs，无条件传 config_loader 会抛 TypeError（2026-10-18 反馈
         # 「Agent 工具 list_skills 执行失败」）。按签名决定是否注入。
@@ -67,11 +72,13 @@ class ToolDispatcher:
         engine: Engine | None = None,
         cancel_check: Callable[[], bool] | None = None,
         pipeline_callbacks: dict[str, Callable[..., dict]] | None = None,
+        batch_ceiling: Callable[[], int] | None = None,
     ) -> None:
         self.config_loader = config_loader or (lambda: Config().load())
         self.engine = engine or Engine.get()
         self._cancel_check = cancel_check
         self.pipeline_callbacks = pipeline_callbacks
+        self.batch_ceiling = batch_ceiling
         self._tools = self._build_tools()
 
     def _build_tools(self) -> dict[str, ToolDef]:
@@ -408,6 +415,7 @@ class ToolDispatcher:
                     "agent_translation_tools",
                     "read_translation_batch",
                     self.config_loader,
+                    batch_ceiling=self.batch_ceiling,
                 ),
                 requires_confirmation=False,
                 requires_idle_engine=True,

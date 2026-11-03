@@ -67,7 +67,9 @@ class AgentSessionStore:
     def save(self, *, session_id: str, messages: list[dict[str, Any]],
              context: list[dict[str, Any]] | None = None,
              created_at: float | None = None,
-             metrics: dict[str, Any] | None = None) -> dict[str, Any] | None:
+             metrics: dict[str, Any] | None = None,
+             stage: str = "",
+             budget: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """写入一个会话；内容为空时删除该会话并返回 None。"""
 
         if not messages:
@@ -82,6 +84,10 @@ class AgentSessionStore:
             "messages": messages,
             "context": context or [],
             "metrics": metrics or {},
+            # stage 与 budget 是增量字段：旧会话文件没有这两个键，
+            # 读取侧一律用 .get() 兜底，所以 SCHEMA_VERSION 不必提升。
+            "stage": str(stage or ""),
+            "budget": dict(budget or {}),
         }
         encoded = json.dumps(payload, ensure_ascii=False, default=str)
         if len(encoded.encode("utf-8")) > MAX_SESSION_BYTES:

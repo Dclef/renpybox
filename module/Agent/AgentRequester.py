@@ -423,6 +423,24 @@ class AgentRequester:
         except Exception:
             pass
 
+    def request_text(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_text_delta: TextDeltaCallback | None = None,
+    ) -> AgentRequestResult:
+        """不带工具跑一次纯文本请求，用于上下文摘要。
+
+        复用同一个 requester 实例（同一套客户端缓存与密钥轮换），
+        只是把工具列表清空 —— 摘要不需要模型调用任何工具。
+        """
+
+        return self.request_tools(
+            messages,
+            [],
+            on_text_delta=on_text_delta,
+        )
+
     def request_tools(
         self,
         messages: list[dict[str, Any]],
@@ -451,7 +469,8 @@ class AgentRequester:
             )
 
         definitions = self._tool_defs(tools)
-        if not definitions:
+        # 摘要请求（request_text）传空工具列表：不是错误，只是不带工具跑一次。
+        if tools and not definitions:
             return AgentRequestResult.failure(
                 "NO_TOOLS",
                 Localizer.get().agent_request_no_tools,
@@ -651,9 +670,11 @@ class AgentRequester:
         payload: dict[str, Any] = {
             "model": self.platform.get("model"),
             "messages": messages,
-            "tools": [tool.openai_schema() for tool in tools],
-            "tool_choice": "auto",
         }
+        # 摘要请求不带工具：有些兼容端点不接受空 tools 数组，直接不传该键。
+        if tools:
+            payload["tools"] = [tool.openai_schema() for tool in tools]
+            payload["tool_choice"] = "auto"
         max_tokens = self._output_token_limit()
         model = str(self.platform.get("model") or "")
         api_url = str(self.platform.get("api_url") or "")
@@ -850,10 +871,12 @@ class AgentRequester:
         payload: dict[str, Any] = {
             "model": self.platform.get("model"),
             "messages": converted,
-            "tools": [tool.anthropic_schema() for tool in tools],
             # thinking 预算要额外算进输出上限，否则开启思考后会顶掉工具参数的空间。
             "max_tokens": max(self._output_token_limit(), thinking_budget + 512),
         }
+        # 摘要请求不带工具：空 tools 数组会被部分端点拒绝，直接不传该键。
+        if tools:
+            payload["tools"] = [tool.anthropic_schema() for tool in tools]
         if system:
             payload["system"] = system
         if any(pattern.search(model) for pattern in self.RE_CLAUDE):
@@ -989,23 +1012,25 @@ class AgentRequester:
         client = self._get_client()
         system, contents = self._google_contents(messages)
         declarations: list[Any] = []
-        for tool in tools:
-            try:
-                declarations.append(types.FunctionDeclaration(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=tool.parameters_schema,
-                ))
-            except Exception:
-                declarations.append(tool.google_schema())
-        try:
-            google_tool = types.Tool(function_declarations=declarations)
-        except Exception:
-            google_tool = {"function_declarations": declarations}
         config_kwargs: dict[str, Any] = {
-            "tools": [google_tool],
             "max_output_tokens": self._output_token_limit(),
         }
+        # 摘要请求不带工具：部分端点对空 function_declarations 会报错。
+        if tools:
+            for tool in tools:
+                try:
+                    declarations.append(types.FunctionDeclaration(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=tool.parameters_schema,
+                    ))
+                except Exception:
+                    declarations.append(tool.google_schema())
+            try:
+                google_tool = types.Tool(function_declarations=declarations)
+            except Exception:
+                google_tool = {"function_declarations": declarations}
+            config_kwargs["tools"] = [google_tool]
         thinking_config = self._google_thinking_config(
             str(self.platform.get("model") or ""),
             self.thinking_level,

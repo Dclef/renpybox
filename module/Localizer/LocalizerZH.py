@@ -1033,6 +1033,13 @@ class LocalizerZH():
     agent_translate_glossary_failed_hint: str = (
         "请按上面给出的术语译法修正这些条目后重新写回。"
     )
+    agent_summary_prompt: str = (
+        "请把以下对话压缩成一段摘要，保留用户的核心诉求、已确认的结论、"
+        "仍未完成的事项与关键约束（术语、路径、数量）。不要编造未出现的信息。"
+    )
+    agent_summary_header: str = "以下是此前对话的摘要："
+    agent_summary_failed: str = "上下文压缩失败，已退回裁剪旧消息。"
+    agent_batch_ceiling_reduced: str = "因输出被截断，本批上限已降到 {limit} 条。"
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"
