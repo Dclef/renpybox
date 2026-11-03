@@ -1037,6 +1037,17 @@ class LocalizerZH():
         "请把以下对话压缩成一段摘要，保留用户的核心诉求、已确认的结论、"
         "仍未完成的事项与关键约束（术语、路径、数量）。不要编造未出现的信息。"
     )
+    agent_translate_placeholder_failed: str = (
+        "有 {count} 条译文丢失或篡改了受保护的变量/标签占位符，已退回待译。"
+    )
+    agent_translate_placeholder_failed_hint: str = (
+        "请原样保留形如 <v0/> 的占位符，一个都不能少、不能改，也不要自己编造新的占位符。"
+    )
+    agent_translate_placeholders_param_description: str = (
+        "取批时返回的 protected_placeholders 占位表，原样回传。"
+        "传入后会把 <vN/> 还原成原始的方括号变量与花括号标签，并校验成对性；"
+        "省略则跳过该校验。"
+    )
     agent_summary_header: str = "以下是此前对话的摘要："
     agent_summary_failed: str = "上下文压缩失败，已退回裁剪旧消息。"
     agent_batch_ceiling_reduced: str = "因输出被截断，本批上限已降到 {limit} 条。"

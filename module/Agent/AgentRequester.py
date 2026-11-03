@@ -161,8 +161,17 @@ class AgentRequester:
             return remembered
         from module.Agent.ModelBudget import resolve_capability
 
+        # 容量解析要带上运行时模型目录，与 AgentService._apply_model_budget 同口径：
+        # 目录是现取的，模型换代不必改代码。目录只读缓存不联网，不会拖慢请求。
+        catalog = None
         try:
-            _context, output = resolve_capability(self.platform)
+            from module.Agent.ModelCatalog import get as get_catalog
+
+            catalog = get_catalog(self.platform)
+        except Exception:  # noqa: BLE001 - 目录缺失退回内置表
+            catalog = None
+        try:
+            _context, output = resolve_capability(self.platform, catalog)
             budget = int(output)
         except (TypeError, ValueError):
             budget = 0

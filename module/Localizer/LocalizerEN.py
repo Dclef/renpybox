@@ -1095,6 +1095,19 @@ class LocalizerEN(LocalizerZH):
         "confirmed conclusions, unfinished items, and key constraints (terms, paths, counts). "
         "Do not invent anything not present."
     )
+    agent_translate_placeholder_failed: str = (
+        "{count} translations lost or altered protected variable/tag placeholders and were "
+        "rolled back to untranslated."
+    )
+    agent_translate_placeholder_failed_hint: str = (
+        "Keep every placeholder such as <v0/> exactly as given: none may be dropped, changed, "
+        "or invented."
+    )
+    agent_translate_placeholders_param_description: str = (
+        "The protected_placeholders map returned by read_translation_batch, passed back unchanged. "
+        "When supplied, <vN/> tokens are restored to the original bracketed variables and curly-braced "
+        "tags, and pairing is verified; omit it to skip that check."
+    )
     agent_summary_header: str = "Summary of the earlier conversation:"
     agent_summary_failed: str = "Context compaction failed; fell back to trimming old messages."
     agent_batch_ceiling_reduced: str = (

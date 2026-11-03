@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any
 
@@ -76,12 +77,90 @@ def _is_pending(item: Any) -> bool:
     return True
 
 
-def _render_item(item: Any) -> dict[str, Any]:
+class _PlaceholderGuard:
+    """把 Ren'Py 里的 `[变量]` / `{标签}` 换成 `<vN/>` 占位符，写回时再还原。
+
+    动机：引擎侧靠 `TextProcessor.pre_process` 产出占位符，再由
+    `ResponseChecker.RE_PRESERVE_TOKEN` 做成对校验；Agent 路径不经过
+    `TextProcessor`，那段强校验一直是空转。模型改坏 `[player_name]`
+    会直接导致游戏 `NameError`，而程序完全没拦。
+
+    形态选 `<vN/>` 是因为 `ResponseChecker.RE_PRESERVE_TOKEN` 已经认它，
+    这样既有校验能真正生效，不必再改校验器。
+    """
+
+    # 复用引擎侧的 Ren'Py 行内保护规则，不自己写正则（写法一歪就和引擎分叉）。
+    PLACEHOLDER_RE = re.compile(r"<v(\d+)/>", re.IGNORECASE)
+
+    def __init__(self) -> None:
+        self.codes: dict[str, str] = {}
+        self._next = 0
+
+    def protect(self, text: str) -> str:
+        """把一段原文里的受保护片段替换成占位符；编号在整批内全局递增。"""
+
+        from module.Cache.CacheItem import CacheItem
+
+        rules = CacheItem.REGEX_RENPY
+        value = str(text or "")
+        if not value or not rules:
+            return value
+
+        def repl(match: re.Match) -> str:
+            original = match.group(0)
+            placeholder = f"<v{self._next}/>"
+            self._next += 1
+            self.codes[placeholder] = original
+            return placeholder
+
+        for rule in rules:
+            value = rule.sub(repl, value)
+        return value
+
+    def restore(self, text: str) -> tuple[str, list[str]]:
+        """还原占位符，返回 (还原后文本, 缺失或多余的占位符列表)。
+
+        缺失与多余都算失败：模型可能整段重写丢掉占位符，也可能编造一个
+        占位表里没有的 `<vN/>`，两种都会让游戏拿到坏文本。
+        """
+
+        value = str(text or "")
+        found = self.PLACEHOLDER_RE.findall(value)
+        expected = [
+            self.PLACEHOLDER_RE.match(key).group(1)
+            for key in self.codes
+        ]
+        problems: list[str] = []
+
+        # 缺失：占位表里有，但模型没输出
+        for key in self.codes:
+            number = self.PLACEHOLDER_RE.match(key).group(1)
+            if number not in found:
+                problems.append(f"missing {key}")
+        # 多余：模型输出了表里没有的编号
+        for number in found:
+            if number not in expected:
+                problems.append(f"unexpected <v{number}/>")
+
+        for placehold, original in self.codes.items():
+            value = re.sub(
+                re.escape(placehold),
+                lambda _match, origin = original: origin,
+                value,
+                flags = re.IGNORECASE,
+            )
+        return value, problems
+
+
+def _render_item(item: Any, guard: "_PlaceholderGuard | None" = None) -> dict[str, Any]:
     """把缓存条目压缩成模型易读的最小字段集。"""
 
+    src = item.get_src()
+    if guard is not None:
+        src = guard.protect(src)
     payload: dict[str, Any] = {
         "id": _item_id(item),
-        "src": item.get_src(),
+        "src": src,
     }
     name_src = item.get_name_src()
     if isinstance(name_src, str) and name_src.strip():
@@ -94,10 +173,10 @@ def _render_item(item: Any) -> dict[str, Any]:
     return payload
 
 
-def _render_polish_item(item: Any) -> dict[str, Any]:
+def _render_polish_item(item: Any, guard: "_PlaceholderGuard | None" = None) -> dict[str, Any]:
     """润色批次额外带上现有译文：没有 dst 就只能重译，看不了「要改哪里」。"""
 
-    payload = _render_item(item)
+    payload = _render_item(item, guard)
     payload["dst"] = str(item.get_dst() or "")
     name_dst = item.get_name_dst()
     if isinstance(name_dst, str) and name_dst.strip():
@@ -263,13 +342,18 @@ def read_translation_batch(
     batch: list[dict[str, Any]] = []
     used = 0
     current_file = ""
+    # 占位符表按批生成，随批次一起给模型、随写回一起传回来：
+    # 跨批复用会张冠李戴（每批 src 不同，占位符内容也不同）。
+    guard = _PlaceholderGuard()
     for item in items[:size]:
         file_path = str(item.get_file_path() or "")
         # 同一批只喂一个文件的条目：跨文件的上下文彼此无关，混在一批里
         # 既稀释语境，也让失败重试牵连整批（照 LinguaGacha 的断批规则）。
         if batch and file_path != current_file:
             break
-        entry = _render_polish_item(item) if polishing else _render_item(item)
+        entry = (
+            _render_polish_item(item, guard) if polishing else _render_item(item, guard)
+        )
         cost = len(str(entry.get("src") or "")) + len(str(entry.get("name_src") or ""))
         if polishing:
             cost += len(str(entry.get("dst") or ""))
@@ -293,6 +377,9 @@ def read_translation_batch(
     # 资产只注入本批命中的条目，作为独立键给模型当约束读，不塞进每条 item：
     # 否则同一份术语会在几十条条目里重复几十次，白烧上下文。
     data.update(_batch_assets(config, batch))
+    # 占位表只在真有受保护片段时才给，避免每批都塞一个空对象。
+    if guard.codes:
+        data["protected_placeholders"] = dict(guard.codes)
     return ToolResult(
         True,
         message,
@@ -441,10 +528,15 @@ def write_translation_batch(
     config_loader: Any = None,
     translations: list[dict[str, Any]] | None = None,
     mode: str = MODE_TRANSLATE,
+    protected_placeholders: dict[str, str] | None = None,
 ) -> ToolResult:
     """把 Agent 给出的译文写回缓存与输出文件。
 
     ``mode="polish"`` 时条目本来是已译内容，写回后标记为 ``POLISHED``。
+
+    ``protected_placeholders`` 是取批时给出的占位表，模型原样回传。传入时会把
+    ``<vN/>`` 还原成 ``[变量]`` / ``{标签}`` 并做成对校验；不传则跳过校验
+    （模型自己编造的调用、或旧会话都没有这份表）。
     """
 
     localizer = Localizer.get()
@@ -459,6 +551,14 @@ def write_translation_batch(
             localizer.agent_translate_translations_required,
             code = "TRANSLATIONS_REQUIRED",
         )
+
+    guard: _PlaceholderGuard | None = None
+    if isinstance(protected_placeholders, dict) and protected_placeholders:
+        guard = _PlaceholderGuard()
+        guard.codes = {
+            str(key): str(value)
+            for key, value in protected_placeholders.items()
+        }
 
     with _WRITE_LOCK:
         try:
@@ -487,6 +587,19 @@ def write_translation_batch(
 
         # 顺序严格如下，调换会产生假误报：
         # ① 译后替换 → ② ResponseChecker（标记/相似度）→ ③ 术语校验（只读）→ ④ 落盘
+        # 占位符还原必须在译后替换之前：否则替换规则会作用在 `<v0/>` 这种
+        # 占位符上，产生错乱，而且还原后的 `[变量]` 才是最终要落盘的文本。
+        # 成对校验失败就退回待译 —— 模型改坏 `[player_name]` 会让游戏 NameError，
+        # 以前程序完全不拦。
+        placeholder_failures: dict[str, list[str]] = {}
+        if guard is not None:
+            for item in written:
+                restored, problems = guard.restore(str(item.get_dst() or ""))
+                if problems:
+                    placeholder_failures[_item_id(item)] = problems
+                else:
+                    item.set_dst(restored)
+
         processor = None
         try:
             from module.TextProcessor import TextProcessor
@@ -495,6 +608,9 @@ def write_translation_batch(
         except Exception:  # noqa: BLE001 - 缺少处理器时跳过译后替换
             processor = None
         for item in written:
+            # 占位符没还原成功的条目保持原样，交给下面统一退回，不再做替换。
+            if _item_id(item) in placeholder_failures:
+                continue
             item.set_dst(_post_process(str(item.get_dst() or ""), processor))
 
         # 与引擎一致的顺序：先说引擎自己的校验器过一遍（占位符、空译文、
@@ -502,7 +618,7 @@ def write_translation_batch(
         failures = _check_batch(config, written)
         checked = []
         for item in written:
-            if _item_id(item) in failures:
+            if _item_id(item) in failures or _item_id(item) in placeholder_failures:
                 item.set_status(Base.TranslationStatus.UNTRANSLATED)
             else:
                 checked.append(item)
@@ -566,12 +682,33 @@ def write_translation_batch(
         result_data["glossary_failures"] = {
             item_id: terms for item_id, terms in list(glossary_failures.items())[:10]
         }
+    if placeholder_failures:
+        # 占位符丢失同样不是「写回失败」，但比术语更危险（会让游戏直接报错），
+        # 所以给出独立键与失败码，让模型知道必须原样保留 `<vN/>`。
+        result_data["placeholder_failures"] = {
+            item_id: problems
+            for item_id, problems in list(placeholder_failures.items())[:10]
+        }
+        written_message = (
+            f"{written_message}\n"
+            f"{localizer.agent_translate_placeholder_failed.format(count = len(placeholder_failures))}"
+            f"\n{localizer.agent_translate_placeholder_failed_hint}"
+        )
     if writeback_error:
         return ToolResult(
             False,
             localizer.agent_translate_writeback_failed.format(detail = writeback_error),
             code = "WRITEBACK_FAILED",
             data = result_data,
+        )
+
+    if placeholder_failures:
+        return ToolResult(
+            False,
+            written_message,
+            code = "PLACEHOLDER_MISMATCH",
+            data = result_data,
+            continues = True,
         )
 
     return ToolResult(

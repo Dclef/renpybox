@@ -17,12 +17,21 @@ export function stageKey(stage: string | null | undefined): string;
 
 export function formatTokenCount(n: number | null | undefined): string;
 
-export function budgetParts(budget: { context_window?: number; max_iterations?: number } | null | undefined): { context: string; iterations: string };
+export function budgetParts(budget: {
+  context_window?: number;
+  usable_tokens?: number;
+  max_output_tokens?: number;
+  max_messages?: number;
+  max_iterations?: number;
+} | null | undefined): { context: string; usable: string; output: string; messages: string; iterations: string };
 
 export interface AgentMetricsParts {
   rounds: number;
   steps: number;
+  requests: number;
   tokensPerSecond: number;
+  inputTokens: string;
+  outputTokens: string;
   totalTokens: string;
   cacheHitPercent: number | null;
   contextPercent: number;
@@ -32,7 +41,10 @@ export interface AgentMetricsParts {
 export function metricsParts(metrics: {
   iterations?: number;
   steps?: number;
+  requests?: number;
   tokens_per_second?: number;
+  input_tokens?: number;
+  output_tokens?: number;
   total_tokens?: number;
   cache_hit_rate?: number | null;
   context_percent?: number;

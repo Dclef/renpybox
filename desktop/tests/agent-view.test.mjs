@@ -53,19 +53,43 @@ test('token 数量按 K/M 压缩，0 和非法值为空', () => {
   assert.equal(formatTokenCount(-1), '');
 });
 
-test('预算行只取上下文窗口和最大轮数', () => {
-  assert.deepEqual(budgetParts({ context_window: 200000, max_iterations: 32 }), { context: '200K', iterations: '32' });
-  assert.deepEqual(budgetParts({ context_window: 1500 }), { context: '1.5K', iterations: '' });
-  assert.deepEqual(budgetParts({}), { context: '', iterations: '' });
-  assert.deepEqual(budgetParts(undefined), { context: '', iterations: '' });
-  assert.deepEqual(budgetParts({ context_window: 0, max_iterations: 0 }), { context: '', iterations: '' });
+test('预算行给出上下文、可用输入、输出上限、消息上限与最大轮数', () => {
+  assert.deepEqual(
+    budgetParts({
+      context_window: 200000,
+      usable_tokens: 150000,
+      max_output_tokens: 32000,
+      max_messages: 600,
+      max_iterations: 32,
+    }),
+    { context: '200K', usable: '150K', output: '32K', messages: '600', iterations: '32' },
+  );
+  assert.deepEqual(
+    budgetParts({ context_window: 1500 }),
+    { context: '1.5K', usable: '', output: '', messages: '', iterations: '' },
+  );
+  assert.deepEqual(
+    budgetParts({}),
+    { context: '', usable: '', output: '', messages: '', iterations: '' },
+  );
+  assert.deepEqual(
+    budgetParts(undefined),
+    { context: '', usable: '', output: '', messages: '', iterations: '' },
+  );
+  assert.deepEqual(
+    budgetParts({ context_window: 0, max_iterations: 0 }),
+    { context: '', usable: '', output: '', messages: '', iterations: '' },
+  );
 });
 
-test('状态栏把轮次、步数、吞吐、token、缓存命中与上下文占比分开给出', () => {
+test('状态栏把轮次、步数、请求次数、吞吐、分项 token、缓存命中与上下文占比分开给出', () => {
   const parts = metricsParts({
     iterations: 25,
     steps: 2145,
+    requests: 31,
     tokens_per_second: 221.4,
+    input_tokens: 180_000,
+    output_tokens: 47_000,
     total_tokens: 227_000_000,
     cache_hit_rate: 0.98,
     context_percent: 0.12,
@@ -73,7 +97,10 @@ test('状态栏把轮次、步数、吞吐、token、缓存命中与上下文占
 
   assert.equal(parts.rounds, 25);
   assert.equal(parts.steps, 2145);
+  assert.equal(parts.requests, 31);
   assert.equal(parts.tokensPerSecond, 221.4);
+  assert.equal(parts.inputTokens, '180K');
+  assert.equal(parts.outputTokens, '47K');
   assert.equal(parts.totalTokens, '227M');
   assert.equal(parts.cacheHitPercent, 98);
   assert.equal(parts.contextPercent, 12);

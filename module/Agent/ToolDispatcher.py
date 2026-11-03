@@ -446,6 +446,10 @@ class ToolDispatcher:
                             },
                             "description": localizer.agent_translate_translations_param_description,
                         },
+                        "protected_placeholders": {
+                            "type": "object",
+                            "description": localizer.agent_translate_placeholders_param_description,
+                        },
                     },
                     "required": ["translations"],
                     "additionalProperties": False,

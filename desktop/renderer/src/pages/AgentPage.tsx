@@ -465,6 +465,13 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
       ? t('agent_page_budget').replace('{context}', budget.context).replace('{iterations}', budget.iterations)
       : t('agent_page_budget_context').replace('{context}', budget.context))
     : '';
+  // 预算明细：以前只显示上下文总量，用户看不到还能塞多少、输出上限多高。
+  const budgetDetail = budget.usable && budget.output && budget.messages
+    ? t('agent_page_budget_detail')
+      .replace('{usable}', budget.usable)
+      .replace('{output}', budget.output)
+      .replace('{messages}', budget.messages)
+    : '';
   const runningProgress = session && session.status !== 'idle' ? lastRunningProgress(session) : undefined;
   const stageLabelKey = stageKey(session?.stage || runningProgress?.stage || '');
   const stagePercent = typeof runningProgress?.percent === 'number' && Number.isFinite(runningProgress.percent)
@@ -478,6 +485,7 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
   const settingsPanel = (
     <div className="agent-settings-panel">
       {budgetText ? <p className="agent-budget">{budgetText}</p> : null}
+      {budgetDetail ? <p className="agent-budget">{budgetDetail}</p> : null}
       <Button block icon={<RefreshCw size={14} strokeWidth={1.75} />} loading={refreshing} disabled={!connected} onClick={() => void refreshPlatforms()}>
         {t('agent_page_settings_refresh')}</Button>
       <Button block onClick={() => { setSettingsOpen(false); onOpenPlatforms(); }}>{t('agent_page_manage_platforms')}</Button>
@@ -757,6 +765,18 @@ export function AgentPage(props: { state: AppState; onOpenPlatforms: () => void 
           {metrics.tokensPerSecond > 0 ? (
             <span className="agent-metrics-item">
               {t('agent_page_metrics_throughput').replace('{speed}', String(Math.round(metrics.tokensPerSecond)))}
+            </span>
+          ) : null}
+          {metrics.requests > 0 ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_requests').replace('{count}', String(metrics.requests))}
+            </span>
+          ) : null}
+          {metrics.inputTokens && metrics.outputTokens ? (
+            <span className="agent-metrics-item">
+              {t('agent_page_metrics_io')
+                .replace('{input}', metrics.inputTokens)
+                .replace('{output}', metrics.outputTokens)}
             </span>
           ) : null}
           {metrics.totalTokens ? (
