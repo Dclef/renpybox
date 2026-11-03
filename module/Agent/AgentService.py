@@ -38,6 +38,9 @@ class AgentService:
     POLLING_ITERATIONS_CEILING = 240
     # 工具参数被输出上限截断后允许模型自我纠正的次数；超过仍不收敛才判失败。
     MAX_TRUNCATION_RETRIES = 3
+    # 摘要消息的标记键：裁剪时据它识别「这条不是真正的用户请求」，
+    # 避免摘要被当成一个用户回合再次删掉。
+    SUMMARY_FLAG = "summary"
 
     def __init__(
         self,
@@ -57,6 +60,7 @@ class AgentService:
         self.dispatcher = dispatcher or ToolDispatcher(
             config_loader = self.config_loader,
             pipeline_callbacks = pipeline_callbacks,
+            batch_ceiling = self.batch_ceiling,
         )
         # None 表示按模型容量推导；显式传入的值优先，且至少为 1。
         self._max_iterations_override = (
@@ -90,6 +94,9 @@ class AgentService:
         # 跨消息累计（一个任务里追问不该把数字清零），只在新建任务时重置。
         self._metrics: dict[str, Any] = self._empty_metrics()
         self._run_started_at = 0.0
+        # 本会话的有效批次上限（0 表示不限制，按模型容量推导）。
+        # 工具参数被输出截断时对半压小，成功跑完一批后逐步回升。
+        self._batch_ceiling = 0
 
     @staticmethod
     def _empty_metrics() -> dict[str, Any]:
@@ -180,6 +187,71 @@ class AgentService:
         self._project_changed_during_run = False
         # 新建任务要连用量一起清空，否则状态栏会继续显示上一个任务的数字。
         self._metrics = self._empty_metrics()
+        self._run_started_at = 0.0
+        # 批次上限是会话内状态，新建任务必须一并清掉。
+        self._batch_ceiling = 0
+
+    def _current_batch_ceiling_hint(self) -> int:
+        """截断时用来对半压小的基准值：已有上限就沿用，否则取按模型推导的批次容量。"""
+
+        if self._batch_ceiling:
+            return int(self._batch_ceiling)
+        try:
+            from module.Agent.ModelBudget import batch_capacity
+
+            capacity = batch_capacity(getattr(self, "_active_platform", None))
+            entries = int(capacity.get("max_entries") or 0)
+        except Exception:  # noqa: BLE001 - 推导失败就不压
+            return 0
+        return entries
+
+    def batch_ceiling(self) -> int:
+        """本会话的有效批次上限；0 表示不限制。"""
+
+        return int(self._batch_ceiling or 0)
+
+    def _reduce_batch_ceiling(self, current: int | None = None) -> None:
+        """工具参数被截断时把批次上限对半压小。
+
+        只用提示词让模型自己降条目数并不可靠（它会一次次原样重试），
+        这里给一个程序侧的硬兜底，模型下次取批就被压住。
+        """
+
+        from module.Agent.ModelBudget import MIN_BATCH_ENTRIES
+
+        base = int(current or self._batch_ceiling or 0)
+        if base <= 0:
+            return
+        self._batch_ceiling = max(MIN_BATCH_ENTRIES, base // 2)
+
+    def _relax_batch_ceiling(self) -> None:
+        """一批成功写完后逐步放宽上限，避免一次截断永久压着小批次。"""
+
+        if not self._batch_ceiling:
+            return
+        self._batch_ceiling = int(self._batch_ceiling * 1.5)
+        # 回到推导值附近就放开限制，让批次重新跟随模型容量。
+        if self._batch_ceiling >= int(self.context_budget.get("max_messages") or 0x7FFFFFFF):
+            self._batch_ceiling = 0
+
+    def restore_metrics(self, metrics: dict[str, Any] | None) -> None:
+        """从历史会话恢复用量统计；脏数据一律按空统计处理。"""
+
+        restored = self._empty_metrics()
+        if isinstance(metrics, dict):
+            for key, value in restored.items():
+                raw = metrics.get(key)
+                if isinstance(value, float):
+                    try:
+                        restored[key] = float(raw)
+                    except (TypeError, ValueError):
+                        restored[key] = 0.0
+                elif isinstance(value, int):
+                    if isinstance(raw, bool) or not isinstance(raw, int):
+                        restored[key] = 0
+                    else:
+                        restored[key] = raw
+        self._metrics = restored
         self._run_started_at = 0.0
 
     def _close_requester(self) -> None:
@@ -428,13 +500,103 @@ class AgentService:
                 usable_tokens = 0
             self.max_iterations = max(8, min(32, usable_tokens // 16000))
 
+    def _estimate_tokens(self, messages: list[dict[str, Any]] | None = None) -> int:
+        """按字符数折算 token 估算，用于判断上下文是否真的快满了。
+
+        字符口径对中英混排偏差很大（英文约 4 字符/token、中文接近 1 字符/token），
+        这也是之前只看字符数容易误判的原因。
+        """
+
+        from module.Agent.ModelBudget import CHARS_PER_TOKEN
+
+        target = self.messages if messages is None else messages
+        try:
+            chars = len(json.dumps(target, ensure_ascii = False, default = str))
+        except (TypeError, ValueError):
+            chars = sum(len(str(message)) for message in target)
+        return int(chars / CHARS_PER_TOKEN) if CHARS_PER_TOKEN > 0 else chars
+
+    def _usable_tokens(self) -> int:
+        """本轮可用的输入预算；取不到时按 max_context_chars 折算。"""
+
+        try:
+            usable = int(self.context_budget.get("usable_tokens") or 0)
+        except (TypeError, ValueError):
+            usable = 0
+        if usable > 0:
+            return usable
+        from module.Agent.ModelBudget import CHARS_PER_TOKEN
+
+        if CHARS_PER_TOKEN <= 0:
+            return 0
+        return int(max(1, self.max_context_chars) / CHARS_PER_TOKEN)
+
+    def _summary_message(self, text: str) -> dict[str, Any]:
+        """摘要以 user 角色承载：Anthropic/Gemini 都不接受结尾是 assistant 的消息。"""
+
+        return {
+            "role": "user",
+            "content": f"{Localizer.get().agent_summary_header}\n{text}",
+            self.SUMMARY_FLAG: True,
+        }
+
+    def _summarize(self, chunk: list[dict[str, Any]]) -> str:
+        """把一段历史压成摘要；失败返回空串，由调用方降级为删除式裁剪。"""
+
+        if not chunk or self._requester is None:
+            return ""
+        payload: list[dict[str, Any]] = [
+            {"role": "system", "content": Localizer.get().agent_summary_prompt}
+        ]
+        payload.extend(chunk)
+        try:
+            result = self._requester.request_text(payload)
+        except Exception as exc:  # noqa: BLE001 - 摘要失败必须可降级
+            LogManager.get().warning(f"Agent 上下文摘要请求失败：{exc}")
+            return ""
+        if not result.success:
+            return ""
+        # 摘要本身也是一次真实消耗，必须计入用量，否则界面的吞吐与总量对不上。
+        self._accumulate_usage(result.usage)
+        return str(result.text or "").strip()
+
+    def _compact(self) -> bool:
+        """尝试压缩最早的用户回合；返回是否真的发生了替换。"""
+
+        if not self.messages or self.messages[0].get("role") != "system":
+            return False
+        # 只压「完整且已结束」的回合：最后一个 user 回合是当前诉求，不能动。
+        user_indices = [
+            index
+            for index, message in enumerate(self.messages)
+            if message.get("role") == "user" and not message.get(self.SUMMARY_FLAG)
+        ]
+        if len(user_indices) < 2:
+            return False
+        start, end = user_indices[0], user_indices[1]
+        chunk = self.messages[start:end]
+        if not chunk:
+            return False
+        summary = self._summarize(chunk)
+        if not summary:
+            return False
+        self.messages[start:end] = [self._summary_message(summary)]
+        return True
+
     def _trim_history(self) -> None:
-        """裁剪历史：字符与消息条数两条边界都要守。"""
+        """裁剪历史：优先摘要压缩，摘要失败才退回删除式裁剪。
+
+        以前只有删除：长任务里模型会丢掉最初的诉求与早期工具结论，
+        而且没有任何补偿手段。现在先去摘要，实在不行才删。
+        """
+
         while self._over_budget():
+            if self._requester is not None and self._compact():
+                continue
             user_indices = [
                 index
                 for index, message in enumerate(self.messages)
-                if message.get("role") == "user"
+                if message.get("role") == "user" and not message.get(self.SUMMARY_FLAG)
             ]
             if len(user_indices) < 2:
                 # 只剩当前回合时（逐批翻译就是这样），按「助手轮次」为边界
@@ -445,8 +607,15 @@ class AgentService:
             del self.messages[user_indices[0]:user_indices[1]]
 
     def _over_budget(self) -> bool:
-        """字符超标或消息条数超标都算超预算。"""
+        """token 超预算，或字符/消息条数触到硬护栏，都算超预算。
 
+        token 是主口径（决定模型是否真的装得下），字符与条数保留为兜底：
+        供应商侧溢出报错往往发生在 token 估算偏乐观的时候。
+        """
+
+        usable = self._usable_tokens()
+        if usable > 0 and self._estimate_tokens() > usable:
+            return True
         if self._context_size() > self.max_context_chars:
             return True
         if self.max_messages and len(self.messages) > self.max_messages:
@@ -454,22 +623,35 @@ class AgentService:
         return False
 
     def _trim_within_turn(self) -> bool:
-        """单回合内裁剪：切到下一个助手消息边界，保证不会留下孤立工具消息。"""
+        """单回合内裁剪：切到下一个助手消息边界，保证不会留下孤立工具消息。
+
+        摘要消息（位于 system 之后）必须跳过：它就是「早期对话的全部内容」，
+        删掉它等于把压缩成果丢了，反而让模型彻底失忆。
+        """
 
         if len(self.messages) < 4:
             return False
         if self.messages[0].get("role") != "system":
             return False
-        if self.messages[1].get("role") != "user":
+        start = 1
+        # 跳过紧跟 system 的摘要消息，从真正的当前用户回合开始裁。
+        while start < len(self.messages) and self.messages[start].get(self.SUMMARY_FLAG):
+            start += 1
+        if start >= len(self.messages):
             return False
+        if self.messages[start].get("role") != "user":
+            return False
+        # 当前用户诉求（start 位置）必须保留，从它之后开始删。
+        # 起点取 start + 2：与旧逻辑 range(3, ...) 等价（旧逻辑 start 恒为 1），
+        # 保证至少删掉一条 assistant，不会原地打转。
         boundary = None
-        for index in range(3, len(self.messages)):
+        for index in range(start + 2, len(self.messages)):
             if self.messages[index].get("role") == "assistant":
                 boundary = index
                 break
         if boundary is None:
             return False
-        del self.messages[2:boundary]
+        del self.messages[start + 1:boundary]
         return True
 
     def _finalize(self, result: AgentRunResult) -> AgentRunResult:
@@ -577,6 +759,8 @@ class AgentService:
 
         # 按本轮实际使用的模型推导预算：同一份会话在不同模型间切换时自动收紧或放宽。
         self._apply_model_budget(platform)
+        # 记下本轮平台：截断时要用它按模型推导批次容量的基准值。
+        self._active_platform = dict(platform)
         # 阶段每次任务重新开始，不要把上一轮的 translate 带进新任务。
         self._stage = ""
         self._emit(callback, "budget", self.budget_summary())
@@ -660,6 +844,9 @@ class AgentService:
                     LogManager.get().warning(
                         f"Agent 工具参数被输出上限截断，第 {truncated} 次：{result.error_message}"
                     )
+                    # 程序侧硬兜底：把批次上限对半压小，模型下次取批就被压住。
+                    # 只靠提示词让它自己降条目数并不可靠，它会一次次原样重试。
+                    self._reduce_batch_ceiling(self._current_batch_ceiling_hint())
                     # 用 user 角色回灌：Anthropic/Gemini 都不接受结尾是 assistant 的消息。
                     self.messages.append({"role": "user", "content": result.error_message})
                     if truncated > self.MAX_TRUNCATION_RETRIES:
@@ -789,6 +976,12 @@ class AgentService:
                     "content": summary,
                 })
                 iteration_results.append(tool_result)
+                # 一批译文顺利写完说明当前上限够用，逐步放宽，避免被一次截断永久压小。
+                if (
+                    tool_result.success
+                    and call.name == "write_translation_batch"
+                ):
+                    self._relax_batch_ceiling()
                 detail = {
                     "name": call.name,
                     "success": tool_result.success,

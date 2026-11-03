@@ -10,6 +10,7 @@ import importlib
 import json
 import re
 import threading
+import time
 from typing import Any, Callable
 
 from base.Base import Base
@@ -62,6 +63,15 @@ class AgentRequester:
     CLIENT_REGISTRY: dict[tuple[str, str, str, int, int], Any] = {}
     CLIENT_LOCK = threading.RLock()
     MAX_RETRY = 2
+    # 限流退避：按尝试次序取用。只对限流生效，普通失败仍然立即重试 ——
+    # 网络抖动等故障等待没有意义，反而拖慢用户可见的失败时间。
+    RETRY_BACKOFF_SECONDS = (2.0, 4.0)
+    # 退避期间的分段长度：用户点停止要能立刻生效，不能一次睡到底。
+    BACKOFF_SLICE_SECONDS = 0.1
+    RE_RATE_LIMIT = re.compile(
+        r"\b(429|rate[\s_-]?limit|too many requests|resource[\s_-]?exhausted)\b",
+        re.IGNORECASE,
+    )
     RE_O_SERIES = re.compile(r"o\d(?:$|-)", re.IGNORECASE)
     RE_GPT5 = re.compile(r"gpt-5", re.IGNORECASE)
     RE_QWEN3_5 = re.compile(r"qwen3(?:\.|-)?5", re.IGNORECASE)
@@ -90,6 +100,8 @@ class AgentRequester:
         self.platform = platform
         self.cancel_event = threading.Event()
         self.last_error_message = ""
+        # 本轮是否撞过限流；每次工具请求开始时重置，用于把最终失败归因为限流。
+        self._rate_limited = False
         # 被端点以「上限过高」拒绝后动态下调；0 表示仍用按模型推导的值。
         self._output_limit_override = 0
         self.thinking_level = self._normalize_thinking_level(
@@ -149,8 +161,17 @@ class AgentRequester:
             return remembered
         from module.Agent.ModelBudget import resolve_capability
 
+        # 容量解析要带上运行时模型目录，与 AgentService._apply_model_budget 同口径：
+        # 目录是现取的，模型换代不必改代码。目录只读缓存不联网，不会拖慢请求。
+        catalog = None
         try:
-            _context, output = resolve_capability(self.platform)
+            from module.Agent.ModelCatalog import get as get_catalog
+
+            catalog = get_catalog(self.platform)
+        except Exception:  # noqa: BLE001 - 目录缺失退回内置表
+            catalog = None
+        try:
+            _context, output = resolve_capability(self.platform, catalog)
             budget = int(output)
         except (TypeError, ValueError):
             budget = 0
@@ -411,6 +432,24 @@ class AgentRequester:
         except Exception:
             pass
 
+    def request_text(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_text_delta: TextDeltaCallback | None = None,
+    ) -> AgentRequestResult:
+        """不带工具跑一次纯文本请求，用于上下文摘要。
+
+        复用同一个 requester 实例（同一套客户端缓存与密钥轮换），
+        只是把工具列表清空 —— 摘要不需要模型调用任何工具。
+        """
+
+        return self.request_tools(
+            messages,
+            [],
+            on_text_delta=on_text_delta,
+        )
+
     def request_tools(
         self,
         messages: list[dict[str, Any]],
@@ -439,12 +478,14 @@ class AgentRequester:
             )
 
         definitions = self._tool_defs(tools)
-        if not definitions:
+        # 摘要请求（request_text）传空工具列表：不是错误，只是不带工具跑一次。
+        if tools and not definitions:
             return AgentRequestResult.failure(
                 "NO_TOOLS",
                 Localizer.get().agent_request_no_tools,
             )
 
+        self._rate_limited = False
         for attempt in range(self.MAX_RETRY):
             if self._cancelled():
                 return AgentRequestResult.failure(
@@ -490,12 +531,57 @@ class AgentRequester:
                         "CANCELLED",
                         Localizer.get().agent_request_cancelled,
                     )
+                # 限流是唯一值得等待的错误：背靠背重试两次大概率仍是 429。
+                # 普通异常保持立即重试，不改变既有行为。
+                if self._is_rate_limited(exc) and attempt + 1 < self.MAX_RETRY:
+                    if self._backoff(attempt):
+                        self._rate_limited = True
+                        continue
+                    return AgentRequestResult.failure(
+                        "CANCELLED",
+                        Localizer.get().agent_request_cancelled,
+                    )
                 if attempt + 1 < self.MAX_RETRY:
                     continue
+        if self._rate_limited:
+            return AgentRequestResult.failure(
+                "RATE_LIMITED",
+                Localizer.get().agent_request_rate_limited,
+            )
         return AgentRequestResult.failure(
             "REQUEST_FAILED",
             Localizer.get().agent_request_failed,
         )
+
+    def _is_rate_limited(self, exc: Exception) -> bool:
+        """识别限流。兼容端点的报错文本不可控，所以类型与文本两路都看。"""
+
+        name = type(exc).__name__.casefold()
+        if "ratelimit" in name or "toomanyrequests" in name:
+            return True
+        status = getattr(exc, "status_code", None)
+        if status is not None:
+            try:
+                if int(status) == 429:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return bool(self.RE_RATE_LIMIT.search(str(exc)))
+
+    def _backoff(self, attempt: int) -> bool:
+        """按尝试次序退避。返回 False 表示期间被取消。"""
+
+        table = self.RETRY_BACKOFF_SECONDS
+        seconds = table[min(attempt, len(table) - 1)]
+        slice_seconds = self.BACKOFF_SLICE_SECONDS
+        waited = 0.0
+        while waited < seconds:
+            if self._cancelled():
+                return False
+            step = min(slice_seconds, seconds - waited)
+            time.sleep(step)
+            waited += step
+        return not self._cancelled()
 
     def _shrink_output_budget(self, message: str) -> bool:
         """识别「输出上限过高」类报错并下调预算，返回是否已下调。"""
@@ -593,9 +679,11 @@ class AgentRequester:
         payload: dict[str, Any] = {
             "model": self.platform.get("model"),
             "messages": messages,
-            "tools": [tool.openai_schema() for tool in tools],
-            "tool_choice": "auto",
         }
+        # 摘要请求不带工具：有些兼容端点不接受空 tools 数组，直接不传该键。
+        if tools:
+            payload["tools"] = [tool.openai_schema() for tool in tools]
+            payload["tool_choice"] = "auto"
         max_tokens = self._output_token_limit()
         model = str(self.platform.get("model") or "")
         api_url = str(self.platform.get("api_url") or "")
@@ -792,10 +880,12 @@ class AgentRequester:
         payload: dict[str, Any] = {
             "model": self.platform.get("model"),
             "messages": converted,
-            "tools": [tool.anthropic_schema() for tool in tools],
             # thinking 预算要额外算进输出上限，否则开启思考后会顶掉工具参数的空间。
             "max_tokens": max(self._output_token_limit(), thinking_budget + 512),
         }
+        # 摘要请求不带工具：空 tools 数组会被部分端点拒绝，直接不传该键。
+        if tools:
+            payload["tools"] = [tool.anthropic_schema() for tool in tools]
         if system:
             payload["system"] = system
         if any(pattern.search(model) for pattern in self.RE_CLAUDE):
@@ -931,23 +1021,25 @@ class AgentRequester:
         client = self._get_client()
         system, contents = self._google_contents(messages)
         declarations: list[Any] = []
-        for tool in tools:
-            try:
-                declarations.append(types.FunctionDeclaration(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=tool.parameters_schema,
-                ))
-            except Exception:
-                declarations.append(tool.google_schema())
-        try:
-            google_tool = types.Tool(function_declarations=declarations)
-        except Exception:
-            google_tool = {"function_declarations": declarations}
         config_kwargs: dict[str, Any] = {
-            "tools": [google_tool],
             "max_output_tokens": self._output_token_limit(),
         }
+        # 摘要请求不带工具：部分端点对空 function_declarations 会报错。
+        if tools:
+            for tool in tools:
+                try:
+                    declarations.append(types.FunctionDeclaration(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=tool.parameters_schema,
+                    ))
+                except Exception:
+                    declarations.append(tool.google_schema())
+            try:
+                google_tool = types.Tool(function_declarations=declarations)
+            except Exception:
+                google_tool = {"function_declarations": declarations}
+            config_kwargs["tools"] = [google_tool]
         thinking_config = self._google_thinking_config(
             str(self.platform.get("model") or ""),
             self.thinking_level,

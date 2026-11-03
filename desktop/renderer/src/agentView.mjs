@@ -75,11 +75,15 @@ export function formatTokenCount(n) {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-/** 设置里的预算行：上下文窗口与最大轮数，缺哪项哪项为空。 */
+/** 设置里的预算行：上下文窗口、可用输入、输出上限、消息上限与最大轮数。 */
 export function budgetParts(budget) {
   const iterations = budget?.max_iterations;
+  const messages = budget?.max_messages;
   return {
     context: formatTokenCount(budget?.context_window),
+    usable: formatTokenCount(budget?.usable_tokens),
+    output: formatTokenCount(budget?.max_output_tokens),
+    messages: typeof messages === 'number' && Number.isFinite(messages) && messages > 0 ? String(messages) : '',
     iterations: typeof iterations === 'number' && Number.isFinite(iterations) && iterations > 0 ? String(iterations) : '',
   };
 }
@@ -98,7 +102,10 @@ export function metricsParts(metrics) {
   const empty = {
     rounds: 0,
     steps: 0,
+    requests: 0,
     tokensPerSecond: 0,
+    inputTokens: '',
+    outputTokens: '',
     totalTokens: '',
     cacheHitPercent: null,
     contextPercent: 0,
@@ -108,7 +115,10 @@ export function metricsParts(metrics) {
 
   const rounds = positiveNumber(metrics.iterations);
   const steps = positiveNumber(metrics.steps);
+  const requests = positiveNumber(metrics.requests);
   const tokensPerSecond = positiveNumber(metrics.tokens_per_second);
+  const inputTokens = formatTokenCount(positiveNumber(metrics.input_tokens));
+  const outputTokens = formatTokenCount(positiveNumber(metrics.output_tokens));
   const totalTokens = formatTokenCount(positiveNumber(metrics.total_tokens));
   const hitRate = typeof metrics.cache_hit_rate === 'number' && Number.isFinite(metrics.cache_hit_rate)
     ? Math.max(0, Math.min(1, metrics.cache_hit_rate))
@@ -118,7 +128,10 @@ export function metricsParts(metrics) {
   return {
     rounds,
     steps,
+    requests,
     tokensPerSecond,
+    inputTokens,
+    outputTokens,
     totalTokens,
     cacheHitPercent: hitRate === null ? null : Math.round(hitRate * 100),
     contextPercent: contextPercent > 0 ? Math.round(contextPercent * 100) : 0,

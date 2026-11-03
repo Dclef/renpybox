@@ -224,6 +224,8 @@ def agent_context_budget(
         "usable_tokens": usable,
         "max_context_chars": context_chars,
         "max_messages": max_messages,
+        # 预留给后续的上下文压缩（compaction）：裁剪时应保留的尾部预算。
+        # 当前实现是删除式裁剪，只扣减额度、不消费本字段。
         "keep_recent_tokens": KEEP_RECENT_TOKENS,
     }
 

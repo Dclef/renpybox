@@ -310,3 +310,116 @@ def test_bad_request_on_max_tokens_shrinks_budget_and_retries(monkeypatch) -> No
     assert requester._output_token_limit() == max(
         AgentRequesterModule.AGENT_MIN_OUTPUT_TOKENS, original // 2
     )
+
+
+def test_rate_limit_backs_off_between_retries(monkeypatch) -> None:
+    """限流时要退避再重试，不能背靠背打两次。"""
+
+    requester = _requester()
+    sleeps: list[float] = []
+    attempts: list[int] = []
+
+    def create(**kwargs):
+        attempts.append(len(attempts) + 1)
+        raise RuntimeError("429 Too Many Requests")
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    monkeypatch.setattr(requester, "_get_client", lambda: client)
+    monkeypatch.setattr(
+        AgentRequesterModule.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    result = requester.request_tools(
+        [{"role": "user", "content": "hi"}],
+        list(ToolDispatcher().tools.values()),
+    )
+
+    assert len(attempts) == 2
+    # 退避应当被切成小片，好让停止请求能立刻生效
+    assert len(sleeps) > 1
+    assert all(step <= requester.BACKOFF_SLICE_SECONDS for step in sleeps)
+    assert sum(sleeps) >= requester.RETRY_BACKOFF_SECONDS[0] * 0.9
+    assert result.success is False
+    assert result.error_code == "RATE_LIMITED"
+
+
+def test_rate_limit_backoff_stops_immediately_on_cancel(monkeypatch) -> None:
+    """退避期间用户点停止，必须立刻返回取消而不是睡完再报错。"""
+
+    requester = _requester()
+    sleeps: list[float] = []
+
+    def create(**kwargs):
+        # 第一次就限流，模拟一撞上就被用户停掉
+        raise RuntimeError("rate limit exceeded")
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    monkeypatch.setattr(requester, "_get_client", lambda: client)
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        requester.cancel_event.set()
+
+    monkeypatch.setattr(AgentRequesterModule.time, "sleep", fake_sleep)
+
+    result = requester.request_tools(
+        [{"role": "user", "content": "hi"}],
+        list(ToolDispatcher().tools.values()),
+    )
+
+    assert result.success is False
+    assert result.error_code == "CANCELLED"
+    # 只睡了开头一小片就退出，没有把整段退避睡完
+    assert len(sleeps) == 1
+
+
+def test_non_rate_limit_error_retries_without_sleep(monkeypatch) -> None:
+    """普通异常维持既有行为：立即重试，不引入等待。"""
+
+    requester = _requester()
+    sleeps: list[float] = []
+    attempts: list[int] = []
+
+    def create(**kwargs):
+        attempts.append(len(attempts) + 1)
+        raise RuntimeError("temporary network failure")
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    monkeypatch.setattr(requester, "_get_client", lambda: client)
+    monkeypatch.setattr(
+        AgentRequesterModule.time,
+        "sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    result = requester.request_tools(
+        [{"role": "user", "content": "hi"}],
+        list(ToolDispatcher().tools.values()),
+    )
+
+    assert len(attempts) == 2
+    assert sleeps == []
+    assert result.success is False
+    assert result.error_code == "REQUEST_FAILED"
+
+
+def test_is_rate_limited_recognizes_common_signals() -> None:
+    requester = _requester()
+
+    assert requester._is_rate_limited(RuntimeError("429 Too Many Requests")) is True
+    assert requester._is_rate_limited(RuntimeError("rate limit exceeded")) is True
+    assert requester._is_rate_limited(RuntimeError("resource_exhausted")) is True
+    assert requester._is_rate_limited(RuntimeError("connection reset")) is False
+
+    class _RateLimitError(Exception):
+        pass
+
+    assert requester._is_rate_limited(_RateLimitError("boom")) is True

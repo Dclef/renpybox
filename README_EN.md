@@ -110,6 +110,15 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 ## Recent Updates 📅
 
+- 2026-11-03 v0.9.11:
+  - The Agent assistant now receives the glossary, do-not-translate list, and character cards per batch when it translates entries itself: previously the one-click flow enforced the glossary strictly while Agent-translated entries ignored it entirely, so a single project could end up with two different term translations; entries that ignore the glossary are now rolled back with the missing terms listed.
+  - Agent write-back now applies the post-translation replacement rules, closing gaps in punctuation and name consistency between the two paths.
+  - Agent translation protects placeholders such as `[player name]` and `{b}`: if the model drops or alters them the entry is rolled back for rewriting, instead of the game failing with an undefined variable.
+  - Long Agent sessions now compact earlier turns into a summary first and only trim old messages if that fails, so a whole-project translation no longer loses the original request.
+  - Provider rate limits are retried with backoff, and Stop takes effect immediately while waiting; truncated output automatically lowers the per-batch entry count.
+  - The Agent status bar now shows usable input, output cap, message cap, request count, and separate input/output tokens.
+  - Fixed the Agent stage and usage being reset to zero when opening a history session, and the session history directory now prunes itself.
+
 - 2026-10-23 v0.9.6:
   - Added single-file `.rbox` project binding: choose binding on import and translation progress is stored in that one file; the title bar always shows the file name, and the project page shows entry count / size / last updated and lets you unbind.
   - After binding, error repair, HTML import, direct `tl/*.rpy` translation, game mod, and similar pages auto-fill the project directory; stopping and restarting source translation resumes instead of rescanning and duplicating backups.

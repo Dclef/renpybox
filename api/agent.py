@@ -26,6 +26,12 @@ class AgentSession:
         self.service = service
         self.notify = notify
         self.store = store
+        # 会话目录给个上限，避免历史聊天把磁盘吃掉（prune 之前没有调用点）。
+        if self.store is not None:
+            try:
+                self.store.prune()
+            except Exception as exc:  # noqa: BLE001 - 清理失败不该挡住启动
+                LogManager.get().warning(f"Agent 会话清理失败：{exc}")
         self.session_id = uuid.uuid4().hex
         self._created_at = time.time()
         self._lock = threading.Lock()
@@ -184,6 +190,8 @@ class AgentSession:
                 context=self.service.messages,
                 created_at=self._created_at,
                 metrics=self.service.metrics_summary(),
+                stage=str(self._stage or ""),
+                budget=self.service.budget_summary(),
             )
         except Exception as exc:
             # 历史落盘失败不该影响正在进行的对话。
@@ -279,7 +287,12 @@ class AgentSession:
                 ]
             )
             self._confirmation = None
-            self._stage = ""
+            # 恢复历史会话的阶段与用量：以前 stage 硬置空、metrics 被 reset 清零，
+            # 打开一个译了 800 条的会话，状态栏会显示 0 轮 0 步。
+            metrics = payload.get("metrics")
+            if isinstance(metrics, dict):
+                self.service.restore_metrics(metrics)
+            self._stage = str(payload.get("stage") or "")
             self._revision += 1
         self._publish()
         return self.snapshot()
