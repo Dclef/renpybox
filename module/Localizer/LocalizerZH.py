@@ -853,6 +853,9 @@ class LocalizerZH():
         "只确认一次，不要拆成多个工具逐个确认。工具运行中会推送阶段与进度，不要重复调用。"
         "返回 TRANSLATION_INCOMPLETE 时，先向用户报告未译数量、统计和失败样例，再决定下一步，"
         "不要自动回填。用户点停止后不要在同一轮重启翻译。"
+        "read_translation_batch 返回的 glossary 与 do_not_translate 是本批必须遵守的约束："
+        "术语一律按给定译法，禁翻项逐字符原样保留。若写回时条目因术语不符被退回，"
+        "按返回的 glossary_failures 清单修正后重新写回，不要原样重试。"
     )
 
     # Agent 运行时
@@ -863,6 +866,7 @@ class LocalizerZH():
     agent_request_cancelled: str = "Agent 请求已取消。"
     agent_request_bad_request: str = "模型拒绝了 Agent 请求参数。"
     agent_request_failed: str = "Agent 请求失败，请检查接口配置或网络。"
+    agent_request_rate_limited: str = "接口限流，已退避重试后仍然失败，请稍后再试。"
     agent_tool_arguments_must_be_object: str = "工具参数必须是 JSON 对象。"
     agent_tool_undeclared_arguments: str = "包含未声明参数：{names}。"
     agent_tool_missing_arguments: str = "缺少必填参数：{names}。"
@@ -1020,6 +1024,15 @@ class LocalizerZH():
     agent_polish_batch_ready: str = "本批 {count} 条已译条目，剩余 {remaining} 条可润色。"
     agent_polish_batch_empty: str = "没有可润色的条目，当前项目可能还没开始翻译。"
     agent_polish_batch_written: str = "已写回 {written} 条润色译文，{failed} 条未通过质量检查。"
+    agent_translate_glossary_header: str = "本批术语表（原文 -> 译文）"
+    agent_translate_glossary_truncated: str = "术语过多，其余未显示。"
+    agent_translate_do_not_translate_header: str = "禁翻项（必须逐字符原样保留）"
+    agent_translate_glossary_failed: str = (
+        "有 {count} 条译文未按术语表翻译，已退回待译。"
+    )
+    agent_translate_glossary_failed_hint: str = (
+        "请按上面给出的术语译法修正这些条目后重新写回。"
+    )
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "并发任务阈值"

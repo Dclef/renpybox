@@ -10,6 +10,7 @@ import importlib
 import json
 import re
 import threading
+import time
 from typing import Any, Callable
 
 from base.Base import Base
@@ -62,6 +63,15 @@ class AgentRequester:
     CLIENT_REGISTRY: dict[tuple[str, str, str, int, int], Any] = {}
     CLIENT_LOCK = threading.RLock()
     MAX_RETRY = 2
+    # 限流退避：按尝试次序取用。只对限流生效，普通失败仍然立即重试 ——
+    # 网络抖动等故障等待没有意义，反而拖慢用户可见的失败时间。
+    RETRY_BACKOFF_SECONDS = (2.0, 4.0)
+    # 退避期间的分段长度：用户点停止要能立刻生效，不能一次睡到底。
+    BACKOFF_SLICE_SECONDS = 0.1
+    RE_RATE_LIMIT = re.compile(
+        r"\b(429|rate[\s_-]?limit|too many requests|resource[\s_-]?exhausted)\b",
+        re.IGNORECASE,
+    )
     RE_O_SERIES = re.compile(r"o\d(?:$|-)", re.IGNORECASE)
     RE_GPT5 = re.compile(r"gpt-5", re.IGNORECASE)
     RE_QWEN3_5 = re.compile(r"qwen3(?:\.|-)?5", re.IGNORECASE)
@@ -90,6 +100,8 @@ class AgentRequester:
         self.platform = platform
         self.cancel_event = threading.Event()
         self.last_error_message = ""
+        # 本轮是否撞过限流；每次工具请求开始时重置，用于把最终失败归因为限流。
+        self._rate_limited = False
         # 被端点以「上限过高」拒绝后动态下调；0 表示仍用按模型推导的值。
         self._output_limit_override = 0
         self.thinking_level = self._normalize_thinking_level(
@@ -445,6 +457,7 @@ class AgentRequester:
                 Localizer.get().agent_request_no_tools,
             )
 
+        self._rate_limited = False
         for attempt in range(self.MAX_RETRY):
             if self._cancelled():
                 return AgentRequestResult.failure(
@@ -490,12 +503,57 @@ class AgentRequester:
                         "CANCELLED",
                         Localizer.get().agent_request_cancelled,
                     )
+                # 限流是唯一值得等待的错误：背靠背重试两次大概率仍是 429。
+                # 普通异常保持立即重试，不改变既有行为。
+                if self._is_rate_limited(exc) and attempt + 1 < self.MAX_RETRY:
+                    if self._backoff(attempt):
+                        self._rate_limited = True
+                        continue
+                    return AgentRequestResult.failure(
+                        "CANCELLED",
+                        Localizer.get().agent_request_cancelled,
+                    )
                 if attempt + 1 < self.MAX_RETRY:
                     continue
+        if self._rate_limited:
+            return AgentRequestResult.failure(
+                "RATE_LIMITED",
+                Localizer.get().agent_request_rate_limited,
+            )
         return AgentRequestResult.failure(
             "REQUEST_FAILED",
             Localizer.get().agent_request_failed,
         )
+
+    def _is_rate_limited(self, exc: Exception) -> bool:
+        """识别限流。兼容端点的报错文本不可控，所以类型与文本两路都看。"""
+
+        name = type(exc).__name__.casefold()
+        if "ratelimit" in name or "toomanyrequests" in name:
+            return True
+        status = getattr(exc, "status_code", None)
+        if status is not None:
+            try:
+                if int(status) == 429:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return bool(self.RE_RATE_LIMIT.search(str(exc)))
+
+    def _backoff(self, attempt: int) -> bool:
+        """按尝试次序退避。返回 False 表示期间被取消。"""
+
+        table = self.RETRY_BACKOFF_SECONDS
+        seconds = table[min(attempt, len(table) - 1)]
+        slice_seconds = self.BACKOFF_SLICE_SECONDS
+        waited = 0.0
+        while waited < seconds:
+            if self._cancelled():
+                return False
+            step = min(slice_seconds, seconds - waited)
+            time.sleep(step)
+            waited += step
+        return not self._cancelled()
 
     def _shrink_output_budget(self, message: str) -> bool:
         """识别「输出上限过高」类报错并下调预算，返回是否已下调。"""

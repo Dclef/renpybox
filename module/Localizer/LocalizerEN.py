@@ -901,7 +901,11 @@ class LocalizerEN(LocalizerZH):
         "it into separate tools. The tool pushes stage and progress while it runs; do not call it "
         "again to poll. When it returns TRANSLATION_INCOMPLETE, report the untranslated count, "
         "the statistics, and failed samples to the user before deciding what to do next, and do not "
-        "apply automatically. After the user presses stop, do not restart translation in the same turn."
+        "apply automatically. After the user presses stop, do not restart translation in the same turn. "
+        "The glossary and do_not_translate fields returned by read_translation_batch are binding for "
+        "this batch: always use the given term translations, and keep do-not-translate items verbatim. "
+        "If entries are rolled back because they did not follow the glossary, fix them using the "
+        "returned glossary_failures list and write them again instead of retrying unchanged."
     )
 
     # Agent runtime
@@ -912,6 +916,7 @@ class LocalizerEN(LocalizerZH):
     agent_request_cancelled: str = "The Agent request was cancelled."
     agent_request_bad_request: str = "The model rejected the Agent request parameters."
     agent_request_failed: str = "The Agent request failed. Check the API settings or network connection."
+    agent_request_rate_limited: str = "Rate limited by the provider; retries with backoff still failed. Please try again later."
     agent_tool_arguments_must_be_object: str = "Tool arguments must be a JSON object."
     agent_tool_undeclared_arguments: str = "Undeclared arguments: {names}."
     agent_tool_missing_arguments: str = "Missing required arguments: {names}."
@@ -1076,6 +1081,15 @@ class LocalizerEN(LocalizerZH):
     agent_polish_batch_ready: str = "{count} translated entries in this batch, {remaining} left to polish."
     agent_polish_batch_empty: str = "Nothing to polish; this project may not have any translations yet."
     agent_polish_batch_written: str = "Wrote {written} polished entries; {failed} failed the quality checks."
+    agent_translate_glossary_header: str = "Glossary for this batch (source -> target)"
+    agent_translate_glossary_truncated: str = "Too many terms; the rest are omitted."
+    agent_translate_do_not_translate_header: str = "Do-not-translate items (preserve verbatim)"
+    agent_translate_glossary_failed: str = (
+        "{count} translations did not follow the glossary and were rolled back to untranslated."
+    )
+    agent_translate_glossary_failed_hint: str = (
+        "Use the glossary terms given above to fix these entries, then write them again."
+    )
 
     # 基础设置
     basic_settings_page_max_workers_title: str = "Concurrent Task Threshold"

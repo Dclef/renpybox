@@ -152,7 +152,10 @@ class AgentSessionStore:
         return summaries
 
     def prune(self, keep: int = 50) -> int:
-        """只保留最近 ``keep`` 个会话，返回删除数量。"""
+        """只保留最近 ``keep`` 个会话，返回删除数量。
+
+        由 api 层择机调用；当前还没有接调用点，会话目录会按用户使用量增长。
+        """
 
         summaries = self.list_sessions()
         removed = 0

@@ -3,11 +3,14 @@
 这里不另造一套翻译流水线，而是复用项目既有实现：
 
 - 缓存：``module.Cache.CacheManager``（与翻译引擎同一份 cache.db / project.json）
-- 质量闸：``module.ResultChecker.ResultChecker``（含标记保留、术语、相似度检查）
+- 质量闸（两道）：``module.Response.ResponseChecker`` 管标记保留与相似度；
+  ``module.ResultChecker.ResultChecker`` 管术语一致性（只读，不改写条目）
+- 译后替换：``module.TextProcessor.replace_post_translation``
 - 写回：``module.File.FileManager.write_to_path``（行级更新，可只写本批条目）
 
-因此 Agent 译出来的内容与引擎译出来的内容落在同一个位置，后续的
-``apply_translation`` / ``refresh_replace_fallback`` 无需区分来源。
+因此 Agent 译出来的内容与引擎译出来的内容落在同一个位置，
+**且经过同一套质量规则**，后续的 ``apply_translation`` / ``refresh_replace_fallback``
+无需区分来源。
 """
 
 from __future__ import annotations
@@ -28,6 +31,11 @@ DEFAULT_BATCH_SIZE = 80
 MAX_BATCH_SIZE = 400
 DEFAULT_BATCH_CHARS = 40_000
 MAX_BATCH_CHARS = 200_000
+
+# 资产注入（术语表 / 禁翻表）的字符上限。
+# ``ToolResult.data`` 会整段进模型上下文（AgentService 只截 message，不截 data），
+# 500 条术语全灌进去会把小窗口模型撑爆，也会稀释本批正文。
+MAX_ASSET_CHARS = 6_000
 
 # 读批的两种取数口径：待译 vs 已译待润色。
 MODE_TRANSLATE = "translate"
@@ -128,6 +136,62 @@ def _is_polish_candidate(item: Any) -> bool:
     return bool(str(item.get_dst() or "").strip())
 
 
+def _clip_asset_text(text: str) -> tuple[str, bool]:
+    """把注入文本截到上限内，返回 (文本, 是否截断过)。"""
+
+    value = str(text or "")
+    if not value:
+        return "", False
+    if len(value) <= MAX_ASSET_CHARS:
+        return value, False
+    return value[: max(0, MAX_ASSET_CHARS - 32)], True
+
+
+def _batch_assets(config: Any, batch: list[dict[str, Any]]) -> dict[str, str]:
+    """按本批原文取出需要注入的术语表、禁翻项与角色卡。
+
+    复用引擎侧的 ``PromptBuilder.build_dynamic_asset_contexts`` —— 它已经做了
+    开关判定、同源去重、优先级排序与 token 预算裁剪，并与引擎提示词口径一致。
+    在这里另写一套匹配规则必然分叉（大小写、``[]{}`` 占位、纯拉丁词边界都容易写错）。
+
+    返回顺序固定为 (术语表, 禁翻表, 角色卡)，缺失的一路是空串。
+    命中为空时**不返回该键**：让模型明确读到「本批没有这类约束」，
+    比收到一个空标题更不容易误判。
+    """
+
+    srcs = [str(entry.get("src") or "") for entry in batch]
+    srcs = [src for src in srcs if src]
+    if not srcs:
+        return {}
+
+    try:
+        from module.PromptBuilder import PromptBuilder
+
+        builder = PromptBuilder(config)
+        glossary, do_not_translate, characters = builder.build_dynamic_asset_contexts(
+            srcs, None
+        )
+    except Exception:  # noqa: BLE001 - 资产表损坏不能阻断取批
+        return {}
+
+    localizer = Localizer.get()
+    assets: dict[str, str] = {}
+    for key, value in (
+        ("glossary", glossary),
+        ("do_not_translate", do_not_translate),
+        ("character", characters),
+    ):
+        text = str(value or "")
+        if not text:
+            continue
+        text, truncated = _clip_asset_text(text)
+        if truncated:
+            text = f"{text}\n{localizer.agent_translate_glossary_truncated}"
+        assets[key] = text
+
+    return assets
+
+
 def read_translation_batch(
     *,
     config_loader: Any = None,
@@ -216,15 +280,19 @@ def read_translation_batch(
         if polishing
         else localizer.agent_translate_batch_ready.format(count = len(batch), remaining = len(items))
     )
+    data = {
+        "remaining": len(items),
+        "returned": len(batch),
+        "mode": MODE_POLISH if polishing else MODE_TRANSLATE,
+        "items": batch,
+    }
+    # 资产只注入本批命中的条目，作为独立键给模型当约束读，不塞进每条 item：
+    # 否则同一份术语会在几十条条目里重复几十次，白烧上下文。
+    data.update(_batch_assets(config, batch))
     return ToolResult(
         True,
         message,
-        data = {
-            "remaining": len(items),
-            "returned": len(batch),
-            "mode": MODE_POLISH if polishing else MODE_TRANSLATE,
-            "items": batch,
-        },
+        data = data,
         # 还有条目可处理，本回合视为长任务在推进。
         continues = bool(batch),
     )
@@ -283,6 +351,52 @@ def _apply_translations(
         written.append(item)
 
     return written, rejected
+
+
+def _post_process(text: str, processor: Any) -> str:
+    """译后替换：与引擎侧同一份规则，纯函数、无状态。"""
+
+    if processor is None:
+        return text
+    try:
+        return processor.replace_post_translation(text)
+    except Exception:  # noqa: BLE001 - 替换规则异常不能阻断写回
+        return text
+
+
+def _check_glossary(config: Any, items: list[Any]) -> dict[str, list[str]]:
+    """术语一致性校验，返回 {条目 id: [缺失的术语对]}。
+
+    **只用 ``get_failed_glossary_terms``（只读），不用 ``check_glossary``**：
+    后者会 ``item.set_dst()`` 就地改写、往输出目录写术语报告、还打日志 ——
+    在 Agent 写回路径里用它会提前污染条目状态。
+
+    另外它内部会按 ``post_translation_replacement`` **反向还原** dst
+    （``ResultChecker._get_repl_texts``），这是引擎侧口径，正好与
+    「先做译后替换、再校验术语」的顺序吻合，不要调换这两步。
+    """
+
+    if not items:
+        return {}
+    try:
+        from module.ResultChecker import ResultChecker
+    except Exception:  # noqa: BLE001 - 缺少校验器时按全部通过处理
+        return {}
+
+    try:
+        checker = ResultChecker(config, items)
+    except Exception:  # noqa: BLE001
+        return {}
+
+    failures: dict[str, list[str]] = {}
+    for item in items:
+        try:
+            failed = checker.get_failed_glossary_terms(item)
+        except Exception:  # noqa: BLE001 - 单条异常不阻断其余条目
+            continue
+        if failed:
+            failures[_item_id(item)] = [f"{src} -> {dst}" for src, dst in failed]
+    return failures
 
 
 def _check_batch(config: Any, items: list[Any]) -> dict[str, str]:
@@ -367,6 +481,18 @@ def write_translation_batch(
                 data = {"rejected": rejected[:20]},
             )
 
+        # 顺序严格如下，调换会产生假误报：
+        # ① 译后替换 → ② ResponseChecker（标记/相似度）→ ③ 术语校验（只读）→ ④ 落盘
+        processor = None
+        try:
+            from module.TextProcessor import TextProcessor
+
+            processor = TextProcessor(config, None)
+        except Exception:  # noqa: BLE001 - 缺少处理器时跳过译后替换
+            processor = None
+        for item in written:
+            item.set_dst(_post_process(str(item.get_dst() or ""), processor))
+
         # 与引擎一致的顺序：先说引擎自己的校验器过一遍（占位符、空译文、
         # 提示词回显、退化、混排等），不合格的条目打回未翻译让模型重译，再写回文件。
         failures = _check_batch(config, written)
@@ -376,6 +502,19 @@ def write_translation_batch(
                 item.set_status(Base.TranslationStatus.UNTRANSLATED)
             else:
                 checked.append(item)
+
+        # 术语校验只在通过上一道闸的条目上做：已经被打回的条目不必重复报告。
+        glossary_failures = _check_glossary(config, checked)
+        if glossary_failures:
+            kept = []
+            for item in checked:
+                if _item_id(item) in glossary_failures:
+                    # 不自动替换：Agent 是对话路径，静默改写会让模型以为译对了，
+                    # 反而固化错误译法。退回待译并回给模型清单，让它下一批自纠。
+                    item.set_status(Base.TranslationStatus.UNTRANSLATED)
+                else:
+                    kept.append(item)
+            checked = kept
 
         writeback_error = ""
         if checked:
@@ -405,30 +544,38 @@ def write_translation_batch(
         if polishing
         else localizer.agent_translate_batch_written.format(written = len(checked), failed = failed)
     )
+    if glossary_failures:
+        # 术语退回不是「写回失败」：它和磁盘/权限问题是两类事，混在一起
+        # 会让用户以为是文件出错了。
+        written_message = (
+            f"{written_message}\n"
+            f"{localizer.agent_translate_glossary_failed.format(count = len(glossary_failures))}"
+            f"\n{localizer.agent_translate_glossary_failed_hint}"
+        )
+    result_data = {
+        "written": len(checked),
+        "failed": failed,
+        "failed_items": failed_items,
+        "rejected": rejected[:20],
+    }
+    if glossary_failures:
+        result_data["glossary_failures"] = {
+            item_id: terms for item_id, terms in list(glossary_failures.items())[:10]
+        }
     if writeback_error:
         return ToolResult(
             False,
             localizer.agent_translate_writeback_failed.format(detail = writeback_error),
             code = "WRITEBACK_FAILED",
-            data = {
-                "written": len(checked),
-                "failed": failed,
-                "failed_items": failed_items,
-                "rejected": rejected[:20],
-            },
+            data = result_data,
         )
 
     return ToolResult(
         True,
         written_message,
-        data = {
-            "written": len(checked),
-            "failed": failed,
-            "failed_items": failed_items,
-            "rejected": rejected[:20],
-        },
+        data = result_data,
         # 有失败条目时模型还要继续改，同样算长任务在推进。
-        continues = bool(checked) or bool(failures),
+        continues = bool(checked) or bool(failures) or bool(glossary_failures),
     )
 
 
