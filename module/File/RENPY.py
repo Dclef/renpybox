@@ -49,7 +49,8 @@ class RENPY(Base):
 
             rel_path = self._relative_to_input(path)
             skip_builtin = self._should_skip_file(path, rel_path)
-            if skip_builtin and mode == 'builtin':
+            from module.Renpy.base_box_conflicts import is_managed_template
+            if is_managed_template(rel_path) or (skip_builtin and mode == 'builtin'):
                 self.debug(f"Skip builtin UI file: {rel_path}")
                 continue
             if mode != 'builtin':
@@ -109,6 +110,9 @@ class RENPY(Base):
         hook_languages: set[str] = set()
         errors: list[str] = []
         for rel_path, group_items in grouped.items():
+            from module.Renpy.base_box_conflicts import is_managed_template
+            if is_managed_template(rel_path):
+                continue
             target_path = self.output_path / rel_path
             try:
                 validate_write_path(target_path, [self.output_path])

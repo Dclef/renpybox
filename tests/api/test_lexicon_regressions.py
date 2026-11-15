@@ -32,6 +32,18 @@ def app_context(tmp_path, monkeypatch):
     (tmp_path / "output").mkdir()
     config.text_preserve_data = [{"src": "[keep]", "comment": "保留"}]
     config.text_preserve_enable = True
+    # 术语/人名扫描改走 Agent 通道：给夹具配好 Agent 接口，抽取函数仍被逐个用例替换。
+    config.agent_platform = 0
+    config.platforms = [
+        {
+            "id": 0,
+            "name": "agent",
+            "api_format": "OpenAI",
+            "api_url": "http://127.0.0.1",
+            "api_key": "x",
+            "model": "m",
+        }
+    ]
     engine = Engine()
     monkeypatch.setattr(Engine, "get", classmethod(lambda cls: engine))
     monkeypatch.setattr(Config, "save", lambda self, **kwargs: None)
@@ -99,7 +111,7 @@ def test_candidate_scan_switch_does_not_write_either_project(app_context, monkey
     def slow_scan(**kwargs):
         entered.set()
         assert release.wait(4)
-        return {"entries": [{"source": "Alice", "target": "", "count": 1}], "warnings": []}
+        return {"entries": [{"source": "Alice", "target": "", "count": 1}], "warnings": [], "status": "completed"}
 
     class Repo:
         has_storage = True
@@ -135,7 +147,7 @@ def test_candidate_scan_switch_does_not_write_either_project(app_context, monkey
 
 def test_scan_candidate_ids_only_cover_returned_rows(app_context, monkeypatch):
     client, config, _, _ = app_context
-    monkeypatch.setattr(lexicon, "extract_glossary_candidates", lambda **kwargs: {"entries": [{"source": "Alice", "target": "", "count": 1}], "warnings": []})
+    monkeypatch.setattr(lexicon, "extract_glossary_candidates", lambda **kwargs: {"entries": [{"source": "Alice", "target": "", "count": 1}], "warnings": [], "status": "completed"})
 
     class Repo:
         has_storage = True
@@ -248,6 +260,7 @@ def test_candidate_scan_keeps_same_source_regex_ids_on_disk(app_context, monkeyp
             {"source": "a.b", "regex": True, "target": "正则建议", "count": 3},
         ],
         "warnings": [],
+        "status": "completed",
     })
     response = client.post("/api/lexicon/glossary/scan-candidates", json={**body(config), "rows": []})
     assert response.status_code == 200, response.text

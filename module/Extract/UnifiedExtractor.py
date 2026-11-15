@@ -429,269 +429,12 @@ class UnifiedExtractor:
         return originals, translations
 
     def _deploy_builtin_ui_pack(self, tl_dir: Path, tl_name: str) -> int:
-        """将内置 base_box（UI 文本翻译）注入到 tl 目录，避免后续重复翻译 UI。
-
-        同时会对 `tl_dir` 内现有翻译进行一次冲突处理，避免 Ren'Py 因重复 strings 翻译崩溃：
-        - 若其他文件仅存在占位翻译（new == "" 或 new == old），删除这些占位条目，保留 base_box 翻译；
-        - 若 screens/common 存在有效翻译且 base_box 为占位，则用其补全 base_box，并清理重复条目。
-        """
-        try:
-            src_dir = Path(get_resource_path("resource", "base_box"))
-            if not src_dir.exists():
-                return 0
-
-            dest_dir = tl_dir / "base_box"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-
-            def decode_literal(quote: str, text: str) -> str:
-                literal = f"{quote}{text}{quote}"
-                try:
-                    return ast.literal_eval(literal)
-                except Exception:
-                    return text.replace('\\"', '"').replace("\\'", "'")
-
-            def iter_old_new_pairs(lines: List[str]) -> List[Tuple[str, str]]:
-                pairs: List[Tuple[str, str]] = []
-                i = 0
-                while i < len(lines):
-                    old_match = self.OLD_LINE_RE.match(lines[i])
-                    if old_match and i + 1 < len(lines):
-                        j = i + 1
-                        while j < len(lines):
-                            probe = lines[j].strip()
-                            if not probe or probe.startswith("#"):
-                                j += 1
-                                continue
-                            break
-                        if j < len(lines):
-                            new_match = self.NEW_LINE_RE.match(lines[j])
-                        else:
-                            new_match = None
-                        if new_match:
-                            old_value = decode_literal(old_match.group(1), old_match.group("text"))
-                            new_value = decode_literal(new_match.group(1), new_match.group("text"))
-                            pairs.append((old_value, new_value))
-                            i = j + 1
-                            continue
-                    i += 1
-                return pairs
-
-            def collect_base_box_entries() -> Tuple[Set[str], Set[str]]:
-                base_old: Set[str] = set()
-                placeholder_old: Set[str] = set()
-                for fn in ("common_box.rpy", "screens_box.rpy"):
-                    fp = src_dir / fn
-                    if not fp.is_file():
-                        continue
-                    try:
-                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                    except Exception:
-                        continue
-                    for old_value, new_value in iter_old_new_pairs(lines):
-                        base_old.add(old_value)
-                        if new_value == "" or new_value == old_value:
-                            placeholder_old.add(old_value)
-                return base_old, placeholder_old
-
-            def remove_string_entries_by_old_values(file_path: Path, olds_to_remove: Set[str]) -> int:
-                if not olds_to_remove:
-                    return 0
-                try:
-                    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                except Exception:
-                    return 0
-
-                removed = 0
-                new_lines: List[str] = []
-                i = 0
-                changed = False
-                while i < len(lines):
-                    old_match = self.OLD_LINE_RE.match(lines[i])
-                    if old_match and i + 1 < len(lines):
-                        j = i + 1
-                        while j < len(lines):
-                            probe = lines[j].strip()
-                            if not probe or probe.startswith("#"):
-                                j += 1
-                                continue
-                            break
-                        if j < len(lines):
-                            new_match = self.NEW_LINE_RE.match(lines[j])
-                        else:
-                            new_match = None
-                        if new_match:
-                            old_value = decode_literal(old_match.group(1), old_match.group("text"))
-                            if old_value in olds_to_remove:
-                                removed += 1
-                                changed = True
-                                i = j + 1
-                                continue
-                            new_lines.extend(lines[i : j + 1])
-                            i = j + 1
-                            continue
-                    new_lines.append(lines[i])
-                    i += 1
-
-                if changed:
-                    # 清理连续空行
-                    cleaned: List[str] = []
-                    prev_empty = False
-                    for line in new_lines:
-                        is_empty = not line.strip()
-                        if is_empty and prev_empty:
-                            continue
-                        cleaned.append(line)
-                        prev_empty = is_empty
-                    atomic_write_text(file_path, "\n".join(cleaned).rstrip() + "\n")
-                    try:
-                        rx.remove_repeat_for_file(str(file_path))
-                    except Exception:
-                        pass
-                return removed
-
-            def is_extracted_ui_file(file_path: Path) -> bool:
-                return file_path.name.lower() in {"common.rpy", "screens.rpy"}
-
-            def apply_overrides_to_base_box(
-                file_path: Path,
-                overrides: Dict[str, str],
-                placeholder_olds: Set[str],
-            ) -> int:
-                if not overrides or not placeholder_olds:
-                    return 0
-                try:
-                    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                except Exception:
-                    return 0
-
-                updated = 0
-                i = 0
-                while i < len(lines):
-                    old_match = self.OLD_LINE_RE.match(lines[i])
-                    if old_match:
-                        old_value = decode_literal(old_match.group(1), old_match.group("text"))
-                        if old_value in placeholder_olds and old_value in overrides:
-                            j = i + 1
-                            while j < len(lines):
-                                probe = lines[j].strip()
-                                if not probe or probe.startswith("#"):
-                                    j += 1
-                                    continue
-                                break
-                            if j < len(lines):
-                                new_match = self.NEW_LINE_RE.match(lines[j])
-                            else:
-                                new_match = None
-                            if new_match:
-                                indent_match = re.match(r'^(\s*)new', lines[j])
-                                indent = indent_match.group(1) if indent_match else ""
-                                escaped = self._escape_rpy_string(overrides[old_value])
-                                lines[j] = f'{indent}new "{escaped}"'
-                                updated += 1
-                                i = j + 1
-                                continue
-                    i += 1
-
-                if updated:
-                    atomic_write_text(file_path, "\n".join(lines))
-                return updated
-
-            injected = 0
-            removed_placeholders = 0
-            removed_ui_duplicates = 0
-            overrides_applied = 0
-
-            base_box_old_set, base_box_placeholder_set = collect_base_box_entries()
-            ui_translation_overrides: Dict[str, str] = {}
-            ui_files: List[Path] = []
-
-            # 1) 先扫描 tl_dir 里的其它文件：清理占位翻译，并收集 screens/common 的有效翻译用于补全 base_box 占位。
-            for rpy_file in tl_dir.rglob("*.rpy"):
-                try:
-                    rel = rpy_file.relative_to(tl_dir)
-                    if any(part.lower() in self.BUILTIN_UI_DIRS for part in rel.parts):
-                        continue
-                except Exception:
-                    pass
-
-                try:
-                    lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
-                except Exception:
-                    continue
-
-                if is_extracted_ui_file(rpy_file):
-                    ui_files.append(rpy_file)
-
-                placeholder_olds: Set[str] = set()
-                for old_value, new_value in iter_old_new_pairs(lines):
-                    if old_value not in base_box_old_set:
-                        continue
-                    if new_value == "" or new_value == old_value:
-                        placeholder_olds.add(old_value)
-                        continue
-                    # 有效译文来自任意文件（不仅是 common/screens），用于补全
-                    # base_box 占位，避免注入后与源文件译文重复或丢失。
-                    ui_translation_overrides.setdefault(old_value, new_value)
-
-                if placeholder_olds:
-                    removed_placeholders += remove_string_entries_by_old_values(rpy_file, placeholder_olds)
-
-            # 处理占位清理后可能出现的空 strings 块（例如仅剩 `translate xxx strings:`），避免 Ren'Py 解析报错。
-            try:
-                self._remove_empty_translate_blocks(tl_dir, tl_name)
-            except Exception as exc:
-                self.logger.warning(f"清理内置 UI 空翻译块失败 {tl_dir}: {exc}")
-
-            for filename in ("common_box.rpy", "screens_box.rpy"):
-                src = src_dir / filename
-                if not src.is_file():
-                    continue
-
-                content = src.read_text(encoding="utf-8", errors="replace")
-                # 支持旧模板（schinese 占位）与新版 {tl_name} 占位
-                content = content.replace("translate schinese", f"translate {tl_name}")
-                content = content.replace("tl/schinese", f"tl/{tl_name}")
-                content = content.replace("{tl_name}", tl_name)
-
-                dest_file = dest_dir / filename
-                dest_file.write_text(content, encoding="utf-8")
-
-                # 2) 对 base_box 的占位翻译进行补全（仅在 new=="" 或 new==old 时使用 screens/common 的翻译）。
-                overrides_applied += apply_overrides_to_base_box(
-                    dest_file, ui_translation_overrides, base_box_placeholder_set
-                )
-
-                # 若过滤后无任何 old 条目，直接删除文件（否则会留下空 translate 块导致 Ren'Py 报错）
-                try:
-                    final_text = dest_file.read_text(encoding="utf-8", errors="replace")
-                    if not self.OLD_LINE_RE.search(final_text):
-                        dest_file.unlink()
-                        continue
-                except Exception:
-                    pass
-
-                injected += 1
-
-            if ui_files and base_box_old_set:
-                for ui_file in ui_files:
-                    removed_ui_duplicates += remove_string_entries_by_old_values(ui_file, base_box_old_set)
-                    try:
-                        remain_text = ui_file.read_text(encoding="utf-8", errors="replace")
-                        if not self.OLD_LINE_RE.search(remain_text):
-                            ui_file.unlink()
-                    except Exception:
-                        pass
-
-            if removed_placeholders or removed_ui_duplicates or overrides_applied:
-                self.logger.info(
-                    f"已清理 base_box 冲突: 删除占位 {removed_placeholders} 条，"
-                    f"清理重复 {removed_ui_duplicates} 条，补全占位 {overrides_applied} 条"
-                )
-
-            return injected
-        except Exception as exc:
-            self.logger.warning(f"注入内置 base_box 失败: {exc}")
+        """Use the same preflight and transaction as font-pack injection."""
+        from module.Renpy.base_box_conflicts import inject_base_box
+        source = Path(get_resource_path("resource", "base_box"))
+        if not source.is_dir():
             return 0
+        return inject_base_box(tl_dir, tl_name, source)
 
     def _decode_literal_value(self, quote: str, text: str) -> str:
         """解析 old/new 字面量文本，兼容转义。"""
@@ -723,123 +466,14 @@ class UnifiedExtractor:
         return olds
 
     def _remove_placeholder_duplicates_for_base_box(self, tl_dir: Path, tl_name: str) -> int:
-        """清理 base_box 重复；有效人工译文先迁移到 base_box 再删除重复项。"""
-        base_old_set = self._collect_base_box_old_values(tl_dir)
-        if not base_old_set:
-            return 0
-
-        removed_total = 0
-        translation_overrides: Dict[str, str] = {}
-        for rpy_file in sorted(tl_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
-            try:
-                rel = rpy_file.relative_to(tl_dir)
-                if any(part.lower() == "base_box" for part in rel.parts):
-                    continue
-            except Exception as exc:
-                self.logger.warning(
-                    f"无法解析 base_box 清理文件相对路径 {rpy_file}: {exc}"
-                )
-
-            try:
-                lines = rpy_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            except Exception:
-                continue
-
-            new_lines: List[str] = []
-            i = 0
-            changed = False
-
-            while i < len(lines):
-                old_match = self.OLD_LINE_RE.match(lines[i])
-                if old_match:
-                    old_value = self._decode_literal_value(old_match.group(1), old_match.group("text"))
-
-                    j = i + 1
-                    while j < len(lines):
-                        probe = lines[j].strip()
-                        if not probe or probe.startswith("#"):
-                            j += 1
-                            continue
-                        break
-
-                    new_value = ""
-                    if j < len(lines):
-                        new_match = self.NEW_LINE_RE.match(lines[j])
-                        if new_match:
-                            new_value = self._decode_literal_value(new_match.group(1), new_match.group("text"))
-
-                    if old_value in base_old_set:
-                        if new_value and new_value != old_value:
-                            # 普通 TL 中的有效人工译文优先于内置包；先暂存，
-                            # 稍后覆盖 base_box，再删除此处重复以保持全局唯一。
-                            translation_overrides.setdefault(old_value, new_value)
-                        removed_total += 1
-                        changed = True
-                        i = j + 1 if j > i else i + 1
-                        continue
-
-                new_lines.append(lines[i])
-                i += 1
-
-            if changed:
-                cleaned: List[str] = []
-                prev_empty = False
-                for line in new_lines:
-                    is_empty = not line.strip()
-                    if is_empty and prev_empty:
-                        continue
-                    cleaned.append(line)
-                    prev_empty = is_empty
-                atomic_write_text(rpy_file, "\n".join(cleaned).rstrip() + "\n")
-
-        if translation_overrides:
-            base_dir = tl_dir / "base_box"
-            for base_file in sorted(base_dir.rglob("*.rpy"), key=lambda item: item.as_posix()):
-                try:
-                    lines = base_file.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).splitlines()
-                except Exception:
-                    continue
-                changed = False
-                i = 0
-                while i < len(lines):
-                    old_match = self.OLD_LINE_RE.match(lines[i])
-                    if not old_match:
-                        i += 1
-                        continue
-                    old_value = self._decode_literal_value(
-                        old_match.group(1), old_match.group("text")
-                    )
-                    override = translation_overrides.get(old_value)
-                    if override is None:
-                        i += 1
-                        continue
-                    j = i + 1
-                    while j < len(lines) and (
-                        not lines[j].strip() or lines[j].lstrip().startswith("#")
-                    ):
-                        j += 1
-                    if j < len(lines) and self.NEW_LINE_RE.match(lines[j]):
-                        indent = lines[j][: len(lines[j]) - len(lines[j].lstrip())]
-                        lines[j] = f'{indent}new "{self._escape_rpy_string(override)}"'
-                        changed = True
-                        i = j + 1
-                        continue
-                    i += 1
-                if changed:
-                    atomic_write_text(base_file, "\n".join(lines).rstrip() + "\n")
-
-        if removed_total:
-            try:
-                self._remove_empty_translate_blocks(tl_dir, tl_name)
-            except Exception as exc:
-                # 占位条目已经删掉了，文件可能只剩下 translate xxx strings: 头。
-                # Ren'Py 启动时会对非空块报错，玩家的游戏直接打不开，而这里原来
-                # 是裸 except: pass，用户只能看到"游戏坏了"却查不出是哪一步。
-                self.logger.warning(f"清理占位条目后残留空翻译块失败 {tl_dir}: {exc}")
-
-        return removed_total
+        """Consolidate only safe template identities; preserve all user values."""
+        from module.Renpy.base_box_conflicts import (
+            add_compiled_cleanup, commit_changes, plan_tree,
+        )
+        changes, removed = plan_tree(tl_dir)
+        add_compiled_cleanup(changes, tl_dir)
+        commit_changes(changes, allowed_roots=[tl_dir])
+        return removed
 
     def _collect_source_registered_old_values(self, game_dir: Path, tl_name: str) -> Set[str]:
         """收集 game/tl 外源码 translate strings 块已经注册的原文。"""
@@ -2262,6 +1896,7 @@ class UnifiedExtractor:
         clean_duplicates: bool = True,
         config_snapshot: Any = None,
         target_tl_dir: str | Path | None = None,
+        _staged: bool = False,
     ) -> ExtractionResult:
         """合并 tl/<lang>_new 到 tl/<lang>，并可选清理重复条目。
 
@@ -2309,6 +1944,13 @@ class UnifiedExtractor:
             result.success = False
             result.message = f"未找到增量目录: {incremental_dir}"
             return result
+
+        if not _staged:
+            from module.Renpy.base_box_conflicts import merge_incremental_transactionally
+            return merge_incremental_transactionally(
+                self, game_dir, tl_name, tl_dir, incremental_dir,
+                clean_duplicates=clean_duplicates, config_snapshot=config_snapshot,
+            )
 
         self._emit_progress("正在分析已有翻译与增量内容...", 10)
 
@@ -2687,7 +2329,7 @@ class UnifiedExtractor:
             )
             # 仅在合并完整成功时记录“判定不译”：合并出错/中断时的缺失条目
             # 可能只是没来得及写入，不能永久记成判定不译。
-            if declined and not merge_errors:
+            if declined and not merge_errors and not _staged:
                 recorded = record_declined_candidates(game_dir, tl_name, declined)
                 if recorded:
                     self.logger.info(
@@ -5504,10 +5146,3 @@ class UnifiedExtractor:
                 f"{write_failures[0]}"
             )
         return removed_total, manifest_path
-
-
-
-
-
-
-

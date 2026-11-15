@@ -7,6 +7,10 @@ import { useT } from '../i18n';
 import {
   canRetryPrepare,
   isIncrementalOutput,
+  onekeyLexiconHasWarning,
+  onekeyLexiconOptions,
+  onekeyLexiconReportOf,
+  onekeyLexiconSummaryLines,
   prepareFailureSummary,
   prepareStageSummaryLines,
 } from '../onekeyView.mjs';
@@ -33,6 +37,23 @@ interface OneKeyDecompile {
   overwrite?: boolean;
 }
 
+/** 词库准备分步结果；Agent 术语与禁翻表互不阻断。 */
+interface OneKeyLexiconStep {
+  status?: string;
+  message?: string;
+  count?: number;
+  [key: string]: unknown;
+}
+
+interface OneKeyLexiconReport {
+  success?: boolean;
+  message?: string;
+  glossary?: OneKeyLexiconStep;
+  preserve?: OneKeyLexiconStep;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
 interface OneKeyResult {
   project_key?: string;
   message?: string;
@@ -53,6 +74,10 @@ interface OneKeyResult {
   game_dir?: string;
   project_root?: string;
   payload?: Record<string, unknown>;
+  // 词库准备结果（普通 prepare 与 skip_extraction 都回显）
+  lexicon?: OneKeyLexiconReport | null;
+  prepare_glossary?: boolean;
+  prepare_lexicon?: boolean;
 }
 
 /** 后端按项目身份派生的写入范围，确认框只展示这些路径。 */
@@ -123,6 +148,7 @@ export function OneKeyTranslatePage(props: {
   const [supplementOverride, setSupplementOverride] = useState<SupplementMode | null>(null);
   const [injectOverride, setInjectOverride] = useState<boolean | null>(null);
   const [prepareLexiconOverride, setPrepareLexiconOverride] = useState<boolean | null>(null);
+  const [prepareGlossaryOverride, setPrepareGlossaryOverride] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
   const completed = useRef('');
@@ -153,7 +179,14 @@ export function OneKeyTranslatePage(props: {
     : values.extract_supplement_mode === 'aggressive' ? 'aggressive' : 'precise';
   const supplementMode = supplementOverride ?? savedSupplement;
   const injectUiPack = injectOverride ?? values.onekey_inject_base_box === true;
-  const prepareLexicon = prepareLexiconOverride ?? values.onekey_prepare_lexicon !== false;
+  // 两个独立开关：Agent 术语默认关闭（旧配置 True 不自动开启付费 Agent），
+  // 禁翻准备沿用 onekey_prepare_lexicon !== false 的旧默认。
+  const lexiconOptions = onekeyLexiconOptions(values, {
+    prepareGlossary: prepareGlossaryOverride,
+    prepareLexicon: prepareLexiconOverride,
+  });
+  const prepareGlossary = lexiconOptions.prepare_glossary;
+  const prepareLexicon = lexiconOptions.prepare_lexicon;
   const verifyUppercase = values.renpy_verify_uppercase_candidates !== false;
   const autoMergeCleanup = values.renpy_incremental_auto_merge_cleanup !== false;
   const extractConflict = !officialExtract && supplementMode === 'off';
@@ -175,6 +208,9 @@ export function OneKeyTranslatePage(props: {
     setExtractMode('auto');
     setSupplementOverride(null);
     setInjectOverride(null);
+    // 项目切换时两个 override 一起重置，避免项目 A 的选择串到项目 B
+    setPrepareLexiconOverride(null);
+    setPrepareGlossaryOverride(null);
     setJob(null);
     setDetect(null);
     setReady(null);
@@ -289,6 +325,7 @@ export function OneKeyTranslatePage(props: {
           exe_path: officialExtract ? (exePath.trim() || detect?.auto_exe || null) : null,
           supplement_mode: supplementMode,
           inject_ui_pack: injectUiPack,
+          prepare_glossary: prepareGlossary,
           prepare_lexicon: prepareLexicon,
           project_key: detect?.project_key || '',
         }),
@@ -326,6 +363,9 @@ export function OneKeyTranslatePage(props: {
           incremental: false,
           confirm_write: true,
           skip_extraction: true,
+          // 已有 TL 跳过抽取时，用户选择的词库准备同样生效
+          prepare_glossary: prepareGlossary,
+          prepare_lexicon: prepareLexicon,
           project_key: detect?.project_key || '',
         }),
       });
@@ -458,6 +498,11 @@ export function OneKeyTranslatePage(props: {
     decompile: t('onekey_stage_decompile_done'),
     extract: t('onekey_stage_extract_done'),
   }, fill);
+  // 词库步骤结果与 warnings：partial/failed 显示为警告，但准备成功仍可继续翻译。
+  // 后续 apply job 的 result 不含 lexicon 时，仍保留 ready 已有的词库报告/警告。
+  const lexiconReport = onekeyLexiconReportOf(result, ready);
+  const lexiconLines = onekeyLexiconSummaryLines(lexiconReport);
+  const lexiconWarning = onekeyLexiconHasWarning(lexiconReport);
   const showPrepareRetry = canRetryPrepare({
     mode,
     status: job?.status,
@@ -506,6 +551,11 @@ export function OneKeyTranslatePage(props: {
             <p key={line} className="card-description">{line}</p>
           ))}
         </div>
+      ) : null}
+      {lexiconLines.length ? (
+        <Banner tone={lexiconWarning ? 'warning' : 'info'}>
+          {lexiconLines.map((line) => <div key={line}>{line}</div>)}
+        </Banner>
       ) : null}
       {mode === 'full' && (missingGameDir || !projectRoot) ? (
         <Banner tone="warning">
@@ -622,6 +672,11 @@ export function OneKeyTranslatePage(props: {
           <Form.Item extra={t('onekey_inject_ui_pack_hint')} style={{ marginBottom: 0 }}>
             <Checkbox checked={injectUiPack} onChange={(event) => setInjectOverride(event.target.checked)} disabled={busy}>
               {t('onekey_inject_ui_pack')}
+            </Checkbox>
+          </Form.Item>
+          <Form.Item extra={t('onekey_prepare_glossary_hint')} style={{ marginBottom: 0 }}>
+            <Checkbox checked={prepareGlossary} onChange={(event) => setPrepareGlossaryOverride(event.target.checked)} disabled={busy}>
+              {t('onekey_prepare_glossary')}
             </Checkbox>
           </Form.Item>
           <Form.Item extra={t('onekey_prepare_lexicon_hint')} style={{ marginBottom: 0 }}>

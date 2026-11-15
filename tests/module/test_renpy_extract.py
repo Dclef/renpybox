@@ -778,7 +778,7 @@ def test_incremental_merge_keeps_literal_backslash_quote_distinct(tmp_path):
     staging.write_text(
         'translate chinese strings:\n\n'
         '    old "- Training Bot \\\\\\"Copper Finch\\\\\\""\n'
-        '    new "- 训练机器人 \\\\"铜雀\\\\""\n',
+        '    new "- 训练机器人 \\\\\\"铜雀\\\\\\""\n',
         encoding="utf-8",
     )
 

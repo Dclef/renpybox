@@ -71,9 +71,12 @@ class PrepareBody(OneKeyBase):
     # None 表示沿用已保存配置；UnifiedExtractor 从磁盘配置读取，因此显式值会先落盘。
     supplement_mode: Literal["off", "precise", "aggressive"] | None = None
     inject_ui_pack: bool | None = None
-    # 抽取完成后顺手准备词库：扫描角色名做术语候选（去重 + 过滤非术语），
-    # 并把 [variable] 写进禁翻表。None 表示沿用配置里的 onekey_prepare_lexicon。
+    # 抽取完成后顺手准备禁翻表（扫描 [variable]）。
+    # None 表示沿用配置里的 onekey_prepare_lexicon；该字段不再触发术语抽取。
     prepare_lexicon: bool | None = None
+    # 抽取完成后用 Agent 提取术语与人名。
+    # None 表示沿用配置里的 onekey_prepare_glossary（默认 False）。
+    prepare_glossary: bool | None = None
 
 
 class ApplyBody(OneKeyBase):
@@ -198,128 +201,544 @@ def _latest_job(request: Request, kind: str | None = None, project_key: str | No
     )
 
 
-def _prepare_lexicon_after_extract(request: Request, check_cancel, progress, config: Any) -> dict:
-    """抽取完成后准备术语库与禁翻库，返回可展示的摘要。
+def _agent_platform(config: Any) -> tuple[dict[str, Any] | None, str]:
+    """按配置的 Agent 接口取平台；-1 视为未配置，绝不回落到翻译平台。"""
+    try:
+        platform_id = int(getattr(config, "agent_platform", -1))
+    except (TypeError, ValueError):
+        platform_id = -1
+    if platform_id < 0:
+        from module.Localizer.Localizer import Localizer
 
-    只补「自动」部分：人工词条原样不动；已有条目不会被删除，只有自动候选
-    会被重新生成、去重、过滤。任何一步失败都只影响本段结果，不影响抽取。
+        return None, Localizer.get().lexicon_agent_unset_glossary
+    from module.Localizer.Localizer import Localizer
+
+    try:
+        platform = config.get_platform(platform_id)
+    except Exception as exc:
+        return None, Localizer.get().onekey_glossary_failed.format(error = exc)
+    if not isinstance(platform, dict):
+        return None, Localizer.get().onekey_glossary_failed.format(
+            error = Localizer.get().agent_api_missing,
+        )
+    return platform, ""
+
+
+def _prepare_lexicon_safely(
+    request: Request,
+    check_cancel,
+    progress,
+    config: Any,
+    body: PrepareBody,
+    *,
+    expected_identity: tuple[str, ...] | None = None,
+    prepared_config: Any | None = None,
+    scan_scope_root: str = "",
+) -> dict:
+    """准备词库并把取消以外的异常降级成警告，不阻断翻译。"""
+    from module.Localizer.Localizer import Localizer
+
+    try:
+        return _prepare_lexicon_after_extract(
+            request,
+            check_cancel,
+            progress,
+            config,
+            prepare_glossary_enabled = body.prepare_glossary,
+            prepare_preserve_enabled = body.prepare_lexicon,
+            expected_identity = expected_identity,
+            prepared_config = prepared_config,
+            scan_scope_root = scan_scope_root,
+        )
+    except asyncio.CancelledError:
+        raise
+    except InterruptedError:
+        # 词库准备内部用 InterruptedError 表达取消，必须映射回任务取消，不能当失败吞掉。
+        raise asyncio.CancelledError()
+    except Exception as exc:
+        message = Localizer.get().onekey_lexicon_prepare_failed.format(error = exc)
+        return {
+            "success": True,
+            "message": message,
+            "warnings": [message],
+            "glossary": {"status": "failed", "message": message, "added": 0},
+            "preserve": {"status": "skipped", "message": Localizer.get().onekey_preserve_skipped, "added": 0},
+        }
+
+
+def _confined_scan_config(config: Any, scope_root: str) -> Any:
+    """复制一份扫描专用配置，把所有项目路径规范到本次请求的项目内。
+
+    LexiconOps 的术语/禁翻候选都从 config 的 input_folder / output_folder /
+    renpy_game_folder / renpy_tl_folder / renpy_project_path 推断扫描根；换项目时
+    旧项目的路径仍留在 live 配置里，扫描就会跨回旧项目。这里只在副本上做规范化，
+    不改 live 持久化语义。
+    """
+    raw_scope = str(scope_root or "").strip()
+    if raw_scope == "":
+        return config
+    scope = Path(raw_scope).expanduser()
+    try:
+        scope = scope.resolve()
+    except Exception:
+        pass
+    if not scope.is_dir():
+        return config
+
+    confined = copy.deepcopy(config)
+    game_dir = scope / "game"
+    if not game_dir.is_dir():
+        game_dir = scope
+    confined.renpy_project_path = str(scope)
+    confined.renpy_game_folder = str(game_dir)
+
+    def _inside(raw: str) -> Path | None:
+        text = str(raw or "").strip()
+        if text == "":
+            return None
+        candidate = Path(text).expanduser()
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            pass
+        try:
+            candidate.relative_to(scope)
+        except ValueError:
+            return None
+        return candidate
+
+    tl_root = _inside(getattr(config, "renpy_tl_folder", ""))
+    if tl_root is None or not tl_root.is_dir():
+        tl_root = None
+        for base in (game_dir, scope):
+            candidate_tl = base / "tl"
+            if candidate_tl.is_dir():
+                for child in sorted(
+                    (item for item in candidate_tl.iterdir() if item.is_dir()),
+                    key = lambda item: item.name.lower(),
+                ):
+                    tl_root = child
+                    break
+                if tl_root is not None:
+                    break
+    confined.renpy_tl_folder = str(tl_root) if tl_root is not None else ""
+    confined.input_folder = str(tl_root) if tl_root is not None else str(game_dir)
+    confined.output_folder = ""
+    return confined
+
+def _confined_scan_paths(
+    config: Any, scope_root: str,
+) -> tuple[Path | None, Path | None]:
+    """只在本次请求的项目根内解析源码目录，绝不回退到别的项目。
+
+    LexiconOps.resolve_renpy_scan_paths 会按 input/output/tl/game/project 顺序取
+    第一个有 .rpy 的目录；换项目时旧路径仍留在配置里，就会跨回旧项目。这里把
+    候选全部限制在 scope_root 之内，找不到源码就返回 None（如实失败）。
+    """
+    raw_scope = str(scope_root or "").strip()
+    if raw_scope == "":
+        return None, None
+    scope = Path(raw_scope).expanduser()
+    try:
+        scope = scope.resolve()
+    except Exception:
+        pass
+    if not scope.is_dir():
+        return None, None
+
+    candidates: list[Path] = [scope / "game", scope]
+    for attribute in (
+        "renpy_game_folder", "input_folder", "output_folder", "renpy_tl_folder",
+    ):
+        raw = str(getattr(config, attribute, "") or "").strip()
+        if raw == "":
+            continue
+        candidate = Path(raw).expanduser()
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            pass
+        try:
+            candidate.relative_to(scope)
+        except ValueError:
+            # 落在项目根之外的旧路径一律丢弃，避免跨项目扫描。
+            continue
+        candidates.append(candidate)
+
+    ordered: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen or not candidate.is_dir():
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+
+    source_root: Path | None = None
+    for candidate in ordered:
+        try:
+            if LexiconOps.count_source_rpy_files(candidate) > 0:
+                source_root = candidate
+                break
+        except Exception:
+            continue
+    if source_root is None:
+        return None, None
+
+    tl_root: Path | None = None
+    for base in (source_root, source_root.parent, scope):
+        for tl_dir in (base / "tl", base / "game" / "tl"):
+            if not tl_dir.is_dir():
+                continue
+            for child in sorted(
+                (item for item in tl_dir.iterdir() if item.is_dir()),
+                key = lambda item: item.name.lower(),
+            ):
+                tl_root = child
+                break
+            if tl_root is not None:
+                break
+        if tl_root is not None:
+            break
+    return source_root, tl_root
+
+def _glossary_rows(repository: Any, live_config: Any) -> tuple[list[dict[str, Any]], Any]:
+    """读取当前词库全量行（正式 + 候选），用于判断哪些 src 已存在。"""
+    state = repository.load(live_config)
+    metadata = (
+        state.analysis_candidates.get("glossary_metadata", {})
+        if hasattr(state, "analysis_candidates") else {}
+    )
+    rows: list[dict[str, Any]] = []
+    for candidate, items in ((False, state.assets.glossary), (True, state.analysis_candidates.get("items", []))):
+        for item in items:
+            data = item.to_dict() if hasattr(item, "to_dict") else item
+            record_id = str(data.get("record_id", "") or "")
+            meta = metadata.get(record_id, {}) if isinstance(metadata, Mapping) else {}
+            rows.append({
+                "record_id": record_id,
+                "src": str(data.get("source", data.get("src", "")) or ""),
+                "dst": str(data.get("target", data.get("dst", "")) or ""),
+                "info": str(data.get("note", data.get("comment", "")) or ""),
+                "comment": str(data.get("note", data.get("comment", "")) or ""),
+                "type": str(meta.get("type", "") or ""),
+                "case_sensitive": bool(meta.get("case_sensitive", False)),
+                "enabled": bool(data.get("enabled", True)),
+                "regex": bool(data.get("regex", False)),
+                "candidate": candidate,
+                "candidate_confirmed": False if candidate else bool(meta.get("candidate_confirmed", False)),
+            })
+    return rows, state
+
+
+def _prepare_lexicon_after_extract(
+    request: Request,
+    check_cancel,
+    progress,
+    config: Any,
+    *,
+    prepare_glossary_enabled: bool | None = None,
+    prepare_preserve_enabled: bool | None = None,
+    expected_identity: tuple[str, ...] | None = None,
+    prepared_config: Any | None = None,
+    scan_scope_root: str = "",
+) -> dict:
+    """抽取完成后准备词库：术语走 Agent，禁翻表沿用结构扫描。
+
+    prepared_config 是路径配置完成后、持锁捕获的配置快照：术语扫描必须以它为准，
+    否则用户在 body.game_dir 里换到 gameB 时仍会去读旧的 gameA。
+    expected_identity 是本任务写入后应得的项目身份：既接受本任务自己的路径变化，
+    又拒绝真正的外部项目切换。
+    只补缺失的 src：已有译名、备注与禁用状态一律不动；写盘前重读当前库再筛一次。
     """
     from module.Engine.Translator.ProjectAssetsRepository import ProjectAssetsRepository
-    from module.OneKey.lexicon_prep import prepare_glossary, prepare_preserve
+    from module.Localizer.Localizer import Localizer
+    from module.OneKey.lexicon_prep import (
+        STATUS_FAILED as PREP_FAILED,
+        STATUS_SKIPPED as PREP_SKIPPED,
+        existing_src_keys,
+        merge_preserve_entries,
+        prepare_glossary,
+        prepare_preserve,
+        select_new_entries,
+    )
 
-    progress("正在准备术语库与禁翻库", 94, stage="lexicon")
+    progress(Localizer.get().onekey_lexicon_preparing, 94, stage="lexicon")
     check_cancel()
 
-    report: dict[str, Any] = {"success": True}
+    warnings: list[str] = []
+    # 路径配置后的正确快照；缺省时退回调用方快照（纯函数测试与旧调用）。
+    snapshot = prepared_config if prepared_config is not None else config
+    # 身份必须取自真实快照：受限副本会改写 input/output，不能拿来核对 live 配置。
+    expected = (
+        expected_identity
+        if expected_identity is not None
+        else _project_identity(snapshot)
+    )
+    # 术语与禁翻统一使用受限副本：项目外残留路径全部规范到本次请求的项目内，
+    # 否则 LexiconOps 会按 input/output/game 顺序回退到旧项目。
+    scan_config = _confined_scan_config(snapshot, scan_scope_root)
 
-    source = None
-    tl_root = None
-    try:
-        source, tl_root = LexiconOps.resolve_renpy_scan_paths(config)
-    except Exception:
-        source = None
+    want_glossary = (
+        prepare_glossary_enabled
+        if prepare_glossary_enabled is not None
+        else bool(getattr(scan_config, "onekey_prepare_glossary", False))
+    )
+    want_preserve = (
+        prepare_preserve_enabled
+        if prepare_preserve_enabled is not None
+        else bool(getattr(scan_config, "onekey_prepare_lexicon", True))
+    )
 
-    with CacheManager.LOCK:
+    def _locked_snapshot() -> tuple[Any, Any, str]:
+        """锁内取当前配置与仓库；返回 (repository, live_config, 失败原因)。"""
         live_config = request.app.state.config
-        # 词库挂在快照项目上；项目已切换时不要写进别人的库。
-        if _project_identity(live_config) != _project_identity(config):
-            return {"success": False, "message": "项目已切换，跳过词库准备"}
-
+        if _project_identity(live_config) != expected:
+            return None, live_config, Localizer.get().onekey_lexicon_project_changed
         repository = ProjectAssetsRepository.from_config(live_config)
         if not getattr(repository, "has_storage", False):
-            return {"success": False, "message": "当前项目没有词库存储，跳过词库准备"}
+            return None, live_config, Localizer.get().onekey_lexicon_storage_missing
+        return repository, live_config, ""
 
-        state = repository.load(live_config)
-        metadata = state.analysis_candidates.get("glossary_metadata", {}) if hasattr(state, "analysis_candidates") else {}
-        rows: list[dict[str, Any]] = []
-        for candidate, items in ((False, state.assets.glossary), (True, state.analysis_candidates.get("items", []))):
-            for item in items:
-                data = item.to_dict() if hasattr(item, "to_dict") else item
-                record_id = str(data.get("record_id", "") or "")
-                meta = metadata.get(record_id, {}) if isinstance(metadata, Mapping) else {}
-                rows.append({
-                    "record_id": record_id,
-                    "src": str(data.get("source", data.get("src", "")) or ""),
-                    "dst": str(data.get("target", data.get("dst", "")) or ""),
-                    "info": str(data.get("note", data.get("comment", "")) or ""),
-                    "comment": str(data.get("note", data.get("comment", "")) or ""),
-                    "type": str(meta.get("type", "") or ""),
-                    "case_sensitive": bool(meta.get("case_sensitive", False)),
-                    "enabled": bool(data.get("enabled", True)),
-                    "regex": bool(data.get("regex", False)),
-                    "candidate": candidate,
-                    "candidate_confirmed": False if candidate else bool(meta.get("candidate_confirmed", False)),
-                })
+    # 网络与源码扫描全部在全局锁外完成，避免长时间占住 CacheManager.LOCK。
+    glossary_entries: list[dict[str, Any]] = []
+    glossary_status = PREP_SKIPPED
+    glossary_added = 0
+    glossary_error = ""
 
-        names: set[str] = set()
-        if source is not None:
-            def scan_names() -> set[str]:
-                check_cancel()
-                found = LexiconOps.extract_names_from_source(source, check_cancel)
-                found |= LexiconOps.extract_names_from_miss_files(
-                    source,
-                    LexiconOps.effective_tl_name(config, tl_root),
-                    check_cancel,
-                )
-                return found
+    # 术语与禁翻共用同一个受限源码根：解析不到就如实失败，绝不回退旧项目。
+    confined_source: Path | None = None
+    try:
+        confined_source, _confined_tl = _confined_scan_paths(scan_config, scan_scope_root)
+    except Exception:
+        confined_source = None
 
-            try:
-                names = scan_names()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                names = set()
+    if want_glossary:
+        platform = None
+        reason = ""
+        try:
+            platform, reason = _agent_platform(scan_config)
+        except Exception as exc:
+            # 接口配置异常只影响术语这一路，禁翻仍要继续。
+            reason = Localizer.get().onekey_glossary_failed.format(error = exc)
+        if platform is None:
+            glossary_status = PREP_FAILED
+            glossary_error = reason
+            warnings.append(reason)
+        else:
+            source = confined_source
+            if source is None:
+                glossary_status = PREP_FAILED
+                glossary_error = Localizer.get().onekey_lexicon_game_dir_unresolved
+                warnings.append(glossary_error)
+            else:
+                known_rows: list[dict[str, Any]] | None = None
+                read_error = ""
+                try:
+                    with CacheManager.LOCK:
+                        repository, live_config, read_error = _locked_snapshot()
+                        if repository is not None:
+                            known_rows, _state = _glossary_rows(repository, live_config)
+                except Exception as exc:
+                    known_rows = None
+                    read_error = Localizer.get().onekey_lexicon_write_failed.format(error = exc)
+                if known_rows is None:
+                    glossary_status = PREP_FAILED
+                    glossary_error = read_error
+                    warnings.append(read_error)
+                else:
+                    def extract() -> Mapping[str, Any]:
+                        # 一键选项是「术语提取」：完整术语服务，不对类型做任何筛选。
+                        from module.Extract.GlossaryCandidateService import extract_glossary_candidates
 
-        glossary = prepare_glossary(config, rows, scan_names=(lambda: names) if names else None)
-        if names:
-            # 用扫描结果整体替换自动候选：旧的手工保留，旧的自动候选重建。
-            removed_ids = {
-                row.get("record_id", "")
-                for row in rows
-                if row.get("candidate") and LexiconOps._is_auto_character_entry(row)
-            }
-            try:
-                repository.replace_analysis_terms(
-                    [{**item, "dst": item.get("dst", ""), "info": item.get("info", "")} for item in glossary.entries],
-                    removed_record_ids=removed_ids,
-                )
-            except Exception as exc:
-                report["glossary_error"] = str(exc)
+                        def cancelled() -> bool:
+                            try:
+                                check_cancel()
+                            except asyncio.CancelledError:
+                                return True
+                            return False
 
-        report["glossary"] = {
-            "scanned": glossary.scanned,
-            "added": glossary.added,
-            "removed_duplicate": glossary.removed_duplicate,
-            "removed_not_term": glossary.removed_not_term,
-            "message": glossary.summary() if names else "未扫描到角色名，术语库未变动",
-        }
+                        return extract_glossary_candidates(
+                            config = scan_config,
+                            target_path = str(source),
+                            platform = platform,
+                            progress_callback = lambda message, percent: progress(
+                                str(message), int(percent), stage = "glossary"
+                            ),
+                            cancel_callback = cancelled,
+                        )
 
-        check_cancel()
+                    try:
+                        result = prepare_glossary(scan_config, known_rows, extract = extract)
+                    except InterruptedError:
+                        raise
+                    except Exception as exc:
+                        result = None
+                        glossary_status = PREP_FAILED
+                        glossary_error = Localizer.get().onekey_glossary_failed.format(error = exc)
+                        warnings.append(glossary_error)
+                    if result is not None:
+                        glossary_entries = list(result.entries)
+                        glossary_status = result.status
+                        glossary_error = result.error
+                        warnings.extend(result.warnings)
 
+    check_cancel()
+
+    preserve_new: list[dict[str, Any]] = []
+    preserve_status = PREP_SKIPPED
+    preserve_scanned = 0
+    preserve_added = 0
+    preserve_enabled = False
+    preserve_error = ""
+
+    if want_preserve and confined_source is None:
+        # 项目内没有源码：禁翻也不许回退扫描旧项目。
+        preserve_status = PREP_FAILED
+        preserve_error = Localizer.get().onekey_lexicon_game_dir_unresolved
+        warnings.append(preserve_error)
+    elif want_preserve:
+        # 已有行完整复制，enabled / regex / 嵌套 metadata 都不能在这一步丢掉。
         existing_preserve = [
-            {"src": str(item.get("src", "") or ""), "comment": str(item.get("comment", item.get("info", "")) or "")}
-            for item in (getattr(live_config, "text_preserve_data", None) or [])
-            if isinstance(item, Mapping)
+            dict(item)
+            for item in (getattr(scan_config, "text_preserve_data", None) or [])
+            if isinstance(item, Mapping) and str(item.get("src", "") or "").strip()
         ]
-        preserve = prepare_preserve(config, existing_preserve, cancel_check=check_cancel)
-        if preserve.added:
-            try:
-                _persist_fields(live_config, {
-                    "text_preserve_data": preserve.entries,
-                    "text_preserve_enable": bool(preserve.enabled),
-                })
-            except Exception as exc:
-                report["preserve_error"] = str(exc)
-        report["preserve"] = {
-            "scanned": preserve.scanned,
-            "added": preserve.added,
-            "message": preserve.summary() if preserve.scanned else "未扫描到变量引用，禁翻库未变动",
-        }
+        try:
+            # 只在本次项目内解析出的源码根上扫描，绝不回退到旧项目。
+            preserve = prepare_preserve(
+                scan_config,
+                existing_preserve,
+                cancel_check = check_cancel,
+                scan_paths = [confined_source],
+            )
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            preserve = None
+            preserve_status = PREP_FAILED
+            preserve_error = Localizer.get().onekey_preserve_failed.format(error = exc)
+            warnings.append(preserve_error)
+        if preserve is not None:
+            preserve_status = preserve.status
+            preserve_scanned = preserve.scanned
+            preserve_enabled = bool(preserve.enabled)
+            preserve_error = preserve.error
+            warnings.extend(preserve.warnings)
+            known_preserve = {
+                LexiconOps.normalize_preserve_src(str(item.get("src", "") or ""))
+                for item in existing_preserve
+            }
+            # 只保留本次新扫到的条目；写盘时与当前表合并，避免覆盖并发编辑。
+            preserve_new = [
+                dict(item)
+                for item in preserve.entries
+                if LexiconOps.normalize_preserve_src(str(item.get("src", "") or ""))
+                not in known_preserve
+            ]
 
-    parts = [report["glossary"]["message"], report["preserve"]["message"]]
-    report["message"] = "；".join(part for part in parts if part)
+    check_cancel()
+
+    # 落盘：两路各自独立 try / 核对身份 / 记录状态，互不阻断。
+    # 落盘前都重读当前库，再按最新内容筛一次，绝不覆盖并发编辑。
+    if glossary_entries:
+        glossary_write_error = ""
+        try:
+            with CacheManager.LOCK:
+                repository, live_config, glossary_write_error = _locked_snapshot()
+                if repository is not None:
+                    current_rows, _state = _glossary_rows(repository, live_config)
+                    fresh = select_new_entries(
+                        glossary_entries, existing_src_keys(current_rows)
+                    )
+                    if fresh:
+                        repository.merge_analysis_terms(fresh)
+                        glossary_added = len(fresh)
+        except Exception as exc:
+            glossary_write_error = Localizer.get().onekey_lexicon_write_failed.format(
+                error = exc
+            )
+        if glossary_write_error:
+            # 只有这一路失败：禁翻照常写，术语按失败如实报告且计数归零。
+            warnings.append(glossary_write_error)
+            glossary_status = PREP_FAILED
+            glossary_added = 0
+            glossary_error = glossary_write_error
+
+    if preserve_new:
+        preserve_write_error = ""
+        try:
+            with CacheManager.LOCK:
+                _repository_ignored, live_config, preserve_write_error = _locked_snapshot()
+                if preserve_write_error == "":
+                    current_preserve = [
+                        dict(item)
+                        for item in (getattr(live_config, "text_preserve_data", None) or [])
+                        if isinstance(item, Mapping)
+                        and str(item.get("src", "") or "").strip()
+                    ]
+                    merged_now, added_now = merge_preserve_entries(
+                        current_preserve, preserve_new
+                    )
+                    if added_now:
+                        _persist_fields(
+                            live_config,
+                            {
+                                "text_preserve_data": merged_now,
+                                "text_preserve_enable": preserve_enabled,
+                            },
+                        )
+                        preserve_added = added_now
+        except Exception as exc:
+            preserve_write_error = Localizer.get().onekey_lexicon_write_failed.format(
+                error = exc
+            )
+        if preserve_write_error:
+            # 禁翻这一路失败时，已成功的术语必须保留真实计数与状态。
+            warnings.append(preserve_write_error)
+            preserve_status = PREP_FAILED
+            preserve_added = 0
+            preserve_error = preserve_write_error
+
+    if glossary_status == PREP_FAILED:
+        glossary_message = Localizer.get().onekey_glossary_failed.format(
+            error = glossary_error or Localizer.get().lexicon_agent_result_unavailable,
+        )
+    elif glossary_status == "partial":
+        glossary_message = Localizer.get().onekey_glossary_partial.format(count = glossary_added)
+    elif glossary_status == "completed":
+        glossary_message = Localizer.get().onekey_glossary_completed.format(count = glossary_added)
+    else:
+        glossary_message = Localizer.get().onekey_glossary_skipped
+
+    if preserve_status == PREP_FAILED:
+        preserve_message = Localizer.get().onekey_preserve_failed.format(
+            error = preserve_error,
+        )
+    elif preserve_status == "completed":
+        preserve_message = Localizer.get().onekey_preserve_completed.format(count = preserve_added)
+    else:
+        preserve_message = Localizer.get().onekey_preserve_skipped
+
+    report: dict[str, Any] = {
+        "success": True,
+        "warnings": warnings,
+        "glossary": {
+            "status": glossary_status,
+            "added": glossary_added,
+            "message": glossary_message,
+        },
+        "preserve": {
+            "status": preserve_status,
+            "added": preserve_added,
+            "scanned": preserve_scanned,
+            "message": preserve_message,
+        },
+    }
+    report["message"] = "；".join(
+        part for part in (glossary_message, preserve_message) if part
+    )
     return report
-
 
 @router.get("")
 def read_onekey(request: Request) -> dict:
@@ -421,11 +840,14 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
             option_values["extract_use_custom"] = body.supplement_mode != "off"
         if body.inject_ui_pack is not None:
             option_values["onekey_inject_base_box"] = bool(body.inject_ui_pack)
-        if body.prepare_lexicon is not None:
-            option_values["onekey_prepare_lexicon"] = bool(body.prepare_lexicon)
         if exe_path and not getattr(live, "extract_use_official", True):
             # 抽取器还会检查该开关；用户已明确选择并确认 EXE，不能被旧配置静默跳过。
             option_values["extract_use_official"] = True
+    # 词库开关与抽取选项独立：用户提供的值先保存，跳过抽取的路径同样要保存。
+    if body.prepare_lexicon is not None:
+        option_values["onekey_prepare_lexicon"] = bool(body.prepare_lexicon)
+    if body.prepare_glossary is not None:
+        option_values["onekey_prepare_glossary"] = bool(body.prepare_glossary)
     engine = _acquire_engine()
     manager = request.app.state.jobs
     try:
@@ -456,6 +878,7 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
         if getattr(live, "extract_use_custom", True) else "off",
         "inject_ui_pack": bool(getattr(live, "onekey_inject_base_box", False)),
         "prepare_lexicon": bool(getattr(live, "onekey_prepare_lexicon", True)),
+        "prepare_glossary": bool(getattr(live, "onekey_prepare_glossary", False)),
         "message": "正在配置翻译路径" if body.skip_extraction else "准备检测项目",
         "worker_active": True,
         "stage": "paths" if body.skip_extraction else "detect",
@@ -496,7 +919,12 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
                     configured, game_root, language, remember_run=True,
                 )
                 _persist_project_paths(live_config, configured)
-            return {
+                # 本任务刚把路径写进共享配置：以写入后的身份作为词库阶段的预期，
+                # 既认可自己的路径变化，又能识别真正的外部项目切换。
+                prepared_identity = _project_identity(live_config)
+                # 同时捕获路径配置后的配置快照：后续扫描必须用它，不能用旧快照。
+                prepared_config = copy.deepcopy(live_config)
+            payload = {
                 "project_key": project_key,
                 "game_dir": game_dir,
                 "project_root": game_root,
@@ -516,6 +944,14 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
                 "extraction_success": True,
                 "worker_active": True,
             }
+            # 跳过抽取也要执行用户选择的词库准备，否则开关在复用路径上失效。
+            payload["lexicon"] = _prepare_lexicon_safely(
+                request, check_cancel, progress, config, body,
+                expected_identity = prepared_identity,
+                prepared_config = prepared_config,
+                scan_scope_root = game_root,
+            )
+            return payload
 
         check_cancel()
         progress("正在检测脚本状态", 5, stage="detect")
@@ -610,6 +1046,8 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
                     configured, game_root, language, remember_run=True,
                 )
             _persist_project_paths(live_config, configured)
+            prepared_identity = _project_identity(live_config)
+            prepared_config = copy.deepcopy(live_config)
 
         payload = {
             "project_key": project_key,
@@ -635,23 +1073,14 @@ async def prepare(request: Request, body: PrepareBody) -> dict:
             payload["incremental_dir"] = str(getattr(result, "incremental_dir", None) or prepared["incremental_dir"] or "")
             payload["tl_dir"] = str(getattr(result, "tl_dir", None) or prepared["main_tl_dir"])
 
-        # 抽取完成后顺手准备词库（用户 m04513：一条龙应该也把自动扫描术语库的
-        # 自动去重和移除可能不是术语的词语，然后禁翻库也要一起弄）。
+        # 抽取完成后准备词库：术语走 Agent，禁翻表独立扫描。
         # 整段包在 try 里：词库准备失败绝不能把已成功的抽取判成失败。
-        want_lexicon = (
-            body.prepare_lexicon
-            if body.prepare_lexicon is not None
-            else bool(getattr(request.app.state.config, "onekey_prepare_lexicon", True))
+        payload["lexicon"] = _prepare_lexicon_safely(
+            request, check_cancel, progress, config, body,
+            expected_identity = prepared_identity,
+            prepared_config = prepared_config,
+            scan_scope_root = game_root,
         )
-        if want_lexicon:
-            try:
-                payload["lexicon"] = _prepare_lexicon_after_extract(
-                    request, check_cancel, progress, config,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                payload["lexicon"] = {"success": False, "message": f"词库准备失败：{exc}"}
         return payload
 
     async def worker(_: Job) -> dict:

@@ -453,10 +453,9 @@ def _backup_existing_targets(game: Path, language: str, *, gui_hook: bool) -> st
         if fonts_dir.is_dir():
             targets.append(fonts_dir)
     else:
-        for name in ("base_box", "fonts"):
-            path = tl_dir / name
-            if path.exists():
-                targets.append(path)
+        # Shared reconciliation can edit colliding entries anywhere in this TL.
+        if tl_dir.is_dir():
+            targets.append(tl_dir)
     if not targets:
         return None
     backup_root = _unique_backup_dir(game / FontReplacer.BACKUP_DIR_NAME, "inject")
@@ -618,6 +617,8 @@ def _run_inject(
         missing = "base_box/base_ma" if base_src is None else "fonts"
         raise RuntimeError(f"资源缺失: {missing}")
     _ensure_font_inject_targets(game, language, gui_hook=generate_gui_hook)
+    from module.Renpy.base_box_conflicts import injection_plan
+    injection_plan(game / "tl" / language, language, base_src)
     check_cancel()
     # 从此处起进入写入：备份 / 部署 / GUI，不再因取消中断并谎称未写入
     backup_path: str | None = None
@@ -653,9 +654,15 @@ def _run_inject(
         replacer = FontReplacer()
         ok, message = replacer.deploy_builtin_font_pack(str(game), language)
         if not ok:
-            # 部署已执行：可能 mkdir / 写了一部分，不得谎称未写入
-            written = True
-            partial = True
+            from module.Renpy.base_box_conflicts import TransactionFailure
+            failure = getattr(replacer, "last_deploy_error", None)
+            # Known transactions report verified rollback. Legacy/custom deployers
+            # still retain conservative partial-write semantics.
+            written = (failure.rollback_failed if isinstance(failure, TransactionFailure)
+                       else not isinstance(failure, ValueError))
+            partial = written
+            if isinstance(failure, TransactionFailure) and failure.backup_path:
+                backup_path = failure.backup_path
             raise FontWorkError(message or "字体包注入失败", _payload(message or "字体包注入失败"))
         written = True
         if generate_gui_hook:

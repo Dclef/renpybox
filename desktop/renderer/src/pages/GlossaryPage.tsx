@@ -1,10 +1,17 @@
 /** 术语表：单元格内联编辑，操作与旧 Qt LocalGlossaryPage 对齐。 */
 import { useEffect, useRef, useState } from 'react';
-import { Button, Checkbox, Dropdown, Input, Progress, Tag } from 'antd';
+import { Button, Checkbox, Dropdown, Input, Tag } from 'antd';
 import { Check, Plus, Search } from 'lucide-react';
 
 import { cancelJob, request } from '../api';
 import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
+import { checkpointScanRequestBody, glossaryScanOutcome } from '../glossaryView.mjs';
+import { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, glossarySelectionLabels } from '../glossarySelection.mjs';
+import type { RowSelectionState } from '../glossarySelection.mjs';
+import { AgentExtractionFeedback, GlossaryTaskControls } from './AgentExtractionFeedback';
+import { appendPreviewRows, previewCandidates, previewLabels, previewApplyReason, scanResultApplicable } from '../glossaryPreview.mjs';
+import type { PreviewContext } from '../glossaryPreview.mjs';
+import { ExtractionScanDialog } from './ExtractionScanDialog';
 import { useT } from '../i18n';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
@@ -46,6 +53,10 @@ interface LexiconJobResult {
   count_map?: Record<string, number>;
   candidate_ids?: string[];
   warnings?: string[];
+  // completed 仅表示执行结束；是否完整覆盖由 coverage_complete / 计数判断。
+  // coverage_complete=false 表示语料未完整覆盖，必须持久警告。
+  status?: 'completed' | 'partial' | 'skipped' | 'failed' | string;
+  coverage_complete?: boolean;
   results?: Array<[number, string]>;
   ner_count?: number;
   kw_count?: number;
@@ -53,9 +64,15 @@ interface LexiconJobResult {
   row_snapshots?: TermRow[];
   written?: boolean;
   failed_count?: number;
+  reused_chunks?: number;
+  requested_chunks?: number;
+  checkpoint_status?: string;
+  resume_available?: boolean;
 }
 
 type LexiconJob = JobSnapshot & { cancel_requested?: boolean; result?: LexiconJobResult | null };
+
+const loadExtractionCapabilities = (signal: AbortSignal) => request<unknown>('/api/lexicon', { signal });
 
 function normalizeSrc(text: string): string {
   return text.replace(/\s+/g, ' ').trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').toLowerCase();
@@ -166,12 +183,13 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   const [cellDirty, setCellDirty] = useState(false);
   const [appliedJobId, setAppliedJobId] = useState('');
   const taskOwner = useRef<{ id: string; project: string; generation: number } | null>(null);
-  const setRows = (next: TermRow[] | ((previous: TermRow[]) => TermRow[])) => {
+  const setRows = (next: TermRow[] | ((previous: TermRow[]) => TermRow[]), resetSelection = true) => {
     const value = typeof next === 'function' ? next(rowsRef.current) : next;
     rowsRef.current = value;
     generation.current += 1;
     setEditGeneration((value) => value + 1);
     setStoredRows(value);
+    if (resetSelection) setSelected(null);
   };
   const [enabled, setEnabled] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -179,8 +197,10 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   dirtyRef.current = dirty || cellDirty;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // 模型部分失败 / warnings 的持久警告，不随 toast 消失
+  const [scanWarning, setScanWarning] = useState('');
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useState<RowSelectionState>(null);
   const [pageToken, setPageToken] = useState(0);
   const [confirmReload, setConfirmReload] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -204,11 +224,23 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   const activeJob = jobRunning(job);
   const locked = busy || engineBusy || activeJob;
   const editLocked = locked || stale;
+  const selectionContext = JSON.stringify([projectKey, query]);
+  const selection = readRowSelection(selected, rows.length, selectionContext);
+  const selectionLabels = glossarySelectionLabels(state.bootLanguage);
+  const previewText = previewLabels(state.bootLanguage);
+  const previewRuntime = rowsRef as typeof rowsRef & { previewContext?: PreviewContext & { job: LexiconJob | null } };
+  previewRuntime.previewContext = { active: activeJob, busy, engineBusy: Boolean(engineBusy), stale, hasSnapshot: Boolean(snapshot), cellDirty, jobId: job?.id, outputFolder: String(state.settings?.values.output_folder ?? ''), jobOutputFolder: job?.result?.output_folder, job };
+  // Upgrade only the legacy selection slot; never replace draft or editor hook state.
+  if (typeof selected === 'number') setSelected(selection);
+  else if (selectionContextChanged(selected, selectionContext)) setSelected(null);
 
   useEffect(() => {
     onDirtyChange?.(dirty || cellDirty);
     return () => onDirtyChange?.(false);
   }, [dirty, cellDirty, onDirtyChange]);
+
+  // 开始新扫描/载入新项目时清掉上一条警告
+  const clearScanWarning = () => setScanWarning('');
 
   const apply = (next: GlossarySnapshot) => {
     // 载荷可能缺字段（后端异常/套餐差异），缺失时按空表处理，避免渲染期抛错。
@@ -246,13 +278,21 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   useEffect(() => () => { operation.current += 1; }, []);
 
   useEffect(() => {
+    // Same-project Fast Refresh must retain the live task owner and pending draft.
+    if (snapshot && ownerProject === projectKey) {
+      setError((current) => current === '项目已变更，请先导出未保存的词条，再重新载入当前项目。' ? '' : current);
+      return;
+    }
     operation.current += 1;
     taskOwner.current = null;
     setJob(null);
     setBusy(false);
+    clearScanWarning();
     // DataSheet 已在 layout 阶段按 flushKey 把未 blur 的文字提交回 rowsRef，此处 dirtyRef 已包含它
     if (dirtyRef.current) {
-      setError('项目已变更，请先导出未保存的词条，再重新载入当前项目。');
+      const projectChangedMessage = '项目已变更，请先导出未保存的词条，再重新载入当前项目。';
+      if (ownerProject !== projectKey) setError(projectChangedMessage);
+      else setError((current) => current === projectChangedMessage ? '' : current);
       return;
     }
     let alive = true;
@@ -309,18 +349,28 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       });
     }
     if ((job.kind === 'lexicon_scan_candidates' || job.kind === 'lexicon_scan_characters') && Array.isArray(result.entries)) {
-      setRows(result.entries.map((row) => ({
-        ...row,
-        info: noteOf(row),
-        hits: result.count_map?.[normalizeSrc(String(row.src ?? ''))] != null
-          ? String(result.count_map[normalizeSrc(String(row.src ?? ''))])
-          : '',
-      })));
-      if (snapshot && Array.isArray(result.candidate_ids)) {
-        setSnapshot({ ...snapshot, candidate_ids: result.candidate_ids, revision: Number((result as LexiconJobResult & { revision?: number }).revision ?? snapshot.revision) });
+      const outcome = glossaryScanOutcome(result as unknown as Record<string, unknown>, job.status, t('lexicon_agent_partial_warning'));
+      // partial / coverage 不全 / warnings 持久展示，且不被旧成功 toast 覆盖
+      if (outcome.hasWarning) setScanWarning(outcome.warning);
+      // written=false 的空结果不覆盖现有 UI 草稿、快照或候选标记
+      if (outcome.applyRows) {
+        const nextRows = (result.entries as TermRow[]).map((row) => ({
+          ...row,
+          info: noteOf(row),
+          hits: result.count_map?.[normalizeSrc(String(row.src ?? ''))] != null
+            ? String(result.count_map[normalizeSrc(String(row.src ?? ''))])
+            : '',
+        }));
+        setRows(nextRows);
+        if (outcome.applyIds && snapshot && Array.isArray(result.candidate_ids)) {
+          setSnapshot({ ...snapshot, candidate_ids: result.candidate_ids, revision: Number((result as LexiconJobResult & { revision?: number }).revision ?? snapshot.revision) });
+        }
+        if (outcome.markDirty) setDirty(true);
       }
-      setDirty(true);
-      state.pushToast('success', result.message || `新增 ${result.added ?? 0}，更新 ${result.updated ?? 0}`);
+      if (!outcome.cancelled) {
+        // 零候选成功也正常显示；部分失败/警告用 warning tone，其余 success
+        state.pushToast(outcome.hasWarning ? 'warning' : 'success', result.message || `新增 ${result.added ?? 0}，更新 ${result.updated ?? 0}`);
+      }
     }
     if (job.kind === 'lexicon_translate' && Array.isArray(result.results)) {
       setRows((previous) => {
@@ -481,26 +531,25 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   };
 
   const removeSelected = () => {
-    if (selected == null) {
-      state.pushToast('info', '请先选择要删除的词条');
-      return;
-    }
-    setRows((previous) => previous.filter((_, i) => i !== selected));
-    setSelected(null);
+    if (editLocked) return;
+    const previous = rowsRef.current;
+    const next = deleteCheckedRows(previous, selected, selectionContext);
+    if (next.length === previous.length) return;
+    setRows(next);
     setDirty(true);
   };
 
   const confirmSelected = () => {
-    if (selected == null) {
+    if (selection.active == null) {
       state.pushToast('info', '请先选择候选词条');
       return;
     }
-    const row = rows[selected];
+    const row = rows[selection.active];
     if (!row?.candidate || row.candidate_confirmed) {
       state.pushToast('info', '选中项不是待确认候选');
       return;
     }
-    setRows((previous) => previous.map((item, i) => (i === selected ? { ...item, candidate_confirmed: true } : item)));
+    setRows((previous) => previous.map((item, i) => (i === selection.active ? { ...item, candidate_confirmed: true } : item)), false);
     setDirty(true);
     state.pushToast('success', '已确认候选，补充译文后保存到项目');
   };
@@ -566,11 +615,12 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     const draft = generation.current;
     setBusy(true);
     setError('');
+    clearScanWarning();
     try {
-      const identity = await request<{ project_key: string; output_folder: string }>('/api/lexicon');
+      const identity = await request<{ project_key: string; output_folder: string; extraction_capabilities?: { checkpoint_resume?: boolean } }>('/api/lexicon');
       if (id !== operation.current || project !== projectRef.current || draft !== generation.current) return;
       const { job: next } = await request<{ job: LexiconJob }>(path, {
-        method: 'POST', body: JSON.stringify({ ...body, project_key: identity.project_key, output_folder: identity.output_folder }),
+        method: 'POST', body: JSON.stringify({ ...checkpointScanRequestBody(path, body, identity), project_key: identity.project_key, output_folder: identity.output_folder }),
       });
       if (id !== operation.current || project !== projectRef.current || draft !== generation.current) return;
       taskOwner.current = { id: next.id, project, generation: draft };
@@ -613,9 +663,35 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     }
   };
 
-  const onScanCharacters = () => askJob('/api/lexicon/glossary/scan-characters', {
-    confirm: true, rows: rowsRef.current.map(toApiRow),
-  }, t('lexicon_scan_characters_title'), t('lexicon_scan_characters_body'));
+  const addPreviewCandidates = async () => {
+    const context = previewRuntime.previewContext;
+    if (!context || !job?.result) return;
+    const reason = previewApplyReason(context, state.bootLanguage);
+    if (reason) { setError(reason); return; }
+    const candidates = previewCandidates(job.result);
+    if (!candidates.length) { setError(previewText.empty); return; }
+    const id = ++operation.current, project = projectRef.current, version = generation.current, expectedJob = job.id;
+    const result = job.result;
+    setBusy(true);
+    try {
+      const identity = await request<{project_key:string;output_folder:string;job?:LexiconJob|null}>('/api/lexicon');
+      if (id !== operation.current || project !== projectRef.current || version !== generation.current) return;
+      const latest = previewRuntime.previewContext;
+      if (!latest || latest.job?.id !== expectedJob || result.project_key !== identity.project_key || result.output_folder !== identity.output_folder || (identity.job && (identity.job.id !== expectedJob || jobRunning(identity.job)))) {
+        setError(previewText.project); return;
+      }
+      const changed = previewApplyReason({ ...latest, busy: false }, state.bootLanguage);
+      if (changed) { setError(changed); return; }
+      const merged = appendPreviewRows(rowsRef.current, candidates);
+      if (merged.added) { setRows(merged.rows); setDirty(true); }
+      setError('');
+      state.pushToast('success', previewText.toast.replace('{added}', String(merged.added)).replace('{existing}', String(merged.existing)));
+    } catch (error) {
+      if (id === operation.current && project === projectRef.current) setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (id === operation.current && project === projectRef.current) setBusy(false);
+    }
+  };
 
   const applyRecoveredJob = async () => {
     const result = job?.result;
@@ -631,6 +707,12 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       }
       if (job.kind === 'lexicon_translate' && (!result.row_snapshots || result.row_snapshots.length !== rowsRef.current.length || result.row_snapshots.some((row, index) => row.src !== rowsRef.current[index].src || row.dst !== rowsRef.current[index].dst))) {
         setError('词条已变化，请重新翻译；旧任务结果不会覆盖当前稿本。'); return;
+      }
+      // 重载后应用旧 job 结果也走同一套保护：written=false 不覆盖草稿，partial/warnings 持久警告。
+      if (job.kind === 'lexicon_scan_candidates' || job.kind === 'lexicon_scan_characters') {
+        const recovered = glossaryScanOutcome(result as unknown as Record<string, unknown>, job.status, t('lexicon_agent_partial_warning'));
+        if (recovered.hasWarning) setScanWarning(recovered.warning);
+        if (!recovered.applyRows) { setError(t('lexicon_result_not_written')); return; }
       }
       if (job.kind === 'lexicon_statistics') {
         const keys = rowsRef.current.map((row) => `${row.src.replace(/\s+/g, ' ').trim()}|${row.case_sensitive ? 1 : 0}`);
@@ -654,7 +736,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
 
   return (
     <div className={embedded ? 'glossary-layout rb-embedded' : 'glossary-layout rb-page'}>
-      <div className="rb-page-scroll rb-glossary">
+      <div className="rb-page-scroll rb-glossary" data-agent-running={activeJob ? 'true' : 'false'}>
         {embedded ? null : (
           <PageHeader
             title="术语表"
@@ -668,17 +750,39 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           />
         )}
         <div className="rb-lexicon-controls">
-        <div className="rb-sheet-summary">{rows.length} 个词条 · {candidateCount} 个候选 · {dirty || cellDirty ? '有未保存修改' : '已与项目同步'}</div>
+        <div className="rb-sheet-summary">{rows.length} 个词条 · {candidateCount} 个候选 · {dirty || cellDirty ? '有未保存修改' : '已与项目同步'}{activeJob ? <span className="rb-glossary-running-note"> · {t('lexicon_running_readonly')}</span> : null}</div>
         {error ? <Banner tone="error">{error}</Banner> : null}
-        {engineBusy ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
-        {!activeJob && job && appliedJobId !== job.id && job.result?.output_folder === state.settings?.values.output_folder ? <Button onClick={applyRecoveredJob}>应用任务结果</Button> : null}
-        {activeJob ? (
-          <>
-            <Banner tone="info">{cancelling || job?.cancel_requested ? t('lexicon_cancelling') : (jobResult?.message || t('lexicon_job_running'))}</Banner>
-            <Progress percent={Math.min(100, 100 * (job?.progress || 0))} aria-label={t('lexicon_job_running')} />
-          </>
-        ) : null}
+        {engineBusy && !activeJob ? <Banner tone="info">任务执行期间词库只读，结束后可以保存。</Banner> : null}
+        {!activeJob && job && scanResultApplicable(job) && appliedJobId !== job.id && job.result?.output_folder === state.settings?.values.output_folder ? <Button onClick={applyRecoveredJob}>应用任务结果</Button> : null}
+        <AgentExtractionFeedback
+          key={job?.id ?? 'idle'}
+          result={jobResult}
+          progressFraction={job?.progress}
+          createdAt={job?.created_at}
+          updatedAt={job?.updated_at}
+          active={activeJob}
+          cancelling={activeJob && (cancelling || Boolean(job?.cancel_requested))}
+          jobStatus={job?.status}
+          language={state.bootLanguage}
+          previewAdd={{ label: previewText.add.replace('{count}', String(previewCandidates(jobResult).length)), reason: previewApplyReason(previewRuntime.previewContext!, state.bootLanguage) || (!previewCandidates(jobResult).length ? previewText.empty : ''), note: previewText.note, onAdd: () => void addPreviewCandidates() }}
+          warningText={scanWarning}
+          t={t}
+        />
 
+        <GlossaryTaskControls active={activeJob} t={t}
+          search={<Input style={{ width: 280 }} aria-label={t('lexicon_search_glossary')} placeholder={t('lexicon_search_glossary_placeholder')} value={query} prefix={<Search size={16} strokeWidth={1.75} />} onChange={(event) => { setQuery(event.target.value); setSelected(null); setPageToken((value) => value + 1); }} />}
+          stop={<Button danger data-testid="glossary-running-stop" disabled={!activeJob || cancelling || Boolean(job?.cancel_requested)} onClick={() => {
+            if (!job) return;
+            const owner = projectRef.current, cancelledId = job.id;
+            setCancelling(true);
+            void cancelJob(job.id).then((next) => {
+              if (owner !== projectRef.current) return;
+              setJob((current) => current?.id === cancelledId ? next as LexiconJob : current);
+              if (!jobRunning(next as LexiconJob)) setCancelling(false);
+              void state.reloadTranslation();
+            }).catch((e) => { if (owner === projectRef.current) { setCancelling(false); setError(e instanceof Error ? e.message : String(e)); } });
+          }}>{t('lexicon_stop_scan')}</Button>}
+        >
         <div className="rb-toolbar">
           <Button disabled={editLocked || !snapshot} onClick={() => excelInput.current?.click()}>{t('lexicon_import_excel')}</Button>
           <Button disabled={locked || !rows.length} onClick={() => void exportExcel()}>{t('lexicon_export_excel')}</Button>
@@ -695,24 +799,18 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
 
         <div className="rb-toolbar">
           <Button disabled={editLocked || !snapshot} icon={<Plus size={16} strokeWidth={1.75} />} onClick={addRow}>{t('lexicon_add')}</Button>
-          <Button disabled={editLocked || selected == null} onClick={confirmSelected}>{t('lexicon_confirm_selected')}</Button>
-          <Button disabled={editLocked || selected == null} onClick={removeSelected}>{t('lexicon_delete_selected')}</Button>
+          <Button disabled={editLocked || selection.active == null} onClick={confirmSelected}>{selectionLabels.confirmCurrent}</Button>
+          <Button data-testid="glossary-delete-selected" disabled={editLocked || selection.checked.length === 0} onClick={removeSelected}>{selectionLabels.deleteSelected.replace('{count}', String(selection.checked.length))}</Button>
           <Button disabled={editLocked || !rows.length} onClick={dedupe}>{t('lexicon_deduplicate')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={onClassify}>{t('lexicon_auto_classify')}</Button>
           <Button danger type="text" disabled={editLocked || !snapshot} onClick={() => { if (snapshot && !editLocked) setConfirmClear(true); }}>{t('lexicon_clear')}</Button>
         </div>
 
         <div className="rb-toolbar">
-          <Button disabled={editLocked || !snapshot} onClick={() => askJob('/api/lexicon/glossary/scan-candidates', {
+          <Button data-testid="glossary-extract-all" disabled={editLocked || !snapshot} onClick={() => askJob('/api/lexicon/glossary/scan-candidates', {
             confirm: true,
             rows: rowsRef.current.map(toApiRow),
-          }, t('lexicon_scan_candidates_title'), t('lexicon_scan_candidates_confirm'))}>{t('lexicon_scan_candidates')}</Button>
-          <Button disabled={!activeJob || cancelling || Boolean(job?.cancel_requested)} onClick={() => {
-            if (!job) return;
-            setCancelling(true);
-            void cancelJob(job.id).catch((e) => setError(e instanceof Error ? e.message : String(e)));
-          }}>{t('lexicon_stop_scan')}</Button>
-          <Button disabled={editLocked || !snapshot} onClick={() => void onScanCharacters()}>{t('lexicon_scan_characters')}</Button>
+          }, previewText.title, previewText.confirm)}>{previewText.extract}</Button>
           <Button disabled={editLocked || !rows.length} onClick={() => {
             const tasks = rowsRef.current.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim())).length;
             askJob('/api/lexicon/glossary/translate', {
@@ -743,9 +841,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           </Dropdown>
         </div>
 
-        <div className="rb-toolbar">
-          <Input style={{ width: 280 }} aria-label={t('lexicon_search_glossary')} placeholder={t('lexicon_search_glossary_placeholder')} value={query} prefix={<Search size={16} strokeWidth={1.75} />} onChange={(event) => { setQuery(event.target.value); setPageToken((value) => value + 1); }} />
-        </div>
+        </GlossaryTaskControls>
         </div>
 
         <input ref={excelInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(e) => void importExcel(e.target.files?.[0])} />
@@ -754,11 +850,17 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
         <DataSheet
           rows={matched}
           getKey={(entry) => String(entry.index)}
-          selectedKey={selected == null ? null : String(selected)}
-          onSelect={(key) => setSelected(key == null ? null : Number(key))}
+          selectedKey={selection.active == null ? null : String(selection.active)}
+          onSelect={(key) => setSelected((previous) => selectActiveRow(previous, key, rowsRef.current.length, selectionContext))}
+          rowSelection={{
+            selectedKeys: selection.checked.map(String),
+            onChange: (keys) => setSelected((previous) => selectCheckedRows(previous, keys, rowsRef.current.length, selectionContext)),
+            title: selectionLabels.selectPage,
+            label: (entry) => selectionLabels.selectRow.replace('{index}', String(entry.index + 1)),
+          }}
           rowNumber={(entry) => entry.index + 1}
           emptyText={emptyText}
-          footer={`${matched.length} 条`}
+          footer={`${matched.length} 条 · ${selectionLabels.selectedCount.replace('{count}', String(selection.checked.length))}`}
           resetPageToken={pageToken}
           label={t('app_glossary_page')}
           readOnly={editLocked}
@@ -776,9 +878,13 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
               <span className="rb-term-marks">
                 {displayType(row)}
                 {row.candidate ? <Tag>{row.candidate_confirmed ? <Check size={12} strokeWidth={1.75} /> : null}{t('lexicon_candidate')}</Tag> : null}
-                <Checkbox aria-label={t('lexicon_case_sensitive')} checked={row.case_sensitive === true} disabled={editLocked} onClick={(event) => event.stopPropagation()} onChange={(event) => {
+              </span>
+            ) },
+            { key: 'case_sensitive', title: t('lexicon_case_sensitive'), width: '9%', render: ({ row, index }) => (
+              <span onDoubleClick={(event) => event.stopPropagation()}>
+                <Checkbox aria-label={t('lexicon_case_sensitive')} checked={row.case_sensitive === true} disabled={editLocked} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => {
                   const checked = event.target.checked;
-                  setRows((previous) => previous.map((item) => item === row ? { ...item, case_sensitive: checked, hits: '' } : item));
+                  setRows((previous) => previous.map((item, i) => i === index ? { ...item, case_sensitive: checked, hits: '' } : item), false);
                   setDirty(true);
                 }} />
               </span>
@@ -811,13 +917,13 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
         </Dialog>
       ) : null}
       {pendingJob ? (
-        <Dialog title={pendingJob.title} onCancel={() => setPendingJob(null)} onConfirm={() => {
-          const next = pendingJob;
-          setPendingJob(null);
-          void startJob(next.path, next.body);
-        }}>
-          {pendingJob.message}
-        </Dialog>
+        <ExtractionScanDialog path={pendingJob.path} body={pendingJob.body} title={pendingJob.title} message={pendingJob.message}
+          projectKey={projectKey} loadCapabilities={loadExtractionCapabilities} t={t}
+          onCancel={() => setPendingJob(null)} onConfirm={(body) => {
+            const next = pendingJob;
+            setPendingJob(null);
+            void startJob(next.path, body);
+          }} />
       ) : null}
     </div>
   );
