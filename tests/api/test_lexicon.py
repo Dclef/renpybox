@@ -236,9 +236,36 @@ def test_classify_and_preserve_rescan(lexicon_app):
     assert body["enabled"] is True
 
 
-def test_scan_characters_sync(lexicon_app):
-    client, *_ = lexicon_app
+def test_scan_characters_uses_agent_channel(lexicon_app, monkeypatch):
+    client, config, *_ = lexicon_app
+    # 人名也走 Agent：未配置 Agent 接口时必须明确失败，且不写入任何候选。
+    config.agent_platform = -1
+    response = client.post("/api/lexicon/glossary/scan-characters", json={"confirm": True})
+    assert response.status_code == 200, response.text
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert "Agent" in job["result"]["message"] or "接口" in job["result"]["message"]
+
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured["platform"] = kwargs.get("platform")
+        return {"names": ["Eileen"], "entries": [{"src": "Eileen"}], "status": "completed", "warnings": []}
+
+    monkeypatch.setattr("api.routes.lexicon.extract_character_candidates", fake_agent)
+    config.agent_platform = 0
+    config.platforms = [
+        {
+            "id": 0,
+            "name": "mock",
+            "api_format": "OpenAI",
+            "api_url": "http://127.0.0.1",
+            "api_key": "x",
+            "model": "m",
+        }
+    ]
     response = client.post("/api/lexicon/glossary/scan-characters", json={"confirm": True})
     assert response.status_code == 200, response.text
     body = _finish(client, response.json()["job"]["id"])["result"]
     assert any(item.get("src") == "Eileen" for item in body.get("new_entries", []))
+    assert captured["platform"]["model"] == "m"

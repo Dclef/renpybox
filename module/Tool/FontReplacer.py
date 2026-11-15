@@ -1076,35 +1076,20 @@ class FontReplacer:
                 missing = "base_box/base_ma" if base_src is None else "fonts"
                 return False, f"资源缺失: {missing}"
 
-            # 目标目录
+            from module.Renpy.base_box_conflicts import inject_base_box
             tl_dir = game_path / "tl" / tl_name
             dest_base_dir = tl_dir / "base_box"
-            dest_fonts_dir = tl_dir / "fonts"
-            dest_base_dir.mkdir(parents=True, exist_ok=True)
-            dest_fonts_dir.mkdir(parents=True, exist_ok=True)
-
-            # 复制内置 base 包内容并替换语言标识/路径
-            for src_file in base_src.glob("*.rpy"):
-                content = src_file.read_text(encoding="utf-8")
-                # 支持旧模板（schinese 占位）和新版 {tl_name} 占位
-                content = content.replace("translate schinese", f"translate {tl_name}")
-                content = content.replace("tl/schinese", f"tl/{tl_name}")
-
-                default_font_path = f"tl/{tl_name}/fonts/SourceHanSansCN-Bold.ttf"
-                content = content.replace("{tl_name}", tl_name)
-                content = content.replace("{font_path}", default_font_path)
-                content = content.replace("{is_rtl_enabled}", "False")
-                (dest_base_dir / src_file.name).write_text(content, encoding="utf-8")
-
-            # 复制字体到 tl/{tl_name}/fonts
-            copied = 0
-            for font_file in fonts_src.iterdir():
-                if font_file.suffix.lower() in __class__.FONT_SUFFIXES and font_file.is_file():
-                    shutil.copy(font_file, dest_fonts_dir / font_file.name)
-                    copied += 1
-
+            extra_files = {
+                Path("fonts") / font.name: font.read_bytes()
+                for font in fonts_src.iterdir()
+                if font.is_file() and font.suffix.lower() in self.FONT_SUFFIXES
+            }
+            self.last_deploy_error = None
+            inject_base_box(tl_dir, tl_name, base_src, extra_files=extra_files)
+            copied = len(extra_files)
             return True, f"字体包部署完成: base_box({dest_base_dir}), fonts({copied} 个)"
         except Exception as e:
+            self.last_deploy_error = e
             self.logger.error(f"部署内置字体包失败: {e}")
             return False, str(e)
 

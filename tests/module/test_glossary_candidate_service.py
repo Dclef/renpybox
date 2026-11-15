@@ -1,436 +1,897 @@
-"""术语候选扫描：规则通道判定、LLM 分块提示词与思考日志。"""
+"""Agent 术语候选服务：分块、证据定位、部分失败与取消。"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import module.Extract.GlossaryCandidateService as service_module
-from module.Extract.GlossaryCandidateService import GlossaryCandidateService
+from module.Extract.GlossaryCandidateService import (
+    GlossaryCandidateService,
+    extract_character_candidates,
+    extract_glossary_candidates,
+)
+
+PLATFORM = {"api_format": "OpenAI", "api_url": "http://localhost", "model": "test"}
+FENCE = "```"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_extraction_checkpoints(tmp_path_factory, monkeypatch):
+    root = tmp_path_factory.mktemp('extraction-checkpoints')
+    monkeypatch.setattr('module.Extract.ExtractionCheckpoint.default_checkpoint_root', lambda: root)
 
 
 def make_service(**kwargs) -> GlossaryCandidateService:
     options = {
         "config": SimpleNamespace(),
         "target_path": ".",
-        "platform": {"api_format": "OpenAI", "api_url": "http://localhost", "model": "test"},
+        "platform": dict(PLATFORM),
     }
     options.update(kwargs)
     return GlossaryCandidateService(**options)
 
 
-def test_prompt_chunks_respect_size_and_char_limits():
-    service = make_service()
-    texts = [f"line-{index}" for index in range(100)]
+def make_item(index: int, text: str) -> dict:
+    return {"id": index, "text": text, "source": "script.rpy", "line": index + 1}
 
-    chunks = service._build_prompt_chunks(texts)
+
+class FakeRequester:
+    """按脚本返回 Agent 结果；记录每个实例的 close 次数。"""
+
+    responses: list = []
+    instances: list = []
+
+    def __init__(self, config, platform):
+        self.config = config
+        self.platform = platform
+        self.closed = 0
+        self.cancelled = 0
+        self.prompts: list[str] = []
+        FakeRequester.instances.append(self)
+
+    def request_text(self, messages, on_text_delta=None):
+        self.prompts.append(messages[0]["content"])
+        response = FakeRequester.responses.pop(0) if FakeRequester.responses else None
+        if response is None:
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, SimpleNamespace):
+            return response
+        return SimpleNamespace(success=True, text=str(response), error_code="", error_message="")
+
+    def cancel(self):
+        self.cancelled += 1
+
+    def close(self):
+        self.closed += 1
+
+
+@pytest.fixture(autouse=True)
+def reset_fake():
+    FakeRequester.responses = []
+    FakeRequester.instances = []
+    yield
+    FakeRequester.responses = []
+    FakeRequester.instances = []
+
+
+def test_chunks_respect_size_and_char_limits():
+    service = make_service()
+    items = [make_item(index, f"line-{index}") for index in range(100)]
+
+    chunks = service._build_chunks(items)
 
     assert sum(len(chunk) for chunk in chunks) == 100
     for chunk in chunks:
-        assert len(chunk) <= service.MAX_LLM_CHUNK_ITEMS
-        assert sum(len(text) for text in chunk) <= service.MAX_LLM_CHUNK_CHARS or len(chunk) == 1
+        assert len(chunk) <= service.CHUNK_MAX_ITEMS
+        assert sum(len(item["text"]) for item in chunk) <= service.CHUNK_MAX_CHARS or len(chunk) == 1
 
 
-def test_prompt_chunks_truncate_long_lines():
+def test_long_lines_split_by_sentence_not_truncated():
     service = make_service()
-    long_line = "A" * (service.MAX_LLM_LINE_CHARS + 500)
+    line = ("Alpha met Beta at the gate. " * 60).strip()
+    assert len(line) > service.MAX_ITEM_CHARS
 
-    chunks = service._build_prompt_chunks([long_line])
+    segments = service._split_long_text(line)
 
-    assert len(chunks) == 1
-    assert len(chunks[0][0]) == service.MAX_LLM_LINE_CHARS
-
-
-def test_candidate_prompt_includes_known_terms_hint():
-    service = make_service()
-
-    prompt = service._build_candidate_prompt(["Leo went to the market."], ["Leo", "Alice"])[0]["content"]
-
-    assert "参考：本地规则" in prompt
-    assert "Leo" in prompt
-    assert "Alice" in prompt
+    assert len(segments) > 1
+    assert all(len(segment) <= service.MAX_ITEM_CHARS for segment in segments)
+    assert "Alpha met Beta at the gate." in segments[0]
 
 
-def test_candidate_prompt_skips_empty_known_terms():
+def test_prompt_requires_grounded_non_english_extraction():
     service = make_service()
 
-    prompt = service._build_candidate_prompt(["Leo went home."], ["", "  "])[0]["content"]
+    prompt = service._build_prompt([make_item(0, "LUMA waved at 田中さん.")])[0]["content"]
 
-    assert "参考：本地规则" not in prompt
-
-
-def test_candidate_prompt_requires_proper_noun_judgement():
-    service = make_service()
-
-    prompt = service._build_candidate_prompt(["Something happened."])[0]["content"]
-
-    # 提示词必须明确排除日常词汇/按钮/变量，否则模型会把句首大写词也报上来。
-    for token in ("特定的名字", "按钮", "变量", "纯数字", "JSONLINE"):
+    for token in ("非英语", "不要依赖大小写", "JSONLINE", "逐字出现的原样片段"):
         assert token in prompt
 
 
-def test_llm_exchange_logs_thinking_and_usage(monkeypatch):
+def test_character_prompt_asks_for_names_only():
+    service = make_service(character_only=True)
+
+    prompt = service._build_prompt([make_item(0, "LUMA waved.")])[0]["content"]
+
+    assert "人物名字" in prompt
+    assert "非英语人名" in prompt
+
+
+def test_prompt_payload_carries_source_line_kind_and_speaker():
     service = make_service()
-    lines: list[str] = []
-    service.info = lambda message: lines.append(message)
+    chunk = [
+        {
+            "id": 7,
+            "text": "LUMA waved.",
+            "source": "sub/scripts/chapter1.rpy",
+            "line": 42,
+            "kind": "dialogue",
+            "speaker": "e",
+        }
+    ]
 
-    service._log_llm_exchange(0, 12, "weigh  which nouns are proper…", 321, 45, 2.5)
+    prompt = service._build_prompt(chunk)[0]["content"]
+    payload_line = [line for line in prompt.splitlines() if line.startswith('{"id"')][0]
 
-    assert any("思考片段" in line for line in lines)
-    assert any("tokens 321/45" in line for line in lines)
-    assert any("耗时 2.5s" in line for line in lines)
+    assert '"source": "sub/scripts/chapter1.rpy"' in payload_line
+    assert '"line": 42' in payload_line
+    assert '"kind": "dialogue"' in payload_line
+    assert '"speaker": "e"' in payload_line
+    assert "键是行号" not in prompt
+    assert "id、source、line、kind、speaker" in prompt
 
 
-def test_llm_exchange_logs_without_thinking(monkeypatch):
+def test_candidates_must_be_locatable_in_input():
     service = make_service()
-    lines: list[str] = []
-    service.info = lambda message: lines.append(message)
+    chunk = [make_item(0, "LUMA went to the East Square.")]
 
-    service._log_llm_exchange(3, 5, "", 10, 20, 1.0)
+    assert service._locate_candidate({"src": "East Square", "line": 0}, chunk) == "East Square"
+    assert service._locate_candidate({"src": "LUMA", "line": 0}, chunk) == "LUMA"
+    assert service._locate_candidate({"src": "Nottingham", "line": 0}, chunk) is None
+    assert service._locate_candidate({"src": "LUMA", "line": 99}, chunk) == "LUMA"
 
-    assert not any("思考片段" in line for line in lines)
-    assert any("tokens 10/20" in line for line in lines)
 
-
-def test_extract_chunk_uses_known_terms_and_reports_tokens(monkeypatch):
+def test_ungrounded_response_is_reported_as_failure(monkeypatch):
     service = make_service()
-    captured: dict[str, object] = {}
+    FakeRequester.responses = ['{"src": "Nottingham", "type": "地名", "line": 0}']
 
-    class FakeRequester:
-        def __init__(self, config, platform, index):
-            captured["index"] = index
-
-        def request(self, messages, response_shape="none"):
-            captured["prompt"] = messages[0]["content"]
-            return False, "thinking text", '{"src": "Leo", "dst": "", "type": "角色"}', 100, 20
-
-    monkeypatch.setattr(service_module, "TaskRequester", FakeRequester)
-    lines: list[str] = []
-    service.info = lambda message: lines.append(message)
-
-    success, payload = service._extract_chunk_with_llm(["Leo waved."], 0, known_terms = ["Alice"])
-
-    assert success is True
-    assert payload[0]["src"] == "Leo"
-    assert payload[0]["origin"] == "llm"
-    assert "Alice" in str(captured["prompt"])
-    assert any("tokens 100/20" in line for line in lines)
-
-
-def test_extract_chunk_reports_empty_response(monkeypatch):
-    service = make_service()
-
-    class FakeRequester:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def request(self, messages, response_shape="none"):
-            return False, "", "", 0, 0
-
-    monkeypatch.setattr(service_module, "TaskRequester", FakeRequester)
-
-    success, payload = service._extract_chunk_with_llm(["text"], 2)
-
-    assert success is False
-    assert "第 3 个分块" in str(payload)
-
-
-def test_candidate_prompt_requests_empty_array_when_no_terms():
-    service = make_service()
-
-    prompt = service._build_candidate_prompt(["Something happened."])[0]["content"]
-
-    assert "只输出 []" in prompt
-
-
-def _fake_requester_returning(text):
-    class FakeRequester:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def request(self, messages, response_shape="none"):
-            return False, "", text, 1, 1
-
-    return FakeRequester
-
-
-def test_extract_chunk_accepts_valid_empty_array(monkeypatch):
-    for text in ("[]", "  [ ]\n", "```json\n[]\n```"):
-        service = make_service()
-        monkeypatch.setattr(service_module, "TaskRequester", _fake_requester_returning(text))
-
-        assert service._extract_chunk_with_llm(["text"], 0) == (True, [])
-
-
-def test_extract_chunk_still_rejects_malformed_output(monkeypatch):
-    for text in ("[oops", "no terms here", "[]\n extra"):
-        service = make_service()
-        monkeypatch.setattr(service_module, "TaskRequester", _fake_requester_returning(text))
-
-        success, payload = service._extract_chunk_with_llm(["text"], 1)
-
-        assert success is False, text
-        assert "第 2 个分块" in str(payload)
-
-
-def test_empty_array_chunk_counts_as_success_without_warning(monkeypatch):
-    service = make_service()
-    monkeypatch.setattr(service_module, "TaskRequester", _fake_requester_returning("[]"))
-
-    succeeded, payloads, warnings = service._run_llm_chunks([["a"], ["b"]], [])
-
-    assert succeeded == 2
-    assert payloads == [[], []]
-    assert warnings == []
-
-
-def test_rule_channel_prefers_speaking_characters(monkeypatch):
-    service = make_service()
-    from module.Extract import ProperNounDetector as detector_module
-
-    class FakeScanner:
-        def __init__(self):
-            pass
-
-        def scan_project(self, project_root, progress=None):
-            return SimpleNamespace(
-                names = {"Leo", "Soldier"},
-                speaker_counts = {"Leo": 12},
-            )
-
-    monkeypatch.setattr(service_module, "CharacterScanner", FakeScanner)
-    monkeypatch.setattr(
-        detector_module.ProperNounDetector,
-        "detect",
-        lambda self, evidence: ["Alice"],
+    success, payload = service._request_chunk(
+        0, [make_item(0, "LUMA waved.")], FakeRequester(None, PLATFORM)
     )
 
-    evidence = SimpleNamespace(words = {}, phrases = {})
-    candidates = service._collect_rule_candidates(["Leo: hi", "Alice smiled."], "." , evidence)
-
-    sources = {item["src"]: item for item in candidates}
-    assert "Leo" in sources
-    assert sources["Leo"]["type"] == "角色"
-    assert "Alice" in sources
-    assert sources["Alice"]["origin"] == "rule_phrase"
+    assert success is False
+    assert "找不到原文" in str(payload)
 
 
-def test_looks_like_code_line_filters_script_statements():
+def test_empty_array_is_success_with_zero_candidates():
     service = make_service()
+    FakeRequester.responses = ["[]"]
 
-    assert service._looks_like_code_line("wait_event('e1', 'e2') and delta_day('d1')") is True
-    assert service._looks_like_code_line("show screen calendar with dissolve") is True
-    assert service._looks_like_code_line("images/bg room.png") is True
-    assert service._looks_like_code_line("Leo went to the market.") is False
-    assert service._looks_like_code_line("{b}Notice Board{/b}") is False
+    success, payload = service._request_chunk(
+        0, [make_item(0, "LUMA waved.")], FakeRequester(None, PLATFORM)
+    )
+
+    assert success is True
+    assert payload == []
 
 
-def test_select_llm_texts_skips_known_and_stopwords():
-    from module.Extract.ProperNounDetector import CorpusEvidence
-
+def test_fenced_empty_array_is_accepted():
     service = make_service()
-    texts = [
-        "Leo waved at Alice.",
-        "Leo went to the East Square.",
-        "The queen waved at Leo.",
-    ]
-    evidence = CorpusEvidence(texts)
+    FakeRequester.responses = [FENCE + "json\n[]\n" + FENCE]
 
-    selected = service._select_llm_texts(texts, evidence, ["Leo", "Alice"])
+    success, payload = service._request_chunk(
+        0, [make_item(0, "LUMA waved.")], FakeRequester(None, PLATFORM)
+    )
 
-    # 只含已知名的行没必要再问模型；queen 是停用词也不驱动选样；
-    # 只有东广场（未被规则通道收录）才值得问。
-    assert "Leo waved at Alice." not in selected
-    assert "The queen waved at Leo." not in selected
-    assert "Leo went to the East Square." in selected
+    assert success is True
+    assert payload == []
 
 
-def test_pick_coverage_lines_prefers_readable_context():
-    from module.Extract.ProperNounDetector import CorpusEvidence
+def test_malformed_response_is_a_failure():
+    for text in ("[oops", "no terms here"):
+        service = make_service()
+        FakeRequester.responses = [text]
 
+        success, payload = service._request_chunk(
+            1, [make_item(0, "LUMA waved.")], FakeRequester(None, PLATFORM)
+        )
+
+        assert success is False, text
+        assert "第 2 块" in str(payload)
+
+
+def test_agent_failure_keeps_code_and_message():
     service = make_service()
-    texts = [
-        "Zyx",
-        "She whispered that Zyx would return before dawn broke over the hills.",
-    ]
-    evidence = CorpusEvidence(texts)
+    requester = FakeRequester(None, PLATFORM)
+    requester.request_text = lambda messages, on_text_delta=None: SimpleNamespace(
+        success=False, text="", error_code="RATE_LIMITED", error_message="限流"
+    )
 
-    selected = service._pick_coverage_lines(texts, {"zyx"}, evidence, 1)
+    success, payload = service._request_chunk(0, [make_item(0, "LUMA waved.")], requester)
 
-    assert len(selected) == 1
-    assert "whispered" in selected[0]
-
-
-def test_run_llm_chunks_runs_in_parallel(monkeypatch):
-    import threading
-
-    service = make_service()
-    barrier = threading.Barrier(3, timeout = 5)
-    seen_threads: set[str] = set()
-
-    def fake_extract(chunk, index, *, known_terms = ()):
-        seen_threads.add(threading.current_thread().name)
-        barrier.wait()
-        return True, [{"src": f"Term{index}", "dst": "", "type": "术语"}]
-
-    monkeypatch.setattr(service, "_extract_chunk_with_llm", fake_extract)
-
-    success, payloads, warnings = service._run_llm_chunks([["a"], ["b"], ["c"]], [])
-
-    assert success == 3
-    assert len(payloads) == 3
-    assert warnings == []
-    assert len(seen_threads) == 3
+    assert success is False
+    assert "限流" in str(payload)
 
 
-def test_llm_only_candidates_require_corpus_proper_name_evidence():
-    from module.Extract.ProperNounDetector import CorpusEvidence
+def test_missing_platform_fails_without_rule_fallback(monkeypatch):
+    texts = ["LUMA waved.", "Leo went to the East Square."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: (
+            [make_item(index, text) for index, text in enumerate(texts)],
+            [],
+        ),
+    )
+    service = make_service(platform=None)
 
-    service = make_service()
-    evidence = CorpusEvidence([
-        "We drove to the Castle.",
-        "The castle is old.",
-        "I visited the East Square.",
-        "I returned to the East Square.",
-        "The bar is called Sisterhood.",
-        "{b}Red Pearl{/b}",
-        "Yeah, it's like mount Fuji, you just get to see it once.",
-        "Sasha waved from the station.",
-        "Open Inventory with the Button.",
-        'I heard about "The Organize" yesterday.',
-    ])
-    candidates = [
-        {"src": "Castle", "origins": {"llm"}},
-        {"src": "East Square", "origins": {"llm"}},
-        {"src": "Sisterhood", "origins": {"llm"}},
-        {"src": "Red Pearl", "origins": {"llm"}},
-        {"src": "Sasha", "origins": {"llm"}},
-        {"src": "Mount Fuji", "type": "地名", "origins": {"llm"}},
-        {"src": "Inventory", "origins": {"llm"}},
-        {"src": "Button", "origins": {"llm"}},
-        {"src": "The Organize", "origins": {"llm"}},
-        {"src": "Castle", "origins": {"rule_phrase"}},
-    ]
-
-    filtered, rejected = service._filter_unsupported_llm_candidates(candidates, evidence)
-
-    assert rejected == 3
-    assert {item["src"] for item in filtered} == {
-        "East Square", "Sisterhood", "Red Pearl", "Sasha", "Mount Fuji", "The Organize", "Castle"
-    }
-    assert any(item["origins"] == {"rule_phrase"} for item in filtered if item["src"] == "Castle")
-
-
-def test_evidence_keeps_named_and_lowercase_game_terms():
-    from module.Extract.ProperNounDetector import CorpusEvidence
-
-    service = make_service()
-    lines = [
-        "We called it... The Cemetery of the living dead!",
-        "She called me ‘The skeleton flogger.’ Do you know anything about that?",
-        "The book I read was {i}Devil May Die{/i}.",
-        "The mysterious HPL virus continues to spread.",
-        "I have to bring the Mana potion to her.",
-        "Make her drink this Mana potion.",
-        "Group corruption magic is a work in progress.",
-        "Group corruption magic was really strong.",
-        "I have to complete the awakening ritual.",
-        "The awakening ritual ends before summer.",
-        "Destroy the cult's artifact: the cursed trapezohedron.",
-        "The amulet resonated with the Trapezohedron.",
-    ]
-    types = {
-        "Cemetery of the living dead": "地名",
-        "The skeleton flogger": "角色",
-        "Devil May Die": "物品",
-        "Hpl virus": "术语",
-        "Mana potion": "物品",
-        "group corruption magic": "术语",
-        "awakening ritual": "术语",
-        "cursed trapezohedron": "物品",
-        "Trapezohedron": "物品",
-    }
-    entries = [{"src": src, "type": kind, "origins": {"llm"}} for src, kind in types.items()]
-
-    filtered, rejected = service._filter_unsupported_llm_candidates(entries, CorpusEvidence(lines))
-
-    assert rejected == 0
-    assert {item["src"] for item in filtered} == set(types)
-
-
-def test_evidence_rejects_hallucinations_and_ordinary_lowercase_phrases():
-    from module.Extract.ProperNounDetector import CorpusEvidence
-
-    service = make_service()
-    lines = [
-        "Buy a {b}chamomile tea{/b} for her.",
-        "We returned to the castle.",
-        "He brought chamomile tea again.",
-        "She called me silly.",
-    ]
-    entries = [
-        {"src": src, "type": kind, "origins": {"llm"}}
-        for src, kind in [
-            ("Chamomile tea", "物品"), ("Castle", "地名"),
-            ("Nottingham", "地名"), ("Silly", "角色"),
-            ("Invented Magic", "术语"),
-        ]
-    ]
-
-    filtered, rejected = service._filter_unsupported_llm_candidates(entries, CorpusEvidence(lines))
-
-    assert filtered == []
-    assert rejected == len(entries)
-
-
-def test_short_names_are_selected_for_ai_and_pass_grounding():
-    from module.Extract.ProperNounDetector import CorpusEvidence
-
-    service = make_service()
-    texts = ["Her name was Ann.", "We met Lee by the river.", "The boy is named Jo."]
-    evidence = CorpusEvidence(texts)
-
-    assert set(service._select_llm_texts(texts, evidence, [])) == set(texts)
-    candidates = [{"src": name, "type": "角色", "origins": {"llm"}} for name in ("Ann", "Lee", "Jo")]
-    filtered, rejected = service._filter_unsupported_llm_candidates(candidates, evidence)
-    assert rejected == 0
-    assert len(filtered) == 3
-
-
-def test_coverage_selection_checks_cancellation():
-    import pytest
-    from module.Extract.ProperNounDetector import CorpusEvidence
-
-    checks = 0
-
-    def cancelled():
-        nonlocal checks
-        checks += 1
-        return checks >= 3
-
-    service = make_service(cancel_callback=cancelled)
-    texts = [f"We met Zyx near the station on day {index}." for index in range(400)]
-    with pytest.raises(InterruptedError, match="已停止"):
-        service._pick_coverage_lines(texts, {"zyx"}, CorpusEvidence(texts), 1)
-    assert checks == 3
-
-
-def test_run_warns_when_character_budget_truncates_selected_contexts(monkeypatch):
-    service = make_service()
-    service.MAX_LLM_CHUNKS = 2
-    service.MAX_LLM_CHUNK_CHARS = 100
-    texts = [f"We met Zyx outside the old palace and waited by the western gate, number {index}." for index in range(5)]
-    monkeypatch.setattr(service_module, "collect_glossary_candidate_texts", lambda *args, **kwargs: texts)
-    monkeypatch.setattr(service, "_collect_rule_candidates", lambda *args: [])
-    monkeypatch.setattr(service, "_select_llm_texts", lambda *args: texts)
-    sent = []
-
-    def fake_run(chunks, known_terms):
-        sent.extend(chunks)
-        return len(chunks), [], []
-
-    monkeypatch.setattr(service, "_run_llm_chunks", fake_run)
     result = service.run()
 
-    assert len(sent) == 2
+    assert result["status"] == "failed"
+    assert result["entries"] == []
+    assert result["rule_candidate_count"] == 0
+    assert result["used_llm"] is False
+    assert result["coverage_complete"] is False
+
+
+def test_partial_failure_keeps_successful_chunks(monkeypatch):
+    texts = ["LUMA waved.", "Leo went to the East Square.", "Third line here."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: (
+            [make_item(index, text) for index, text in enumerate(texts)],
+            [],
+        ),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "CHUNK_MAX_ITEMS",
+        1,
+    )
+    FakeRequester.responses = ['{"src": "LUMA", "type": "角色", "line": 0}', "[oops"]
+
+    service = make_service()
+    result = service.run()
+
+    assert result["status"] == "partial"
+    assert result["llm_chunks_total"] == 3
+    assert result["llm_chunks_success"] >= 1
+    assert result["coverage_complete"] is False
+    assert any(entry["src"] == "LUMA" for entry in result["entries"])
+
+
+def test_all_chunks_failed_reports_failure(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ["[oops"]
+
+    result = make_service().run()
+
+    assert result["status"] == "failed"
+    assert result["entries"] == []
+    assert result["coverage_complete"] is False
+
+
+def test_requester_closed_after_each_chunk(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ["[]"]
+
+    make_service().run()
+
+    assert FakeRequester.instances
+    assert all(requester.closed == 1 for requester in FakeRequester.instances)
+
+
+def test_cancel_raises_and_closes_requester(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+
+    class SlowRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            SlowRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            raise InterruptedError("stopped")
+
+    monkeypatch.setattr(service_module, "AgentRequester", SlowRequester)
+
+    with pytest.raises(InterruptedError):
+        make_service().run()
+
+    assert all(requester.closed == 1 for requester in SlowRequester.instances)
+
+
+def test_corpus_keeps_character_definitions_and_later_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    lines = [
+        'define e = Character("LUMA")',
+        "label start:",
+        '    "Hello there."',
+        '    e "LUMA is back."',
+    ]
+    (game / "script.rpy").write_text("\n".join(lines), encoding="utf-8")
+    (game / "tl").mkdir()
+    (game / "tl" / "ignored.rpy").write_text('"Not a source line."', encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    texts = [item["text"] for item in items]
+    kinds = {item["text"]: item["kind"] for item in items}
+
+    assert 'define e = Character("LUMA")' in texts
+    assert kinds['define e = Character("LUMA")'] == "character-definition"
+    assert "Hello there." in texts
+    assert "LUMA is back." in texts
+    assert "Not a source line." not in texts
+    speakers = {item["text"]: item.get("speaker", "") for item in items}
+    assert speakers["LUMA is back."] == "e"
+
+
+def test_corpus_source_is_relative_path(tmp_path):
+    game = tmp_path / "game"
+    nested = game / "sub"
+    nested.mkdir(parents=True)
+    (nested / "chapter1.rpy").write_text('e "LUMA is here."', encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+
+    assert [item["source"] for item in items] == ["sub/chapter1.rpy"]
+    assert [item["line"] for item in items] == [1]
+
+
+def test_same_text_on_different_lines_is_kept_once_per_line(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    lines = [
+        'e "LUMA is here."',
+        'r "LUMA is here."',
+        'e "LUMA is here."',
+    ]
+    (game / "script.rpy").write_text("\n".join(lines), encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    same_text = [item for item in items if item["text"] == "LUMA is here."]
+
+    assert len(same_text) == 3, "同一句在不同行/不同说话人下都要保留"
+    assert {item["speaker"] for item in same_text} == {"e", "r"}
+    assert len({item["line"] for item in same_text}) == 3
+
+
+def test_duplicate_literal_within_one_line_is_deduped(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text('e "Yes. Yes."', encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    assert [item["text"] for item in items] == ["Yes. Yes."]
+
+
+def test_extract_character_candidates_filters_agent_type(monkeypatch):
+    texts = ["LUMA waved.", "East Square is far."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: (
+            [make_item(index, text) for index, text in enumerate(texts)],
+            [],
+        ),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = [
+        '{"src": "LUMA", "type": "角色", "line": 0}\n{"src": "East Square", "type": "地名", "line": 1}'
+    ]
+
+    payload = make_service().run()
+    assert {entry["src"] for entry in payload["entries"]} == {"LUMA", "East Square"}
+
+    FakeRequester.responses = [
+        '{"src": "LUMA", "type": "角色", "line": 0}\n{"src": "East Square", "type": "地名", "line": 1}'
+    ]
+    character = extract_character_candidates(
+        config=SimpleNamespace(), target_path=".", platform=dict(PLATFORM)
+    )
+    assert character["names"] == ["LUMA"]
+
+
+def test_corpus_read_failure_marks_partial(monkeypatch):
+    texts = ["LUMA waved."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, texts[0])], ["读取源码文件失败：broken.rpy"]),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ["[]"]
+
+    result = make_service().run()
+
+    assert result["status"] == "partial", "读失败必须反映为部分覆盖"
+    assert result["coverage_complete"] is False
+    assert any("broken.rpy" in warning for warning in result["warnings"])
+
+
+def test_source_listing_failure_marks_partial():
+    import pathlib
+
+    service = make_service()
+
+    class BoomError(OSError):
+        pass
+
+    def boom(self, pattern):
+        raise BoomError("boom")
+
+    original = pathlib.Path.rglob
+    pathlib.Path.rglob = boom
+    try:
+        files, warning = service._source_files(pathlib.Path("."))
+    finally:
+        pathlib.Path.rglob = original
+
+    assert files == []
+    assert warning != ""
+
+
+def test_cancel_stops_active_requester(monkeypatch):
+    import threading
+    import time as time_module
+
+    entered = threading.Event()
+
+    class BlockingRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            BlockingRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            entered.set()
+            deadline = time_module.monotonic() + 3
+            while time_module.monotonic() < deadline:
+                if self.cancelled:
+                    return SimpleNamespace(success=False, text="", error_code="CANCELLED", error_message="")
+                time_module.sleep(0.01)
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+        def cancel(self):
+            FakeRequester.cancel(self)
+            self.cancelled = 1
+
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", BlockingRequester)
+    BlockingRequester.instances = []
+
+    checks = {"count": 0}
+
+    def cancelled():
+        checks["count"] += 1
+        return entered.is_set() and checks["count"] >= 2
+
+    service = make_service(cancel_callback=cancelled)
+    with pytest.raises(InterruptedError):
+        service.run()
+
+    assert BlockingRequester.instances, "必须真的发出请求"
+    assert any(requester.cancelled for requester in BlockingRequester.instances), \
+        "取消必须传播到活跃 requester，不能等网络超时"
+    assert all(requester.closed == 1 for requester in BlockingRequester.instances)
+
+
+def test_slow_chunk_times_out_after_starting(monkeypatch):
+    import time as time_module
+
+    class SlowRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            SlowRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            time_module.sleep(1.5)
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", SlowRequester)
+    SlowRequester.instances = []
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_TIMEOUT_SECONDS", 0.2)
+
+    result = make_service().run()
+
+    assert result["status"] == "failed", "唯一分块超时即为失败"
+    assert any("超时" in warning for warning in result["warnings"])
+    assert any(requester.cancelled for requester in SlowRequester.instances)
+    assert all(requester.closed == 1 for requester in SlowRequester.instances)
+
+
+def test_all_chunks_settled_returns_without_waiting_forever(monkeypatch):
+    import threading
+    import time as time_module
+
+    class StuckRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            StuckRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            threading.Event().wait(30)
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", StuckRequester)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CLOSE_TIMEOUT_SECONDS", 0.3)
+
+    started = time_module.monotonic()
+    result = make_service().run()
+    elapsed = time_module.monotonic() - started
+
+    assert elapsed < 20, "超时后必须有界返回，不能无限等待"
+    assert result["status"] == "failed"
+    assert StuckRequester.instances
+
+
+def test_all_workers_stuck_returns_within_deadline_two_chunks(monkeypatch):
+    import threading
+    import time as time_module
+
+    class StuckRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            StuckRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            threading.Event().wait(60)
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+    texts = ["LUMA waved.", "Leo left."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(index, text) for index, text in enumerate(texts)], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", StuckRequester)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_CONCURRENCY", 1)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CLOSE_TIMEOUT_SECONDS", 0.3)
+
+    started = time_module.monotonic()
+    result = make_service().run()
+    elapsed = time_module.monotonic() - started
+
+    bound = 0.2 + 0.3 + 1.0
+    assert elapsed < bound, f"必须在截止时间内返回，实际 {elapsed:.2f}s"
+    assert result["status"] == "failed"
+    assert len(StuckRequester.instances) == 1, "不得在阻塞时创建额外线程/请求"
+    assert result["llm_chunks_success"] == 0
+    assert any("块" in warning for warning in result["warnings"])
+
+
+def test_all_workers_stuck_returns_within_deadline_five_chunks(monkeypatch):
+    import threading
+    import time as time_module
+
+    class StuckRequester(FakeRequester):
+        instances = []
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            StuckRequester.instances.append(self)
+
+        def request_text(self, messages, on_text_delta=None):
+            threading.Event().wait(60)
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+    texts = [f"Line {index} here." for index in range(5)]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(index, text) for index, text in enumerate(texts)], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", StuckRequester)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_CONCURRENCY", 4)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_MAX_ITEMS", 1)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CLOSE_TIMEOUT_SECONDS", 0.3)
+
+    started = time_module.monotonic()
+    result = make_service().run()
+    elapsed = time_module.monotonic() - started
+
+    bound = 0.2 + 0.3 + 1.0
+    assert elapsed < bound, f"4 个槽全被占满时也必须在截止时间内返回，实际 {elapsed:.2f}s"
+    assert result["status"] == "failed"
+    assert result["llm_chunks_total"] == 5
+    assert len(StuckRequester.instances) == 4, "不得为排队中的块创建额外请求"
+    assert result["llm_chunks_success"] == 0
+    assert len(result["warnings"]) >= 5, "每个未完成块都要有警告"
+
+
+def test_candidate_lowercase_is_restored_to_source_casing():
+    service = make_service()
+    chunk = [make_item(0, "LUMA waved at the gate.")]
+
+    assert service._locate_candidate({"src": "luma", "line": 0}, chunk) == "LUMA"
+    assert service._locate_candidate({"src": "Luma", "line": 0}, chunk) == "LUMA"
+    assert service._locate_candidate({"src": "LUMA", "line": 0}, chunk) == "LUMA"
+    assert service._locate_candidate({"src": "Nottingham", "line": 0}, chunk) is None
+
+
+def test_non_english_candidate_returns_source_slice():
+    service = make_service()
+    chunk = [make_item(0, "田中さんはLUMAを見た。")]
+
+    assert service._locate_candidate({"src": "田中さん", "line": 0}, chunk) == "田中さん"
+    assert service._locate_candidate({"src": "LUMA", "line": 0}, chunk) == "LUMA"
+
+
+def test_casefold_expansion_does_not_misplace_slice():
+    service = make_service()
+
+    assert service._match_source_slice("luma", "Stra\u00dfe LUMA") == "LUMA"
+    assert service._match_source_slice("STRASSE", "Stra\u00dfe LUMA") == "Stra\u00dfe"
+    assert service._match_source_slice("strasse", "Stra\u00dfe LUMA") == "Stra\u00dfe"
+    assert service._match_source_slice("Luma", "\u0130stanbul LUMA") == "LUMA"
+    assert service._match_source_slice("\u0130stanbul", "\u0130stanbul LUMA") == "\u0130stanbul"
+    assert service._match_source_slice("Nottingham", "Stra\u00dfe LUMA") is None
+
+
+def test_casefold_boundary_through_locate_candidate():
+    service = make_service()
+    chunk = [make_item(0, "Stra\u00dfe LUMA waved.")]
+
+    assert service._locate_candidate({"src": "luma", "line": 0}, chunk) == "LUMA"
+    assert service._locate_candidate({"src": "STRASSE", "line": 0}, chunk) == "Stra\u00dfe"
+
+
+def test_public_entry_points_keep_signature():
+    """旧两参数回调契约保持不变；event_callback 是可选新增，不破坏旧调用。"""
+    import inspect
+
+    signature = inspect.signature(extract_glossary_candidates)
+    assert {
+        "config",
+        "target_path",
+        "platform",
+        "progress_callback",
+        "cancel_callback",
+    } <= set(signature.parameters)
+    assert signature.parameters["event_callback"].default is None
+    for name in ("progress_callback", "cancel_callback"):
+        assert signature.parameters[name].default is None
+
+    character_signature = inspect.signature(extract_character_candidates)
+    assert character_signature.parameters["event_callback"].default is None
+
+
+def test_prompt_excludes_generic_ui_terms_by_semantics():
+    """泛用 UI 词靠语义说明排除，不是事后英文词表过滤。"""
+    service = make_service()
+
+    prompt = service._build_prompt([make_item(0, "Help")])[0]["content"]
+
+    for token in ("通用界面词", "通用按键", "引擎与运行时名词", "不属于目标"):
+        assert token in prompt
+    assert "反例" in prompt, "要给出正反 few-shot，而不是只列禁止词"
+    assert "evidence" in prompt, "要求模型给出短依据"
+
+
+def test_prompt_character_mode_mentions_definition_context():
+    service = make_service(character_only=True)
+
+    prompt = service._build_prompt([make_item(0, "LUMA")])[0]["content"]
+
+    assert "definition" in prompt
+    assert "变量名只是引用" in prompt
+
+
+def test_chunk_capacity_covers_regular_pages():
+    service = make_service()
+
+    assert service.CHUNK_MAX_ITEMS >= 80
+    assert service.CHUNK_MAX_CHARS >= 8000
+
+
+def test_corpus_keeps_define_and_default_lines(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    lines = [
+        'define e = Character("LUMA")',
+        'default moon_blade = "Moon Blade"',
+        'define guild = "Silver Guild"',
+    ]
+    (game / "script.rpy").write_text("\n".join(lines), encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    kinds = {item["text"]: item["kind"] for item in items}
+
+    assert kinds['define e = Character("LUMA")'] == "character-definition"
+    assert kinds['default moon_blade = "Moon Blade"'] == "definition"
+    assert kinds['define guild = "Silver Guild"'] == "definition"
+    assert all(item["text"] for item in items), "整行语境不能被切成裸字面量"
+
+
+def test_corpus_orders_character_and_dialogue_before_ui(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    lines = [
+        'text "Help"',
+        'e "LUMA is back."',
+        'define e = Character("LUMA")',
+    ]
+    (game / "script.rpy").write_text("\n".join(lines), encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    kinds = [item["kind"] for item in items]
+
+    assert kinds == sorted(kinds, key=lambda name: {"character-definition": 0, "definition": 1, "dialogue": 2, "ui": 3}[name])
+    assert [item["id"] for item in items] == list(range(len(items))), "id 必须重排且连续"
+    assert len(items) == 3, "排序不得丢语料"
+
+
+def test_generated_template_files_are_not_sent(tmp_path):
+    """内置/生成模板按文件来源排除，属于结构名单而不是词表。"""
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "script.rpy").write_text('e "LUMA is here."', encoding="utf-8")
+    (game / "base_box").mkdir()
+    (game / "base_box" / "screens_box.rpy").write_text('text "Help"', encoding="utf-8")
+    (game / "base_box" / "generated.rpy").write_text('text "History"', encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    texts = [item["text"] for item in items]
+
+    assert "LUMA is here." in texts
+    assert "Help" not in texts
+    assert "History" not in texts
+
+
+def test_progress_events_follow_shared_contract(monkeypatch):
+    """结构化快照字段与去重上限必须与共享契约一致。"""
+    events: list[dict] = []
+    texts = ["LUMA waved.", "Leo left."]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(index, text) for index, text in enumerate(texts)], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_MAX_ITEMS", 1)
+    FakeRequester.responses = [
+        '{"src": "LUMA", "type": "角色", "line": 0, "evidence": "角色定义中的显示名"}',
+        '{"src": "Leo", "type": "角色", "line": 1}',
+    ]
+
+    service = make_service(event_callback=events.append)
+    result = service.run()
+
+    assert events, "必须真的发出过事件"
+    snapshot = events[-1]
+    assert snapshot["phase"] == "completed"
+    for field in ("total_chunks", "completed_chunks", "successful_chunks", "failed_chunks", "pending_chunks"):
+        assert isinstance(snapshot[field], int) and snapshot[field] >= 0
+    assert snapshot["pending_chunks"] == 0
+    assert snapshot["successful_chunks"] == result["llm_chunks_total"]
+    assert isinstance(snapshot["elapsed_seconds"], (int, float)) and snapshot["elapsed_seconds"] >= 0
+    assert snapshot["candidate_count"] >= 1
+    assert len(snapshot["candidates"]) <= 20
+    assert all("src" in item for item in snapshot["candidates"])
+    # 临时候选不得进入最终 entries 之外的落盘结构。
+    assert result["entries"] and "evidence" not in result["entries"][0]
+
+
+def test_event_callback_is_optional(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ["[]"]
+
+    assert make_service().run()["status"] == "completed"
+
+
+def test_healthy_chunks_run_after_one_timeout(monkeypatch):
+    """单块超时只结算该块，健康工作槽继续消费队列。"""
+    import time as time_module
+
+    class MixedRequester(FakeRequester):
+        instances = []
+        order = 0
+
+        def __init__(self, config, platform):
+            super().__init__(config, platform)
+            MixedRequester.instances.append(self)
+            self.index = MixedRequester.order
+            MixedRequester.order += 1
+
+        def request_text(self, messages, on_text_delta=None):
+            if self.index == 0:
+                time_module.sleep(1.2)
+                return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+            return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
+
+    texts = ["first", "second", "third"]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(index, text) for index, text in enumerate(texts)], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", MixedRequester)
+    # 两个槽：一个槽被不返回的超时块占住时，另一个槽必须继续消费队列。
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_CONCURRENCY", 2)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_MAX_ITEMS", 1)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CLOSE_TIMEOUT_SECONDS", 0.3)
+    MixedRequester.order = 0
+    MixedRequester.instances = []
+
+    started = time_module.monotonic()
+    result = make_service().run()
+    elapsed = time_module.monotonic() - started
+
+    assert result["llm_chunks_total"] == 3
+    assert result["llm_chunks_success"] == 2, "超时块之后的健康块必须继续执行"
+    assert len(MixedRequester.instances) == 3, "每个块都要有机会启动"
+    assert result["status"] == "partial"
+    assert elapsed < 10
+
+
+def test_coverage_limit_marks_result_incomplete(monkeypatch):
+    texts = [f"line {index}" for index in range(6)]
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: (
+            [make_item(index, text) for index, text in enumerate(texts)],
+            [],
+        ),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "CHUNK_MAX_ITEMS", 1)
+    monkeypatch.setattr(service_module.GlossaryCandidateService, "MAX_LLM_CHUNKS", 2)
+    FakeRequester.responses = ["[]", "[]"]
+
+    result = make_service().run()
+
     assert result["llm_chunks_total"] == 2
-    assert any("2/5" in warning and "低频专名" in warning for warning in result["warnings"])
+    assert result["coverage_complete"] is False
+    assert any("未分析部分不算完成" in warning for warning in result["warnings"])

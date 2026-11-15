@@ -1,269 +1,235 @@
-"""一条龙的术语库 / 禁翻库预处理。
+"""一条龙的词库预处理：术语/人名交给 Agent，禁翻表保留结构扫描。
 
-解包、抽取、翻译之外，用户还希望一条龙顺手把词库准备好（2026-10-18 反馈：
-「一条龙应该也把自动扫描术语库的自动去重和移除可能不是术语的词语，然后禁翻
-库也要一起弄啊」）。这里把三件事做成纯函数 + 一个薄编排层：
+历史：这里曾经用「扫描 Character 定义 + 词形启发式过滤」生成术语候选
+（NOT_TERM_PHRASES / looks_like_term / filter_not_terms）。规则既漏提非英语名字，
+也把 Rose 这类普通名词混进候选。现在术语与人名一律由 Agent 通道判定（见
+module/Extract/GlossaryCandidateService.py），本模块只负责：
 
-1. 扫描角色名 -> 术语候选（复用 LexiconOps 的扫描与合并规则）；
-2. 去重（同 src 大小写不敏感合并，保留人工词条）；
-3. 过滤掉明显不是术语的条目（动词短语、整句、占位符、纯符号……）；
-4. 扫出 [variable] 写进禁翻表。
+1. 把 Agent 候选转换成可落盘的候选行（只补缺失的 src，绝不覆盖已有条目）；
+2. 扫描 [variable] 合并进禁翻表（结构解析，与术语判定无关）。
 
-本模块不依赖 api，也不直接写配置：调用方拿到计划后自己落盘，这样 Agent 工具
-和 HTTP 路由可以共用同一份规则，不会两边分叉。
+本模块不依赖 api，也不直接写配置：调用方拿到计划后自己落盘。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from module.Localizer.Localizer import Localizer
 from module.Tool import LexiconOps
 
-
-# 明显不是术语的条目：动词短语、界面按钮、整句、代词。
-# 这些在英文 Ren'Py 工程里极常见（Buy / Calculate Progress / Everyone），
-# 以前全都进了候选表，用户看到 200 多条垃圾候选（2026-10-18 反馈）。
-NOT_TERM_PHRASES = frozenset(
-    {
-        "buy", "sell", "back", "next", "cancel", "confirm", "yes", "no", "ok",
-        "continue", "start", "load", "save", "quit", "exit", "return", "close",
-        "open", "settings", "options", "preferences", "gallery", "extras",
-        "main menu", "load game", "new game", "save game", "quick save",
-        "quick load", "auto", "skip", "history", "help", "about", "credits",
-        "calculate progress", "progress", "day", "night", "morning", "evening",
-        "everyone", "someone", "anyone", "nobody", "people", "crowd", "voice",
-        "unknown", "narrator", "you", "me", "us", "them", "he", "she", "they",
-        "him", "her", "his", "hers", "their", "theirs", "it", "its",
-        "soldier", "soldiers", "villager", "villagers", "guard", "guards",
-        "girl", "girls", "woman", "women", "man", "men", "boy", "boys",
-        "master", "mistress", "sir", "madam", "miss", "mister",
-    }
-)
-
-# 这些后缀说明是动作/进度而不是专有名词。
-NOT_TERM_SUFFIXES = ("progress", "loading", "complete", "completed", "failed")
+# 与 GlossaryCandidateService / 一键流程共用的状态词。
+STATUS_COMPLETED = "completed"
+STATUS_PARTIAL = "partial"
+STATUS_SKIPPED = "skipped"
+STATUS_FAILED = "failed"
 
 
 @dataclass
 class GlossaryPrepResult:
-    """术语库预处理的产物与统计。"""
+    """术语预处理的产物与统计。
+
+    entries 只有「本次应当新增」的候选：调用方用它做 merge，不得 replace，
+    这样已有译名、备注与禁用状态都不会被覆盖或重新启用。
+    """
 
     entries: list[dict[str, Any]] = field(default_factory=list)
     added: int = 0
-    removed_duplicate: int = 0
-    removed_not_term: int = 0
     scanned: int = 0
     kept_existing: int = 0
-
-    @property
-    def changed(self) -> bool:
-        return bool(self.added or self.removed_duplicate or self.removed_not_term)
-
-    def summary(self) -> str:
-        return (
-            f"术语库：扫描 {self.scanned} 个名字，"
-            f"新增 {self.added} 条，"
-            f"去重 {self.removed_duplicate} 条，"
-            f"过滤非术语 {self.removed_not_term} 条"
-        )
-
-
-def looks_like_term(text: str) -> bool:
-    """判断一个自动候选值不值得进术语表。
-
-    刻意保守：只在明确是垃圾时返回 False，宁可漏过滤也不要误删用户想保留的
-    专有名词。人工词条永远不会走到这里。
-    """
-    value = LexiconOps.clean_text_for_classify(str(text or ""))
-    if not value:
-        return False
-
-    lowered = value.casefold().strip()
-    if lowered in NOT_TERM_PHRASES:
-        return False
-    if any(lowered.endswith(suffix) for suffix in NOT_TERM_SUFFIXES):
-        return False
-
-    # 整句：带句末标点的不是术语
-    if any(ch in value for ch in ".?!。？！"):
-        return False
-    # 纯符号或纯数字
-    if not any(ch.isalpha() for ch in value):
-        return False
-
-    words = value.split()
-    if not words or len(words) > 4:
-        return False
-    # 全小写的多词短语基本是普通搭配，专有名词通常有首字母大写
-    if len(words) > 1 and value == lowered:
-        return False
-
-    return LexiconOps.is_probable_name(value)
-
-
-def filter_not_terms(entries: Iterable[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """去掉自动生成的、明显不是术语的候选；人工词条原样保留。"""
-    kept: list[dict[str, Any]] = []
-    removed = 0
-    for entry in entries:
-        if not isinstance(entry, Mapping):
-            continue
-        item = dict(entry)
-        automatic = bool(item.get("candidate")) and not bool(item.get("candidate_confirmed"))
-        if automatic and not looks_like_term(str(item.get("src", "") or "")):
-            removed += 1
-            continue
-        kept.append(item)
-    return kept, removed
-
-
-def dedupe_entries(entries: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """按规范化 src 去重，保留人工词条优先；返回 (结果, 去重条数)。"""
-    rows = [dict(item) for item in entries if isinstance(item, Mapping)]
-    manual = [item for item in rows if not item.get("candidate")]
-    automatic = [item for item in rows if item.get("candidate")]
-
-    merged_manual = LexiconOps.dedupe_glossary_entries(manual)
-    merged_auto = LexiconOps.dedupe_glossary_entries(automatic)
-
-    manual_keys = {
-        LexiconOps.normalize_glossary_src(str(item.get("src", "") or ""))
-        for item in merged_manual
-    }
-    survivors = [
-        item
-        for item in merged_auto
-        if LexiconOps.normalize_glossary_src(str(item.get("src", "") or "")) not in manual_keys
-    ]
-    total = len(rows)
-    kept = len(merged_manual) + len(survivors)
-    return merged_manual + survivors, max(0, total - kept)
-
-
-def prepare_glossary(
-    config: Any,
-    existing_rows: Sequence[Mapping[str, Any]],
-    *,
-    scan_names: Callable[[], set[str]] | None = None,
-    enabled: bool = True,
-) -> GlossaryPrepResult:
-    """扫描角色名并更新术语候选，返回可直接落盘的行。
-
-    ``existing_rows`` 是当前术语表全量行（含人工词条与旧候选）。返回的
-    ``entries`` 只有「候选」部分，人工词条由调用方保持不动。
-    """
-    if not enabled:
-        return GlossaryPrepResult()
-
-    names: set[str] = set()
-    if scan_names is not None:
-        try:
-            names = set(scan_names() or ())
-        except Exception:
-            names = set()
-
-    kept_existing = [dict(row) for row in existing_rows if isinstance(row, Mapping)]
-
-    manual = [row for row in kept_existing if not row.get("candidate")]
-    existing_auto = [row for row in kept_existing if row.get("candidate")]
-
-    # 用扫描结果重建自动候选，同时保留用户已确认过的候选。
-    confirmed_auto = [row for row in existing_auto if row.get("candidate_confirmed")]
-    # 注意返回值顺序是 (保留的手工词条, 新候选, 被移除的自动条目数)。
-    _kept_manual, generated, _removed_auto = LexiconOps.build_character_scan_entries(
-        manual, names
-    )
-
-    pool: list[dict[str, Any]] = []
-    pool.extend(confirmed_auto)
-    for entry in generated:
-        pool.append(
-            {
-                "src": entry.get("src", ""),
-                "dst": entry.get("dst", ""),
-                "type": entry.get("type", ""),
-                "info": entry.get("info", ""),
-                "comment": entry.get("comment", ""),
-                "case_sensitive": False,
-                "candidate": True,
-                "candidate_confirmed": False,
-                "enabled": True,
-                "regex": False,
-            }
-        )
-
-    filtered, removed_not_term = filter_not_terms(pool)
-    deduped, removed_duplicate = dedupe_entries(filtered)
-
-    before = {
-        LexiconOps.normalize_glossary_src(str(row.get("src", "") or ""))
-        for row in existing_auto
-    }
-    added = sum(
-        1
-        for item in deduped
-        if LexiconOps.normalize_glossary_src(str(item.get("src", "") or "")) not in before
-    )
-
-    return GlossaryPrepResult(
-        entries=deduped,
-        added=added,
-        removed_duplicate=removed_duplicate,
-        removed_not_term=removed_not_term,
-        scanned=len(names),
-        kept_existing=len(manual),
-    )
-
-
-@dataclass
-class PreservePrepResult:
-    """禁翻库预处理的产物。"""
-
-    entries: list[dict[str, Any]] = field(default_factory=list)
-    added: int = 0
-    enabled: bool = False
-    scanned: int = 0
+    status: str = STATUS_SKIPPED
+    warnings: list[str] = field(default_factory=list)
+    error: str = ""
 
     @property
     def changed(self) -> bool:
         return bool(self.added)
 
     def summary(self) -> str:
-        return f"禁翻库：扫描 {self.scanned} 个变量引用，新增 {self.added} 条"
+        if self.status == STATUS_SKIPPED:
+            return "术语提取已跳过"
+        if self.status == STATUS_FAILED:
+            return f"Agent 提取术语失败：{self.error}"
+        if self.status == STATUS_PARTIAL:
+            return f"Agent 只完成部分分块，已保留 {self.added} 条候选"
+        return f"Agent 已提取 {self.added} 条术语候选"
 
 
-def prepare_preserve(
+def normalize_src(value: Any) -> str:
+    """候选原文的规范化键，与仓库合并口径保持一致。"""
+    return LexiconOps.normalize_glossary_src(str(value or ""))
+
+
+def existing_src_keys(rows: Iterable[Mapping[str, Any]]) -> set[str]:
+    """已有条目的规范化键集合；它们不会被本次候选覆盖。"""
+    keys: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        key = normalize_src(row.get("src", row.get("source", "")))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def build_candidate_rows(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """把 Agent 候选转换成候选行（只做结构整形，不做语义判断）。"""
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        src = str(entry.get("src", entry.get("source", "")) or "").strip()
+        if not src:
+            continue
+        type_name = str(entry.get("type", "") or "").strip()
+        note = str(entry.get("info", entry.get("comment", "")) or "").strip()
+        rows.append(
+            {
+                "src": src,
+                "dst": str(entry.get("dst", entry.get("target", "")) or "").strip(),
+                "type": f"候选 / {type_name}" if type_name else "候选",
+                "info": note or "术语候选 (Agent 提取)",
+                "comment": note or "术语候选 (Agent 提取)",
+                "case_sensitive": bool(entry.get("case_sensitive", False)),
+                "candidate": True,
+                "candidate_confirmed": False,
+                "enabled": True,
+                "regex": False,
+            }
+        )
+    return rows
+
+
+def select_new_entries(
+    candidate_rows: Sequence[Mapping[str, Any]],
+    known_keys: set[str],
+) -> list[dict[str, Any]]:
+    """只保留尚不存在的候选；同批内重复也只留第一条。"""
+    fresh: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in candidate_rows:
+        if not isinstance(row, Mapping):
+            continue
+        key = normalize_src(row.get("src", ""))
+        if not key or key in known_keys or key in seen:
+            continue
+        seen.add(key)
+        fresh.append(dict(row))
+    return fresh
+
+
+def prepare_glossary(
     config: Any,
-    existing_entries: Sequence[Mapping[str, Any]],
+    existing_rows: Sequence[Mapping[str, Any]],
     *,
-    cancel_check: Callable[[], bool] | None = None,
+    extract: Callable[[], Mapping[str, Any]] | None = None,
     enabled: bool = True,
-) -> PreservePrepResult:
-    """扫描 [variable] 并合并进禁翻表；已有条目不动，只补新增。"""
+    cancel_check: Callable[[], bool] | None = None,
+) -> GlossaryPrepResult:
+    """调用 Agent 抽取术语候选，返回「只新增」的候选行。
+
+    extract 由调用方注入（通常包装 GlossaryCandidateService 的公共入口），
+    本模块不自己发请求，也不做任何词形/频次判断。
+    """
     if not enabled:
-        return PreservePrepResult()
+        return GlossaryPrepResult(status=STATUS_SKIPPED)
+
+    if cancel_check is not None and cancel_check():
+        raise InterruptedError("术语提取已取消")
+
+    if extract is None:
+        message = "未配置 Agent 术语抽取通道"
+        return GlossaryPrepResult(status=STATUS_FAILED, error=message, warnings=[message])
 
     try:
-        result = LexiconOps.scan_preserve_variables(config, cancel_check)
-    except Exception:
-        return PreservePrepResult()
+        payload = extract()
+    except InterruptedError:
+        raise
+    except Exception as exc:  # 抽取失败不能拖垮一键流程
+        message = str(exc)
+        return GlossaryPrepResult(status=STATUS_FAILED, error=message, warnings=[message])
 
-    scanned_entries = list(result.get("entries", []) or [])
-    existing = [
-        LexiconOps.normalize_preserve_src(str(item.get("src", "") or ""))
-        for item in existing_entries
-        if isinstance(item, Mapping)
-    ]
-    seen = {key for key in existing if key}
+    if not isinstance(payload, Mapping):
+        message = "Agent 未返回可用结果"
+        return GlossaryPrepResult(status=STATUS_FAILED, error=message, warnings=[message])
 
+    status = str(payload.get("status") or STATUS_COMPLETED)
+    warnings = [str(item) for item in (payload.get("warnings") or []) if str(item).strip()]
+    entries = payload.get("entries") or []
+
+    if status == STATUS_FAILED:
+        error = "；".join(warnings) if warnings else "Agent 未返回可用术语"
+        return GlossaryPrepResult(
+            status=STATUS_FAILED, error=error, warnings=warnings or [error]
+        )
+
+    known = existing_src_keys(existing_rows)
+    rows = build_candidate_rows(entries)
+    fresh = select_new_entries(rows, known)
+
+    return GlossaryPrepResult(
+        entries=fresh,
+        added=len(fresh),
+        scanned=len(rows),
+        kept_existing=len(known),
+        status=STATUS_PARTIAL if status == STATUS_PARTIAL else STATUS_COMPLETED,
+        warnings=warnings,
+    )
+
+
+@dataclass
+class PreservePrepResult:
+    """禁翻预处理的产物。"""
+
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    added: int = 0
+    enabled: bool = False
+    scanned: int = 0
+    status: str = STATUS_SKIPPED
+    warnings: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added)
+
+    def summary(self) -> str:
+        if self.status == STATUS_SKIPPED:
+            return "禁翻表准备已跳过"
+        if self.status == STATUS_FAILED:
+            return f"禁翻表准备失败：{self.error}"
+        return f"禁翻表已更新 {self.added} 条"
+
+
+def merge_preserve_entries(
+    existing_entries: Sequence[Mapping[str, Any]],
+    scanned_entries: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """把新扫描到的 [variable] 合并到现有禁翻表，只补新增。
+
+    已有行完整复制：enabled / regex / 嵌套 metadata 等字段一律原样保留，
+    只允许新增缺失的 src，绝不重建或丢弃既有条目。
+    """
     merged: list[dict[str, Any]] = [
-        {"src": str(item.get("src", "") or ""), "comment": str(item.get("comment", item.get("info", "")) or "")}
+        dict(item)
         for item in existing_entries
         if isinstance(item, Mapping) and str(item.get("src", "") or "").strip()
     ]
+    seen = {
+        key
+        for key in (
+            LexiconOps.normalize_preserve_src(str(item.get("src", "") or ""))
+            for item in merged
+        )
+        if key
+    }
+
     added = 0
     for entry in scanned_entries:
+        if not isinstance(entry, Mapping):
+            continue
         src = str(entry.get("src", "") or "").strip()
         if not src:
             continue
@@ -273,23 +239,125 @@ def prepare_preserve(
         seen.add(key)
         merged.append({"src": src, "comment": ""})
         added += 1
+    return merged, added
+
+
+def _scan_preserve(
+    config: Any,
+    cancel_check: Callable[[], bool] | None,
+    scan_paths: Sequence[Any] | None,
+) -> dict[str, Any]:
+    """在限定目录内扫描 [variable]；未限定则退回 LexiconOps 默认候选。"""
+    if not scan_paths:
+        return LexiconOps.scan_preserve_variables(config, cancel_check)
+
+    roots: list[Path] = []
+    for raw in scan_paths:
+        if raw is None:
+            continue
+        path = raw if isinstance(raw, Path) else Path(str(raw))
+        if not path.is_dir():
+            continue
+        if any(part.lower() == "tl" for part in path.parts):
+            continue
+        roots.append(path)
+    if not roots:
+        # 复用已有本地化键：警告会直接展示给用户，不能夹硬编码中文。
+        raise LexiconOps.LexiconOpsError(
+            Localizer.get().onekey_lexicon_game_dir_unresolved
+        )
+
+    found: set[str] = set()
+    scanned_root: Path | None = None
+    for root in roots:
+        if cancel_check is not None:
+            cancel_check()
+        try:
+            if LexiconOps.count_source_rpy_files(root) <= 0:
+                continue
+        except Exception:
+            continue
+        scanned_root = root
+        for rpy_file in root.rglob("*.rpy"):
+            if cancel_check is not None:
+                cancel_check()
+            if "tl" in [part.lower() for part in rpy_file.parts]:
+                continue
+            try:
+                content = rpy_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError as exc:
+                # 只带原始路径与异常，不写死任何语言的提示文案。
+                raise LexiconOps.LexiconOpsError(f"{rpy_file}: {exc}") from exc
+            for var_name in LexiconOps.RE_VARIABLE_IN_TEXT.findall(content):
+                found.add(f"[{var_name}]")
+        break
+
+    if scanned_root is None:
+        raise LexiconOps.LexiconOpsError(
+            Localizer.get().onekey_lexicon_game_dir_unresolved
+        )
+    if not found:
+        # prepare_preserve 只消费 entries / enabled，message 一并去掉，避免硬编码文案。
+        return {
+            "entries": [],
+            "game_path": str(scanned_root),
+            "cleared": True,
+            "enabled": False,
+        }
+    return {
+        "entries": [{"src": text} for text in sorted(found)],
+        "game_path": str(scanned_root),
+        "cleared": False,
+        "enabled": True,
+    }
+
+def prepare_preserve(
+    config: Any,
+    existing_entries: Sequence[Mapping[str, Any]],
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+    enabled: bool = True,
+    scan_paths: Sequence[Any] | None = None,
+) -> PreservePrepResult:
+    """扫描 [variable] 并合并进禁翻表；已有条目不动，只补新增。
+
+    scan_paths 由调用方限定扫描根（本次请求项目内的源码目录），
+    避免 LexiconOps 按配置里的旧路径回退到别的项目；为空时退回默认候选。
+    """
+    if not enabled:
+        return PreservePrepResult(status=STATUS_SKIPPED)
+
+    try:
+        result = _scan_preserve(config, cancel_check, scan_paths)
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        return PreservePrepResult(status=STATUS_FAILED, error=str(exc), warnings=[str(exc)])
+
+    scanned_entries = list(result.get("entries", []) or [])
+    merged, added = merge_preserve_entries(existing_entries, scanned_entries)
 
     return PreservePrepResult(
         entries=merged,
         added=added,
         enabled=bool(result.get("enabled", True)) or bool(merged),
         scanned=len(scanned_entries),
+        status=STATUS_COMPLETED,
     )
 
 
 __all__ = [
     "GlossaryPrepResult",
-    "NOT_TERM_PHRASES",
-    "NOT_TERM_SUFFIXES",
     "PreservePrepResult",
-    "dedupe_entries",
-    "filter_not_terms",
-    "looks_like_term",
+    "STATUS_COMPLETED",
+    "STATUS_FAILED",
+    "STATUS_PARTIAL",
+    "STATUS_SKIPPED",
+    "build_candidate_rows",
+    "existing_src_keys",
+    "merge_preserve_entries",
+    "normalize_src",
     "prepare_glossary",
     "prepare_preserve",
+    "select_new_entries",
 ]

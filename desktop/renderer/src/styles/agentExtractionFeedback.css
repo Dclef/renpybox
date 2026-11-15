@@ -1,0 +1,62 @@
+/* Agent 提取反馈：警告与明细固定最大高度滚动，不挤坏词表布局。 */
+.rb-agent-feedback { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; min-width: 0; max-height: min(340px, 38vh); overflow-y: auto; overflow-wrap: anywhere; }
+.rb-agent-feedback > * { flex-shrink: 0; }
+.rb-agent-feedback-status { display: flex; flex-direction: column; gap: 4px; }
+.rb-agent-feedback-status-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rb-agent-feedback-message { color: var(--rb-text-secondary); font-size: 12px; }
+.rb-agent-feedback-summary { color: var(--rb-text-secondary); font-size: 12px; }
+.rb-agent-feedback-active,
+.rb-agent-feedback-preview,
+.rb-agent-feedback-warning-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--rb-text-secondary); }
+.rb-agent-feedback-active { max-height: 84px; overflow-y: auto; }
+.rb-agent-feedback-preview { max-height: 160px; overflow-y: auto; }
+.rb-agent-feedback-preview li { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
+.rb-agent-feedback-type,
+.rb-agent-feedback-location,
+.rb-agent-feedback-evidence { color: var(--rb-text-secondary); font-size: 11px; }
+.rb-agent-feedback-counts { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--rb-text-secondary); }
+.rb-agent-feedback-toggle { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--rb-accent, #1677ff); cursor: pointer; font-size: 12px; }
+.rb-agent-feedback-note { margin: 0; font-size: 11px; color: var(--rb-text-secondary); }
+.rb-agent-feedback-warning { border: 1px solid color-mix(in srgb, var(--rb-warning) 32%, var(--rb-border)); border-radius: 6px; padding: 6px 8px; background: color-mix(in srgb, var(--rb-warning) 10%, var(--rb-surface)); }
+.rb-agent-feedback-warning-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rb-agent-feedback-coverage { font-size: 12px; color: var(--rb-text-secondary); }
+.rb-agent-feedback-warning-list { max-height: 96px; overflow-y: auto; }
+.rb-agent-feedback-warning-item { padding: 1px 0; word-break: break-word; }
+
+/* Only the glossary's running state uses the compact layout. Shared table rules stay untouched. */
+.rb-glossary[data-agent-running='true'] > .rb-lexicon-controls { gap: 6px; flex: 0 0 auto; max-height: none; overflow: visible; }
+.rb-glossary[data-agent-running='true'] .rb-sheet-summary { font-size: 12px; line-height: 18px; }
+.rb-glossary-running-note { color: var(--rb-text-secondary); }
+.rb-glossary-task-controls, .rb-glossary-idle-actions { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rb-glossary-task-controls[data-active='true'] { gap: 0; }
+.rb-glossary-live-toolbar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rb-glossary-live-toolbar > .ant-input-affix-wrapper { margin-right: auto; min-width: 100px; max-width: 100%; }
+.rb-glossary-live-toolbar > .ant-btn { flex: 0 0 auto; }
+.rb-glossary-actions-panel { width: min(600px, calc(100vw - 48px)); max-height: min(220px, 45vh); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.rb-agent-feedback-detail-panel { width: min(520px, calc(100vw - 48px)); max-height: min(240px, 45vh); overflow-y: auto; overflow-wrap: anywhere; }
+.rb-agent-feedback-detail-panel > .rb-agent-feedback-note { margin: 4px 0; }
+.rb-agent-feedback-detail-actions { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; }
+.rb-agent-feedback[data-active='true'] { max-height: 126px; gap: 4px; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-status { display: grid; grid-template-columns: minmax(0, 1fr) 180px; align-items: center; column-gap: 12px; row-gap: 2px; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-status-head { min-width: 0; flex-wrap: nowrap; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-message { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rb-agent-feedback[data-active='true'] [data-testid='agent-feedback-progress'] { min-width: 0; line-height: 18px; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-summary,
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-detail-actions,
+.rb-agent-feedback[data-active='true'] [data-testid='agent-feedback-legacy'] { grid-column: 1 / -1; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-warning { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 3px 6px; }
+.rb-extraction-resume-options { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; border: 0; padding: 0; }
+.rb-extraction-resume-options legend { font-weight: 600; margin-bottom: 8px; }
+.rb-extraction-resume-options label { display: flex; align-items: center; gap: 6px; }
+.rb-glossary-task-controls[data-active='false'] .rb-glossary-secondary-toggle { display: none; }
+@media (max-height: 820px) {
+  .rb-page-scroll.rb-glossary { gap: 4px; }
+  .rb-glossary .rb-sheet-summary { display: block; }
+  .rb-glossary > .rb-lexicon-controls { gap: 6px; flex: 0 0 auto; max-height: none; overflow: visible; }
+  .rb-glossary .rb-glossary-idle-actions { display: none; }
+  .rb-glossary .rb-glossary-task-controls { gap: 0; }
+  .rb-glossary .rb-glossary-task-controls[data-active='false'] .rb-glossary-secondary-toggle { display: inline-flex; }
+  .rb-glossary .rb-sheet-summary { font-size: 12px; line-height: 18px; }
+}
+
+

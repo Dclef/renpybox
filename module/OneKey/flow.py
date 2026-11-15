@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import time
 from pathlib import Path
 
@@ -491,126 +490,26 @@ def apply_translation_files_transactionally(
     output_dir: Path,
     input_dir: Path,
 ) -> int:
-    """应用整批翻译文件；任一文件失败时恢复此前所有目标。"""
-    # 相对目标必须按输出目录中的词法路径计算，不能先解引用源符号链接。
+    """Preflight the complete target plus output, then commit one transaction."""
+    from module.Renpy.base_box_conflicts import (
+        add_compiled_cleanup, commit_changes, is_managed_template, plan_tree,
+    )
     output_dir = Path(os.path.abspath(os.fspath(output_dir)))
     input_dir = Path(input_dir).resolve()
-    input_dir.parent.mkdir(parents=True, exist_ok=True)
-    backup_root = Path(
-        tempfile.mkdtemp(prefix=".renpybox-apply-", dir=str(input_dir.parent))
-    )
-    input_dir_resolved = input_dir.resolve()
-    # 允许 tl 目录内部及游戏目录内的符号链接目标，但禁止写回项目之外。
-    allowed_roots = (
-        input_dir_resolved,
-        input_dir_resolved.parent,
-        input_dir_resolved.parent.parent,
-    )
-    applied: list[tuple[Path, Path | None]] = []
-    temp_targets: list[Path] = []
-    rollback_failed = False
-    try:
-        for index, source in enumerate(output_files):
-            lexical_source = Path(os.path.abspath(os.fspath(source)))
-            rel_path = lexical_source.relative_to(output_dir)
-            if rel_path.is_absolute() or ".." in rel_path.parts:
-                raise ValueError(f"输出文件越过翻译目录: {lexical_source}")
-            source = lexical_source.resolve(strict=True)
-            if not source.is_file():
-                raise ValueError(f"输出翻译源不是文件: {lexical_source}")
-            target = input_dir / rel_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-
-            # os.replace 会替换符号链接本身，而不是写入其指向文件。
-            # 对链接的真实目标执行整套事务，才能同时保留链接和回滚能力。
-            if target.is_symlink():
-                try:
-                    unresolved_target = target.resolve(strict=False)
-                    write_target = (
-                        unresolved_target.parent.resolve(strict=True)
-                        / unresolved_target.name
-                    )
-                except (OSError, RuntimeError) as exc:
-                    raise RuntimeError(
-                        f"无法解析翻译目标符号链接: {target}: {exc}"
-                    ) from exc
-                if write_target.exists() and not write_target.is_file():
-                    raise RuntimeError(f"翻译目标符号链接未指向文件: {target}")
-            else:
-                write_target = target
-
-            # 防止翻译目录内被植入指向项目外的符号链接，导致写回覆盖外部文件。
-            resolved_write_target = write_target.resolve(strict=False)
-            if not any(
-                resolved_write_target == root
-                or root in resolved_write_target.parents
-                for root in allowed_roots
-            ):
-                raise RuntimeError(
-                    f"翻译目标符号链接指向翻译目录之外: {target} -> {write_target}"
-                )
-
-            backup: Path | None = None
-            if write_target.exists():
-                backup = backup_root / rel_path
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(write_target, backup)
-
-            temp_fd, temp_name = tempfile.mkstemp(
-                prefix=f".{write_target.name}.apply-{index}-",
-                suffix=".tmp",
-                dir=str(write_target.parent),
-            )
-            os.close(temp_fd)
-            temp_target = Path(temp_name)
-            temp_targets.append(temp_target)
-            shutil.copy2(source, temp_target)
-            os.replace(str(temp_target), str(write_target))
-            temp_targets.remove(temp_target)
-            applied.append((write_target, backup))
-        return len(applied)
-    except Exception as apply_exc:
-        rollback_errors: list[str] = []
-        for target, backup in reversed(applied):
-            try:
-                if backup is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    restore_fd, restore_name = tempfile.mkstemp(
-                        prefix=f".{target.name}.rollback-",
-                        suffix=".tmp",
-                        dir=str(target.parent),
-                    )
-                    os.close(restore_fd)
-                    restore_temp = Path(restore_name)
-                    try:
-                        shutil.copy2(backup, restore_temp)
-                        os.replace(str(restore_temp), str(target))
-                    finally:
-                        restore_temp.unlink(missing_ok=True)
-            except Exception as rollback_exc:
-                rollback_errors.append(f"{target}: {rollback_exc}")
-        rollback_failed = bool(rollback_errors)
-        preserved_hint = ""
-        if rollback_errors:
-            # 回滚失败时原文件唯一副本仍在 backup_root，必须保留而不是删除。
-            preserved = backup_root.with_name(
-                f"{backup_root.name}-rollback-{int(time.time())}"
-            )
-            try:
-                backup_root.replace(preserved)
-                preserved_hint = f"；原始文件备份保留在: {preserved}"
-            except Exception:
-                preserved_hint = f"；原始文件备份目录: {backup_root}（未能重命名）"
-        detail = f"；回滚失败：{'；'.join(rollback_errors)}" if rollback_errors else ""
-        raise RuntimeError(
-            f"应用翻译失败，已回滚本批次：{apply_exc}{detail}{preserved_hint}"
-        ) from apply_exc
-    finally:
-        for temp_target in temp_targets:
-            temp_target.unlink(missing_ok=True)
-        if not rollback_failed:
-            shutil.rmtree(backup_root, ignore_errors=True)
+    proposed = {}
+    for source in output_files:
+        lexical_source = Path(os.path.abspath(os.fspath(source)))
+        relative = lexical_source.relative_to(output_dir)
+        if is_managed_template(relative):
+            # Old caches must never overwrite deployed templates/manual changes.
+            continue
+        if not lexical_source.is_file():
+            raise ValueError(str(lexical_source))
+        proposed[relative] = lexical_source.read_bytes().decode("utf-8-sig")
+    changes, _ = plan_tree(input_dir, proposed)
+    add_compiled_cleanup(changes, input_dir)
+    commit_changes(changes, allowed_roots=[input_dir, input_dir.parent.parent])
+    return len(proposed)
 
 _EXTRACTOR_PROGRESS_EN = {
     "已备份旧翻译": "Backed up the previous translation...",
@@ -666,6 +565,14 @@ def _localize_extraction_result(result, incremental: bool) -> str:
     return message
 
 
+def _base_box_failure_detail(message: str) -> str:
+    localizer = Localizer.get()
+    prefixes = [getattr(localizer, key, "").partition("{")[0]
+                for key in ("base_box_conflict", "base_box_unsafe_syntax", "base_box_transaction_failed")]
+    offsets = [message.find(prefix) for prefix in prefixes if prefix and prefix in message]
+    return message[min(offsets):] if offsets else ""
+
+
 def _localize_extraction_base_result(result, incremental: bool) -> str:
     message = str(getattr(result, "message", "") or "")
     if Localizer.get_app_language() != BaseLanguage.Enum.EN:
@@ -685,6 +592,9 @@ def _localize_extraction_base_result(result, incremental: bool) -> str:
             return f"Incremental extraction completed. Preserved {preserved} existing translation(s)."
         total = getattr(result, "total_files", 0)
         return f"Text extraction completed ({total} file(s))."
+    base_box_detail = _base_box_failure_detail(message)
+    if base_box_detail:
+        return base_box_detail
     if "已被禁用" in message:
         return "Extraction is disabled. Enable official or supplemental extraction and try again."
     if "已自动恢复原翻译目录" in message:
@@ -698,6 +608,9 @@ def _localize_merge_failure(message: str) -> str:
     text = str(message or "")
     if Localizer.get_app_language() != BaseLanguage.Enum.EN:
         return text or "增量翻译文件合并失败"
+    base_box_detail = _base_box_failure_detail(text)
+    if base_box_detail:
+        return base_box_detail
     if "已保留增量目录" in text:
         return "The incremental merge did not complete. The incremental folder was preserved. Check the logs for details."
     if text.startswith("未找到增量目录:"):

@@ -955,3 +955,51 @@ def test_cancel_inside_scanner_releases_engine(font_app, monkeypatch, stage):
     injected = client.post("/api/font-tools/inject", json=_inject(paths.project_key))
     assert injected.status_code == 200, injected.text
     assert _finish(client, injected.json()["job"]["id"])["status"] == "done"
+
+
+def test_inject_conflicting_manual_values_fail_without_writes(font_app):
+    client, _, _, _, game, paths, _ = font_app
+    tl = game / "tl/chinese"
+    for name, value in (("first.rpy", "人工甲"), ("other/first.rpy", "人工乙")):
+        path = tl / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'translate chinese strings:\n    old "Back"\n    new "{value}"\n', encoding="utf-8")
+    before = {p.relative_to(game): p.read_bytes() for p in game.rglob("*") if p.is_file()}
+    response = client.post("/api/font-tools/inject", json=_inject(paths.project_key))
+    assert response.status_code == 200
+    job = _finish(client, response.json()["job"]["id"])
+    assert job["status"] == "failed"
+    assert job["result"]["written"] is False
+    assert "first.rpy" in (job.get("error") or job["result"].get("message") or "")
+    assert {p.relative_to(game): p.read_bytes() for p in game.rglob("*") if p.is_file()} == before
+
+
+def test_real_inject_transaction_failure_reports_verified_rollback(font_app, monkeypatch):
+    from module.Renpy import base_box_conflicts as service
+    client, _, _, _, game, paths, _ = font_app
+    tl = game / "tl/chinese"
+    user = tl / "manual.rpy"
+    user.write_text('translate chinese strings:\n    old "Back"\n    new "人工"\n', encoding="utf-8")
+    compiled = user.with_suffix(".rpyc")
+    compiled.write_bytes(b"original-compiled")
+    before = (user.read_bytes(), compiled.read_bytes())
+    real = service.os.replace
+    failed = False
+
+    def fail_once(src, dest):
+        nonlocal failed
+        if Path(dest) == tl / "base_box/screens_box.rpy" and not failed:
+            assert (tl / "base_box/common_box.rpy").is_file()
+            failed = True
+            raise OSError("simulated injection commit interruption")
+        return real(src, dest)
+
+    monkeypatch.setattr(service.os, "replace", fail_once)
+    response = client.post("/api/font-tools/inject", json=_inject(paths.project_key))
+    job = _finish(client, response.json()["job"]["id"])
+    assert failed and job["status"] == "failed"
+    assert job["result"]["written"] is False
+    assert job["result"]["partial"] is False
+    assert (user.read_bytes(), compiled.read_bytes()) == before
+    assert not (tl / "base_box").exists()
+    _assert_no_live_scripts(Path(job["result"]["backup_path"]))

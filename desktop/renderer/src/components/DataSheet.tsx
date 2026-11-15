@@ -29,6 +29,14 @@ export function DataSheet<T extends object>(props: {
   columns: DataSheetColumn<T>[];
   selectedKey: string | null;
   onSelect: (key: string | null) => void;
+  /** Optional checkboxes, independent of active-row selection and editing. */
+  rowSelection?: {
+    selectedKeys: string[];
+    onChange: (keys: string[]) => void;
+    title: string;
+    label: (row: T) => string;
+  };
+
   /** 原始序号（从 1 计）。筛选和翻页后仍对应同一条数据。 */
   rowNumber: (row: T) => number;
   /** 读取单元格草稿文本；仅可编辑列需要。 */
@@ -54,7 +62,7 @@ export function DataSheet<T extends object>(props: {
 }) {
   const t = useT();
   const {
-    rows, getKey, columns, selectedKey, onSelect, rowNumber,
+    rows, getKey, columns, selectedKey, onSelect, rowNumber, rowSelection,
     getEditValue, onCommitEdit, readOnly = false, editGeneration = 0, flushKey = '', onDraftChange,
     editRequest, onEditRequestConsumed,
     emptyText, footer, resetPageToken = 0, label,
@@ -106,6 +114,13 @@ export function DataSheet<T extends object>(props: {
   }, [flushKey]);
 
   useLayoutEffect(() => {
+    // Keep the snapshot on an existing ref object; leave its project key and initializer unchanged.
+    const snapshot = flushKeyRef as typeof flushKeyRef & { lastEditGeneration?: number };
+    const initialized = Object.prototype.hasOwnProperty.call(snapshot, 'lastEditGeneration');
+    const previous = snapshot.lastEditGeneration;
+    snapshot.lastEditGeneration = editGeneration;
+    // First legacy-ref migration and Fast Refresh must retain unblurred text.
+    if (!initialized || previous === editGeneration) return;
     editRef.current = null;
     setEditing(null);
     setDraft('');
@@ -310,6 +325,20 @@ export function DataSheet<T extends object>(props: {
             bordered
             tableLayout="fixed"
             rowKey={getKey}
+            rowSelection={rowSelection ? {
+              type: 'checkbox',
+              selectedRowKeys: rowSelection.selectedKeys,
+              preserveSelectedRowKeys: true,
+              columnWidth: 44,
+              columnTitle: (node) => <span data-testid="sheet-page-select" title={rowSelection.title}>{node}</span>,
+              getTitleCheckboxProps: () => ({ 'aria-label': rowSelection.title }),
+              onChange: (keys) => rowSelection.onChange(keys.map(String)),
+              getCheckboxProps: (row) => ({ disabled: readOnly, 'aria-label': rowSelection.label(row) }),
+              renderCell: (_checked, row, _index, node) => (
+                <span data-testid={`sheet-row-select-${getKey(row)}`} onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>{node}</span>
+              ),
+            } : undefined}
             columns={tableColumns}
             dataSource={visible}
             pagination={false}

@@ -894,7 +894,8 @@ def test_filtered_new_target_write_failure_does_not_copy_mixed_source(
 
     def fail_filtered_target_once(path, text, **kwargs):
         nonlocal failed_once
-        if Path(path) == mixed_target and not failed_once:
+        # The merge now computes on a temporary tree before the live commit.
+        if Path(path).parts[-2:] == mixed_target.parts[-2:] and not failed_once:
             failed_once = True
             raise OSError("fictional filtered write interruption")
         return real_atomic_write(path, text, **kwargs)
@@ -1233,7 +1234,7 @@ def test_cross_file_write_failure_preserves_incremental_translation(tmp_path, mo
     real_atomic_write = unified_module.atomic_write_text
 
     def fail_placeholder_write(path, text, **kwargs):
-        if Path(path) == placeholder:
+        if Path(path).parts[-2:] == placeholder.parts[-2:]:
             raise OSError("fictional write interruption")
         return real_atomic_write(path, text, **kwargs)
 
@@ -1374,53 +1375,18 @@ def test_regular_extract_restores_tl_on_failure(tmp_path, monkeypatch):
     )
 
 
-def test_empty_block_cleanup_failures_are_logged_not_swallowed(tmp_path, monkeypatch):
-    """占位/去重清理步骤失败必须留下日志。
-
-    这两个调用点原来都是裸 ``except: pass``，而同一次调用在
-    ``_deploy_builtin_ui_pack`` 里已经带 warning。差异本身就是 bug：条目已经
-    删掉、文件只剩 ``translate xxx strings:`` 头时，Ren'Py 启动会直接报错，
-    而用户看不到任何线索，只能对着"游戏打不开"猜原因。
-    """
+def test_malformed_base_box_fails_before_removing_any_placeholder(tmp_path):
+    """A malformed managed template must fail before destructive cleanup."""
     tl_dir = tmp_path / "chinese"
     (tl_dir / "base_box").mkdir(parents=True)
-    (tl_dir / "base_box" / "common_box.rpy").write_text(
-        'translate chinese strings:\n\n    old "Confirm"\n\n', encoding="utf-8"
-    )
-    # base_box 之外的重复条目才会被删掉（base_box 自身被跳过），
-    # removed_total 为 0 时根本不会走到收尾清理。
-    (tl_dir / "ui.rpy").write_text(
-        'translate chinese strings:\n\n    old "Confirm"\n    new ""\n\n',
-        encoding="utf-8",
-    )
-
-    extractor = UnifiedExtractor.__new__(UnifiedExtractor)
-    warnings: list[str] = []
-    extractor.logger = type(
-        "TestLogger",
-        (),
-        {
-            "info": lambda self, message: None,
-            "warning": lambda self, message: warnings.append(message),
-            "error": lambda self, message: None,
-        },
-    )()
-
-    # base_box 里已有 old，才会进入重复清理分支。
-    monkeypatch.setattr(
-        extractor, "_collect_base_box_old_values", lambda _tl_dir: {"Confirm"}
-    )
-
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("empty block cleanup boom")
-
-    monkeypatch.setattr(extractor, "_remove_empty_translate_blocks", boom)
-
-    assert extractor._remove_placeholder_duplicates_for_base_box(tl_dir, "chinese") == 1
-
-    assert any(
-        "清理占位条目后残留空翻译块失败" in message for message in warnings
-    ), warnings
+    base = tl_dir / "base_box" / "common_box.rpy"
+    base.write_text('translate chinese strings:\n    old "Confirm"\n', encoding="utf-8")
+    user = tl_dir / "ui.rpy"
+    user.write_text('translate chinese strings:\n    old "Confirm"\n    new ""\n', encoding="utf-8")
+    before = (base.read_bytes(), user.read_bytes())
+    with pytest.raises(ValueError, match="common_box.rpy"):
+        make_extractor()._remove_placeholder_duplicates_for_base_box(tl_dir, "chinese")
+    assert (base.read_bytes(), user.read_bytes()) == before
 
 
 def test_merge_reports_empty_block_and_empty_file_cleanup_failures(tmp_path, monkeypatch):

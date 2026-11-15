@@ -293,9 +293,12 @@ class Config():
     onekey_inject_base_box: bool = False
     # 一键翻译完成后，是否自动执行 replace_text 补全漏翻
     onekey_auto_hook_supplement: bool = False
-    # 抽取后顺手准备词库：扫描角色名生成术语候选（去重 + 过滤非术语），
-    # 并扫描 [variable] 写入禁翻表。默认开着——用户不想每次手点两个按钮。
+    # 抽取后顺手准备禁翻表：扫描 [variable] 抓进禁翻表。默认开着。
+    # 注意：该字段今后只控制禁翻表，不再触发任何术语/人名抽取。
     onekey_prepare_lexicon: bool = True
+    # 抽取后用 Agent 提取术语与人名候选。默认关闭：这一步会调用付费模型，
+    # 旧配置里的 onekey_prepare_lexicon=True 不会被当成同意。
+    onekey_prepare_glossary: bool = False
 
     # 角色 / 世界观工作台
     renpy_workbench_worldbook_enable: bool = False
