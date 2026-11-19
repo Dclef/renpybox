@@ -110,6 +110,11 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 ## Recent Updates 📅
 
+- 2026-11-19 v0.9.13:
+  - Added the Bilibili free translation interface (Index-Translate-35B-A3B): no API key required; select it directly in **API**
+  - New setups now default to Microsoft Bing Translate (Free); existing configurations keep their chosen interface
+  - Fixed Bing free translation returning an empty response after the mainland-China hostname redirect; interface tests no longer fail with NoneType / xpath errors
+
 - 2026-11-03 v0.9.11:
   - The Agent assistant now receives the glossary, do-not-translate list, and character cards per batch when it translates entries itself: previously the one-click flow enforced the glossary strictly while Agent-translated entries ignored it entirely, so a single project could end up with two different term translations; entries that ignore the glossary are now rolled back with the missing terms listed.
   - Agent write-back now applies the post-translation replacement rules, closing gaps in punctuation and name consistency between the two paths.
