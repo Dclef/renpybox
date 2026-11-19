@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ssl
 from typing import Any, Optional
 
 
@@ -55,7 +56,13 @@ def proxies_for_url(url: Optional[str]) -> Optional[dict[str, str]]:
     return {"http": url, "https": url}
 
 
-def create_httpx_client(proxy_url: Optional[str], timeout: Any = None, *, trust_env: bool = True) -> Any:
+def create_httpx_client(
+    proxy_url: Optional[str],
+    timeout: Any = None,
+    *,
+    trust_env: bool = True,
+    verify: bool | ssl.SSLContext = True,
+) -> Any:
     """按代理地址创建 httpx.Client。
 
     httpx 0.28 起 ``proxies=`` 已被移除，只能传 ``proxy=``（单值）。
@@ -64,7 +71,7 @@ def create_httpx_client(proxy_url: Optional[str], timeout: Any = None, *, trust_
     """
     import httpx
 
-    kwargs: dict[str, Any] = {"trust_env": trust_env}
+    kwargs: dict[str, Any] = {"trust_env": trust_env, "verify": verify}
     if timeout is not None:
         kwargs["timeout"] = timeout
     if proxy_url:

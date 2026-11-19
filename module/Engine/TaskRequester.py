@@ -1,6 +1,5 @@
 import importlib
 import json
-import os
 import re
 import threading
 import time
@@ -11,6 +10,7 @@ from module.Secret.SecretStore import SecretStore
 from base.VersionManager import VersionManager
 from base.compat import StrEnum
 from module.Config import Config
+from module.Engine.API import BingTranslate, IndexTranslate
 from module.Engine.DegradationDetector import DegradationDetector
 from module.Engine.Engine import Engine
 from module.Localizer.Localizer import Localizer
@@ -54,7 +54,6 @@ openai = _LazyModule("openai")
 genai = _LazyModule("google.genai")
 types = _LazyModule("google.genai.types")
 pygtrans = _LazyModule("pygtrans")
-translators = _LazyModule("translators")
 
 
 class TaskRequester(Base):
@@ -83,6 +82,14 @@ class TaskRequester(Base):
     # 密钥索引
     API_KEY_INDEX: int = 0
     MAX_REQUEST_RETRY: int = 3
+    FREE_QUOTA_NOTIFIED: set[str] = set()
+    RE_FREE_QUOTA = re.compile(
+        r"\b(?:too many (?:requests|429)|rate[ _-]?limit(?:ed|ing)?|resource[ _-]exhausted|"
+        r"quota(?:[ _-](?:exceeded|exhausted|limit))?|request limit|unusual traffic|"
+        r"throttl(?:ed|ing)|(?:http(?: error)?|status(?: code)?|error)[:= ]*429)\b|"
+        r"限流|频率限制|请求(?:过多|过于频繁|次数超限)|请求频繁|配额|额度(?:不足|已用完|耗尽|限制|超限)",
+        re.IGNORECASE,
+    )
     DEFAULT_MAX_OUTPUT_TOKENS: int = 4 * 1024
     GOOGLE_GEMINI_25_FLASH_MAX_OUTPUT_TOKENS: int = 16 * 1024
     TRANSLATION_RESULT_SCHEMA: dict[str, Any] = {
@@ -399,6 +406,8 @@ class TaskRequester(Base):
         cls.CANCEL_EVENT.set()
         cls.close_all_clients()
         cls.CANCEL_EVENT.clear()
+        with cls.LOCK:
+            cls.FREE_QUOTA_NOTIFIED.clear()
         cls._prune_cancelled_threads()
 
     @classmethod
@@ -570,7 +579,10 @@ class TaskRequester(Base):
 
         # 显式代理（以及「跟随系统代理」的 trust_env）必须落到 SDK 自己的 httpx
         # 客户端上，否则「网络代理」设置对 OpenAI / Anthropic / Google 全都不生效。
-        http_client = create_httpx_client(proxy_url, default_http_timeout(timeout))
+        if format == Base.APIFormat.INDEX_TRANSLATE:
+            http_client = create_httpx_client(proxy_url, default_http_timeout(timeout), verify = IndexTranslate.tls_context())
+        else:
+            http_client = create_httpx_client(proxy_url, default_http_timeout(timeout))
 
         if format == Base.APIFormat.SAKURALLM:
             client = openai.OpenAI(
@@ -783,8 +795,7 @@ class TaskRequester(Base):
                     self.last_request_metrics["provider_ms"] = self.last_request_metrics.get("provider_ms", 0) + (time.perf_counter() - provider_started_at) * 1000
                     self.last_request_metrics["logical_request_ms_samples"] = [round((time.perf_counter() - request_started_at) * 1000, 3)]
             except openai.BadRequestError as e:
-                self.last_error_message = str(e)
-                self.error(f"{Localizer.get().log_task_fail}", e)
+                self._record_request_failure(e)
                 self.warning("[API-REQUEST] 请求参数错误，不再重试")
                 return finish_result((True, None, None, None, None), failed=True)
             skip = last_result[0]
@@ -836,6 +847,36 @@ class TaskRequester(Base):
             return False
         return bool(cls.is_cancel_requested())
 
+    def _free_translation_quota_hint(self, exc: BaseException) -> str:
+        fmt = self.platform.get("api_format")
+        if fmt not in Base.MACHINE_API_FORMATS and not (
+            fmt == Base.APIFormat.INDEX_TRANSLATE and IndexTranslate.is_public_url(self.platform.get("api_url"))
+        ):
+            return ""
+
+        response = getattr(exc, "response", None)
+        status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+        if status == 429 or self.RE_FREE_QUOTA.search(str(exc)):
+            return Localizer.get().free_translation_quota_hint
+        # Some free services return HTTP 403 with a rate-limit explanation in the body.
+        if (
+            status == 403 and fmt in Base.MACHINE_API_FORMATS
+            and self.RE_FREE_QUOTA.search(str(getattr(response, "text", ""))[:4096])
+        ):
+            return Localizer.get().free_translation_quota_hint
+        return ""
+
+    def _notify_free_translation_quota(self, hint: str) -> None:
+        cls = type(self)
+        if cls.is_cancel_requested() or Engine.get().get_status() == Engine.Status.TESTING:
+            return  # Interface tests already show the hint in their result banner.
+        fmt = str(self.platform.get("api_format"))
+        with cls.LOCK:
+            if fmt in cls.FREE_QUOTA_NOTIFIED:
+                return
+            cls.FREE_QUOTA_NOTIFIED.add(fmt)
+        self.emit(Base.Event.APP_TOAST_SHOW, {"type": Base.ToastType.WARNING, "message": hint})
+
     def _record_request_failure(
         self,
         exc: BaseException,
@@ -849,9 +890,13 @@ class TaskRequester(Base):
             self.last_error_message = ""
             self.debug("[API-REQUEST] 用户停止任务，忽略关闭客户端产生的异常")
             return
-        self.last_error_message = str(exc)
+        hint = self._free_translation_quota_hint(exc)
+        self.last_error_message = f"{hint}\n{exc}" if hint else str(exc)
         self._recover_closed_cached_client(exc, client = client, key = key)
-        self.error(f"{Localizer.get().log_task_fail}", exc)
+        message = Localizer.get().log_task_fail
+        self.error(f"{message} {hint}" if hint else message, exc)
+        if hint:
+            self._notify_free_translation_quota(hint)
 
     def _recover_closed_cached_client(
         self,
@@ -1002,19 +1047,21 @@ class TaskRequester(Base):
         *,
         response_shape: ResponseShape = "none",
     ) -> dict:
+        is_index_translate = self.platform.get("api_format") == Base.APIFormat.INDEX_TRANSLATE
         args: dict = args | {
             "model": self.platform.get('model'),
             "messages": messages,
             "max_tokens": self._output_token_limit(),
-            "extra_headers": {
+        }
+        if not is_index_translate:
+            args["extra_headers"] = {
                 "User-Agent": f"Renpybox/{VersionManager.get().get_version()} (https://github.com/dclef/RenpyBox)"
             }
-        }
 
         model = str(self.platform.get('model') or "")
 
         # OpenAI O-Series 模型兼容性处理
-        if (
+        if not is_index_translate and (
             self.platform.get('api_url').startswith("https://api.openai.com") or
             __class__.RE_O_SERIES.search(model) is not None
         ):
@@ -1023,8 +1070,12 @@ class TaskRequester(Base):
 
         extra_body: dict[str, Any] = {}
 
+        if is_index_translate:
+            # 官方客户端关闭思考，避免输出推理过程而非译文。
+            args.setdefault("temperature", 0.0)
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False}
         # GPT-5 系列支持 reasoning_effort 多挡位控制。
-        if __class__.RE_GPT5.search(model) is not None:
+        elif __class__.RE_GPT5.search(model) is not None:
             if thinking_level == ThinkingLevel.OFF:
                 extra_body["reasoning_effort"] = "none"
             else:
@@ -1104,6 +1155,8 @@ class TaskRequester(Base):
                 args,
                 response_shape = response_shape,
             )
+            if self.platform.get("api_format") == Base.APIFormat.INDEX_TRANSLATE:
+                openai_args["extra_headers"] = IndexTranslate.openai_headers(client_key)
             openai_args["stream"] = True
             openai_args["stream_options"] = {"include_usage": True}
 
@@ -1726,6 +1779,10 @@ class TaskRequester(Base):
                 target = target_lang,
             )
             if not isinstance(results, list):
+                # pygtrans returns a Null wrapper instead of raising on HTTP errors.
+                response = getattr(results, "response", None)
+                if response is not None:
+                    response.raise_for_status()
                 raise ValueError(f"GoogleFree 请求失败: {results}")
             dsts = [str(item.translatedText) for item in results]
             if len(dsts) != len(srcs):
@@ -1760,13 +1817,6 @@ class TaskRequester(Base):
             return True, None, None, None, None
 
         try:
-            # 避免 translators 导入时的地理位置检测发起额外网络请求
-            os.environ.setdefault("translators_default_region", "CN")
-            try:
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            except Exception:
-                pass
             source_lang, target_lang = self._get_translators_language_codes()
 
             dsts: list[str] = []
@@ -1774,21 +1824,14 @@ class TaskRequester(Base):
                 if __class__.is_cancel_requested():
                     return True, None, None, None, None
                 # ponytail: translators 库只有单条接口，逐条请求；失败由外层重试/拆批兜底
-                dsts.append(str(translators.translate_text(
+                dsts.append(BingTranslate.translate_text(
                     text,
-                    translator = "bing",
                     from_language = source_lang,
                     to_language = target_lang,
                     timeout = self.config.request_timeout,
-                    if_print_warning = False,
-                )))
+                ))
         except Exception as e:
-            if __class__.is_cancellation_side_effect(e):
-                self.last_error_message = ""
-                self.debug("[API-REQUEST] 用户停止任务，忽略关闭客户端产生的异常")
-            else:
-                self.last_error_message = str(e)
-                self.error(f"{Localizer.get().log_task_fail}", e)
+            self._record_request_failure(e)
             return True, None, None, None, None
 
         input_tokens = sum(len(v) for v in srcs)

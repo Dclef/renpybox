@@ -195,6 +195,7 @@ class LocalizerEN(LocalizerZH):
     log_expert_mode: str = "Expert Mode Enabled …"
     log_api_test_fail: str = "API test failed … "
     log_task_fail: str = "Translation task failed …"
+    free_translation_quota_hint: str = "The free translation service hit a rate or quota limit. Try again later, or change your public IP or proxy endpoint and retry."
     log_read_file_fail: str = "File reading failed …"
     log_write_file_fail: str = "File writing failed …"
     log_read_cache_file_fail: str = "Failed to read cached data from file …"

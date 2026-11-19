@@ -75,6 +75,11 @@ class APITester(Base):
                     "content": "将下面的日文文本翻译成中文：魔導具師ダリヤはうつむかない",
                 },
             ]
+        elif platform.get("api_format") == Base.APIFormat.INDEX_TRANSLATE:
+            messages = [{
+                "role": "user",
+                "content": "请将以下日语文本翻译为中文，直接输出译文。\n\nおはようございます。",
+            }]
         else:
             messages = [
                 {

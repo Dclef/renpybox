@@ -22,6 +22,7 @@ except (ImportError, Exception):
     TRANSLATORS_AVAILABLE = False
 
 from base.LogManager import LogManager
+from module.Engine.API import BingTranslate
 
 
 class TranslateResponse:
@@ -364,14 +365,19 @@ class FastTranslator:
                 if not text or not text.strip():
                     return index, text, False, None
 
-                res = ts.translate_text(
-                    text,
-                    translator=engine,
-                    from_language=from_lang,
-                    to_language=to_lang,
-                    timeout=15,
-                    if_print_warning=False,
-                )
+                if engine == "bing":
+                    res = BingTranslate.translate_text(
+                        text, from_language=from_lang, to_language=to_lang, timeout=15,
+                    )
+                else:
+                    res = ts.translate_text(
+                        text,
+                        translator=engine,
+                        from_language=from_lang,
+                        to_language=to_lang,
+                        timeout=15,
+                        if_print_warning=False,
+                    )
                 
                 if res and res != text:
                     return index, res, False, None

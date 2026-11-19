@@ -40,6 +40,7 @@ class Base():
         GOOGLE = "Google"
         ANTHROPIC = "Anthropic"
         SAKURALLM = "SakuraLLM"
+        INDEX_TRANSLATE = "IndexTranslate"
         GOOGLEFREE = "GoogleFree"
         BING = "Bing"
 

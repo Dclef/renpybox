@@ -2,11 +2,14 @@ from types import SimpleNamespace
 
 import openai
 import pytest
+import requests
 
 from base.Base import Base
 from base.BaseLanguage import BaseLanguage
 from module.Config import Config
+from module.Engine.Engine import Engine
 from module.Engine.TaskRequester import TaskRequester, ThinkingLevel
+from module.Localizer.Localizer import Localizer
 
 
 class _ClosableStream:
@@ -344,3 +347,46 @@ def test_request_googlefree_batch_roundtrip(monkeypatch: pytest.MonkeyPatch) -> 
     assert "T:hello" in response_result
     assert "T:world" in response_result
     assert input_tokens > 0 and output_tokens > 0
+
+
+@pytest.mark.parametrize("provider", [Base.APIFormat.GOOGLEFREE, Base.APIFormat.BING])
+def test_free_translation_rate_limit_is_visible_and_does_not_spam(monkeypatch, provider):
+    requester = _googlefree_requester()
+    requester.platform["api_format"] = provider
+    response = requests.Response()
+    response.status_code = 429
+    response.url = "https://example.invalid/translate"
+    response.reason = "Too Many Requests"
+    client = SimpleNamespace(translate=lambda *args, **kwargs: SimpleNamespace(response=response))
+    monkeypatch.setattr(TaskRequester, "get_client", classmethod(lambda cls, **kwargs: client))
+    monkeypatch.setattr(
+        "module.Engine.TaskRequester.BingTranslate.translate_text",
+        lambda *args, **kwargs: response.raise_for_status(),
+    )
+    monkeypatch.setattr(TaskRequester, "is_cancel_requested", classmethod(lambda cls: False))
+    monkeypatch.setattr(TaskRequester, "FREE_QUOTA_NOTIFIED", set())
+    monkeypatch.setattr(Engine, "get", classmethod(lambda cls: SimpleNamespace(get_status=lambda: Engine.Status.TRANSLATING)))
+    toasts = []
+    logged = []
+    monkeypatch.setattr(requester, "emit", lambda event, data: toasts.append((event, data)))
+    monkeypatch.setattr(requester, "error", lambda message, exc: logged.append(message))
+
+    messages = [{"role": "user", "content": '```jsonline\n{"0": "hello"}\n```'}]
+    call = requester.request_bing if provider == Base.APIFormat.BING else requester.request_googlefree
+    for _ in range(2):
+        assert call(messages)[0] is True
+    hint = Localizer.get().free_translation_quota_hint
+    assert hint in requester.last_error_message
+    assert "429" in requester.last_error_message
+    assert len(logged) == 2 and all(hint in message for message in logged)
+    assert toasts == [(Base.Event.APP_TOAST_SHOW, {"type": Base.ToastType.WARNING, "message": hint})]
+
+
+def test_quota_hint_distinguishes_access_errors_and_nonfree_providers():
+    requester = _googlefree_requester()
+    assert requester._free_translation_quota_hint(RuntimeError("QUOTA_EXCEEDED"))
+    assert requester._free_translation_quota_hint(RuntimeError("请求过于频繁"))
+    assert not requester._free_translation_quota_hint(RuntimeError("403: Forbidden"))
+    assert not requester._free_translation_quota_hint(RuntimeError("SSL connection timeout"))
+    requester.platform["api_format"] = Base.APIFormat.OPENAI
+    assert not requester._free_translation_quota_hint(RuntimeError("HTTP 429: too many requests"))

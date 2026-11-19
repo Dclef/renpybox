@@ -193,6 +193,7 @@ class LocalizerZH():
     log_expert_mode: str = "专家模式已启用 …"
     log_api_test_fail: str = "接口测试失败 … "
     log_task_fail: str = "翻译任务失败 …"
+    free_translation_quota_hint: str = "免费翻译请求触发限流或额度限制。请稍后重试；若仍失败，可切换网络出口 IP 或代理节点后再试。"
     log_read_file_fail: str = "文件读取失败 …"
     log_write_file_fail: str = "文件写入失败 …"
     log_read_cache_file_fail: str = "从文件读取缓存数据失败 …"

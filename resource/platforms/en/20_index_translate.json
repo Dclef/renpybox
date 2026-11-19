@@ -1,0 +1,16 @@
+{
+    "group": "online",
+    "id": 20,
+    "name": "Bilibili (Free)",
+    "api_url": "https://index-translate.bilibili.com/v1",
+    "api_key": [],
+    "api_format": "IndexTranslate",
+    "model": "Index-Translate-35B-A3B",
+    "thinking": {
+        "level": "OFF"
+    },
+    "top_p": 0.95,
+    "temperature": 0.0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0
+}

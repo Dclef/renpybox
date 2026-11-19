@@ -41,7 +41,7 @@ class PlatformWrite(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     name: str | None = Field(default = None, min_length = 1, max_length = 128)
     group: Literal["local", "machine", "online", "custom"] | None = None
-    api_format: Literal["OpenAI", "Google", "Anthropic", "SakuraLLM", "GoogleFree", "Bing"] | None = None
+    api_format: Literal["OpenAI", "Google", "Anthropic", "SakuraLLM", "IndexTranslate", "GoogleFree", "Bing"] | None = None
     api_url: str | None = Field(default = None, max_length = 2048)
     model: str | None = Field(default = None, max_length = 256)
     thinking_level: Literal["OFF", "LOW", "MEDIUM", "HIGH", "MAX"] | None = None
@@ -192,7 +192,7 @@ def load_platform_presets() -> list[dict]:
     if not os.path.isdir(path):
         return []
     presets: list[dict] = []
-    # 文件名前缀（0_sakura → 19_bing）决定展示顺序，与 Qt5 的 id 排序一致。
+    # 文件名前缀决定预设的展示顺序。
     entries = sorted(
         (item for item in os.scandir(path) if item.is_file() and item.name.endswith(".json")),
         key = lambda item: item.name,

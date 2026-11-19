@@ -51,8 +51,8 @@ def _platform(name: str, **overrides) -> dict:
 def test_load_default_platforms_generates_fresh_identities() -> None:
     platforms = load_default_platforms()
 
-    assert len(platforms) == 16
-    assert [item["id"] for item in platforms] == list(range(16))
+    assert len(platforms) == 17
+    assert [item["id"] for item in platforms] == list(range(17))
     assert platforms[0]["name"] == "SakuraLLM"
 
     identities = []
@@ -252,7 +252,7 @@ def test_seed_default_platforms_fills_null_list_and_writes_config(monkeypatch, t
     assert seed_default_platforms(config) is True
 
     saved = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
-    assert len(saved["platforms"]) == 16
+    assert len(saved["platforms"]) == 17
     assert saved["platforms"][0]["name"] == "SakuraLLM"
     # 第二次启动不再改动
     assert seed_default_platforms(Config().load()) is False
@@ -283,3 +283,42 @@ def test_seed_default_platforms_propagates_save_failure(monkeypatch, tmp_path) -
     monkeypatch.setattr(config, "save", fail_save)
     with pytest.raises(PermissionError):
         seed_default_platforms(config)
+
+
+def test_normalize_adds_index_translate_without_reordering_existing_ids() -> None:
+    defaults = load_default_platforms()
+    # A manually added online platform can already be after a custom one.
+    platforms = [
+        _platform("自定义已启用", id=0, group="custom"),
+        _platform("另一个在线服务", id=1),
+        *(copy.deepcopy(item) for item in defaults if item["api_format"] in {"GoogleFree", "Bing"}),
+    ]
+    for index, item in enumerate(platforms):
+        item["id"] = index
+        item["thinking"] = {"level": "OFF"}
+        SecretStore.ensure_platform_identity(item, preserve_legacy=False)
+    previous = copy.deepcopy(platforms)
+
+    assert normalize_platforms(platforms, defaults)
+    assert platforms[:-1] == previous
+    added = platforms[-1]
+    assert added["id"] == len(previous)
+    assert added["api_format"] == "IndexTranslate"
+    assert added["api_key"] == []
+    assert not normalize_platforms(platforms, defaults)
+
+
+def test_old_bilibili_preset_name_is_migrated_without_renaming_custom_entry() -> None:
+    platforms = load_default_platforms()
+    normalize_platforms(platforms)
+    original = next(item for item in platforms if item["api_format"] == "IndexTranslate")
+    original["name"] = "哔哩哔哩 Index-Translate（免费）"
+    custom = {**original, "name": "我调好的哔哩哔哩", "id": len(platforms)}
+    platforms.append(custom)
+    original_ids = [item["id"] for item in platforms]
+
+    assert normalize_platforms(platforms)
+    assert original["name"] == "哔哩哔哩（免费）"
+    assert custom["name"] == "我调好的哔哩哔哩"
+    assert [item["id"] for item in platforms] == original_ids
+    assert not normalize_platforms(platforms)
