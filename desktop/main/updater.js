@@ -43,7 +43,7 @@ export function friendlyUpdateError(error) {
     case 'not-published': return 'GitHub 尚未发布可用的桌面版本，发布后可检查更新。';
     case 'rate-limited': return 'GitHub 接口访问受限（可能触发频率限制），请稍后重试。';
     case 'network': return `无法连接 GitHub：${error.message || '网络不可用'}`;
-    case 'download': return `下载更新失败：${error.message || '网络中断'}`;
+    case 'download': return `下载更新失败：${error.message || '网络中断'}（已下载部分已保留，重试会自动续传）`;
     case 'install': return `启动安装程序失败：${error.message || '未知原因'}`;
     default: return error?.message || '更新失败，请重试。';
   }
@@ -68,17 +68,29 @@ async function defaultRequestJson(url, fetchImpl = fetch) {
  *
  * 直连 GitHub 资产常被墙（objects.githubusercontent.com），这里按候选顺序
  * 依次尝试：直连 → 公共镜像。第一个完整通过校验的即成功。
+ *
+ * 同一候选最多试 3 次（1s/2s/4s 退避，封顶 8s）：中断后 .part 会留下，
+ * 下一次尝试自动带 Range 续传，所以重试不会从零重下几百 MB。
+ * 403/404 这类换镜像才有用的错误（retryable === false）立刻跳到下一个候选，
+ * 用户主动取消（AbortError）立刻抛出。
  */
-async function defaultDownloadFile(url, destination, options = {}) {
-  const { fetchImpl = fetch, onProgress, signal, expectedSize, expectedDigest } = options;
+export async function downloadWithMirrors(url, destination, options = {}) {
+  const {
+    fetchImpl = fetch, onProgress, signal, expectedSize, expectedDigest,
+    sleepImpl = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  } = options;
   const candidates = downloadCandidates(url);
   let lastError;
   for (const candidate of candidates) {
-    try {
-      return await downloadInstaller(candidate, destination, { fetchImpl, onProgress, signal, expectedSize, expectedDigest });
-    } catch (error) {
-      lastError = error;
-      if (error?.name === 'AbortError') throw error;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await downloadInstaller(candidate, destination, { fetchImpl, onProgress, signal, expectedSize, expectedDigest });
+      } catch (error) {
+        lastError = error;
+        if (error?.name === 'AbortError') throw error;
+        if (error?.retryable === false || attempt === 3) break;
+        await sleepImpl(Math.min(8000, 1000 * 2 ** (attempt - 1)));
+      }
     }
   }
   throw lastError ?? Object.assign(new Error('没有可用的下载地址'), { kind: 'download' });
@@ -127,7 +139,7 @@ export function createDesktopUpdater({
   repo = DEFAULT_UPDATE_REPO,
   fetchImpl = fetch,
   requestJson = url => defaultRequestJson(url, fetchImpl),
-  downloadFile = defaultDownloadFile,
+  downloadFile = downloadWithMirrors,
   launchInstaller = defaultLaunchInstaller,
   /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
   installDir = '',
