@@ -129,15 +129,6 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
   - After binding, error repair, HTML import, direct `tl/*.rpy` translation, game mod, and similar pages auto-fill the project directory; stopping and restarting source translation resumes instead of rescanning and duplicating backups.
   - Fixed creating an empty cache when the bound project file was moved or deleted; removed cloud-sync directory reminders.
 
-- 2026-10-22 v0.9.5:
-  - Parallel proofreading now stages changes and saves once; script repair adds Ren'Py Lint re-checks and allows longer waits on large projects.
-  - `.rbox` files can be opened with a double-click and show an import confirmation; the installer registers the file association and icon.
-
-- 2026-10-20 v0.9.4:
-  - Added `.rbox` snapshots and a guided migration path for older SQLite / JSON caches, with compatibility notes, import previews, and backups.
-  - Combined error repair and code formatting into **Script repair**, with safe fixes enabled by default; improved glossary preparation and character / worldbook analysis.
-  - Added combined multi-select proofreading filters and cumulative Agent usage metrics; improved truncated-response recovery and fixed deleted history returning and implicit font scans.
-
 See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
 ## FAQ 📥
