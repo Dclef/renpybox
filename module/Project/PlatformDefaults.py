@@ -8,7 +8,7 @@ Qt5 端（``frontend/Project/PlatformPage.py``）与 Electron sidecar
 
 - 默认接口从 ``resource/platforms/<界面语言>`` 读取，与 Qt5 完全一致；
 - ``normalize_platforms`` 只做字段级修补（思考等级、DeepSeek 旧模型别名、机翻
-  接口补齐、凭据身份、连续编号），不删除用户已有接口；
+  接口与 Index-Translate 预设补齐、凭据身份、连续编号），不删除用户已有接口；
 - 跨版本导入只搬运配置字段与 ``credential_id``：密钥本体存在 Windows 凭据管理器里
   且是全局的，只要身份一致就能自动认领，不必搬运密钥；旧配置里残留的明文密钥由
   ``SecretStore.migrate_platforms`` 落进凭据库后再从配置中清空。
@@ -23,6 +23,7 @@ from typing import Callable
 
 from base.Base import Base
 from base.PathHelper import get_resource_path
+from module.Engine.API import IndexTranslate
 from module.Localizer.Localizer import Localizer
 from module.Project.PlatformNaming import deduplicate_platform_name
 from module.Secret.SecretStore import SecretStore
@@ -32,6 +33,12 @@ from module.Secret.SecretStore import SecretStore
 DEEPSEEK_OFFICIAL_URLS = ("https://api.deepseek.com", "https://api.deepseek.com/v1")
 DEEPSEEK_LEGACY_MODEL = "deepseek-chat"
 DEEPSEEK_CURRENT_MODEL = "deepseek-v4-flash"
+
+# 只迁移曾经发出的默认名称，不覆盖用户自定义名称。
+INDEX_TRANSLATE_LEGACY_NAMES = {
+    "哔哩哔哩 Index-Translate（免费）": "哔哩哔哩（免费）",
+    "Bilibili Index-Translate (Free)": "Bilibili (Free)",
+}
 
 # 思考等级合法值；旧版 bool 字段按 True -> HIGH 迁移。
 THINKING_LEVELS = ("OFF", "LOW", "MEDIUM", "HIGH", "MAX")
@@ -89,7 +96,7 @@ def normalize_platforms(platforms: list[dict], defaults: list[dict] | None = Non
     与 Qt5 ``PlatformPage.ensure_default_platforms`` 行为一致：补齐凭据身份、
     迁移 DeepSeek 旧模型别名、统一思考字段、补齐缺失的机翻接口、连续编号。
 
-    ``defaults`` 用于补齐机翻接口，缺省时读取内置默认接口；显式传入空列表表示
+    ``defaults`` 用于补齐机翻接口及 Index-Translate 预设，缺省时读取内置默认接口；显式传入空列表表示
     不做补齐（Qt5 页面沿用这一扩展点，便于测试注入固定模板）。
     """
     if not isinstance(platforms, list):
@@ -148,15 +155,36 @@ def normalize_platforms(platforms: list[dict], defaults: list[dict] | None = Non
     if len(ids) != len(set(ids)):
         changed = True
 
-    if not changed:
-        return False
+    # 仅新增或更名预设时保留已有接口的顺序与 id，避免更改当前启用的接口。
+    reindex = changed
+    public_index_platforms = [
+        item for item in platforms
+        if isinstance(item, dict)
+        and item.get("api_format") == Base.APIFormat.INDEX_TRANSLATE
+        and IndexTranslate.is_public_url(item.get("api_url"))
+    ]
+    for item in public_index_platforms:
+        new_name = INDEX_TRANSLATE_LEGACY_NAMES.get(str(item.get("name", "")))
+        if new_name is not None:
+            item["name"] = deduplicate_platform_name(new_name, platforms)
+            changed = True
+    if not public_index_platforms:
+        template = next((item for item in defaults if item.get("api_format") == Base.APIFormat.INDEX_TRANSLATE), None)
+        if template is not None:
+            platform = copy.deepcopy(template)
+            SecretStore.ensure_platform_identity(platform, preserve_legacy = False)
+            platform["id"] = max((item.get("id", 0) for item in platforms if isinstance(item, dict)), default = -1) + 1
+            platform["name"] = deduplicate_platform_name(platform["name"], platforms)
+            platforms.append(platform)
+            changed = True
 
-    # 非自定义接口在前，自定义接口在后；并重新连续编号 id
-    platforms.sort(key = lambda item: (1 if is_custom_platform(item) else 0, item.get("id", 0)))
-    for index, item in enumerate(platforms):
-        item["id"] = index
+    if reindex:
+        # 非自定义接口在前，自定义接口在后；并重新连续编号 id
+        platforms.sort(key = lambda item: (1 if is_custom_platform(item) else 0, item.get("id", 0)))
+        for index, item in enumerate(platforms):
+            item["id"] = index
 
-    return True
+    return changed
 
 
 def seed_default_platforms(config: object) -> bool:
@@ -166,14 +194,19 @@ def seed_default_platforms(config: object) -> bool:
     播种，两端因此表现不一致。启动时调用本函数即可对齐。
     """
     platforms = getattr(config, "platforms", None)
+    fresh = not isinstance(platforms, list) or not platforms
     if not isinstance(platforms, list):
         # platforms 为 null / 非法：整份换成内置默认接口
-        config.platforms = load_default_platforms()
-        normalize_platforms(config.platforms)
-        config.save(strict = True)
-        return True
+        platforms = config.platforms = load_default_platforms()
 
-    if normalize_platforms(platforms):
+    changed = normalize_platforms(platforms)
+    if fresh:
+        # 新配置默认必应，但不覆盖已配置用户主动选用的接口。
+        bing = next((item for item in platforms if item.get("api_format") == Base.APIFormat.BING), None)
+        if bing is not None:
+            config.activate_platform = bing["id"]
+
+    if changed or fresh:
         config.save(strict = True)
         return True
 

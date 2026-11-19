@@ -1455,6 +1455,7 @@
   .platform-row-actions { display: flex; flex-shrink: 0; gap: 0; }
   .rb-platform-card-meta { display: flex; align-items: center; gap: 8px; color: var(--rb-text-secondary); font-size: 12px; }
   .rb-platform-card-meta > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-platform-card-note { margin: 0; color: var(--rb-text-secondary); font-size: 12px; }
   .rb-platform-card-meta i { width: 7px; height: 7px; background: var(--rb-accent); border-radius: 50%; }
   .rb-platform-badge { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--rb-surface-subtle); }
   .platform-editor { display: flex; flex-direction: column; gap: 12px; width: 100%; min-width: 0; margin: 0; padding: 0; }

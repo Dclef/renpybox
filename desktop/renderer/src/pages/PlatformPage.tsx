@@ -66,7 +66,7 @@ const GROUPS = [
   { key: 'online', title: '在线大模型', description: '官方与云端服务', icon: Cloud },
   { key: 'custom', title: '自定义接口', description: '兼容 OpenAI 等协议', icon: Settings },
 ];
-const FORMATS = ['OpenAI', 'Google', 'Anthropic', 'SakuraLLM', 'GoogleFree', 'Bing'];
+const FORMATS = ['OpenAI', 'Google', 'Anthropic', 'SakuraLLM', 'IndexTranslate', 'GoogleFree', 'Bing'];
 const PARAMETERS = [
   { key: 'top_p', label: 'Top P', min: 0, max: 1 },
   { key: 'temperature', label: '温度', min: 0, max: 2 },
@@ -508,6 +508,9 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                         </div>
                       </div>
                       <div className="rb-platform-card-meta"><span className="rb-platform-badge">{platform.api_format || '—'}</span><span>{modelLabel(platform)}</span>{isActive && <i aria-label="使用中" title="使用中" />}</div>
+                      {platform.api_format === 'GoogleFree' ? (
+                        <p className="rb-platform-card-note">{t('platform_google_free_proxy')}</p>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -665,7 +668,7 @@ export function PlatformPage(props: { state: AppState; onDirtyChange?: (dirty: b
                 清空此接口已保存的密钥
               </Checkbox>
             ) : null}
-            {!machine && editor.api_format !== 'SakuraLLM' ? (
+            {!machine && !['SakuraLLM', 'IndexTranslate'].includes(editor.api_format) ? (
               <Form.Item label="思考等级" style={{ marginBottom: 0 }}>
                 <Select
                   allowClear={false}

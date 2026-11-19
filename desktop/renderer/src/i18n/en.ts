@@ -467,6 +467,7 @@ export const en: Record<keyof typeof zh, string> = {
   rules_defaults_confirm: "Replace this list with the engine defaults? Save to apply.",
   proofreading_checking: 'Checking {checked} / {total} entries; matches appear as they are found…',
   platform_test: 'Test connection',
+  platform_google_free_proxy: 'A proxy is usually needed in mainland China.',
   platform_edit: 'Edit',
   platform_parameters: 'Model parameters',
   platform_add: 'Add Platform',

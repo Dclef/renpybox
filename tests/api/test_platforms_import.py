@@ -213,11 +213,7 @@ def test_import_rolls_back_when_save_fails(monkeypatch, tmp_path) -> None:
 
 
 def test_import_after_startup_seeding_reclaims_legacy_identities(monkeypatch, tmp_path) -> None:
-    """复现用户场景：全新安装启动时播种了 16 条默认接口，随后导入旧版配置。
-
-    播种出来的条目没有密钥，应当认领旧版身份而不是再追加一份同名接口 ——
-    否则列表会翻倍到 32 条，而且哪一条都读不到原来的密钥。
-    """
+    """全新安装启动播种后，导入不同名的旧版接口，仍能找回旧凭据。"""
     store = SecretStore(MemoryBackend())
     monkeypatch.setattr(SecretStore, "_instance", store)
 
@@ -238,6 +234,7 @@ def test_import_after_startup_seeding_reclaims_legacy_identities(monkeypatch, tm
         from module.Project.PlatformDefaults import load_default_platforms
 
         config.platforms = load_default_platforms()
+        seeded_count = len(config.platforms)
         config.save(strict = True)
 
         # 旧版那 16 条与默认模板不同名，会全部作为新条目导入
@@ -245,9 +242,9 @@ def test_import_after_startup_seeding_reclaims_legacy_identities(monkeypatch, tm
 
         assert body["imported"] == 16
         assert body["skipped"] == 0
-        assert len(config.platforms) == 32
-        # 追加的条目拿新编号，不与已播种的 0..15 撞号
-        assert [item["id"] for item in config.platforms] == list(range(32))
+        assert len(config.platforms) == seeded_count + len(legacy)
+        # 追加的条目拿新编号，不与已播种的列表撞号
+        assert [item["id"] for item in config.platforms] == list(range(seeded_count + len(legacy)))
         # 旧版启用的是「接口 3」，归一化重编号后仍指向同一条（不是第 3 条）
         active = config.get_platform(config.activate_platform)
         assert active["name"] == "接口 3"

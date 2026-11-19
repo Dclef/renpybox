@@ -52,7 +52,7 @@
 - Desktop UI: Translation Task, Proofreading, Ren'Py Toolbox, Character / Worldbook Workbench, and Agent Assistant; light / dark themes and Chinese / English UI (some strings may still appear in Chinese).
 - One-click translation wizard: automatically detects `game/tl/<lang>` and supports incremental or full extraction and resume from checkpoints. On the task page you can Stop, Continue Task, Write translation files, and Retry failed items.
 - Glossary and do-not-translate management: extract character names, manage local glossaries and preserved-text lists, protect text, apply replacements, and clean mixed-language text. The workbench maintains character cards and worldbook entries, with prompt preview and editing.
-- Free translation: built-in Google and Bing free engines, no API key required (network access to those services is required); usable for batch translation and the local glossary.
+- Free translation: built-in Microsoft Bing, Google, and Bilibili interfaces require no API key. Bing and Google also work with the local glossary.
 - Concurrent engines: built-in templates for OpenAI, DeepSeek, Anthropic, Google, Volcano Engine, and more; custom endpoints can be added under API. Adjust concurrent-task and RPM limits in Basic Settings.
 - High-fidelity formatting: AST completion, missing-text scanning, and `miss_patch` support generate `replace_text*.rpy` patches while preserving existing translations.
 - Ren'Py toolbox: RPY formatting, indentation and quote checks and repairs, trailing-space cleanup, batch font replacement, RPA unpacking and packing, RPYC decompilation, language entry and default-language settings, and Android packaging through the Android wrapper workflow.
@@ -102,7 +102,7 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 ## Quick Start
 
-1. In **API**, select or add a translation interface and test it. Free Google / Bing need no API key, but require network access to those services; paid APIs need keys as required by each provider.
+1. In **API**, select or add a translation interface and test it. New setups default to **Microsoft Bing Translate (Free)**. Google Translate (Free) typically needs a proxy in mainland China. **Bilibili (Free)** uses `Index-Translate-35B-A3B` without an API key. If a free service reports a rate limit or quota error, wait and try again or change your public IP or proxy endpoint. If an older version fails a Bing interface test with a `NoneType` / `xpath` error, update RenpyBox. The updated adapter calls `www.bing.com` directly to avoid the empty response caused by the old China hostname redirect.
 2. In **Project Settings**, choose the input folder and languages, or open Toolbox **One-click translation** and select a game folder to prepare text.
 3. Open **Translation Task**, confirm the active API and input / output folders, then start. Use **Stop** and **Continue Task**; failed items can be retried with **Retry failed items**.
 4. Review via Toolbox **Review & polish** or **Open Proofreading** on the task page; when ready, use **Write translation files**. Proofreading does not write game files by itself.

@@ -4,6 +4,8 @@ import urllib.error
 import urllib.request
 
 from base.Base import Base
+from module.Engine.API import IndexTranslate
+from module.ProxySettings import create_httpx_client
 
 
 def list_models(api_url: str, api_key: str, api_format: str) -> list[str]:
@@ -20,8 +22,16 @@ def list_models(api_url: str, api_key: str, api_format: str) -> list[str]:
             result = [getattr(model, "id", "") for model in getattr(models, "data", models)]
     else:
         import openai
-        with openai.OpenAI(api_key=api_key or "no-key-required", base_url=api_url, timeout=30, max_retries=0) as client:
-            models = client.models.list()
+        is_index_translate = api_format == Base.APIFormat.INDEX_TRANSLATE
+        with openai.OpenAI(
+            api_key=api_key or "no-key-required",
+            base_url=api_url,
+            timeout=30,
+            max_retries=0,
+            http_client=create_httpx_client(None, 30, verify=IndexTranslate.tls_context()) if is_index_translate else None,
+        ) as client:
+            options = {"extra_headers": IndexTranslate.openai_headers(api_key)} if is_index_translate else {}
+            models = client.models.list(**options)
             result = [getattr(model, "id", "") for model in getattr(models, "data", models)]
     return sorted({model for model in result if isinstance(model, str) and model.strip()})
 
@@ -77,7 +87,10 @@ def list_model_capabilities(
 
     url = f"{str(api_url or '').rstrip('/')}/models"
     request = urllib.request.Request(url, method="GET")
-    if api_key:
+    is_index_translate = api_format == Base.APIFormat.INDEX_TRANSLATE
+    if is_index_translate:
+        request.add_header("User-Agent", IndexTranslate.USER_AGENT)
+    if api_key and not (is_index_translate and api_key == IndexTranslate.ANONYMOUS_KEY):
         request.add_header("Authorization", f"Bearer {api_key}")
     request.add_header("Accept", "application/json")
     try:

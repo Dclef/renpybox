@@ -465,6 +465,7 @@ export const zh = {
   rules_defaults_confirm: "用引擎内置称呼词替换当前列表？保存后生效。",
   proofreading_checking: '正在检查问题：{checked} / {total} 条，已发现的结果会陆续显示…',
   platform_test: '测试接口',
+  platform_google_free_proxy: '中国大陆通常需要代理（梯子）',
   platform_edit: '编辑',
   platform_parameters: '模型参数',
   platform_add: '新增接口',
