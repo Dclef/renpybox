@@ -20,7 +20,7 @@ import { Sidecar, SIDECAR_PORT, SIDECAR_URL } from './sidecar.js';
 import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
 import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
-import { createDesktopUpdater } from './updater.js';
+import { createDesktopUpdater, readUpdateMirrors } from './updater.js';
 import { createElectronFetch, readProxySettings } from './updater-net.js';
 import { createWindowCloseGuard } from './window-close-guard.js';
 import { APP_DATA_DIR_NAME, migrateLegacyProfile } from './profile-migration.js';
@@ -87,6 +87,9 @@ const updateFetch = createElectronFetch({
 const updater = createDesktopUpdater({
   packaged: !isDev, version: app.getVersion(), log,
   fetchImpl: updateFetch,
+  // 下载镜像同理：每次更新前重读 config.json，用户改完设置不用重启。
+  // 读出来是 null（没配/配坏）时下载层回退内置默认镜像。
+  mirrorsFor: () => readUpdateMirrors(path.join(dataPath, 'config.json'), readFileSync),
   // 安装版把当前 exe 所在目录交给 NSIS，更新时默认装回原目录（便携解压目录同理）。
   installDir: isDev ? '' : path.dirname(app.getPath('exe')),
   tempDir: path.join(dataPath, 'update'),

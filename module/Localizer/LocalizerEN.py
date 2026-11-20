@@ -324,6 +324,12 @@ class LocalizerEN(LocalizerZH):
     app_settings_page_proxy_url: str = "Example - http://127.0.0.1:7890"
     app_settings_page_proxy_url_title: str = "Network Proxy"
     app_settings_page_proxy_url_content: str = "When enabled, network requests use the configured proxy address; leave the address empty to follow the system proxy (takes effect after app restart)"
+    setting_update_mirror_title: str = "Update Mirrors"
+    setting_update_mirror_body: str = "Direct GitHub access is often unavailable, so update downloads try these mirrors in the order listed below; one prefix per line, leave it empty to use the built-in defaults. Mirrors only affect download speed: the installer is still verified with a full SHA-256 checksum, so changing mirrors never weakens security."
+    setting_update_mirror_placeholder: str = "One mirror address per line, e.g. https://fastgit.cc/"
+    setting_update_mirror_reset: str = "Restore Defaults"
+    setting_update_mirror_invalid: str = "Mirror addresses must start with http:// or https:// and end with /"
+    setting_update_mirror_saved: str = "Update mirrors saved"
     app_settings_page_close: str = "The application will close, please confirm …"
 
     # 接口管理

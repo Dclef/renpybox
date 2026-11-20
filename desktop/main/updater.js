@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import { downloadInstaller } from './updater-download.js';
-import { downloadCandidates } from './updater-mirror.js';
+import { GITHUB_DOWNLOAD_MIRRORS, downloadCandidates } from './updater-mirror.js';
 import {
   DESKTOP_TAG_PATTERN,
   compareDesktopVersions,
@@ -62,34 +62,137 @@ async function defaultRequestJson(url, fetchImpl = fetch) {
   return response.json();
 }
 
+/** 首字节超时：候选在这个时间内一个字节都没给，就当作不可用换下一个。 */
+const STALL_TIMEOUT_MS = 12000;
+/** 同一候选最多尝试几次：第二次还失败就换候选（镜像多，没必要死磕一条）。 */
+const MAX_ATTEMPTS = 2;
+/** 退避：1s → 2s，封顶 4s。.part 会保留，重试自动走 Range 续传。 */
+const backoffMs = attempt => Math.min(4000, 1000 * 2 ** (attempt - 1));
+
+const abortedError = cause => Object.assign(
+  new Error(cause?.message || '下载已取消'),
+  { name: 'AbortError', cause },
+);
+
+/** 候选主机名（只用于文案；解析失败就退回原串）。 */
+function hostOf(candidate) {
+  try { return new URL(candidate).host; } catch { return String(candidate); }
+}
+
+/**
+ * 首字节超时的错误：**故意不用 AbortError**。
+ * stall 只是「这条镜像不通」，要换候选继续下；而 AbortError 在上层被当成
+ * 用户取消（回到 available、不报错），两者混在一起会让卡死的镜像静默失败。
+ */
+const stallError = (candidate, stallTimeoutMs) => Object.assign(
+  new Error(`连接 ${hostOf(candidate)} 在 ${Math.max(1, Math.round(stallTimeoutMs / 1000))} 秒内没有返回任何数据`),
+  { kind: 'download', retryable: true, stall: true },
+);
+
 /**
  * 默认下载实现：交给 updater-download.js，只有发布资产的大小与 SHA-256
  * 都对得上时才会把文件交给安装流程；注入 downloadFile 的测试可自行决定行为。
  *
- * 直连 GitHub 资产常被墙（objects.githubusercontent.com），这里按候选顺序
- * 依次尝试：直连 → 公共镜像。第一个完整通过校验的即成功。
+ * 候选顺序见 updater-mirror.js：镜像优先，直连兜底。
  *
- * 同一候选最多试 3 次（1s/2s/4s 退避，封顶 8s）：中断后 .part 会留下，
- * 下一次尝试自动带 Range 续传，所以重试不会从零重下几百 MB。
- * 403/404 这类换镜像才有用的错误（retryable === false）立刻跳到下一个候选，
- * 用户主动取消（AbortError）立刻抛出。
+ * 两条保护，针对国内网络最常见的两种坏情况：
+ * 1. **首字节超时**：候选 STALL_TIMEOUT_MS 内没有任何数据就 abort 它、立刻换下一个；
+ *    收到第一块数据后撤掉计时器——只限制「多久开始下」，不限制「下多久」，
+ *    否则慢速大文件会被误杀。
+ * 2. **有限重试**：同一候选最多 MAX_ATTEMPTS 次，退避 1s/2s（封顶 4s）。
+ *    中断后 .part 会保留，下一次尝试带 Range 续传，所以重试不会从零重下几百 MB。
+ *
+ * 用户主动取消（外层 signal）与 stall 必须分开：前者原样抛 AbortError、不重试也不换
+ * 候选；后者走内部 controller，只当作这条候选不可用。
+ * 403/404 这类换镜像才有用的错误（retryable === false）也立刻跳到下一个候选。
  */
+/**
+ * 生效的镜像清单：用户在设置页填的优先，没有/非法/空列表则回退内置默认。
+ *
+ * 注意不能把空数组直接交给 downloadCandidates：那样候选只剩直连一条，
+ * 国内会挂满超时，等于把「没配置」当成「不要镜像」。
+ */
+function resolveMirrors(mirrors) {
+  const value = typeof mirrors === 'function' ? mirrors() : mirrors;
+  return Array.isArray(value) && value.length > 0 ? value : GITHUB_DOWNLOAD_MIRRORS;
+}
+
+/**
+ * 从 config.json 读用户配置的更新镜像前缀（纯函数，不依赖 electron，可直接单测）。
+ *
+ * 只接受 http(s) 且以 / 结尾的字符串前缀；清洗后为空说明「用内置默认」，
+ * 返回 null 而不是空数组，避免调用方误当成「一条镜像都不要」。
+ */
+export function readUpdateMirrors(configPath, readFileSync) {
+  if (!configPath) return null;
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    const list = config?.update_mirror_urls;
+    if (!Array.isArray(list)) return null;
+    const cleaned = list
+      .filter(item => typeof item === 'string')
+      .map(item => item.trim())
+      .filter(item => item !== ''
+        && (item.startsWith('https://') || item.startsWith('http://'))
+        && item.endsWith('/'));
+    return cleaned.length > 0 ? cleaned : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function downloadWithMirrors(url, destination, options = {}) {
   const {
     fetchImpl = fetch, onProgress, signal, expectedSize, expectedDigest,
     sleepImpl = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    stallTimeoutMs = STALL_TIMEOUT_MS,
+    // 用户配置的镜像前缀；null/空数组/非数组都回退内置默认。
+    mirrors,
   } = options;
-  const candidates = downloadCandidates(url);
+  const candidates = downloadCandidates(url, resolveMirrors(mirrors));
   let lastError;
   for (const candidate of candidates) {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted) throw abortedError();
+      // 每次尝试独占一个内部 controller：stall 走它，用户取消由外层 signal 转发进来。
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort();
+      signal?.addEventListener?.('abort', forwardAbort, { once: true });
+      let stalled = false;
+      let started = false;
+      const timer = stallTimeoutMs > 0
+        ? setTimeout(() => { stalled = true; controller.abort(); }, stallTimeoutMs)
+        : null;
       try {
-        return await downloadInstaller(candidate, destination, { fetchImpl, onProgress, signal, expectedSize, expectedDigest });
+        return await downloadInstaller(candidate, destination, {
+          fetchImpl,
+          signal: controller.signal,
+          expectedSize,
+          expectedDigest,
+          onProgress: event => {
+            if (!started) {
+              // 首字节到了就撤掉计时器：剩下的时间不再限制，大文件慢慢下也要下完。
+              started = true;
+              if (timer !== null) clearTimeout(timer);
+            }
+            onProgress?.(event);
+          },
+        });
       } catch (error) {
         lastError = error;
+        // 用户主动取消：原样抛出，不重试、也不换候选。
+        if (signal?.aborted) throw error?.name === 'AbortError' ? error : abortedError(error);
+        // 首字节超时：这条候选不通，立刻换下一个（不计退避）。
+        if (stalled) {
+          lastError = stallError(candidate, stallTimeoutMs);
+          break;
+        }
         if (error?.name === 'AbortError') throw error;
-        if (error?.retryable === false || attempt === 3) break;
-        await sleepImpl(Math.min(8000, 1000 * 2 ** (attempt - 1)));
+        if (error?.retryable === false || attempt === MAX_ATTEMPTS) break;
+        await sleepImpl(backoffMs(attempt));
+      } finally {
+        if (timer !== null) clearTimeout(timer);
+        signal?.removeEventListener?.('abort', forwardAbort);
       }
     }
   }
@@ -139,6 +242,10 @@ export function createDesktopUpdater({
   repo = DEFAULT_UPDATE_REPO,
   fetchImpl = fetch,
   requestJson = url => defaultRequestJson(url, fetchImpl),
+  /** 用户配置的镜像列表：每次下载重新读，改完设置无需重启。返回 null 表示用内置默认。 */
+  mirrorsFor = () => null,
+  // 裸引用即可：mirrors 由 fetchAsset 每次下载时读取并传进来，
+  // 这样注入自定义 downloadFile 的调用方也能拿到用户镜像，不会静默丢配置。
   downloadFile = downloadWithMirrors,
   launchInstaller = defaultLaunchInstaller,
   /** 当前安装目录：更新时作为安装器的默认目标，避免被搬到 C 盘。 */
@@ -184,6 +291,9 @@ export function createDesktopUpdater({
       signal,
       expectedSize: size,
       expectedDigest: digest,
+      // 每次下载现读用户配置（不缓存）：改完设置无需重启。
+      // 放在这里而不是包装默认 downloadFile：注入的下载实现同样能拿到。
+      mirrors: mirrorsFor(),
       onProgress: ({ received, total }) => {
         if (cancelling) return;
         // 进度条之外还要给出「已下载 / 总大小」，用户才能判断还要等多久。

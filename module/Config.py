@@ -140,6 +140,9 @@ class Config():
     expert_mode: bool = False
     proxy_url: str = ""
     proxy_enable: bool = False
+    # 更新下载镜像列表（每行一个前缀，按顺序尝试；留空表示只用默认内置镜像）。
+    # 用户在设置页「更新镜像」里自行增删；主进程每次更新前重读 config.json。
+    update_mirror_urls: list = None
     font_hinting: bool = True
     scale_factor: str = ""
 

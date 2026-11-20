@@ -7,15 +7,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { downloadCandidates, mirrorUrls } from '../main/updater-mirror.js';
+import { GITHUB_DOWNLOAD_MIRRORS, downloadCandidates, mirrorUrls } from '../main/updater-mirror.js';
 import { latestChangelogSection, shouldAnnounceUpdate, shouldOfferUpdate } from '../renderer/src/updateNotice.mjs';
 
 const ASSET = 'https://github.com/dclef/renpybox/releases/download/v0.9.2/RenpyBox-0.9.2-x64.exe';
 
 test('只对 GitHub Release 下载地址生成镜像，其它 url 原样跳过', () => {
+  // 默认只内置两条实测可用的加速镜像，顺序按实测速度（fastgit.cc 优先）。
   assert.deepEqual(mirrorUrls(ASSET), [
-    `https://ghfast.top/${ASSET}`,
-    `https://gh-proxy.com/${ASSET}`,
+    `https://fastgit.cc/${ASSET}`,
+    `https://cors.isteed.cc/${ASSET}`,
   ]);
   // API 查询与普通网页不套镜像
   assert.deepEqual(mirrorUrls('https://api.github.com/repos/dclef/renpybox/releases'), []);
@@ -25,13 +26,26 @@ test('只对 GitHub Release 下载地址生成镜像，其它 url 原样跳过',
   assert.deepEqual(mirrorUrls(null), []);
 });
 
-test('下载候选直连优先、镜像兜底，且不重复', () => {
+test('下载候选镜像优先、直连兜底在最后，且不重复', () => {
   const candidates = downloadCandidates(ASSET);
-  assert.equal(candidates[0], ASSET);
-  assert.equal(candidates.length, 3);
-  assert.equal(new Set(candidates).size, 3);
-  // 非 GitHub 地址只有自己一个候选
+  // 国内直连 objects.githubusercontent.com 常常挂满超时，所以镜像排前面。
+  assert.deepEqual(candidates, [
+    `https://fastgit.cc/${ASSET}`,
+    `https://cors.isteed.cc/${ASSET}`,
+    ASSET,
+  ]);
+  assert.equal(candidates.at(-1), ASSET, '直连必须留在最后兜底');
+  assert.equal(new Set(candidates).size, candidates.length, '候选不能重复');
+  // 非 GitHub 地址没有镜像，只有它自己一个候选
   assert.deepEqual(downloadCandidates('https://example.test/x.exe'), ['https://example.test/x.exe']);
+});
+
+test('默认镜像清单只剩两条可用镜像，实测淘汰的镜像不再出现', () => {
+  assert.deepEqual([...GITHUB_DOWNLOAD_MIRRORS], ['https://fastgit.cc/', 'https://cors.isteed.cc/']);
+  const joined = GITHUB_DOWNLOAD_MIRRORS.join(' ').toLowerCase();
+  for (const dropped of ['ghfast.top', 'ghproxy.net', 'gh-proxy.com']) {
+    assert.equal(joined.includes(dropped), false, `默认清单不应再包含 ${dropped}`);
+  }
 });
 
 test('更新日志只取第一个版本段落', () => {
