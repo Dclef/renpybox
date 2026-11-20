@@ -1062,6 +1062,8 @@ export const zh = {
   project_file_auto_create_failed: '绑定成功，但自动创建工程文件失败：{error}',
   project_file_binding_missing: '工程文件已不在原处，翻译结果无法保存：{path}',
   project_file_binding_missing_hint: '文件被移动或删除了。请重新导入该 .rbox（或导入另一个工程文件）以恢复绑定。',
+  project_file_binding_relocated_hint: '默认位置已改为工程根目录（不再放进 RenpyBox_Translation 子文件夹）。解除绑定后点「创建工程文件」或「导入工程文件」，就会改用新位置的新文件；旧文件保留不动。',
+  project_file_auto_create_error: '绑定成功，但当前工程没有绑定工程文件：{error}',
   project_file_binding_output: '绑定的输出目录',
   project_file_binding_size: '文件大小',
   project_file_binding_updated: '最后更新',

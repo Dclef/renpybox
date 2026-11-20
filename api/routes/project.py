@@ -286,8 +286,14 @@ def _project_label(config: Any) -> str:
 
 
 def default_project_file_path(config: Any, output: str) -> str:
-    """默认工程文件绝对路径：``<输出目录>/<项目名>.rbox``。"""
-    return os.path.join(str(output), f"{_project_label(config)}{ProjectFile.SUFFIX}")
+    """默认工程文件绝对路径：``<项目根>/<项目名>.rbox``。
+
+    用户口径：.rbox 直接放在被翻译的工程根目录，不再套
+    ``RenpyBox_Translation/<语言>`` 子文件夹；翻译输出目录（译文产物）
+    保持原样不动。拿不到项目根时退回输出目录，保证仍有可写位置。
+    """
+    base = str(_project_root(config) or "").strip() or str(output)
+    return os.path.join(base, f"{_project_label(config)}{ProjectFile.SUFFIX}")
 
 
 def _binding_applies(config: Any, output: str) -> bool:
@@ -297,6 +303,26 @@ def _binding_applies(config: Any, output: str) -> bool:
     if bound == "" or scope == "":
         return False
     return _path_key(scope) == _path_key(output)
+
+
+def _drop_stale_binding(config: Any, output: str) -> str:
+    """清掉作用域与当前输出不符的旧绑定，返回被清掉的 .rbox 路径。
+
+    Chp2 → Chp3 这类切换里，旧绑定既不会被 CacheManager 采纳（作用域不匹配），
+    又会盖住新绑定：界面一直显示上一个工程的 .rbox。这里在自动创建前把它清掉，
+    旧 .rbox 文件本身原样保留（用户随时可以重新导入）。
+    """
+    bound = str(getattr(config, "project_file_path", "") or "").strip()
+    scope = str(getattr(config, "project_file_output", "") or "").strip()
+    if bound == "" or scope == "":
+        return ""
+    if _path_key(scope) == _path_key(output):
+        return ""
+    config.project_file_path = ""
+    config.project_file_output = ""
+    Config.set_bound_project_file("", "")
+    config.save()
+    return bound
 
 
 def _describe(config: Any, info: ProjectFileInfo, output: str) -> dict[str, Any]:
@@ -808,6 +834,8 @@ def _install_project_file(config: Any, path: str, *, bind: bool = True) -> dict[
         # 绑定字段不在白名单里，单独落到 live 配置（bind=false 时是解除绑定）。
         config.project_file_path = staged.project_file_path
         config.project_file_output = staged.project_file_output
+        # 绑定/解绑立即生效，不等下一次 save/load 刷新镜像。
+        Config.set_bound_project_file(staged.project_file_path, staged.project_file_output)
         if runtime is not None:
             # 停止后的翻译器仍会自动保存内存缓存；同步成导入结果，避免旧快照覆盖。
             runtime.set_project(CacheProject.from_dict(snapshot.project.asdict()))
@@ -918,10 +946,20 @@ def _create_and_bind_project_file(config: Any, target: str = "") -> dict[str, An
     return result
 
 
+def _auto_create_error(target: str, error: str, stale_error: str = "") -> str:
+    """自动创建失败的原因：路径 + 原因，必要时附上清理旧绑定的错误。"""
+    message = Localizer.get().project_file_api_auto_create_failed.format(path = target, error = error)
+    if stale_error:
+        message = f"{message}{Localizer.get().project_file_api_error_separator}{stale_error}"
+    return message
+
+
 def _auto_create_project_file(config: Any) -> tuple[str, str]:
     """绑定动作后按开关自动创建并绑定工程文件，返回 (路径, 失败原因)。
 
     失败只返回可展示的原因，绝不抛出：绑定成功这件事不能被它推翻。
+    三种现场都要走通：全新工程（创建）、切换工程（清掉旧绑定再创建）、
+    保留着上次默认文件的工程（直接接管已存在的 .rbox，而不是报「已存在」）。
     """
     if not bool(getattr(config, "project_file_auto_create", True)):
         return "", ""
@@ -929,23 +967,42 @@ def _auto_create_project_file(config: Any) -> tuple[str, str]:
         output = _target_output(config)
     except HTTPException:
         return "", ""
+    target = default_project_file_path(config, output)
+    stale_error = ""
     if _binding_applies(config, output):
-        return "", ""
+        bound = str(getattr(config, "project_file_path", "") or "").strip()
+        if bound and os.path.isfile(bound):
+            return "", ""
+        # 作用域对得上但文件被删/被移走：绑定已经失效，按未绑定重来一次。
+        config.project_file_path = ""
+        config.project_file_output = ""
+        Config.set_bound_project_file("", "")
+    else:
+        try:
+            dropped = _drop_stale_binding(config, output)
+            if dropped:
+                Base().warning(
+                    f"工程文件绑定作用域与当前输出不符，已解除旧绑定：{dropped}",
+                    console = False,
+                )
+        except Exception as exc:  # noqa: BLE001
+            stale_error = str(exc)
     try:
-        previous = str(getattr(config, "project_file_path", "") or "").strip()
-        if previous:
-            # 旧绑定作用域与当前输出不符，运行期本来就不会生效；新文件接管，旧文件原样保留。
-            Base().warning(
-                f"工程文件绑定作用域不匹配，将重新创建并绑定：{previous}",
-                console = False,
-            )
         with _EngineReservation():
-            result = _create_and_bind_project_file(config, default_project_file_path(config, output))
-        return str(result.get("project_file_path") or ""), ""
+            if os.path.isfile(target):
+                # 默认位置已经有上次生成的 .rbox：直接接管它。
+                # 不能因为「文件已存在」失败——那会把绑定留在上一个工程上，
+                # 正是用户看到「磁盘上有文件、界面说没绑定」的现场。
+                result = _install_project_file(config, target, bind = True)
+            else:
+                result = _create_and_bind_project_file(config, target)
+        created = str(result.get("project_file_path") or target)
+        Config.set_bound_project_file(created, output)
+        return created, stale_error
     except HTTPException as exc:
-        return "", str(exc.detail)
+        return "", _auto_create_error(target, str(exc.detail), stale_error)
     except Exception as exc:  # noqa: BLE001
-        return "", str(exc)
+        return "", _auto_create_error(target, str(exc), stale_error)
 
 
 @router.post("/file/inspect")
@@ -1087,6 +1144,19 @@ def _binding_payload(
 ) -> dict[str, Any]:
     bound_path = bound if bound != "" else str(getattr(config, "project_file_path", "") or "").strip()
     output_folder = output if output != "" else str(getattr(config, "project_file_output", "") or "").strip()
+    current_output = ""
+    try:
+        resolved_output = resolve_translation_output(config)
+        if resolved_output is not None:
+            current_output = str(resolved_output)
+    except Exception:  # noqa: BLE001
+        current_output = ""
+    # 旧工程留下的绑定（作用域与当前输出不符）不会被 CacheManager 采纳，
+    # 界面上就不能再显示成「已绑定」——否则切换工程后一直显示上一个 .rbox。
+    if bound_path and output_folder and current_output and _path_key(output_folder) != _path_key(current_output):
+        bound_path = ""
+        output_folder = ""
+    Config.set_bound_project_file(bound_path, output_folder)
     exists = bound_path != "" and os.path.isfile(bound_path)
     payload: dict[str, Any] = {
         "bound": bound_path != "",
@@ -1175,6 +1245,9 @@ def unbind_project_file(request: Request) -> dict[str, Any]:
                 ) from exc
             config.project_file_path = ""
             config.project_file_output = ""
+            # 镜像必须同步清空：否则解绑后紧接着导入同一个 .rbox，
+            # 缓存路径解析还会看到过期绑定，报「找不到工程文件」。
+            Config.set_bound_project_file("", "")
             try:
                 config.save(strict = True)
             except Exception as exc:

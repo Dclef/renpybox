@@ -1064,6 +1064,8 @@ export const en: Record<keyof typeof zh, string> = {
   project_file_auto_create_failed: 'Bound successfully, but creating the project file failed: {error}',
   project_file_binding_missing: 'The project file is no longer at its location; translation results cannot be saved: {path}',
   project_file_binding_missing_hint: 'The file was moved or deleted. Import this .rbox again (or import another project file) to restore the binding.',
+  project_file_binding_relocated_hint: 'New project files go straight into the project root instead of the RenpyBox_Translation subfolder. Unbind and then use Create project file or Import project file to pick up the new location; older files are left untouched.',
+  project_file_auto_create_error: 'Bound successfully, but the current project has no bound project file: {error}',
   project_file_binding_output: 'Bound output folder',
   project_file_binding_size: 'File size',
   project_file_binding_updated: 'Last updated',

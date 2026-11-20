@@ -424,6 +424,7 @@ class LocalizerZH():
     project_file_api_settings_save_failed: str = "配置保存失败，设置未生效"
     project_file_api_no_binding: str = "当前没有绑定工程文件"
     project_file_api_bound_missing: str = "绑定的工程文件已不在原处：{path}"
+    project_file_api_auto_create_failed: str = "自动创建工程文件失败（{path}）：{error}"
     project_file_api_bound_read_failed: str = "工程文件读取失败：{error}"
     project_file_api_unbind_failed: str = "解除绑定失败，工程文件保持不变：{error}"
     project_file_api_legacy_folder_invalid: str = "旧缓存目录无效：请选择旧版输出目录或其 cache 子目录"

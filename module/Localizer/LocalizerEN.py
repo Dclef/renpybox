@@ -426,6 +426,7 @@ class LocalizerEN(LocalizerZH):
     project_file_api_settings_save_failed: str = "Failed to save settings; the imported settings were not applied"
     project_file_api_no_binding: str = "No project file is bound"
     project_file_api_bound_missing: str = "The bound project file is no longer at its original location: {path}"
+    project_file_api_auto_create_failed: str = "Failed to create the project file ({path}): {error}"
     project_file_api_bound_read_failed: str = "Failed to read the project file: {error}"
     project_file_api_unbind_failed: str = "Failed to unbind; the project file is unchanged: {error}"
     project_file_api_legacy_folder_invalid: str = "The legacy cache folder is invalid. Choose an old output folder or its cache subfolder."
