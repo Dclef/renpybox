@@ -324,6 +324,12 @@ class LocalizerEN(LocalizerZH):
     app_settings_page_proxy_url: str = "Example - http://127.0.0.1:7890"
     app_settings_page_proxy_url_title: str = "Network Proxy"
     app_settings_page_proxy_url_content: str = "When enabled, network requests use the configured proxy address; leave the address empty to follow the system proxy (takes effect after app restart)"
+    setting_update_mirror_title: str = "Update Mirrors"
+    setting_update_mirror_body: str = "Direct GitHub access is often unavailable, so update downloads try these mirrors in the order listed below; one prefix per line, leave it empty to use the built-in defaults. Mirrors only affect download speed: the installer is still verified with a full SHA-256 checksum, so changing mirrors never weakens security."
+    setting_update_mirror_placeholder: str = "One mirror address per line, e.g. https://fastgit.cc/"
+    setting_update_mirror_reset: str = "Restore Defaults"
+    setting_update_mirror_invalid: str = "Mirror addresses must start with http:// or https:// and end with /"
+    setting_update_mirror_saved: str = "Update mirrors saved"
     app_settings_page_close: str = "The application will close, please confirm …"
 
     # 接口管理
@@ -426,6 +432,7 @@ class LocalizerEN(LocalizerZH):
     project_file_api_settings_save_failed: str = "Failed to save settings; the imported settings were not applied"
     project_file_api_no_binding: str = "No project file is bound"
     project_file_api_bound_missing: str = "The bound project file is no longer at its original location: {path}"
+    project_file_api_auto_create_failed: str = "Failed to create the project file ({path}): {error}"
     project_file_api_bound_read_failed: str = "Failed to read the project file: {error}"
     project_file_api_unbind_failed: str = "Failed to unbind; the project file is unchanged: {error}"
     project_file_api_legacy_folder_invalid: str = "The legacy cache folder is invalid. Choose an old output folder or its cache subfolder."

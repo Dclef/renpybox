@@ -322,6 +322,12 @@ class LocalizerZH():
     app_settings_page_proxy_url: str = "示例 - http://127.0.0.1:7890"
     app_settings_page_proxy_url_title: str = "网络代理"
     app_settings_page_proxy_url_content: str = "启用此功能后，将使用设置的代理地址发送网络请求；地址留空则跟随系统代理（将在应用重启后生效）"
+    setting_update_mirror_title: str = "更新镜像"
+    setting_update_mirror_body: str = "GitHub 直连常常不可用，更新下载会按下面的顺序依次尝试这些镜像；每行一个前缀，留空则使用内置默认镜像。镜像只影响下载速度，安装包仍然会做完整的 SHA-256 校验，改镜像不会降低安全性。"
+    setting_update_mirror_placeholder: str = "每行一个镜像地址，例如 https://fastgit.cc/"
+    setting_update_mirror_reset: str = "恢复默认"
+    setting_update_mirror_invalid: str = "镜像地址必须以 http:// 或 https:// 开头并以 / 结尾"
+    setting_update_mirror_saved: str = "更新镜像已保存"
     app_settings_page_close: str = "应用即将关闭，请确认 …"
 
     # 接口管理
@@ -424,6 +430,7 @@ class LocalizerZH():
     project_file_api_settings_save_failed: str = "配置保存失败，设置未生效"
     project_file_api_no_binding: str = "当前没有绑定工程文件"
     project_file_api_bound_missing: str = "绑定的工程文件已不在原处：{path}"
+    project_file_api_auto_create_failed: str = "自动创建工程文件失败（{path}）：{error}"
     project_file_api_bound_read_failed: str = "工程文件读取失败：{error}"
     project_file_api_unbind_failed: str = "解除绑定失败，工程文件保持不变：{error}"
     project_file_api_legacy_folder_invalid: str = "旧缓存目录无效：请选择旧版输出目录或其 cache 子目录"

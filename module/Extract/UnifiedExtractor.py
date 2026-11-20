@@ -222,6 +222,17 @@ class UnifiedExtractor:
         self._last_preserve_removed_count: int = 0
         # 内置 UI 文件跳过日志每个文件仅记录一次，避免多次全目录扫描时刷屏
         self._logged_ui_skips: set = set()
+        # 官方抽取失败的具体原因（成功或未跑时为空）：降级补充抽取后必须原样
+        # 带进 result.message，不能把结果报成「抽取完成」。
+        self.official_extraction_error: str = ""
+
+    def _official_failure_notice(self) -> str:
+        """官方抽取失败提示：复用既有字段，并把具体原因带出来。"""
+        notice = Localizer.get().game_rules_official_failed
+        detail = str(getattr(self, "official_extraction_error", "") or "").strip()
+        if detail:
+            notice += "\n" + detail
+        return notice
 
     def _warn_if_writeback_report(self, tl_dir: Path) -> None:
         report_path = tl_dir / "writeback_report_renpy.json"
@@ -1265,6 +1276,9 @@ class UnifiedExtractor:
                 except Exception as e:
                     self._check_cancel()
                     self.official_extraction_status = "failed"
+                    # 失败原因必须一路带到 result.message：降级补充抽取可以继续，
+                    # 但绝不能再报「抽取完成」而不提官方阶段已经失败。
+                    self.official_extraction_error = str(e)
                     if not allow_custom and not allow_rules:
                         raise
                     self.logger.warning(f"官方抽取失败: {e}，将仅使用补充抽取")
@@ -1390,7 +1404,7 @@ class UnifiedExtractor:
             
         result.official_status = getattr(self, "official_extraction_status", "not_run")
         if result.success and result.official_status == "failed":
-            result.message += "\n" + Localizer.get().game_rules_official_failed
+            result.message += "\n" + self._official_failure_notice()
         if result.game_rule_profile:
             result.message += "\n" + Localizer.get().game_rules_extracted.format(
                 profile=result.game_rule_profile, matched=result.game_rule_candidates,
@@ -1560,6 +1574,8 @@ class UnifiedExtractor:
                         except Exception as e:
                             self._check_cancel()
                             self.official_extraction_status = "failed"
+                            # 与常规抽取一致：失败原因必须带进 result.message。
+                            self.official_extraction_error = str(e)
                             if not allow_custom and not allow_rules:
                                 raise
                             self.logger.warning(f"官方抽取失败: {e}")
@@ -1879,7 +1895,7 @@ class UnifiedExtractor:
             
         result.official_status = getattr(self, "official_extraction_status", "not_run")
         if result.success and result.official_status == "failed":
-            result.message += "\n" + Localizer.get().game_rules_official_failed
+            result.message += "\n" + self._official_failure_notice()
         if result.game_rule_profile:
             result.message += "\n" + Localizer.get().game_rules_extracted.format(
                 profile=result.game_rule_profile, matched=result.game_rule_candidates,

@@ -201,8 +201,8 @@ test('标题栏常驻当前工程文件：绑定时显示文件名，丢失换�
   assert.match(store, /void reloadProjectFileBinding\(\);\s*\n\s*void Promise\.all\(\[reloadProject\(\)/);
 
   const page = read('pages', 'ProjectPage.tsx');
-  // 保存 / 导入 / 解除绑定 / 创建 四处写操作 + 绑定后自动创建，都要刷新标题栏。
-  assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 5);
+  // 保存 / 导入 / 解除绑定 / 创建 四处写操作 + 绑定后自动创建 + 导入失败回滚，都要刷新标题栏。
+  assert.equal((page.match(/state\.reloadProjectFileBinding\(\)/g) ?? []).length, 6);
 
   const css = fs.readFileSync(path.join(src, 'styles', 'app.css'), 'utf8');
   assert.match(css, /\.rb-titlebar \.rb-project-file \{/);
@@ -228,9 +228,36 @@ test('未绑定时可一键创建工程文件，默认位置来自后端', () =>
   // 自动创建开关直接写配置项，默认开启
   assert.match(page, /values\?\.project_file_auto_create !== false/);
   assert.match(page, /state\.setSetting\('project_file_auto_create', next\)/);
-  // 绑定后只提示自动创建结果，失败不阻塞绑定
+  // 绑定后只提示自动创建结果，失败不阻塞绑定（失败文案带路径与原因）
   assert.match(page, /project_file_auto_created/);
-  assert.match(page, /project_file_auto_create_failed/);
+  assert.match(page, /project_file_auto_create_error/);
   const bind = page.match(/const pickProject = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
   assert.match(bind, /noteAutoCreate\(info\)/);
+});
+
+test('自动创建后面板直接显示已绑定，不再提示手动创建', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  // 绑定后自动创建会改绑定：面板、标题栏都要刷新，失败也不能停在旧工程上。
+  const note = page.match(/const noteAutoCreate = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.ok(note, 'noteAutoCreate 缺失');
+  assert.match(note, /void reloadBinding\(\);/);
+  assert.match(note, /void state\.reloadProjectFileBinding\(\);/);
+  assert.match(note, /project_file_auto_created/);
+  assert.match(note, /project_file_auto_create_error/);
+  // 未绑定时才出现手动创建入口；绑定后走解除绑定。
+  assert.match(page, /binding && !binding\.bound/);
+});
+
+test('导入失败会刷新绑定，避免拿着过期路径反复导入', () => {
+  const page = read('pages', 'ProjectPage.tsx');
+  const begin = page.match(/const beginImport = useCallback\([\s\S]*?\n {2}\}, /)?.[0] ?? '';
+  assert.match(begin, /inspectProjectFile\(path\)/);
+  assert.match(begin, /void reloadBinding\(\);/);
+  assert.match(begin, /void state\.reloadProjectFileBinding\(\);/);
+  const zh = read('i18n', 'zh.ts');
+  const en = read('i18n', 'en.ts');
+  for (const key of ['project_file_auto_create_error', 'project_file_binding_relocated_hint']) {
+    assert.match(zh, new RegExp(`\\n  ${key}: `), `zh 缺少 ${key}`);
+    assert.match(en, new RegExp(`\\n  ${key}: `), `en 缺少 ${key}`);
+  }
 });

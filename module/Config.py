@@ -140,6 +140,9 @@ class Config():
     expert_mode: bool = False
     proxy_url: str = ""
     proxy_enable: bool = False
+    # 更新下载镜像列表（每行一个前缀，按顺序尝试；留空表示只用默认内置镜像）。
+    # 用户在设置页「更新镜像」里自行增删；主进程每次更新前重读 config.json。
+    update_mirror_urls: list = None
     font_hinting: bool = True
     scale_factor: str = ""
 
@@ -651,6 +654,23 @@ class Config():
             str(getattr(config, "project_file_path", "") or "").strip(),
             str(getattr(config, "project_file_output", "") or "").strip(),
         )
+
+    @classmethod
+    def set_bound_project_file(cls, path: Any = "", output: Any = "") -> tuple[str, str]:
+        """绑定/解绑后立即刷新镜像，不等下一次 save/load。
+
+        缓存路径解析只看 BOUND_PROJECT_FILE（CacheManager.bound_project_file）。
+        自动创建、导入、解绑之后如果只改 config 字段，镜像会停在旧路径上：
+        解绑后紧接着导入同一个 .rbox 会用到过期的绑定作用域，表现成找不到工程文件。
+        所以这三处写配置时必须同时刷新镜像；目录缓存安装事务里镜像被冻结，
+        此时忽略写入，由恢复方决定最终值。
+        """
+        if not cls.BOUND_PROJECT_FILE_FROZEN:
+            cls.BOUND_PROJECT_FILE = (
+                str(path or "").strip(),
+                str(output or "").strip(),
+            )
+        return cls.BOUND_PROJECT_FILE
 
     def load(self, path: str = None) -> Self:
         # UI 主线程读盘计数（锁外打点；摘要可能触发 LogManager 初始化再进 load，锁外才安全）

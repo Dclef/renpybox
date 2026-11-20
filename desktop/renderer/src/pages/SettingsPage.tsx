@@ -34,7 +34,8 @@ import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
 import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
-import { Button, Progress, Tooltip } from 'antd';
+import { Button, Input, Progress, Tooltip } from 'antd';
+import { formatMirrorList, parseMirrorList } from '../updateMirrorSettings.mjs';
 import { displayVersion, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
 
 type Variant = 'basic' | 'expert' | 'app';
@@ -186,6 +187,7 @@ export function SettingsPage(props: {
             <SettingsGroup>
               {cards(fields)}
               <ProxyCard state={state} value={values?.proxy_url} proxyEnabled={values?.proxy_enable} />
+              <UpdateMirrorCard state={state} value={values?.update_mirror_urls} />
             </SettingsGroup>
             <AboutCard state={state} />
           </>
@@ -569,6 +571,60 @@ function WebAboutCard(props: { state: AppState }) {
         </Dialog>
       ) : null}
     </>
+  );
+}
+
+/**
+ * 更新镜像 —— 用户可以自己维护镜像前缀列表（一行一个），更新时按顺序尝试。
+ *
+ * 校验与格式化逻辑放在 updateMirrorSettings.mjs，便于 node --test 直接覆盖；
+ * 这里只负责草稿、红字提示和提交。空列表 = 使用主进程内置的默认镜像。
+ */
+function UpdateMirrorCard(props: { state: AppState; value: unknown }) {
+  const { state, value } = props;
+  const t = useT();
+  const title = t('setting_update_mirror_title');
+  const saved = formatMirrorList(value);
+  const [draft, setDraft] = useState(saved);
+  const [errors, setErrors] = useState<string[]>([]);
+  const focused = useRef(false);
+
+  useEffect(() => {
+    // 正在输入时不要用外部值覆盖草稿，否则会把用户刚敲的字符顶掉。
+    if (!focused.current) setDraft(saved);
+  }, [saved]);
+
+  const commit = useCallback(async (text: string) => {
+    const { values, errors: invalid } = parseMirrorList(text);
+    setErrors(invalid);
+    // 非法行一律不提交：让用户先改对，避免把坏地址写进配置后更新失败。
+    if (invalid.length > 0) return;
+    if (values.join('\n') === saved) return;
+    if (await state.setSetting('update_mirror_urls', values)) {
+      state.pushToast('success', t('setting_update_mirror_saved'));
+    }
+  }, [saved, state, t]);
+
+  return (
+    <SettingCard title={title} description={t('setting_update_mirror_body')}>
+      <Input.TextArea
+        aria-label={title}
+        value={draft}
+        placeholder={t('setting_update_mirror_placeholder')}
+        autoSize={{ minRows: 3, maxRows: 8 }}
+        onFocus={() => { focused.current = true; }}
+        onChange={(event) => { setDraft(event.target.value); if (errors.length > 0) setErrors([]); }}
+        onBlur={() => { focused.current = false; void commit(draft); }}
+      />
+      {errors.length > 0 ? (
+        <p style={{ margin: 0, color: 'var(--rb-error)' }} role="alert">
+          {t('setting_update_mirror_invalid')}
+        </p>
+      ) : null}
+      <Button size="small" onClick={() => { setDraft(''); void commit(''); }}>
+        {t('setting_update_mirror_reset')}
+      </Button>
+    </SettingCard>
   );
 }
 

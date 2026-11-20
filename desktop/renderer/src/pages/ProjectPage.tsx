@@ -117,11 +117,15 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
     const created = String(info.auto_created_project_file ?? '');
     const failed = String(info.auto_create_error ?? '');
     if (!created && !failed) return;
-    // 自动创建改了绑定，标题栏与「当前工程文件」面板都要跟着刷新。
+    // 自动创建改了绑定，标题栏与「当前工程文件」面板都要跟着刷新；
+    // 创建失败时面板必须回到「未绑定 + 可手动创建」，而不是停在旧工程上。
+    void reloadBinding();
     void state.reloadProjectFileBinding();
     if (created) state.pushToast('success', t('project_file_auto_created').replace('{path}', created));
-    if (failed) state.pushToast('warning', t('project_file_auto_create_failed').replace('{error}', failed));
-  }, [state, t]);
+    if (failed) {
+      state.pushToast('error', t('project_file_auto_create_error').replace('{error}', failed));
+    }
+  }, [reloadBinding, state, t]);
 
   /**
    * 选目录。原壳的 `_sync_renpy_paths_from_selection` 语义：
@@ -212,10 +216,14 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
       setPendingImport(await inspectProjectFile(path));
     } catch (error) {
       state.pushToast('error', error instanceof Error ? error.message : String(error));
+      // 失败时刷新绑定：失效的绑定（文件被移走/旧工程残留）要立刻在面板上反映出来，
+      // 否则用户会拿着一条过期路径反复导入，看到的永远是「找不到工程文件」。
+      void reloadBinding();
+      void state.reloadProjectFileBinding();
     } finally {
       setBusy(false);
     }
-  }, [state]);
+  }, [reloadBinding, state]);
 
   const pickImportFile = useCallback(async () => {
     const picked = await window.renpy?.pickFile({ filters: RBOX_FILTERS });
@@ -484,6 +492,7 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
               {binding.default_path ? (
                 <p className="rb-project-file-guide">{t('project_file_create_hint').replace('{path}', binding.default_path)}</p>
               ) : null}
+              <p className="rb-project-file-guide">{t('project_file_binding_relocated_hint')}</p>
               <div className="rb-project-file-actions">
                 <Button type="primary" size="small" disabled={projectFileBlocked} onClick={() => void createProject(false)}>
                   {t('project_file_create')}

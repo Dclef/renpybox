@@ -1380,6 +1380,11 @@ def _bind_default_output(tmp_path: Path, config: Config) -> Path:
     return Path(config.output_folder)
 
 
+def _default_rbox(config: Config, label: str = "MyGame") -> Path:
+    """默认 .rbox 落在项目根目录（A 方案：不再套 RenpyBox_Translation/<语言>）。"""
+    return Path(config.renpy_project_path) / f"{label}.rbox"
+
+
 def _resolve_paths(config: Config) -> None:
     """模拟还没绑定项目的全新配置（输出目录也由后端推导）。"""
     config.renpy_project_path = config.renpy_game_folder = config.renpy_tl_folder = ""
@@ -1398,7 +1403,7 @@ def test_create_empty_project_file_binds_and_stays_loadable(tmp_path, config, fr
 
     assert response.status_code == 200, response.text
     body = response.json()
-    target = output / "MyGame.rbox"
+    target = _default_rbox(config)
     assert Path(body["project_file_path"]) == target
     assert body["created"] is True
     assert body["bound"] is True
@@ -1436,7 +1441,7 @@ def test_binding_endpoint_exposes_default_path_and_switch(tmp_path, config) -> N
 
     assert body["bound"] is False
     assert body["auto_create"] is True
-    assert Path(body["default_path"]) == output / "MyGame.rbox"
+    assert Path(body["default_path"]) == _default_rbox(config)
 
 
 def test_create_migrates_existing_directory_cache_with_backup(tmp_path, config, fresh_engine) -> None:
@@ -1456,7 +1461,7 @@ def test_create_migrates_existing_directory_cache_with_backup(tmp_path, config, 
 
     assert response.status_code == 200, response.text
     body = response.json()
-    target = output / "MyGame.rbox"
+    target = _default_rbox(config)
     assert body["migrated_item_count"] == 2
 
     snapshot = ProjectFile.load(target)
@@ -1514,7 +1519,7 @@ def test_create_write_failure_leaves_directory_cache_intact(tmp_path, config, fr
     assert "Read-only" in response.json()["detail"]
     after = {name: data for name, data in _tree_bytes(output).items() if not name.endswith(("-wal", "-shm"))}
     assert after == before
-    assert not (output / "MyGame.rbox").exists()
+    assert not _default_rbox(config).exists()
     assert config.project_file_path == ""
     assert _read_cache(config)[1] == ["old-1", "old-2"]
     assert fresh_engine.get_status() == Engine.Status.IDLE
@@ -1538,7 +1543,7 @@ def test_create_install_failure_rolls_back_cache_and_removes_new_file(tmp_path, 
     assert "写入导入缓存失败" in response.json()["detail"]
     assert (output / "cache" / CacheManager.CACHE_DB_NAME).is_file()
     assert _read_cache(config)[1] == ["old-1", "old-2"]
-    assert not (output / "MyGame.rbox").exists()
+    assert not _default_rbox(config).exists()
     assert config.project_file_path == ""
     assert fresh_engine.get_status() == Engine.Status.IDLE
 
@@ -1558,7 +1563,7 @@ def test_unbind_after_create_returns_to_directory_cache(tmp_path, config, fresh_
     assert (output / "cache" / CacheManager.CACHE_DB_NAME).is_file()
     assert _read_cache(config)[1] == ["old-1", "old-2"]
     assert config.project_file_path == ""
-    assert (output / "MyGame.rbox").is_file()
+    assert _default_rbox(config).is_file()
     assert fresh_engine.get_status() == Engine.Status.IDLE
 
 
@@ -1578,7 +1583,7 @@ def test_resolve_auto_creates_and_binds_default_project_file(tmp_path, config, f
     assert response.status_code == 200, response.text
     body = response.json()
     output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
-    target = output / "MyGame.rbox"
+    target = _default_rbox(config)
     assert Path(body["auto_created_project_file"]) == target
     assert body["auto_create_error"] == ""
     assert target.is_file()
@@ -1607,7 +1612,7 @@ def test_resolve_auto_create_switch_off_creates_nothing(tmp_path, config, fresh_
     assert response.json()["auto_create_error"] == ""
     output = tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese"
     assert output.is_dir()
-    assert not (output / "MyGame.rbox").exists()
+    assert not _default_rbox(config).exists()
     assert config.project_file_path == ""
     assert fresh_engine.get_status() == Engine.Status.IDLE
 
@@ -1627,7 +1632,7 @@ def test_resolve_auto_create_migrates_existing_directory_cache(tmp_path, config,
         response = client.post("/api/project/resolve", json = {"path": str(tmp_path / "MyGame")})
 
     assert response.status_code == 200, response.text
-    target = output / "MyGame.rbox"
+    target = _default_rbox(config)
     assert Path(response.json()["auto_created_project_file"]) == target
     assert [item.get_src() for item in ProjectFile.load(target).items] == ["old-1", "old-2"]
     assert not (output / "cache" / CacheManager.CACHE_DB_NAME).exists()
@@ -1679,6 +1684,6 @@ def test_resolve_auto_create_skips_while_engine_busy(tmp_path, config, fresh_eng
     assert response.status_code == 200, response.text
     assert response.json()["auto_created_project_file"] == ""
     assert response.json()["auto_create_error"] != ""
-    assert not (tmp_path / "MyGame" / "RenpyBox_Translation" / "chinese" / "MyGame.rbox").exists()
+    assert not (tmp_path / "MyGame" / "MyGame.rbox").exists()
     assert config.project_file_path == ""
     assert fresh_engine.get_status() == Engine.Status.TRANSLATING
