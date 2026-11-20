@@ -112,6 +112,8 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 - 2026-11-20 v0.9.14:
   - Desktop updates now resume: an interrupted or cancelled download keeps its partial file and continues from where it stopped instead of starting over; flaky connections retry with backoff and fall back to mirror hosts, and a finished installer is verified without downloading again.
+  - Updates now download through acceleration mirrors (fastgit.cc and cors.isteed.cc): the 235 MB installer took 7-10 seconds in testing, while direct GitHub access and the old ghfast.top mirror are effectively unusable in mainland China. A mirror that sends no data for 12 seconds is skipped automatically.
+  - **Settings** gains an **Update Mirrors** editor where you can add or remove mirror addresses; leave it empty to use the built-in defaults. Mirrors only affect download speed — the installer is still verified with a full SHA-256 check.
   - Extraction no longer pulls in the other languages a project ships with: multi-language games no longer fail with "translation already exists" because of bundled japanese / korean files. Those folders are isolated during extraction and restored afterwards, byte for byte.
   - A failed official extraction is no longer reported as success, and the message now names the duplicated line, its file and its language instead of suggesting the tl folder be deleted.
   - Binding a project now creates and binds its .rbox automatically, switching projects leaves no stale binding, and importing after unbinding no longer fails with "project file not found".
