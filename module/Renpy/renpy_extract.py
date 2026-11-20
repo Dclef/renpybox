@@ -1239,7 +1239,9 @@ def WriteExtracted(p, extractedSet, is_open_filter, filter_length, is_gen_empty,
     for file_index, source_file in enumerate(_source_files(source_root, should_stop), 1):
         _check_cancel(should_stop)
         relative = source_file.relative_to(source_root)
-        if relative.parts and relative.parts[0].lower() == tl.lower():
+        # _source_files 已剪掉 game/tl，这里再按第一段兜底：目标语言目录与任何
+        # 其它语言目录都不能作为本语言的覆盖/去重输入。
+        if relative.parts and relative.parts[0].lower() == "tl":
             continue
         target_file = tl_dir / relative
         if is_builtin_ui_file(str(source_file)):
@@ -1478,6 +1480,7 @@ def merge_string_literal_continuations(lines):
             line.rstrip().endswith(("'", '"'))
             and index + 1 < len(lines)
             and lines[index + 1].lstrip().startswith(("'", '"'))
+            and _bracket_balance(line) > 0
         ):
             index += 1
             line = line.rstrip() + " " + lines[index].lstrip()
@@ -1488,6 +1491,42 @@ def merge_string_literal_continuations(lines):
         (_merge_adjacent_literals_in_line(line), start_index)
         for line, start_index in logical
     ]
+
+
+def _bracket_balance(line):
+    """统计一行里未闭合的括号数量（忽略字符串与注释）。
+
+    Python 的隐式字符串拼接只发生在括号/方括号/花括号未闭合的表达式内；
+    两条独立语句（例如 Ren'Py menu 的两个相邻选项）首尾相接并不构成拼接。
+    旧实现只看「本行以引号结尾且下一行以引号开头」，会把相邻选项拼成一条
+    old，写进 tl 后既不是合法原文，也会连带破坏去重。
+    """
+    depth = 0
+    index = 0
+    n = len(line)
+    quote = ""
+    while index < n:
+        char = line[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "#":
+            break
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        index += 1
+    return max(depth, 0)
 
 
 def _merge_adjacent_literals_in_line(line):

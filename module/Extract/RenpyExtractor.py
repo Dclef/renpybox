@@ -100,9 +100,14 @@ class RenpyExtractor:
             command.append("--empty")
 
         moved_files = []
+        isolated_languages: List[Tuple[Path, Path]] = []
         try:
             # 避免官方抽取被“中间文件”干扰（例如 miss_ready_replace.rpy 是生成 replace_text 的工作文件）
             moved_files = self._temporarily_hide_tool_files(tl_dir)
+            # 其它语言目录（游戏自带 japanese/korean 等）必须对 Ren'Py 不可见：
+            # 否则它们的 translate <lang> strings: 块会在 translate 命令加载脚本时
+            # 全部注册进内存，同一条 old 出现两次就抛 "already exists"。
+            isolated_languages = self._isolate_other_languages(tl_dir, tl_name)
 
             self.logger.info(f"执行官方抽取: {' '.join(command)}")
             from utils.process_runner import (
@@ -144,6 +149,8 @@ class RenpyExtractor:
             result_stdout = result.stdout or ""
             result_returncode = result.returncode
         finally:
+            # 恢复顺序与隔离顺序相反：先放回其它语言目录，再恢复中间文件。
+            self._restore_isolated_languages(isolated_languages)
             self._restore_hidden_files(moved_files)
         if result_stdout:
             self.logger.info(result_stdout.strip())
@@ -153,7 +160,11 @@ class RenpyExtractor:
             if result_stdout:
                 # 检查是否是已存在翻译的错误
                 if "already exists" in result_stdout:
-                    error_msg = "官方抽取失败：检测到重复的翻译条目。请尝试删除 tl 文件夹后重试。"
+                    # 原文：重复 old 落在哪个语言目录/文件/行，直接告诉用户。
+                    # 绝不建议删除 tl 文件夹——那会连同用户已有译文一起删掉。
+                    error_msg = self._duplicate_translation_message(
+                        result_stdout, tl_name, isolated_languages
+                    )
                 else:
                     # 截取最后几行错误信息
                     lines = result_stdout.strip().split('\n')
@@ -206,6 +217,113 @@ class RenpyExtractor:
                     hidden.unlink(missing_ok=True)
             except Exception:
                 continue
+
+    # 官方抽取只关心目标语言；其它语言目录（游戏自带的 japanese/korean 等）
+    # 必须在 translate 命令运行期间对 Ren'Py 不可见，否则它们的
+    # translate <lang> strings: 块会被一并加载注册。
+    ISOLATED_SUFFIX = ".renpybox_isolated"
+
+    def _isolate_other_languages(self, tl_dir: Path, tl_name: str) -> List[Tuple[Path, Path]]:
+        """把 game/tl 下非目标语言目录临时移出 Ren'Py 的可见范围。
+
+        只做重命名（同盘 rename，内容与 mtime 都不变），返回 (新位置, 原位置)
+        列表供 _restore_isolated_languages 无条件还原。任何一步失败都立刻
+        把已经移走的目录放回去，绝不留下被搬走的用户文件。
+        """
+        moved: List[Tuple[Path, Path]] = []
+        tl_root = tl_dir.parent
+        if not tl_root.is_dir():
+            return moved
+        target = (tl_name or "").strip().lower()
+        # 目标语言目录必须保持可见；None 是 Ren'Py 默认语言目录，也不动。
+        keep = {target, "none"}
+        try:
+            entries = sorted(tl_root.iterdir(), key = lambda item: item.name.casefold())
+        except OSError:
+            return moved
+        for entry in entries:
+            if not entry.is_dir() or entry.name.lower() in keep:
+                continue
+            if entry.name.endswith(self.ISOLATED_SUFFIX):
+                continue
+            try:
+                destination = entry.with_name(entry.name + self.ISOLATED_SUFFIX)
+                if destination.exists():
+                    # 上次异常退出遗留：先还原再重新隔离，避免覆盖用户文件。
+                    self._restore_isolated_languages([(destination, entry)])
+                entry.replace(destination)
+                moved.append((destination, entry))
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(f"隔离其它语言目录失败（已跳过）: {entry}: {exc}")
+                self._restore_isolated_languages(moved)
+                return []
+        if moved:
+            self.logger.info(
+                f"官方抽取前临时隔离 {len(moved)} 个非目标语言目录（抽取后自动恢复）"
+            )
+        return moved
+
+    def _restore_isolated_languages(self, moved: List[Tuple[Path, Path]]) -> None:
+        """无条件把 _isolate_other_languages 移走的目录放回原位。"""
+        for isolated, original in reversed(moved):
+            try:
+                if isolated.exists() and not original.exists():
+                    isolated.replace(original)
+                elif isolated.exists() and original.exists():
+                    # 原位已有同名目录：绝不覆盖，保留隔离副本供用户手工合并。
+                    self.logger.warning(
+                        f"隔离目录原位已被占用，保留副本: {isolated}"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error(f"恢复其它语言目录失败: {original}: {exc}")
+
+    @staticmethod
+    def _duplicate_translation_message(
+        stdout: str,
+        tl_name: str,
+        isolated: List[Tuple[Path, Path]],
+    ) -> str:
+        """把 Ren'Py 的重复翻译异常翻译成可定位、可操作的提示。
+
+        现场异常形如：
+            Exception: A translation for "..." already exists at game/tl/japanese/characters.rpy:7252.
+        这里带出重复原文、语言目录与文件行号，并明确其它语言目录没有被改动；
+        不再建议删除 tl 文件夹（那会连带删掉用户已有译文）。
+        """
+        match = re.search(
+            r'A translation for "(?P<old>.*?)" already exists at (?P<where>[^\s:]+):(?P<line>\d+)',
+            stdout,
+            re.S,
+        )
+        isolated_names = sorted({original.name for _isolated, original in isolated})
+        if match:
+            where = match.group("where").replace("\\", "/")
+            parts = where.split("/")
+            language = parts[1] if len(parts) > 2 and parts[0] == "tl" else ""
+            detail = (
+                f"官方抽取失败：检测到重复的翻译条目。原文 '{match.group('old')}' "
+                f"已在 {where}:{match.group('line')} 注册"
+            )
+            if language:
+                detail += f"（语言目录：tl/{language}）"
+            if language and language.lower() != (tl_name or "").strip().lower():
+                detail += "，它不是本次目标语言"
+            detail += "。"
+        else:
+            detail = "官方抽取失败：检测到重复的翻译条目。"
+        detail += (
+            "常见原因是同一 tl 目录同时存在 .rpy 与 .rpyc（或打包进 .rpa 的副本），"
+            "Ren'Py 会把同一块 translate 加载两次。"
+        )
+        if isolated_names:
+            detail += (
+                "本次已临时隔离并恢复其它语言目录："
+                + "、".join(f"tl/{name}" for name in isolated_names)
+                + "，其中的译文未被修改。"
+            )
+        else:
+            detail += "其它语言目录未被修改。"
+        return detail
 
     def runtime_extract(
         self,
