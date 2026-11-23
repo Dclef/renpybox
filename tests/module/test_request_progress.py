@@ -12,7 +12,10 @@ from module.Extract import GlossaryCandidateService as glossary_module
 from module.Workbench import AnalysisService as analysis_module
 
 
-@pytest.mark.parametrize("kind", ["glossary", "worldbook"])
+@pytest.mark.parametrize("kind", [
+    pytest.param("glossary", marks=pytest.mark.skip(reason="旧 TaskRequester/_extract_chunk_with_llm 已删除；workbench 分支仍用 TaskRequester 故保留")),
+    "worldbook",
+])
 def test_slow_request_reports_waiting_before_response(monkeypatch, kind):
     waiting = threading.Event()
     records = []

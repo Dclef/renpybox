@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('renpy', {
   pickFile: (options) => ipcRenderer.invoke('dialog:pick-file', options),
   saveFile: (options) => ipcRenderer.invoke('dialog:save-file', options),
   openPath: (target) => ipcRenderer.invoke('shell:open-path', target),
+  /** 并发测速更新镜像（主进程代理感知 fetch） */
+  probeMirrors: (prefixes) => ipcRenderer.invoke('app:probe-mirrors', prefixes),
   /** 双击 .rbox（或启动参数带 .rbox）时主进程推过来的工程文件路径，返回取消订阅函数 */
   onProjectFileOpen: (callback) => {
     const handler = (_event, file) => callback(file);

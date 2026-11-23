@@ -4,6 +4,7 @@ import { Button, Checkbox, Collapse, Form, Input, Progress, Select, Table } from
 
 import { ApiError, cancelJob, request } from '../api';
 import { useT } from '../i18n';
+import { useHydratedForm } from './useHydratedForm';
 import {
   advancedMustStayOpen,
   buildNewRule,
@@ -211,6 +212,14 @@ export function RpyExtractionPage(props: {
   const engineBusy = state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
   const hasProject = Boolean(projectPath);
   const writeBlocked = busy || mutating || engineBusy || !keyReady || state.link !== 'open';
+  // 编辑态不含 keyReady：轮询回包未到时 keyReady 短暂为 false，不能拿它禁用方式/方案下拉
+  const editBlocked = busy || mutating || engineBusy || state.link !== 'open';
+  // 轮询每次换新 status 引用；公共 hook 保证同身份只水合一次，用户改过 mode/profileId 后不再被覆盖
+  const selectionFormIdentity = useMemo(
+    () => JSON.stringify([statusPath, suite.identity]),
+    [statusPath, suite.identity],
+  );
+  const selectionHydration = useHydratedForm(selectionFormIdentity);
 
   useEffect(() => {
     jobIdRef.current = job?.id ?? null;
@@ -350,7 +359,11 @@ export function RpyExtractionPage(props: {
   }, [suite.identity, projectPath]);
 
   useEffect(() => {
+    // 路径/分类/语言/页码/项目任一变化即换身份：重置标记，允许新身份首次水合
+    if (selectionHydration.identityChanged()) return;
     if (!status) return;
+    // 已水合过或用户已手动改过 mode/profileId：不再用后端 applied_* 覆盖本地选择
+    if (!selectionHydration.shouldHydrate()) return;
     const nextApplied = {
       mode: status.applied_mode || 'builtin',
       profileId: status.applied_profile_id ?? null,
@@ -359,7 +372,9 @@ export function RpyExtractionPage(props: {
     setApplied(nextApplied);
     setMode((nextApplied.mode as Mode) || 'builtin');
     setProfileId(nextApplied.profileId);
-  }, [status?.project_key, status?.category, status?.applied_mode, status?.applied_profile_id, status?.applied_name, noProfile]);
+    selectionHydration.markHydrated();
+  // selectionHydration 是每次渲染重建的对象，故意不进 deps；身份由 selectionFormIdentity 驱动
+  }, [status?.project_key, status?.category, status?.applied_mode, status?.applied_profile_id, status?.applied_name, noProfile, selectionFormIdentity]);
 
   useEffect(() => {
     if (advancedMustStayOpen(mode)) setAdvancedOpen(true);
@@ -773,8 +788,12 @@ export function RpyExtractionPage(props: {
               { value: 'combined', label: t('rpy_rules_combined_simple') },
               { value: 'custom', label: t('rpy_rules_custom_simple') },
             ]}
-            onChange={(value) => setMode(value as Mode)}
-            disabled={writeBlocked}
+            onChange={(value) => {
+              // 用户手动改方式：标记 dirty，后续轮询不得回写覆盖
+              selectionHydration.markDirty();
+              setMode(value as Mode);
+            }}
+            disabled={editBlocked}
           />
         </Form.Item>
         <p className="card-description">{modeHelp}</p>
@@ -785,8 +804,12 @@ export function RpyExtractionPage(props: {
               value={profileId || undefined}
               placeholder={noProfile}
               options={profiles.map((item) => ({ value: item.id, label: item.name || item.id }))}
-              onChange={(value) => setProfileId(value ? String(value) : null)}
-              disabled={writeBlocked}
+              onChange={(value) => {
+                // 用户手动改方案：标记 dirty，后续轮询不得回写覆盖
+                selectionHydration.markDirty();
+                setProfileId(value ? String(value) : null);
+              }}
+              disabled={editBlocked}
             />
           </Form.Item>
         ) : null}

@@ -43,6 +43,9 @@ export function SourceTranslatePage(props: {
   const t = useT();
   const values = state.settings?.values ?? {};
   const projectPath = String(state.project?.renpy_project_path ?? '');
+  // 选择对话框在途期间项目可能被切走：用 ref 记录当前项目身份，回包后对比，避免旧选择写进新项目
+  const projectIdentityRef = useRef(projectPath);
+  projectIdentityRef.current = projectPath;
   const gameFolder = String(state.project?.renpy_game_folder ?? '');
   const tlFolder = String(state.project?.renpy_tl_folder ?? '');
   const ownerKey = useMemo(
@@ -191,24 +194,28 @@ export function SourceTranslatePage(props: {
   };
 
   const pickInput = async () => {
+    // 弹框前冻结项目身份；回包时项目已切换则丢弃，不污染新项目输入
+    const context = projectIdentityRef.current;
     if (inputKind === 'file') {
       const path = await window.renpy?.pickFile?.({
         filters: [{ name: 'Ren\'Py', extensions: ['rpy'] }],
       });
-      if (path) {
+      if (path && context === projectIdentityRef.current) {
         setInputPath(path);
       }
       return;
     }
     const path = await window.renpy?.pickFolder?.(inputPath || gameFolder || projectPath || undefined);
-    if (path) {
+    if (path && context === projectIdentityRef.current) {
       setInputPath(path);
     }
   };
 
   const pickBackup = async () => {
+    // 同上：await 前后对比项目身份，切换过项目就丢弃这次选择
+    const context = projectIdentityRef.current;
     const path = await window.renpy?.pickFolder?.(externalBackupDir || projectPath || undefined);
-    if (path) setExternalBackupDir(path);
+    if (path && context === projectIdentityRef.current) setExternalBackupDir(path);
   };
 
   const start = async (preflightConfirmed = false, projectStatus: 'UNTRANSLATED' | 'TRANSLATING' = 'UNTRANSLATED') => {

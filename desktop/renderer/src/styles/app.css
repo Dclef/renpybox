@@ -542,6 +542,28 @@
   .rb-setting-value { font-size: 13px; font-variant-numeric: tabular-nums; }
   .rb-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* 更新镜像：下拉多选 + 自定义单行，紧凑纵排全宽 */
+  .rb-mirror-card { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 10px; }
+  .rb-mirror-head { min-width: 0; }
+  .rb-mirror-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; }
+  .rb-mirror-select { width: 100%; }
+  .rb-mirror-meta { margin: 0; color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-mirror-hint { color: var(--rb-text-secondary); }
+  .rb-mirror-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+  .rb-mirror-custom .ant-input { flex: 1 1 200px; min-width: 0; }
+  .rb-mirror-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .rb-mirror-errors { display: flex; flex-direction: column; gap: 4px; color: var(--rb-error); font-size: 12px; }
+  .rb-mirror-errors-title { margin: 0; font-weight: 500; }
+  .rb-mirror-errors-sub { margin: 0; }
+  .rb-mirror-errors-list { margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
+  /* 测速结果：一行一节点，无卡片 */
+  .rb-mirror-probe { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .rb-mirror-probe-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; min-width: 0; color: var(--rb-text-secondary); font-size: 12px; }
+  .rb-mirror-probe-url { flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-mirror-probe-fast { color: var(--rb-accent); }
+  .rb-mirror-probe-bad { color: var(--rb-error); }
+  .rb-mirror-probe-note { margin: 0; color: var(--rb-error); font-size: 12px; }
+
   .rb-project-identity {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1344,6 +1366,12 @@
   @media (max-width: 719px) {
     .rb-setting-row { flex-wrap: wrap; }
     .rb-setting-control { width: 100%; }
+    /* 窄屏：镜像自定义行与操作行全宽换行 */
+    .rb-mirror-card { gap: 8px; }
+    .rb-mirror-custom { flex-direction: column; align-items: stretch; }
+    .rb-mirror-custom .ant-input { width: 100%; flex-basis: auto; }
+    .rb-mirror-actions { width: 100%; }
+    .rb-mirror-probe-url { flex-basis: 100%; }
   }
 
   @media (max-width: 999px) {

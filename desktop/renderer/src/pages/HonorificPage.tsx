@@ -78,12 +78,14 @@ export function HonorificPage(props: { state: AppState; onDirtyChange?: (dirty: 
     };
   }, []);
 
+  // 设置对象每轮换引用；用 JSON 串稳定原始值，避免本 effect 无意义重跑
+  const titlesKey = JSON.stringify(state.settings?.values.honorific_placeholder_titles ?? null);
   useEffect(() => {
     if (unsaved) return;
     setRows(readRows(state.settings?.values.honorific_placeholder_titles, nextId));
     setEnabled(state.settings?.values.honorific_placeholder_bridge_enable !== false);
     setEditGeneration((value) => value + 1);
-  }, [unsaved, state.settings?.values.honorific_placeholder_titles, state.settings?.values.honorific_placeholder_bridge_enable]);
+  }, [unsaved, titlesKey, state.settings?.values.honorific_placeholder_bridge_enable]);
 
   useEffect(() => {
     onDirtyChange?.(unsaved);

@@ -93,6 +93,8 @@ export function TranslationReusePage(props: { state: AppState }) {
   const ownerKey = reuseOwnerProjectKey(status);
   const engineBusy = state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
   const blocked = busy || engineBusy || !keyReady || state.link !== 'open';
+  // 编辑态不含 keyReady：轮询回包延迟会让 keyReady 短暂为 false，若拿它禁用输入框/浏览按钮，用户每敲一字就丢焦点
+  const editBlocked = busy || engineBusy || state.link !== 'open';
   const pathConflict = reusePathsConflict(sourceDir, targetDir);
   const ready = Boolean(sourceDir.trim() && targetDir.trim()) && !pathConflict;
 
@@ -135,10 +137,10 @@ export function TranslationReusePage(props: { state: AppState }) {
             <Input
               value={sourceDir}
               placeholder={copy.sourcePh}
-              disabled={blocked}
+              disabled={editBlocked}
               onChange={(e) => setSourceDir(e.target.value)}
             />
-            <Button onClick={() => void pickSource()} disabled={blocked}>{copy.browse}</Button>
+            <Button onClick={() => void pickSource()} disabled={editBlocked}>{copy.browse}</Button>
           </Space.Compact>
         </Form.Item>
         <Form.Item label={copy.target}>
@@ -146,10 +148,10 @@ export function TranslationReusePage(props: { state: AppState }) {
             <Input
               value={targetDir}
               placeholder={copy.targetPh}
-              disabled={blocked}
+              disabled={editBlocked}
               onChange={(e) => setTargetDir(e.target.value)}
             />
-            <Button onClick={() => void pickTarget()} disabled={blocked}>{copy.browse}</Button>
+            <Button onClick={() => void pickTarget()} disabled={editBlocked}>{copy.browse}</Button>
           </Space.Compact>
         </Form.Item>
       </SettingsGroup>

@@ -1,5 +1,5 @@
 /** 设置默认语言：复用 /api/language-tools/default；提交前校验 tl/<language> 存在。 */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Form, Input, Progress, Select } from 'antd';
 
 import { defaultLanguagePathReady, resolveTargetLanguage } from '../languageToolsView.mjs';
@@ -49,15 +49,19 @@ export function SetDefaultLanguagePage(props: { state: AppState }) {
   const writeBlocked = busy || engineBusy || !keyReady || state.link !== 'open' || !hasProject || !language;
 
   const languagesKey = languages.join('\0');
+  // 用户在下拉框手动选过语言后，status 回写不得再覆盖其选择；身份变化时解除
+  const selectedDirtyRef = useRef(false);
   useEffect(() => {
     setConfirm(false);
     setLocalError('');
     setCustom('');
     if (languages.includes('chinese')) setSelected('chinese');
     else if (languages[0]) setSelected(languages[0]);
+    selectedDirtyRef.current = false;
   }, [suite.identity]);
 
   useEffect(() => {
+    if (selectedDirtyRef.current) return;
     if (status?.default_language && !custom && languages.includes(status.default_language)) {
       setSelected(status.default_language);
     }
@@ -111,7 +115,11 @@ export function SetDefaultLanguagePage(props: { state: AppState }) {
           <Select
             options={languages.map((item) => ({ value: item, label: item }))}
             value={selected}
-            onChange={(value) => setSelected(String(value || 'chinese'))}
+            onChange={(value) => {
+              // 用户手动选语言：标记 dirty，避免下一轮 status 回写把它改回去
+              selectedDirtyRef.current = true;
+              setSelected(String(value || 'chinese'));
+            }}
             disabled={busy || !hasProject}
             allowClear={false}
           />

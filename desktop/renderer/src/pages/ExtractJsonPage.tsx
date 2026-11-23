@@ -66,6 +66,8 @@ export function ExtractJsonPage(props: { state: AppState }) {
 
   const engineBusy = state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
   const writeBlocked = busy || engineBusy || !keyReady || state.link !== 'open';
+  // 编辑态不含 keyReady：轮询回包未到时 keyReady 短暂为 false，不能拿它禁用浏览/选择按钮
+  const editBlocked = busy || engineBusy || state.link !== 'open';
   const defaultRoot = status?.default_game_file || status?.project_root || fallbackRoot;
   const resolvedGame = resolveGameFile(gameFile, defaultRoot);
   const canExport = exportJsonReady({ gameFile, outputPath, defaultRoot });
@@ -144,7 +146,7 @@ export function ExtractJsonPage(props: { state: AppState }) {
         <Form.Item label={t('extract_json_game_file')} style={{ marginBottom: 12 }}>
           <Space.Compact block>
             <Input value={gameFile} onChange={(e) => setGameFile(e.target.value)} style={{ flex: 1 }} />
-            <Button onClick={() => void pickGameFile()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
+            <Button onClick={() => void pickGameFile()} disabled={editBlocked}>{t('extract_json_browse')}</Button>
           </Space.Compact>
         </Form.Item>
         <Form.Item label={t('extract_json_language')} style={{ marginBottom: 12 }}>
@@ -169,7 +171,7 @@ export function ExtractJsonPage(props: { state: AppState }) {
         <Form.Item label={t('extract_json_output')} style={{ marginBottom: 12 }}>
           <Space.Compact block>
             <Input value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-            <Button onClick={() => void pickOutput()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
+            <Button onClick={() => void pickOutput()} disabled={editBlocked}>{t('extract_json_browse')}</Button>
           </Space.Compact>
         </Form.Item>
         <Button
@@ -191,7 +193,7 @@ export function ExtractJsonPage(props: { state: AppState }) {
         <Form.Item label={t('extract_json_json_path')} style={{ marginBottom: 12 }}>
           <Space.Compact block>
             <Input value={jsonPath} onChange={(e) => setJsonPath(e.target.value)} style={{ flex: 1 }} />
-            <Button onClick={() => void pickJson()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
+            <Button onClick={() => void pickJson()} disabled={editBlocked}>{t('extract_json_browse')}</Button>
           </Space.Compact>
         </Form.Item>
         <div className="rb-tool-actions">
@@ -223,7 +225,7 @@ export function ExtractJsonPage(props: { state: AppState }) {
         <Form.Item label={t('extract_json_output')} style={{ marginBottom: 12 }}>
           <Space.Compact block>
             <Input value={tlExportPath} onChange={(e) => setTlExportPath(e.target.value)} style={{ flex: 1 }} />
-            <Button onClick={() => void pickTlExport()} disabled={writeBlocked}>{t('extract_json_browse')}</Button>
+            <Button onClick={() => void pickTlExport()} disabled={editBlocked}>{t('extract_json_browse')}</Button>
           </Space.Compact>
         </Form.Item>
         <Button

@@ -87,6 +87,8 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
   const operation = useRef(0);
   const projectKey = JSON.stringify([state.project?.renpy_project_path, state.project?.renpy_tl_folder, state.settings?.values.renpy_project_path, state.settings?.values.renpy_game_folder, state.settings?.values.renpy_tl_folder, state.settings?.values.input_folder, state.settings?.values.output_folder]);
   const projectRef = useRef(projectKey); projectRef.current = projectKey;
+  // 设置对象每次换引用：用 JSON 串稳定原始值，供水合 effect 做 deps
+  const preserveDataKey = JSON.stringify(state.settings?.values.text_preserve_data ?? null);
   // 规则本身是全局设置；owner 只标记草稿在哪个项目身份下编辑，防止切换后晚到的旧草稿被保存进新项目
   const [ownerProject, setOwnerProject] = useState(projectKey);
   const stale = ownerProject !== projectKey;
@@ -122,7 +124,8 @@ export function PreservePage(props: { state: AppState; onDirtyChange?: (dirty: b
     setRows(readRows(state.settings?.values.text_preserve_data));
     setEnabled(state.settings?.values.text_preserve_enable === true);
     setOwnerProject(projectKey);
-  }, [dirty, cellDirty, projectKey, state.settings?.values.text_preserve_data, state.settings?.values.text_preserve_enable]);
+    // deps 用 JSON 串稳定原始值（同 projectKey 做法），避免设置对象换引用导致每轮重跑
+  }, [dirty, cellDirty, projectKey, preserveDataKey, state.settings?.values.text_preserve_enable]);
 
   useEffect(() => {
     onDirtyChange?.(dirty || cellDirty);

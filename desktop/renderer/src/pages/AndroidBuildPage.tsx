@@ -1,5 +1,5 @@
 /** 安卓打包：对齐 Qt5 AndroidBuildPage，走 /api/android-build。SDK 任务无假停止。 */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Form, Input, Progress } from 'antd';
 
 import { request } from '../api';
@@ -8,6 +8,7 @@ import {
   androidAppFieldsReady,
   androidConfigPayload,
   androidCopy,
+  androidFormIdentityKey,
   androidJobCancellable,
   androidOwnerProjectKey,
   androidSdkReady,
@@ -17,10 +18,16 @@ import {
   formatAndroidOutputs,
   formatPrefixPlan,
   formatPrefixResult,
+  androidDraftHasContent,
+  androidDraftKey,
+  mergeAndroidForm,
+  parseAndroidDraftBundle,
   prefixRequestBody,
   sameAndroidPath,
+  serializeAndroidDraft,
 } from '../androidBuildView.mjs';
 import { useT } from '../i18n';
+import { useHydratedForm } from './useHydratedForm';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, SettingsGroup } from '../ui';
 import {
@@ -110,18 +117,81 @@ const KINDS = [
   'android_shell',
 ] as const;
 
+/** 从 sessionStorage 读取当前绑定项目的草稿；失败时回落默认空表单。 */
+function loadAndroidDraftBundle(projectPath: string) {
+  try {
+    const raw = sessionStorage.getItem(androidDraftKey(projectPath));
+    if (!raw) {
+      return { form: defaultAndroidForm(), prefixDir: '', prefixText: 'x-', fromStorage: false };
+    }
+    const bundle = parseAndroidDraftBundle(raw);
+    return { ...bundle, fromStorage: true };
+  } catch {
+    return { form: defaultAndroidForm(), prefixDir: '', prefixText: 'x-', fromStorage: false };
+  }
+}
+
+function clearAndroidDraftStorage(projectPath: string) {
+  try {
+    sessionStorage.removeItem(androidDraftKey(projectPath));
+  } catch {
+    // 隐私模式等场景下静默退化
+  }
+}
+
+function persistAndroidDraftStorage(
+  projectPath: string,
+  form: ReturnType<typeof defaultAndroidForm>,
+  prefixDir: string,
+  prefixText: string,
+) {
+  try {
+    sessionStorage.setItem(
+      androidDraftKey(projectPath),
+      serializeAndroidDraft(form, { prefixDir, prefixText }),
+    );
+  } catch {
+    // 写入失败不阻断编辑
+  }
+}
+
+function draftExistsInStorage(projectPath: string): boolean {
+  try {
+    const raw = sessionStorage.getItem(androidDraftKey(projectPath));
+    if (!raw) return false;
+    const bundle = parseAndroidDraftBundle(raw);
+    return androidDraftHasContent(bundle.form, { prefixDir: bundle.prefixDir, prefixText: bundle.prefixText });
+  } catch {
+    return false;
+  }
+}
+
 export function AndroidBuildPage(props: { state: AppState }) {
   const { state } = props;
   const t = useT();
   const uiLang = state.bootLanguage === 'EN' ? 'EN' : 'ZH';
   const copy = (key: keyof typeof ANDROID_COPY) => androidCopy(ANDROID_COPY[key], uiLang);
-  const [form, setForm] = useState(() => defaultAndroidForm());
+  // 草稿按全局绑定项目隔离，不用 statusPath（手动 B 会变）
+  const boundProject = String(state.project?.renpy_project_path ?? '');
+  const initialDraftRef = useRef<ReturnType<typeof loadAndroidDraftBundle> | null>(null);
+  if (initialDraftRef.current === null) {
+    initialDraftRef.current = loadAndroidDraftBundle(boundProject);
+  }
+  const initialDraft = initialDraftRef.current;
+  const [form, setForm] = useState(initialDraft.form);
   const [projectPath, setProjectPath] = useState('');
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
   const [localError, setLocalError] = useState('');
   const [detectMsg, setDetectMsg] = useState('');
-  const [prefixDir, setPrefixDir] = useState('');
-  const [prefixText, setPrefixText] = useState('x-');
+  const [prefixDir, setPrefixDir] = useState(initialDraft.prefixDir);
+  const [prefixText, setPrefixText] = useState(initialDraft.prefixText);
+  const [draftRestored, setDraftRestored] = useState(() => (
+    initialDraft.fromStorage
+    && androidDraftHasContent(initialDraft.form, {
+      prefixDir: initialDraft.prefixDir,
+      prefixText: initialDraft.prefixText,
+    })
+  ));
   const [prefixMsg, setPrefixMsg] = useState('');
   const [prefixTone, setPrefixTone] = useState<'info' | 'success' | 'warning'>('info');
   const [prefixPlan, setPrefixPlan] = useState<PrefixPayload | null>(null);
@@ -132,6 +202,13 @@ export function AndroidBuildPage(props: { state: AppState }) {
   const suite = useProjectToolJob<AndroidResult, AndroidStatus>(state, statusPath, KINDS);
   const { status, keyReady, job, result, active, error, busy } = suite;
   const ownerKey = androidOwnerProjectKey(status, suite.currentKey() || '');
+  const formIdentity = androidFormIdentityKey(statusPath, suite.identity);
+  // 轮询每次换新 config 引用；公共 hook 保证同身份只水合一次，用户改过则保留本地值
+  const formHydration = useHydratedForm(formIdentity);
+  const boundProjectRef = useRef(boundProject);
+  const draftBootMarkedRef = useRef(false);
+  // 写入 android.json 成功后暂停草稿落盘，直到用户再次编辑
+  const draftPersistEnabledRef = useRef(true);
 
   const engineBusy = state.translation.engine_status !== 'IDLE'
     || state.translation.stop_barrier
@@ -152,13 +229,61 @@ export function AndroidBuildPage(props: { state: AppState }) {
   }, [state.project?.renpy_project_path]);
 
   useEffect(() => {
+    // 首次挂载：有 session 草稿时标 dirty，避免后端空 config 覆盖
+    if (!draftBootMarkedRef.current && initialDraft.fromStorage) {
+      draftBootMarkedRef.current = true;
+      if (androidDraftHasContent(form, { prefixDir, prefixText })) {
+        formHydration.markDirty();
+      }
+    }
+  }, [form, formHydration, initialDraft.fromStorage, prefixDir, prefixText]);
+
+  useEffect(() => {
+    if (boundProjectRef.current === boundProject) return;
+    boundProjectRef.current = boundProject;
+    const bundle = loadAndroidDraftBundle(boundProject);
+    setForm(bundle.form);
+    setPrefixDir(bundle.prefixDir);
+    setPrefixText(bundle.prefixText);
+    const restored = bundle.fromStorage
+      && androidDraftHasContent(bundle.form, { prefixDir: bundle.prefixDir, prefixText: bundle.prefixText });
+    setDraftRestored(restored);
+    if (restored) formHydration.markDirty();
+    draftPersistEnabledRef.current = true;
+  }, [boundProject, formHydration]);
+
+  useEffect(() => {
+    if (!draftPersistEnabledRef.current) return;
+    // 无实质内容时不占 sessionStorage
+    if (!androidDraftHasContent(form, { prefixDir, prefixText })) {
+      clearAndroidDraftStorage(boundProject);
+      return;
+    }
+    persistAndroidDraftStorage(boundProject, form, prefixDir, prefixText);
+  }, [boundProject, form, prefixDir, prefixText]);
+
+  useEffect(() => {
+    // 切项目 / 改手动项目目录：新目标 android.json 允许重新水合一次
+    if (formHydration.identityChanged()) {
+      // 身份变但仍有本地草稿时，继续优先草稿而非轮询空 config
+      if (draftExistsInStorage(boundProject)) {
+        formHydration.markDirty();
+      }
+      // 本轮 status 仍可能是旧目标；等 projectToolJob setStatus(null) 后再水合
+      return;
+    }
     if (!status?.config) return;
-    setForm(defaultAndroidForm(status.config));
+    if (formHydration.shouldHydrate()) {
+      const hydrateFlags = formHydration.flags();
+      setForm((prev) => mergeAndroidForm(prev, status.config, hydrateFlags));
+      formHydration.markHydrated();
+    }
     // 仅在路径尚未手动改写时同步 status 根，避免冲掉手动 B
     if (status.project_root && !projectPath.trim()) {
       setProjectPath(status.project_root);
     }
-  }, [status?.config, status?.project_root, suite.identity]);
+  // projectPath 仅作「为空才兜底」读取，故意不列入 deps（与原 effect 一致）
+  }, [status?.config, status?.project_root, suite.identity, formIdentity, boundProject, formHydration]);
 
   // 构建成功后自动打开 rapt/bin（对齐 Qt）
   useEffect(() => {
@@ -168,6 +293,8 @@ export function AndroidBuildPage(props: { state: AppState }) {
   }, [job?.id, job?.status, result?.open_bin, result?.rapt_bin, status?.rapt_bin]);
 
   function patchForm(partial: Partial<typeof form>) {
+    draftPersistEnabledRef.current = true;
+    formHydration.markDirty();
     setForm((prev) => ({ ...prev, ...partial }));
   }
 
@@ -262,6 +389,11 @@ export function AndroidBuildPage(props: { state: AppState }) {
         return undefined;
       }
       setDetectMsg(payload.message || copy('writeJson'));
+      // 已写入 android.json：清 session 草稿，后端 config 与水合同步
+      clearAndroidDraftStorage(boundProject);
+      setDraftRestored(false);
+      formHydration.markHydrated();
+      draftPersistEnabledRef.current = false;
       return state.reloadTranslation();
     }).catch((failure) => {
       if (context !== suite.identityRef.current || !sameAndroidPath(pathAtStart, projectPath)) {
@@ -326,7 +458,11 @@ export function AndroidBuildPage(props: { state: AppState }) {
 
   async function pickPrefixDir() {
     const next = await window.renpy?.pickFolder?.(prefixDir || undefined);
-    if (next) setPrefixDir(next);
+    if (next) {
+      draftPersistEnabledRef.current = true;
+      formHydration.markDirty();
+      setPrefixDir(next);
+    }
   }
 
   async function runPrefix(action: 'strip' | 'restore', apply: boolean) {
@@ -354,7 +490,11 @@ export function AndroidBuildPage(props: { state: AppState }) {
         return;
       }
       setPrefixPlan(null);
-      if (payload.new_root) setPrefixDir(payload.new_root);
+      if (payload.new_root) {
+        draftPersistEnabledRef.current = true;
+        formHydration.markDirty();
+        setPrefixDir(payload.new_root);
+      }
       setPrefixTone(payload.skipped ? 'warning' : 'success');
       setPrefixMsg(formatPrefixResult(payload, uiLang));
     } catch (err) {
@@ -378,6 +518,9 @@ export function AndroidBuildPage(props: { state: AppState }) {
 
   return (
     <div className="rb-asset-page rb-page-scroll" data-rb-page="android-build">
+      {draftRestored ? (
+        <Banner tone="info" data-rb-android-draft-restored="1">{t('android_build_draft_restored')}</Banner>
+      ) : null}
       {error ? <Banner tone="error">{error}</Banner> : null}
       {localError ? <Banner tone="error">{localError}</Banner> : null}
       {!hasProject ? <Banner tone="warning">{copy('needsProject')}</Banner> : null}
@@ -537,7 +680,11 @@ export function AndroidBuildPage(props: { state: AppState }) {
         <Form.Item label={copy('prefixLabel')} style={{ marginBottom: 12 }}>
           <Input
             value={prefixText}
-            onChange={(event) => setPrefixText(event.target.value)}
+            onChange={(event) => {
+              draftPersistEnabledRef.current = true;
+              formHydration.markDirty();
+              setPrefixText(event.target.value);
+            }}
             disabled={prefixBusy}
             style={{ width: 160, maxWidth: '100%' }}
             data-rb-android-prefix-text="1"

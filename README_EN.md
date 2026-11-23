@@ -110,6 +110,11 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
 
 ## Recent Updates 📅
 
+- 2026-11-24 v0.9.15:
+  - **Update Mirrors** is now a multi-select dropdown with custom addresses, plus a one-click speed test that shows latency and throughput per mirror and automatically saves the fastest order.
+  - Android Build keeps unsaved form data when you leave and return, and its keystore logs no longer show garbled Chinese text.
+  - Fixed input fields losing focus or being overwritten by background state refreshes across settings and tool pages, and expanded the regression checks.
+
 - 2026-11-20 v0.9.14:
   - Desktop updates now resume: an interrupted or cancelled download keeps its partial file and continues from where it stopped instead of starting over; flaky connections retry with backoff and fall back to mirror hosts, and a finished installer is verified without downloading again.
   - Updates now download through acceleration mirrors (fastgit.cc and cors.isteed.cc): the 235 MB installer took 7-10 seconds in testing, while direct GitHub access and the old ghfast.top mirror are effectively unusable in mainland China. A mirror that sends no data for 12 seconds is skipped automatically.
@@ -123,15 +128,6 @@ An `.rbox` file is a manual snapshot: save it again after further translation or
   - Added the Bilibili free translation interface (Index-Translate-35B-A3B): no API key required; select it directly in **API**
   - New setups now default to Microsoft Bing Translate (Free); existing configurations keep their chosen interface
   - Fixed Bing free translation returning an empty response after the mainland-China hostname redirect; interface tests no longer fail with NoneType / xpath errors
-
-- 2026-11-03 v0.9.11:
-  - The Agent assistant now receives the glossary, do-not-translate list, and character cards per batch when it translates entries itself: previously the one-click flow enforced the glossary strictly while Agent-translated entries ignored it entirely, so a single project could end up with two different term translations; entries that ignore the glossary are now rolled back with the missing terms listed.
-  - Agent write-back now applies the post-translation replacement rules, closing gaps in punctuation and name consistency between the two paths.
-  - Agent translation protects placeholders such as `[player name]` and `{b}`: if the model drops or alters them the entry is rolled back for rewriting, instead of the game failing with an undefined variable.
-  - Long Agent sessions now compact earlier turns into a summary first and only trim old messages if that fails, so a whole-project translation no longer loses the original request.
-  - Provider rate limits are retried with backoff, and Stop takes effect immediately while waiting; truncated output automatically lowers the per-batch entry count.
-  - The Agent status bar now shows usable input, output cap, message cap, request count, and separate input/output tokens.
-  - Fixed the Agent stage and usage being reset to zero when opening a history session, and the session history directory now prunes itself.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the complete change history.
 
