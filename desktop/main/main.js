@@ -21,6 +21,7 @@ import { createLogger } from './logger.js';
 import { readLogTail } from './log-reader.js';
 import { exportFilename, logRevealTarget, resolveLogFile, writeLogExport } from './log-export.js';
 import { createDesktopUpdater, readUpdateMirrors } from './updater.js';
+import { probeMirrors } from './mirror-probe.js';
 import { createElectronFetch, readProxySettings } from './updater-net.js';
 import { createWindowCloseGuard } from './window-close-guard.js';
 import { APP_DATA_DIR_NAME, migrateLegacyProfile } from './profile-migration.js';
@@ -292,6 +293,8 @@ ipcMain.handle('app:check-update', () => updater.check());
 ipcMain.handle('app:download-update', () => updater.download());
 ipcMain.handle('app:cancel-update', () => updater.cancel());
 ipcMain.handle('app:install-update', () => updater.install());
+// 镜像测速走已有代理感知 fetch，渲染层 CSP 不能直连外网
+ipcMain.handle('app:probe-mirrors', (_event, prefixes) => probeMirrors(prefixes, { fetchImpl: updateFetch }));
 
 ipcMain.handle('shell:open', (_event, kind) => {
   if (kind === 'logs' || kind === 'welcome' || kind === 'update') openShellWindow(kind);

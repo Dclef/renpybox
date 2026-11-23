@@ -58,6 +58,14 @@ jobs:
       - name: Check desktop contracts
         run: npm test --prefix desktop
 
+      # 后端 pytest 门禁：requirements-backend.txt 未含 pytest，先显式安装再跑根 tests/，红灯阻塞发布。
+      - name: Check backend pytest suite
+        run: |
+          python -m pip install pytest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest tests/ -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build Windows installer
         run: npm run pack:win --prefix desktop
         env:

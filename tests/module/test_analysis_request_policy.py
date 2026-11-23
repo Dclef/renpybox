@@ -71,6 +71,7 @@ def test_non_dict_platform_passthrough():
     assert build_analysis_platform(None) is None
 
 
+@pytest.mark.skip(reason="旧 TaskRequester/_extract_chunk_with_llm 已删除；思考档位封顶契约由本文件 build_analysis_platform 用例与 test_glossary_candidate_service.py 覆盖")
 def test_glossary_chunk_passes_capped_copy_to_requester(monkeypatch):
     platform = make_platform({"level": "MAX"})
     original = copy.deepcopy(platform)

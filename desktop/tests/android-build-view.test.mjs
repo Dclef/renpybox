@@ -6,7 +6,13 @@ import {
   androidAppFieldsReady,
   androidConfigPayload,
   androidCopy,
+  androidDraftHasContent,
+  androidDraftKey,
+  androidFormIdentityKey,
   androidJobCancellable,
+  parseAndroidDraftBundle,
+  restoreAndroidDraft,
+  serializeAndroidDraft,
   androidOwnerProjectKey,
   androidSdkReady,
   androidStatusPath,
@@ -15,8 +21,10 @@ import {
   formatAndroidOutputs,
   formatPrefixPlan,
   formatPrefixResult,
+  mergeAndroidForm,
   prefixRequestBody,
   sameAndroidPath,
+  shouldHydrateAndroidForm,
 } from '../renderer/src/androidBuildView.mjs';
 
 test('默认表单对齐 Config/Qt', () => {
@@ -137,4 +145,123 @@ test('ANDROID_COPY 新增 X- 前缀键双语齐全', () => {
     assert.ok(ANDROID_COPY[key].ZH, `${key}.ZH`);
     assert.ok(ANDROID_COPY[key].EN, `${key}.EN`);
   }
+});
+
+test('水合：用户 dirty（刚选 SDK）时空 config 不能冲掉 sdkPath', () => {
+  const current = {
+    ...defaultAndroidForm(),
+    sdkPath: 'D:/renpy-8.5.3-sdk',
+  };
+  const emptyConfig = { sdk_path: '', app_name: '', package_name: '', version: '' };
+  assert.equal(shouldHydrateAndroidForm({ hydrated: true, dirty: true }), false);
+  assert.equal(shouldHydrateAndroidForm({ hydrated: false, dirty: true }), false);
+  const merged = mergeAndroidForm(current, emptyConfig, { hydrated: false, dirty: true });
+  assert.equal(merged.sdkPath, 'D:/renpy-8.5.3-sdk');
+  assert.strictEqual(merged, current);
+});
+
+test('水合：同一身份已水合后轮询新 config 对象不再重置表单', () => {
+  const current = defaultAndroidForm({
+    sdk_path: 'D:/sdk',
+    app_name: 'Demo',
+    package_name: 'com.demo',
+    version: '1.0',
+  });
+  // 内容相同但引用不同的轮询 payload
+  const polled = {
+    sdk_path: 'D:/sdk',
+    app_name: 'Demo',
+    package_name: 'com.demo',
+    version: '1.0',
+  };
+  assert.equal(shouldHydrateAndroidForm({ hydrated: true, dirty: false }), false);
+  const merged = mergeAndroidForm(current, polled, { hydrated: true, dirty: false });
+  assert.strictEqual(merged, current);
+  assert.equal(merged.appName, 'Demo');
+});
+
+test('水合：身份变化后允许重新水合并载入新 config', () => {
+  const keyA = androidFormIdentityKey('/api/android-build?project_path=A', 'id-1');
+  const keyB = androidFormIdentityKey('/api/android-build?project_path=B', 'id-2');
+  assert.notEqual(keyA, keyB);
+
+  const stale = defaultAndroidForm({ sdk_path: 'D:/old-sdk', app_name: 'Old' });
+  // 身份变化：调用方重置 hydrated/dirty 后再 merge
+  const nextConfig = {
+    sdk_path: 'D:/new-sdk',
+    app_name: 'NewApp',
+    package_name: 'com.new',
+    version: '2.0',
+  };
+  assert.equal(shouldHydrateAndroidForm({ hydrated: false, dirty: false }), true);
+  const merged = mergeAndroidForm(stale, nextConfig, { hydrated: false, dirty: false });
+  assert.notStrictEqual(merged, stale);
+  assert.equal(merged.sdkPath, 'D:/new-sdk');
+  assert.equal(merged.appName, 'NewApp');
+  assert.equal(merged.packageName, 'com.new');
+  assert.equal(merged.version, '2.0');
+});
+
+test('水合：未 dirty 且未水合时从 config 正常载入', () => {
+  const empty = defaultAndroidForm();
+  const config = {
+    sdk_path: 'C:/renpy-sdk',
+    app_name: 'Game',
+    package_name: 'com.game',
+    version: '0.1',
+    archive_source_dir: 'images',
+  };
+  assert.equal(shouldHydrateAndroidForm({ hydrated: false, dirty: false }), true);
+  const merged = mergeAndroidForm(empty, config, { hydrated: false, dirty: false });
+  assert.equal(merged.sdkPath, 'C:/renpy-sdk');
+  assert.equal(merged.appName, 'Game');
+  assert.equal(merged.packageName, 'com.game');
+  assert.equal(merged.version, '0.1');
+  assert.equal(merged.archiveSourceDir, 'images');
+});
+
+test('androidDraftKey：空项目稳定、不同项目键不同', () => {
+  const empty = androidDraftKey('');
+  const empty2 = androidDraftKey('   ');
+  assert.equal(empty, empty2);
+  assert.ok(empty.startsWith('renpybox.android.draft.'));
+  assert.notEqual(androidDraftKey('C:/Game/A'), androidDraftKey('C:/Game/B'));
+  assert.equal(androidDraftKey('C:\\Game\\A'), androidDraftKey('c:/game/a'));
+});
+
+test('草稿序列化往返与 prefix 字段', () => {
+  const form = { ...defaultAndroidForm(), sdkPath: 'D:/sdk/', appName: 'Demo' };
+  const raw = serializeAndroidDraft(form, { prefixDir: 'C:/assets/x-game', prefixText: 'y-' });
+  const bundle = parseAndroidDraftBundle(raw);
+  assert.equal(bundle.form.sdkPath, 'D:/sdk/');
+  assert.equal(bundle.form.appName, 'Demo');
+  assert.equal(bundle.prefixDir, 'C:/assets/x-game');
+  assert.equal(bundle.prefixText, 'y-');
+  assert.equal(restoreAndroidDraft(raw).sdkPath, 'D:/sdk/');
+});
+
+test('restoreAndroidDraft：解析失败回落默认', () => {
+  const form = restoreAndroidDraft('{not-json');
+  assert.deepEqual(form, defaultAndroidForm());
+  const nested = restoreAndroidDraft(JSON.stringify({ v: 1, form: null }));
+  assert.deepEqual(nested, defaultAndroidForm());
+});
+
+test('restoreAndroidDraft：缺字段与类型错误回落', () => {
+  const raw = JSON.stringify({
+    v: 1,
+    form: { sdkPath: 'https://ok/', appName: 42, shellBackupEnable: 'no' },
+    prefixDir: 99,
+  });
+  const bundle = parseAndroidDraftBundle(raw);
+  assert.equal(bundle.form.sdkPath, 'https://ok/');
+  assert.equal(bundle.form.appName, '42');
+  assert.equal(bundle.form.shellBackupEnable, true);
+  assert.equal(bundle.prefixDir, '99');
+});
+
+test('androidDraftHasContent 识别非默认表单与前缀', () => {
+  assert.equal(androidDraftHasContent(defaultAndroidForm()), false);
+  assert.equal(androidDraftHasContent({ ...defaultAndroidForm(), sdkPath: 'C:/sdk/' }), true);
+  assert.equal(androidDraftHasContent(defaultAndroidForm(), { prefixDir: 'C:/x' }), true);
 });

@@ -23,6 +23,14 @@ export interface DesktopUpdateState {
   totalBytes?: number;
 }
 
+export interface MirrorProbeResult {
+  prefix: string;
+  latencyMs: number;
+  bytesPerSec: number;
+  ok: boolean;
+  fastest?: boolean;
+}
+
 export interface DesktopAppInfo {
   appVersion: string;
   packaged: boolean;
@@ -71,6 +79,8 @@ interface RenpyBridge {
   pickFile: (options?: FileDialogOptions) => Promise<string | null>;
   saveFile: (options?: FileDialogOptions) => Promise<string | null>;
   openPath: (target: string) => Promise<boolean>;
+  /** 主进程并发测速；空字符串前缀表示直连 */
+  probeMirrors: (prefixes: string[]) => Promise<MirrorProbeResult[]>;
   platform: string;
   versions: { electron: string; chrome: string; node: string };
 }

@@ -325,11 +325,26 @@ class LocalizerEN(LocalizerZH):
     app_settings_page_proxy_url_title: str = "Network Proxy"
     app_settings_page_proxy_url_content: str = "When enabled, network requests use the configured proxy address; leave the address empty to follow the system proxy (takes effect after app restart)"
     setting_update_mirror_title: str = "Update Mirrors"
-    setting_update_mirror_body: str = "Direct GitHub access is often unavailable, so update downloads try these mirrors in the order listed below; one prefix per line, leave it empty to use the built-in defaults. Mirrors only affect download speed: the installer is still verified with a full SHA-256 checksum, so changing mirrors never weakens security."
-    setting_update_mirror_placeholder: str = "One mirror address per line, e.g. https://fastgit.cc/"
+    setting_update_mirror_body: str = "Direct GitHub access is often unavailable, so update downloads try mirrors in the order you select below. Pick presets from the dropdown or add custom URLs underneath; leave the list empty to use the built-in defaults. Mirrors only affect download speed: the installer is still verified with a full SHA-256 checksum, so changing mirrors never weakens security."
+    setting_update_mirror_select_placeholder: str = "Select mirrors (multiple)"
+    setting_update_mirror_custom_placeholder: str = "Custom mirror URL, e.g. https://mirror.example.com/"
+    setting_update_mirror_add: str = "Add"
+    setting_update_mirror_builtin_hint: str = "Leave empty to use the 2 built-in defaults"
+    setting_update_mirror_selected_count: str = "{COUNT} mirrors selected"
+    setting_update_mirror_probe: str = "Speed test"
+    setting_update_mirror_probing: str = "Testing…"
+    setting_update_mirror_probe_failed: str = "No reachable mirror; kept previous settings"
+    setting_update_mirror_latency: str = "{MS} ms"
+    setting_update_mirror_speed: str = "{SPEED} MB/s"
+    setting_update_mirror_fastest: str = "Fastest"
+    setting_update_mirror_direct: str = "Direct"
     setting_update_mirror_reset: str = "Restore Defaults"
     setting_update_mirror_invalid: str = "Mirror addresses must start with http:// or https:// and end with /"
     setting_update_mirror_saved: str = "Update mirrors saved"
+    # 更新镜像卡片 UI 优化：与 desktop/renderer/src/i18n/en.ts 同名同步
+    setting_update_mirror_save: str = "Save"
+    setting_update_mirror_save_failed: str = "Failed to save update mirrors, please try again"
+    setting_update_mirror_invalid_prefix: str = "Invalid addresses"
     app_settings_page_close: str = "The application will close, please confirm …"
 
     # 接口管理
@@ -1606,6 +1621,7 @@ class LocalizerEN(LocalizerZH):
     android_build_processing_shell_package: str = 'Processing shell package...'
     android_build_shell_package_completed: str = 'Shell package completed.'
     android_build_archive_rpa_created: str = 'archive.rpa was created.'
+    android_build_draft_restored: str = 'Unsaved draft restored'
     android_build_android_build: str = 'Android Build'
     android_build_paths: str = 'Paths'
     android_build_project_folder: str = 'Project Folder:'

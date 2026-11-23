@@ -55,6 +55,16 @@ def _wait_idle(client):
     raise AssertionError("Agent 快照未在时限内回到空闲")
 
 
+def _wait_saved(store, session_id):
+    # 状态回到 idle 与会话落盘分属两条线程，偶发先后倒置；轮询等待而不是一次性断言，避免 CI 随机红灯。
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        if store.load(session_id) is not None:
+            return
+        time.sleep(0.01)
+    raise AssertionError("会话未在时限内落盘")
+
+
 def test_finished_run_is_saved_and_listed(history_app) -> None:
     client = history_app.client
 
@@ -137,7 +147,7 @@ def test_delete_current_session_stays_deleted(history_app) -> None:
     client.post("/api/agent/message", json={"message": "第一个任务", "thinking_level": "OFF"})
     finished = _wait_idle(client)
     current_id = finished["session_id"]
-    assert history_app.store.load(current_id) is not None
+    _wait_saved(history_app.store, current_id)
 
     assert client.delete(f"/api/agent/sessions/{current_id}").json() == {"deleted": True}
 

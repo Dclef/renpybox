@@ -110,7 +110,8 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
     if (!values) return;
     setInputFolder(String(values.input_folder ?? ''));
     setOutputFolder(String(values.output_folder ?? ''));
-  }, [values]);
+    // deps 只取两个原始值：values 每次 setSettings 都换引用，用对象会让本 effect 每轮空跑
+  }, [values?.input_folder, values?.output_folder]);
 
   // 绑定后自动创建工程文件：成功只报路径，失败只报原因（绑定本身已经成功）。
   const noteAutoCreate = useCallback((info: ProjectInfo) => {
@@ -134,8 +135,11 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
    */
   const pickFolder = useCallback(
     async (which: 'input' | 'output', current: string) => {
+      // 弹框前冻结项目身份：回包时项目已切换则丢弃，避免旧目录写进新项目
+      const context = String(state.project?.renpy_project_path ?? '');
       const picked = await window.renpy?.pickFolder(current || undefined);
       if (!picked) return;
+      if (context !== String(state.project?.renpy_project_path ?? '')) return;
       setBusy(true);
       try {
         if (!await state.setSetting(which === 'input' ? 'input_folder' : 'output_folder', picked)) return;
@@ -161,9 +165,12 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
   );
 
   const pickProject = useCallback(async () => {
+    // 同上：await 前后对比项目身份，切过项目就丢弃这次选择
+    const context = String(state.project?.renpy_project_path ?? '');
     const current = String(state.project?.renpy_project_path ?? inputFolder);
     const picked = await window.renpy?.pickFolder(current || undefined);
     if (!picked) return;
+    if (context !== String(state.project?.renpy_project_path ?? '')) return;
     setBusy(true);
     try {
       const info = await resolveProject(picked);
@@ -226,10 +233,13 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
   }, [reloadBinding, state]);
 
   const pickImportFile = useCallback(async () => {
+    // 弹框前冻结项目身份：切过项目就不要再用旧选择发起导入
+    const context = String(state.project?.renpy_project_path ?? '');
     const picked = await window.renpy?.pickFile({ filters: RBOX_FILTERS });
     if (!picked) return;
+    if (context !== String(state.project?.renpy_project_path ?? '')) return;
     await beginImport(picked);
-  }, [beginImport]);
+  }, [beginImport, state.project?.renpy_project_path]);
 
   // 双击 .rbox / 启动参数带 .rbox：主进程推路径过来，直接进入导入确认。
   useEffect(() => {
@@ -329,8 +339,11 @@ export function ProjectPage(props: { state: AppState; incomingFile?: string | nu
   }, [binding, engineBusy, projectLabel, reloadBinding, state, t]);
 
   const pickLegacyCache = useCallback(async () => {
+    // 同上：await 前后对比项目身份，切过项目就不把旧缓存目录塞进确认框
+    const context = String(state.project?.renpy_project_path ?? '');
     const picked = await window.renpy?.pickFolder(outputFolder || inputFolder || undefined);
     if (!picked) return;
+    if (context !== String(state.project?.renpy_project_path ?? '')) return;
     setBusy(true);
     try {
       setPendingLegacy(await inspectLegacyProjectCache(picked));

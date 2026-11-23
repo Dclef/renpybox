@@ -18,7 +18,7 @@
  * 夹在 max_output_tokens 和 request_timeout 两张卡之间，不是卡片。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import * as api from '../api';
 import { ChangelogView } from '../components/ChangelogView';
@@ -34,8 +34,19 @@ import type { UpdateState } from '../types';
 import type { AppState } from '../useAppState';
 import type { DesktopAppInfo, DesktopUpdateState } from '../preload';
 import { Dialog, NumberInput, PageHeader, SelectInput, SettingCard, SettingsGroup, Switch, TextInput } from '../ui';
-import { Button, Input, Progress, Tooltip } from 'antd';
-import { formatMirrorList, parseMirrorList } from '../updateMirrorSettings.mjs';
+import { Button, Input, Progress, Select, Tooltip } from 'antd';
+// 镜像列表纯逻辑在 mjs，便于单测；空列表语义与主进程内置默认一致
+import {
+  MIRROR_PRESETS,
+  addCustomMirror,
+  formatMirrorList,
+  isUsingBuiltinMirrors,
+  mirrorProbeCandidates,
+  parseMirrorList,
+  rankMirrorResults,
+  reconcileMirrorSelection,
+  speedOrderedMirrors,
+} from '../updateMirrorSettings.mjs';
 import { displayVersion, formatMegabytes, resolveWebUpdateUi } from '../webUpdateStatus.mjs';
 
 type Variant = 'basic' | 'expert' | 'app';
@@ -575,56 +586,203 @@ function WebAboutCard(props: { state: AppState }) {
 }
 
 /**
- * 更新镜像 —— 用户可以自己维护镜像前缀列表（一行一个），更新时按顺序尝试。
- *
- * 校验与格式化逻辑放在 updateMirrorSettings.mjs，便于 node --test 直接覆盖；
- * 这里只负责草稿、红字提示和提交。空列表 = 使用主进程内置的默认镜像。
+ * 更新镜像 —— 下拉多选预设 + 自定义追加，有序数组即后端尝试顺序；空列表 = 内置默认。
  */
 function UpdateMirrorCard(props: { state: AppState; value: unknown }) {
   const { state, value } = props;
   const t = useT();
   const title = t('setting_update_mirror_title');
-  const saved = formatMirrorList(value);
-  const [draft, setDraft] = useState(saved);
+  // 后端 value 每次轮询都是新对象；用字符串做稳定依赖，避免 effect 每渲染重跑导致无限 setState
+  const savedText = formatMirrorList(value);
+  const savedValues = useMemo(() => parseMirrorList(savedText).values, [savedText]);
+  const [ordered, setOrdered] = useState(savedValues);
+  const [customDraft, setCustomDraft] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
-  const focused = useRef(false);
+  const [probing, setProbing] = useState(false);
+  const [probeRows, setProbeRows] = useState<ReturnType<typeof rankMirrorResults>>([]);
+  const [probeFailed, setProbeFailed] = useState(false);
+  const dirty = useRef(false);
 
   useEffect(() => {
-    // 正在输入时不要用外部值覆盖草稿，否则会把用户刚敲的字符顶掉。
-    if (!focused.current) setDraft(saved);
-  }, [saved]);
-
-  const commit = useCallback(async (text: string) => {
-    const { values, errors: invalid } = parseMirrorList(text);
-    setErrors(invalid);
-    // 非法行一律不提交：让用户先改对，避免把坏地址写进配置后更新失败。
-    if (invalid.length > 0) return;
-    if (values.join('\n') === saved) return;
-    if (await state.setSetting('update_mirror_urls', values)) {
-      state.pushToast('success', t('setting_update_mirror_saved'));
+    // 未改本地列表时才跟随后端回读，避免保存/轮询冲掉正在编辑的选择。
+    // 依赖用字符串 savedText（而非数组 savedValues），否则每次渲染都换引用会无限重跑。
+    if (!dirty.current) {
+      // 只在值真的变了才 setState，避免任何多余的渲染
+      setOrdered((prev) => (prev.length === savedValues.length && prev.every((item, i) => item === savedValues[i]) ? prev : savedValues));
+      setErrors((prev) => (prev.length === 0 ? prev : []));
     }
-  }, [saved, state, t]);
+  }, [savedText, savedValues]);
+
+  const commit = useCallback(async (nextValues: string[]) => {
+    const same = nextValues.length === savedValues.length
+      && nextValues.every((item, index) => item === savedValues[index]);
+    if (same) return;
+    if (await state.setSetting('update_mirror_urls', nextValues)) {
+      dirty.current = false;
+      state.pushToast('success', t('setting_update_mirror_saved'));
+    } else {
+      state.pushToast('error', t('setting_update_mirror_save_failed'));
+    }
+  }, [savedValues, state, t]);
+
+  const presetSet = useMemo(() => new Set(MIRROR_PRESETS), []);
+  // 下拉选项 = 预设 + 已保存但不在预设里的自定义值（每项只出现一次）
+  const selectOptions = useMemo(() => {
+    const extra = ordered.filter((item) => !presetSet.has(item));
+    return [...MIRROR_PRESETS, ...extra].map((mirror) => ({ value: mirror, label: mirror }));
+  }, [ordered, presetSet]);
+
+  const addCustom = useCallback(() => {
+    const { values: next, errors: invalid } = addCustomMirror(ordered, customDraft);
+    if (invalid.length > 0) {
+      setErrors(invalid);
+      return;
+    }
+    setErrors([]);
+    setCustomDraft('');
+    dirty.current = true;
+    setOrdered(next);
+  }, [customDraft, ordered]);
+
+  const usingBuiltin = isUsingBuiltinMirrors(value) && ordered.length === 0;
+
+  const runProbe = useCallback(async () => {
+    if (probing || state.saving) return;
+    const candidates = mirrorProbeCandidates(ordered);
+    setProbing(true);
+    setProbeFailed(false);
+    try {
+      const raw = await window.renpy?.probeMirrors?.(candidates);
+      const ranked = rankMirrorResults(raw);
+      setProbeRows(ranked);
+      const next = speedOrderedMirrors(ranked);
+      // 没有可用镜像前缀时不改配置（直连空前缀不写入 update_mirror_urls）
+      if (next.length === 0) {
+        setProbeFailed(true);
+        return;
+      }
+      dirty.current = true;
+      setOrdered(next);
+      await commit(next);
+    } catch {
+      setProbeRows([]);
+      setProbeFailed(true);
+    } finally {
+      setProbing(false);
+    }
+  }, [commit, ordered, probing, state.saving]);
 
   return (
-    <SettingCard title={title} description={t('setting_update_mirror_body')}>
-      <Input.TextArea
-        aria-label={title}
-        value={draft}
-        placeholder={t('setting_update_mirror_placeholder')}
-        autoSize={{ minRows: 3, maxRows: 8 }}
-        onFocus={() => { focused.current = true; }}
-        onChange={(event) => { setDraft(event.target.value); if (errors.length > 0) setErrors([]); }}
-        onBlur={() => { focused.current = false; void commit(draft); }}
-      />
-      {errors.length > 0 ? (
-        <p style={{ margin: 0, color: 'var(--rb-error)' }} role="alert">
-          {t('setting_update_mirror_invalid')}
+    <section className="rb-setting-row rb-mirror-card" data-rb-update-mirror="1">
+      <div className="rb-mirror-head">
+        <div className="rb-setting-title">{title}</div>
+        <div className="rb-setting-desc">{t('setting_update_mirror_body')}</div>
+      </div>
+      <div className="rb-mirror-editor">
+        <Select
+          mode="multiple"
+          allowClear
+          aria-label={title}
+          className="rb-mirror-select"
+          placeholder={usingBuiltin ? t('setting_update_mirror_builtin_hint') : t('setting_update_mirror_select_placeholder')}
+          maxTagCount="responsive"
+          value={ordered}
+          options={selectOptions}
+          data-rb-update-mirror-select="1"
+          onChange={(selected) => {
+            dirty.current = true;
+            setErrors([]);
+            setOrdered(reconcileMirrorSelection(ordered, selected));
+          }}
+        />
+        <p className="rb-mirror-meta">
+          {fill(t('setting_update_mirror_selected_count'), { count: ordered.length })}
+          {usingBuiltin ? (
+            <span className="rb-mirror-hint"> · {t('setting_update_mirror_builtin_hint')}</span>
+          ) : null}
         </p>
-      ) : null}
-      <Button size="small" onClick={() => { setDraft(''); void commit(''); }}>
-        {t('setting_update_mirror_reset')}
-      </Button>
-    </SettingCard>
+        <div className="rb-mirror-custom">
+          <Input
+            aria-label={t('setting_update_mirror_custom_placeholder')}
+            value={customDraft}
+            placeholder={t('setting_update_mirror_custom_placeholder')}
+            data-rb-update-mirror-input="1"
+            onChange={(event) => {
+              setCustomDraft(event.target.value);
+              if (errors.length > 0) setErrors([]);
+            }}
+            onPressEnter={() => addCustom()}
+          />
+          <Button size="small" disabled={state.saving} onClick={() => addCustom()} data-rb-update-mirror-add="1">
+            {t('setting_update_mirror_add')}
+          </Button>
+        </div>
+        {errors.length > 0 ? (
+          <div className="rb-mirror-errors" role="alert" data-rb-update-mirror-errors="1">
+            <p className="rb-mirror-errors-title">{t('setting_update_mirror_invalid')}</p>
+            <p className="rb-mirror-errors-sub">{t('setting_update_mirror_invalid_prefix')}</p>
+            <ul className="rb-mirror-errors-list">
+              {errors.map((raw, index) => (
+                <li key={`${raw}-${index}`}>{raw}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <div className="rb-mirror-actions">
+          <Button
+            type="primary"
+            size="small"
+            loading={state.saving}
+            disabled={state.saving}
+            onClick={() => void commit(ordered)}
+            data-rb-update-mirror-save="1"
+          >
+            {t('setting_update_mirror_save')}
+          </Button>
+          <Button
+            size="small"
+            loading={probing}
+            disabled={probing || state.saving}
+            onClick={() => void runProbe()}
+            data-rb-update-mirror-probe="1"
+          >
+            {probing ? t('setting_update_mirror_probing') : t('setting_update_mirror_probe')}
+          </Button>
+          <Button
+            size="small"
+            disabled={state.saving || probing}
+            data-rb-update-mirror-reset="1"
+            onClick={() => {
+              dirty.current = true;
+              setOrdered([]);
+              setCustomDraft('');
+              setErrors([]);
+              void commit([]);
+            }}
+          >
+            {t('setting_update_mirror_reset')}
+          </Button>
+        </div>
+        {probeFailed ? (
+          <p className="rb-mirror-probe-note" data-rb-update-mirror-results="1">{t('setting_update_mirror_probe_failed')}</p>
+        ) : null}
+        {probeRows.length > 0 ? (
+          <ul className="rb-mirror-probe" data-rb-update-mirror-results="1">
+            {probeRows.map((row) => (
+              <li
+                key={row.prefix || 'direct'}
+                className={row.ok ? (row.fastest ? 'rb-mirror-probe-row rb-mirror-probe-fast' : 'rb-mirror-probe-row') : 'rb-mirror-probe-row rb-mirror-probe-bad'}
+              >
+                <span className="rb-mirror-probe-url">{row.prefix || t('setting_update_mirror_direct')}</span>
+                <span>{fill(t('setting_update_mirror_latency'), { ms: row.latencyMs })}</span>
+                <span>{row.ok ? fill(t('setting_update_mirror_speed'), { speed: (row.bytesPerSec / (1024 * 1024)).toFixed(2) }) : '—'}</span>
+                {row.fastest ? <span>{t('setting_update_mirror_fastest')}</span> : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </section>
   );
 }
 

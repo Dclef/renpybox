@@ -2,7 +2,7 @@ export const ANDROID_COPY: Record<string, { ZH: string; EN: string }>;
 
 export function androidCopy(table: { ZH: string; EN: string } | null | undefined, lang?: string): string;
 
-export function defaultAndroidForm(config?: object | null): {
+export type AndroidFormState = {
   sdkPath: string;
   appName: string;
   packageName: string;
@@ -14,6 +14,43 @@ export function defaultAndroidForm(config?: object | null): {
   updateAlways: boolean;
   updateIcons: boolean;
 };
+
+export function defaultAndroidForm(config?: object | null): AndroidFormState;
+
+export function shouldHydrateAndroidForm(flags?: {
+  hydrated?: boolean;
+  dirty?: boolean;
+}): boolean;
+
+export function mergeAndroidForm(
+  current: AndroidFormState,
+  config?: object | null,
+  flags?: { hydrated?: boolean; dirty?: boolean },
+): AndroidFormState;
+
+export function androidFormIdentityKey(statusPath?: string, suiteIdentity?: string): string;
+
+export const ANDROID_DRAFT_STORAGE_PREFIX: string;
+
+export function androidDraftKey(projectPath?: string): string;
+
+export function serializeAndroidDraft(
+  form: AndroidFormState,
+  extra?: { prefixDir?: string; prefixText?: string },
+): string;
+
+export function restoreAndroidDraft(raw: unknown): AndroidFormState;
+
+export function parseAndroidDraftBundle(raw: unknown): {
+  form: AndroidFormState;
+  prefixDir: string;
+  prefixText: string;
+};
+
+export function androidDraftHasContent(
+  form: AndroidFormState,
+  extra?: { prefixDir?: string; prefixText?: string },
+): boolean;
 
 export function androidStatusPath(projectPath?: string): string;
 

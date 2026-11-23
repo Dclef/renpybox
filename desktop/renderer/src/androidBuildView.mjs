@@ -7,8 +7,8 @@ export const ANDROID_COPY = {
   title: { ZH: '安卓打包', EN: 'Android Build' },
   paths: { ZH: '路径', EN: 'Paths' },
   pathsNote: {
-    ZH: '壳项目 / 修改版 SDK 可从社区渠道获取；请选择本机 Ren\'Py SDK 与项目根目录。',
-    EN: 'Shell projects / modified SDKs come from community channels. Pick a local Ren\'Py SDK and project root.',
+    ZH: '壳项目 / 修改版 SDK 需要从群里获取，群号：821152470；请选择本机 Ren\'Py SDK 与项目根目录。',
+    EN: 'Get the shell project / modified SDK from our group (Group No. 821152470). Pick a local Ren\'Py SDK and project root.',
   },
   sdk: { ZH: "Ren'Py SDK", EN: "Ren'Py SDK" },
   project: { ZH: '项目目录', EN: 'Project folder' },
@@ -111,6 +111,113 @@ export function defaultAndroidForm(config = {}) {
     updateAlways: cfg.update_always !== false,
     updateIcons: cfg.update_icons !== false,
   };
+}
+
+/**
+ * 是否用后端 config 水合本地 form。
+ * 同一身份只水合一次；用户改过表单后不再被轮询覆盖。
+ * 通用纯判定，useHydratedForm 与页面均复用此函数。
+ */
+export function shouldHydrateAndroidForm({ hydrated = false, dirty = false } = {}) {
+  return !hydrated && !dirty;
+}
+
+/**
+ * 合并后端 config 到本地 form：仅在未水合且未 dirty 时替换为 defaultAndroidForm(config)。
+ * 身份键变化时调用方应先重置 hydrated/dirty 再传入。
+ */
+export function mergeAndroidForm(current, config, { hydrated = false, dirty = false } = {}) {
+  if (!shouldHydrateAndroidForm({ hydrated, dirty })) {
+    return current;
+  }
+  return defaultAndroidForm(config);
+}
+
+/** 表单水合身份：statusPath（含手动 project_path）+ suite.identity */
+export function androidFormIdentityKey(statusPath = '', suiteIdentity = '') {
+  return `${String(statusPath || '')}\0${String(suiteIdentity || '')}`;
+}
+
+/** sessionStorage 键前缀：草稿按全局绑定项目路径隔离，不含手动 B。 */
+export const ANDROID_DRAFT_STORAGE_PREFIX = 'renpybox.android.draft.';
+
+const ANDROID_DRAFT_NO_PROJECT = '__no_project__';
+
+/** 生成安卓打包页草稿的 sessionStorage 键。 */
+export function androidDraftKey(projectPath = '') {
+  const trimmed = String(projectPath || '').trim();
+  const slug = trimmed
+    ? trimmed.replace(/\\/g, '/').toLowerCase()
+    : ANDROID_DRAFT_NO_PROJECT;
+  return `${ANDROID_DRAFT_STORAGE_PREFIX}${encodeURIComponent(slug)}`;
+}
+
+function _coerceAndroidFormState(raw) {
+  if (!raw || typeof raw !== 'object') return defaultAndroidForm();
+  const src = /** @type {Record<string, unknown>} */ (raw);
+  return {
+    sdkPath: typeof src.sdkPath === 'string' ? src.sdkPath : String(src.sdkPath ?? ''),
+    appName: typeof src.appName === 'string' ? src.appName : String(src.appName ?? ''),
+    packageName: typeof src.packageName === 'string' ? src.packageName : String(src.packageName ?? ''),
+    version: typeof src.version === 'string' ? src.version : String(src.version ?? ''),
+    archiveSourceDir: typeof src.archiveSourceDir === 'string' ? src.archiveSourceDir : String(src.archiveSourceDir ?? ''),
+    shellBackupEnable: src.shellBackupEnable !== false,
+    shellRemoveDirs: typeof src.shellRemoveDirs === 'string'
+      ? src.shellRemoveDirs
+      : String(src.shellRemoveDirs ?? defaultAndroidForm().shellRemoveDirs),
+    dname: typeof src.dname === 'string' ? src.dname : String(src.dname ?? ''),
+    updateAlways: src.updateAlways !== false,
+    updateIcons: src.updateIcons !== false,
+  };
+}
+
+/** 序列化表单草稿（含可选 X- 前缀区字段）为 JSON 字符串。 */
+export function serializeAndroidDraft(form, extra = {}) {
+  const payload = {
+    v: 1,
+    form: _coerceAndroidFormState(form),
+    prefixDir: typeof extra.prefixDir === 'string' ? extra.prefixDir : String(extra.prefixDir ?? ''),
+    prefixText: typeof extra.prefixText === 'string' ? extra.prefixText : String(extra.prefixText ?? 'x-'),
+  };
+  return JSON.stringify(payload);
+}
+
+/** 解析草稿 JSON，仅返回表单；脏数据一律回落 defaultAndroidForm()。 */
+export function restoreAndroidDraft(raw) {
+  return parseAndroidDraftBundle(raw).form;
+}
+
+/** 完整解析草稿 bundle（页面用于恢复 prefix 区）。 */
+export function parseAndroidDraftBundle(raw) {
+  const fallback = {
+    form: defaultAndroidForm(),
+    prefixDir: '',
+    prefixText: 'x-',
+  };
+  const text = String(raw ?? '').trim();
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') return fallback;
+    const src = /** @type {Record<string, unknown>} */ (parsed);
+    const form = _coerceAndroidFormState(src.form);
+    const prefixDir = typeof src.prefixDir === 'string' ? src.prefixDir : String(src.prefixDir ?? '');
+    const prefixText = typeof src.prefixText === 'string' ? src.prefixText : String(src.prefixText ?? 'x-');
+    return { form, prefixDir, prefixText };
+  } catch {
+    return fallback;
+  }
+}
+
+/** 草稿是否含用户实质输入（用于恢复后标记 dirty / 提示）。 */
+export function androidDraftHasContent(form, extra = {}) {
+  const base = defaultAndroidForm();
+  const keys = Object.keys(base);
+  const formDirty = keys.some((key) => form?.[key] !== base[key]);
+  const prefixDir = String(extra.prefixDir ?? '').trim();
+  const prefixText = String(extra.prefixText ?? 'x-').trim();
+  const prefixDirty = Boolean(prefixDir) || (prefixText && prefixText !== 'x-');
+  return formDirty || prefixDirty;
 }
 
 /** status URL：手动项目 B 带 project_path，驱动 late 响应上下文失效。 */

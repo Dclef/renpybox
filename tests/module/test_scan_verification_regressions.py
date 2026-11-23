@@ -14,6 +14,7 @@ def make_service(**kwargs):
     return GlossaryCandidateService(config=SimpleNamespace(), target_path=".", platform=None, **kwargs)
 
 
+@pytest.mark.skip(reason="旧 _extract_chunk_with_llm/_run_llm_chunks/TaskRequester.RUN_CANCEL_CONTEXT 已删除；AgentRequester 新架构的取消语义由 test_agent_feedback_contract.py 覆盖")
 def test_glossary_workers_inherit_caller_cancellation(monkeypatch):
     service = make_service()
     event = threading.Event()
@@ -29,6 +30,7 @@ def test_glossary_workers_inherit_caller_cancellation(monkeypatch):
     assert success == 1 and len(payloads) == 1 and warnings == []
 
 
+@pytest.mark.skip(reason="旧 _extract_chunk_with_llm/_run_llm_chunks 已删除；新架构分块保序由 test_glossary_candidate_service.py 覆盖")
 def test_glossary_payloads_keep_input_order_when_second_finishes_first(monkeypatch):
     reported = threading.Event()
     service = make_service(progress_callback=lambda message, percent: reported.set())
@@ -79,6 +81,7 @@ def test_source_cache_detects_rename(tmp_path, owner):
     assert second != first
 
 
+@pytest.mark.skip(reason="旧 _extract_chunk_with_llm/_run_llm_chunks 已删除；新架构取消语义由 test_agent_feedback_contract.py 覆盖")
 def test_glossary_cancel_skips_queued_chunks(monkeypatch):
     service = make_service()
     service.LLM_CHUNK_CONCURRENCY = 1
@@ -98,6 +101,7 @@ def test_glossary_cancel_skips_queued_chunks(monkeypatch):
     assert called == [0]
 
 
+@pytest.mark.skip(reason="旧 _extract_chunk_with_llm/_run_llm_chunks 已删除；新架构取消语义由 test_agent_feedback_contract.py 覆盖")
 def test_glossary_cancel_waits_for_running_chunk(monkeypatch):
     import time
     cancelled = threading.Event()

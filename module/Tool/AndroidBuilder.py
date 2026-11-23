@@ -10,6 +10,8 @@ from typing import Callable, Iterable
 
 from base.LogManager import LogManager
 
+from module.Tool.androidProcessOutput import decode_process_output
+
 
 def _get_module_dir() -> Path:
     """获取模块目录，兼容打包和源码运行"""
@@ -83,21 +85,20 @@ class AndroidBuilder:
         if env:
             merged_env.update(env)
 
+        # 二进制逐行读 stdout：JDK keytool 在中文 Windows 常输出 GBK，不能按 UTF-8 ignore 硬解
         process = subprocess.Popen(
             args,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
             env=merged_env,
             creationflags=self._creationflags_no_window(),
         )
         if process.stdout:
-            for line in process.stdout:
+            for raw_line in process.stdout:
+                line_bytes = raw_line.rstrip(b"\r\n")
                 if on_output:
-                    on_output(line.rstrip())
+                    on_output(decode_process_output(line_bytes))
         return process.wait()
 
     def write_android_json(

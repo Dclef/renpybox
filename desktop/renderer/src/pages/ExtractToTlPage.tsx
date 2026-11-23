@@ -76,6 +76,8 @@ export function ExtractToTlPage(props: { state: AppState }) {
 
   const engineBusy = state.translation.engine_status !== 'IDLE' || state.translation.stop_barrier || state.translation.single_tasks;
   const writeBlocked = busy || engineBusy || !keyReady || state.link !== 'open';
+  // 编辑态不含 keyReady：轮询回包未到时 keyReady 短暂为 false，不能拿它禁用浏览/选择按钮
+  const editBlocked = busy || engineBusy || state.link !== 'open';
   const hasTarget = Boolean(gameDir.trim() || status?.project_root || state.project?.renpy_project_path);
   const ruleMode = status?.rule_mode || 'builtin';
   const switches = resolveExtractSwitches({
@@ -206,7 +208,7 @@ export function ExtractToTlPage(props: { state: AppState }) {
         <Form.Item label={t('extract_tl_game_dir')} style={{ marginBottom: 12 }}>
           <Space.Compact block>
             <Input value={gameDir} onChange={(e) => setGameDir(e.target.value)} style={{ flex: 1 }} />
-            <Button onClick={() => void pickGameDir()} disabled={writeBlocked}>{t('extract_tl_browse')}</Button>
+            <Button onClick={() => void pickGameDir()} disabled={editBlocked}>{t('extract_tl_browse')}</Button>
           </Space.Compact>
         </Form.Item>
         <Form.Item label={t('extract_tl_language')} style={{ marginBottom: 12 }}>
@@ -252,7 +254,7 @@ export function ExtractToTlPage(props: { state: AppState }) {
               <Form.Item label={t('extract_tl_exe')} style={{ marginBottom: 12 }}>
                 <Space.Compact block>
                   <Input value={exePath} onChange={(e) => setExePath(e.target.value)} disabled={!useOfficial} style={{ flex: 1 }} placeholder={t('extract_tl_exe_hint')} />
-                  <Button onClick={() => void pickExe()} disabled={writeBlocked || !useOfficial}>{t('extract_tl_browse')}</Button>
+                  <Button onClick={() => void pickExe()} disabled={editBlocked || !useOfficial}>{t('extract_tl_browse')}</Button>
                 </Space.Compact>
               </Form.Item>
               <Checkbox checked={skipHooks} onChange={(e) => setSkipHooks(e.target.checked)}>

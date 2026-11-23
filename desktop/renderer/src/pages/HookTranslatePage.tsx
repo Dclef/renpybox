@@ -188,15 +188,18 @@ export function HookTranslatePage(props: { state: AppState }) {
   }, [activeRequestId, extracting, ownerKey, projectIdentity, state, statusOwnerKey]);
 
   const pickGame = async () => {
+    // 弹框前冻结项目身份；两次 await 回包都要求身份未变，避免旧选择写进已切换的新项目
+    const context = projectIdentityRef.current;
     const file = await window.renpy?.pickFile?.({
       filters: [{ name: 'Executable', extensions: ['exe'] }],
     });
+    if (context !== projectIdentityRef.current) return;
     if (file) {
       setGamePath(file);
       return;
     }
     const folder = await window.renpy?.pickFolder?.(gamePath || projectPath || undefined);
-    if (folder) setGamePath(folder);
+    if (folder && context === projectIdentityRef.current) setGamePath(folder);
   };
 
   const start = async (preflightConfirmed = false) => {

@@ -482,6 +482,8 @@ export function ErrorRepairPage(props: { state: AppState }) {
     || state.translation.stop_barrier
     || state.translation.single_tasks;
   const blocked = busy || engineBusy || !keyReady || state.link !== 'open';
+  // 编辑态不含 keyReady：轮询回包未到时 keyReady 短暂为 false，不能拿它禁用输入框/浏览按钮
+  const editBlocked = busy || engineBusy || state.link !== 'open';
   const folderReady = Boolean(folder.trim());
 
   useEffect(() => {
@@ -508,7 +510,8 @@ export function ErrorRepairPage(props: { state: AppState }) {
     const suggestedFolder = String(status.folder ?? '').trim()
       || String(state.project?.renpy_tl_folder ?? state.settings?.values?.renpy_tl_folder ?? '').trim();
     if (suggestedFolder) setFolder((current) => (current.trim() ? current : suggestedFolder));
-  }, [status, suite.identity, state.project?.renpy_tl_folder, state.settings?.values?.renpy_tl_folder]);
+    // deps 只取原始值 status?.folder：轮询每 1.5s 换 status 引用，用对象会让本 effect 每轮空跑
+  }, [status?.folder, suite.identity, state.project?.renpy_tl_folder, state.settings?.values?.renpy_tl_folder]);
 
   const done = job?.status === 'done';
   const fixView = done && result?.action === 'fix' ? result : null;
@@ -613,8 +616,8 @@ export function ErrorRepairPage(props: { state: AppState }) {
       <SettingsGroup title={uiCopy.folderTitle} description={uiCopy.folderDesc}>
         <Form.Item label={uiCopy.folderLabel}>
           <Space.Compact block>
-            <Input value={folder} onChange={(e) => setFolder(e.target.value)} disabled={blocked} />
-            <Button onClick={() => void pickFolder()} disabled={blocked}>{uiCopy.browse}</Button>
+            <Input value={folder} onChange={(e) => setFolder(e.target.value)} disabled={editBlocked} />
+            <Button onClick={() => void pickFolder()} disabled={editBlocked}>{uiCopy.browse}</Button>
           </Space.Compact>
         </Form.Item>
       </SettingsGroup>

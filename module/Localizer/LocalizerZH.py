@@ -323,11 +323,26 @@ class LocalizerZH():
     app_settings_page_proxy_url_title: str = "网络代理"
     app_settings_page_proxy_url_content: str = "启用此功能后，将使用设置的代理地址发送网络请求；地址留空则跟随系统代理（将在应用重启后生效）"
     setting_update_mirror_title: str = "更新镜像"
-    setting_update_mirror_body: str = "GitHub 直连常常不可用，更新下载会按下面的顺序依次尝试这些镜像；每行一个前缀，留空则使用内置默认镜像。镜像只影响下载速度，安装包仍然会做完整的 SHA-256 校验，改镜像不会降低安全性。"
-    setting_update_mirror_placeholder: str = "每行一个镜像地址，例如 https://fastgit.cc/"
+    setting_update_mirror_body: str = "GitHub 直连常常不可用，更新下载会按所选顺序依次尝试这些镜像；在下拉中勾选预设、或用下方输入添加自定义地址，全部留空则使用内置默认镜像。镜像只影响下载速度，安装包仍然会做完整的 SHA-256 校验，改镜像不会降低安全性。"
+    setting_update_mirror_select_placeholder: str = "选择镜像（可多选）"
+    setting_update_mirror_custom_placeholder: str = "自定义镜像地址，例如 https://mirror.example.com/"
+    setting_update_mirror_add: str = "添加"
+    setting_update_mirror_builtin_hint: str = "留空即使用内置默认镜像（2 条）"
+    setting_update_mirror_selected_count: str = "已选 {COUNT} 个镜像"
+    setting_update_mirror_probe: str = "测速"
+    setting_update_mirror_probing: str = "测速中…"
+    setting_update_mirror_probe_failed: str = "无可用节点，已保留原配置"
+    setting_update_mirror_latency: str = "延迟 {MS} ms"
+    setting_update_mirror_speed: str = "{SPEED} MB/s"
+    setting_update_mirror_fastest: str = "最快"
+    setting_update_mirror_direct: str = "直连"
     setting_update_mirror_reset: str = "恢复默认"
     setting_update_mirror_invalid: str = "镜像地址必须以 http:// 或 https:// 开头并以 / 结尾"
     setting_update_mirror_saved: str = "更新镜像已保存"
+    # 更新镜像卡片 UI 优化：与 desktop/renderer/src/i18n/zh.ts 同名同步
+    setting_update_mirror_save: str = "保存"
+    setting_update_mirror_save_failed: str = "更新镜像保存失败，请重试"
+    setting_update_mirror_invalid_prefix: str = "以下地址不合法"
     app_settings_page_close: str = "应用即将关闭，请确认 …"
 
     # 接口管理
@@ -1542,6 +1557,7 @@ class LocalizerZH():
     android_build_processing_shell_package: str = '壳子处理中...'
     android_build_shell_package_completed: str = '壳子制作完成'
     android_build_archive_rpa_created: str = 'archive.rpa 打包完成'
+    android_build_draft_restored: str = '已恢复未保存的草稿'
     android_build_android_build: str = '安卓打包'
     android_build_paths: str = '路径设置'
     android_build_project_folder: str = '项目目录:'
