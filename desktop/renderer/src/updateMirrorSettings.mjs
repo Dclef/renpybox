@@ -121,10 +121,11 @@ export function rankMirrorResults(results) {
   return list;
 }
 
-/** 自动保存用的前缀顺序：只保留可用且非空（直连空前缀不写入配置）。 */
+/** 自动保存用的前缀顺序：只留最快的两条可用非空前缀（直连空前缀不写入配置）。 */
 export function speedOrderedMirrors(results) {
   return rankMirrorResults(results)
     .filter((item) => item.ok && item.prefix)
+    .slice(0, 2)
     .map((item) => item.prefix);
 }
 

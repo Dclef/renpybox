@@ -563,6 +563,12 @@
   .rb-mirror-probe-fast { color: var(--rb-accent); }
   .rb-mirror-probe-bad { color: var(--rb-error); }
   .rb-mirror-probe-note { margin: 0; color: var(--rb-error); font-size: 12px; }
+  /* 下拉选项内的测速数字 */
+  .rb-mirror-option { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+  .rb-mirror-option-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rb-mirror-option-stats { flex-shrink: 0; font-size: 12px; color: var(--rb-text-secondary); font-variant-numeric: tabular-nums; }
+  .rb-mirror-option-stats.rb-mirror-option-fast { color: var(--rb-accent); }
+  .rb-mirror-option-stats.rb-mirror-option-bad { color: var(--rb-error); }
 
   .rb-project-identity {
     display: grid;

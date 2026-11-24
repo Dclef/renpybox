@@ -97,6 +97,32 @@ test('传自定义 mirrors 时第一个候选来自用户配置', async () => {
   });
 });
 
+test('proxyEnabled 时只请求原始地址，关闭时仍先走镜像', async () => {
+  await workdir(async directory => {
+    const on = recorder();
+    await downloadWithMirrors(ASSET, path.join(directory, 'via-proxy.exe'), {
+      expectedSize: EXPECTED_SIZE,
+      expectedDigest: EXPECTED_DIGEST,
+      fetchImpl: on.fetchImpl,
+      sleepImpl: on.sleepImpl,
+      mirrors: ['https://my.mirror/'],
+      proxyEnabled: true,
+    });
+    assert.deepEqual(on.calls, [ASSET]);
+
+    const off = recorder();
+    await downloadWithMirrors(ASSET, path.join(directory, 'via-mirror.exe'), {
+      expectedSize: EXPECTED_SIZE,
+      expectedDigest: EXPECTED_DIGEST,
+      fetchImpl: off.fetchImpl,
+      sleepImpl: off.sleepImpl,
+      mirrors: ['https://my.mirror/'],
+      proxyEnabled: false,
+    });
+    assert.equal(off.calls[0], 'https://my.mirror/' + ASSET);
+  });
+});
+
 test('mirrors 为 null/空数组/非数组时回退内置默认镜像，而不是只剩直连', async () => {
   await workdir(async directory => {
     for (const [index, mirrors] of [null, [], 'not-an-array'].entries()) {

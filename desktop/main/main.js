@@ -91,6 +91,8 @@ const updater = createDesktopUpdater({
   // 下载镜像同理：每次更新前重读 config.json，用户改完设置不用重启。
   // 读出来是 null（没配/配坏）时下载层回退内置默认镜像。
   mirrorsFor: () => readUpdateMirrors(path.join(dataPath, 'config.json'), readFileSync),
+  // 代理开启时下载只用原始地址，不再先试镜像。
+  proxyEnabledFor: () => readProxySettings(path.join(dataPath, 'config.json'), readFileSync).enabled === true,
   // 安装版把当前 exe 所在目录交给 NSIS，更新时默认装回原目录（便携解压目录同理）。
   installDir: isDev ? '' : path.dirname(app.getPath('exe')),
   tempDir: path.join(dataPath, 'update'),

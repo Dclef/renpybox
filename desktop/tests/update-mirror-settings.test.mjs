@@ -183,6 +183,15 @@ test('speedOrderedMirrors 只保留可用非空前缀；候选为空时用预设
     { prefix: 'https://bad/', latencyMs: 1, bytesPerSec: 0, ok: false },
   ]);
   assert.deepEqual(ordered, ['https://ok/']);
+  // 只保留最快的两条，多余的可用镜像不写入配置
+  const many = speedOrderedMirrors([
+    { prefix: 'https://a/', latencyMs: 5, bytesPerSec: 900, ok: true },
+    { prefix: 'https://b/', latencyMs: 6, bytesPerSec: 800, ok: true },
+    { prefix: 'https://c/', latencyMs: 7, bytesPerSec: 700, ok: true },
+    { prefix: 'https://d/', latencyMs: 8, bytesPerSec: 600, ok: true },
+    { prefix: 'https://bad/', latencyMs: 1, bytesPerSec: 0, ok: false },
+  ]);
+  assert.deepEqual(many, ['https://a/', 'https://b/']);
   const candidates = mirrorProbeCandidates([]);
   assert.equal(candidates.at(-1), '');
   assert.ok(candidates.includes(MIRROR_PRESETS[0]));

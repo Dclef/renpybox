@@ -148,8 +148,10 @@ export async function downloadWithMirrors(url, destination, options = {}) {
     stallTimeoutMs = STALL_TIMEOUT_MS,
     // 用户配置的镜像前缀；null/空数组/非数组都回退内置默认。
     mirrors,
+    // 开代理时不套镜像：原始地址已由代理出口访问，镜像只会更慢。
+    proxyEnabled = false,
   } = options;
-  const candidates = downloadCandidates(url, resolveMirrors(mirrors));
+  const candidates = proxyEnabled ? [url] : downloadCandidates(url, resolveMirrors(mirrors));
   let lastError;
   for (const candidate of candidates) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -244,6 +246,8 @@ export function createDesktopUpdater({
   requestJson = url => defaultRequestJson(url, fetchImpl),
   /** 用户配置的镜像列表：每次下载重新读，改完设置无需重启。返回 null 表示用内置默认。 */
   mirrorsFor = () => null,
+  /** 网络代理是否开启：每次下载现读，开启时 fetchAsset 不传镜像候选。 */
+  proxyEnabledFor = () => false,
   // 裸引用即可：mirrors 由 fetchAsset 每次下载时读取并传进来，
   // 这样注入自定义 downloadFile 的调用方也能拿到用户镜像，不会静默丢配置。
   downloadFile = downloadWithMirrors,
@@ -294,6 +298,7 @@ export function createDesktopUpdater({
       // 每次下载现读用户配置（不缓存）：改完设置无需重启。
       // 放在这里而不是包装默认 downloadFile：注入的下载实现同样能拿到。
       mirrors: mirrorsFor(),
+      proxyEnabled: proxyEnabledFor(),
       onProgress: ({ received, total }) => {
         if (cancelling) return;
         // 进度条之外还要给出「已下载 / 总大小」，用户才能判断还要等多久。

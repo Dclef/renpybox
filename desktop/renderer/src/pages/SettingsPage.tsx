@@ -629,8 +629,32 @@ function UpdateMirrorCard(props: { state: AppState; value: unknown }) {
   // 下拉选项 = 预设 + 已保存但不在预设里的自定义值（每项只出现一次）
   const selectOptions = useMemo(() => {
     const extra = ordered.filter((item) => !presetSet.has(item));
-    return [...MIRROR_PRESETS, ...extra].map((mirror) => ({ value: mirror, label: mirror }));
-  }, [ordered, presetSet]);
+    return [...MIRROR_PRESETS, ...extra].map((mirror) => {
+      const row = probeRows.find((item) => item.prefix === mirror);
+      // 没测过只显示地址；测过则在选项右侧带延迟与速率
+      if (!row) return { value: mirror, label: mirror };
+      const statsClass = row.ok
+        ? (row.fastest ? 'rb-mirror-option-stats rb-mirror-option-fast' : 'rb-mirror-option-stats')
+        : 'rb-mirror-option-stats rb-mirror-option-bad';
+      const speed = row.ok
+        ? fill(t('setting_update_mirror_speed'), { speed: (row.bytesPerSec / (1024 * 1024)).toFixed(2) })
+        : '—';
+      return {
+        value: mirror,
+        label: (
+          <span className="rb-mirror-option">
+            <span className="rb-mirror-option-url">{mirror}</span>
+            <span className={statsClass}>
+              {fill(t('setting_update_mirror_latency'), { ms: row.latencyMs })}
+              {' · '}
+              {speed}
+              {row.fastest ? ` · ${t('setting_update_mirror_fastest')}` : ''}
+            </span>
+          </span>
+        ),
+      };
+    });
+  }, [ordered, presetSet, probeRows, t]);
 
   const addCustom = useCallback(() => {
     const { values: next, errors: invalid } = addCustomMirror(ordered, customDraft);
@@ -697,9 +721,6 @@ function UpdateMirrorCard(props: { state: AppState; value: unknown }) {
         />
         <p className="rb-mirror-meta">
           {fill(t('setting_update_mirror_selected_count'), { count: ordered.length })}
-          {usingBuiltin ? (
-            <span className="rb-mirror-hint"> · {t('setting_update_mirror_builtin_hint')}</span>
-          ) : null}
         </p>
         <div className="rb-mirror-custom">
           <Input
