@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { classifyWarning } from '../renderer/src/glossaryImport.mjs';
 import { buildSync } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -130,6 +131,12 @@ test('warning and candidate details have bounded scroll regions scoped to the fe
     assert.match(rule, /overflow-y:\s*auto/);
   }
   assert.match(css, /max-height:\s*min\(340px, 38vh\)/);
+  assert.match(css, /scrollbar-color/);
+  const feedback = readFileSync(new URL('../renderer/src/pages/AgentExtractionFeedback.tsx', import.meta.url), 'utf8');
+  assert.match(feedback, /data-kind/);
+  assert.match(feedback, /rb-warning-kind/);
+  assert.equal(classifyWarning('第 1 块未能取得结果：RateLimitError 429 rate limit').kind, 'rate');
+  assert.equal(classifyWarning('第 2 块：APITimeoutError 504 Read timed out').kind, 'timeout');
 });
 
 test('running toolbar retains search and stop while three idle operations stay in the closed popover', () => {

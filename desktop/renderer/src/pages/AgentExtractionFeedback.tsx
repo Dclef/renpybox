@@ -20,6 +20,7 @@ import {
 } from '../glossaryView.mjs';
 import type { TextKey } from '../i18n';
 import { feedbackPhase, previewLabels } from '../glossaryPreview.mjs';
+import { classifyWarning, type WarningKind } from '../glossaryImport.mjs';
 import '../styles/agentExtractionFeedback.css';
 
 type T = (key: TextKey) => string;
@@ -91,6 +92,15 @@ export function GlossaryTaskControls({ active, search, stop, children, t }: {
   );
 }
 
+const WARNING_KIND_KEY: Record<WarningKind, TextKey> = {
+  rate: 'lexicon_warn_kind_rate',
+  timeout: 'lexicon_warn_kind_timeout',
+  connection: 'lexicon_warn_kind_connection',
+  request: 'lexicon_warn_kind_request',
+  cancel: 'lexicon_warn_kind_cancel',
+  other: 'lexicon_warn_kind_other',
+};
+
 function WarningList({ digest, t }: { digest: WarningDigest; t: T }) {
   const [expanded, setExpanded] = useState(false);
   if (!digest.total) return null;
@@ -101,7 +111,16 @@ function WarningList({ digest, t }: { digest: WarningDigest; t: T }) {
       <FeedbackDisclosure open={expanded} onOpenChange={setExpanded} testId="agent-feedback-warning-toggle"
         label={expanded ? t('lexicon_warning_hide') : fillTemplate(t('lexicon_warning_show'), { count: digest.total })}>
         <ul className="rb-agent-feedback-warning-list" data-testid="agent-feedback-warning-list">
-          {digest.items.map((line, index) => <li key={index} className="rb-agent-feedback-warning-item">{line}</li>)}
+          {digest.items.map((line, index) => {
+            const warning = classifyWarning(line);
+            return (
+              <li key={index} className="rb-agent-feedback-warning-item" data-kind={warning.kind}>
+                <span className="rb-warning-kind">{t(WARNING_KIND_KEY[warning.kind])}</span>
+                {warning.head ? <span className="rb-warning-head">{warning.head}</span> : null}
+                <span className="rb-warning-detail">{warning.detail}</span>
+              </li>
+            );
+          })}
         </ul>
         <p className="rb-agent-feedback-note">{t('lexicon_warning_note')}</p>
       </FeedbackDisclosure>

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { importMergeLabels, mergeImportedRows, normalizeImportRows } from '../renderer/src/glossaryImport.mjs';
+import { classifyWarning, importMergeLabels, mergeImportedRows, normalizeImportRows } from '../renderer/src/glossaryImport.mjs';
 
 const term = (src, extra = {}) => ({ src, dst: '', type: '', info: '', case_sensitive: false, regex: false, ...extra });
 
@@ -175,4 +175,24 @@ test('glossary page import merges instead of replacing the sheet or appending ra
   assert.match(apply, /cellDirty/);
   assert.match(source, /lexicon_import_merge_title/);
   assert.match(source, /useState<ImportStrategy>\('keep'\)/);
+  assert.match(source, /role="radiogroup"/);
+  assert.match(source, /rb-import-strategy/);
+  assert.match(source, /data-selected/);
+  assert.match(source, /lexicon_import_effect_keep/);
+});
+
+test('classifyWarning labels the failure and splits the first colon', () => {
+  assert.deepEqual(classifyWarning('第 1 块未能取得结果：RateLimitError 429 rate limit'), {
+    kind: 'rate', head: '第 1 块未能取得结果', detail: 'RateLimitError 429 rate limit',
+  });
+  assert.equal(classifyWarning('第 2 块：APITimeoutError 504 Read timed out').kind, 'timeout');
+  assert.deepEqual(classifyWarning('head: detail'), { kind: 'other', head: 'head', detail: 'detail' });
+  assert.equal(classifyWarning('connection reset by peer').kind, 'connection');
+  assert.equal(classifyWarning('BadRequestError 400').kind, 'request');
+  assert.equal(classifyWarning('任务已取消').kind, 'cancel');
+  assert.equal(classifyWarning('Cancelled by user').kind, 'cancel');
+  assert.deepEqual(classifyWarning('plain note'), { kind: 'other', head: '', detail: 'plain note' });
+  assert.deepEqual(classifyWarning(null), { kind: 'other', head: '', detail: '' });
+  assert.deepEqual(classifyWarning(undefined), { kind: 'other', head: '', detail: '' });
+  assert.deepEqual(classifyWarning(12), { kind: 'other', head: '', detail: '12' });
 });

@@ -8,8 +8,8 @@
 .rb-agent-feedback-active,
 .rb-agent-feedback-preview,
 .rb-agent-feedback-warning-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--rb-text-secondary); }
-.rb-agent-feedback-active { max-height: 84px; overflow-y: auto; }
-.rb-agent-feedback-preview { max-height: 160px; overflow-y: auto; }
+.rb-agent-feedback-active { max-height: 84px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--rb-scrollbar) transparent; }
+.rb-agent-feedback-preview { max-height: 160px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--rb-scrollbar) transparent; }
 .rb-agent-feedback-preview li { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
 .rb-agent-feedback-type,
 .rb-agent-feedback-location,
@@ -20,8 +20,30 @@
 .rb-agent-feedback-warning { border: 1px solid color-mix(in srgb, var(--rb-warning) 32%, var(--rb-border)); border-radius: 6px; padding: 6px 8px; background: color-mix(in srgb, var(--rb-warning) 10%, var(--rb-surface)); }
 .rb-agent-feedback-warning-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .rb-agent-feedback-coverage { font-size: 12px; color: var(--rb-text-secondary); }
-.rb-agent-feedback-warning-list { max-height: 96px; overflow-y: auto; }
-.rb-agent-feedback-warning-item { padding: 1px 0; word-break: break-word; }
+.rb-agent-feedback-warning-list { max-height: 200px; overflow-y: auto; list-style: none; padding-left: 0; scrollbar-width: thin; scrollbar-color: var(--rb-scrollbar) transparent; }
+.rb-agent-feedback-warning-item { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed color-mix(in srgb, var(--rb-border) 70%, transparent); }
+.rb-agent-feedback-warning-item:last-child { border-bottom: 0; }
+.rb-warning-kind { font-size: 11px; padding: 0 7px; border-radius: 999px; flex: 0 0 auto; font-weight: 600; }
+.rb-warning-head { color: var(--rb-text-secondary); font-size: 12px; }
+.rb-warning-detail { font-size: 12px; word-break: break-word; }
+.rb-agent-feedback-warning-item[data-kind='rate'] .rb-warning-kind,
+.rb-agent-feedback-warning-item[data-kind='connection'] .rb-warning-kind { background: color-mix(in srgb, var(--rb-warning) 14%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-warning) 75%, var(--rb-text-primary)); }
+.rb-agent-feedback-warning-item[data-kind='timeout'] .rb-warning-kind,
+.rb-agent-feedback-warning-item[data-kind='request'] .rb-warning-kind { background: color-mix(in srgb, var(--rb-error) 14%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-error) 75%, var(--rb-text-primary)); }
+.rb-agent-feedback-warning-item[data-kind='cancel'] .rb-warning-kind { background: color-mix(in srgb, var(--rb-text-secondary) 14%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-text-secondary) 75%, var(--rb-text-primary)); }
+.rb-agent-feedback-warning-item[data-kind='other'] .rb-warning-kind { background: color-mix(in srgb, var(--rb-accent) 14%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-accent) 75%, var(--rb-text-primary)); }
+.rb-agent-feedback-warning-list::-webkit-scrollbar,
+.rb-agent-feedback-preview::-webkit-scrollbar,
+.rb-agent-feedback-active::-webkit-scrollbar { width: 8px; }
+.rb-agent-feedback-warning-list::-webkit-scrollbar-thumb,
+.rb-agent-feedback-preview::-webkit-scrollbar-thumb,
+.rb-agent-feedback-active::-webkit-scrollbar-thumb { background: var(--rb-scrollbar); border-radius: 4px; }
+.rb-agent-feedback-warning-list::-webkit-scrollbar-thumb:hover,
+.rb-agent-feedback-preview::-webkit-scrollbar-thumb:hover,
+.rb-agent-feedback-active::-webkit-scrollbar-thumb:hover { background: var(--rb-scrollbar-hover); }
+.rb-agent-feedback-warning-list::-webkit-scrollbar-track,
+.rb-agent-feedback-preview::-webkit-scrollbar-track,
+.rb-agent-feedback-active::-webkit-scrollbar-track { background: transparent; }
 
 /* Only the glossary's running state uses the compact layout. Shared table rules stay untouched. */
 .rb-glossary[data-agent-running='true'] > .rb-lexicon-controls { gap: 6px; flex: 0 0 auto; max-height: none; overflow: visible; }
@@ -33,7 +55,7 @@
 .rb-glossary-live-toolbar > .ant-input-affix-wrapper { margin-right: auto; min-width: 100px; max-width: 100%; }
 .rb-glossary-live-toolbar > .ant-btn { flex: 0 0 auto; }
 .rb-glossary-actions-panel { width: min(600px, calc(100vw - 48px)); max-height: min(220px, 45vh); overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-.rb-agent-feedback-detail-panel { width: min(520px, calc(100vw - 48px)); max-height: min(240px, 45vh); overflow-y: auto; overflow-wrap: anywhere; }
+.rb-agent-feedback-detail-panel { width: min(720px, calc(100vw - 48px)); max-height: min(240px, 45vh); overflow-y: auto; overflow-wrap: anywhere; }
 .rb-agent-feedback-detail-panel > .rb-agent-feedback-note { margin: 4px 0; }
 .rb-agent-feedback-detail-actions { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 12px; row-gap: 2px; }
 .rb-agent-feedback[data-active='true'] { max-height: 126px; gap: 4px; }
@@ -58,5 +80,32 @@
   .rb-glossary .rb-glossary-task-controls[data-active='false'] .rb-glossary-secondary-toggle { display: inline-flex; }
   .rb-glossary .rb-sheet-summary { font-size: 12px; line-height: 18px; }
 }
+
+.rb-import-dialog { display: flex; flex-direction: column; gap: 12px; }
+.rb-import-file { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--rb-text-primary); }
+.rb-import-file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-import-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.rb-import-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 10px; border: 1px solid transparent; }
+.rb-import-chip b { font-weight: 700; font-size: 15px; }
+.rb-import-chip > span { font-size: 12px; color: var(--rb-text-secondary); }
+.rb-import-chip[data-tone='success'] { background: color-mix(in srgb, var(--rb-success) 12%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-success) 70%, var(--rb-text-primary)); }
+.rb-import-chip[data-tone='warning'] { background: color-mix(in srgb, var(--rb-warning) 12%, var(--rb-surface)); color: color-mix(in srgb, var(--rb-warning) 70%, var(--rb-text-primary)); }
+.rb-import-chip[data-tone='neutral'] { background: var(--rb-surface); border-color: var(--rb-border); color: var(--rb-text-primary); }
+.rb-import-hint { margin: 0; font-size: 12px; color: var(--rb-text-secondary); }
+.rb-import-strategies { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; }
+.rb-import-strategy { display: flex; gap: 10px; align-items: flex-start; text-align: left; width: 100%; cursor: pointer; border: 1px solid var(--rb-border); background: var(--rb-surface); border-radius: 10px; padding: 10px 12px; color: var(--rb-text-primary); }
+.rb-import-strategy:hover { border-color: color-mix(in srgb, var(--rb-accent) 35%, var(--rb-border)); }
+.rb-import-strategy[data-selected='true'] { border-color: var(--rb-accent); background: var(--rb-accent-surface); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-accent) 12%, transparent); }
+.rb-import-strategy[data-strategy='overwrite'][data-selected='true'] { border-color: var(--rb-error); background: color-mix(in srgb, var(--rb-error) 12%, var(--rb-surface)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rb-error) 12%, transparent); }
+.rb-import-strategy:focus-visible { outline: 2px solid var(--rb-accent); outline-offset: 2px; }
+.rb-import-strategy-dot { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; border-radius: 999px; border: 1px solid var(--rb-border); display: inline-flex; align-items: center; justify-content: center; }
+.rb-import-strategy[data-selected='true'] .rb-import-strategy-dot { border-color: var(--rb-accent); }
+.rb-import-strategy[data-selected='true'] .rb-import-strategy-dot::after { content: ''; width: 8px; height: 8px; border-radius: 999px; background: var(--rb-accent); }
+.rb-import-strategy[data-strategy='overwrite'][data-selected='true'] .rb-import-strategy-dot { border-color: var(--rb-error); }
+.rb-import-strategy[data-strategy='overwrite'][data-selected='true'] .rb-import-strategy-dot::after { background: var(--rb-error); }
+.rb-import-strategy-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rb-import-strategy-title { font-weight: 600; }
+.rb-import-strategy-desc { font-size: 12px; color: var(--rb-text-secondary); }
+.rb-import-strategy-effect { font-size: 12px; }
 
 

@@ -1,7 +1,7 @@
 /** 术语表：单元格内联编辑，操作与旧 Qt LocalGlossaryPage 对齐。 */
 import { useEffect, useRef, useState } from 'react';
-import { Button, Checkbox, Dropdown, Input, Radio, Tag } from 'antd';
-import { Check, Plus, Search } from 'lucide-react';
+import { Button, Checkbox, Dropdown, Input, Tag } from 'antd';
+import { Check, Copy, FileJson, FileSpreadsheet, FileText, Plus, Search } from 'lucide-react';
 
 import { cancelJob, request } from '../api';
 import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
@@ -21,7 +21,6 @@ import { Banner, Dialog, NextStepBar, PageHeader } from '../ui';
 
 type ImportStrategy = 'keep' | 'fill' | 'overwrite';
 type PendingImport = { incoming: ImportedTerm[]; filename: string; op: number; project: string; version: number } | null;
-const importRadioStyle = { display: 'flex', alignItems: 'flex-start', marginBottom: 8, whiteSpace: 'normal' } as const;
 
 interface TermRow {
   src: string;
@@ -744,9 +743,8 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   };
 
   const importPreview = pendingImport ? mergeImportedRows(rows, pendingImport.incoming, 'keep') : null;
-  const importSummary = pendingImport && importPreview
-    ? t('lexicon_import_merge_summary').replace('{total}', String(pendingImport.incoming.length)).replace('{added}', String(importPreview.added)).replace('{duplicate}', String(importPreview.duplicate))
-    : '';
+  const importFillPreview = pendingImport ? mergeImportedRows(rows, pendingImport.incoming, 'fill') : null;
+  const importOverwritePreview = pendingImport ? mergeImportedRows(rows, pendingImport.incoming, 'overwrite') : null;
   const matched = rows
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => `${row.src} ${row.dst} ${displayType(row)} ${noteOf(row)}`.toLowerCase().includes(query.toLowerCase()));
@@ -936,15 +934,36 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           {t('lexicon_apply_result_body')}
         </Dialog>
       ) : null}
-      {pendingImport ? (
+      {pendingImport && importPreview && importFillPreview && importOverwritePreview ? (
         <Dialog title={t('lexicon_import_merge_title')} confirmText={t('lexicon_import_apply')} onCancel={() => setPendingImport(null)} onConfirm={applyPendingImport}>
-          <div>{pendingImport.filename}</div>
-          <div>{importSummary}</div>
-          <Radio.Group value={importStrategy} onChange={(event) => setImportStrategy(event.target.value as ImportStrategy)}>
-            <Radio value="keep" style={importRadioStyle}>{t('lexicon_import_keep')}<br />{t('lexicon_import_keep_desc')}</Radio>
-            <Radio value="fill" style={importRadioStyle}>{t('lexicon_import_fill')}<br />{t('lexicon_import_fill_desc')}</Radio>
-            <Radio value="overwrite" style={importRadioStyle}>{t('lexicon_import_overwrite')}<br />{t('lexicon_import_overwrite_desc')}</Radio>
-          </Radio.Group>
+          <div className="rb-import-dialog">
+            <div className="rb-import-file" title={pendingImport.filename}>
+              {pendingImport.filename.toLowerCase().endsWith('.xlsx') ? <FileSpreadsheet size={16} strokeWidth={1.75} /> : <FileJson size={16} strokeWidth={1.75} />}
+              <span className="rb-import-file-name">{pendingImport.filename}</span>
+            </div>
+            <div className="rb-import-stats">
+              <span className="rb-import-chip" data-tone="success"><Plus size={14} strokeWidth={1.75} /><b>{importPreview.added}</b><span>{t('lexicon_import_chip_added')}</span></span>
+              <span className="rb-import-chip" data-tone="warning"><Copy size={14} strokeWidth={1.75} /><b>{importPreview.duplicate}</b><span>{t('lexicon_import_chip_duplicate')}</span></span>
+              <span className="rb-import-chip" data-tone="neutral"><FileText size={14} strokeWidth={1.75} /><b>{pendingImport.incoming.length}</b><span>{t('lexicon_import_chip_total')}</span></span>
+            </div>
+            <p className="rb-import-hint">{t('lexicon_import_merge_hint')}</p>
+            <div className="rb-import-strategies" role="radiogroup" aria-label={t('lexicon_import_merge_hint')}>
+              {([
+                ['keep', t('lexicon_import_keep'), t('lexicon_import_keep_desc'), t('lexicon_import_effect_keep').replace('{count}', String(importPreview.duplicate))],
+                ['fill', t('lexicon_import_fill'), t('lexicon_import_fill_desc'), t('lexicon_import_effect_fill').replace('{count}', String(importFillPreview.filled))],
+                ['overwrite', t('lexicon_import_overwrite'), t('lexicon_import_overwrite_desc'), t('lexicon_import_effect_overwrite').replace('{count}', String(importOverwritePreview.replaced))],
+              ] as const).map(([id, title, desc, effect]) => (
+                <button key={id} type="button" role="radio" className="rb-import-strategy" data-strategy={id} data-selected={importStrategy === id} aria-checked={importStrategy === id} onClick={() => setImportStrategy(id)}>
+                  <span className="rb-import-strategy-dot" />
+                  <span className="rb-import-strategy-copy">
+                    <span className="rb-import-strategy-title">{title}</span>
+                    <span className="rb-import-strategy-desc">{desc}</span>
+                    <span className="rb-import-strategy-effect">{effect}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </Dialog>
       ) : null}
       {pendingJob ? (

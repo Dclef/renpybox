@@ -169,3 +169,19 @@ const labels = {
 export function importMergeLabels(language) {
   return language === 'EN' ? labels.EN : labels.ZH;
 }
+
+export function classifyWarning(line) {
+  if (typeof line !== 'string') return { kind: 'other', head: '', detail: String(line ?? '') };
+  const lower = line.toLowerCase();
+  let kind = 'other';
+  if (lower.includes('ratelimit') || lower.includes('429')) kind = 'rate';
+  else if (lower.includes('timeout') || lower.includes('timed out')) kind = 'timeout';
+  else if (lower.includes('connection')) kind = 'connection';
+  else if (lower.includes('badrequest') || lower.includes('400')) kind = 'request';
+  else if (lower.includes('取消') || lower.includes('cancelled')) kind = 'cancel';
+  const full = line.indexOf('：');
+  const spaced = line.indexOf(': ');
+  const cut = full < 0 ? spaced : spaced < 0 ? full : Math.min(full, spaced);
+  if (cut < 0) return { kind, head: '', detail: line };
+  return { kind, head: line.slice(0, cut), detail: line.slice(cut + (line.charAt(cut) === '：' ? 1 : 2)) };
+}
