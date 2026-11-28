@@ -7,6 +7,7 @@ import { cancelJob, request } from '../api';
 import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
 import { checkpointScanRequestBody, glossaryScanOutcome } from '../glossaryView.mjs';
 import { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, clearCheckedTranslations, glossarySelectionLabels } from '../glossarySelection.mjs';
+import { applyTranslate, translateSnapshotsMatch, translateTargetRows } from '../glossaryTranslate.mjs';
 import type { RowSelectionState } from '../glossarySelection.mjs';
 import { AgentExtractionFeedback, GlossaryTaskControls } from './AgentExtractionFeedback';
 import { appendPreviewRows, previewCandidates, previewLabels, previewApplyReason, scanResultApplicable } from '../glossaryPreview.mjs';
@@ -136,22 +137,6 @@ function mergeEntries(base: TermRow, incoming: TermRow): TermRow {
   return merged;
 }
 
-function applyTranslate(rows: TermRow[], results: Array<[number, string]>): { rows: TermRow[]; applied: number } {
-  const next = rows.map((row) => ({ ...row }));
-  let applied = 0;
-  for (const [index, dst] of results) {
-    if (index < 0 || index >= next.length) continue;
-    const text = String(dst ?? '').trim();
-    if (!text) continue;
-    const src = String(next[index].src ?? '').trim();
-    const current = String(next[index].dst ?? '').trim();
-    if (current && current !== src) continue;
-    next[index] = { ...next[index], dst: text, candidate_confirmed: next[index].candidate ? true : next[index].candidate_confirmed };
-    applied += 1;
-  }
-  return { rows: next, applied };
-}
-
 function jobRunning(job: LexiconJob | null): boolean {
   const result = job?.result && typeof job.result === 'object' ? job.result : null;
   return Boolean(job && (job.status === 'pending' || job.status === 'running' || result?.worker_active));
@@ -188,6 +173,8 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   const [cellDirty, setCellDirty] = useState(false);
   const [appliedJobId, setAppliedJobId] = useState('');
   const taskOwner = useRef<{ id: string; project: string; generation: number } | null>(null);
+  const translateIndices = useRef<{ id: string; project: string; generation: number; indices: number[] } | null>(null);
+  const pendingTranslateIndices = useRef<number[] | null>(null);
   const setRows = (next: TermRow[] | ((previous: TermRow[]) => TermRow[]), resetSelection = true) => {
     const value = typeof next === 'function' ? next(rowsRef.current) : next;
     rowsRef.current = value;
@@ -380,11 +367,14 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       }
     }
     if (job.kind === 'lexicon_translate' && Array.isArray(result.results)) {
+      const recorded = translateIndices.current;
+      const indices = recorded && recorded.id === job.id && recorded.project === projectRef.current ? recorded.indices : undefined;
       setRows((previous) => {
-        const applied = applyTranslate(previous, result.results!);
+        const applied = applyTranslate(previous, result.results!, indices);
         state.pushToast(applied.applied ? 'success' : 'info', applied.applied ? `已填充 ${applied.applied} 条译文` : '翻译完成但无可写入结果');
         return applied.rows;
       });
+      translateIndices.current = null;
       setDirty(true);
     }
   }, [job, snapshot, state]);
@@ -567,11 +557,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     state.pushToast('success', t('lexicon_clear_dst_done').replace('{count}', String(outcome.changed)));
   };
 
-  const translateTargets = () => {
-    const checked = readRowSelection(selected, rowsRef.current.length, selectionContext).checked;
-    const pool = checked.length ? checked.map((index) => rowsRef.current[index]).filter(Boolean) : rowsRef.current;
-    return pool.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim()));
-  };
+  const translateTargets = () => translateTargetRows(rowsRef.current, readRowSelection(selected, rowsRef.current.length, selectionContext).checked);
 
   const confirmSelected = () => {
     if (selection.active == null) {
@@ -658,6 +644,10 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       });
       if (id !== operation.current || project !== projectRef.current || draft !== generation.current) return;
       taskOwner.current = { id: next.id, project, generation: draft };
+      if (path === '/api/lexicon/glossary/translate' && Array.isArray(pendingTranslateIndices.current)) {
+        translateIndices.current = { id: next.id, project, generation: draft, indices: pendingTranslateIndices.current };
+        pendingTranslateIndices.current = null;
+      }
       completedJob.current = '';
       setJob(next);
       void state.reloadTranslation();
@@ -739,7 +729,9 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
       if (result.project_key !== identity.project_key || result.output_folder !== identity.output_folder) {
         setError('项目已变化，旧任务结果不会覆盖当前稿本。'); return;
       }
-      if (job.kind === 'lexicon_translate' && (!result.row_snapshots || result.row_snapshots.length !== rowsRef.current.length || result.row_snapshots.some((row, index) => row.src !== rowsRef.current[index].src || row.dst !== rowsRef.current[index].dst))) {
+      const recorded = translateIndices.current;
+      const indices = job.kind === 'lexicon_translate' && recorded && recorded.id === job.id && recorded.project === projectRef.current ? recorded.indices : undefined;
+      if (job.kind === 'lexicon_translate' && !translateSnapshotsMatch(rowsRef.current, result.row_snapshots, indices)) {
         setError('词条已变化，请重新翻译；旧任务结果不会覆盖当前稿本。'); return;
       }
       // 重载后应用旧 job 结果也走同一套保护：written=false 不覆盖草稿，partial/warnings 持久警告。
@@ -849,22 +841,24 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
             confirm: true,
             rows: rowsRef.current.map(toApiRow),
           }, previewText.title, previewText.confirm)}>{previewText.extract}</Button>
-          <Button disabled={editLocked || !rows.length || translateTargets().length === 0} onClick={() => {
-            const targets = translateTargets().map(toApiRow);
+          <Button disabled={editLocked || !rows.length || translateTargets().rows.length === 0} onClick={() => {
+            const targets = translateTargets();
+            pendingTranslateIndices.current = targets.indices;
             askJob('/api/lexicon/glossary/translate', {
               mode: 'llm',
-              rows: targets,
+              rows: targets.rows.map(toApiRow),
               confirm: true,
-            }, t('lexicon_translate_llm_title'), t('lexicon_translate_llm_confirm').replace('{count}', String(targets.length)));
+            }, t('lexicon_translate_llm_title'), t('lexicon_translate_llm_confirm').replace('{count}', String(targets.rows.length)));
           }}>{t('lexicon_translate_llm')}</Button>
-          <Button disabled={editLocked || !rows.length || translateTargets().length === 0} onClick={() => {
-            const targets = translateTargets().map(toApiRow);
+          <Button disabled={editLocked || !rows.length || translateTargets().rows.length === 0} onClick={() => {
+            const targets = translateTargets();
+            pendingTranslateIndices.current = targets.indices;
             askJob('/api/lexicon/glossary/translate', {
               mode: 'fast',
               engine: 'bing',
-              rows: targets,
+              rows: targets.rows.map(toApiRow),
               confirm: true,
-            }, t('lexicon_translate_fast_title'), t('lexicon_translate_fast_confirm').replace('{count}', String(targets.length)));
+            }, t('lexicon_translate_fast_title'), t('lexicon_translate_fast_confirm').replace('{count}', String(targets.rows.length)));
           }}>{t('lexicon_translate_fast')}</Button>
           <Dropdown
             menu={{

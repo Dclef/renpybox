@@ -269,8 +269,9 @@ test('clear-dst button and translate buttons use the shared selection without to
     return pageSource.slice(pageSource.lastIndexOf('<Button', at), pageSource.indexOf('</Button>', at));
   };
   for (const segment of [buttonAt("mode: 'llm'"), buttonAt("mode: 'fast'")]) {
-    assert.match(segment, /translateTargets\(\)\.length === 0/);
-    assert.match(segment, /translateTargets\(\)\.map\(toApiRow\)/);
+    assert.match(segment, /translateTargets\(\)\.rows\.length === 0/);
+    assert.match(segment, /targets\.rows\.map\(toApiRow\)/);
+    assert.match(segment, /pendingTranslateIndices\.current = targets\.indices/);
     assert.doesNotMatch(segment, /rowsRef\.current\.map\(toApiRow\)/);
   }
   assert.match(variable('translateTargets'), /readRowSelection\(selected, rowsRef\.current\.length, selectionContext\)/);
