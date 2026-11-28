@@ -72,6 +72,7 @@ class AgentRequester:
         r"\b(429|rate[\s_-]?limit|too many requests|resource[\s_-]?exhausted)\b",
         re.IGNORECASE,
     )
+    RE_SECRET = re.compile(r"sk-[A-Za-z0-9_-]{6,}")
     RE_O_SERIES = re.compile(r"o\d(?:$|-)", re.IGNORECASE)
     RE_GPT5 = re.compile(r"gpt-5", re.IGNORECASE)
     RE_QWEN3_5 = re.compile(r"qwen3(?:\.|-)?5", re.IGNORECASE)
@@ -100,6 +101,8 @@ class AgentRequester:
         self.platform = platform
         self.cancel_event = threading.Event()
         self.last_error_message = ""
+        self._last_error_type = ""
+        self._last_error_status = None
         # 本轮是否撞过限流；每次工具请求开始时重置，用于把最终失败归因为限流。
         self._rate_limited = False
         # 被端点以「上限过高」拒绝后动态下调；0 表示仍用按模型推导的值。
@@ -514,7 +517,7 @@ class AgentRequester:
                     on_reasoning_delta=on_reasoning_delta,
                 )
             except openai.BadRequestError as exc:
-                self.last_error_message = str(exc)
+                self._remember_error(exc)
                 # 不少兼容端点不接受「比它自己支持值更大」的 max_tokens，会在
                 # 参数校验阶段直接 400。此时把输出预算减半再试一次，而不是让用户
                 # 看到「请求失败」却不知道是预算过高。
@@ -525,7 +528,7 @@ class AgentRequester:
                     Localizer.get().agent_request_bad_request,
                 )
             except Exception as exc:
-                self.last_error_message = str(exc)
+                self._remember_error(exc)
                 if self._cancelled():
                     return AgentRequestResult.failure(
                         "CANCELLED",
@@ -550,8 +553,29 @@ class AgentRequester:
             )
         return AgentRequestResult.failure(
             "REQUEST_FAILED",
-            Localizer.get().agent_request_failed,
+            self._request_failed_message(),
         )
+
+    def _remember_error(self, exc: BaseException) -> None:
+        self.last_error_message = str(exc)
+        self._last_error_type = type(exc).__name__
+        status = getattr(exc, "status_code", None)
+        try:
+            self._last_error_status = int(status) if status is not None else None
+        except (TypeError, ValueError):
+            self._last_error_status = None
+
+    def _request_failed_message(self) -> str:
+        """真实失败原因：类型、HTTP 状态、截断后的消息。密钥打码，不含请求体。"""
+        message = self.RE_SECRET.sub("sk-***", str(self.last_error_message or ""))
+        message = " ".join(message.split())
+        if len(message) > 160:
+            message = message[:160]
+        status = "" if self._last_error_status is None else str(self._last_error_status)
+        reason = " ".join(part for part in (self._last_error_type, status, message) if part).strip()
+        if not reason:
+            return Localizer.get().agent_request_failed
+        return Localizer.get().agent_request_failed_detail.format(reason=reason)
 
     def _is_rate_limited(self, exc: Exception) -> bool:
         """识别限流。兼容端点的报错文本不可控，所以类型与文本两路都看。"""

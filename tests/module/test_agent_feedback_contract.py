@@ -39,7 +39,7 @@ def payload(messages):
 
 
 class Requester:
-    def __init__(self, config, platform):
+    def __init__(self, config, platform, **kwargs):
         self.platform = platform
 
     def request_text(self, messages):
@@ -238,7 +238,7 @@ def test_all_slots_request_and_cancel_block_but_return_is_bounded(monkeypatch):
     release = threading.Event()
     instances = []
     class Stuck(Requester):
-        def __init__(self, config, platform):
+        def __init__(self, config, platform, **kwargs):
             super().__init__(config, platform)
             instances.append(self)
         def request_text(self, messages):
@@ -297,7 +297,7 @@ def test_constructor_and_cleanup_exceptions_do_not_kill_worker(monkeypatch):
     fake_corpus(monkeypatch, 4)
     instances = []
     class Failure(Requester):
-        def __init__(self, config, platform):
+        def __init__(self, config, platform, **kwargs):
             instances.append(self)
             if len(instances) == 1:
                 raise RuntimeError("bad setup")

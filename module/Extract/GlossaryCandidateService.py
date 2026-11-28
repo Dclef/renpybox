@@ -360,6 +360,8 @@ class GlossaryCandidateService(Base):
         r"^(?:#[0-9a-fA-F]{3,8}|[\w./\\-]+\.(?:rpy|rpyc|py|png|jpg|jpeg|webp|ogg|mp3|wav|ttf|otf|json|txt)|"
         r"[0-9]+(?:\.[0-9]+)?)$"
     )
+    # 单个代码标识符：必须含下划线或以数字结尾。纯字母单词（人名）不在此列。
+    RE_CODE_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     # 40 项/2500 字会把一次对话切成过碎的分块：语境被截断后模型更容易把
     # 泛用 UI 词当成术语。常规容量提到 80 项/8000 字，仍保留总块上限与覆盖诊断。
@@ -694,7 +696,7 @@ class GlossaryCandidateService(Base):
                 before = len(items)
                 if depth > 0 and definition_name:
                     value = self._normalize_definition(raw)
-                    if value:
+                    if value and self._definition_worth_sending(value):
                         self._push(items, set(), value, source_name, number, definition_kind, "")
                 else:
                     self._append_line(items, set(), raw, source_name, number)
@@ -769,15 +771,14 @@ class GlossaryCandidateService(Base):
         # 角色定义行整行保留：模型能看到 Character(...) 的上下文与显示名。
         if self.RE_CHARACTER_DEF.search(self.RE_STRING.sub("", line)) is not None:
             text = self._normalize_definition(line)
-            if text:
+            if text and self._definition_worth_sending(text):
                 self._push(items, seen_in_line, text, source, number, "character-definition", "")
             return
 
-        # define / default 等赋值行整行保留：变量名与显示名的对应关系本身就是证据，
-        # 只送字符串字面量会丢掉“谁是谁”的语境。
+        # define / default 等赋值行整行保留：显示名、定义头和标识符别名都是「谁是谁」的证据。
         if self.RE_DEFINITION.search(line) is not None or self.RE_ASSIGNMENT.match(line) is not None:
             text = self._normalize_definition(line)
-            if text:
+            if text and self._definition_worth_sending(text):
                 self._push(items, seen_in_line, text, source, number, "definition", "")
             return
 
@@ -846,7 +847,35 @@ class GlossaryCandidateService(Base):
             return ""
         if GlossaryCandidateService.RE_STRUCTURAL_NOISE.fullmatch(cleaned) is not None:
             return ""
+        if GlossaryCandidateService._is_code_token(cleaned):
+            return ""
         return cleaned
+
+    @staticmethod
+    def _is_code_token(text: str) -> bool:
+        """单 token 代码标识符。纯字母单词留给模型判断，不在这里丢。"""
+        if GlossaryCandidateService.RE_CODE_TOKEN.fullmatch(text) is None:
+            return False
+        return "_" in text or text[-1].isdigit()
+
+    def _has_display_text(self, text: str) -> bool:
+        """定义行里是否有非空字符串字面量。"""
+        return any(literal.strip() for literal in self._string_literals(text))
+
+    def _definition_worth_sending(self, text: str) -> bool:
+        """一行定义值得送：有显示文本、Character( 定义头，或右侧是标识符的别名赋值。"""
+        if self._has_display_text(text):
+            return True
+        if self.RE_CHARACTER_DEF.search(self.RE_STRING.sub("", text)) is not None:
+            return True
+        assignment = self.RE_ASSIGNMENT.match(text)
+        if assignment is None:
+            return False
+        right = text[assignment.end():].strip()
+        if self.RE_IDENTIFIER.fullmatch(right) is None:
+            return False
+        # True/False/None 能被 RE_IDENTIFIER 整段匹配，但它们是字面量，不是别名。
+        return right not in {"True", "False", "None"}
 
     def _split_long_text(self, text: str) -> list[str]:
         """超长文本按句读/词边界切段，带重叠，避免把名字切两半。"""
@@ -1103,7 +1132,11 @@ class GlossaryCandidateService(Base):
                 try:
                     if self._cancelled():
                         raise InterruptedError(Localizer.get().agent_glossary_cancelled)
-                    requester = AgentRequester(self.config, self.platform or {})
+                    requester = AgentRequester(
+                        self.config,
+                        self.platform or {},
+                        thinking_level=getattr(self.config, "agent_thinking_level", None),
+                    )
                     with lock:
                         active[index]["requester"] = requester
                         abandoned = stop.is_set() or index in results

@@ -645,7 +645,7 @@ def test_both_real_api_paths_resume_full_cached_results_with_fake_requester(app_
     monkeypatch.setattr(module.GlossaryCandidateService, '_input_byte_limit', lambda self: 1000000)
     monkeypatch.setattr(module.GlossaryCandidateService, 'CHUNK_CONCURRENCY', 1)
     class FakeRequester:
-        def __init__(self, config, platform):
+        def __init__(self, config, platform, **kwargs):
             pass
         def request_text(self, messages):
             item = json.loads(messages[0]['content'].split('输入：' + chr(10), 1)[1])

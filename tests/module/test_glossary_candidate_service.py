@@ -43,9 +43,10 @@ class FakeRequester:
     responses: list = []
     instances: list = []
 
-    def __init__(self, config, platform):
+    def __init__(self, config, platform, *, thinking_level=None):
         self.config = config
         self.platform = platform
+        self.thinking_level = thinking_level
         self.closed = 0
         self.cancelled = 0
         self.prompts: list[str] = []
@@ -306,8 +307,8 @@ def test_cancel_raises_and_closes_requester(monkeypatch):
     class SlowRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             SlowRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -461,8 +462,8 @@ def test_cancel_stops_active_requester(monkeypatch):
     class BlockingRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             BlockingRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -508,8 +509,8 @@ def test_slow_chunk_times_out_after_starting(monkeypatch):
     class SlowRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             SlowRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -540,8 +541,8 @@ def test_all_chunks_settled_returns_without_waiting_forever(monkeypatch):
     class StuckRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -573,8 +574,8 @@ def test_all_workers_stuck_returns_within_deadline_two_chunks(monkeypatch):
     class StuckRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -611,8 +612,8 @@ def test_all_workers_stuck_returns_within_deadline_five_chunks(monkeypatch):
     class StuckRequester(FakeRequester):
         instances = []
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
         def request_text(self, messages, on_text_delta=None):
@@ -837,8 +838,8 @@ def test_healthy_chunks_run_after_one_timeout(monkeypatch):
         instances = []
         order = 0
 
-        def __init__(self, config, platform):
-            super().__init__(config, platform)
+        def __init__(self, config, platform, *, thinking_level=None):
+            super().__init__(config, platform, thinking_level=thinking_level)
             MixedRequester.instances.append(self)
             self.index = MixedRequester.order
             MixedRequester.order += 1
@@ -895,3 +896,92 @@ def test_coverage_limit_marks_result_incomplete(monkeypatch):
     assert result["llm_chunks_total"] == 2
     assert result["coverage_complete"] is False
     assert any("未分析部分不算完成" in warning for warning in result["warnings"])
+
+
+def test_definitions_without_display_text_stay_out_of_corpus(tmp_path):
+    game = tmp_path / "game"
+    game.mkdir()
+    lines = [
+        "default tall_in = 0",
+        "define gui.text_size = 33",
+        "init python:",
+        "define stats = (",
+        "    0",
+        ")",
+        "define h = Character('History')",
+        'default hero_name = "Luma"',
+        "define luna = Character(",
+        '    "Astrid"',
+        ")",
+    ]
+    (game / "script.rpy").write_text("\n".join(lines), encoding="utf-8")
+
+    items, _warnings = make_service(target_path=str(game))._collect_corpus()
+    texts = [item["text"] for item in items]
+
+    assert not any("tall_in" in text or "text_size" in text or "init python" in text for text in texts)
+    assert not any(text.strip() in {"0", "define stats = (", ")"} for text in texts)
+    assert "define h = Character('History')" in texts
+    assert 'default hero_name = "Luma"' in texts
+    assert any("Astrid" in text for text in texts)
+
+
+def test_context_noise_drops_code_tokens_and_keeps_plain_names():
+    normalize = GlossaryCandidateService._normalize_context
+    for noise in ("my_style", "K_ESCAPE", "mouseup_3", "quick_save", "clarissa_school01_breath1", "breath2"):
+        assert normalize(noise) == ""
+    for name in ("Astrid", "Park", "Ox", "Luma", "Eastwatch"):
+        assert normalize(name) == name
+    assert normalize("Park walked home") == "Park walked home"
+    assert GlossaryCandidateService._normalize_definition('define h = Character("History")').startswith("define h")
+
+
+def test_extraction_uses_config_thinking_level(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ["[]"]
+    config = SimpleNamespace(agent_thinking_level="LOW")
+
+    make_service(config=config).run()
+
+    assert FakeRequester.instances
+    assert FakeRequester.instances[-1].thinking_level == "LOW"
+
+
+def test_agent_failure_message_keeps_reason_and_redacts_key(monkeypatch):
+    from base.Base import Base
+    from module.Agent.AgentRequester import AgentRequester
+    from module.Config import Config
+
+    requester = AgentRequester(
+        Config(),
+        {
+            "api_key": ["test-key"],
+            "api_url": "https://example.invalid/v1",
+            "api_format": Base.APIFormat.OPENAI,
+            "model": "test-model",
+        },
+    )
+
+    class Boom(RuntimeError):
+        status_code = 503
+
+    def raise_boom(*_args, **_kwargs):
+        raise Boom("read timeout sk-abcDEF123456\nbody " + ("x" * 400))
+
+    monkeypatch.setattr(requester, "_request_openai", raise_boom)
+    result = requester.request_tools([{"role": "user", "content": "hi"}], [])
+
+    assert result.success is False
+    assert result.error_code == "REQUEST_FAILED"
+    assert "Boom" in result.error_message
+    assert "503" in result.error_message
+    assert "read timeout" in result.error_message
+    assert "sk-abcDEF123456" not in result.error_message
+    assert "sk-***" in result.error_message
+    assert "\n" not in result.error_message
+    assert len(result.error_message) < 220
