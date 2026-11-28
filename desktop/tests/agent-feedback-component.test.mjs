@@ -136,6 +136,15 @@ test('warning and candidate details have bounded scroll regions scoped to the fe
   assert.match(css, /\.rb-agent-feedback\[data-active='true'\] \.rb-agent-feedback-message\s*\{[^}]*text-overflow:\s*ellipsis/);
   assert.match(css, /\.rb-banner-text\s*\{[^}]*max-height:\s*120px/);
   assert.match(css, /\.rb-banner-text\s*\{[^}]*overflow-y:\s*auto/);
+  const reasoningRule = css.split('.rb-agent-feedback-reasoning .reasoning-text {').at(-1)?.split('}')[0];
+  assert.match(reasoningRule, /max-height:\s*\d+px/);
+  assert.match(reasoningRule, /overflow-y:\s*auto/);
+  const feedbackSource = readFileSync(new URL('../renderer/src/pages/AgentExtractionFeedback.tsx', import.meta.url), 'utf8');
+  assert.match(feedbackSource, /chunk\.reasoning \?/);
+  assert.match(feedbackSource, /rb-agent-feedback-reasoning/);
+  assert.match(feedbackSource, /lexicon_extract_reasoning/);
+  const silent = render({ active: true, result: { extraction_progress: progress } });
+  assert.doesNotMatch(silent, /rb-agent-feedback-reasoning/);
   const feedback = readFileSync(new URL('../renderer/src/pages/AgentExtractionFeedback.tsx', import.meta.url), 'utf8');
   assert.match(feedback, /data-kind/);
   assert.match(feedback, /rb-warning-kind/);

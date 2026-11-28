@@ -53,7 +53,7 @@ def make_service(tmp_path, monkeypatch, *, count=4, behavior=None, calls=None, e
     class FakeRequester:
         def __init__(self, config, platform, **kwargs):
             pass
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             data = [json.loads(line) for line in messages[0]['content'].split('输入：' + chr(10), 1)[1].splitlines()]
             index = data[0]['id']
             calls.append(index)

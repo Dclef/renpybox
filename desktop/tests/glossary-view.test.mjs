@@ -172,6 +172,7 @@ test('124/5/119 场景：规范化摘要只保留有界活动分块与最多20�
   assert.equal(view.elapsedSeconds, 63.44);
   assert.equal(view.activeChunks.length, 1);
   assert.deepEqual(view.activeChunks[0].sources, ['game/script.rpy', 'game/chars.rpy']);
+  assert.equal(view.activeChunks[0].reasoning, '');
   assert.equal(view.candidates.length, 2);
   assert.equal(view.candidates[0].src, '艾莉娅');
   assert.equal(view.candidates[0].line, 12);

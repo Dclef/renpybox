@@ -42,7 +42,7 @@ class Requester:
     def __init__(self, config, platform, **kwargs):
         self.platform = platform
 
-    def request_text(self, messages):
+    def request_text(self, messages, **_kwargs):
         return response()
 
     def cancel(self):
@@ -115,7 +115,7 @@ def test_multiline_character_definition_keeps_real_name_line(tmp_path):
     assert name_row["kind"] == "character-definition"
     assert any("Character(" in row["text"] for row in chunk)
     requester = Requester(None, PLATFORM)
-    requester.request_text = lambda _: response(json.dumps({"src": "History", "type": "角色", "line": name_row["id"]}))
+    requester.request_text = lambda *_args, **_kwargs: response(json.dumps({"src": "History", "type": "角色", "line": name_row["id"]}))
     success, grounded = svc._request_chunk(0, chunk, requester)
     assert success and grounded[0]["line"] == 2 and grounded[0]["source"] == "names.rpy"
 
@@ -135,7 +135,7 @@ def test_ui_usage_and_same_word_character_are_distinct(tmp_path):
     assert "赋值里的字符串并非都指人物" in prompt
     definition = next(row for row in rows if row["kind"] == "character-definition")
     requester = Requester(None, PLATFORM)
-    requester.request_text = lambda _: response(json.dumps({"src": "History", "type": "角色", "line": definition["id"]}))
+    requester.request_text = lambda *_args, **_kwargs: response(json.dumps({"src": "History", "type": "角色", "line": definition["id"]}))
     success, grounded = svc._request_chunk(0, rows, requester)
     assert success and grounded[0]["src"] == "History"
 
@@ -144,7 +144,7 @@ def test_ui_usage_and_same_word_character_are_distinct(tmp_path):
 def test_real_character_spelling_is_not_blacklisted_or_stripped(name):
     row = item(0, f'define narrator = Character("{name}")', kind="character-definition")
     requester = Requester(None, PLATFORM)
-    requester.request_text = lambda _: response(json.dumps({"src": name, "type": "角色", "line": 0}, ensure_ascii=False))
+    requester.request_text = lambda *_args, **_kwargs: response(json.dumps({"src": name, "type": "角色", "line": 0}, ensure_ascii=False))
     success, grounded = service()._request_chunk(0, [row], requester)
     assert success and grounded[0]["src"] == name
 
@@ -154,7 +154,7 @@ def test_preview_uses_checked_quote_and_resolved_source_not_model_hint():
     rows = [item(9, "Nothing here.", source="ui.rpy", line=2),
             item(17, "Luma waved at History.", source="chapter/real.rpy", line=87)]
     requester = Requester(None, PLATFORM)
-    requester.request_text = lambda _: response(json.dumps({"src": "History", "type": "角色", "line": 9,
+    requester.request_text = lambda *_args, **_kwargs: response(json.dumps({"src": "History", "type": "角色", "line": 9,
                                                            "source": "forged.rpy", "evidence": "secret invented reasoning"}))
     success, grounded = svc._request_chunk(0, rows, requester)
     assert success
@@ -162,7 +162,7 @@ def test_preview_uses_checked_quote_and_resolved_source_not_model_hint():
     assert grounded[0]["evidence"] in rows[1]["text"]
     assert "History" in grounded[0]["evidence"]
     assert "invented" not in grounded[0]["evidence"]
-    requester.request_text = lambda _: response(json.dumps({"src": "History", "type": "角色", "line": 17,
+    requester.request_text = lambda *_args, **_kwargs: response(json.dumps({"src": "History", "type": "角色", "line": 17,
                                                            "evidence": "waved at History."}))
     assert svc._request_chunk(0, rows, requester)[1][0]["evidence"] == "waved at History."
 
@@ -196,7 +196,7 @@ def test_healthy_slot_runs_far_beyond_first_timeout_and_discards_late(monkeypatc
     closed = threading.Event()
     calls = []
     class Mixed(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             index = payload(messages)[0]["id"]
             self.index = index
             calls.append(index)
@@ -241,7 +241,7 @@ def test_all_slots_request_and_cancel_block_but_return_is_bounded(monkeypatch):
         def __init__(self, config, platform, **kwargs):
             super().__init__(config, platform)
             instances.append(self)
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             release.wait(3)
             return response()
         def cancel(self):
@@ -273,7 +273,7 @@ def test_blocking_close_keeps_occupied_slots_and_valid_results(monkeypatch):
     release = threading.Event()
     calls = []
     class SlowClose(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             calls.append(payload(messages)[0]["id"])
             return response()
         def close(self):
@@ -317,7 +317,7 @@ def test_user_cancel_freezes_events_results_and_legacy_callbacks(monkeypatch):
     release, cancelled = threading.Event(), threading.Event()
     closes = []
     class Slow(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             self.index = payload(messages)[0]["id"]
             release.wait(3)
             return response(json.dumps({"src": f"Name{self.index}", "type": "角色", "line": self.index}))
@@ -354,7 +354,7 @@ def test_events_cover_start_finish_heartbeat_and_use_one_publisher(monkeypatch):
     owner = threading.get_ident()
     times, events, publishers = [], [], []
     class Heartbeat(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             time.sleep(1.15)
             return response('{"src":"Name0","type":"角色","line":0,"evidence":"Name0 spoke."}')
     monkeypatch.setattr(module, "AgentRequester", Heartbeat)
@@ -405,7 +405,7 @@ def test_context_overflow_is_reported_without_dropping_source(tmp_path):
 def test_character_preview_filters_only_agent_category(monkeypatch):
     fake_corpus(monkeypatch, 1)
     class Entities(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             return response('{"src":"Name0","type":"物品","line":0}')
     monkeypatch.setattr(module, "AgentRequester", Entities)
     events = []
@@ -419,7 +419,7 @@ def test_character_preview_filters_only_agent_category(monkeypatch):
 def test_response_after_deadline_before_next_poll_is_rejected(monkeypatch):
     fake_corpus(monkeypatch, 1)
     class JustLate(Requester):
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             time.sleep(0.075)
             return response('{"src":"Name0","type":"角色","line":0}')
     monkeypatch.setattr(module, "AgentRequester", JustLate)

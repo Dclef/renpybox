@@ -645,6 +645,7 @@ export const en: Record<keyof typeof zh, string> = {
   lexicon_extract_phase_completed: 'Extraction finished',
   lexicon_extract_summary: 'Chunks {completed}/{total} · success {successful} · failed {failed} · pending {pending}',
   lexicon_extract_elapsed: 'Elapsed {seconds}s',
+  lexicon_extract_reasoning: 'Reasoning',
   lexicon_extract_active: 'Active chunk {index}: {sources} ({seconds}s)',
   lexicon_extract_sources_unknown: 'source unavailable',
   lexicon_extract_candidates: '{count} provisional candidates (preview only, not written to the glossary)',

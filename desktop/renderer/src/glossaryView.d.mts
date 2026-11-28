@@ -23,7 +23,7 @@ export interface ExtractionProgressView {
   failedChunks: number;
   pendingChunks: number;
   elapsedSeconds: number;
-  activeChunks: Array<{ index: number; sources: string[]; elapsedSeconds: number }>;
+  activeChunks: Array<{ index: number; sources: string[]; elapsedSeconds: number; reasoning: string }>;
   candidateCount: number;
   candidates: Array<{ src: string; type: string; evidence: string; source: string; line: number }>;
   candidatesTruncated: boolean;

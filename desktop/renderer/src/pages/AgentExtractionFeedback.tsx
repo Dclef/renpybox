@@ -219,6 +219,12 @@ export function AgentExtractionFeedback(props: AgentExtractionFeedbackProps) {
                         sources: chunk.sources.length ? chunk.sources.join(', ') : t('lexicon_extract_sources_unknown'),
                         seconds: formatSeconds(chunk.elapsedSeconds),
                       })}
+                      {chunk.reasoning ? (
+                        <details className="rb-agent-feedback-reasoning">
+                          <summary>{t('lexicon_extract_reasoning')}</summary>
+                          <div className="reasoning-text">{chunk.reasoning}</div>
+                        </details>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

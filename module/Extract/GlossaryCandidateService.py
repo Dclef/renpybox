@@ -36,6 +36,7 @@ PROGRESS_MAX_CANDIDATES = 20
 PROGRESS_MAX_ACTIVE_CHUNKS = 4
 PROGRESS_MAX_SOURCES = 3
 PROGRESS_EVIDENCE_CHARS = 40
+REASONING_MAX_CHARS = 600
 PHASE_COLLECTING = "collecting"
 PHASE_EXTRACTING = "extracting"
 PHASE_AGGREGATING = "aggregating"
@@ -218,6 +219,7 @@ class ExtractionProgress:
         self._checkpoint: dict[str, Any] = {}
         self._candidate_keys: set[str] = set()
         self._candidate_preview: dict[str, dict[str, Any]] = {}
+        self._reasoning: dict[int, str] = {}
         self._dirty = True
         self._closed = False
         self._last_emit = 0.0
@@ -253,6 +255,20 @@ class ExtractionProgress:
             if reused:
                 self._reused.add(index)
             self._dirty = True
+
+    def append_reasoning(self, index: int, delta: str) -> None:
+        if not isinstance(delta, str) or delta == "":
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._reasoning[index] = (self._reasoning.get(index, "") + delta)[-REASONING_MAX_CHARS:]
+            self._dirty = True
+
+    def clear_reasoning(self, index: int) -> None:
+        with self._lock:
+            if self._reasoning.pop(index, None) is not None:
+                self._dirty = True
 
     def set_checkpoint(self, details: dict[str, Any]) -> None:
         with self._lock:
@@ -305,7 +321,8 @@ class ExtractionProgress:
         with self._lock:
             active = [
                 {"index": index + 1, "sources": list(self._sources.get(index, [])),
-                 "elapsed_seconds": round(max(0.0, now - started), 3)}
+                 "elapsed_seconds": round(max(0.0, now - started), 3),
+                 "reasoning": self._reasoning.get(index, "")}
                 for index, started in sorted(self._active.items())
             ]
             completed = len(self._finished)
@@ -1197,6 +1214,7 @@ class GlossaryCandidateService(Base):
                                     results[index] = (True, rows)
                         self.progress.set_checkpoint(self._checkpoint.metadata())
                     self.progress.chunk_finished(index, bool(success))
+                    self.progress.clear_reasoning(index)
                     if success and isinstance(rows, list):
                         visible = [row for row in rows if not self.character_only or row.get("type") == "角色"]
                         self.progress.see_candidates(visible)
@@ -1277,7 +1295,10 @@ class GlossaryCandidateService(Base):
         if len(json.dumps(messages, ensure_ascii = False).encode("utf-8")) > self._input_byte_limit():
             return False, Localizer.get().agent_glossary_chunk_failed.format(
                 index = index + 1, reason = Localizer.get().agent_glossary_prompt_budget)
-        result = requester.request_text(messages)
+        result = requester.request_text(
+            messages,
+            on_reasoning_delta=lambda delta: self.progress.append_reasoning(index, delta),
+        )
         if result.error_code == "CANCELLED":
             if self._cancelled():
                 raise InterruptedError(Localizer.get().agent_glossary_cancelled)

@@ -106,6 +106,7 @@ export function normalizeExtractionProgress(raw) {
       index: safeNonNegInt(item.index) || i + 1,
       sources: sourcesRaw.slice(0, MAX_SOURCES).map((s) => safeText(s, 160)).filter(Boolean),
       elapsedSeconds: safeNonNegNumber(item.elapsed_seconds),
+      reasoning: safeText(item.reasoning, 600),
     };
   });
   const candidatesRaw = Array.isArray(raw.candidates) ? raw.candidates : [];

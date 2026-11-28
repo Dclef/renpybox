@@ -671,7 +671,7 @@ def test_both_real_api_paths_resume_full_cached_results_with_fake_requester(app_
     class FakeRequester:
         def __init__(self, config, platform, **kwargs):
             pass
-        def request_text(self, messages):
+        def request_text(self, messages, **_kwargs):
             item = json.loads(messages[0]['content'].split('输入：' + chr(10), 1)[1])
             index = item['id']
             calls.append(index)

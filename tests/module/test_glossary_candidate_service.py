@@ -8,7 +8,9 @@ import pytest
 
 import module.Extract.GlossaryCandidateService as service_module
 from module.Extract.GlossaryCandidateService import (
+    ExtractionProgress,
     GlossaryCandidateService,
+    REASONING_MAX_CHARS,
     extract_character_candidates,
     extract_glossary_candidates,
 )
@@ -52,8 +54,12 @@ class FakeRequester:
         self.prompts: list[str] = []
         FakeRequester.instances.append(self)
 
-    def request_text(self, messages, on_text_delta=None):
+    def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
         self.prompts.append(messages[0]["content"])
+        self.on_reasoning_delta = on_reasoning_delta
+        if callable(on_reasoning_delta):
+            for delta in getattr(self, "reasoning_deltas", ()) or ():
+                on_reasoning_delta(delta)
         response = FakeRequester.responses.pop(0) if FakeRequester.responses else None
         if response is None:
             return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
@@ -207,7 +213,7 @@ def test_malformed_response_is_a_failure():
 def test_agent_failure_keeps_code_and_message():
     service = make_service()
     requester = FakeRequester(None, PLATFORM)
-    requester.request_text = lambda messages, on_text_delta=None: SimpleNamespace(
+    requester.request_text = lambda messages, on_text_delta=None, on_reasoning_delta=None: SimpleNamespace(
         success=False, text="", error_code="RATE_LIMITED", error_message="限流"
     )
 
@@ -311,7 +317,7 @@ def test_cancel_raises_and_closes_requester(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             SlowRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             raise InterruptedError("stopped")
 
     monkeypatch.setattr(service_module, "AgentRequester", SlowRequester)
@@ -466,7 +472,7 @@ def test_cancel_stops_active_requester(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             BlockingRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             entered.set()
             deadline = time_module.monotonic() + 3
             while time_module.monotonic() < deadline:
@@ -513,7 +519,7 @@ def test_slow_chunk_times_out_after_starting(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             SlowRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             time_module.sleep(1.5)
             return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
 
@@ -545,7 +551,7 @@ def test_all_chunks_settled_returns_without_waiting_forever(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             threading.Event().wait(30)
             return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
 
@@ -578,7 +584,7 @@ def test_all_workers_stuck_returns_within_deadline_two_chunks(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             threading.Event().wait(60)
             return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
 
@@ -616,7 +622,7 @@ def test_all_workers_stuck_returns_within_deadline_five_chunks(monkeypatch):
             super().__init__(config, platform, thinking_level=thinking_level)
             StuckRequester.instances.append(self)
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             threading.Event().wait(60)
             return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
 
@@ -844,7 +850,7 @@ def test_healthy_chunks_run_after_one_timeout(monkeypatch):
             self.index = MixedRequester.order
             MixedRequester.order += 1
 
-        def request_text(self, messages, on_text_delta=None):
+        def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
             if self.index == 0:
                 time_module.sleep(1.2)
                 return SimpleNamespace(success=True, text="[]", error_code="", error_message="")
@@ -950,6 +956,62 @@ def test_extraction_uses_config_thinking_level(monkeypatch):
 
     assert FakeRequester.instances
     assert FakeRequester.instances[-1].thinking_level == "LOW"
+
+
+def test_reasoning_buffer_keeps_the_tail_and_only_active_chunks():
+    progress = ExtractionProgress()
+    progress.append_reasoning(0, "ab")
+    progress.append_reasoning(0, "cd")
+    progress.append_reasoning(1, "other")
+    progress.chunk_started(0)
+    visible = progress.snapshot()["active_chunks"]
+    assert len(visible) == 1
+    assert visible[0]["reasoning"] == "abcd"
+    progress.append_reasoning(0, "x" * (REASONING_MAX_CHARS + 50))
+    tail = progress.snapshot()["active_chunks"][0]["reasoning"]
+    assert tail == "x" * REASONING_MAX_CHARS
+    progress.clear_reasoning(0)
+    assert progress.snapshot()["active_chunks"][0]["reasoning"] == ""
+    assert 0 not in progress._reasoning
+
+
+def test_request_chunk_feeds_reasoning_into_the_active_snapshot():
+    service = make_service()
+    requester = FakeRequester(None, PLATFORM)
+    requester.reasoning_deltas = ["think ", "about Luma"]
+    FakeRequester.responses = ["[]"]
+    service.progress.chunk_started(0)
+
+    success, payload = service._request_chunk(0, [make_item(0, "LUMA waved.")], requester)
+
+    assert success is True and payload == []
+    assert requester.on_reasoning_delta is not None
+    assert service.progress.snapshot()["active_chunks"][0]["reasoning"] == "think about Luma"
+
+
+def test_reasoning_is_not_stored_on_entries(monkeypatch):
+    monkeypatch.setattr(
+        service_module.GlossaryCandidateService,
+        "_collect_corpus",
+        lambda self: ([make_item(0, "LUMA waved.")], []),
+    )
+    monkeypatch.setattr(service_module, "AgentRequester", FakeRequester)
+    FakeRequester.responses = ['{"src": "LUMA", "type": "角色", "line": 0}']
+    original = FakeRequester.request_text
+
+    def request_text(self, messages, on_text_delta=None, on_reasoning_delta=None):
+        self.reasoning_deltas = ["hidden thought"]
+        return original(self, messages, on_text_delta, on_reasoning_delta)
+
+    monkeypatch.setattr(FakeRequester, "request_text", request_text)
+    service = make_service()
+    result = service.run()
+
+    assert {entry["src"] for entry in result["entries"]} == {"LUMA"}
+    assert all("reasoning" not in entry for entry in result["entries"])
+    assert "reasoning" not in result
+    assert "extraction_progress" not in result
+    assert service.progress._reasoning == {}
 
 
 def test_agent_failure_message_keeps_reason_and_redacts_key(monkeypatch):

@@ -440,6 +440,7 @@ class AgentRequester:
         messages: list[dict[str, Any]],
         *,
         on_text_delta: TextDeltaCallback | None = None,
+        on_reasoning_delta: TextDeltaCallback | None = None,
     ) -> AgentRequestResult:
         """不带工具跑一次纯文本请求，用于上下文摘要。
 
@@ -451,6 +452,7 @@ class AgentRequester:
             messages,
             [],
             on_text_delta=on_text_delta,
+            on_reasoning_delta=on_reasoning_delta,
         )
 
     def request_tools(

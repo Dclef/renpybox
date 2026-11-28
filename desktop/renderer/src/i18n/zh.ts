@@ -643,6 +643,7 @@ export const zh = {
   lexicon_extract_phase_completed: '提取结束',
   lexicon_extract_summary: '分块 {completed}/{total} · 成功 {successful} · 失败 {failed} · 待处理 {pending}',
   lexicon_extract_elapsed: '已用时 {seconds} 秒',
+  lexicon_extract_reasoning: '思考过程',
   lexicon_extract_active: '活动分块 {index}：{sources}（{seconds} 秒）',
   lexicon_extract_sources_unknown: '来源未知',
   lexicon_extract_candidates: '暂定候选 {count} 条（仅供预览，不写入词库）',
