@@ -1,6 +1,6 @@
 /** 术语表：单元格内联编辑，操作与旧 Qt LocalGlossaryPage 对齐。 */
 import { useEffect, useRef, useState } from 'react';
-import { Button, Checkbox, Dropdown, Input, Tag } from 'antd';
+import { Button, Checkbox, Dropdown, Input, Radio, Tag } from 'antd';
 import { Check, Plus, Search } from 'lucide-react';
 
 import { cancelJob, request } from '../api';
@@ -10,12 +10,18 @@ import { readRowSelection, selectionContextChanged, selectActiveRow, selectCheck
 import type { RowSelectionState } from '../glossarySelection.mjs';
 import { AgentExtractionFeedback, GlossaryTaskControls } from './AgentExtractionFeedback';
 import { appendPreviewRows, previewCandidates, previewLabels, previewApplyReason, scanResultApplicable } from '../glossaryPreview.mjs';
+import { mergeImportedRows, normalizeImportRows } from '../glossaryImport.mjs';
+import type { ImportedTerm } from '../glossaryImport.mjs';
 import type { PreviewContext } from '../glossaryPreview.mjs';
 import { ExtractionScanDialog } from './ExtractionScanDialog';
 import { useT } from '../i18n';
 import type { JobSnapshot } from '../types';
 import type { AppState } from '../useAppState';
 import { Banner, Dialog, NextStepBar, PageHeader } from '../ui';
+
+type ImportStrategy = 'keep' | 'fill' | 'overwrite';
+type PendingImport = { incoming: ImportedTerm[]; filename: string; op: number; project: string; version: number } | null;
+const importRadioStyle = { display: 'flex', alignItems: 'flex-start', marginBottom: 8, whiteSpace: 'normal' } as const;
 
 interface TermRow {
   src: string;
@@ -205,6 +211,8 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
   const [confirmReload, setConfirmReload] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmApply, setConfirmApply] = useState(false);
+  const [pendingImport, setPendingImport] = useState<PendingImport>(null);
+  const [importStrategy, setImportStrategy] = useState<ImportStrategy>('keep');
   const [pendingJob, setPendingJob] = useState<{ path: string; body: Record<string, unknown>; title: string; message: string } | null>(null);
   const [editRequest, setEditRequest] = useState<DataSheetEditTarget | null>(null);
   const [job, setJob] = useState<LexiconJob | null>(null);
@@ -428,6 +436,15 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     }
   };
 
+  const openImportMerge = (parsed: { rows: ImportedTerm[]; error: string }, filename: string, guard: { id: number; key: string; version: number }) => {
+    if (guard.id !== operation.current || guard.key !== projectRef.current || guard.version !== generation.current) return;
+    if (parsed.error) throw new Error(parsed.error);
+    if (cellDirty) { setError('请先按 Enter 提交当前单元格，再导入。'); return; }
+    setError('');
+    setImportStrategy('keep');
+    setPendingImport({ incoming: parsed.rows, filename, op: guard.id, project: guard.key, version: guard.version });
+  };
+
   const importExcel = async (file?: File) => {
     if (!file || editLocked) return;
     const id = ++operation.current;
@@ -441,19 +458,8 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
         body: JSON.stringify({ kind: 'glossary', content_base64, filename: file.name }),
       });
       if (id !== operation.current || key !== projectRef.current || version !== generation.current) return;
-      setRows((result.rows ?? []).map((row) => ({
-        src: String(row.src ?? ''),
-        dst: String(row.dst ?? ''),
-        type: String(row.type ?? ''),
-        info: String(row.comment ?? row.info ?? ''),
-        candidate: false,
-        hits: '',
-      })));
-      if (snapshot) setSnapshot({ ...snapshot, candidate_ids: [] });
-      setDirty(true);
-      setSelected(null);
-      setError('');
-      state.pushToast('success', `已导入 ${result.count} 个词条（保存后生效）`);
+      const parsed = normalizeImportRows(result.rows);
+      openImportMerge(parsed, file.name, { id, key, version });
     } catch (e) {
       if (id === operation.current && key === projectRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -488,22 +494,9 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     try {
       if (file.size > 5 * 1024 * 1024) throw new Error('JSON 文件应小于 5 MB');
       const data: unknown = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
-      if (!Array.isArray(data) || data.some((row) => !row || typeof row !== 'object' || typeof (row as TermRow).src !== 'string' || typeof (row as TermRow).dst !== 'string')) {
-        throw new Error('文件应为词条数组，每条至少包含字符串 src 和 dst。');
-      }
-      const incoming = (data as TermRow[]).map((row) => ({
-        ...row,
-        record_id: '',
-        candidate: row.candidate === true,
-        candidate_confirmed: false,
-        info: noteOf(row),
-        type: String(row.type ?? ''),
-        hits: '',
-      }));
       if (op !== operation.current || owner !== projectRef.current || version !== generation.current) return;
-      setRows((previous) => [...previous, ...incoming]);
-      setDirty(true);
-      state.pushToast('info', `已导入 ${incoming.length} 个词条，保存后生效`);
+      const parsed = normalizeImportRows(data);
+      openImportMerge(parsed, file.name, { id: op, key: owner, version });
     } catch (e) {
       if (op === operation.current && owner === projectRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -519,6 +512,29 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     link.download = 'glossary.json';
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const applyPendingImport = () => {
+    const pending = pendingImport;
+    if (!pending) return;
+    if (pending.op !== operation.current || pending.project !== projectRef.current || pending.version !== generation.current) {
+      setPendingImport(null);
+      return;
+    }
+    if (cellDirty) { setError('请先按 Enter 提交当前单元格，再导入。'); setPendingImport(null); return; }
+    const next = mergeImportedRows(rowsRef.current, pending.incoming, importStrategy);
+    setPendingImport(null);
+    setError('');
+    if (next.added || next.filled || next.replaced) {
+      setRows(next.rows);
+      setDirty(true);
+      statsKeys.current = [];
+    }
+    if (importStrategy === 'keep' && next.added === 0) {
+      state.pushToast('info', t('lexicon_import_all_existing'));
+      return;
+    }
+    state.pushToast(next.added || next.filled || next.replaced ? 'success' : 'info', t('lexicon_import_merge_toast').replace('{added}', String(next.added)).replace('{duplicate}', String(next.duplicate)).replace('{kept}', String(next.kept)).replace('{filled}', String(next.filled)).replace('{replaced}', String(next.replaced)));
   };
 
   const addRow = () => {
@@ -727,6 +743,10 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     }
   };
 
+  const importPreview = pendingImport ? mergeImportedRows(rows, pendingImport.incoming, 'keep') : null;
+  const importSummary = pendingImport && importPreview
+    ? t('lexicon_import_merge_summary').replace('{total}', String(pendingImport.incoming.length)).replace('{added}', String(importPreview.added)).replace('{duplicate}', String(importPreview.duplicate))
+    : '';
   const matched = rows
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => `${row.src} ${row.dst} ${displayType(row)} ${noteOf(row)}`.toLowerCase().includes(query.toLowerCase()));
@@ -914,6 +934,17 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           setConfirmApply(false);
         }}>
           {t('lexicon_apply_result_body')}
+        </Dialog>
+      ) : null}
+      {pendingImport ? (
+        <Dialog title={t('lexicon_import_merge_title')} confirmText={t('lexicon_import_apply')} onCancel={() => setPendingImport(null)} onConfirm={applyPendingImport}>
+          <div>{pendingImport.filename}</div>
+          <div>{importSummary}</div>
+          <Radio.Group value={importStrategy} onChange={(event) => setImportStrategy(event.target.value as ImportStrategy)}>
+            <Radio value="keep" style={importRadioStyle}>{t('lexicon_import_keep')}<br />{t('lexicon_import_keep_desc')}</Radio>
+            <Radio value="fill" style={importRadioStyle}>{t('lexicon_import_fill')}<br />{t('lexicon_import_fill_desc')}</Radio>
+            <Radio value="overwrite" style={importRadioStyle}>{t('lexicon_import_overwrite')}<br />{t('lexicon_import_overwrite_desc')}</Radio>
+          </Radio.Group>
         </Dialog>
       ) : null}
       {pendingJob ? (
