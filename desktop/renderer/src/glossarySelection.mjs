@@ -24,6 +24,17 @@ export function deleteCheckedRows(rows, value, context) {
   const checked = new Set(readRowSelection(value, rows.length, context).checked);
   return checked.size ? rows.filter((_row, index) => !checked.has(index)) : rows;
 }
+export function clearCheckedTranslations(rows, value, context) {
+  const checked = new Set(readRowSelection(value, rows.length, context).checked);
+  if (!checked.size) return { rows, changed: 0 };
+  let changed = 0;
+  const next = rows.map((row, index) => {
+    if (!checked.has(index)) return row;
+    if (row.dst.trim() !== '') changed += 1;
+    return { ...row, dst: '' };
+  });
+  return { rows: next, changed };
+}
 
 // Local labels avoid replacing the shared language Context while drafts are live.
 const labels = {

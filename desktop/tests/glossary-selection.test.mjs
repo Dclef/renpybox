@@ -5,7 +5,7 @@ import { parseSync, traverse } from '@babel/core';
 import { transformSync as stripTypes } from 'esbuild';
 const staged = process.env.GLOSSARY_SELECTION_CANDIDATE === '1';
 const path = name => new URL(staged ? './.tmp/glossary-selection-' + name : '../renderer/src/' + name, import.meta.url);
-const { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, glossarySelectionLabels } = await import(path('glossarySelection.mjs'));
+const { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, clearCheckedTranslations, glossarySelectionLabels } = await import(path('glossarySelection.mjs'));
 const context = JSON.stringify(['project-a', '']);
 const fixture = () => ['Help', 'History', 'Renpy', 'Mouse'].map((src, index) => ({ src, dst: 'translated-' + src, case_sensitive: index < 3, extra: { keep: index } }));
 
@@ -219,4 +219,60 @@ test('actual same-project refresh preserves a clean snapshot and live task owner
  const operation={current:7},live={id:'running-job',project:'project-a',generation:4},taskOwner={current:live};let error='Other network error';const forbidden=()=>{throw new Error('Must not reset or reload a live same-project task');};
  actualEffect(pageSource,'useEffect','projectKey',{snapshot:{rows:[]},ownerProject:'project-a',projectKey:'project-a',operation,taskOwner,dirtyRef:{current:false},setJob:forbidden,setBusy:forbidden,clearScanWarning:forbidden,setSnapshot:forbidden,request:forbidden,setError:value=>{error=typeof value==='function'?value(error):value;}});
  assert.equal(operation.current,7);assert.equal(taskOwner.current,live);assert.equal(error,'Other network error');
+});
+
+test('clearCheckedTranslations blanks dst only and leaves unchecked row objects in place', () => {
+  const kept = { src: 'B', dst: '乙', type: '地', candidate: false, record_id: 'keep' };
+  const rows = [
+    { src: 'A', dst: '甲', type: '名', candidate: true, candidate_confirmed: false, record_id: 'r1', info: 'note', case_sensitive: true },
+    kept,
+    { src: 'C', dst: '', type: '空', candidate: true, record_id: 'r3' },
+  ];
+  const selected = selectCheckedRows(null, ['0'], rows.length, context);
+  const outcome = clearCheckedTranslations(rows, selected, context);
+  assert.equal(outcome.changed, 1);
+  assert.equal(outcome.rows[0].dst, '');
+  assert.equal(outcome.rows[0].src, 'A');
+  assert.equal(outcome.rows[0].type, '名');
+  assert.equal(outcome.rows[0].candidate, true);
+  assert.equal(outcome.rows[0].candidate_confirmed, false);
+  assert.equal(outcome.rows[0].record_id, 'r1');
+  assert.equal(outcome.rows[0].info, 'note');
+  assert.equal(outcome.rows[0].case_sensitive, true);
+  assert.equal(outcome.rows[1], kept);
+  assert.equal(kept.dst, '乙');
+  assert.equal(rows[0].dst, '甲');
+});
+
+test('checked rows that already have an empty dst do not count as changed', () => {
+  const rows = [{ src: 'A', dst: '' }, { src: 'B', dst: '  ' }];
+  const outcome = clearCheckedTranslations(rows, selectCheckedRows(null, ['0'], rows.length, context), context);
+  assert.equal(outcome.changed, 0);
+  assert.equal(outcome.rows.length, rows.length);
+  assert.equal(outcome.rows[0].dst, '');
+  assert.notEqual(outcome.rows, rows);
+});
+
+test('no checked rows returns the original array and changes nothing', () => {
+  const rows = [{ src: 'A', dst: '甲' }];
+  const outcome = clearCheckedTranslations(rows, null, context);
+  assert.equal(outcome.rows, rows);
+  assert.equal(outcome.changed, 0);
+});
+
+test('clear-dst button and translate buttons use the shared selection without touching full-table exports', () => {
+  assert.match(pageSource, /data-testid="glossary-clear-dst-selected"/);
+  assert.match(variable('clearSelectedTranslations'), /clearCheckedTranslations\(rowsRef\.current, selected, selectionContext\)/);
+  assert.doesNotMatch(variable('clearSelectedTranslations'), /request\(|save\(|fetch\(/);
+  const buttonAt = (marker) => {
+    const at = pageSource.indexOf(marker);
+    return pageSource.slice(pageSource.lastIndexOf('<Button', at), pageSource.indexOf('</Button>', at));
+  };
+  for (const segment of [buttonAt("mode: 'llm'"), buttonAt("mode: 'fast'")]) {
+    assert.match(segment, /translateTargets\(\)\.length === 0/);
+    assert.match(segment, /translateTargets\(\)\.map\(toApiRow\)/);
+    assert.doesNotMatch(segment, /rowsRef\.current\.map\(toApiRow\)/);
+  }
+  assert.match(variable('translateTargets'), /readRowSelection\(selected, rowsRef\.current\.length, selectionContext\)/);
+  assert.match(pageSource, /rowsRef\.current\.map\(toApiRow\)/);
 });

@@ -6,7 +6,7 @@ import { Check, Copy, FileJson, FileSpreadsheet, FileText, Plus, Search } from '
 import { cancelJob, request } from '../api';
 import { DataSheet, type DataSheetEditTarget } from '../components/DataSheet';
 import { checkpointScanRequestBody, glossaryScanOutcome } from '../glossaryView.mjs';
-import { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, glossarySelectionLabels } from '../glossarySelection.mjs';
+import { readRowSelection, selectionContextChanged, selectActiveRow, selectCheckedRows, deleteCheckedRows, clearCheckedTranslations, glossarySelectionLabels } from '../glossarySelection.mjs';
 import type { RowSelectionState } from '../glossarySelection.mjs';
 import { AgentExtractionFeedback, GlossaryTaskControls } from './AgentExtractionFeedback';
 import { appendPreviewRows, previewCandidates, previewLabels, previewApplyReason, scanResultApplicable } from '../glossaryPreview.mjs';
@@ -554,6 +554,25 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
     setDirty(true);
   };
 
+  const clearSelectedTranslations = () => {
+    if (editLocked) return;
+    const outcome = clearCheckedTranslations(rowsRef.current, selected, selectionContext);
+    if (outcome.changed === 0) {
+      if (readRowSelection(selected, rowsRef.current.length, selectionContext).checked.length) state.pushToast('info', t('lexicon_clear_dst_none'));
+      return;
+    }
+    setRows(outcome.rows);
+    setDirty(true);
+    statsKeys.current = [];
+    state.pushToast('success', t('lexicon_clear_dst_done').replace('{count}', String(outcome.changed)));
+  };
+
+  const translateTargets = () => {
+    const checked = readRowSelection(selected, rowsRef.current.length, selectionContext).checked;
+    const pool = checked.length ? checked.map((index) => rowsRef.current[index]).filter(Boolean) : rowsRef.current;
+    return pool.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim()));
+  };
+
   const confirmSelected = () => {
     if (selection.active == null) {
       state.pushToast('info', '请先选择候选词条');
@@ -819,6 +838,7 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
           <Button disabled={editLocked || !snapshot} icon={<Plus size={16} strokeWidth={1.75} />} onClick={addRow}>{t('lexicon_add')}</Button>
           <Button disabled={editLocked || selection.active == null} onClick={confirmSelected}>{selectionLabels.confirmCurrent}</Button>
           <Button data-testid="glossary-delete-selected" disabled={editLocked || selection.checked.length === 0} onClick={removeSelected}>{selectionLabels.deleteSelected.replace('{count}', String(selection.checked.length))}</Button>
+          <Button data-testid="glossary-clear-dst-selected" disabled={editLocked || selection.checked.length === 0} onClick={clearSelectedTranslations}>{t('lexicon_clear_dst_selected').replace('{count}', String(selection.checked.length))}</Button>
           <Button disabled={editLocked || !rows.length} onClick={dedupe}>{t('lexicon_deduplicate')}</Button>
           <Button disabled={editLocked || !rows.length} onClick={onClassify}>{t('lexicon_auto_classify')}</Button>
           <Button danger type="text" disabled={editLocked || !snapshot} onClick={() => { if (snapshot && !editLocked) setConfirmClear(true); }}>{t('lexicon_clear')}</Button>
@@ -829,22 +849,22 @@ export function GlossaryPage({ state, onDirtyChange, onNextStep, embedded = fals
             confirm: true,
             rows: rowsRef.current.map(toApiRow),
           }, previewText.title, previewText.confirm)}>{previewText.extract}</Button>
-          <Button disabled={editLocked || !rows.length} onClick={() => {
-            const tasks = rowsRef.current.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim())).length;
+          <Button disabled={editLocked || !rows.length || translateTargets().length === 0} onClick={() => {
+            const targets = translateTargets().map(toApiRow);
             askJob('/api/lexicon/glossary/translate', {
               mode: 'llm',
-              rows: rowsRef.current.map(toApiRow),
+              rows: targets,
               confirm: true,
-            }, t('lexicon_translate_llm_title'), t('lexicon_translate_llm_confirm').replace('{count}', String(tasks)));
+            }, t('lexicon_translate_llm_title'), t('lexicon_translate_llm_confirm').replace('{count}', String(targets.length)));
           }}>{t('lexicon_translate_llm')}</Button>
-          <Button disabled={editLocked || !rows.length} onClick={() => {
-            const tasks = rowsRef.current.filter((row) => row.src.trim() && (!row.dst.trim() || row.dst.trim() === row.src.trim())).length;
+          <Button disabled={editLocked || !rows.length || translateTargets().length === 0} onClick={() => {
+            const targets = translateTargets().map(toApiRow);
             askJob('/api/lexicon/glossary/translate', {
               mode: 'fast',
               engine: 'bing',
-              rows: rowsRef.current.map(toApiRow),
+              rows: targets,
               confirm: true,
-            }, t('lexicon_translate_fast_title'), t('lexicon_translate_fast_confirm').replace('{count}', String(tasks)));
+            }, t('lexicon_translate_fast_title'), t('lexicon_translate_fast_confirm').replace('{count}', String(targets.length)));
           }}>{t('lexicon_translate_fast')}</Button>
           <Dropdown
             menu={{

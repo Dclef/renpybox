@@ -5,4 +5,5 @@ export function readRowSelection(value: RowSelectionState, count: number, contex
 export function selectActiveRow(value: RowSelectionState, key: string | number | null, count: number, context: string): RowSelection;
 export function selectCheckedRows(value: RowSelectionState, keys: readonly (string | number)[], count: number, context: string): RowSelection;
 export function deleteCheckedRows<T>(rows: T[], value: RowSelectionState, context: string): T[];
+export function clearCheckedTranslations<T extends { dst: string }>(rows: T[], value: RowSelectionState, context: string): { rows: T[]; changed: number };
 export function glossarySelectionLabels(language: unknown): { deleteSelected: string; selectPage: string; selectRow: string; selectedCount: string; confirmCurrent: string };
