@@ -131,6 +131,30 @@ def test_scan_candidates_fails_without_agent_platform(app_context, monkeypatch):
     assert "Agent" in job["result"]["message"] or "接口" in job["result"]["message"]
 
 
+def test_failed_scan_summarizes_repeated_warnings(app_context, monkeypatch):
+    client, config, _, _ = app_context
+    writes = []
+    use_repository(monkeypatch, config, empty_state(), writes)
+    enable_agent(config)
+    warnings = [f"第 {index} 块未能取得结果：401 Unauthorized" for index in range(30)]
+    monkeypatch.setattr(
+        lexicon,
+        "extract_glossary_candidates",
+        lambda **kwargs: {"entries": [], "warnings": warnings, "status": "failed"},
+    )
+
+    response = client.post("/api/lexicon/glossary/scan-candidates", json=request_body(config))
+    job = finish(client, response.json()["job"]["id"])
+
+    assert job["status"] == "failed"
+    message = job["result"]["message"]
+    assert len(message) < 200
+    assert len(job["error"]) < 200
+    assert "另有" in message and "29" in message
+    assert job["result"]["warnings"] == warnings
+    assert writes == []
+
+
 def test_scan_candidates_uses_configured_agent_platform(app_context, monkeypatch):
     client, config, _, _ = app_context
     writes = []

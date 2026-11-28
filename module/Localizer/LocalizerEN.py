@@ -940,6 +940,7 @@ class LocalizerEN(LocalizerZH):
     agent_request_bad_request: str = "The model rejected the Agent request parameters."
     agent_request_failed: str = "The Agent request failed. Check the API settings or network connection."
     agent_request_failed_detail: str = "Agent request failed: {reason}"
+    agent_error_more: str = " ({count} more warnings; expand to view all)"
     agent_request_rate_limited: str = "Rate limited by the provider; retries with backoff still failed. Please try again later."
     agent_tool_arguments_must_be_object: str = "Tool arguments must be a JSON object."
     agent_tool_undeclared_arguments: str = "Undeclared arguments: {names}."

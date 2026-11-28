@@ -214,9 +214,30 @@ def _fresh_names(rows: Any, state: Any, names: list[str]) -> list[str]:
     return fresh
 
 
+class _ErrorSummary(str):
+    """短摘要。warnings 挂在字符串上，随异常参数进入 job.result，不拼进文案。"""
+
+
 def _agent_error(payload: dict[str, Any], fallback: str) -> str:
     warnings = [str(item) for item in payload.get("warnings", []) if str(item).strip()]
-    return "；".join(warnings) if warnings else fallback
+    if not warnings:
+        return fallback
+    more = Localizer.get().agent_error_more.format(count=len(warnings) - 1) if len(warnings) > 1 else ""
+    # job.error 会再加「异常类名: 」前缀，摘要本身压到 183，两处都短于 200。
+    room = 183 - len(more)
+    first = warnings[0]
+    if len(first) > 160:
+        first = first[:160] + "…"
+    if room < 1:
+        text = more[:183]
+    elif len(first) > room:
+        text = (first[:room - 1] + "…") if room > 1 else first[:room]
+        text += more
+    else:
+        text = first + more
+    summary = _ErrorSummary(text)
+    summary.warnings = warnings
+    return summary
 
 
 def _repository(config: Any) -> ProjectAssetsRepository:
@@ -424,6 +445,10 @@ async def _run_lexicon_job(
                 raise asyncio.CancelledError() from exc
             if isinstance(job.result, dict):
                 job.result["message"] = str(exc)
+                carried = exc.args[0] if getattr(exc, "args", None) else None
+                carried_warnings = getattr(carried, "warnings", None)
+                if isinstance(carried_warnings, list):
+                    job.result["warnings"] = list(carried_warnings)
             raise
         finally:
             if isinstance(job.result, dict):

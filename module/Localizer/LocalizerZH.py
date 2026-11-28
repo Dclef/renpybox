@@ -890,6 +890,7 @@ class LocalizerZH():
     agent_request_bad_request: str = "模型拒绝了 Agent 请求参数。"
     agent_request_failed: str = "Agent 请求失败，请检查接口配置或网络。"
     agent_request_failed_detail: str = "Agent 请求失败：{reason}"
+    agent_error_more: str = "（另有 {count} 条警告，展开查看全部）"
     agent_request_rate_limited: str = "接口限流，已退避重试后仍然失败，请稍后再试。"
     agent_tool_arguments_must_be_object: str = "工具参数必须是 JSON 对象。"
     agent_tool_undeclared_arguments: str = "包含未声明参数：{names}。"

@@ -3,7 +3,7 @@
 .rb-agent-feedback > * { flex-shrink: 0; }
 .rb-agent-feedback-status { display: flex; flex-direction: column; gap: 4px; }
 .rb-agent-feedback-status-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.rb-agent-feedback-message { color: var(--rb-text-secondary); font-size: 12px; }
+.rb-agent-feedback-message { color: var(--rb-text-secondary); font-size: 12px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-height: 36px; }
 .rb-agent-feedback-summary { color: var(--rb-text-secondary); font-size: 12px; }
 .rb-agent-feedback-active,
 .rb-agent-feedback-preview,
@@ -61,7 +61,7 @@
 .rb-agent-feedback[data-active='true'] { max-height: 126px; gap: 4px; }
 .rb-agent-feedback[data-active='true'] .rb-agent-feedback-status { display: grid; grid-template-columns: minmax(0, 1fr) 180px; align-items: center; column-gap: 12px; row-gap: 2px; }
 .rb-agent-feedback[data-active='true'] .rb-agent-feedback-status-head { min-width: 0; flex-wrap: nowrap; }
-.rb-agent-feedback[data-active='true'] .rb-agent-feedback-message { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rb-agent-feedback[data-active='true'] .rb-agent-feedback-message { min-width: 0; display: block; -webkit-line-clamp: unset; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: none; }
 .rb-agent-feedback[data-active='true'] [data-testid='agent-feedback-progress'] { min-width: 0; line-height: 18px; }
 .rb-agent-feedback[data-active='true'] .rb-agent-feedback-summary,
 .rb-agent-feedback[data-active='true'] .rb-agent-feedback-detail-actions,
@@ -107,5 +107,6 @@
 .rb-import-strategy-title { font-weight: 600; }
 .rb-import-strategy-desc { font-size: 12px; color: var(--rb-text-secondary); }
 .rb-import-strategy-effect { font-size: 12px; }
+.rb-banner-text { max-height: 120px; overflow-y: auto; }
 
 

@@ -132,6 +132,10 @@ test('warning and candidate details have bounded scroll regions scoped to the fe
   }
   assert.match(css, /max-height:\s*min\(340px, 38vh\)/);
   assert.match(css, /scrollbar-color/);
+  assert.match(css, /\.rb-agent-feedback-message\s*\{[^}]*(-webkit-line-clamp:\s*2|max-height:\s*\d+px)/);
+  assert.match(css, /\.rb-agent-feedback\[data-active='true'\] \.rb-agent-feedback-message\s*\{[^}]*text-overflow:\s*ellipsis/);
+  assert.match(css, /\.rb-banner-text\s*\{[^}]*max-height:\s*120px/);
+  assert.match(css, /\.rb-banner-text\s*\{[^}]*overflow-y:\s*auto/);
   const feedback = readFileSync(new URL('../renderer/src/pages/AgentExtractionFeedback.tsx', import.meta.url), 'utf8');
   assert.match(feedback, /data-kind/);
   assert.match(feedback, /rb-warning-kind/);
