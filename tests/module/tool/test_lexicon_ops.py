@@ -165,3 +165,43 @@ def test_translate_helpers():
     assert rows[0]["dst"] == "甲"
     assert rows[1]["dst"] == "已译"
     assert decode_llm_jsonline('{"0": "甲"}\n{"1": "乙"}', 2) == ["甲", "乙"]
+
+
+def test_decode_llm_jsonline_structured_translations():
+    payload = '{"translations":[{"request_index":0,"text":"甲"},{"request_index":1,"text":"乙"}],"new_glossary":[]}'
+    assert decode_llm_jsonline(payload, 2) == ["甲", "乙"]
+    inputs = '{"inputs":[{"request_index":1,"text":"乙"},{"request_index":0,"text":"甲"}]}'
+    assert decode_llm_jsonline(inputs, 2) == ["甲", "乙"]
+
+
+def test_decode_llm_jsonline_jsonline_out_of_order():
+    payload = '{"request_index":1,"text":"乙"}\n{"request_index":0,"text":"甲"}'
+    assert decode_llm_jsonline(payload, 2) == ["甲", "乙"]
+
+
+def test_decode_llm_jsonline_legacy_digit_keys():
+    assert decode_llm_jsonline('{"0": "甲"}\n{"1": "乙"}', 2) == ["甲", "乙"]
+    assert decode_llm_jsonline('{"1": "乙", "0": "甲"}', 2) == ["甲", "乙"]
+
+
+def test_decode_llm_jsonline_rejects_bad_indexes():
+    assert decode_llm_jsonline('{"request_index":0,"text":"甲"}\n{"request_index":2,"text":"越界"}', 2) == ["", ""]
+    assert decode_llm_jsonline('{"request_index":0,"text":"甲"}\n{"request_index":0,"text":"重复"}', 1) == [""]
+    assert decode_llm_jsonline('{"request_index":0,"text":"甲"}', 2) == ["", ""]
+
+
+def test_decode_llm_jsonline_fence_and_bad_fields():
+    assert decode_llm_jsonline('{"request_index":0,"text":1}', 1) == [""]
+    assert decode_llm_jsonline('{"text":"甲"}', 1) == [""]
+    fenced = '```json\n{"translations":[{"request_index":0,"text":"甲"},{"request_index":1,"text":"乙"}]}\n```'
+    assert decode_llm_jsonline(fenced, 2) == ["甲", "乙"]
+
+
+def test_decode_llm_jsonline_empty_or_prose():
+    assert decode_llm_jsonline("", 2) == ["", ""]
+    assert decode_llm_jsonline("这是解释，不是译文。", 2) == ["", ""]
+
+
+def test_decode_llm_jsonline_single_record():
+    payload = '{\n  "request_index": 0,\n  "text": "甲"\n}'
+    assert decode_llm_jsonline(payload, 1) == ["甲"]

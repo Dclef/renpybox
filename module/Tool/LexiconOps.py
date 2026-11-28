@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import io
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -1009,31 +1010,95 @@ def decode_llm_jsonline(response_text: str, expected: int) -> list[str]:
     except Exception:
         repair = None
 
-    mapping: dict[str, str] = {}
+    def loads(text: str) -> Any:
+        if repair is not None:
+            try:
+                return repair.loads(text)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def record(data: object) -> tuple[int, str] | None:
+        if not isinstance(data, dict) or set(data) != {"request_index", "text"}:
+            return None
+        index = data.get("request_index")
+        value = data.get("text")
+        if type(index) is not int or index < 0 or not isinstance(value, str):
+            return None
+        return index, value
+
+    def digit_record(data: object) -> tuple[int, str] | None:
+        if not isinstance(data, dict) or len(data) != 1:
+            return None
+        key, value = next(iter(data.items()))
+        if str(key).isdigit() and isinstance(value, str):
+            return int(str(key)), value
+        return None
+
+    def align(entries: list[tuple[int, str]]) -> list[str] | None:
+        indices = [index for index, _text in entries]
+        if len(indices) != len(set(indices)) or set(indices) != set(range(expected)):
+            return None
+        return [text for _index, text in sorted(entries, key=lambda item: item[0])]
+
+    def blanks() -> list[str]:
+        return [""] * expected
+
+    def from_list(items: object) -> list[str] | None:
+        if not isinstance(items, list):
+            return None
+        entries: list[tuple[int, str]] = []
+        for item in items:
+            parsed = record(item)
+            if parsed is None:
+                return blanks()
+            entries.append(parsed)
+        aligned = align(entries)
+        return blanks() if aligned is None else aligned
+
+    lines: list[str] = []
     for raw in (response_text or "").splitlines():
         line = raw.strip()
-        if not line or line.startswith("```"):
-            continue
-        try:
-            data = repair.loads(line) if repair else None  # type: ignore[attr-defined]
-        except Exception:
-            data = None
-        if isinstance(data, dict) and len(data) == 1:
-            key, value = next(iter(data.items()))
-            if isinstance(key, str) and isinstance(value, str):
-                mapping[key] = value
+        if line and not line.startswith("```"):
+            lines.append(line)
 
-    if not mapping:
-        try:
-            data = repair.loads(response_text) if repair else None  # type: ignore[attr-defined]
-        except Exception:
-            data = None
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if isinstance(key, str) and isinstance(value, str):
-                    mapping[key] = value
+    entries: list[tuple[int, str]] = []
+    for line in lines:
+        data = loads(line)
+        parsed = record(data)
+        if parsed is None:
+            parsed = digit_record(data)
+        if parsed is not None:
+            entries.append(parsed)
+    if entries:
+        aligned = align(entries)
+        if aligned is not None:
+            return aligned
 
-    return [mapping.get(str(i), "") for i in range(expected)]
+    data = loads("\n".join(lines))
+    if isinstance(data, dict):
+        for key in ("translations", "inputs"):
+            if key in data:
+                parsed_list = from_list(data.get(key))
+                if parsed_list is not None:
+                    return parsed_list
+        parsed = record(data)
+        # 单记录兜底只采信「单个 JSON 文档」：若原文里能逐行解析出多条记录，说明是
+        # JSONLINE 输入，已在上面的逐行阶段处理；这里再放行会让 json_repair 对重复/越界
+        # 多行的宽松合并绕过 align 校验。美化后的单个 dict（含换行但只有一条记录）不受影响。
+        if parsed is not None and not entries:
+            return [parsed[1]] if parsed[0] == 0 and expected == 1 else blanks()
+        mapping = {
+            int(str(key)): value
+            for key, value in data.items()
+            if str(key).isdigit() and isinstance(value, str)
+        }
+        if mapping:
+            return [mapping.get(index, "") for index in range(expected)]
+    return blanks()
 
 
 def apply_translate_results(
